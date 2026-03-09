@@ -698,6 +698,69 @@ bool ExtractLaunchPathFromExternalURL(NSURL* url,
   return false;
 }
 
+bool ParseTitleIDFromURLValue(NSString* value, uint32_t* title_id_out) {
+  if (!value || !title_id_out) {
+    return false;
+  }
+  NSString* normalized = DecodeURLComponent(value);
+  if (!normalized) {
+    return false;
+  }
+  normalized =
+      [normalized stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if ([normalized hasPrefix:@"0x"] || [normalized hasPrefix:@"0X"]) {
+    normalized = [normalized substringFromIndex:2];
+  }
+  if (normalized.length != 8) {
+    return false;
+  }
+  const char* utf8 = [normalized UTF8String];
+  if (!utf8 || !utf8[0]) {
+    return false;
+  }
+  char* end = nullptr;
+  errno = 0;
+  unsigned long parsed = std::strtoul(utf8, &end, 16);
+  if (errno != 0 || !end || *end != '\0' || parsed > UINT32_MAX || parsed == 0) {
+    return false;
+  }
+  *title_id_out = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool ExtractLaunchTitleIDFromExternalURL(NSURL* url, uint32_t* title_id_out) {
+  if (!url || !title_id_out || url.isFileURL) {
+    return false;
+  }
+
+  NSURLComponents* components =
+      [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+  if (components) {
+    NSArray<NSString*>* candidate_keys =
+        @[ @"title-id", @"title_id", @"titleid", @"tid" ];
+    for (NSString* key in candidate_keys) {
+      for (NSURLQueryItem* item in components.queryItems) {
+        if (!item.name ||
+            [item.name caseInsensitiveCompare:key] != NSOrderedSame) {
+          continue;
+        }
+        if (ParseTitleIDFromURLValue(item.value, title_id_out)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  NSArray<NSString*>* path_components = url.pathComponents;
+  for (NSString* component in [path_components reverseObjectEnumerator]) {
+    if (ParseTitleIDFromURLValue(component, title_id_out)) {
+      return true;
+    }
+  }
+
+  return ParseTitleIDFromURLValue(url.host, title_id_out);
+}
+
 cvar::IConfigVar* GetConfigVar(const std::string& key) {
   if (!cvar::ConfigVars) {
     return nullptr;
@@ -1049,6 +1112,19 @@ std::string FormatTitleID(uint32_t title_id) {
   char buffer[9] = {};
   std::snprintf(buffer, sizeof(buffer), "%08X", title_id);
   return std::string(buffer);
+}
+
+static NSString* xe_launch_url_for_title_id(uint32_t title_id) {
+  if (!title_id) {
+    return nil;
+  }
+  NSURLComponents* components = [[[NSURLComponents alloc] init] autorelease];
+  components.scheme = @"xenios";
+  components.host = @"launch";
+  components.queryItems = @[
+    [NSURLQueryItem queryItemWithName:@"title-id" value:ToNSString(FormatTitleID(title_id))]
+  ];
+  return components.URL.absoluteString;
 }
 
 enum class IOSInstalledContentKind {
@@ -9730,28 +9806,118 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (BOOL)handleExternalLaunchURL:(NSURL*)url {
-  std::filesystem::path launch_path;
-  if (!ExtractLaunchPathFromExternalURL(url, &launch_path) ||
-      launch_path.empty()) {
-    NSString* absolute_url = [url absoluteString];
-    XELOGW("iOS: External launch URL missing path: {}",
-           absolute_url ? [absolute_url UTF8String] : "");
-    self.statusLabel.text = @"Launch URL missing game path.";
+- (NSString*)displayNameForGamePath:(const std::filesystem::path&)game_path {
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (game.path == game_path) {
+      return ToNSString(game.title);
+    }
+  }
+  return nil;
+}
+
+- (BOOL)findDiscoveredGameWithTitleID:(uint32_t)title_id
+                                 path:(std::filesystem::path*)path_out
+                          displayName:(NSString**)display_name_out {
+  if (!title_id || !path_out) {
     return NO;
   }
 
-  XELOGI("iOS: External game launch requested: {}", launch_path.string());
+  auto find_match = [&]() -> const IOSDiscoveredGame* {
+    for (const IOSDiscoveredGame& game : discovered_games_) {
+      if (game.title_id == title_id) {
+        return &game;
+      }
+    }
+    return nullptr;
+  };
+
+  const IOSDiscoveredGame* match = find_match();
+  if (!match) {
+    [self refreshImportedGames];
+    match = find_match();
+  }
+  if (!match) {
+    return NO;
+  }
+
+  *path_out = match->path;
+  if (display_name_out) {
+    *display_name_out = ToNSString(match->title);
+  }
+  return YES;
+}
+
+- (void)copyLaunchURLForGameAtIndex:(size_t)game_index {
+  if (game_index >= discovered_games_.size()) {
+    return;
+  }
+  const IOSDiscoveredGame& game = discovered_games_[game_index];
+  if (!game.title_id) {
+    self.statusLabel.text = @"Launch URL unavailable for this game.";
+    return;
+  }
+
+  NSString* launch_url = xe_launch_url_for_title_id(game.title_id);
+  if (!launch_url || launch_url.length == 0) {
+    self.statusLabel.text = @"Failed to build launch URL.";
+    return;
+  }
+
+  [UIPasteboard generalPasteboard].string = launch_url;
+  NSString* game_title = ToNSString(game.title);
+  self.statusLabel.text = game_title.length > 0
+                              ? [NSString stringWithFormat:@"Copied launch URL for %@.",
+                                                           game_title]
+                              : @"Copied launch URL.";
+  XELOGI("iOS: Copied title-ID launch URL {}", [launch_url UTF8String]);
+}
+
+- (BOOL)handleExternalLaunchURL:(NSURL*)url {
+  std::filesystem::path launch_path;
+  NSString* display_name = nil;
+  uint32_t title_id = 0;
+  if (ExtractLaunchPathFromExternalURL(url, &launch_path) && !launch_path.empty()) {
+    display_name = [self displayNameForGamePath:launch_path];
+    if (!display_name || display_name.length == 0) {
+      display_name = ToNSString(launch_path.filename().string());
+    }
+  } else if (ExtractLaunchTitleIDFromExternalURL(url, &title_id) && title_id) {
+    if (![self findDiscoveredGameWithTitleID:title_id
+                                        path:&launch_path
+                                 displayName:&display_name]) {
+      XELOGW("iOS: External launch title ID {:08X} was not found in Library", title_id);
+      self.statusLabel.text =
+          [NSString stringWithFormat:@"Title ID %08X was not found in Library.", title_id];
+      return NO;
+    }
+  }
+
+  if (launch_path.empty()) {
+    NSString* absolute_url = [url absoluteString];
+    XELOGW("iOS: External launch URL missing valid game target: {}",
+           absolute_url ? [absolute_url UTF8String] : "");
+    self.statusLabel.text = @"Launch URL missing a valid game target.";
+    return NO;
+  }
+
+  if (!display_name || display_name.length == 0) {
+    display_name = ToNSString(launch_path.filename().string());
+  }
+
+  if (title_id) {
+    XELOGI("iOS: External game launch requested by title ID {:08X}: {}", title_id,
+           launch_path.string());
+  } else {
+    XELOGI("iOS: External game launch requested: {}", launch_path.string());
+  }
   if (!self.jitAcquired) {
     pending_external_launch_path_ = launch_path;
     self.statusLabel.text =
-        [NSString stringWithFormat:@"Waiting for JIT to launch: %@",
-                                   ToNSString(launch_path.filename().string())];
+        [NSString stringWithFormat:@"Waiting for JIT to launch: %@", display_name];
     return YES;
   }
 
-  [self launchGameAtPath:launch_path
-             displayName:ToNSString(launch_path.filename().string())];
+  [self launchGameAtPath:launch_path displayName:display_name];
   return YES;
 }
 
@@ -10047,6 +10213,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                      NSString* game_title = ToNSString(game.title);
                      const BOOL can_manage_content = game.title_id != 0;
                      const BOOL can_view_compatibility = game.title_id != 0;
+                     const BOOL can_copy_launch_url = game.title_id != 0;
                      UIAction* play_action = [UIAction
                          actionWithTitle:@"Play"
                                    image:[UIImage systemImageNamed:@"play.fill"]
@@ -10068,15 +10235,28 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                                            handler:^(__unused UIAction* action) {
                                              [self presentManageContentSheetForIndex:game_index];
                                            }];
+                     UIAction* copy_launch_url_action =
+                         [UIAction actionWithTitle:@"Copy Launch URL"
+                                             image:[UIImage systemImageNamed:@"link"]
+                                        identifier:nil
+                                           handler:^(__unused UIAction* action) {
+                                             [self copyLaunchURLForGameAtIndex:game_index];
+                                           }];
                      if (!can_view_compatibility) {
                        compatibility_action.attributes = UIMenuElementAttributesDisabled;
                      }
                      if (!can_manage_content) {
                        content_action.attributes = UIMenuElementAttributesDisabled;
                      }
+                     if (!can_copy_launch_url) {
+                       copy_launch_url_action.attributes = UIMenuElementAttributesDisabled;
+                     }
                      return [UIMenu
                          menuWithTitle:@""
-                              children:@[ play_action, compatibility_action, content_action ]];
+                              children:@[
+                                play_action, compatibility_action, content_action,
+                                copy_launch_url_action
+                              ]];
                    }];
 }
 
