@@ -10422,7 +10422,13 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
     NSString* title_name =
         game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
     NSString* icon_base64 = @"";
-    if (!game.icon_data.empty()) {
+    UIImage *cache_image = xe_cached_game_art(game.title_id);
+    if (cache_image) {
+        NSData* icon_data = UIImageJPEGRepresentation(cache_image, 0.95);
+        if (icon_data && icon_data.length > 0) {
+            icon_base64 = [icon_data base64EncodedStringWithOptions:0] ?: @"";
+        }
+    } else if (!game.icon_data.empty()) {
       NSData* icon_data = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
       if (icon_data.length > 0) {
         icon_base64 = [icon_data base64EncodedStringWithOptions:0] ?: @"";
