@@ -62,7 +62,7 @@ jobs:
       prerelease: "${{ steps.release.outputs.prerelease }}"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -176,7 +176,7 @@ jobs:
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Upload publish metadata
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "apple-publish-metadata"
           path: "build-metadata.env"
@@ -212,13 +212,13 @@ jobs:
             needs_qt: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Cache Qt 6.10.1
         if: "${{ matrix.needs_qt }}"
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: "~/Qt"
           key: "${{ runner.os }}-${{ runner.arch }}-qt6-6.10.1"
@@ -241,7 +241,7 @@ jobs:
             done
           }
 
-          brew install sdl2 ninja pipx
+          brew install sdl2
 
           if [[ "${{ matrix.needs_qt }}" == "true" ]]; then
             export PATH="$HOME/.local/bin:$PATH"
@@ -287,7 +287,7 @@ jobs:
           test -f "${{ matrix.artifact_path }}"
 
       - name: Upload published artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "${{ matrix.artifact_name }}"
           path: "${{ matrix.artifact_path }}"
@@ -304,30 +304,30 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download publish metadata
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "apple-publish-metadata"
           path: "."
 
       - name: Download iOS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "xenios_ios_iphone_ipad"
           path: "artifacts/ios"
 
       - name: Download macOS Apple Silicon artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "xenios_macos_apple_silicon"
           path: "artifacts/macos-arm64"
 
       - name: Download macOS Intel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "xenios_macos_intel"
           path: "artifacts/macos-x86_64"
@@ -411,7 +411,7 @@ jobs:
           echo "macos_x86_64_download_url=$(jq -r '.assets[] | select(.name == \"xenios_macos_intel.dmg\") | .browser_download_url' release.json)" >> "$GITHUB_OUTPUT"
 
       - name: Check out xenios.jp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: "xenios-jp/xenios.jp"
           ref: "main"
