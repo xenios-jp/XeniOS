@@ -31,6 +31,60 @@ namespace xe {
 namespace hid {
 namespace sdl {
 
+namespace {
+
+struct VirtualControllerSlot {
+  bool connected = false;
+  X_INPUT_STATE state = {};
+};
+
+std::mutex virtual_controller_mutex;
+std::array<VirtualControllerSlot, HID_SDL_USER_COUNT> virtual_controllers;
+std::atomic<uint32_t> physical_controller_count{0};
+
+bool CopyVirtualControllerState(uint32_t user_index, X_INPUT_STATE* out_state) {
+  if (user_index >= HID_SDL_USER_COUNT || !out_state) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(virtual_controller_mutex);
+  const VirtualControllerSlot& slot = virtual_controllers[user_index];
+  if (!slot.connected) {
+    return false;
+  }
+  *out_state = slot.state;
+  return true;
+}
+
+bool HasVirtualController(uint32_t user_index) {
+  if (user_index >= HID_SDL_USER_COUNT) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(virtual_controller_mutex);
+  return virtual_controllers[user_index].connected;
+}
+
+void PopulateVirtualCapabilities(X_INPUT_CAPABILITIES* out_caps) {
+  if (!out_caps) {
+    return;
+  }
+  std::memset(out_caps, 0, sizeof(*out_caps));
+  out_caps->type = 0x01;
+  out_caps->sub_type = 0x01;
+  out_caps->flags = 0;
+  out_caps->gamepad.buttons =
+      0xF3FF | (cvars::guide_button ? X_INPUT_GAMEPAD_GUIDE : 0x0);
+  out_caps->gamepad.left_trigger = 0xFF;
+  out_caps->gamepad.right_trigger = 0xFF;
+  out_caps->gamepad.thumb_lx = static_cast<int16_t>(0xFFFFu);
+  out_caps->gamepad.thumb_ly = static_cast<int16_t>(0xFFFFu);
+  out_caps->gamepad.thumb_rx = static_cast<int16_t>(0xFFFFu);
+  out_caps->gamepad.thumb_ry = static_cast<int16_t>(0xFFFFu);
+  out_caps->vibration.left_motor_speed = 0xFFFFu;
+  out_caps->vibration.right_motor_speed = 0xFFFFu;
+}
+
+}  // namespace
+
 SDLInputDriver::SDLInputDriver(xe::ui::Window* window, size_t window_z_order)
     : InputDriver(window, window_z_order),
       sdl_events_initialized_(false),
@@ -47,11 +101,17 @@ SDLInputDriver::~SDLInputDriver() {
       window()->app_context().ExecutePendingFunctionsFromUIThread();
     });
   }
+  uint32_t closed_controller_count = 0;
   for (size_t i = 0; i < controllers_.size(); i++) {
     if (controllers_.at(i).sdl) {
       SDL_GameControllerClose(controllers_.at(i).sdl);
       controllers_.at(i) = {};
+      ++closed_controller_count;
     }
+  }
+  if (closed_controller_count) {
+    physical_controller_count.fetch_sub(closed_controller_count,
+                                        std::memory_order_relaxed);
   }
   if (sdl_events_initialized_) {
     SDL_QuitSubSystem(SDL_INIT_EVENTS);
@@ -202,7 +262,11 @@ X_RESULT SDLInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
 
   auto controller = GetControllerState(user_index);
   if (!controller) {
-    return X_ERROR_DEVICE_NOT_CONNECTED;
+    if (!HasVirtualController(user_index)) {
+      return X_ERROR_DEVICE_NOT_CONNECTED;
+    }
+    PopulateVirtualCapabilities(out_caps);
+    return X_ERROR_SUCCESS;
   }
 
   // Unfortunately drivers can't present all information immediately (e.g.
@@ -227,7 +291,9 @@ X_RESULT SDLInputDriver::GetState(uint32_t user_index,
 
   auto controller = GetControllerState(user_index);
   if (!controller) {
-    return X_ERROR_DEVICE_NOT_CONNECTED;
+    return CopyVirtualControllerState(user_index, out_state)
+               ? X_ERROR_SUCCESS
+               : X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
   if (controller->state_changed) {
@@ -251,7 +317,8 @@ X_RESULT SDLInputDriver::SetState(uint32_t user_index,
 
   auto controller = GetControllerState(user_index);
   if (!controller) {
-    return X_ERROR_DEVICE_NOT_CONNECTED;
+    return HasVirtualController(user_index) ? X_ERROR_SUCCESS
+                                            : X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
 #if SDL_VERSION_ATLEAST(2, 0, 9)
@@ -330,8 +397,15 @@ X_RESULT SDLInputDriver::GetKeystroke(uint32_t users, uint32_t flags,
 
   for (uint32_t user_index = (user_any ? 0 : users);
        user_index < (user_any ? HID_SDL_USER_COUNT : users + 1); user_index++) {
-    auto controller = GetControllerState(user_index);
-    if (!controller) {
+    X_INPUT_STATE current_state = {};
+    bool has_state = false;
+    if (auto* controller = GetControllerState(user_index)) {
+      current_state = controller->state;
+      has_state = true;
+    } else {
+      has_state = CopyVirtualControllerState(user_index, &current_state);
+    }
+    if (!has_state) {
       if (user_any) {
         continue;
       } else {
@@ -342,8 +416,8 @@ X_RESULT SDLInputDriver::GetKeystroke(uint32_t users, uint32_t flags,
     // If input is not active (e.g. due to a dialog overlay), force buttons to
     // "unpressed". The algorithm will automatically send UP events when
     // `is_active()` goes low and DOWN events when it goes high again.
-    const uint64_t curr_butts = controller->state.gamepad.buttons |
-                                AnalogToKeyfield(controller->state.gamepad);
+    const uint64_t curr_butts = current_state.gamepad.buttons |
+                                AnalogToKeyfield(current_state.gamepad);
     KeystrokeState& last = keystroke_states_.at(user_index);
 
     // Handle repeating
@@ -515,6 +589,7 @@ void SDLInputDriver::OnControllerDeviceAdded(const SDL_Event& event) {
     state.state_changed = true;
     UpdateXCapabilities(state);
 
+    physical_controller_count.fetch_add(1, std::memory_order_relaxed);
     XELOGI("SDL OnControllerDeviceAdded: Added at index {}.", user_id);
     XELOGI("SDL Controller {}: {}", user_id,
            SDL_GameControllerMapping(controller));
@@ -532,6 +607,10 @@ void SDLInputDriver::OnControllerDeviceRemoved(const SDL_Event& event) {
     SDL_GameControllerClose(controllers_.at(*idx).sdl);
     controllers_.at(*idx) = {};
     keystroke_states_.at(*idx) = {};
+    uint32_t count = physical_controller_count.load(std::memory_order_relaxed);
+    if (count) {
+      physical_controller_count.fetch_sub(1, std::memory_order_relaxed);
+    }
     XELOGI("SDL OnControllerDeviceRemoved: Removed at player index {}.", *idx);
   } else {
     // Can happen in case all slots where full previously.
@@ -786,6 +865,29 @@ inline uint64_t SDLInputDriver::AnalogToKeyfield(
     thumb_y = gamepad.thumb_ry;
   }
   return f;
+}
+
+
+void SetVirtualControllerState(uint32_t user_index,
+                               const X_INPUT_STATE& state) {
+  if (user_index >= HID_SDL_USER_COUNT) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(virtual_controller_mutex);
+  virtual_controllers[user_index].connected = true;
+  virtual_controllers[user_index].state = state;
+}
+
+void ClearVirtualControllerState(uint32_t user_index) {
+  if (user_index >= HID_SDL_USER_COUNT) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(virtual_controller_mutex);
+  virtual_controllers[user_index] = {};
+}
+
+bool AnyPhysicalControllerConnected() {
+  return physical_controller_count.load(std::memory_order_relaxed) != 0;
 }
 
 }  // namespace sdl

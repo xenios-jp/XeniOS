@@ -1937,6 +1937,21 @@ def build_shaders(targets=None, config="release", target_os=None):
 
                 # Common compile args.
                 # Target Metal 2.3 explicitly for checked-in bytecode.
+                #
+                # Pin the deployment target explicitly so the generated
+                # metallibs remain loadable on older supported OS versions
+                # instead of inheriting the host SDK default.
+                metal_deployment_args = []
+                if target_os == "ios":
+                    ios_min = os.environ.get("IPHONEOS_DEPLOYMENT_TARGET",
+                                             "16.0")
+                    metal_deployment_args = [f"-mios-version-min={ios_min}"]
+                elif target_os == "macosx":
+                    macos_min = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
+                    if macos_min:
+                        metal_deployment_args = [
+                            f"-mmacosx-version-min={macos_min}"
+                        ]
                 compile_args = [
                     "-x", "metal",
                     "-std=ios-metal2.3" if target_os == "ios"
@@ -1944,7 +1959,7 @@ def build_shaders(targets=None, config="release", target_os=None):
                     "-D", "SHADING_LANGUAGE_MSL_XE=1",
                     "-I", src_dir,
                     f"-fmodules-cache-path={module_cache}",
-                ]
+                ] + metal_deployment_args
 
                 if is_release:
                     # Release: .xesl -> .air -> .metallib (no debug info)

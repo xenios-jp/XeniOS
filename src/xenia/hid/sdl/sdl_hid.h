@@ -12,11 +12,17 @@
 
 #include <memory>
 
+#include "xenia/hid/input.h"
 #include "xenia/hid/input_system.h"
 
 namespace xe {
 namespace hid {
 namespace sdl {
+
+void SetVirtualControllerState(uint32_t user_index,
+                               const X_INPUT_STATE& state);
+void ClearVirtualControllerState(uint32_t user_index);
+bool AnyPhysicalControllerConnected();
 
 std::unique_ptr<InputDriver> Create(xe::ui::Window* window,
                                     size_t window_z_order);

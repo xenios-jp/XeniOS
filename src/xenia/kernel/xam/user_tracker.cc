@@ -503,6 +503,31 @@ void UserTracker::UpdateProfileGpd() {
   }
 }
 
+bool UserTracker::ResetTitleAchievements(uint64_t xuid, uint32_t title_id) {
+  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  if (!user || !title_id) {
+    return false;
+  }
+
+  bool changed = false;
+  if (user->dashboard_gpd_.RemoveTitle(title_id)) {
+    UpdateSettingValue(xuid, kDashboardID,
+                       UserSettingId::XPROFILE_GAMERCARD_TITLES_PLAYED, -1);
+    changed = true;
+  }
+
+  auto game_gpd = user->games_gpd_.find(title_id);
+  if (game_gpd != user->games_gpd_.end()) {
+    user->games_gpd_.erase(game_gpd);
+    changed = true;
+  }
+
+  if (changed) {
+    user->WriteGpd(kDashboardID);
+  }
+  return changed;
+}
+
 std::vector<Achievement> UserTracker::GetUserTitleAchievements(
     uint64_t xuid, uint32_t title_id) const {
   auto user = kernel_state()->xam_state()->GetUserProfile(xuid);

@@ -215,7 +215,8 @@ class AchievementManager {
 
  private:
   bool DoesAchievementExist(const uint32_t achievement_id) const;
-  void ShowAchievementEarnedNotification(const Achievement* achievement) const;
+  void ShowAchievementEarnedNotification(const Achievement* achievement,
+                                      uint64_t xuid, uint32_t title_id) const;
 
   // This contains all backends with exception of default storage.
   std::vector<std::unique_ptr<AchievementBackendInterface>>

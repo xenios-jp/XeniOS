@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,35 @@ struct IOSProfileSummary {
   std::string gamertag;
   bool signed_in = false;
   uint8_t signed_in_slot = 0xFF;
+  uint32_t gamerscore = 0;
+};
+
+struct IOSAchievementEntry {
+  uint32_t achievement_id = 0;
+  uint32_t gamerscore = 0;
+  bool unlocked = false;
+  std::string title;
+  std::string description;
+  std::vector<uint8_t> icon_data;
+};
+
+struct IOSAchievementsData {
+  uint64_t xuid = 0;
+  uint32_t title_id = 0;
+  std::string title_name;
+  uint32_t achievements_total = 0;
+  uint32_t achievements_unlocked = 0;
+  uint32_t gamerscore_total = 0;
+  uint32_t gamerscore_earned = 0;
+  std::vector<IOSAchievementEntry> achievements;
+};
+
+struct IOSAchievementNotificationData {
+  std::string title;
+  std::string subtitle;
+  std::string description;
+  uint32_t gamerscore = 0;
+  std::vector<uint8_t> icon_data;
 };
 
 class IOSWindowedAppContext final : public WindowedAppContext {
@@ -78,11 +108,16 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   using ProfileServicesReadyCallback = std::function<void()>;
   using SignInUIPromptCallback = std::function<bool(uint32_t, uint32_t)>;
   using ControllerStateCallback = std::function<bool(uint32_t, hid::X_INPUT_STATE*)>;
+  using AchievementsListCallback =
+      std::function<std::optional<IOSAchievementsData>(uint32_t)>;
+  using AchievementsResetCallback = std::function<bool(uint32_t, std::string*)>;
   using MessageBoxPromptCallback =
       std::function<bool(const std::string&, const std::string&, const std::vector<std::string>&,
                          uint32_t, uint32_t*)>;
   using KeyboardPromptCallback = std::function<bool(const std::string&, const std::string&,
                                                     const std::string&, std::string*, bool*)>;
+  using AchievementNotificationCallback =
+      std::function<void(const IOSAchievementNotificationData&)>;
 
   void set_profiles_list_callback(ProfilesListCallback callback) {
     profiles_list_callback_ = std::move(callback);
@@ -179,6 +214,29 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     return controller_state_callback_(user_index, out_state);
   }
 
+  void set_achievements_list_callback(AchievementsListCallback callback) {
+    achievements_list_callback_ = std::move(callback);
+  }
+  std::optional<IOSAchievementsData> GetAchievementsForTitle(uint32_t title_id) const {
+    if (!achievements_list_callback_) {
+      return std::nullopt;
+    }
+    return achievements_list_callback_(title_id);
+  }
+
+  void set_achievements_reset_callback(AchievementsResetCallback callback) {
+    achievements_reset_callback_ = std::move(callback);
+  }
+  bool ResetAchievementsForTitle(uint32_t title_id, std::string* status_out) const {
+    if (!achievements_reset_callback_) {
+      if (status_out) {
+        *status_out = "Achievement reset is unavailable.";
+      }
+      return false;
+    }
+    return achievements_reset_callback_(title_id, status_out);
+  }
+
   void set_message_box_prompt_callback(MessageBoxPromptCallback callback) {
     message_box_prompt_callback_ = std::move(callback);
   }
@@ -209,6 +267,15 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     }
   }
 
+  void set_achievement_notification_callback(AchievementNotificationCallback callback) {
+    achievement_notification_callback_ = std::move(callback);
+  }
+  void NotifyAchievementUnlocked(const IOSAchievementNotificationData& data) const {
+    if (achievement_notification_callback_) {
+      achievement_notification_callback_(data);
+    }
+  }
+
  private:
   UIView* metal_view_ = nullptr;
   UIViewController* view_controller_ = nullptr;
@@ -221,10 +288,13 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   GameExitedCallback game_exited_callback_;
   SignInUIPromptCallback signin_ui_prompt_callback_;
   ControllerStateCallback controller_state_callback_;
+  AchievementsListCallback achievements_list_callback_;
+  AchievementsResetCallback achievements_reset_callback_;
   ProfileServicesReadyCallback profile_services_ready_callback_;
   MessageBoxPromptCallback message_box_prompt_callback_;
   KeyboardPromptCallback keyboard_prompt_callback_;
   LayoutChangedCallback layout_changed_callback_;
+  AchievementNotificationCallback achievement_notification_callback_;
 };
 
 }  // namespace ui

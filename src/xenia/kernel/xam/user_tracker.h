@@ -95,6 +95,7 @@ class UserTracker {
                                             uint32_t title_id) const;
 
   // Achievements
+  bool ResetTitleAchievements(uint64_t xuid, uint32_t title_id);
   std::vector<Achievement> GetUserTitleAchievements(uint64_t xuid,
                                                     uint32_t title_id) const;
   std::span<const uint8_t> GetAchievementIcon(uint64_t xuid, uint32_t title_id,

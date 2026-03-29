@@ -207,7 +207,11 @@ std::unique_ptr<ImmediateTexture> MetalImmediateDrawer::CreateTexture(uint32_t w
   texture_desc->setArrayLength(1);
   texture_desc->setSampleCount(1);
   texture_desc->setUsage(MTL::TextureUsageShaderRead);
+#if XE_PLATFORM_IOS
+  texture_desc->setStorageMode(MTL::StorageModeShared);
+#else
   texture_desc->setStorageMode(MTL::StorageModeManaged);
+#endif
 
   // Create Metal texture
   MTL::Texture* metal_texture = device_->newTexture(texture_desc);

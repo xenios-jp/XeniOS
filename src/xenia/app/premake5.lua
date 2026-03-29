@@ -271,7 +271,18 @@ project("xenia-app")
     })
     local ios_lldbinit_installer =
         path.getabsolute(path.join(project_root, "tools", "ios", "install_lldbinit_xenios_jit.sh"))
+    local ios_achievement_sound =
+        path.getabsolute(path.join(project_root, "assets", "apple", "achievement_unlocked_360.mp3"))
+    buildinputs({
+      ios_achievement_sound,
+      ios_lldbinit_installer,
+    })
+    buildoutputs({
+      "$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/achievement_unlocked_360.mp3",
+    })
     postbuildcommands({
+      'rm -f "${TARGET_BUILD_DIR}/${WRAPPER_NAME}/xbox360_startup.mp4"',
+      'cp -f "' .. ios_achievement_sound .. '" "${TARGET_BUILD_DIR}/${WRAPPER_NAME}/achievement_unlocked_360.mp3"',
       'if [ -z "${XENIA_SKIP_LLDBINIT_INSTALL}" ]; then /bin/bash "'
           .. ios_lldbinit_installer .. '"; fi',
     })
