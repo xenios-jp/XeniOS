@@ -499,6 +499,15 @@ bool EmulatorAppIOS::OnInitialize() {
       uint8_t slot = profile_manager->GetUserIndexAssignedToProfile(xuid);
       summary.signed_in = slot < XUserMaxUserCount;
       summary.signed_in_slot = slot;
+      auto titles = profile_manager->GetProfile(xuid);
+      if (titles) {
+        for (const auto* title_info : titles->dashboard_gpd().GetTitlesInfo()) {
+          if (!title_info) {
+            continue;
+          }
+          summary.gamerscore += title_info->gamerscore_earned;
+        }
+      }
       profiles.push_back(std::move(summary));
     }
     std::sort(profiles.begin(), profiles.end(),
@@ -554,6 +563,168 @@ bool EmulatorAppIOS::OnInitialize() {
     profile_manager->Login(xuid, 0, true);
     return profile_manager->GetProfile(xuid) != nullptr;
   });
+
+  ios_context.set_achievements_list_callback(
+      [this](uint32_t requested_title_id) -> std::optional<ui::IOSAchievementsData> {
+        std::lock_guard<std::mutex> lock(launch_mutex_);
+        if (!emulator_ || !emulator_->kernel_state() ||
+            !emulator_->kernel_state()->xam_state()) {
+          return std::nullopt;
+        }
+
+        auto* kernel_state = emulator_->kernel_state();
+        auto* xam_state = kernel_state->xam_state();
+        auto* profile_manager = xam_state->profile_manager();
+        auto* achievement_manager = xam_state->achievement_manager();
+        if (!profile_manager || !achievement_manager) {
+          return std::nullopt;
+        }
+
+        xe::kernel::xam::UserProfile* profile = nullptr;
+        for (uint8_t slot = 0; slot < XUserMaxUserCount; ++slot) {
+          profile = profile_manager->GetProfile(slot);
+          if (profile) {
+            break;
+          }
+        }
+        if (!profile) {
+          return std::nullopt;
+        }
+
+        const uint32_t resolved_title_id =
+            requested_title_id ? requested_title_id : emulator_->title_id();
+        if (!resolved_title_id) {
+          return std::nullopt;
+        }
+
+        ui::IOSAchievementsData data;
+        data.xuid = profile->xuid();
+        data.title_id = resolved_title_id;
+
+        if (auto title_info = xam_state->user_tracker()->GetUserTitleInfo(
+                profile->xuid(), resolved_title_id)) {
+          data.title_name = xe::to_utf8(title_info->title_name);
+          if (!data.title_name.empty() && data.title_name.back() == '\0') {
+            data.title_name.pop_back();
+          }
+          data.achievements_total = title_info->achievements_count;
+          data.achievements_unlocked = title_info->unlocked_achievements_count;
+          data.gamerscore_total = title_info->gamerscore_amount;
+          data.gamerscore_earned = title_info->title_earned_gamerscore;
+        }
+
+        if (data.title_name.empty() && resolved_title_id == emulator_->title_id()) {
+          data.title_name = emulator_->title_name();
+        }
+
+        auto stats = profile->GetTitleAchievementStats(resolved_title_id);
+        if (!data.achievements_total) {
+          data.achievements_total = stats.achievements_total;
+          data.achievements_unlocked = stats.achievements_unlocked;
+          data.gamerscore_total = stats.gamerscore_total;
+          data.gamerscore_earned = stats.gamerscore_earned;
+        }
+
+        auto achievements =
+            achievement_manager->GetTitleAchievements(profile->xuid(), resolved_title_id);
+        data.achievements.reserve(achievements.size());
+
+        auto sanitize_utf16 = [](const std::u16string& value) {
+          std::string utf8 = xe::to_utf8(value);
+          if (!utf8.empty() && utf8.back() == '\0') {
+            utf8.pop_back();
+          }
+          return utf8;
+        };
+
+        for (const auto& achievement : achievements) {
+          ui::IOSAchievementEntry entry;
+          entry.achievement_id = achievement.achievement_id;
+          entry.gamerscore = achievement.gamerscore;
+          entry.unlocked = achievement.IsUnlocked();
+
+          const bool can_show_locked =
+              (achievement.flags &
+               static_cast<uint32_t>(xe::kernel::xam::AchievementFlags::kShowUnachieved)) != 0;
+          if (entry.unlocked || can_show_locked) {
+            entry.title = sanitize_utf16(achievement.achievement_name);
+          } else {
+            entry.title = "Secret Achievement";
+          }
+          if (entry.unlocked) {
+            entry.description = sanitize_utf16(achievement.unlocked_description);
+          } else if (can_show_locked) {
+            entry.description = sanitize_utf16(achievement.locked_description);
+          }
+
+          if (entry.unlocked) {
+            auto icon_data = achievement_manager->GetAchievementIcon(
+                profile->xuid(), resolved_title_id, achievement.achievement_id);
+            entry.icon_data.assign(icon_data.begin(), icon_data.end());
+          }
+          data.achievements.push_back(std::move(entry));
+        }
+
+        std::stable_sort(data.achievements.begin(), data.achievements.end(),
+                         [](const ui::IOSAchievementEntry& a,
+                            const ui::IOSAchievementEntry& b) {
+                           if (a.unlocked != b.unlocked) {
+                             return a.unlocked && !b.unlocked;
+                           }
+                           return a.achievement_id < b.achievement_id;
+                         });
+
+        return data;
+      });
+
+  ios_context.set_achievements_reset_callback(
+      [this](uint32_t title_id, std::string* status_out) {
+        std::lock_guard<std::mutex> lock(launch_mutex_);
+        if (!emulator_ || !emulator_->kernel_state() ||
+            !emulator_->kernel_state()->xam_state()) {
+          if (status_out) {
+            *status_out = "Profile services are unavailable.";
+          }
+          return false;
+        }
+
+        auto* xam_state = emulator_->kernel_state()->xam_state();
+        auto* profile_manager = xam_state->profile_manager();
+        auto* user_tracker = xam_state->user_tracker();
+        if (!profile_manager || !user_tracker || !title_id) {
+          if (status_out) {
+            *status_out = "Achievement reset is unavailable.";
+          }
+          return false;
+        }
+
+        xe::kernel::xam::UserProfile* profile = nullptr;
+        for (uint8_t slot = 0; slot < XUserMaxUserCount; ++slot) {
+          profile = profile_manager->GetProfile(slot);
+          if (profile) {
+            break;
+          }
+        }
+        if (!profile) {
+          if (status_out) {
+            *status_out = "Sign in to a profile before resetting achievements.";
+          }
+          return false;
+        }
+
+        if (!user_tracker->ResetTitleAchievements(profile->xuid(), title_id)) {
+          if (status_out) {
+            *status_out = "No saved achievements were found for this game.";
+          }
+          return false;
+        }
+
+        profile_manager->ReloadProfiles();
+        if (status_out) {
+          *status_out = "Achievements reset.";
+        }
+        return true;
+      });
 
   XELOGI("iOS: EmulatorAppIOS initialized successfully");
   return true;

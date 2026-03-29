@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import <AVFoundation/AVFoundation.h>
 #import <GameController/GameController.h>
 #import <MetalKit/MetalKit.h>
 #import <PhotosUI/PhotosUI.h>
@@ -64,6 +65,13 @@
 #include "xenia/xbox.h"
 
 DECLARE_path(log_file);
+
+static NSString* const kXeniaAchievementPopupAtTopDefaultsKey =
+    @"XeniaAchievementPopupAtTop";
+
+static NSString* XeniaAchievementPopupPositionKeyForTitleID(uint32_t title_id) {
+  return [NSString stringWithFormat:@"%@.%08X", kXeniaAchievementPopupAtTopDefaultsKey, title_id];
+}
 
 // Forward declarations of the Objective-C classes.
 @class XeniaAppDelegate;
@@ -579,10 +587,11 @@ static constexpr IOSFocusNodeId kLauncherFocusSettings = 1;
 static constexpr IOSFocusNodeId kLauncherFocusProfile = 2;
 static constexpr IOSFocusNodeId kLauncherFocusImport = 3;
 static constexpr IOSFocusNodeId kLauncherFocusLibrary = 4;
-static constexpr IOSFocusNodeId kInGameFocusResume = 101;
-static constexpr IOSFocusNodeId kInGameFocusSettings = 102;
-static constexpr IOSFocusNodeId kInGameFocusLog = 103;
-static constexpr IOSFocusNodeId kInGameFocusExit = 104;
+static constexpr IOSFocusNodeId kInGameFocusAchievements = 101;
+static constexpr IOSFocusNodeId kInGameFocusResume = 102;
+static constexpr IOSFocusNodeId kInGameFocusSettings = 103;
+static constexpr IOSFocusNodeId kInGameFocusLog = 104;
+static constexpr IOSFocusNodeId kInGameFocusExit = 105;
 
 static NSString* const kXeniaAutoOpenStikDebugOnLaunchPreferenceKey =
     @"ios_auto_open_stikdebug_on_launch";
@@ -3679,6 +3688,277 @@ typedef void (^IOSProfileStatusHandler)(NSString* status_message);
 - (instancetype)initWithTitleID:(uint32_t)title_id
                           title:(NSString*)title
                            host:(id<XeniaGameContentHost>)host;
+@end
+
+@interface XeniaAchievementsViewController : UITableViewController
+- (instancetype)initWithAppContext:(xe::ui::IOSWindowedAppContext*)app_context
+                           titleID:(uint32_t)title_id
+                             title:(NSString*)title;
+@end
+
+@implementation XeniaAchievementsViewController {
+  xe::ui::IOSWindowedAppContext* app_context_;
+  xe::ui::IOSAchievementsData achievements_data_;
+  uint32_t title_id_;
+  NSString* title_text_;
+  UIImage* locked_icon_;
+  UISegmentedControl* popup_position_control_;
+}
+
+- (instancetype)initWithAppContext:(xe::ui::IOSWindowedAppContext*)app_context
+                           titleID:(uint32_t)title_id
+                             title:(NSString*)title {
+  self = [super initWithStyle:UITableViewStyleInsetGrouped];
+  if (!self) {
+    return nil;
+  }
+  app_context_ = app_context;
+  title_id_ = title_id;
+  title_text_ = [title copy];
+  return self;
+}
+
+- (void)dealloc {
+  [title_text_ release];
+  [locked_icon_ release];
+  [popup_position_control_ release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = title_text_.length ? title_text_ : @"Achievements";
+  self.navigationItem.leftBarButtonItem =
+      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                     target:self
+                                                     action:@selector(closeAchievementsTapped:)] autorelease];
+  self.tableView.backgroundColor = [XeniaTheme bgPrimary];
+  self.tableView.separatorColor = [XeniaTheme border];
+  self.tableView.rowHeight = UITableViewAutomaticDimension;
+  self.tableView.estimatedRowHeight = 86.0f;
+  UIImageSymbolConfiguration* config =
+      [UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightSemibold];
+  locked_icon_ = [[[UIImage systemImageNamed:@"lock.fill" withConfiguration:config]
+      imageWithTintColor:[XeniaTheme textMuted]
+            renderingMode:UIImageRenderingModeAlwaysOriginal] retain];
+  [self reloadAchievements];
+}
+
+- (void)achievementPopupPositionChanged:(UISegmentedControl*)sender {
+  if (!title_id_) {
+    return;
+  }
+  [GetUserDefaults() setBool:sender.selectedSegmentIndex == 1
+                      forKey:XeniaAchievementPopupPositionKeyForTitleID(title_id_)];
+}
+
+- (void)closeAchievementsTapped:(UIBarButtonItem*)__unused sender {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)reloadAchievements {
+  if (!app_context_) {
+    achievements_data_ = xe::ui::IOSAchievementsData();
+    [self.tableView reloadData];
+    return;
+  }
+  auto achievements = app_context_->GetAchievementsForTitle(title_id_);
+  if (achievements.has_value()) {
+    achievements_data_ = *achievements;
+    if (!achievements_data_.title_name.empty()) {
+      self.title = ToNSString(achievements_data_.title_name);
+    }
+  } else {
+    achievements_data_ = xe::ui::IOSAchievementsData();
+    achievements_data_.title_id = title_id_;
+    if (title_text_.length) {
+      achievements_data_.title_name = std::string([title_text_ UTF8String]);
+    }
+  }
+  [self.tableView reloadData];
+}
+
+- (void)resetAchievementsTapped:(UIBarButtonItem*)__unused sender {
+  if (!app_context_ || !title_id_) {
+    xe_present_ok_alert(self, @"Unavailable", @"Achievement reset is unavailable for this title.");
+    return;
+  }
+
+  UIAlertController* alert =
+      [UIAlertController alertControllerWithTitle:@"Reset this game's achievements?"
+                                          message:@"This removes this game's saved achievement progress for the signed-in profile."
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Reset"
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(__unused UIAlertAction* action) {
+    std::string status;
+    if (app_context_->ResetAchievementsForTitle(title_id_, &status)) {
+      [self reloadAchievements];
+      xe_present_ok_alert(self, @"Achievements Reset",
+                          status.empty() ? @"Achievements reset." : ToNSString(status));
+    } else {
+      xe_present_ok_alert(self, @"Reset Failed",
+                          status.empty() ? @"Achievements could not be reset." : ToNSString(status));
+    }
+  }]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 4;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  if (section == 0 || section == 1 || section == 3) {
+    return 1;
+  }
+  return achievements_data_.achievements.empty()
+             ? 1
+             : static_cast<NSInteger>(achievements_data_.achievements.size());
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  if (section == 0) return @"Achievement Popup";
+  if (section == 1) return @"Overview";
+  if (section == 3) return @"Actions";
+  return @"Achievements";
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView
+         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section == 0) {
+    static NSString* popup_id = @"AchievementPopupPositionCell";
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:popup_id];
+    if (!cell) {
+      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                     reuseIdentifier:popup_id] autorelease];
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      cell.detailTextLabel.numberOfLines = 2;
+      popup_position_control_ =
+          [[[UISegmentedControl alloc] initWithItems:@[ @"Bottom", @"Top" ]] retain];
+      [popup_position_control_ addTarget:self
+                                  action:@selector(achievementPopupPositionChanged:)
+                        forControlEvents:UIControlEventValueChanged];
+    }
+    cell.backgroundColor = [XeniaTheme bgSurface];
+    cell.textLabel.textColor = [XeniaTheme textPrimary];
+    cell.detailTextLabel.textColor = [XeniaTheme textMuted];
+    cell.textLabel.text = @"Popup Position";
+    cell.detailTextLabel.text =
+        @"Choose whether unlocked achievement popups appear near the bottom or near the top.";
+    popup_position_control_.selectedSegmentIndex =
+        GetUserDefaultBool(XeniaAchievementPopupPositionKeyForTitleID(title_id_), false) ? 1 : 0;
+    [popup_position_control_ sizeToFit];
+    cell.accessoryView = popup_position_control_;
+    cell.imageView.image = [UIImage systemImageNamed:@"rectangle.topthird.inset.filled"];
+    cell.imageView.tintColor = [XeniaTheme accent];
+    return cell;
+  }
+
+  if (indexPath.section == 1) {
+    static NSString* summary_id = @"AchievementSummaryCell";
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:summary_id];
+    if (!cell) {
+      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                     reuseIdentifier:summary_id] autorelease];
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      cell.detailTextLabel.numberOfLines = 2;
+    }
+    cell.backgroundColor = [XeniaTheme bgSurface];
+    cell.textLabel.textColor = [XeniaTheme textPrimary];
+    cell.detailTextLabel.textColor = [XeniaTheme textMuted];
+    cell.textLabel.text = [NSString stringWithFormat:@"%u / %u unlocked",
+                                                     achievements_data_.achievements_unlocked,
+                                                     achievements_data_.achievements_total];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%u / %u gamerscore",
+                                                           achievements_data_.gamerscore_earned,
+                                                           achievements_data_.gamerscore_total];
+    cell.imageView.image = [UIImage systemImageNamed:@"rosette"];
+    cell.imageView.tintColor = [XeniaTheme accent];
+    return cell;
+  }
+
+  if (indexPath.section == 3) {
+    static NSString* action_id = @"AchievementActionCell";
+    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:action_id];
+    if (!cell) {
+      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                     reuseIdentifier:action_id] autorelease];
+    }
+    cell.backgroundColor = [XeniaTheme bgSurface];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.textLabel.text = @"Reset Game Achievements";
+    cell.textLabel.textColor = [XeniaTheme statusError];
+    cell.detailTextLabel.text =
+        @"Remove achievement progress for this game only on the signed-in profile.";
+    cell.detailTextLabel.textColor = [XeniaTheme textMuted];
+    cell.detailTextLabel.numberOfLines = 2;
+    cell.imageView.image = [UIImage systemImageNamed:@"arrow.counterclockwise.circle"];
+    cell.imageView.tintColor = [XeniaTheme statusError];
+    cell.accessoryView = nil;
+    return cell;
+  }
+
+  static NSString* achievement_id = @"AchievementEntryCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:achievement_id];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                   reuseIdentifier:achievement_id] autorelease];
+    cell.detailTextLabel.numberOfLines = 3;
+  }
+  cell.backgroundColor = [XeniaTheme bgSurface];
+  cell.textLabel.textColor = [XeniaTheme textPrimary];
+  cell.detailTextLabel.textColor = [XeniaTheme textMuted];
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+  if (achievements_data_.achievements.empty()) {
+    cell.textLabel.text = @"No achievements data available";
+    cell.detailTextLabel.text = @"Launch the game with a signed-in profile to populate this list.";
+    cell.imageView.image = [UIImage systemImageNamed:@"list.bullet.rectangle"];
+    cell.imageView.tintColor = [XeniaTheme textMuted];
+    cell.accessoryView = nil;
+    return cell;
+  }
+
+  const xe::ui::IOSAchievementEntry& entry =
+      achievements_data_.achievements[static_cast<size_t>(indexPath.row)];
+  NSString* title = entry.title.empty() ? @"Achievement" : ToNSString(entry.title);
+  NSString* description = entry.description.empty() ? @"" : ToNSString(entry.description);
+  NSString* status = entry.unlocked ? @"Unlocked" : @"Locked";
+  cell.detailTextLabel.text =
+      description.length > 0 ? [NSString stringWithFormat:@"%@\n%@", description, status] : status;
+  cell.textLabel.text = title;
+  cell.textLabel.textColor = entry.unlocked ? [XeniaTheme textPrimary] : [XeniaTheme textMuted];
+
+  if (!entry.icon_data.empty()) {
+    NSData* image_data = [NSData dataWithBytes:entry.icon_data.data() length:entry.icon_data.size()];
+    UIImage* image = [UIImage imageWithData:image_data];
+    cell.imageView.image = image ?: locked_icon_;
+    cell.imageView.tintColor = nil;
+  } else {
+    cell.imageView.image = locked_icon_;
+    cell.imageView.tintColor = [XeniaTheme textMuted];
+  }
+
+  UILabel* score_label = [[[UILabel alloc] init] autorelease];
+  score_label.text = [NSString stringWithFormat:@"%u G", entry.gamerscore];
+  score_label.textColor = entry.unlocked ? [XeniaTheme accent] : [XeniaTheme textMuted];
+  score_label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+  [score_label sizeToFit];
+  cell.accessoryView = score_label;
+  return cell;
+}
+
+- (void)tableView:(UITableView* __unused)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [self.tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section == 3) {
+    [self resetAchievementsTapped:nil];
+  }
+}
+
 @end
 
 // ---------------------------------------------------------------------------
@@ -8072,11 +8352,13 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 @property(nonatomic, strong) UIButton* settingsButton;
 @property(nonatomic, strong) UIButton* profileButton;
 @property(nonatomic, strong) UILabel* titleLabel;
+@property(nonatomic, strong) UILabel* launcherGamerscoreLabel;
 @property(nonatomic, strong) UILabel* statusLabel;
 @property(nonatomic, strong) UILabel* signedInProfileLabel;
 @property(nonatomic, strong) UICollectionView* importedGamesCollectionView;
 @property(nonatomic, strong) UILabel* importedGamesEmptyLabel;
 @property(nonatomic, strong) UIView* inGameMenuOverlay;
+@property(nonatomic, strong) UIButton* inGameAchievementsButton;
 @property(nonatomic, strong) UIButton* inGameResumeButton;
 @property(nonatomic, strong) UIButton* inGameSettingsButton;
 @property(nonatomic, strong) UIButton* inGameLiveLogButton;
@@ -8096,6 +8378,33 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 @property(nonatomic, strong) NSTimer* jitPollTimer;
 @property(nonatomic, strong) NSTimer* controllerNavTimer;
 @property(nonatomic, strong) UIStackView* topInfoStack;
+@property(nonatomic, strong) UIView* achievementToastView;
+@property(nonatomic, strong) UIImageView* achievementToastIconView;
+@property(nonatomic, strong) UILabel* achievementToastHeaderLabel;
+@property(nonatomic, strong) UILabel* achievementToastTitleLabel;
+@property(nonatomic, strong) UILabel* achievementToastDescriptionLabel;
+@property(nonatomic, strong) UILabel* achievementToastGamerscoreLabel;
+@property(nonatomic, strong) CAGradientLayer* achievementToastBackgroundGradient;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastGamerscoreWidthConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastTopConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastBottomConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastMaxWidthConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastLeadingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastTrailingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastIconLeadingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastIconWidthConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastIconHeightConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastHeaderTopConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastHeaderLeadingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastScoreGapConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastScoreTrailingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastScoreHeightConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastTitleTopConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastTitleTrailingConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastDescriptionTopConstraint;
+@property(nonatomic, strong) NSLayoutConstraint* achievementToastDescriptionBottomConstraint;
+@property(nonatomic, strong) AVAudioPlayer* achievementToastAudioPlayer;
+@property(nonatomic, strong) NSTimer* achievementToastTimer;
 @property(nonatomic, assign) BOOL jitAcquired;
 - (void)refreshSignedInProfileUI;
 - (void)presentSystemSigninPromptForUserIndex:(uint32_t)user_index
@@ -8108,7 +8417,16 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                                                        NSString* text))completion;
 - (void)setupInGameMenuOverlay;
 - (void)toggleInGameMenuTapped:(UITapGestureRecognizer*)recognizer;
+- (void)showAchievementToastWithTitle:(NSString*)title
+                           achievement:(NSString*)achievement
+                           description:(NSString*)description
+                            gamerscore:(uint32_t)gamerscore
+                              iconData:(NSData*)icon_data;
+- (void)updateAchievementToastLayout;
+- (void)playAchievementToastSound;
+- (void)presentAchievementsSheetForTitleID:(uint32_t)title_id fallbackTitle:(NSString*)fallback_title;
 - (void)resumeGameTapped:(UIButton*)sender;
+- (void)inGameAchievementsTapped:(UIButton*)sender;
 - (void)inGameSettingsTapped:(UIButton*)sender;
 - (void)inGameLiveLogTapped:(UIButton*)sender;
 - (void)exitGameTapped:(UIButton*)sender;
@@ -8122,6 +8440,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 - (void)applyCompatDataToDiscoveredGames;
 - (void)presentCompatibilitySheetForIndex:(size_t)game_index;
 - (void)presentManageContentSheetForIndex:(size_t)game_index;
+- (void)presentAchievementsSheetForIndex:(size_t)game_index;
 - (BOOL)installTitleUpdateAtPath:(NSString*)path
                           status:(NSString**)status_out
                   notTitleUpdate:(BOOL*)not_title_update_out;
@@ -8140,6 +8459,10 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   CGSize last_collection_layout_size_;
   BOOL compat_fetch_started_;
   std::filesystem::path pending_external_launch_path_;
+  std::filesystem::path active_game_path_;
+  CGRect last_achievement_toast_layout_bounds_;
+  CGRect last_achievement_toast_safe_frame_;
+  BOOL last_achievement_toast_popup_at_top_;
 }
 
 - (void)viewDidLoad {
@@ -8154,6 +8477,9 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   native_controller_packet_number_ = 0;
   last_collection_layout_size_ = CGSizeZero;
   compat_fetch_started_ = NO;
+  last_achievement_toast_layout_bounds_ = CGRectNull;
+  last_achievement_toast_safe_frame_ = CGRectNull;
+  last_achievement_toast_popup_at_top_ = NO;
   controller_navigation_mapper_.Reset();
 
   // Create the Metal-backed rendering view (full screen, behind everything).
@@ -8378,15 +8704,22 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   IOSFocusNodeId previous_focus = in_game_focus_graph_.current();
   in_game_focus_graph_.Clear();
 
+  xe::ui::apple::FocusNode achievements;
+  achievements.id = kInGameFocusAchievements;
+  achievements.up = kInGameFocusResume;
+  achievements.down = kInGameFocusSettings;
+  achievements.enabled = self.inGameAchievementsButton && self.inGameAchievementsButton.enabled &&
+                         !self.inGameAchievementsButton.hidden;
+
   xe::ui::apple::FocusNode resume;
   resume.id = kInGameFocusResume;
-  resume.down = kInGameFocusSettings;
+  resume.down = kInGameFocusAchievements;
   resume.enabled = self.inGameResumeButton && self.inGameResumeButton.enabled &&
                    !self.inGameResumeButton.hidden;
 
   xe::ui::apple::FocusNode settings;
   settings.id = kInGameFocusSettings;
-  settings.up = kInGameFocusResume;
+  settings.up = kInGameFocusAchievements;
   settings.down = kInGameFocusLog;
   settings.enabled = self.inGameSettingsButton && self.inGameSettingsButton.enabled &&
                      !self.inGameSettingsButton.hidden;
@@ -8405,6 +8738,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                  !self.inGameExitButton.hidden;
 
   in_game_focus_graph_.AddOrUpdateNode(resume);
+  in_game_focus_graph_.AddOrUpdateNode(achievements);
   in_game_focus_graph_.AddOrUpdateNode(settings);
   in_game_focus_graph_.AddOrUpdateNode(log);
   in_game_focus_graph_.AddOrUpdateNode(exit);
@@ -8456,6 +8790,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
 - (void)applyInGameMenuFocusVisuals {
   if (!self.inGameMenuOverlay || self.inGameMenuOverlay.hidden || !controller_navigation_was_enabled_) {
+    [self setButton:self.inGameAchievementsButton controllerFocused:NO];
     [self setButton:self.inGameResumeButton controllerFocused:NO];
     [self setButton:self.inGameSettingsButton controllerFocused:NO];
     [self setButton:self.inGameLiveLogButton controllerFocused:NO];
@@ -8464,6 +8799,8 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   }
 
   IOSFocusNodeId current_focus = in_game_focus_graph_.current();
+  [self setButton:self.inGameAchievementsButton
+  controllerFocused:current_focus == kInGameFocusAchievements];
   [self setButton:self.inGameResumeButton controllerFocused:current_focus == kInGameFocusResume];
   [self setButton:self.inGameSettingsButton
   controllerFocused:current_focus == kInGameFocusSettings];
@@ -8922,6 +9259,9 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
   if (actions.accept) {
     switch (in_game_focus_graph_.current()) {
+      case kInGameFocusAchievements:
+        [self.inGameAchievementsButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+        break;
       case kInGameFocusResume:
         [self.inGameResumeButton sendActionsForControlEvents:UIControlEventTouchUpInside];
         break;
@@ -9139,6 +9479,13 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
   [self.launcherOverlay addSubview:self.titleLabel];
 
+  self.launcherGamerscoreLabel = [[UILabel alloc] init];
+  self.launcherGamerscoreLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  self.launcherGamerscoreLabel.textColor = [XeniaTheme textMuted];
+  self.launcherGamerscoreLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+  self.launcherGamerscoreLabel.text = @"Total Gamerscore: 0G";
+  [self.launcherOverlay addSubview:self.launcherGamerscoreLabel];
+
   UIButtonConfiguration* settingsCfg = [UIButtonConfiguration plainButtonConfiguration];
   settingsCfg.image =
       [UIImage systemImageNamed:@"gearshape"
@@ -9343,6 +9690,9 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
         constraintEqualToAnchor:self.profileButton.leadingAnchor
                        constant:-2],
     [self.settingsButton.centerYAnchor constraintEqualToAnchor:self.titleLabel.centerYAnchor],
+    [self.launcherGamerscoreLabel.trailingAnchor constraintEqualToAnchor:self.settingsButton.leadingAnchor
+                                                                constant:-6],
+    [self.launcherGamerscoreLabel.centerYAnchor constraintEqualToAnchor:self.titleLabel.centerYAnchor],
     // JIT ready dot + ring + label sit right after the title.
     [self.jitReadyDot.leadingAnchor constraintEqualToAnchor:self.titleLabel.trailingAnchor
                                                    constant:10],
@@ -9356,6 +9706,9 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
     [self.jitReadyLabel.leadingAnchor constraintEqualToAnchor:self.jitReadyDot.trailingAnchor
                                                      constant:6],
     [self.jitReadyLabel.centerYAnchor constraintEqualToAnchor:self.titleLabel.centerYAnchor],
+    [self.jitReadyLabel.trailingAnchor
+        constraintLessThanOrEqualToAnchor:self.launcherGamerscoreLabel.leadingAnchor
+                                 constant:-8],
     [self.jitReadyLabel.trailingAnchor
         constraintLessThanOrEqualToAnchor:self.settingsButton.leadingAnchor
                                  constant:-8],
@@ -9458,6 +9811,22 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                     forControlEvents:UIControlEventTouchUpInside];
   [panel addSubview:self.inGameResumeButton];
 
+  UIButtonConfiguration* achievements_config = [UIButtonConfiguration tintedButtonConfiguration];
+  achievements_config.title = @"Achievements";
+  achievements_config.image = [UIImage systemImageNamed:@"rosette"];
+  achievements_config.imagePadding = 6;
+  achievements_config.baseForegroundColor = [XeniaTheme textPrimary];
+  achievements_config.baseBackgroundColor = [XeniaTheme bgSurface2];
+  achievements_config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
+  achievements_config.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
+  self.inGameAchievementsButton =
+      [UIButton buttonWithConfiguration:achievements_config primaryAction:nil];
+  self.inGameAchievementsButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.inGameAchievementsButton addTarget:self
+                                    action:@selector(inGameAchievementsTapped:)
+                          forControlEvents:UIControlEventTouchUpInside];
+  [panel addSubview:self.inGameAchievementsButton];
+
   UIButtonConfiguration* settings_config = [UIButtonConfiguration tintedButtonConfiguration];
   settings_config.title = @"Settings";
   settings_config.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
@@ -9524,7 +9893,12 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
     [self.inGameResumeButton.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor constant:14],
     [self.inGameResumeButton.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor constant:-14],
 
-    [self.inGameSettingsButton.topAnchor constraintEqualToAnchor:self.inGameResumeButton.bottomAnchor
+    [self.inGameAchievementsButton.topAnchor constraintEqualToAnchor:self.inGameResumeButton.bottomAnchor
+                                                            constant:10],
+    [self.inGameAchievementsButton.leadingAnchor constraintEqualToAnchor:self.inGameResumeButton.leadingAnchor],
+    [self.inGameAchievementsButton.trailingAnchor constraintEqualToAnchor:self.inGameResumeButton.trailingAnchor],
+
+    [self.inGameSettingsButton.topAnchor constraintEqualToAnchor:self.inGameAchievementsButton.bottomAnchor
                                                         constant:10],
     [self.inGameSettingsButton.leadingAnchor constraintEqualToAnchor:self.inGameResumeButton.leadingAnchor],
     [self.inGameSettingsButton.trailingAnchor
@@ -9586,6 +9960,23 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
 - (void)resumeGameTapped:(UIButton*)sender {
   [self hideInGameMenuOverlay];
+}
+
+- (void)inGameAchievementsTapped:(UIButton*)__unused sender {
+  [self hideInGameMenuOverlay];
+  NSString* fallback_title = nil;
+  uint32_t title_id = 0;
+  if (!active_game_path_.empty()) {
+    for (const IOSDiscoveredGame& game : discovered_games_) {
+      if (game.path == active_game_path_) {
+        title_id = game.title_id;
+        fallback_title = game.title.empty() ? ToNSString(game.path.stem().string())
+                                            : ToNSString(game.title);
+        break;
+      }
+    }
+  }
+  [self presentAchievementsSheetForTitleID:title_id fallbackTitle:fallback_title];
 }
 
 - (void)inGameSettingsTapped:(UIButton*)sender {
@@ -9666,10 +10057,14 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
   if (signed_in_profile) {
     self.signedInProfileLabel.text =
         [NSString stringWithFormat:@"Signed in: %@", ToNSString(signed_in_profile->gamertag)];
+    self.launcherGamerscoreLabel.text =
+        [NSString stringWithFormat:@"Total Gamerscore: %uG", signed_in_profile->gamerscore];
   } else if (profiles.empty()) {
     self.signedInProfileLabel.text = @"No local profile yet";
+    self.launcherGamerscoreLabel.text = @"Total Gamerscore: 0G";
   } else {
     self.signedInProfileLabel.text = @"No profile signed in";
+    self.launcherGamerscoreLabel.text = @"Total Gamerscore: 0G";
   }
 }
 
@@ -10595,6 +10990,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
   self.statusLabel.text = [NSString stringWithFormat:@"Loading: %@", game_label];
   self.gameRunning = YES;
+  active_game_path_ = game_path;
 
   xe_request_landscape_orientation(self);
   [UIView animateWithDuration:0.3
@@ -10641,6 +11037,61 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
     *not_title_update_out = not_title_update;
   }
   return success;
+}
+
+- (void)presentAchievementsSheetForTitleID:(uint32_t)title_id fallbackTitle:(NSString*)fallback_title {
+  if (!self.appContext) {
+    xe_present_ok_alert(self, @"Unavailable",
+                        @"Achievements are unavailable until the app context is ready.");
+    return;
+  }
+
+  auto achievements = self.appContext->GetAchievementsForTitle(title_id);
+  if (!achievements.has_value()) {
+    xe_present_ok_alert(self, @"Unavailable",
+                        @"Sign in to a local profile first, then launch the game again to view achievements.");
+    return;
+  }
+
+  NSString* title = achievements->title_name.empty() ? fallback_title : ToNSString(achievements->title_name);
+  if (!title || title.length == 0) {
+    title = @"Achievements";
+  }
+  XeniaAchievementsViewController* achievements_controller =
+      [[XeniaAchievementsViewController alloc] initWithAppContext:self.appContext
+                                                          titleID:achievements->title_id
+                                                            title:title];
+  XeniaLandscapeNavigationController* navigation_controller =
+      [[XeniaLandscapeNavigationController alloc] initWithRootViewController:achievements_controller];
+  if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+    navigation_controller.modalPresentationStyle = UIModalPresentationFormSheet;
+    CGSize screen_size = self.view.bounds.size;
+    CGFloat width = MIN(MAX(screen_size.width * 0.74f, 700.0f), 920.0f);
+    CGFloat height = MIN(MAX(screen_size.height * 0.84f, 760.0f), 1040.0f);
+    navigation_controller.preferredContentSize = CGSizeMake(width, height);
+  } else {
+    navigation_controller.modalPresentationStyle = UIModalPresentationFullScreen;
+  }
+  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [navigation_controller release];
+  [achievements_controller release];
+}
+
+- (void)presentAchievementsSheetForIndex:(size_t)game_index {
+  if (game_index >= discovered_games_.size()) {
+    return;
+  }
+
+  const IOSDiscoveredGame& game = discovered_games_[game_index];
+  if (!game.title_id) {
+    xe_present_ok_alert(self, @"Unavailable",
+                        @"This item does not expose a title ID, so achievements cannot be loaded.");
+    return;
+  }
+
+  NSString* fallback_title = game.title.empty() ? ToNSString(game.path.stem().string())
+                                                : ToNSString(game.title);
+  [self presentAchievementsSheetForTitleID:game.title_id fallbackTitle:fallback_title];
 }
 
 - (void)presentCompatibilitySheetForIndex:(size_t)game_index {
@@ -10864,6 +11315,13 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                                  handler:^(__unused UIAction* action) {
                                    [self launchGameAtPath:game_path displayName:game_title];
                                  }];
+                     UIAction* achievements_action =
+                         [UIAction actionWithTitle:@"Achievements"
+                                             image:[UIImage systemImageNamed:@"rosette"]
+                                        identifier:nil
+                                           handler:^(__unused UIAction* action) {
+                                             [self presentAchievementsSheetForIndex:game_index];
+                                           }];
                      UIAction* compatibility_action =
                          [UIAction actionWithTitle:@"Compatibility"
                                              image:[UIImage systemImageNamed:@"checkmark.shield"]
@@ -10888,6 +11346,9 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                      if (!can_view_compatibility) {
                        compatibility_action.attributes = UIMenuElementAttributesDisabled;
                      }
+                     if (!game.title_id) {
+                       achievements_action.attributes = UIMenuElementAttributesDisabled;
+                     }
                      if (!can_manage_content) {
                        content_action.attributes = UIMenuElementAttributesDisabled;
                      }
@@ -10896,7 +11357,7 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
                      }
                      return [UIMenu menuWithTitle:@""
                                          children:@[
-                                           play_action, compatibility_action, content_action,
+                                           play_action, achievements_action, compatibility_action, content_action,
                                            copy_launch_url_action
                                          ]];
                    }];
@@ -10956,11 +11417,121 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
     last_collection_layout_size_ = collection_size;
     [self.importedGamesCollectionView.collectionViewLayout invalidateLayout];
   }
+  [self updateAchievementToastLayout];
   // Notify the app context that the layout changed, so the window and
   // presenter can update for rotation, split-view, or safe-area changes.
   if (self.appContext) {
     self.appContext->NotifyLayoutChanged();
   }
+}
+
+- (void)updateAchievementToastLayout {
+  if (!self.achievementToastView) {
+    return;
+  }
+
+  static constexpr CGFloat kReferenceViewportWidth = 430.0f * (16.0f / 9.0f);
+  static constexpr CGFloat kReferenceViewportHeight = 430.0f;
+  static constexpr CGFloat kReferenceToastWidth = 430.0f;
+  static constexpr CGFloat kReferenceEdgeInset = 18.0f;
+
+  CGRect layout_bounds = self.metalView ? self.metalView.frame : self.view.bounds;
+  CGFloat bounds_width = CGRectGetWidth(layout_bounds);
+  CGFloat bounds_height = CGRectGetHeight(layout_bounds);
+  if (bounds_width <= 0.0f || bounds_height <= 0.0f) {
+    return;
+  }
+
+  CGFloat viewport_width = bounds_width;
+  CGFloat viewport_height = bounds_width * (9.0f / 16.0f);
+  if (viewport_height > bounds_height) {
+    viewport_height = bounds_height;
+    viewport_width = bounds_height * (16.0f / 9.0f);
+  }
+  CGRect viewport_rect = CGRectMake(CGRectGetMidX(layout_bounds) - viewport_width * 0.5f,
+                                    CGRectGetMidY(layout_bounds) - viewport_height * 0.5f,
+                                    viewport_width, viewport_height);
+  CGFloat scale = MIN(viewport_width / kReferenceViewportWidth,
+                      viewport_height / kReferenceViewportHeight);
+  scale = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone ? scale * 0.56f : scale * 0.88f;
+  scale = MAX(0.60f, MIN(scale, 1.08f));
+
+  uint32_t active_title_id = 0;
+  if (!active_game_path_.empty()) {
+    for (const IOSDiscoveredGame& game : discovered_games_) {
+      if (game.path == active_game_path_) {
+        active_title_id = game.title_id;
+        break;
+      }
+    }
+  }
+  BOOL popup_at_top =
+      active_title_id ? GetUserDefaultBool(XeniaAchievementPopupPositionKeyForTitleID(active_title_id), false)
+                      : false;
+
+  CGRect safe_layout_frame = self.view.safeAreaLayoutGuide.layoutFrame;
+  if (CGRectEqualToRect(last_achievement_toast_layout_bounds_, layout_bounds) &&
+      CGRectEqualToRect(last_achievement_toast_safe_frame_, safe_layout_frame) &&
+      last_achievement_toast_popup_at_top_ == popup_at_top) {
+    return;
+  }
+  last_achievement_toast_layout_bounds_ = layout_bounds;
+  last_achievement_toast_safe_frame_ = safe_layout_frame;
+  last_achievement_toast_popup_at_top_ = popup_at_top;
+
+  CGFloat side_inset = roundf(kReferenceEdgeInset * scale);
+  CGFloat screen_edge_gap = roundf(kReferenceEdgeInset * scale);
+  CGFloat target_width =
+      MIN(roundf(kReferenceToastWidth * scale), CGRectGetWidth(viewport_rect) - side_inset * 2.0f);
+  CGFloat leading_constant = CGRectGetMinX(viewport_rect) + side_inset;
+  CGFloat trailing_constant =
+      -(CGRectGetWidth(self.view.bounds) - CGRectGetMaxX(viewport_rect) + side_inset);
+  CGFloat bottom_constant =
+      (CGRectGetMaxY(viewport_rect) - screen_edge_gap) - CGRectGetMaxY(safe_layout_frame);
+  CGFloat top_constant =
+      (CGRectGetMinY(viewport_rect) + screen_edge_gap) - CGRectGetMinY(safe_layout_frame);
+
+  if (popup_at_top) {
+    self.achievementToastTopConstraint.active = YES;
+    self.achievementToastBottomConstraint.active = NO;
+    self.achievementToastTopConstraint.constant = top_constant;
+  } else {
+    self.achievementToastTopConstraint.active = NO;
+    self.achievementToastBottomConstraint.active = YES;
+    self.achievementToastBottomConstraint.constant = bottom_constant;
+  }
+
+  self.achievementToastMaxWidthConstraint.constant = target_width;
+  self.achievementToastLeadingConstraint.constant = leading_constant;
+  self.achievementToastTrailingConstraint.constant = trailing_constant;
+  self.achievementToastIconLeadingConstraint.constant = roundf(20.0f * scale);
+  self.achievementToastIconWidthConstraint.constant = roundf(56.0f * scale);
+  self.achievementToastIconHeightConstraint.constant = roundf(56.0f * scale);
+  self.achievementToastHeaderTopConstraint.constant = roundf(14.0f * scale);
+  self.achievementToastHeaderLeadingConstraint.constant = roundf(16.0f * scale);
+  self.achievementToastScoreGapConstraint.constant = roundf(8.0f * scale);
+  self.achievementToastScoreTrailingConstraint.constant = -roundf(14.0f * scale);
+  self.achievementToastScoreHeightConstraint.constant = roundf(22.0f * scale);
+  self.achievementToastTitleTopConstraint.constant = roundf(4.0f * scale);
+  self.achievementToastTitleTrailingConstraint.constant = -roundf(14.0f * scale);
+  self.achievementToastDescriptionTopConstraint.constant = roundf(4.0f * scale);
+  self.achievementToastDescriptionBottomConstraint.constant = -roundf(14.0f * scale);
+
+  self.achievementToastView.layer.cornerRadius = 18.0f * scale;
+  self.achievementToastView.layer.shadowRadius = 24.0f * scale;
+  self.achievementToastView.layer.shadowOffset = CGSizeMake(0.0f, 14.0f * scale);
+  self.achievementToastBackgroundGradient.cornerRadius = 18.0f * scale;
+  self.achievementToastBackgroundGradient.frame = self.achievementToastView.bounds;
+  self.achievementToastGamerscoreLabel.layer.cornerRadius = 11.0f * scale;
+
+  self.achievementToastHeaderLabel.font =
+      [UIFont systemFontOfSize:10.0f * scale weight:UIFontWeightHeavy];
+  self.achievementToastGamerscoreLabel.font =
+      [UIFont systemFontOfSize:12.0f * scale weight:UIFontWeightBold];
+  self.achievementToastTitleLabel.font =
+      [UIFont systemFontOfSize:18.0f * scale weight:UIFontWeightSemibold];
+  self.achievementToastDescriptionLabel.font =
+      [UIFont systemFontOfSize:13.0f * scale weight:UIFontWeightMedium];
 }
 
 - (void)openGameTapped:(UIButton*)sender {
@@ -11128,9 +11699,266 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
 #pragma mark - Public API
 
+- (void)showAchievementToastWithTitle:(NSString*)title
+                           achievement:(NSString*)achievement
+                           description:(NSString*)description
+                            gamerscore:(uint32_t)gamerscore
+                              iconData:(NSData*)icon_data {
+  if (!self.achievementToastView) {
+    UIView* toast = [[[UIView alloc] initWithFrame:CGRectZero] autorelease];
+    toast.translatesAutoresizingMaskIntoConstraints = NO;
+    toast.backgroundColor = [UIColor colorWithRed:0.09f green:0.10f blue:0.11f alpha:0.97f];
+    toast.layer.cornerRadius = 18.0f;
+    toast.layer.borderWidth = 1.0f;
+    toast.layer.borderColor =
+        [UIColor colorWithRed:0.55f green:0.80f blue:0.31f alpha:0.85f].CGColor;
+    toast.layer.shadowColor = [UIColor blackColor].CGColor;
+    toast.layer.shadowOpacity = 0.34f;
+    toast.layer.shadowRadius = 24.0f;
+    toast.layer.shadowOffset = CGSizeMake(0.0f, 14.0f);
+    toast.alpha = 0.0f;
+    toast.clipsToBounds = YES;
+    toast.transform = CGAffineTransformConcat(
+        CGAffineTransformMakeTranslation(-44.0f, 0.0f),
+        CGAffineTransformMakeScale(0.96f, 0.96f));
+
+    CAGradientLayer* background_gradient = [CAGradientLayer layer];
+    background_gradient.colors = @[
+      (id)[UIColor colorWithRed:0.16f green:0.22f blue:0.10f alpha:0.92f].CGColor,
+      (id)[UIColor colorWithRed:0.09f green:0.10f blue:0.11f alpha:0.97f].CGColor,
+      (id)[UIColor colorWithRed:0.05f green:0.06f blue:0.07f alpha:0.98f].CGColor,
+    ];
+    background_gradient.locations = @[ @0.0f, @0.18f, @1.0f ];
+    background_gradient.startPoint = CGPointMake(0.0f, 0.5f);
+    background_gradient.endPoint = CGPointMake(1.0f, 0.5f);
+    background_gradient.cornerRadius = 18.0f;
+    background_gradient.frame = CGRectMake(0.0f, 0.0f, 430.0f, 112.0f);
+    [toast.layer insertSublayer:background_gradient atIndex:0];
+
+    UIImageView* icon_view = [[[UIImageView alloc] init] autorelease];
+    icon_view.translatesAutoresizingMaskIntoConstraints = NO;
+    icon_view.contentMode = UIViewContentModeScaleAspectFit;
+    icon_view.tintColor = [UIColor colorWithRed:0.79f green:0.95f blue:0.67f alpha:1.0f];
+    [toast addSubview:icon_view];
+
+    UILabel* header_label = [[[UILabel alloc] init] autorelease];
+    header_label.translatesAutoresizingMaskIntoConstraints = NO;
+    header_label.textColor = [UIColor colorWithRed:0.80f green:0.94f blue:0.65f alpha:1.0f];
+    header_label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    header_label.numberOfLines = 1;
+    [toast addSubview:header_label];
+
+    UILabel* score_label = [[[UILabel alloc] init] autorelease];
+    score_label.translatesAutoresizingMaskIntoConstraints = NO;
+    score_label.textColor = [UIColor colorWithWhite:0.98f alpha:1.0f];
+    score_label.backgroundColor = [UIColor colorWithRed:0.28f green:0.44f blue:0.16f alpha:0.96f];
+    score_label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+    score_label.textAlignment = NSTextAlignmentCenter;
+    score_label.layer.cornerRadius = 11.0f;
+    score_label.layer.masksToBounds = YES;
+    [toast addSubview:score_label];
+
+    UILabel* title_label = [[[UILabel alloc] init] autorelease];
+    title_label.translatesAutoresizingMaskIntoConstraints = NO;
+    title_label.textColor = [UIColor whiteColor];
+    title_label.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
+    title_label.numberOfLines = 2;
+    [toast addSubview:title_label];
+
+    UILabel* description_label = [[[UILabel alloc] init] autorelease];
+    description_label.translatesAutoresizingMaskIntoConstraints = NO;
+    description_label.textColor = [UIColor colorWithWhite:0.82f alpha:1.0f];
+    description_label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    description_label.numberOfLines = 2;
+    [toast addSubview:description_label];
+
+    [self.view addSubview:toast];
+    NSLayoutConstraint* score_width_constraint =
+        [score_label.widthAnchor constraintEqualToConstant:58.0f];
+    NSLayoutConstraint* toast_top_constraint =
+        [toast.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:0.0f];
+    NSLayoutConstraint* toast_bottom_constraint =
+        [toast.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-68.0f];
+    NSLayoutConstraint* toast_max_width_constraint =
+        [toast.widthAnchor constraintLessThanOrEqualToConstant:430.0f];
+    NSLayoutConstraint* toast_leading_constraint =
+        [toast.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:18.0f];
+    NSLayoutConstraint* toast_trailing_constraint =
+        [toast.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-18.0f];
+    NSLayoutConstraint* icon_leading_constraint =
+        [icon_view.leadingAnchor constraintEqualToAnchor:toast.leadingAnchor constant:20.0f];
+    NSLayoutConstraint* icon_width_constraint =
+        [icon_view.widthAnchor constraintEqualToConstant:56.0f];
+    NSLayoutConstraint* icon_height_constraint =
+        [icon_view.heightAnchor constraintEqualToConstant:56.0f];
+    NSLayoutConstraint* header_top_constraint =
+        [header_label.topAnchor constraintEqualToAnchor:toast.topAnchor constant:14.0f];
+    NSLayoutConstraint* header_leading_constraint =
+        [header_label.leadingAnchor constraintEqualToAnchor:icon_view.trailingAnchor constant:16.0f];
+    NSLayoutConstraint* score_gap_constraint =
+        [score_label.leadingAnchor constraintGreaterThanOrEqualToAnchor:header_label.trailingAnchor constant:8.0f];
+    NSLayoutConstraint* score_trailing_constraint =
+        [score_label.trailingAnchor constraintEqualToAnchor:toast.trailingAnchor constant:-14.0f];
+    NSLayoutConstraint* score_height_constraint =
+        [score_label.heightAnchor constraintEqualToConstant:22.0f];
+    NSLayoutConstraint* title_top_constraint =
+        [title_label.topAnchor constraintEqualToAnchor:header_label.bottomAnchor constant:4.0f];
+    NSLayoutConstraint* title_trailing_constraint =
+        [title_label.trailingAnchor constraintEqualToAnchor:toast.trailingAnchor constant:-14.0f];
+    NSLayoutConstraint* description_top_constraint =
+        [description_label.topAnchor constraintEqualToAnchor:title_label.bottomAnchor constant:4.0f];
+    NSLayoutConstraint* description_bottom_constraint =
+        [description_label.bottomAnchor constraintEqualToAnchor:toast.bottomAnchor constant:-14.0f];
+    [NSLayoutConstraint activateConstraints:@[
+      [toast.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+      toast_max_width_constraint,
+      toast_leading_constraint,
+      toast_trailing_constraint,
+      icon_leading_constraint,
+      [icon_view.centerYAnchor constraintEqualToAnchor:toast.centerYAnchor],
+      icon_width_constraint,
+      icon_height_constraint,
+      header_top_constraint,
+      header_leading_constraint,
+      [score_label.centerYAnchor constraintEqualToAnchor:header_label.centerYAnchor],
+      score_gap_constraint,
+      score_trailing_constraint,
+      score_width_constraint,
+      score_height_constraint,
+      title_top_constraint,
+      [title_label.leadingAnchor constraintEqualToAnchor:header_label.leadingAnchor],
+      title_trailing_constraint,
+      description_top_constraint,
+      [description_label.leadingAnchor constraintEqualToAnchor:title_label.leadingAnchor],
+      [description_label.trailingAnchor constraintEqualToAnchor:title_label.trailingAnchor],
+      description_bottom_constraint,
+    ]];
+
+    self.achievementToastView = toast;
+    self.achievementToastIconView = icon_view;
+    self.achievementToastHeaderLabel = header_label;
+    self.achievementToastTitleLabel = title_label;
+    self.achievementToastDescriptionLabel = description_label;
+    self.achievementToastGamerscoreLabel = score_label;
+    self.achievementToastBackgroundGradient = background_gradient;
+    self.achievementToastGamerscoreWidthConstraint = score_width_constraint;
+    self.achievementToastTopConstraint = toast_top_constraint;
+    self.achievementToastBottomConstraint = toast_bottom_constraint;
+    self.achievementToastMaxWidthConstraint = toast_max_width_constraint;
+    self.achievementToastLeadingConstraint = toast_leading_constraint;
+    self.achievementToastTrailingConstraint = toast_trailing_constraint;
+    self.achievementToastIconLeadingConstraint = icon_leading_constraint;
+    self.achievementToastIconWidthConstraint = icon_width_constraint;
+    self.achievementToastIconHeightConstraint = icon_height_constraint;
+    self.achievementToastHeaderTopConstraint = header_top_constraint;
+    self.achievementToastHeaderLeadingConstraint = header_leading_constraint;
+    self.achievementToastScoreGapConstraint = score_gap_constraint;
+    self.achievementToastScoreTrailingConstraint = score_trailing_constraint;
+    self.achievementToastScoreHeightConstraint = score_height_constraint;
+    self.achievementToastTitleTopConstraint = title_top_constraint;
+    self.achievementToastTitleTrailingConstraint = title_trailing_constraint;
+    self.achievementToastDescriptionTopConstraint = description_top_constraint;
+    self.achievementToastDescriptionBottomConstraint = description_bottom_constraint;
+    self.achievementToastTopConstraint.active = NO;
+    self.achievementToastBottomConstraint.active = YES;
+  }
+
+  [self.achievementToastTimer invalidate];
+  self.achievementToastTimer = nil;
+  [self updateAchievementToastLayout];
+  self.achievementToastHeaderLabel.text =
+      title.length ? [title uppercaseString] : @"ACHIEVEMENT UNLOCKED";
+  self.achievementToastTitleLabel.text =
+      achievement.length ? achievement : @"Achievement unlocked";
+  self.achievementToastDescriptionLabel.text =
+      description.length ? description : @"Xbox 360 achievement earned";
+  self.achievementToastGamerscoreLabel.text = [NSString stringWithFormat:@"%uG", gamerscore];
+  CGFloat score_height = MAX(CGRectGetHeight(self.achievementToastGamerscoreLabel.bounds),
+                             self.achievementToastScoreHeightConstraint.constant);
+  CGSize score_size =
+      [self.achievementToastGamerscoreLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, score_height)];
+  self.achievementToastGamerscoreWidthConstraint.constant =
+      MAX(score_size.width + score_height * 0.82f, 52.0f * score_height / 22.0f);
+  [self playAchievementToastSound];
+
+  UIImage* icon_image = nil;
+  if (icon_data.length > 0) {
+    icon_image = [UIImage imageWithData:icon_data];
+  }
+  if (!icon_image) {
+    UIImageSymbolConfiguration* config =
+        [UIImageSymbolConfiguration configurationWithPointSize:28 weight:UIImageSymbolWeightSemibold];
+    icon_image = [[UIImage systemImageNamed:@"rosette" withConfiguration:config]
+        imageWithTintColor:[UIColor colorWithRed:0.79f green:0.95f blue:0.67f alpha:1.0f]
+              renderingMode:UIImageRenderingModeAlwaysOriginal];
+  }
+  self.achievementToastIconView.image = icon_image;
+
+  [self.view bringSubviewToFront:self.achievementToastView];
+  [self.view layoutIfNeeded];
+  self.achievementToastBackgroundGradient.frame = self.achievementToastView.bounds;
+  self.achievementToastView.transform = CGAffineTransformConcat(
+      CGAffineTransformMakeTranslation(-44.0f, 0.0f),
+      CGAffineTransformMakeScale(0.96f, 0.96f));
+  [UIView animateWithDuration:0.30
+                        delay:0.0
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionCurveEaseOut
+                   animations:^{
+                     self.achievementToastView.alpha = 1.0f;
+                     self.achievementToastView.transform = CGAffineTransformIdentity;
+                   }
+                   completion:nil];
+
+  self.achievementToastTimer = [NSTimer scheduledTimerWithTimeInterval:4.6
+                                                                repeats:NO
+                                                                  block:^(__unused NSTimer* timer) {
+    [UIView animateWithDuration:0.22
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionCurveEaseIn
+                     animations:^{
+                       self.achievementToastView.alpha = 0.0f;
+                       self.achievementToastView.transform = CGAffineTransformConcat(
+                           CGAffineTransformMakeTranslation(-28.0f, 0.0f),
+                           CGAffineTransformMakeScale(0.98f, 0.98f));
+                     }
+                     completion:nil];
+    self.achievementToastTimer = nil;
+  }];
+}
+
+- (void)playAchievementToastSound {
+  NSURL* sound_url = [[NSBundle mainBundle] URLForResource:@"achievement_unlocked_360"
+                                             withExtension:@"mp3"];
+  if (!sound_url) {
+    XELOGE("iOS: achievement sound resource missing from app bundle");
+    return;
+  }
+
+  [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                   withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                                         error:nil];
+  [[AVAudioSession sharedInstance] setActive:YES error:nil];
+
+  AVAudioPlayer* player = [[[AVAudioPlayer alloc] initWithContentsOfURL:sound_url
+                                                                  error:nil] autorelease];
+  if (!player) {
+    XELOGE("iOS: failed to initialize achievement sound player");
+    return;
+  }
+
+  player.volume = 1.0f;
+  player.currentTime = 0.0;
+  [player prepareToPlay];
+  self.achievementToastAudioPlayer = player;
+  [self.achievementToastAudioPlayer play];
+}
+
 - (void)showLauncherOverlay {
   self.gameRunning = NO;
   self.gameStopInProgress = NO;
+  active_game_path_.clear();
   [self hideInGameMenuOverlay];
   self.launcherOverlay.hidden = NO;
   self.statusLabel.text = @"";
@@ -11150,8 +11978,10 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 - (void)dealloc {
   [self.jitPollTimer invalidate];
   [self.controllerNavTimer invalidate];
+  [self.achievementToastTimer invalidate];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [compat_data_ release];
+  [super dealloc];
 }
 
 @end
@@ -11316,6 +12146,24 @@ static constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
       }
     });
   });
+  app_context_->set_achievement_notification_callback(
+      [vc](const xe::ui::IOSAchievementNotificationData& data) {
+        const std::string title = data.title;
+        const std::string subtitle = data.subtitle;
+        const std::string description = data.description;
+        const uint32_t gamerscore = data.gamerscore;
+        const std::vector<uint8_t> icon_data = data.icon_data;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          NSData* icon = icon_data.empty() ? nil
+                                           : [NSData dataWithBytes:icon_data.data()
+                                                            length:icon_data.size()];
+          [vc showAchievementToastWithTitle:ToNSString(title)
+                                achievement:ToNSString(subtitle)
+                                description:ToNSString(description)
+                                 gamerscore:gamerscore
+                                   iconData:icon];
+        });
+      });
 
   XELOGI("iOS: Metal view ready ({}x{})",
          static_cast<uint32_t>(vc.metalView.bounds.size.width *

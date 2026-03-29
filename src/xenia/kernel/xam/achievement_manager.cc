@@ -15,6 +15,9 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/achievement_backends/gpd_achievement_backend.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
+#if XE_PLATFORM_IOS
+#include "xenia/ui/windowed_app_context_ios.h"
+#endif
 #if !XE_PLATFORM_IOS
 #include "xenia/ui/audio_helper.h"
 #endif
@@ -91,7 +94,7 @@ void AchievementManager::EarnAchievement(const uint64_t xuid,
     // Something went really wrong!
     return;
   }
-  ShowAchievementEarnedNotification(&achievement.value());
+  ShowAchievementEarnedNotification(&achievement.value(), xuid, title_id);
 }
 
 void AchievementManager::LoadTitleAchievements(const uint64_t xuid) const {
@@ -149,10 +152,19 @@ bool AchievementManager::DoesAchievementExist(
 }
 
 void AchievementManager::ShowAchievementEarnedNotification(
-    const Achievement* achievement) const {
+    const Achievement* achievement, uint64_t xuid, uint32_t title_id) const {
+  auto sanitize_utf16 = [](const std::u16string& value) {
+    std::string utf8 = xe::to_utf8(value);
+    if (!utf8.empty() && utf8.back() == '\0') {
+      utf8.pop_back();
+    }
+    return utf8;
+  };
+
+  const std::string achievement_name = sanitize_utf16(achievement->achievement_name);
+  const std::string achievement_detail = sanitize_utf16(achievement->unlocked_description);
   const std::string description =
-      fmt::format("{}G - {}", achievement->gamerscore,
-                  xe::to_utf8(achievement->achievement_name));
+      fmt::format("{}G - {}", achievement->gamerscore, achievement_name);
 
   const Emulator* emulator = kernel_state()->emulator();
   ui::WindowedAppContext& app_context =
@@ -160,8 +172,24 @@ void AchievementManager::ShowAchievementEarnedNotification(
   ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
   if (!imgui_drawer) {
-    // No UI drawer available (e.g. iOS without ImGui); just log.
+#if XE_PLATFORM_IOS
+    auto& ios_app_context =
+        static_cast<ui::IOSWindowedAppContext&>(app_context);
+    ui::IOSAchievementNotificationData notification;
+    notification.title = "Achievement unlocked";
+    notification.subtitle = achievement_name;
+    notification.description = achievement_detail;
+    notification.gamerscore = achievement->gamerscore;
+    auto icon = default_achievements_backend_->GetAchievementIcon(
+        xuid, title_id, achievement->achievement_id);
+    notification.icon_data.assign(icon.begin(), icon.end());
+    ios_app_context.CallInUIThread([&ios_app_context, notification]() {
+      ios_app_context.NotifyAchievementUnlocked(notification);
+    });
+#else
+    // No UI drawer available; just log.
     XELOGI("Achievement unlocked (no UI): {}", description);
+#endif
     return;
   }
 
