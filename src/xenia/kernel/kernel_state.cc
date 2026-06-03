@@ -203,6 +203,8 @@ uint32_t KernelState::title_id() const {
   return 0;
 }
 
+bool KernelState::is_title_open() const { return emulator_->is_title_open(); }
+
 const std::unique_ptr<xam::SpaInfo> KernelState::title_xdbf() const {
   return module_xdbf(executable_module_);
 }

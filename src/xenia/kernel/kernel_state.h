@@ -178,6 +178,7 @@ class KernelState {
   vfs::VirtualFileSystem* file_system() const { return file_system_; }
 
   uint32_t title_id() const;
+  bool is_title_open() const;
   const std::unique_ptr<xam::SpaInfo> title_xdbf() const;
   const std::unique_ptr<xam::SpaInfo> module_xdbf(
       object_ref<UserModule> exec_module) const;
