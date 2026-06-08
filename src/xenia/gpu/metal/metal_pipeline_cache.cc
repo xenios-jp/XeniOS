@@ -75,6 +75,41 @@ DEFINE_int32(metal_pipeline_creation_threads, -1,
              "-1 = auto (75% of cores), 0 = disabled (synchronous).",
              "Metal");
 
+DEFINE_bool(metal_native_msl_guest_shaders, false,
+            "Experimental: translate guest shaders directly to native Metal "
+            "Shading Language. This is compile/dump-only by default.",
+            "Metal");
+
+DEFINE_bool(metal_native_msl_compile_only, true,
+            "When native guest MSL is enabled, compile native MSL for "
+            "diagnostics but keep rendering on the DXIL/MSC path.",
+            "Metal");
+
+DEFINE_bool(metal_native_msl_render, false,
+            "Experimental: use native guest MSL for standard vertex/pixel "
+            "render pipelines instead of DXIL/MSC. Geometry and tessellation "
+            "emulation remain on the existing path.",
+            "Metal");
+
+DEFINE_bool(metal_native_msl_fallback_to_msc, true,
+            "If native guest MSL translation/compilation fails, keep using "
+            "the DXIL/MSC path. Disable to make native MSL misses fail loudly.",
+            "Metal");
+
+DEFINE_bool(metal_native_msl_helper_msc, true,
+            "Temporary native-MSL bring-up path: keep geometry/tessellation "
+            "helper-stage pipelines on the existing DXIL/Metal Shader "
+            "Converter emulation path while standard guest VS/PS render "
+            "pipelines use native MSL.",
+            "Metal");
+
+DEFINE_bool(metal_native_msl_expand_rectangle_lists, true,
+            "Expand Xenos rectangle lists in native MSL vertex shaders instead "
+            "of routing them through the temporary geometry helper path. This "
+            "must stay enabled for native MSL on systems where DXBC to DXIL "
+            "conversion is unavailable.",
+            "Metal");
+
 namespace xe {
 namespace gpu {
 namespace metal {
@@ -86,6 +121,95 @@ void AtomicMax(std::atomic<uint64_t>& target, uint64_t value) {
   while (current < value && !target.compare_exchange_weak(
                                 current, value, std::memory_order_relaxed,
                                 std::memory_order_relaxed)) {
+  }
+}
+
+bool NativeGuestMslRenderEnabled() {
+  return cvars::metal_native_msl_render;
+}
+
+uint64_t NativeMslTranslationCacheKey(uint64_t shader_modification,
+                                      uint64_t texture_sign_key) {
+  if (!texture_sign_key) {
+    return shader_modification;
+  }
+  uint64_t key_data[] = {
+      shader_modification,
+      texture_sign_key,
+      UINT64_C(0x4E4D534C53676E31),  // "NMSLSgn1"
+  };
+  uint64_t key = XXH3_64bits(key_data, sizeof(key_data));
+  return key ? key : UINT64_C(0x4E4D534C53676E31);
+}
+
+DxbcShader::TextureSignComponentMasks NativeMslTextureSignMasksFromStorage(
+    const uint8_t* stored_masks) {
+  DxbcShader::TextureSignComponentMasks masks = {};
+  std::memcpy(masks.data(), stored_masks, masks.size());
+  return masks;
+}
+
+bool NativePrimitiveMeshPipelineKind(
+    MetalPipelineCache::PipelineKind kind) {
+  switch (kind) {
+    case MetalPipelineCache::PipelineKind::kNativeRectangleMesh:
+    case MetalPipelineCache::PipelineKind::kNativePointMesh:
+    case MetalPipelineCache::PipelineKind::kNativeQuadMesh:
+      return true;
+    default:
+      return false;
+  }
+}
+
+MetalPipelineCache::PipelineKind NativePrimitiveMeshPipelineKindForType(
+    MetalPipelineCache::NativeMeshPipelineType type) {
+  switch (type) {
+    case MetalPipelineCache::NativeMeshPipelineType::kPointList:
+      return MetalPipelineCache::PipelineKind::kNativePointMesh;
+    case MetalPipelineCache::NativeMeshPipelineType::kQuadList:
+      return MetalPipelineCache::PipelineKind::kNativeQuadMesh;
+    case MetalPipelineCache::NativeMeshPipelineType::kRectangleList:
+    default:
+      return MetalPipelineCache::PipelineKind::kNativeRectangleMesh;
+  }
+}
+
+MetalPipelineCache::NativeMeshPipelineType NativePrimitiveMeshTypeForKind(
+    MetalPipelineCache::PipelineKind kind) {
+  switch (kind) {
+    case MetalPipelineCache::PipelineKind::kNativePointMesh:
+      return MetalPipelineCache::NativeMeshPipelineType::kPointList;
+    case MetalPipelineCache::PipelineKind::kNativeQuadMesh:
+      return MetalPipelineCache::NativeMeshPipelineType::kQuadList;
+    case MetalPipelineCache::PipelineKind::kNativeRectangleMesh:
+    default:
+      return MetalPipelineCache::NativeMeshPipelineType::kRectangleList;
+  }
+}
+
+const char* NativePrimitiveMeshEntryPoint(
+    MetalPipelineCache::NativeMeshPipelineType type) {
+  switch (type) {
+    case MetalPipelineCache::NativeMeshPipelineType::kPointList:
+      return "main_point_mesh";
+    case MetalPipelineCache::NativeMeshPipelineType::kQuadList:
+      return "main_quad_mesh";
+    case MetalPipelineCache::NativeMeshPipelineType::kRectangleList:
+    default:
+      return "main_rect_mesh";
+  }
+}
+
+const char* NativePrimitiveMeshLabel(
+    MetalPipelineCache::NativeMeshPipelineType type) {
+  switch (type) {
+    case MetalPipelineCache::NativeMeshPipelineType::kPointList:
+      return "point-list";
+    case MetalPipelineCache::NativeMeshPipelineType::kQuadList:
+      return "quad-list";
+    case MetalPipelineCache::NativeMeshPipelineType::kRectangleList:
+    default:
+      return "rectangle-list";
   }
 }
 
@@ -123,19 +247,6 @@ void LogMetalErrorDetails(const char* label, NS::Error* error) {
            info_desc ? info_desc->utf8String() : "<null>");
   }
 }
-
-class ScopedAutoreleasePool {
- public:
-  ScopedAutoreleasePool() : pool_(NS::AutoreleasePool::alloc()->init()) {}
-  ~ScopedAutoreleasePool() {
-    if (pool_) {
-      pool_->drain();
-    }
-  }
-
- private:
-  NS::AutoreleasePool* pool_ = nullptr;
-};
 
 void EnsureDepthFormatForDepthWritingFragment(const char* pipeline_name,
                                               bool fragment_writes_depth,
@@ -496,6 +607,26 @@ constexpr uint32_t kGeneratedStageTessellationVertex = 0x200;
 constexpr uint32_t kGeneratedStageTessellationHull = 0x201;
 constexpr uint32_t kGeneratedStageTessellationDomain = 0x202;
 
+uint32_t NativeMslTessellationControlPointCount(
+    const PrimitiveProcessor::ProcessingResult& primitive) {
+  switch (primitive.host_vertex_shader_type) {
+    case Shader::HostVertexShaderType::kTriangleDomainCPIndexed:
+      return 3;
+    case Shader::HostVertexShaderType::kQuadDomainCPIndexed:
+      return 4;
+    case Shader::HostVertexShaderType::kTriangleDomainPatchIndexed:
+      return primitive.tessellation_mode == xenos::TessellationMode::kAdaptive
+                 ? 3
+                 : 1;
+    case Shader::HostVertexShaderType::kQuadDomainPatchIndexed:
+      return primitive.tessellation_mode == xenos::TessellationMode::kAdaptive
+                 ? 4
+                 : 1;
+    default:
+      return 0;
+  }
+}
+
 }  // namespace
 
 class MetalPipelineCache::GeneratedStageCache {
@@ -601,13 +732,21 @@ class MetalPipelineCache::GeneratedStageCache {
   GeometryVertexStageState* GetGeometryVertexStage(
       MetalShader::MetalTranslation* vertex_translation,
       GeometryShaderKey geometry_shader_key) {
-    auto vertex_it = geometry_vertex_stage_cache_.find(vertex_translation);
+    const uint64_t geometry_vertex_stage_key_data[] = {
+        uint64_t(reinterpret_cast<uintptr_t>(vertex_translation)),
+        uint64_t(geometry_shader_key.key)};
+    uint64_t geometry_vertex_stage_key =
+        XXH3_64bits(geometry_vertex_stage_key_data,
+                    sizeof(geometry_vertex_stage_key_data));
+    auto vertex_it =
+        geometry_vertex_stage_cache_.find(geometry_vertex_stage_key);
     if (vertex_it != geometry_vertex_stage_cache_.end()) {
       return &vertex_it->second;
     }
 
     if (!owner_.EnsureDxilTranslationReady(vertex_translation,
-                                           "geometry vertex")) {
+                                           "geometry helper vertex",
+                                           /*helper_stage_pipeline=*/true)) {
       XELOGE("Geometry VS: failed to create a valid DXIL translation");
       return nullptr;
     }
@@ -674,7 +813,7 @@ class MetalPipelineCache::GeneratedStageCache {
     }
 
     auto [inserted_it, inserted] = geometry_vertex_stage_cache_.emplace(
-        vertex_translation, std::move(state));
+        geometry_vertex_stage_key, std::move(state));
     return &inserted_it->second;
   }
 
@@ -685,12 +824,20 @@ class MetalPipelineCache::GeneratedStageCache {
       return &geom_it->second;
     }
 
+    std::vector<uint8_t> dxil_data;
     const std::vector<uint32_t>& dxbc_dwords =
         GetGeometryShader(geometry_shader_key);
     std::vector<uint8_t> dxbc_bytes(dxbc_dwords.size() * sizeof(uint32_t));
     std::memcpy(dxbc_bytes.data(), dxbc_dwords.data(), dxbc_bytes.size());
 
-    std::vector<uint8_t> dxil_data;
+    if (!dxbc_to_dxil_converter_.IsAvailable()) {
+      const uint64_t key_data[] = {kGeneratedStageGeometryShader,
+                                   uint64_t(geometry_shader_key.key)};
+      owner_.LogHelperDxilUnavailableOnce(
+          XXH3_64bits(key_data, sizeof(key_data)),
+          "geometry helper generated mesh shader");
+      return nullptr;
+    }
     std::string dxil_error;
     if (!owner_.ConvertDxbcToDxil(dxbc_bytes, dxil_data, &dxil_error)) {
       XELOGE("Geometry GS: DXBC to DXIL conversion failed: {}", dxil_error);
@@ -782,6 +929,16 @@ class MetalPipelineCache::GeneratedStageCache {
     std::vector<uint8_t> dxbc_bytes(vs_bytes, vs_bytes + vs_size);
     std::vector<uint8_t> dxil_data;
     std::string dxil_error;
+    if (!dxbc_to_dxil_converter_.IsAvailable()) {
+      const uint64_t key_data[] = {
+          kGeneratedStageTessellationVertex,
+          domain_translation->shader().ucode_data_hash(),
+          domain_translation->modification(), uint64_t(tessellation_mode)};
+      owner_.LogHelperDxilUnavailableOnce(
+          XXH3_64bits(key_data, sizeof(key_data)),
+          "tessellation helper generated vertex");
+      return nullptr;
+    }
     if (!owner_.ConvertDxbcToDxil(dxbc_bytes, dxil_data, &dxil_error)) {
       XELOGE("Tessellation VS: DXBC to DXIL conversion failed: {}", dxil_error);
       return nullptr;
@@ -932,6 +1089,16 @@ class MetalPipelineCache::GeneratedStageCache {
     std::vector<uint8_t> dxbc_bytes(hs_bytes, hs_bytes + hs_size);
     std::vector<uint8_t> dxil_data;
     std::string dxil_error;
+    if (!dxbc_to_dxil_converter_.IsAvailable()) {
+      const uint64_t key_data[] = {
+          kGeneratedStageTessellationHull,
+          uint64_t(primitive_processing_result.host_vertex_shader_type),
+          uint64_t(tessellation_mode)};
+      owner_.LogHelperDxilUnavailableOnce(
+          XXH3_64bits(key_data, sizeof(key_data)),
+          "tessellation helper generated hull");
+      return nullptr;
+    }
     if (!owner_.ConvertDxbcToDxil(dxbc_bytes, dxil_data, &dxil_error)) {
       XELOGE("Tessellation HS: DXBC to DXIL conversion failed: {}", dxil_error);
       return nullptr;
@@ -976,8 +1143,8 @@ class MetalPipelineCache::GeneratedStageCache {
     }
 
     if (!owner_.EnsureDxilTranslationReady(domain_translation,
-                                           "tessellation domain")) {
-      XELOGE("Tessellation DS: failed to create a valid DXIL translation");
+                                           "tessellation helper domain",
+                                           /*helper_stage_pipeline=*/true)) {
       return nullptr;
     }
     std::vector<uint8_t> dxil_data = domain_translation->GetDxilDataCopy();
@@ -1017,7 +1184,7 @@ class MetalPipelineCache::GeneratedStageCache {
   DxbcToDxilConverter& dxbc_to_dxil_converter_;
   MetalShaderConverter& metal_shader_converter_;
 
-  std::unordered_map<MetalShader::MetalTranslation*, GeometryVertexStageState>
+  std::unordered_map<uint64_t, GeometryVertexStageState>
       geometry_vertex_stage_cache_;
   std::unordered_map<GeometryShaderKey, GeometryShaderStageState,
                      GeometryShaderKey::Hasher>
@@ -1105,6 +1272,13 @@ MetalPipelineCache::~MetalPipelineCache() {
   }
   geometry_pipeline_cache_.clear();
 
+  for (auto& pair : native_mesh_pipeline_cache_) {
+    if (pair.second.pipeline) {
+      pair.second.pipeline->release();
+    }
+  }
+  native_mesh_pipeline_cache_.clear();
+
   for (auto& pair : tessellation_pipeline_cache_) {
     if (pair.second.pipeline) {
       pair.second.pipeline->release();
@@ -1119,6 +1293,11 @@ MetalPipelineCache::~MetalPipelineCache() {
     depth_only_pixel_library_ = nullptr;
   }
   depth_only_pixel_function_name_.clear();
+  if (native_depth_only_pixel_library_) {
+    native_depth_only_pixel_library_->release();
+    native_depth_only_pixel_library_ = nullptr;
+  }
+  native_depth_only_pixel_function_name_.clear();
 
   ShutdownShaderStorage();
 
@@ -1126,6 +1305,7 @@ MetalPipelineCache::~MetalPipelineCache() {
   shader_translator_.reset();
   dxbc_to_dxil_converter_.reset();
   metal_shader_converter_.reset();
+  native_msl_translator_.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,8 +1331,19 @@ bool MetalPipelineCache::InitializeShaderTranslation(
 
   dxbc_to_dxil_converter_ = std::make_unique<DxbcToDxilConverter>();
   if (!dxbc_to_dxil_converter_->Initialize()) {
-    XELOGE("Failed to initialize DXBC to DXIL converter");
-    return false;
+    // The DXBC->DXIL path needs the dxilconv library. Native MSL rendering
+    // doesn't need it for standard guest vertex/pixel shaders, but generated
+    // helper/system stages that still use MSC may fail until they are moved
+    // over too. Without an alternate guest shader path, there is no shader
+    // path, so fail hard.
+    if (NativeGuestMslRenderEnabled()) {
+      XELOGW(
+          "Metal: DXBC->DXIL converter unavailable; alternate guest shader "
+          "path enabled, but generated DXBC helper stages may fail to compile");
+    } else {
+      XELOGE("Failed to initialize DXBC to DXIL converter");
+      return false;
+    }
   }
 
   metal_shader_converter_ = std::make_unique<MetalShaderConverter>();
@@ -1160,13 +1351,40 @@ bool MetalPipelineCache::InitializeShaderTranslation(
     XELOGE("Failed to initialize Metal Shader Converter");
     return false;
   }
-  generated_stages_ = std::make_unique<GeneratedStageCache>(
-      *this, device_, *dxbc_to_dxil_converter_, *metal_shader_converter_);
+
+  const bool helper_stage_msc_enabled =
+      !NativeGuestMslRenderEnabled() || cvars::metal_native_msl_helper_msc;
+  if (helper_stage_msc_enabled) {
+    generated_stages_ = std::make_unique<GeneratedStageCache>(
+        *this, device_, *dxbc_to_dxil_converter_, *metal_shader_converter_);
+  } else {
+    generated_stages_.reset();
+  }
+
+  if (NativeGuestMslRenderEnabled() || cvars::metal_native_msl_guest_shaders) {
+    native_msl_translator_ = std::make_unique<MslShaderTranslator>(
+        ui::GraphicsProvider::GpuVendorID::kApple,
+        /*bindless_resources_used=*/true, edram_rov_used,
+        draw_resolution_scale_x, draw_resolution_scale_y);
+    if (NativeGuestMslRenderEnabled()) {
+      XELOGW(
+          "metal_native_msl_render: native guest MSL render path enabled for "
+          "standard vertex/pixel pipelines; generated geometry/tess helper "
+          "stages are {}",
+          helper_stage_msc_enabled ? "enabled" : "disabled");
+    } else {
+      XELOGI(
+          "metal_native_msl_guest_shaders: native MSL compile diagnostics "
+          "enabled");
+    }
+  }
 
   // Configure MSC minimum targets.
   if (device_) {
     IRGPUFamily min_family = IRGPUFamilyMetal3;
-    if (device_->supportsFamily(MTL::GPUFamilyApple10)) {
+    if (cvars::metal_msc_debug_validation) {
+      min_family = IRGPUFamilyMetal3;
+    } else if (device_->supportsFamily(MTL::GPUFamilyApple10)) {
       min_family = IRGPUFamilyApple10;
     } else if (device_->supportsFamily(MTL::GPUFamilyApple9)) {
       min_family = IRGPUFamilyApple9;
@@ -1412,7 +1630,6 @@ bool MetalPipelineCache::ConvertDxbcToDxil(
 
 MTL::Library* MetalPipelineCache::NewLibraryFromBytes(
     const std::vector<uint8_t>& bytes, const char* label) {
-  ScopedAutoreleasePool autorelease_pool;
   if (!device_ || bytes.empty()) {
     RecordLibraryCreation(bytes.size(), false, 0);
     return nullptr;
@@ -1562,15 +1779,80 @@ void MetalPipelineCache::PrewarmStoredPipelines(
   size_t skipped = 0;
   for (const MetalPipelineStoredDescription& stored : descriptions) {
     const MetalPipelineDescription& desc = stored.description;
+    const bool native_pipeline =
+        desc.shader_backend ==
+        uint32_t(MetalShader::MetalTranslation::Backend::kNativeMsl);
+    if (native_pipeline && !NativeGuestMslRenderEnabled()) {
+      ++skipped;
+      continue;
+    }
+    const bool standard_pipeline =
+        desc.kind == uint32_t(PipelineKind::kStandard);
+    if (!native_pipeline && standard_pipeline && NativeGuestMslRenderEnabled()) {
+      ++skipped;
+      continue;
+    }
     auto vs_it = shader_cache_.find(desc.vertex_shader_hash);
     if (vs_it == shader_cache_.end()) {
       ++skipped;
       continue;
     }
+    uint64_t vertex_translation_key = desc.vertex_shader_modification;
+    if (native_pipeline) {
+      vertex_translation_key = NativeMslTranslationCacheKey(
+          desc.vertex_shader_modification,
+          desc.vertex_shader_native_msl_texture_sign_key);
+    }
     auto* vertex_translation = static_cast<MetalShader::MetalTranslation*>(
-        vs_it->second->GetOrCreateTranslation(desc.vertex_shader_modification));
-    if (!vertex_translation ||
-        !EnsureMetalTranslationReady(vertex_translation)) {
+        vs_it->second->GetOrCreateTranslation(vertex_translation_key));
+    const PipelineKind pipeline_kind = PipelineKind(desc.kind);
+    const bool helper_pipeline =
+        pipeline_kind == PipelineKind::kGeometry ||
+        pipeline_kind == PipelineKind::kTessellation;
+    const bool native_primitive_mesh_pipeline =
+        NativePrimitiveMeshPipelineKind(pipeline_kind);
+    const bool native_tessellation_mesh_pipeline =
+        pipeline_kind == PipelineKind::kNativeTessellationMesh;
+    if (!vertex_translation) {
+      ++skipped;
+      continue;
+    }
+    if (native_pipeline &&
+        !vertex_translation->ConfigureNativeMslVariant(
+            desc.vertex_shader_modification,
+            desc.vertex_shader_native_msl_texture_sign_key,
+            NativeMslTextureSignMasksFromStorage(
+                desc.vertex_shader_native_msl_texture_sign_component_masks),
+            NativeMslTextureSignMasksFromStorage(
+                desc.vertex_shader_native_msl_texture_sign_values))) {
+      ++skipped;
+      continue;
+    }
+    const bool async_native_standard_pipeline =
+        native_pipeline && standard_pipeline &&
+        cvars::async_shader_compilation && !creation_threads_.empty();
+    if (standard_pipeline || native_primitive_mesh_pipeline ||
+        native_tessellation_mesh_pipeline) {
+      if (!async_native_standard_pipeline &&
+          !EnsureMetalTranslationReady(vertex_translation,
+                                       /*native_guest_allowed=*/true,
+                                       "stored vertex")) {
+        ++skipped;
+        continue;
+      }
+    } else if (helper_pipeline) {
+      if (!EnsureDxilTranslationReady(
+              vertex_translation,
+              desc.kind == uint32_t(PipelineKind::kTessellation)
+                  ? "stored tessellation helper domain"
+                  : "stored geometry helper vertex",
+              /*helper_stage_pipeline=*/true)) {
+        ++skipped;
+        continue;
+      }
+    } else if (!EnsureMetalTranslationReady(vertex_translation,
+                                            /*native_guest_allowed=*/false,
+                                            "stored system vertex")) {
       ++skipped;
       continue;
     }
@@ -1582,11 +1864,36 @@ void MetalPipelineCache::PrewarmStoredPipelines(
         ++skipped;
         continue;
       }
+      uint64_t pixel_translation_key = desc.pixel_shader_modification;
+      if (native_pipeline) {
+        pixel_translation_key = NativeMslTranslationCacheKey(
+            desc.pixel_shader_modification,
+            desc.pixel_shader_native_msl_texture_sign_key);
+      }
       pixel_translation = static_cast<MetalShader::MetalTranslation*>(
-          ps_it->second->GetOrCreateTranslation(
-              desc.pixel_shader_modification));
-      if (!pixel_translation ||
-          !EnsureMetalTranslationReady(pixel_translation)) {
+          ps_it->second->GetOrCreateTranslation(pixel_translation_key));
+      if (!pixel_translation) {
+        ++skipped;
+        continue;
+      }
+      if (native_pipeline &&
+          !pixel_translation->ConfigureNativeMslVariant(
+              desc.pixel_shader_modification,
+              desc.pixel_shader_native_msl_texture_sign_key,
+              NativeMslTextureSignMasksFromStorage(
+                  desc.pixel_shader_native_msl_texture_sign_component_masks),
+              NativeMslTextureSignMasksFromStorage(
+                  desc.pixel_shader_native_msl_texture_sign_values))) {
+        ++skipped;
+        continue;
+      }
+      if (!async_native_standard_pipeline &&
+          !EnsureMetalTranslationReady(
+              pixel_translation,
+              standard_pipeline || native_primitive_mesh_pipeline ||
+                  native_tessellation_mesh_pipeline,
+              helper_pipeline ? "stored helper pixel" : "stored pixel",
+              helper_pipeline)) {
         ++skipped;
         continue;
       }
@@ -1606,7 +1913,7 @@ void MetalPipelineCache::PrewarmStoredPipelines(
     std::memcpy(rendering.blendcontrol, desc.blendcontrol,
                 sizeof(rendering.blendcontrol));
 
-    if (desc.kind == uint32_t(PipelineKind::kStandard)) {
+    if (standard_pipeline) {
       PipelineHandle* handle = GetOrCreatePipelineState(
           vertex_translation, pixel_translation, formats, rendering);
       if (handle) {
@@ -1629,6 +1936,24 @@ void MetalPipelineCache::PrewarmStoredPipelines(
       if (GetOrCreateTessellationPipelineState(vertex_translation,
                                                pixel_translation, primitive,
                                                formats, rendering)) {
+        ++queued;
+      }
+    } else if (native_primitive_mesh_pipeline) {
+      if (GetOrCreateNativeMslPrimitiveMeshPipelineState(
+              vertex_translation, pixel_translation,
+              NativePrimitiveMeshTypeForKind(pipeline_kind), formats,
+              rendering)) {
+        ++queued;
+      }
+    } else if (native_tessellation_mesh_pipeline) {
+      PrimitiveProcessor::ProcessingResult primitive = {};
+      primitive.host_vertex_shader_type =
+          Shader::HostVertexShaderType(desc.auxiliary0);
+      primitive.tessellation_mode = xenos::TessellationMode(desc.auxiliary1);
+      primitive.host_primitive_type = xenos::PrimitiveType(desc.auxiliary2);
+      if (GetOrCreateNativeMslTessellationPipelineState(
+              vertex_translation, pixel_translation, primitive, formats,
+              rendering)) {
         ++queued;
       }
     } else {
@@ -1801,6 +2126,7 @@ bool MetalPipelineCache::EnsureDepthOnlyPixelShader() {
   if (depth_only_pixel_library_) {
     return true;
   }
+
   if (!shader_translator_ || !dxbc_to_dxil_converter_ ||
       !metal_shader_converter_) {
     XELOGE("Depth-only PS: shader translation not initialized");
@@ -1842,6 +2168,68 @@ bool MetalPipelineCache::EnsureDepthOnlyPixelShader() {
   return true;
 }
 
+bool MetalPipelineCache::EnsureNativeDepthOnlyPixelShader() {
+  if (native_depth_only_pixel_library_) {
+    return true;
+  }
+
+  static constexpr char kNativeDepthOnlyPs[] =
+      "#include <metal_stdlib>\n"
+      "using namespace metal;\n"
+      "fragment void xe_native_depth_only_ps() {}\n";
+
+  NS::Error* error = nullptr;
+  NS::String* source_string =
+      NS::String::string(kNativeDepthOnlyPs, NS::UTF8StringEncoding);
+  MTL::CompileOptions* compile_options = nullptr;
+  if (cvars::metal_native_msl_debug_validation ||
+      !cvars::metal_native_msl_fast_math) {
+    compile_options = MTL::CompileOptions::alloc()->init();
+    compile_options->setMathMode(MTL::MathModeSafe);
+    compile_options->setMathFloatingPointFunctions(
+        MTL::MathFloatingPointFunctionsFast);
+    if (cvars::metal_native_msl_debug_validation) {
+      compile_options->setEnableLogging(true);
+      compile_options->setPreserveInvariance(true);
+    }
+    compile_options->setOptimizationLevel(MTL::LibraryOptimizationLevelDefault);
+  }
+
+  auto library_start = std::chrono::steady_clock::now();
+  native_depth_only_pixel_library_ =
+      device_->newLibrary(source_string, compile_options, &error);
+  auto library_end = std::chrono::steady_clock::now();
+  if (compile_options) {
+    compile_options->release();
+  }
+  RecordLibraryCreation(std::strlen(kNativeDepthOnlyPs),
+                        native_depth_only_pixel_library_ != nullptr,
+                        ElapsedMs(library_start, library_end));
+
+  if (!native_depth_only_pixel_library_) {
+    XELOGE("Native depth-only PS: MSL compile failed: {}",
+           error ? error->localizedDescription()->utf8String()
+                 : "unknown error");
+    return false;
+  }
+  if (error) {
+    XELOGW("Native depth-only PS: MSL compile diagnostics: {}",
+           error->localizedDescription()->utf8String());
+  }
+
+  native_depth_only_pixel_function_name_ = "xe_native_depth_only_ps";
+  NS::String* function_name = NS::String::string(
+      native_depth_only_pixel_function_name_.c_str(), NS::UTF8StringEncoding);
+  MTL::Function* function =
+      native_depth_only_pixel_library_->newFunction(function_name);
+  if (!function) {
+    XELOGE("Native depth-only PS: missing function");
+    return false;
+  }
+  function->release();
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Shader modification selection
 // ---------------------------------------------------------------------------
@@ -1849,11 +2237,16 @@ bool MetalPipelineCache::EnsureDepthOnlyPixelShader() {
 DxbcShaderTranslator::Modification
 MetalPipelineCache::GetCurrentVertexShaderModification(
     const Shader& shader, Shader::HostVertexShaderType host_vertex_shader_type,
-    uint32_t interpolator_mask) const {
+    uint32_t interpolator_mask, bool native_guest_allowed) const {
   const auto& regs = register_file_;
+  const ShaderTranslator* modification_translator = shader_translator_.get();
+  if (native_guest_allowed && NativeGuestMslRenderEnabled() &&
+      native_msl_translator_) {
+    modification_translator = native_msl_translator_.get();
+  }
 
   DxbcShaderTranslator::Modification modification(
-      shader_translator_->GetDefaultVertexShaderModification(
+      modification_translator->GetDefaultVertexShaderModification(
           shader.GetDynamicAddressableRegisterCount(
               regs.Get<reg::SQ_PROGRAM_CNTL>().vs_num_reg),
           host_vertex_shader_type));
@@ -1881,11 +2274,17 @@ MetalPipelineCache::GetCurrentVertexShaderModification(
 DxbcShaderTranslator::Modification
 MetalPipelineCache::GetCurrentPixelShaderModification(
     const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
-    reg::RB_DEPTHCONTROL normalized_depth_control) const {
+    reg::RB_DEPTHCONTROL normalized_depth_control,
+    bool native_guest_allowed) const {
   const auto& regs = register_file_;
+  const ShaderTranslator* modification_translator = shader_translator_.get();
+  if (native_guest_allowed && NativeGuestMslRenderEnabled() &&
+      native_msl_translator_) {
+    modification_translator = native_msl_translator_.get();
+  }
 
   DxbcShaderTranslator::Modification modification(
-      shader_translator_->GetDefaultPixelShaderModification(
+      modification_translator->GetDefaultPixelShaderModification(
           shader.GetDynamicAddressableRegisterCount(
               regs.Get<reg::SQ_PROGRAM_CNTL>().ps_num_reg)));
 
@@ -1968,14 +2367,43 @@ MetalPipelineCache::BuildPipelineDescription(
     PipelineKind kind, MetalShader::MetalTranslation* vertex_translation,
     MetalShader::MetalTranslation* pixel_translation,
     const PipelineAttachmentFormats& attachment_formats,
-    const PipelineRenderingKey& rendering_key) const {
+    const PipelineRenderingKey& rendering_key,
+    bool force_native_msl_backend) const {
   MetalPipelineDescription desc = {};
   desc.kind = uint32_t(kind);
   desc.vertex_shader_hash = vertex_translation->shader().ucode_data_hash();
-  desc.vertex_shader_modification = vertex_translation->modification();
+  desc.vertex_shader_modification = vertex_translation->shader_modification();
+  desc.shader_backend =
+      uint32_t(MetalShader::MetalTranslation::Backend::kMetalShaderConverter);
   if (pixel_translation) {
     desc.pixel_shader_hash = pixel_translation->shader().ucode_data_hash();
-    desc.pixel_shader_modification = pixel_translation->modification();
+    desc.pixel_shader_modification = pixel_translation->shader_modification();
+  }
+  if (force_native_msl_backend ||
+      (vertex_translation->is_native_msl() &&
+       (!pixel_translation || pixel_translation->is_native_msl()))) {
+    desc.shader_backend =
+        uint32_t(MetalShader::MetalTranslation::Backend::kNativeMsl);
+    desc.vertex_shader_native_msl_texture_sign_key =
+        vertex_translation->native_msl_texture_sign_key();
+    std::memcpy(desc.vertex_shader_native_msl_texture_sign_component_masks,
+                vertex_translation->native_msl_texture_sign_component_masks()
+                    .data(),
+                xenos::kTextureFetchConstantCount);
+    std::memcpy(desc.vertex_shader_native_msl_texture_sign_values,
+                vertex_translation->native_msl_texture_sign_values().data(),
+                xenos::kTextureFetchConstantCount);
+    if (pixel_translation) {
+      desc.pixel_shader_native_msl_texture_sign_key =
+          pixel_translation->native_msl_texture_sign_key();
+      std::memcpy(desc.pixel_shader_native_msl_texture_sign_component_masks,
+                  pixel_translation->native_msl_texture_sign_component_masks()
+                      .data(),
+                  xenos::kTextureFetchConstantCount);
+      std::memcpy(desc.pixel_shader_native_msl_texture_sign_values,
+                  pixel_translation->native_msl_texture_sign_values().data(),
+                  xenos::kTextureFetchConstantCount);
+    }
   }
   desc.sample_count = attachment_formats.sample_count;
   desc.depth_format = uint32_t(attachment_formats.depth_format);
@@ -1995,10 +2423,11 @@ MetalPipelineCache::BuildStandardPipelineDescription(
     MetalShader::MetalTranslation* vertex_translation,
     MetalShader::MetalTranslation* pixel_translation,
     const PipelineAttachmentFormats& attachment_formats,
-    const PipelineRenderingKey& rendering_key) const {
+    const PipelineRenderingKey& rendering_key,
+    bool force_native_msl_backend) const {
   return BuildPipelineDescription(PipelineKind::kStandard, vertex_translation,
                                   pixel_translation, attachment_formats,
-                                  rendering_key);
+                                  rendering_key, force_native_msl_backend);
 }
 
 MetalPipelineCache::MetalPipelineDescription
@@ -2031,6 +2460,29 @@ MetalPipelineCache::BuildTessellationPipelineDescription(
   desc.auxiliary1 = uint32_t(tessellation_mode);
   desc.auxiliary2 = uint32_t(primitive_processing_result.host_primitive_type);
   return desc;
+}
+
+MetalPipelineCache::MetalPipelineDescription
+MetalPipelineCache::BuildNativePrimitiveMeshPipelineDescription(
+    MetalShader::MetalTranslation* vertex_translation,
+    MetalShader::MetalTranslation* pixel_translation,
+    NativeMeshPipelineType mesh_type,
+    const PipelineAttachmentFormats& attachment_formats,
+    const PipelineRenderingKey& rendering_key) const {
+  return BuildPipelineDescription(
+      NativePrimitiveMeshPipelineKindForType(mesh_type), vertex_translation,
+      pixel_translation, attachment_formats, rendering_key);
+}
+
+MetalPipelineCache::MetalPipelineDescription
+MetalPipelineCache::BuildNativeRectangleMeshPipelineDescription(
+    MetalShader::MetalTranslation* vertex_translation,
+    MetalShader::MetalTranslation* pixel_translation,
+    const PipelineAttachmentFormats& attachment_formats,
+    const PipelineRenderingKey& rendering_key) const {
+  return BuildNativePrimitiveMeshPipelineDescription(
+      vertex_translation, pixel_translation,
+      NativeMeshPipelineType::kRectangleList, attachment_formats, rendering_key);
 }
 
 void MetalPipelineCache::QueueStoredShader(MetalShader& shader) {
@@ -2080,10 +2532,83 @@ bool MetalPipelineCache::EnsureDxbcTranslationReadyLocked(
   return true;
 }
 
+bool MetalPipelineCache::IsDxbcToDxilConverterAvailable() const {
+  return dxbc_to_dxil_converter_ && dxbc_to_dxil_converter_->IsAvailable();
+}
+
+void MetalPipelineCache::LogHelperDxilUnavailableOnce(uint64_t key,
+                                                      const char* stage_name,
+                                                      uint64_t shader_hash) {
+  {
+    std::lock_guard<std::mutex> lock(helper_dxil_unavailable_log_mutex_);
+    if (!helper_dxil_unavailable_log_keys_.insert(key).second) {
+      return;
+    }
+  }
+  if (shader_hash) {
+    XELOGE(
+        "metal_helper_msc: {} shader {:016X} requires DXBC->DXIL helper "
+        "conversion, but dxilconv is unavailable; native geometry/tess helper "
+        "emulation is not implemented yet",
+        stage_name ? stage_name : "guest", shader_hash);
+  } else {
+    XELOGE(
+        "metal_helper_msc: {} requires DXBC->DXIL helper conversion, but "
+        "dxilconv is unavailable; native geometry/tess helper emulation is not "
+        "implemented yet",
+        stage_name ? stage_name : "generated helper stage");
+  }
+}
+
 bool MetalPipelineCache::EnsureDxilTranslationReady(
-    MetalShader::MetalTranslation* translation, const char* stage_name) {
+    MetalShader::MetalTranslation* translation, const char* stage_name,
+    bool helper_stage_pipeline) {
   if (!translation) {
     return true;
+  }
+  Shader& shader = translation->shader();
+  if (!shader.is_ucode_analyzed()) {
+    shader.AnalyzeUcode(ucode_disasm_buffer());
+  }
+  if (helper_stage_pipeline && NativeGuestMslRenderEnabled() &&
+      !cvars::metal_native_msl_helper_msc) {
+    XELOGE(
+        "metal_helper_msc: {} shader {:016X} reached DXIL preparation for a "
+        "geometry/tess helper pipeline, but the temporary MSC helper island is "
+        "disabled and native helper emulation is not implemented yet",
+        stage_name ? stage_name : "guest", shader.ucode_data_hash());
+    return false;
+  }
+  if (helper_stage_pipeline && NativeGuestMslRenderEnabled() &&
+      !IsDxbcToDxilConverterAvailable()) {
+    const uint64_t stage_hash =
+        stage_name ? XXH3_64bits(stage_name, std::strlen(stage_name)) : 0;
+    const uint64_t key_data[] = {
+        uint64_t(reinterpret_cast<uintptr_t>(translation)), stage_hash};
+    LogHelperDxilUnavailableOnce(
+        XXH3_64bits(key_data, sizeof(key_data)), stage_name,
+        shader.ucode_data_hash());
+    return false;
+  }
+  const uint32_t memexport_eM_mask =
+      uint32_t(shader.memexport_eM_written()) |
+      uint32_t(shader.memexport_eM_potentially_written_before_end());
+  if (memexport_eM_mask && NativeGuestMslRenderEnabled()) {
+    if (helper_stage_pipeline) {
+      XELOGE(
+          "metal_helper_msc: {} shader {:016X} uses memexport (eM mask "
+          "0x{:02X}); the temporary geometry/tess MSC helper island cannot "
+          "translate memexport until the helper object/mesh path is native MSL",
+          stage_name ? stage_name : "guest", shader.ucode_data_hash(),
+          memexport_eM_mask);
+      return false;
+    }
+    XELOGE(
+        "metal_native_msl_render: {} shader {:016X} uses memexport (eM mask "
+        "0x{:02X}); standard guest memexport must stay on the native MSL path",
+        stage_name ? stage_name : "guest", shader.ucode_data_hash(),
+        memexport_eM_mask);
+    return false;
   }
   if (!translation->GetDxilDataCopy().empty()) {
     return true;
@@ -2092,6 +2617,7 @@ bool MetalPipelineCache::EnsureDxilTranslationReady(
   if (!translation->GetDxilDataCopy().empty()) {
     return true;
   }
+
   if (!EnsureDxbcTranslationReadyLocked(translation, stage_name)) {
     return false;
   }
@@ -2108,15 +2634,251 @@ bool MetalPipelineCache::EnsureDxilTranslationReady(
   return true;
 }
 
-bool MetalPipelineCache::EnsureMetalTranslationReady(
-    MetalShader::MetalTranslation* translation) {
+bool MetalPipelineCache::TryCompileNativeMslForDiagnostics(
+    MetalShader::MetalTranslation* translation, const char* stage_name) {
+  if (!translation || !native_msl_translator_) {
+    return true;
+  }
+  if (!translation->TryClaimNativeMslAttempt()) {
+    return true;
+  }
+
+  if (cvars::async_shader_compilation && !creation_threads_.empty()) {
+    PipelineCreationRequest request = {};
+    request.type = PipelineCreationRequest::Type::kNativeMslDiagnostics;
+    request.native_msl_translation = translation;
+    request.native_msl_stage_name = stage_name;
+    request.priority = 0;
+    {
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
+      creation_queue_.push(request);
+    }
+    creation_request_cond_.notify_one();
+    return true;
+  }
+
+  return CompileNativeMslForDiagnostics(translation, stage_name);
+}
+
+bool MetalPipelineCache::CompileNativeMslForDiagnostics(
+    MetalShader::MetalTranslation* translation, const char* stage_name) {
+  if (!translation || !native_msl_translator_) {
+    return true;
+  }
+
+  Shader& shader = translation->shader();
+  MetalShader::MetalTranslation native_translation(
+      static_cast<MetalShader&>(shader), translation->modification());
+  const uint64_t shader_hash = shader.ucode_data_hash();
+  uint64_t translate_us = 0;
+  std::string source;
+  std::string entry_point_name;
+  DxbcShader::TranslationMetadata native_metadata = {};
+  size_t source_size = 0;
+  {
+    std::lock_guard<std::mutex> lock(shader_translation_mutex_);
+    if (!shader.is_ucode_analyzed()) {
+      shader.AnalyzeUcode(ucode_disasm_buffer());
+    }
+
+    const auto translate_start = std::chrono::steady_clock::now();
+    bool translated =
+        native_msl_translator_->TranslateAnalyzedShader(native_translation);
+    const auto translate_end = std::chrono::steady_clock::now();
+    translate_us =
+        uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                     translate_end - translate_start)
+                     .count());
+    if (!translated) {
+      XELOGW(
+          "metal_native_msl: {} shader {:016X} native MSL translation failed "
+          "after {} us; {}",
+          stage_name ? stage_name : "guest", shader_hash, translate_us,
+          cvars::metal_native_msl_fallback_to_msc ? "using DXIL/MSC"
+                                                  : "native fallback disabled");
+      return cvars::metal_native_msl_fallback_to_msc;
+    }
+
+    const std::vector<uint8_t>& source_bytes =
+        native_translation.translated_binary();
+    source.assign(source_bytes.begin(), source_bytes.end());
+    source_size = source_bytes.size();
+    entry_point_name = native_msl_translator_->GetEntryPointName();
+    native_metadata = native_msl_translator_->GetNativeMetadata();
+  }
+
+  uint64_t library_ms = 0;
+  bool library_created = false;
+  bool library_cache_hit = false;
+  const auto compile_start = std::chrono::steady_clock::now();
+  bool installed = native_translation.InstallNativeMslSource(
+      device_, source, entry_point_name, native_metadata, &library_ms,
+      &library_created, &library_cache_hit);
+  const auto compile_end = std::chrono::steady_clock::now();
+  const uint64_t compile_us =
+      uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                   compile_end - compile_start)
+                   .count());
+  if (library_created) {
+    RecordLibraryCreation(source_size, installed, library_ms);
+  }
+  if (!installed) {
+    XELOGW(
+        "metal_native_msl: {} shader {:016X} native MSL compile failed "
+        "after {} us; {}",
+        stage_name ? stage_name : "guest", shader_hash, compile_us,
+        cvars::metal_native_msl_fallback_to_msc ? "using DXIL/MSC"
+                                                : "native fallback disabled");
+    return cvars::metal_native_msl_fallback_to_msc;
+  }
+
+  XELOGI(
+      "metal_native_msl: {} shader {:016X} compile-only success "
+      "translate_us={} compile_us={} source_bytes={} library_cache_hit={}",
+      stage_name ? stage_name : "guest", shader_hash, translate_us, compile_us,
+      source_size, library_cache_hit);
+  return true;
+}
+
+bool MetalPipelineCache::EnsureNativeMslTranslationReady(
+    MetalShader::MetalTranslation* translation, const char* stage_name) {
   if (!translation) {
     return true;
   }
   if (translation->is_valid()) {
+    if (!translation->is_native_msl()) {
+      XELOGE(
+          "metal_native_msl: {} shader {:016X} was already compiled through "
+          "the DXIL/MSC backend",
+          stage_name ? stage_name : "guest",
+          translation->shader().ucode_data_hash());
+      return false;
+    }
     return true;
   }
-  if (!EnsureDxilTranslationReady(translation, "guest")) {
+  if (!native_msl_translator_) {
+    XELOGE("metal_native_msl: native MSL translator is not initialized");
+    return false;
+  }
+
+  uint64_t translate_us = 0;
+  uint64_t shader_hash = 0;
+  std::string source;
+  std::string entry_point_name;
+  DxbcShader::TranslationMetadata native_metadata = {};
+  size_t source_size = 0;
+  {
+    std::lock_guard<std::mutex> lock(shader_translation_mutex_);
+    if (translation->is_valid()) {
+      return translation->is_native_msl();
+    }
+
+    Shader& shader = translation->shader();
+    shader_hash = shader.ucode_data_hash();
+    if (!shader.is_ucode_analyzed()) {
+      shader.AnalyzeUcode(ucode_disasm_buffer());
+    }
+
+    const auto translate_start = std::chrono::steady_clock::now();
+    bool translated =
+        native_msl_translator_->TranslateAnalyzedShader(*translation);
+    const auto translate_end = std::chrono::steady_clock::now();
+    translate_us =
+        uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                     translate_end - translate_start)
+                     .count());
+    if (!translated) {
+      XELOGE(
+          "metal_native_msl: {} shader {:016X} native MSL translation failed "
+          "after {} us",
+          stage_name ? stage_name : "guest", shader_hash, translate_us);
+      return false;
+    }
+
+    const std::vector<uint8_t>& source_bytes = translation->translated_binary();
+    source.assign(source_bytes.begin(), source_bytes.end());
+    source_size = source_bytes.size();
+    entry_point_name = native_msl_translator_->GetEntryPointName();
+    native_metadata = native_msl_translator_->GetNativeMetadata();
+  }
+
+  uint64_t library_ms = 0;
+  bool library_created = false;
+  bool library_cache_hit = false;
+  const auto compile_start = std::chrono::steady_clock::now();
+  bool installed = translation->InstallNativeMslSource(
+      device_, source, entry_point_name, native_metadata, &library_ms,
+      &library_created, &library_cache_hit);
+  const auto compile_end = std::chrono::steady_clock::now();
+  const uint64_t compile_us =
+      uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                   compile_end - compile_start)
+                   .count());
+  if (library_created) {
+    RecordLibraryCreation(source_size, installed, library_ms);
+  }
+  if (!installed) {
+    XELOGE(
+        "metal_native_msl: {} shader {:016X} native MSL compile failed "
+        "after {} us",
+        stage_name ? stage_name : "guest", shader_hash, compile_us);
+    return false;
+  }
+
+  XELOGI(
+      "metal_native_msl: {} shader {:016X} native render translation ready "
+      "translate_us={} compile_us={} source_bytes={} library_cache_hit={}",
+      stage_name ? stage_name : "guest", shader_hash, translate_us, compile_us,
+      source_size, library_cache_hit);
+  return true;
+}
+
+bool MetalPipelineCache::EnsureMetalTranslationReady(
+    MetalShader::MetalTranslation* translation, bool native_guest_allowed,
+    const char* stage_name, bool helper_stage_pipeline) {
+  if (!translation) {
+    return true;
+  }
+  if (translation->is_valid()) {
+    if (helper_stage_pipeline && translation->is_native_msl()) {
+      XELOGE(
+          "metal_helper_msc: {} shader {:016X} is native MSL, but geometry/"
+          "tess helper pipelines currently require the MSC helper ABI",
+          stage_name ? stage_name : "guest",
+          translation->shader().ucode_data_hash());
+      return false;
+    }
+    if (native_guest_allowed && NativeGuestMslRenderEnabled() &&
+        !translation->is_native_msl()) {
+      XELOGE(
+          "metal_native_msl_render: guest shader {:016X} was already "
+          "compiled through the MSC backend",
+          translation->shader().ucode_data_hash());
+      return false;
+    }
+    return true;
+  }
+
+  if (native_guest_allowed && NativeGuestMslRenderEnabled()) {
+    return EnsureNativeMslTranslationReady(translation, stage_name);
+  }
+
+  // Helper/system stages still use DXIL -> Metal Shader Converter until the
+  // remaining generated pipelines are ported to native MSL too.
+
+  if (helper_stage_pipeline && NativeGuestMslRenderEnabled() &&
+      !cvars::metal_native_msl_helper_msc) {
+    XELOGE(
+        "metal_helper_msc: {} shader {:016X} reached a geometry/tess helper "
+        "pipeline, but the temporary MSC helper island is disabled and native "
+        "helper emulation is not implemented yet",
+        stage_name ? stage_name : "guest",
+        translation->shader().ucode_data_hash());
+    return false;
+  }
+
+  if (!EnsureDxilTranslationReady(translation, stage_name,
+                                  helper_stage_pipeline)) {
     return false;
   }
 
@@ -2162,15 +2924,6 @@ bool MetalPipelineCache::EnsureMetalTranslationReady(
   return true;
 }
 
-bool MetalPipelineCache::EnsureDxbcTranslationReady(
-    MetalShader::MetalTranslation* translation, const char* stage_name) {
-  if (!translation) {
-    return true;
-  }
-  std::lock_guard<std::mutex> lock(shader_translation_mutex_);
-  return EnsureDxbcTranslationReadyLocked(translation, stage_name);
-}
-
 MetalPipelineCache::PipelineHandle*
 MetalPipelineCache::GetOrCreatePipelineState(
     MetalShader::MetalTranslation* vertex_translation,
@@ -2181,13 +2934,47 @@ MetalPipelineCache::GetOrCreatePipelineState(
     XELOGE("No vertex shader translation");
     return nullptr;
   }
+  const bool requires_native_msl = NativeGuestMslRenderEnabled();
+  if (requires_native_msl && !native_msl_translator_) {
+    XELOGE(
+        "metal_native_msl_render: standard guest pipeline requires native MSL, "
+        "but the native MSL translator is unavailable");
+    return nullptr;
+  }
+  const bool async_native_msl =
+      requires_native_msl && cvars::async_shader_compilation &&
+      !creation_threads_.empty();
+  if (native_msl_translator_) {
+    if (requires_native_msl) {
+      if (!async_native_msl) {
+        bool native_ready =
+            EnsureNativeMslTranslationReady(vertex_translation, "vertex") &&
+            EnsureNativeMslTranslationReady(pixel_translation, "pixel");
+        if (!native_ready) {
+          return nullptr;
+        }
+      }
+    } else {
+      if (!TryCompileNativeMslForDiagnostics(vertex_translation, "vertex")) {
+        return nullptr;
+      }
+      if (pixel_translation &&
+          !TryCompileNativeMslForDiagnostics(pixel_translation, "pixel")) {
+        return nullptr;
+      }
+    }
+  }
   MetalPipelineDescription description = BuildStandardPipelineDescription(
-      vertex_translation, pixel_translation, attachment_formats, rendering_key);
+      vertex_translation, pixel_translation, attachment_formats, rendering_key,
+      requires_native_msl);
   uint64_t key = XXH3_64bits(&description, sizeof(description));
 
   // Check cache.
   auto it = pipeline_cache_.find(key);
   if (it != pipeline_cache_.end()) {
+    if (it->second->creation_failed.load(std::memory_order_acquire)) {
+      return nullptr;
+    }
     return it->second.get();
   }
 
@@ -2209,9 +2996,13 @@ MetalPipelineCache::GetOrCreatePipelineState(
 
   // Async path: enqueue for background compilation.
   if (cvars::async_shader_compilation && !creation_threads_.empty()) {
+    PipelineCreationRequest request = {};
+    request.type = PipelineCreationRequest::Type::kPipeline;
+    request.handle = raw_handle;
+    request.priority = raw_handle->priority;
     {
       std::lock_guard<std::mutex> lock(creation_request_lock_);
-      creation_queue_.push(PipelineCreationRequest{raw_handle});
+      creation_queue_.push(request);
     }
     creation_request_cond_.notify_one();
     return raw_handle;
@@ -2224,6 +3015,7 @@ MetalPipelineCache::GetOrCreatePipelineState(
   raw_handle->pending_pixel_translation = nullptr;
 
   if (!pipeline) {
+    raw_handle->creation_failed.store(true, std::memory_order_release);
     return nullptr;
   }
 
@@ -2245,7 +3037,6 @@ MetalPipelineCache::GetOrCreatePipelineState(
 
 MTL::RenderPipelineState* MetalPipelineCache::CreatePipelineFromHandle(
     const PipelineHandle* handle) {
-  ScopedAutoreleasePool autorelease_pool;
   MetalShader::MetalTranslation* vertex_translation =
       handle->pending_vertex_translation;
   MetalShader::MetalTranslation* pixel_translation =
@@ -2448,10 +3239,21 @@ void MetalPipelineCache::CreationThread(size_t thread_index) {
     pool->drain();
     pool = NS::AutoreleasePool::alloc()->init();
 
+    if (request.type ==
+        PipelineCreationRequest::Type::kNativeMslDiagnostics) {
+      CompileNativeMslForDiagnostics(request.native_msl_translation,
+                                     request.native_msl_stage_name);
+      --creation_threads_busy_;
+      continue;
+    }
+
     // Create the pipeline.
     PipelineHandle* handle = request.handle;
     MTL::RenderPipelineState* pipeline = CreatePipelineFromHandle(handle);
     handle->state.store(pipeline, std::memory_order_release);
+    if (!pipeline) {
+      handle->creation_failed.store(true, std::memory_order_release);
+    }
     if (pipeline && handle->storage_write_pending) {
       if (handle->pending_vertex_translation) {
         QueueStoredShader(static_cast<MetalShader&>(
@@ -2708,6 +3510,181 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
 }
 
 // ---------------------------------------------------------------------------
+// GetOrCreateNativeMslPrimitiveMeshPipelineState
+// ---------------------------------------------------------------------------
+
+MetalPipelineCache::NativeMeshPipelineState*
+MetalPipelineCache::GetOrCreateNativeMslPrimitiveMeshPipelineState(
+    MetalShader::MetalTranslation* vertex_translation,
+    MetalShader::MetalTranslation* pixel_translation,
+    NativeMeshPipelineType mesh_type,
+    const PipelineAttachmentFormats& attachment_formats,
+    const PipelineRenderingKey& rendering_key) {
+  const char* mesh_label = NativePrimitiveMeshLabel(mesh_type);
+  const char* mesh_entry_point = NativePrimitiveMeshEntryPoint(mesh_type);
+  if (!vertex_translation || !vertex_translation->is_native_msl() ||
+      !vertex_translation->metal_library()) {
+    XELOGE("Native {} mesh pipeline requires a native MSL vertex shader",
+           mesh_label);
+    return nullptr;
+  }
+  if (pixel_translation && (!pixel_translation->is_native_msl() ||
+                            !pixel_translation->metal_function())) {
+    XELOGE("Native {} mesh pipeline requires a native MSL pixel shader",
+           mesh_label);
+    return nullptr;
+  }
+
+  bool use_fallback_pixel_shader = (pixel_translation == nullptr);
+  MTL::Function* pixel_function =
+      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_function();
+  if (use_fallback_pixel_shader) {
+    if (cvars::metal_native_msl_render) {
+      // Mesh render pipelines still require a fragment function. Keep the
+      // no-guest-PS case native so primitive expansion does not touch the
+      // generated helper island.
+      if (!EnsureNativeDepthOnlyPixelShader()) {
+        XELOGE(
+            "Native {} mesh pipeline: failed to create native depth-only PS",
+            mesh_label);
+        return nullptr;
+      }
+      NS::String* fallback_name = NS::String::string(
+          native_depth_only_pixel_function_name_.c_str(),
+          NS::UTF8StringEncoding);
+      pixel_function =
+          native_depth_only_pixel_library_->newFunction(fallback_name);
+      if (!pixel_function) {
+        XELOGE(
+            "Native {} mesh pipeline: missing native depth-only PS function",
+            mesh_label);
+        return nullptr;
+      }
+    } else {
+      if (!EnsureDepthOnlyPixelShader()) {
+        XELOGE("Native {} mesh pipeline: failed to create depth-only PS",
+               mesh_label);
+        return nullptr;
+      }
+      NS::String* fallback_name = NS::String::string(
+          depth_only_pixel_function_name_.c_str(), NS::UTF8StringEncoding);
+      pixel_function = depth_only_pixel_library_->newFunction(fallback_name);
+      if (!pixel_function) {
+        XELOGE("Native {} mesh pipeline: missing depth-only PS function",
+               mesh_label);
+        return nullptr;
+      }
+    }
+  }
+
+  MetalPipelineDescription description =
+      BuildNativePrimitiveMeshPipelineDescription(
+          vertex_translation, pixel_translation, mesh_type, attachment_formats,
+          rendering_key);
+  uint64_t key = XXH3_64bits(&description, sizeof(description));
+  auto it = native_mesh_pipeline_cache_.find(key);
+  if (it != native_mesh_pipeline_cache_.end()) {
+    if (use_fallback_pixel_shader && pixel_function) {
+      pixel_function->release();
+    }
+    return &it->second;
+  }
+
+  NS::String* mesh_name =
+      NS::String::string(mesh_entry_point, NS::UTF8StringEncoding);
+  MTL::Function* mesh_function =
+      vertex_translation->metal_library()->newFunction(mesh_name);
+  if (!mesh_function) {
+    XELOGE(
+        "Native {} mesh pipeline: vertex shader {:016X} does not export {}",
+        mesh_label, vertex_translation->shader().ucode_data_hash(),
+        mesh_entry_point);
+    if (use_fallback_pixel_shader && pixel_function) {
+      pixel_function->release();
+    }
+    return nullptr;
+  }
+
+  MTL::MeshRenderPipelineDescriptor* desc =
+      MTL::MeshRenderPipelineDescriptor::alloc()->init();
+  desc->setMeshFunction(mesh_function);
+  if (pixel_function) {
+    desc->setFragmentFunction(pixel_function);
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    desc->colorAttachments()->object(i)->setPixelFormat(
+        attachment_formats.color_formats[i]);
+  }
+  desc->setDepthAttachmentPixelFormat(attachment_formats.depth_format);
+  desc->setStencilAttachmentPixelFormat(attachment_formats.stencil_format);
+  desc->setRasterSampleCount(attachment_formats.sample_count);
+  desc->setAlphaToCoverageEnabled(false);
+  desc->setMaxTotalThreadsPerMeshThreadgroup(1);
+  desc->setRequiredThreadsPerMeshThreadgroup(MTL::Size::Make(1, 1, 1));
+
+  ApplyBlendStateToDescriptor(desc->colorAttachments(),
+                              rendering_key.normalized_color_mask,
+                              rendering_key.blendcontrol);
+
+  {
+    std::lock_guard<std::mutex> lock(pipeline_binary_archive_mutex_);
+    if (pipeline_binary_archive_) {
+      NS::Array* archives = NS::Array::array(pipeline_binary_archive_);
+      desc->setBinaryArchives(archives);
+      NS::Error* archive_error = nullptr;
+      if (pipeline_binary_archive_->addMeshRenderPipelineFunctions(
+              desc, &archive_error)) {
+        pipeline_binary_archive_dirty_ = true;
+      }
+    }
+  }
+
+  NS::Error* error = nullptr;
+  auto pipeline_start = std::chrono::steady_clock::now();
+  MTL::RenderPipelineState* pipeline = device_->newRenderPipelineState(
+      desc, MTL::PipelineOptionNone, nullptr, &error);
+  auto pipeline_end = std::chrono::steady_clock::now();
+  RecordRenderPipelineCreation(pipeline != nullptr,
+                               ElapsedMs(pipeline_start, pipeline_end));
+  desc->release();
+  mesh_function->release();
+  if (use_fallback_pixel_shader && pixel_function) {
+    pixel_function->release();
+  }
+
+  if (!pipeline) {
+    XELOGE("Failed to create native {} mesh pipeline state: {}", mesh_label,
+           error ? error->localizedDescription()->utf8String()
+                 : "unknown error");
+    LogMetalErrorDetails("Native primitive mesh pipeline error", error);
+    return nullptr;
+  }
+
+  NativeMeshPipelineState state;
+  state.pipeline = pipeline;
+  state.type = mesh_type;
+  auto [inserted_it, inserted] =
+      native_mesh_pipeline_cache_.emplace(key, std::move(state));
+  QueueStoredShader(static_cast<MetalShader&>(vertex_translation->shader()));
+  if (pixel_translation) {
+    QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
+  }
+  QueueStoredPipeline(description, key);
+  return &inserted_it->second;
+}
+
+MetalPipelineCache::NativeMeshPipelineState*
+MetalPipelineCache::GetOrCreateNativeMslRectanglePipelineState(
+    MetalShader::MetalTranslation* vertex_translation,
+    MetalShader::MetalTranslation* pixel_translation,
+    const PipelineAttachmentFormats& attachment_formats,
+    const PipelineRenderingKey& rendering_key) {
+  return GetOrCreateNativeMslPrimitiveMeshPipelineState(
+      vertex_translation, pixel_translation,
+      NativeMeshPipelineType::kRectangleList, attachment_formats, rendering_key);
+}
+
+// ---------------------------------------------------------------------------
 // GetOrCreateTessellationPipelineState
 // ---------------------------------------------------------------------------
 
@@ -2948,6 +3925,7 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
   state.pipeline = pipeline;
   state.config = ir_desc.pipelineConfig;
   state.primitive = geometry_primitive;
+  state.control_point_count = ir_desc.pipelineConfig.hsInputControlPointCount;
 
   auto [inserted_it, inserted] =
       tessellation_pipeline_cache_.emplace(key, std::move(state));
@@ -2962,6 +3940,177 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
   QueueStoredPipeline(
       stored_description,
       XXH3_64bits(&stored_description, sizeof(stored_description)));
+  return &inserted_it->second;
+}
+
+MetalPipelineCache::TessellationPipelineState*
+MetalPipelineCache::GetOrCreateNativeMslTessellationPipelineState(
+    MetalShader::MetalTranslation* domain_translation,
+    MetalShader::MetalTranslation* pixel_translation,
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+    const PipelineAttachmentFormats& attachment_formats,
+    const PipelineRenderingKey& rendering_key) {
+  if (!domain_translation || !domain_translation->is_native_msl() ||
+      !domain_translation->metal_library()) {
+    XELOGE(
+        "Native tessellation pipeline requires a native MSL domain shader");
+    return nullptr;
+  }
+  if (pixel_translation && (!pixel_translation->is_native_msl() ||
+                            !pixel_translation->metal_function())) {
+    XELOGE("Native tessellation pipeline requires a native MSL pixel shader");
+    return nullptr;
+  }
+
+  MetalPipelineDescription description = BuildPipelineDescription(
+      PipelineKind::kNativeTessellationMesh, domain_translation,
+      pixel_translation, attachment_formats, rendering_key);
+  description.auxiliary0 =
+      uint32_t(primitive_processing_result.host_vertex_shader_type);
+  description.auxiliary1 =
+      uint32_t(primitive_processing_result.tessellation_mode);
+  description.auxiliary2 =
+      uint32_t(primitive_processing_result.host_primitive_type);
+  uint64_t key = XXH3_64bits(&description, sizeof(description));
+  auto it = tessellation_pipeline_cache_.find(key);
+  if (it != tessellation_pipeline_cache_.end()) {
+    return &it->second;
+  }
+
+  const uint32_t control_point_count =
+      NativeMslTessellationControlPointCount(primitive_processing_result);
+  if (!control_point_count) {
+    XELOGE("Native tessellation pipeline: unsupported host vertex shader type {}",
+           uint32_t(primitive_processing_result.host_vertex_shader_type));
+    return nullptr;
+  }
+
+  bool use_fallback_pixel_shader = (pixel_translation == nullptr);
+  MTL::Function* pixel_function =
+      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_function();
+  if (use_fallback_pixel_shader) {
+    if (!EnsureNativeDepthOnlyPixelShader()) {
+      XELOGE(
+          "Native tessellation pipeline: failed to create native depth-only "
+          "PS");
+      return nullptr;
+    }
+    NS::String* fallback_name = NS::String::string(
+        native_depth_only_pixel_function_name_.c_str(), NS::UTF8StringEncoding);
+    pixel_function = native_depth_only_pixel_library_->newFunction(
+        fallback_name);
+    if (!pixel_function) {
+      XELOGE(
+          "Native tessellation pipeline: missing native depth-only PS "
+          "function");
+      return nullptr;
+    }
+  }
+
+  NS::String* object_name =
+      NS::String::string("main_tess_object", NS::UTF8StringEncoding);
+  MTL::Function* object_function =
+      domain_translation->metal_library()->newFunction(object_name);
+  if (!object_function) {
+    XELOGE(
+        "Native tessellation pipeline: domain shader {:016X} does not export "
+        "main_tess_object",
+        domain_translation->shader().ucode_data_hash());
+    if (use_fallback_pixel_shader && pixel_function) {
+      pixel_function->release();
+    }
+    return nullptr;
+  }
+
+  NS::String* mesh_name =
+      NS::String::string("main_tess_mesh", NS::UTF8StringEncoding);
+  MTL::Function* mesh_function =
+      domain_translation->metal_library()->newFunction(mesh_name);
+  if (!mesh_function) {
+    XELOGE(
+        "Native tessellation pipeline: domain shader {:016X} does not export "
+        "main_tess_mesh",
+        domain_translation->shader().ucode_data_hash());
+    object_function->release();
+    if (use_fallback_pixel_shader && pixel_function) {
+      pixel_function->release();
+    }
+    return nullptr;
+  }
+
+  MTL::MeshRenderPipelineDescriptor* desc =
+      MTL::MeshRenderPipelineDescriptor::alloc()->init();
+  desc->setObjectFunction(object_function);
+  desc->setMeshFunction(mesh_function);
+  if (pixel_function) {
+    desc->setFragmentFunction(pixel_function);
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    desc->colorAttachments()->object(i)->setPixelFormat(
+        attachment_formats.color_formats[i]);
+  }
+  desc->setDepthAttachmentPixelFormat(attachment_formats.depth_format);
+  desc->setStencilAttachmentPixelFormat(attachment_formats.stencil_format);
+  desc->setRasterSampleCount(attachment_formats.sample_count);
+  desc->setAlphaToCoverageEnabled(false);
+  desc->setMaxTotalThreadsPerObjectThreadgroup(1);
+  desc->setMaxTotalThreadsPerMeshThreadgroup(1);
+  desc->setRequiredThreadsPerObjectThreadgroup(MTL::Size::Make(1, 1, 1));
+  desc->setRequiredThreadsPerMeshThreadgroup(MTL::Size::Make(1, 1, 1));
+  desc->setMaxTotalThreadgroupsPerMeshGrid(8192);
+  desc->setPayloadMemoryLength(64);
+
+  ApplyBlendStateToDescriptor(desc->colorAttachments(),
+                              rendering_key.normalized_color_mask,
+                              rendering_key.blendcontrol);
+
+  {
+    std::lock_guard<std::mutex> lock(pipeline_binary_archive_mutex_);
+    if (pipeline_binary_archive_) {
+      NS::Array* archives = NS::Array::array(pipeline_binary_archive_);
+      desc->setBinaryArchives(archives);
+      NS::Error* archive_error = nullptr;
+      if (pipeline_binary_archive_->addMeshRenderPipelineFunctions(
+              desc, &archive_error)) {
+        pipeline_binary_archive_dirty_ = true;
+      }
+    }
+  }
+
+  NS::Error* error = nullptr;
+  auto pipeline_start = std::chrono::steady_clock::now();
+  MTL::RenderPipelineState* pipeline = device_->newRenderPipelineState(
+      desc, MTL::PipelineOptionNone, nullptr, &error);
+  auto pipeline_end = std::chrono::steady_clock::now();
+  RecordRenderPipelineCreation(pipeline != nullptr,
+                               ElapsedMs(pipeline_start, pipeline_end));
+  desc->release();
+  object_function->release();
+  mesh_function->release();
+  if (use_fallback_pixel_shader && pixel_function) {
+    pixel_function->release();
+  }
+
+  if (!pipeline) {
+    XELOGE("Failed to create native tessellation pipeline state: {}",
+           error ? error->localizedDescription()->utf8String()
+                 : "unknown error");
+    LogMetalErrorDetails("Native tessellation pipeline error", error);
+    return nullptr;
+  }
+
+  TessellationPipelineState state;
+  state.pipeline = pipeline;
+  state.native_msl = true;
+  state.control_point_count = control_point_count;
+
+  auto [inserted_it, inserted] =
+      tessellation_pipeline_cache_.emplace(key, std::move(state));
+  QueueStoredShader(static_cast<MetalShader&>(domain_translation->shader()));
+  if (pixel_translation) {
+    QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
+  }
+  QueueStoredPipeline(description, key);
   return &inserted_it->second;
 }
 

@@ -41,16 +41,16 @@ class MetalSharedMemory : public SharedMemory {
   }
   void MarkGpuAccess(uint32_t start, uint32_t length,
                      uint64_t submission_index);
-  void TrackStandaloneGpuAccess(MTL::CommandBuffer* command_buffer,
-                                const std::pair<uint32_t, uint32_t>* ranges,
-                                uint32_t range_count);
+  void TrackStandaloneGpuAccess(
+      MTL::CommandBuffer* command_buffer,
+      const std::pair<uint32_t, uint32_t>* ranges, uint32_t range_count);
   struct UploadRouteInfo {
     uint64_t upload_bytes = 0;
     uint64_t direct_bytes = 0;
     uint64_t staged_bytes = 0;
   };
   UploadRouteInfo GetUploadRouteInfo(const SharedMemory::Range* ranges,
-                                     uint32_t range_count);
+                                      uint32_t range_count);
 
   // For trace dump, simplified - just make buffer available for reading
   void UseForReading() {

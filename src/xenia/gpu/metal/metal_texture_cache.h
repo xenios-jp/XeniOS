@@ -59,12 +59,16 @@ class MetalTextureCache : public TextureCache {
   // that must be marked as used by the active render encoder.
   uint32_t GetBindlessSRVIndexForBinding(
       uint32_t fetch_constant, xenos::FetchOpDimension dimension,
-      bool is_signed, MTL::Texture** texture_for_encoder_out = nullptr);
+      bool is_signed, MTL::Texture** texture_for_encoder_out = nullptr,
+      bool* is_fallback_out = nullptr,
+      const char** fallback_reason_out = nullptr);
   // Returns the persistent sampler_bindless_heap_ slot for the sampler that
   // would be created for the given binding.  Falls back to
   // null_sampler_bindless_index_ when no sampler can be resolved.
   uint32_t GetBindlessSamplerIndexForBinding(
       const DxbcShader::SamplerBinding& binding);
+  uint32_t GetNativeMslSRVIndexForBindlessIndex(uint32_t index) const;
+  uint32_t GetNativeMslSamplerIndexForBindlessIndex(uint32_t index) const;
 
   struct TextureSRVKey {
     TextureKey key;
@@ -144,12 +148,18 @@ class MetalTextureCache : public TextureCache {
   bool PrepareTextureMaterialization(const RegisterFile& regs,
                                      uint32_t used_texture_mask,
                                      TextureMaterializationPlan& plan);
+  void RefreshTextureMaterializationPlan(TextureMaterializationPlan& plan);
+  void RefreshTextureMaterializationPlans(
+      TextureMaterializationPlan* const* plans, uint32_t plan_count);
   bool ExecuteTextureMaterialization(TextureMaterializationPlan& plan);
   void BeginTextureUploadBatch();
   bool EndTextureUploadBatch();
   bool PrepareTextureDataLoadRanges(Texture** textures, uint32_t texture_count,
                                     uint64_t base_outdated_mask,
                                     uint64_t mips_outdated_mask) override;
+  void RecordTextureWatchInvalidation(const Texture& texture, bool is_mip,
+                                      TextureWatchInvalidationSource source,
+                                      uint32_t byte_count) override;
   bool RequestTextureDataRange(Texture& texture, TextureDataRangeSource source,
                                uint32_t start, uint32_t length) override;
 
@@ -181,9 +191,11 @@ class MetalTextureCache : public TextureCache {
     kCpuGuestMemory,
   };
   // GPU-based texture loading entry point. Returns true on success.
-  bool TryGpuLoadTexture(Texture& texture, bool load_base, bool load_mips,
-                         TextureLoadSourceMode source_mode =
-                             TextureLoadSourceMode::kResidentMemory);
+  bool TryGpuLoadTexture(
+      Texture& texture, bool load_base, bool load_mips,
+      TextureLoadSourceMode source_mode = TextureLoadSourceMode::kResidentMemory);
+  static uint64_t GetTextureLoadBytes(const Texture& texture, bool load_base,
+                                      bool load_mips);
   bool LoadTextureDataFromCpuGuestMemory(Texture& texture, bool load_base,
                                          bool load_mips);
   MTL::StorageMode GetCacheTextureStorageMode() const;
@@ -249,6 +261,16 @@ class MetalTextureCache : public TextureCache {
     uint32_t GetOrCreateBindlessSRVIndexAndView(
         uint32_t host_swizzle, xenos::FetchOpDimension dimension,
         bool is_signed, MTL::Texture** view_out);
+    bool MarkMaterializationPlanned(uint64_t frame) {
+      bool repeated = last_materialization_plan_frame_ == frame;
+      last_materialization_plan_frame_ = frame;
+      return repeated;
+    }
+    bool MarkMaterializationExecuted(uint64_t frame) {
+      bool repeated = last_materialization_execute_frame_ == frame;
+      last_materialization_execute_frame_ = frame;
+      return repeated;
+    }
 
    private:
     uint64_t GetViewKey(uint32_t host_swizzle,
@@ -261,6 +283,8 @@ class MetalTextureCache : public TextureCache {
 
     MetalTextureCache& texture_cache_;
     MTL::Texture* metal_texture_;
+    uint64_t last_materialization_plan_frame_ = 0;
+    uint64_t last_materialization_execute_frame_ = 0;
     uint32_t bindless_srv_index_ = UINT32_MAX;
     std::unique_ptr<MetalTexture> texture_3d_as_2d_;
     bool is_3d_as_2d_wrapper_ = false;

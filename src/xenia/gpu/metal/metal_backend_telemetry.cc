@@ -196,6 +196,136 @@ const char* MetalTextureUploadSourceFallbackReasonName(size_t reason) {
   }
 }
 
+const char* MetalTextureUploadCompatibilityClassName(size_t type) {
+  switch (type) {
+    case 0:
+      return "direct_copy_candidate";
+    case 1:
+      return "compute_required";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalTextureUploadComputeBlockerName(size_t blocker) {
+  switch (blocker) {
+    case 0:
+      return "tiled";
+    case 1:
+      return "tiled_3d";
+    case 2:
+      return "endian_swap";
+    case 3:
+      return "format_conversion";
+    case 4:
+      return "bc_decompress";
+    case 5:
+      return "scaled_resolve";
+    case 6:
+      return "packed_mips";
+    case 7:
+      return "repack_alignment";
+    case 8:
+      return "unknown";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalTextureUploadExecutionDetailName(size_t detail) {
+  switch (detail) {
+    case 0:
+      return "duplicate_planned_same_plan";
+    case 1:
+      return "fallback_already_current_lockless";
+    case 2:
+      return "cpu_source_already_current";
+    case 3:
+      return "pruned_already_current";
+    case 4:
+      return "pruned_duplicate_same_flush";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalTextureReloadReasonName(size_t reason) {
+  switch (reason) {
+    case 0:
+      return "planned_base_only";
+    case 1:
+      return "planned_mips_only";
+    case 2:
+      return "planned_base_and_mips";
+    case 3:
+      return "planned_cpu_source";
+    case 4:
+      return "planned_resident_source";
+    case 5:
+      return "planned_again_same_frame";
+    case 6:
+      return "refresh_still_needed";
+    case 7:
+      return "refresh_became_current";
+    case 8:
+      return "execute_cpu_source";
+    case 9:
+      return "execute_resident_source";
+    case 10:
+      return "execute_again_same_frame";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalTextureWatchInvalidationReasonName(size_t reason) {
+  switch (reason) {
+    case 0:
+      return "cpu_base";
+    case 1:
+      return "cpu_mips";
+    case 2:
+      return "gpu_other_base";
+    case 3:
+      return "gpu_other_mips";
+    case 4:
+      return "gpu_resolve_base";
+    case 5:
+      return "gpu_resolve_mips";
+    default:
+      return "invalid";
+  }
+}
+
+const char* MetalTextureResolveReloadReasonName(size_t reason) {
+  switch (reason) {
+    case 0:
+      return "candidate";
+    case 1:
+      return "exact_range";
+    case 2:
+      return "contained_range";
+    case 3:
+      return "partial_overlap";
+    case 4:
+      return "no_overlap";
+    case 5:
+      return "no_provenance";
+    case 6:
+      return "mips_requested";
+    case 7:
+      return "scaled_resolve";
+    case 8:
+      return "source_unknown";
+    case 9:
+      return "source_direct_host";
+    case 10:
+      return "source_render_target";
+    default:
+      return "invalid";
+  }
+}
+
 std::string MetalFormatNamedCounts(const uint64_t* values, size_t count,
                                    MetalTelemetryNameCallback name_callback) {
   std::string formatted;

@@ -68,9 +68,10 @@ bool MetalSharedMemory::Initialize() {
   upload_buffer_pool_ = std::make_unique<MetalUploadBufferPool>(
       device, xe::align(ui::GraphicsUploadBufferPool::kDefaultPageSize,
                         size_t(1) << page_size_log2()));
-  page_last_main_gpu_access_submission_.assign(kBufferSize >> page_size_log2(),
-                                               0);
-  page_standalone_gpu_access_counts_.assign(kBufferSize >> page_size_log2(), 0);
+  page_last_main_gpu_access_submission_.assign(
+      kBufferSize >> page_size_log2(), 0);
+  page_standalone_gpu_access_counts_.assign(kBufferSize >> page_size_log2(),
+                                            0);
 
   return true;
 }
@@ -103,7 +104,8 @@ void MetalSharedMemory::MarkGpuAccess(uint32_t start, uint32_t length,
       static_cast<uint32_t>(page_last_main_gpu_access_submission_.size() - 1));
   for (uint32_t page = page_first; page <= page_last; ++page) {
     page_last_main_gpu_access_submission_[page] =
-        std::max(page_last_main_gpu_access_submission_[page], submission_index);
+        std::max(page_last_main_gpu_access_submission_[page],
+                 submission_index);
   }
 }
 
@@ -172,8 +174,9 @@ MetalSharedMemory::UploadRouteInfo MetalSharedMemory::GetUploadRouteInfo(
   const uint32_t page_size = 1u << page_size_log2();
   const uint64_t completed_submission =
       command_processor_.GetCompletedSubmission();
-  const bool direct_write_enabled = ::cvars::metal_shared_memory_direct_write &&
-                                    buffer_ && buffer_->contents() != nullptr;
+  const bool direct_write_enabled =
+      ::cvars::metal_shared_memory_direct_write && buffer_ &&
+      buffer_->contents() != nullptr;
 
   std::lock_guard<std::mutex> standalone_lock(standalone_gpu_access_mutex_);
   for (uint32_t i = 0; i < range_count; ++i) {

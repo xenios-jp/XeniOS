@@ -15,9 +15,13 @@
 #include <utility>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_upload_buffer_pool.h"
+
+DECLARE_bool(metal_native_msl_expand_rectangle_lists);
+DECLARE_bool(metal_native_msl_render);
 
 namespace xe {
 namespace gpu {
@@ -32,14 +36,24 @@ MetalPrimitiveProcessor::MetalPrimitiveProcessor(
 MetalPrimitiveProcessor::~MetalPrimitiveProcessor() { Shutdown(true); }
 
 bool MetalPrimitiveProcessor::Initialize() {
-  // MSC path uses mesh shaders / geometry shaders for point sprites and
-  // rectangle lists, so no vertex-shader expansion is needed.
-  if (!InitializeCommon(true,   // full_32bit_vertex_indices_supported
-                        false,  // triangle_fans_supported (will convert)
-                        false,  // line_loops_supported (will convert)
-                        false,  // quad_lists_supported (will convert)
-                        true,   // point_sprites_without_expansion
-                        true))  // rect_lists_without_expansion
+  const bool native_msl_render = cvars::metal_native_msl_render;
+  const bool native_msl_mesh_primitive_lists =
+      native_msl_render && command_processor_.IsMeshShaderSupported();
+  const bool native_msl_expand_rectangle_lists =
+      native_msl_render && cvars::metal_native_msl_expand_rectangle_lists;
+  // Keep the legacy helper-backed path unchanged for non-native rendering. In
+  // native MSL mode, expose raw point and quad lists to IssueDraw only when the
+  // device can run Metal mesh shaders, where they are expanded by native mesh
+  // entry points. Rectangle-list policy remains controlled by the bring-up cvar:
+  // when requested, the common processor performs the existing VS expansion and
+  // IssueDraw maps that host type back onto the native rectangle mesh wrapper.
+  if (!InitializeCommon(
+          true,   // full_32bit_vertex_indices_supported
+          false,  // triangle_fans_supported (will convert)
+          false,  // line_loops_supported (will convert)
+          native_msl_mesh_primitive_lists,  // quad_lists_supported
+          !native_msl_render || native_msl_mesh_primitive_lists,
+          !native_msl_expand_rectangle_lists))  // rect expansion
   {
     Shutdown();
     return false;
@@ -49,7 +63,14 @@ bool MetalPrimitiveProcessor::Initialize() {
       std::max(size_t(kMinRequiredConvertedIndexBufferSize),
                ui::GraphicsUploadBufferPool::kDefaultPageSize));
 
-  XELOGI("MetalPrimitiveProcessor initialized (MSC path)");
+  XELOGI("MetalPrimitiveProcessor initialized ({})",
+         native_msl_render
+             ? (native_msl_mesh_primitive_lists
+                    ? "native MSL primitive mesh path"
+                    : (native_msl_expand_rectangle_lists
+                           ? "native MSL point VS expansion path"
+                           : "native MSL helper-limited path"))
+             : "MSC path");
   return true;
 }
 

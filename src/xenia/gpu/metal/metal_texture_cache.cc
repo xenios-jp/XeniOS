@@ -116,7 +116,7 @@ namespace metal {
 namespace {
 
 #if XE_PLATFORM_IOS
-constexpr uint64_t kUploadBufferPoolMaxBytes = 512ull * 1024ull * 1024ull;
+constexpr uint64_t kUploadBufferPoolMaxBytes = 128ull * 1024ull * 1024ull;
 constexpr uint64_t kScaledResolveRetiredMaxBytes = 64ull * 1024ull * 1024ull;
 #else
 constexpr uint64_t kUploadBufferPoolMaxBytes = 512ull * 1024ull * 1024ull;
@@ -273,7 +273,8 @@ bool AreDimensionsCompatible(xenos::FetchOpDimension shader_dimension,
              texture_dimension == xenos::DataDimension::k2DOrStacked ||
              texture_dimension == xenos::DataDimension::k3D;
     case xenos::FetchOpDimension::k3DOrStacked:
-      return texture_dimension == xenos::DataDimension::k3D;
+      return texture_dimension == xenos::DataDimension::k2DOrStacked ||
+             texture_dimension == xenos::DataDimension::k3D;
     case xenos::FetchOpDimension::kCube:
       return texture_dimension == xenos::DataDimension::kCube;
     default:
@@ -552,6 +553,17 @@ MetalTextureCache::MetalTextureCache(MetalCommandProcessor* command_processor,
 
 MetalTextureCache::~MetalTextureCache() { Shutdown(); }
 
+uint64_t MetalTextureCache::GetTextureLoadBytes(const Texture& texture,
+                                                bool load_base,
+                                                bool load_mips) {
+  return (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
+                                         UINT32_C(16)))
+                    : 0) +
+         (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
+                                         UINT32_C(16)))
+                    : 0);
+}
+
 MTL::StorageMode MetalTextureCache::GetCacheTextureStorageMode() const {
   if (!::cvars::metal_texture_upload_via_blit ||
       !::cvars::metal_texture_cache_use_private) {
@@ -614,10 +626,9 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
   }
   if (command_processor_) {
     if (!shared_memory_ranges.empty()) {
-      static_cast<MetalSharedMemory&>(shared_memory())
-          .TrackStandaloneGpuAccess(
-              cmd, shared_memory_ranges.data(),
-              static_cast<uint32_t>(shared_memory_ranges.size()));
+      static_cast<MetalSharedMemory&>(shared_memory()).TrackStandaloneGpuAccess(
+          cmd, shared_memory_ranges.data(),
+          static_cast<uint32_t>(shared_memory_ranges.size()));
     }
     command_processor_->CommitStandaloneAsync(cmd);
   } else {
@@ -642,10 +653,9 @@ void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
   }
   if (command_processor_) {
     if (!shared_memory_ranges.empty()) {
-      static_cast<MetalSharedMemory&>(shared_memory())
-          .TrackStandaloneGpuAccess(
-              cmd, shared_memory_ranges.data(),
-              static_cast<uint32_t>(shared_memory_ranges.size()));
+      static_cast<MetalSharedMemory&>(shared_memory()).TrackStandaloneGpuAccess(
+          cmd, shared_memory_ranges.data(),
+          static_cast<uint32_t>(shared_memory_ranges.size()));
     }
     command_processor_->CommitStandaloneAsync(cmd);
   } else {
@@ -819,6 +829,29 @@ bool MetalTextureCache::RequestTextureDataRange(Texture&,
   return false;
 }
 
+void MetalTextureCache::RecordTextureWatchInvalidation(
+    const Texture&, bool is_mip, TextureWatchInvalidationSource source,
+    uint32_t byte_count) {
+  if (!command_processor_) {
+    return;
+  }
+  using Reason = MetalCommandProcessor::TextureWatchInvalidationReason;
+  Reason reason;
+  switch (source) {
+    case TextureWatchInvalidationSource::kCpu:
+      reason = is_mip ? Reason::kCpuMips : Reason::kCpuBase;
+      break;
+    case TextureWatchInvalidationSource::kGpuResolve:
+      reason = is_mip ? Reason::kGpuResolveMips : Reason::kGpuResolveBase;
+      break;
+    case TextureWatchInvalidationSource::kGpuOther:
+    default:
+      reason = is_mip ? Reason::kGpuOtherMips : Reason::kGpuOtherBase;
+      break;
+  }
+  command_processor_->RecordTextureWatchInvalidation(reason, byte_count);
+}
+
 MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
     MTL::CommandBuffer* command_buffer) {
   if (!deferred_upload_batch_depth_ || !command_buffer) {
@@ -913,14 +946,21 @@ bool MetalTextureCache::PrepareTextureMaterialization(
   auto append_texture = [&](TextureKey key) {
     ++plan.request_count;
     Texture* texture = FindOrCreateTexture(key);
-    bool base_outdated = texture ? texture->base_outdated_lockless() : false;
-    bool mips_outdated = texture ? texture->mips_outdated_lockless() : false;
+    bool base_outdated =
+        texture ? texture->base_outdated_lockless() : false;
+    bool mips_outdated =
+        texture ? texture->mips_outdated_lockless() : false;
     if (!texture || (!base_outdated && !mips_outdated)) {
       return;
     }
     for (const TextureMaterializationPlan::TextureLoad& planned_load :
          plan.texture_loads_) {
       if (planned_load.texture == texture) {
+        if (command_processor_) {
+          command_processor_->RecordTextureUploadExecutionDetail(
+              MetalCommandProcessor::TextureUploadExecutionDetail::
+                  kDuplicatePlannedSamePlan);
+        }
         return;
       }
     }
@@ -955,12 +995,16 @@ bool MetalTextureCache::PrepareTextureMaterialization(
         source_range_state(base_outdated, base_start, base_length);
     const SourceRangeState mips_state =
         source_range_state(mips_outdated, mips_start, mips_length);
-    const bool base_needs_upload = base_state == SourceRangeState::kInvalid ||
-                                   base_state == SourceRangeState::kMixed;
-    const bool mips_needs_upload = mips_state == SourceRangeState::kInvalid ||
-                                   mips_state == SourceRangeState::kMixed;
-    const bool base_cpu_source = base_state == SourceRangeState::kInvalid;
-    const bool mips_cpu_source = mips_state == SourceRangeState::kInvalid;
+    const bool base_needs_upload =
+        base_state == SourceRangeState::kInvalid ||
+        base_state == SourceRangeState::kMixed;
+    const bool mips_needs_upload =
+        mips_state == SourceRangeState::kInvalid ||
+        mips_state == SourceRangeState::kMixed;
+    const bool base_cpu_source =
+        base_state == SourceRangeState::kInvalid;
+    const bool mips_cpu_source =
+        mips_state == SourceRangeState::kInvalid;
 
     bool use_cpu_source = !texture_key.scaled_resolve;
     bool has_cpu_source_range = false;
@@ -976,19 +1020,23 @@ bool MetalTextureCache::PrepareTextureMaterialization(
     if (!use_cpu_source) {
       if (command_processor_) {
         MetalCommandProcessor::TextureUploadSourceFallbackReason
-            fallback_reason = MetalCommandProcessor::
-                TextureUploadSourceFallbackReason::kUnknown;
+            fallback_reason =
+                MetalCommandProcessor::TextureUploadSourceFallbackReason::
+                    kUnknown;
         if (texture_key.scaled_resolve) {
-          fallback_reason = MetalCommandProcessor::
-              TextureUploadSourceFallbackReason::kScaledResolve;
+          fallback_reason =
+              MetalCommandProcessor::TextureUploadSourceFallbackReason::
+                  kScaledResolve;
         } else if (base_state == SourceRangeState::kMixed ||
                    mips_state == SourceRangeState::kMixed) {
-          fallback_reason = MetalCommandProcessor::
-              TextureUploadSourceFallbackReason::kMixedValidity;
+          fallback_reason =
+              MetalCommandProcessor::TextureUploadSourceFallbackReason::
+                  kMixedValidity;
         } else if (base_state == SourceRangeState::kValid ||
                    mips_state == SourceRangeState::kValid) {
-          fallback_reason = MetalCommandProcessor::
-              TextureUploadSourceFallbackReason::kSourceAlreadyResident;
+          fallback_reason =
+              MetalCommandProcessor::TextureUploadSourceFallbackReason::
+                  kSourceAlreadyResident;
         }
         command_processor_->RecordTextureUploadSourceFallback(fallback_reason);
       }
@@ -997,6 +1045,89 @@ bool MetalTextureCache::PrepareTextureMaterialization(
       }
       if (mips_needs_upload) {
         plan.source_ranges.push_back({mips_start, mips_length});
+      }
+    }
+
+    if (command_processor_) {
+      const uint64_t upload_bytes =
+          GetTextureLoadBytes(*texture, base_outdated, mips_outdated);
+      if (base_outdated && base_state == SourceRangeState::kValid &&
+          texture->last_base_watch_invalidation_source() ==
+              TextureWatchInvalidationSource::kGpuResolve) {
+        using ResolveReason =
+            MetalCommandProcessor::TextureResolveReloadReason;
+        auto record_resolve_reload = [&](ResolveReason reason) {
+          command_processor_->RecordTextureResolveReload(reason, upload_bytes);
+        };
+        record_resolve_reload(ResolveReason::kCandidate);
+        if (mips_outdated) {
+          record_resolve_reload(ResolveReason::kMipsRequested);
+        }
+        if (texture_key.scaled_resolve) {
+          record_resolve_reload(ResolveReason::kScaledResolve);
+        }
+        switch (texture->last_base_watch_resolve_source()) {
+          case ResolveProvenanceSource::kDirectHost:
+            record_resolve_reload(ResolveReason::kSourceDirectHost);
+            break;
+          case ResolveProvenanceSource::kRenderTarget:
+            record_resolve_reload(ResolveReason::kSourceRenderTarget);
+            break;
+          case ResolveProvenanceSource::kUnknown:
+          default:
+            record_resolve_reload(ResolveReason::kSourceUnknown);
+            break;
+        }
+        const uint32_t resolve_start =
+            texture->last_base_watch_invalidation_range_start();
+        const uint32_t resolve_length =
+            texture->last_base_watch_invalidation_range_length();
+        if (!resolve_length) {
+          record_resolve_reload(ResolveReason::kNoProvenance);
+        } else {
+          const uint64_t texture_start = base_start;
+          const uint64_t texture_end = texture_start + uint64_t(base_length);
+          const uint64_t resolve_range_start = resolve_start;
+          const uint64_t resolve_range_end =
+              resolve_range_start + uint64_t(resolve_length);
+          if (texture_start == resolve_range_start &&
+              texture_end == resolve_range_end) {
+            record_resolve_reload(ResolveReason::kExactRange);
+          } else if (texture_start >= resolve_range_start &&
+                     texture_end <= resolve_range_end) {
+            record_resolve_reload(ResolveReason::kContainedRange);
+          } else if (texture_start < resolve_range_end &&
+                     texture_end > resolve_range_start) {
+            record_resolve_reload(ResolveReason::kPartialOverlap);
+          } else {
+            record_resolve_reload(ResolveReason::kNoOverlap);
+          }
+        }
+      }
+      MetalCommandProcessor::TextureReloadReason range_reason =
+          MetalCommandProcessor::TextureReloadReason::kPlannedBaseAndMips;
+      if (base_outdated && !mips_outdated) {
+        range_reason =
+            MetalCommandProcessor::TextureReloadReason::kPlannedBaseOnly;
+      } else if (!base_outdated && mips_outdated) {
+        range_reason =
+            MetalCommandProcessor::TextureReloadReason::kPlannedMipsOnly;
+      }
+      command_processor_->RecordTextureReloadReason(range_reason,
+                                                    upload_bytes);
+      command_processor_->RecordTextureReloadReason(
+          use_cpu_source
+              ? MetalCommandProcessor::TextureReloadReason::kPlannedCpuSource
+              : MetalCommandProcessor::TextureReloadReason::
+                    kPlannedResidentSource,
+          upload_bytes);
+      MetalTexture* metal_texture = static_cast<MetalTexture*>(texture);
+      if (metal_texture->MarkMaterializationPlanned(
+              command_processor_->GetCurrentTextureTelemetryFrame())) {
+        command_processor_->RecordTextureReloadReason(
+            MetalCommandProcessor::TextureReloadReason::
+                kPlannedAgainSameFrame,
+            upload_bytes);
       }
     }
 
@@ -1039,6 +1170,122 @@ bool MetalTextureCache::PrepareTextureMaterialization(
   return true;
 }
 
+void MetalTextureCache::RefreshTextureMaterializationPlan(
+    TextureMaterializationPlan& plan) {
+  TextureMaterializationPlan* plans[] = {&plan};
+  RefreshTextureMaterializationPlans(plans, 1);
+}
+
+void MetalTextureCache::RefreshTextureMaterializationPlans(
+    TextureMaterializationPlan* const* plans, uint32_t plan_count) {
+  if (!plans || !plan_count) {
+    return;
+  }
+
+  uint32_t total_load_count = 0;
+  for (uint32_t i = 0; i < plan_count; ++i) {
+    TextureMaterializationPlan* plan = plans[i];
+    if (!plan) {
+      continue;
+    }
+    total_load_count += static_cast<uint32_t>(plan->texture_loads_.size());
+    plan->executed_load_count = 0;
+  }
+  if (!total_load_count) {
+    return;
+  }
+
+  std::unordered_map<Texture*, TextureMaterializationPlan::TextureLoad*>
+      live_loads;
+  live_loads.reserve(total_load_count);
+  std::vector<bool> plan_had_duplicate_prune(plan_count, false);
+  uint64_t pruned_already_current = 0;
+  uint64_t pruned_duplicate_same_flush = 0;
+
+  {
+    auto global_lock = AcquireGlobalLock();
+    for (uint32_t i = 0; i < plan_count; ++i) {
+      TextureMaterializationPlan* plan = plans[i];
+      if (!plan) {
+        continue;
+      }
+      for (TextureMaterializationPlan::TextureLoad& load :
+           plan->texture_loads_) {
+        Texture* texture = load.texture;
+        if (!texture) {
+          continue;
+        }
+        const bool planned_base = load.load_base;
+        const bool planned_mips = load.load_mips;
+        load.load_base = load.load_base && texture->base_outdated(global_lock);
+        load.load_mips = load.load_mips && texture->mips_outdated(global_lock);
+        if (!load.load_base && !load.load_mips) {
+          if (command_processor_) {
+            command_processor_->RecordTextureReloadReason(
+                MetalCommandProcessor::TextureReloadReason::
+                    kRefreshBecameCurrent,
+                GetTextureLoadBytes(*texture, planned_base, planned_mips));
+          }
+          load.texture = nullptr;
+          ++pruned_already_current;
+          continue;
+        }
+        if (command_processor_) {
+          command_processor_->RecordTextureReloadReason(
+              MetalCommandProcessor::TextureReloadReason::kRefreshStillNeeded,
+              GetTextureLoadBytes(*texture, load.load_base, load.load_mips));
+        }
+
+        auto [it, inserted] = live_loads.emplace(texture, &load);
+        if (!inserted) {
+          TextureMaterializationPlan::TextureLoad* existing_load = it->second;
+          existing_load->load_base |= load.load_base;
+          existing_load->load_mips |= load.load_mips;
+          existing_load->use_cpu_source =
+              existing_load->use_cpu_source && load.use_cpu_source;
+          load.texture = nullptr;
+          plan_had_duplicate_prune[i] = true;
+          ++pruned_duplicate_same_flush;
+        }
+      }
+    }
+  }
+
+  for (uint32_t i = 0; i < plan_count; ++i) {
+    TextureMaterializationPlan* plan = plans[i];
+    if (!plan) {
+      continue;
+    }
+    auto& loads = plan->texture_loads_;
+    size_t write_index = 0;
+    for (size_t read_index = 0; read_index < loads.size(); ++read_index) {
+      if (!loads[read_index].texture) {
+        continue;
+      }
+      if (write_index != read_index) {
+        loads[write_index] = loads[read_index];
+      }
+      ++write_index;
+    }
+    loads.resize(write_index);
+    plan->planned_load_count = static_cast<uint32_t>(loads.size());
+    if (loads.empty() && !plan_had_duplicate_prune[i]) {
+      plan->source_ranges.clear();
+    }
+  }
+
+  if (command_processor_) {
+    command_processor_->RecordTextureUploadExecutionDetail(
+        MetalCommandProcessor::TextureUploadExecutionDetail::
+            kPrunedAlreadyCurrent,
+        pruned_already_current);
+    command_processor_->RecordTextureUploadExecutionDetail(
+        MetalCommandProcessor::TextureUploadExecutionDetail::
+            kPrunedDuplicateSameFlush,
+        pruned_duplicate_same_flush);
+  }
+}
+
 bool MetalTextureCache::ExecuteTextureMaterialization(
     TextureMaterializationPlan& plan) {
   if (plan.texture_loads_.empty()) {
@@ -1051,21 +1298,58 @@ bool MetalTextureCache::ExecuteTextureMaterialization(
   fallback_textures.reserve(plan.texture_loads_.size());
   {
     UploadBatchScope upload_batch(*this);
+    auto record_execution = [&](Texture& texture, bool load_base,
+                                bool load_mips,
+                                MetalCommandProcessor::TextureReloadReason
+                                    source_reason) {
+      if (!command_processor_) {
+        return;
+      }
+      const uint64_t upload_bytes =
+          GetTextureLoadBytes(texture, load_base, load_mips);
+      command_processor_->RecordTextureReloadReason(source_reason,
+                                                    upload_bytes);
+      MetalTexture* metal_texture = static_cast<MetalTexture*>(&texture);
+      if (metal_texture->MarkMaterializationExecuted(
+              command_processor_->GetCurrentTextureTelemetryFrame())) {
+        command_processor_->RecordTextureReloadReason(
+            MetalCommandProcessor::TextureReloadReason::
+                kExecuteAgainSameFrame,
+            upload_bytes);
+      }
+    };
     for (const TextureMaterializationPlan::TextureLoad& load :
          plan.texture_loads_) {
       if (!load.texture) {
         continue;
       }
       if (!load.use_cpu_source) {
+        record_execution(
+            *load.texture, load.load_base, load.load_mips,
+            MetalCommandProcessor::TextureReloadReason::kExecuteResidentSource);
+        if (!load.texture->base_outdated_lockless() &&
+            !load.texture->mips_outdated_lockless() && command_processor_) {
+          command_processor_->RecordTextureUploadExecutionDetail(
+              MetalCommandProcessor::TextureUploadExecutionDetail::
+                  kFallbackAlreadyCurrentLockless);
+        }
         fallback_textures.push_back(load.texture);
         continue;
       }
+      record_execution(
+          *load.texture, load.load_base, load.load_mips,
+          MetalCommandProcessor::TextureReloadReason::kExecuteCpuSource);
       if (!LoadTextureDataFromCpuGuestMemory(*load.texture, load.load_base,
                                              load.load_mips)) {
         if (command_processor_) {
           command_processor_->RecordTextureUploadSourceFallback(
               MetalCommandProcessor::TextureUploadSourceFallbackReason::
                   kCpuSourceLoadFailed);
+          command_processor_->RecordTextureReloadReason(
+              MetalCommandProcessor::TextureReloadReason::
+                  kExecuteResidentSource,
+              GetTextureLoadBytes(*load.texture, load.load_base,
+                                  load.load_mips));
         }
         fallback_textures.push_back(load.texture);
       }
@@ -1807,15 +2091,16 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
     uint8_t* source_data =
         static_cast<uint8_t*>(transient_source_buffer->contents());
-    auto copy_transient_source = [&](const TransientTextureSourceRange& range) {
-      if (!range.valid) {
-        return;
-      }
-      std::memcpy(source_data + range.buffer_offset,
-                  xbox_ram + range.copy_start, range.copy_length);
-      std::memset(source_data + range.buffer_offset + range.copy_length, 0,
-                  range.buffer_length - range.copy_length);
-    };
+    auto copy_transient_source =
+        [&](const TransientTextureSourceRange& range) {
+          if (!range.valid) {
+            return;
+          }
+          std::memcpy(source_data + range.buffer_offset,
+                      xbox_ram + range.copy_start, range.copy_length);
+          std::memset(source_data + range.buffer_offset + range.copy_length, 0,
+                      range.buffer_length - range.copy_length);
+        };
     copy_transient_source(transient_base_source);
     copy_transient_source(transient_mips_source);
   }
@@ -2013,6 +2298,68 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
         }
       }
     }
+  }
+
+  if (command_processor_) {
+    using TextureUploadClass =
+        MetalCommandProcessor::TextureUploadCompatibilityClass;
+    using TextureUploadBlocker =
+        MetalCommandProcessor::TextureUploadComputeBlocker;
+    const uint64_t upload_bytes =
+        (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
+                                        UINT32_C(16)))
+                   : 0) +
+        (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
+                                        UINT32_C(16)))
+                   : 0);
+    auto is_raw_copy_load_shader = [](TextureCache::LoadShaderIndex shader) {
+      switch (shader) {
+        case TextureCache::kLoadShaderIndex8bpb:
+        case TextureCache::kLoadShaderIndex16bpb:
+        case TextureCache::kLoadShaderIndex32bpb:
+        case TextureCache::kLoadShaderIndex64bpb:
+        case TextureCache::kLoadShaderIndex128bpb:
+          return true;
+        default:
+          return false;
+      }
+    };
+    bool has_compute_blocker = false;
+    auto record_blocker = [&](TextureUploadBlocker blocker) {
+      has_compute_blocker = true;
+      command_processor_->RecordTextureUploadComputeBlocker(blocker,
+                                                            upload_bytes);
+    };
+    if (key.tiled) {
+      record_blocker(TextureUploadBlocker::kTiled);
+    }
+    if (is_3d_tiling) {
+      record_blocker(TextureUploadBlocker::kThreeDimensionalTiling);
+    }
+    if (key.endianness != xenos::Endian::kNone) {
+      record_blocker(TextureUploadBlocker::kEndianSwap);
+    }
+    if (decompress) {
+      record_blocker(TextureUploadBlocker::kBcDecompress);
+    } else if (!is_raw_copy_load_shader(load_shader)) {
+      record_blocker(TextureUploadBlocker::kFormatConversion);
+    }
+    if (texture_resolution_scaled) {
+      record_blocker(TextureUploadBlocker::kScaledResolve);
+    }
+    if (key.packed_mips && load_mips) {
+      record_blocker(TextureUploadBlocker::kPackedMips);
+    }
+    if (!repack_uploads.empty()) {
+      record_blocker(TextureUploadBlocker::kRepackAlignment);
+    }
+    if (!has_compute_blocker && !is_raw_copy_load_shader(load_shader)) {
+      record_blocker(TextureUploadBlocker::kUnknown);
+    }
+    command_processor_->RecordTextureUploadCompatibility(
+        has_compute_blocker ? TextureUploadClass::kComputeRequired
+                            : TextureUploadClass::kDirectCopyCandidate,
+        upload_bytes);
   }
 
   const bool can_defer_upload_blits =
@@ -2493,6 +2840,8 @@ bool MetalTextureCache::Initialize() {
           null_texture_2d_bindless_index_)) {
     IRDescriptorTableSetTexture(e, null_texture_2d_, 0.0f, 0);
   }
+  command_processor_->SetNativeMslViewBindlessTexture(
+      null_texture_2d_bindless_index_, null_texture_2d_);
   null_texture_3d_bindless_index_ =
       command_processor_->AllocateViewBindlessIndex();
   if (null_texture_3d_bindless_index_ == UINT32_MAX) {
@@ -2503,6 +2852,8 @@ bool MetalTextureCache::Initialize() {
           null_texture_3d_bindless_index_)) {
     IRDescriptorTableSetTexture(e, null_texture_3d_, 0.0f, 0);
   }
+  command_processor_->SetNativeMslViewBindlessTexture(
+      null_texture_3d_bindless_index_, null_texture_3d_);
   null_texture_cube_bindless_index_ =
       command_processor_->AllocateViewBindlessIndex();
   if (null_texture_cube_bindless_index_ == UINT32_MAX) {
@@ -2513,6 +2864,8 @@ bool MetalTextureCache::Initialize() {
           null_texture_cube_bindless_index_)) {
     IRDescriptorTableSetTexture(e, null_texture_cube_, 0.0f, 0);
   }
+  command_processor_->SetNativeMslViewBindlessTexture(
+      null_texture_cube_bindless_index_, null_texture_cube_);
 
   // Allocate a persistent bindless slot for the null sampler.
   {
@@ -2540,6 +2893,8 @@ bool MetalTextureCache::Initialize() {
               null_sampler_bindless_index_)) {
         IRDescriptorTableSetSampler(e, null_sampler_bindless_, 0.0f);
       }
+      command_processor_->SetNativeMslSamplerBindlessState(
+          null_sampler_bindless_index_, null_sampler_bindless_);
     } else {
       XELOGE("Failed to create bindless null sampler");
       return false;
@@ -3297,7 +3652,15 @@ void MetalTextureCache::WriteActiveTextureSRVKeys(
 
 uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
     uint32_t fetch_constant, xenos::FetchOpDimension dimension, bool is_signed,
-    MTL::Texture** texture_for_encoder_out) {
+    MTL::Texture** texture_for_encoder_out, bool* is_fallback_out,
+    const char** fallback_reason_out) {
+  if (is_fallback_out) {
+    *is_fallback_out = false;
+  }
+  if (fallback_reason_out) {
+    *fallback_reason_out = nullptr;
+  }
+
   auto get_null_texture_for_dimension = [&]() -> MTL::Texture* {
     switch (dimension) {
       case xenos::FetchOpDimension::k1D:
@@ -3324,19 +3687,25 @@ uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
         return null_texture_2d_bindless_index_;
     }
   };
-  auto return_null_index_for_dimension = [&]() -> uint32_t {
+  auto return_null_index_for_dimension = [&](const char* reason) -> uint32_t {
     if (texture_for_encoder_out) {
       *texture_for_encoder_out = get_null_texture_for_dimension();
+    }
+    if (is_fallback_out) {
+      *is_fallback_out = true;
+    }
+    if (fallback_reason_out) {
+      *fallback_reason_out = reason;
     }
     return get_null_index_for_dimension();
   };
 
   const TextureBinding* binding = GetValidTextureBinding(fetch_constant);
   if (!binding) {
-    return return_null_index_for_dimension();
+    return return_null_index_for_dimension("fetch constant has no valid texture binding");
   }
   if (!AreDimensionsCompatible(dimension, binding->key.dimension)) {
-    return return_null_index_for_dimension();
+    return return_null_index_for_dimension("shader texture dimension is incompatible with bound texture");
   }
 
   Texture* texture = nullptr;
@@ -3345,26 +3714,30 @@ uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
       texture = IsSignedVersionSeparateForFormat(binding->key)
                     ? binding->texture_signed
                     : binding->texture;
+    } else {
+      return return_null_index_for_dimension("signed view not selected by texture signs");
     }
   } else if (texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
     texture = binding->texture;
+  } else {
+    return return_null_index_for_dimension("unsigned view not selected by texture signs");
   }
 
   if (!texture) {
-    return return_null_index_for_dimension();
+    return return_null_index_for_dimension("resolved texture object is null");
   }
 
   texture->MarkAsUsed();
   auto* metal_texture = static_cast<MetalTexture*>(texture);
   if (!metal_texture) {
-    return return_null_index_for_dimension();
+    return return_null_index_for_dimension("resolved texture is not a Metal texture");
   }
   MTL::Texture* texture_for_encoder = nullptr;
   uint32_t srv_index = metal_texture->GetOrCreateBindlessSRVIndexAndView(
       binding->host_swizzle, dimension, is_signed,
       texture_for_encoder_out ? &texture_for_encoder : nullptr);
   if (srv_index == UINT32_MAX) {
-    return return_null_index_for_dimension();
+    return return_null_index_for_dimension("failed to create Metal SRV view");
   }
   if (texture_for_encoder_out) {
     *texture_for_encoder_out = texture_for_encoder
@@ -3388,6 +3761,22 @@ uint32_t MetalTextureCache::GetBindlessSamplerIndexForBinding(
     return it->second;
   }
   return null_sampler_bindless_index_;
+}
+
+uint32_t MetalTextureCache::GetNativeMslSRVIndexForBindlessIndex(
+    uint32_t index) const {
+  if (!command_processor_) {
+    return UINT32_MAX;
+  }
+  return command_processor_->GetNativeMslViewBindlessIndex(index);
+}
+
+uint32_t MetalTextureCache::GetNativeMslSamplerIndexForBindlessIndex(
+    uint32_t index) const {
+  if (!command_processor_) {
+    return UINT32_MAX;
+  }
+  return command_processor_->GetNativeMslSamplerBindlessIndex(index);
 }
 
 MTL::Texture* MetalTextureCache::RequestSwapTexture(
@@ -3709,6 +4098,8 @@ MTL::SamplerState* MetalTextureCache::GetOrCreateSampler(
   if (auto* e =
           command_processor_->GetSamplerBindlessHeapEntry(sampler_index)) {
     IRDescriptorTableSetSampler(e, sampler_state, 0.0f);
+    command_processor_->SetNativeMslSamplerBindlessState(sampler_index,
+                                                         sampler_state);
   } else {
     command_processor_->ReleaseSamplerBindlessIndex(sampler_index);
     sampler_state->release();
@@ -4240,12 +4631,12 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   if (command_processor_) {
     const TextureKey& texture_key = texture.key();
     const uint64_t upload_bytes =
-        (load_base
-             ? uint64_t(xe::align(texture.GetGuestBaseSize(), UINT32_C(16)))
-             : 0) +
-        (load_mips
-             ? uint64_t(xe::align(texture.GetGuestMipsSize(), UINT32_C(16)))
-             : 0);
+        (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
+                                        UINT32_C(16)))
+                   : 0) +
+        (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
+                                        UINT32_C(16)))
+                   : 0);
     command_processor_->RecordTextureUploadSourceRoute(
         texture_key.scaled_resolve
             ? MetalCommandProcessor::TextureUploadSourceRoute::kScaledResolve
@@ -4276,6 +4667,11 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
     mips_outdated = load_mips && texture.mips_outdated(global_lock);
   }
   if (!base_outdated && !mips_outdated) {
+    if (command_processor_) {
+      command_processor_->RecordTextureUploadExecutionDetail(
+          MetalCommandProcessor::TextureUploadExecutionDetail::
+              kCpuSourceAlreadyCurrent);
+    }
     return true;
   }
 
@@ -4291,7 +4687,8 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
   };
   if (!has_cpu_source(base_outdated, texture_key.base_page << 12,
                       base_length) ||
-      !has_cpu_source(mips_outdated, texture_key.mip_page << 12, mips_length)) {
+      !has_cpu_source(mips_outdated, texture_key.mip_page << 12,
+                      mips_length)) {
     return false;
   }
   MetalTexture* metal_texture = static_cast<MetalTexture*>(&texture);
@@ -4461,6 +4858,8 @@ MetalTextureCache::MetalTexture::GetOrCreateBindlessSRVIndexForResolvedView(
     return UINT32_MAX;
   }
   IRDescriptorTableSetTexture(entry, view, 0.0f, 0);
+  texture_cache_.command_processor_->SetNativeMslViewBindlessTexture(
+      bindless_srv_index, view);
   swizzled_view_bindless_srv_indices_.emplace(view_key, bindless_srv_index);
   return bindless_srv_index;
 }
@@ -4573,6 +4972,9 @@ uint32_t MetalTextureCache::MetalTexture::GetOrCreateBindlessSRVIndexAndView(
       }
       IRDescriptorTableSetTexture(entry, resolved_texture->metal_texture_, 0.0f,
                                   0);
+      texture_cache_.command_processor_->SetNativeMslViewBindlessTexture(
+          resolved_texture->bindless_srv_index_,
+          resolved_texture->metal_texture_);
     }
     srv_index = resolved_texture->bindless_srv_index_;
   } else {

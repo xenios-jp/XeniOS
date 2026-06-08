@@ -736,9 +736,10 @@ bool MetalRenderTargetCache::Initialize() {
     size_t min_heap_bytes = std::max<int32_t>(0, ::cvars::metal_heap_min_bytes);
     render_target_heap_pool_ = std::make_unique<MetalHeapPool>(
         device_, MTL::StorageModePrivate, min_heap_bytes, "XeniaRT");
-    render_target_heap_pool_->SetHeapCreatedCallback([this](MTL::Heap* heap) {
-      command_processor_.AddResidencySetHeap(heap);
-    });
+    render_target_heap_pool_->SetHeapCreatedCallback(
+        [this](MTL::Heap* heap) {
+          command_processor_.AddResidencySetHeap(heap);
+        });
   }
 
   // Create the EDRAM buffer.
@@ -1710,7 +1711,8 @@ MTL::ComputePipelineState* MetalRenderTargetCache::GetResolvePipeline(
 }
 
 bool MetalRenderTargetCache::Update(
-    bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
+    bool is_rasterization_done,
+    reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, const Shader& vertex_shader) {
   // Pending draw-pass transfers are ownership-visible already. If control
   // reaches another RT update before the command processor encoded them,
@@ -3201,6 +3203,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     SetAttachmentLoadStoreActions(depth_attachment,
                                   GetTransientAttachmentLoadStoreActions());
     fallback_depth_texture->release();
+
   }
 
   return cached_render_pass_descriptor_;
@@ -3217,8 +3220,7 @@ bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
     return true;
   }
   return IsRenderPassDescriptorCompatibleSlow(
-      pass_descriptor, expected_sample_count,
-      fallback_depth_attachment_required);
+      pass_descriptor, expected_sample_count, fallback_depth_attachment_required);
 }
 
 bool MetalRenderTargetCache::IsRenderPassDescriptorCompatibleSlow(
@@ -4140,8 +4142,9 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                 // textures overlapping this range will be reloaded from the
                 // updated shared memory. This matches D3D12/Vulkan behavior.
                 if (auto* tex_cache = command_processor_.texture_cache()) {
-                  tex_cache->MarkRangeAsResolved(written_address,
-                                                 written_length);
+                  tex_cache->MarkRangeAsResolved(
+                      written_address, written_length,
+                      TextureCache::ResolveProvenanceSource::kRenderTarget);
                 }
 
                 copy_succeeded = true;
@@ -7984,7 +7987,8 @@ MTL::Buffer* MetalRenderTargetCache::GetTransferDummyBuffer() {
   return transfer_dummy_buffer_;
 }
 
-MTL::DepthStencilState* MetalRenderTargetCache::BuildTransferDepthStencilState(
+MTL::DepthStencilState*
+MetalRenderTargetCache::BuildTransferDepthStencilState(
     MTL::CompareFunction depth_compare, bool depth_write, bool stencil_enable,
     uint32_t stencil_write_mask) {
   MTL::DepthStencilDescriptor* desc =

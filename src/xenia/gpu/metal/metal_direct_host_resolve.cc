@@ -321,8 +321,10 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     const char* debug_name;
   };
 #define XE_DIRECT_HOST_RESOLVE_CONFIG(id, is_64bpp, msaa, scaled, source_uint) \
-  {id##_metallib, sizeof(id##_metallib), is_64bpp, msaa,                       \
-   scaled,        source_uint,           #id}
+  {                                                                            \
+    id##_metallib, sizeof(id##_metallib), is_64bpp, msaa, scaled, source_uint, \
+        #id                                                                    \
+  }
 #define XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, msaa_token, msaa, \
                                     source_uint)                             \
   XE_DIRECT_HOST_RESOLVE_CONFIG(prefix##_##bpp##bpp_##msaa_token##xmsaa_cs,  \
@@ -330,15 +332,15 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
       XE_DIRECT_HOST_RESOLVE_CONFIG(                                         \
           prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, is_64bpp, msaa, \
           true, source_uint)
-#define XE_DIRECT_HOST_RESOLVE_BPP(prefix, bpp, is_64bpp, source_uint)   \
-  XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 1,                  \
+#define XE_DIRECT_HOST_RESOLVE_BPP(prefix, bpp, is_64bpp, source_uint) \
+  XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 1,                   \
                               xenos::MsaaSamples::k1X, source_uint),     \
       XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 2,              \
                                   xenos::MsaaSamples::k2X, source_uint), \
       XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 4,              \
                                   xenos::MsaaSamples::k4X, source_uint)
-#define XE_DIRECT_HOST_RESOLVE_SOURCE(prefix, source_uint)    \
-  XE_DIRECT_HOST_RESOLVE_BPP(prefix, 32, false, source_uint), \
+#define XE_DIRECT_HOST_RESOLVE_SOURCE(prefix, source_uint)                 \
+  XE_DIRECT_HOST_RESOLVE_BPP(prefix, 32, false, source_uint),              \
       XE_DIRECT_HOST_RESOLVE_BPP(prefix, 64, true, source_uint)
   static constexpr DirectHostResolvePipelineConfig
       kDirectHostResolvePipelineConfigs[] = {
@@ -384,24 +386,26 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     bool source_is_uint;
     const char* debug_name;
   };
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(id, shader, msaa, scaled, \
-                                                 source_uint)              \
-  {id##_metallib, sizeof(id##_metallib), shader, msaa, scaled, source_uint, #id}
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader,           \
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(id, shader, msaa, scaled,   \
+                                                 source_uint)                \
+  {                                                                          \
+    id##_metallib, sizeof(id##_metallib), shader, msaa, scaled, source_uint, \
+        #id                                                                  \
+  }
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader,          \
                                                msaa_token, msaa, source_uint) \
-  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                                   \
-      prefix##_##bpp##bpp_##msaa_token##xmsaa_cs, shader, msaa, false,        \
-      source_uint),                                                           \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                               \
-          prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, shader, msaa,    \
+  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                                  \
+      prefix##_##bpp##bpp_##msaa_token##xmsaa_cs, shader, msaa, false,       \
+      source_uint),                                                          \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                              \
+          prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, shader, msaa,   \
           true, source_uint)
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(prefix, bpp, shader,      \
-                                               source_uint)              \
-  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                \
-      prefix, bpp, shader, 1, xenos::MsaaSamples::k1X, source_uint),     \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                            \
-          prefix, bpp, shader, 2, xenos::MsaaSamples::k2X, source_uint), \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                            \
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(prefix, bpp, shader, source_uint) \
+  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader, 1,                \
+                                         xenos::MsaaSamples::k1X, source_uint), \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                   \
+          prefix, bpp, shader, 2, xenos::MsaaSamples::k2X, source_uint),        \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                   \
           prefix, bpp, shader, 4, xenos::MsaaSamples::k4X, source_uint)
 #define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_SOURCE(prefix, source_uint)        \
   XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(                                    \
@@ -465,12 +469,15 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     const char* debug_name;
   };
 #define XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(id, msaa, scaled) \
-  {id##_metallib, sizeof(id##_metallib), msaa, scaled, #id}
-#define XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(msaa_token, msaa)          \
-  XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                               \
-      resolve_host_depth_32bpp_##msaa_token##xmsaa_cs, msaa, false), \
-      XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                           \
-          resolve_host_depth_32bpp_##msaa_token##xmsaa_scaled_cs, msaa, true)
+  {                                                           \
+    id##_metallib, sizeof(id##_metallib), msaa, scaled, #id   \
+  }
+#define XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(msaa_token, msaa)                \
+  XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                                     \
+      resolve_host_depth_32bpp_##msaa_token##xmsaa_cs, msaa, false),       \
+      XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                                 \
+          resolve_host_depth_32bpp_##msaa_token##xmsaa_scaled_cs, msaa,    \
+          true)
   static constexpr DirectHostDepthResolvePipelineConfig
       kDirectHostDepthResolvePipelineConfigs[] = {
           XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(1, xenos::MsaaSamples::k1X),
@@ -988,7 +995,9 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   written_address = resolve_info.copy_dest_extent_start;
   written_length = resolve_info.copy_dest_extent_length;
   if (texture_cache) {
-    texture_cache->MarkRangeAsResolved(written_address, written_length);
+    texture_cache->MarkRangeAsResolved(
+        written_address, written_length,
+        TextureCache::ResolveProvenanceSource::kDirectHost);
   }
 
   ++direct_telemetry.direct_host_success;

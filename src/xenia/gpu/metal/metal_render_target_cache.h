@@ -582,9 +582,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       TransferAttachmentFormats& attachment_formats_out) const;
   bool GetCurrentTransferAttachmentFormats(
       TransferAttachmentFormats& attachment_formats_out) const;
-  bool CanQueueDrawPassTransfers(uint32_t render_target_index,
-                                 RenderTarget* const* render_targets,
-                                 const std::vector<Transfer>& transfers) const;
+  bool CanQueueDrawPassTransfers(
+      uint32_t render_target_index, RenderTarget* const* render_targets,
+      const std::vector<Transfer>& transfers) const;
   bool PendingDrawPassTransfersFullyOverwriteTarget(
       uint32_t render_target_index, RenderTarget* render_target,
       const std::vector<Transfer>& transfers) const;

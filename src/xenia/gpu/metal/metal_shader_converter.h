@@ -26,7 +26,7 @@ namespace metal {
 
 class MetalStageCompileCache;
 
-constexpr uint32_t kMetalRootSignatureAbiVersion = 2;
+constexpr uint32_t kMetalRootSignatureAbiVersion = 3;
 
 // Shader stage for Metal conversion
 enum class MetalShaderStage {

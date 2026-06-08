@@ -23,6 +23,13 @@ constexpr uint32_t kFunctionConstantRegisterSpace = 2147420894u;
 constexpr uint32_t kDefaultCompatibilityFlags =
     IRCompatibilityFlagForceTextureArray | IRCompatibilityFlagBoundsCheck |
     IRCompatibilityFlagVertexPositionInfToNan;
+constexpr uint32_t kDebugCompatibilityFlags =
+    IRCompatibilityFlagBoundsCheck | IRCompatibilityFlagVertexPositionInfToNan |
+    IRCompatibilityFlagTextureMinLODClamp | IRCompatibilityFlagSamplerLODBias |
+    IRCompatibilityFlagPositionInvariance | IRCompatibilityFlagSampleNanToZero |
+    IRCompatibilityFlagTexWriteRoundingRTZ |
+    IRCompatibilityFlagSuppress2DComputeDerivativeErrors |
+    IRCompatibilityFlagForceTextureArray;
 constexpr uint32_t kUnsetCompilerOption = UINT32_MAX;
 
 MetalShaderConverter::MetalShaderConverter()
@@ -40,7 +47,10 @@ void MetalShaderConverter::SetMinimumTarget(uint32_t gpu_family, uint32_t os,
 
 void MetalShaderConverter::PopulateDefaultRequestOptions(
     MetalStageCompileRequest& request) const {
-  if (!request.compatibility_flags) {
+  if (cvars::metal_msc_debug_validation) {
+    request.compatibility_flags |= kDebugCompatibilityFlags;
+    request.validation_flags = IRCompilerValidationFlagAll;
+  } else if (!request.compatibility_flags) {
     request.compatibility_flags = kDefaultCompatibilityFlags;
   }
   if (!request.function_constant_resource_space) {
@@ -203,7 +213,11 @@ void* MetalShaderConverter::CreateXbox360RootSignature(
   desc.pParameters = params;
   desc.NumStaticSamplers = 0;
   desc.pStaticSamplers = nullptr;
-  desc.Flags = IRRootSignatureFlagNone;
+  desc.Flags = bindless_resources_used
+                   ? static_cast<IRRootSignatureFlags>(
+                         IRRootSignatureFlagCBVSRVUAVHeapDirectlyIndexed |
+                         IRRootSignatureFlagSamplerHeapDirectlyIndexed)
+                   : IRRootSignatureFlagNone;
 
   IRVersionedRootSignatureDescriptor versionedDesc = {};
   versionedDesc.version = IRRootSignatureVersion_1_1;

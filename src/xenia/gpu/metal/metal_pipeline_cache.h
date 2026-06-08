@@ -31,6 +31,7 @@
 #include "xenia/gpu/metal/metal_shader.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/metal/metal_stage_compile_cache.h"
+#include "xenia/gpu/msl_shader_translator.h"
 #include "xenia/gpu/primitive_processor.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/registers.h"
@@ -124,22 +125,32 @@ class MetalPipelineCache {
   DxbcShaderTranslator::Modification GetCurrentVertexShaderModification(
       const Shader& shader,
       Shader::HostVertexShaderType host_vertex_shader_type,
-      uint32_t interpolator_mask) const;
+      uint32_t interpolator_mask, bool native_guest_allowed = true) const;
   DxbcShaderTranslator::Modification GetCurrentPixelShaderModification(
       const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
-      reg::RB_DEPTHCONTROL normalized_depth_control) const;
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      bool native_guest_allowed = true) const;
 
   enum class PipelineKind : uint32_t {
     kStandard = 0,
     kGeometry = 1,
     kTessellation = 2,
+    kNativeRectangleMesh = 3,
+    kNativeTessellationMesh = 4,
+    kNativePointMesh = 5,
+    kNativeQuadMesh = 6,
   };
 
   XEPACKEDSTRUCT(MetalPipelineDescription, {
+    static constexpr uint32_t kNativeMslTextureSignCount =
+        xenos::kTextureFetchConstantCount;
+
     uint64_t vertex_shader_hash;
     uint64_t vertex_shader_modification;
+    uint64_t vertex_shader_native_msl_texture_sign_key;
     uint64_t pixel_shader_hash;
     uint64_t pixel_shader_modification;
+    uint64_t pixel_shader_native_msl_texture_sign_key;
     uint64_t auxiliary_hash;
     uint32_t auxiliary0;
     uint32_t auxiliary1;
@@ -153,8 +164,17 @@ class MetalPipelineCache {
     uint32_t normalized_color_mask;
     uint32_t alpha_to_mask_enable;
     uint32_t blendcontrol[4];
+    uint8_t vertex_shader_native_msl_texture_sign_component_masks
+        [kNativeMslTextureSignCount];
+    uint8_t vertex_shader_native_msl_texture_sign_values
+        [kNativeMslTextureSignCount];
+    uint8_t pixel_shader_native_msl_texture_sign_component_masks
+        [kNativeMslTextureSignCount];
+    uint8_t pixel_shader_native_msl_texture_sign_values
+        [kNativeMslTextureSignCount];
+    uint32_t shader_backend;
 
-    static constexpr uint32_t kVersion = 0x20260530;
+    static constexpr uint32_t kVersion = 0x20260607;
   });
 
   XEPACKEDSTRUCT(MetalPipelineStoredDescription, {
@@ -167,6 +187,7 @@ class MetalPipelineCache {
   // the render thread picks up via acquire loads.
   struct PipelineHandle {
     std::atomic<MTL::RenderPipelineState*> state{nullptr};
+    std::atomic<bool> creation_failed{false};
     uint64_t description_hash = 0;
     MetalPipelineDescription description = {};
     // Data needed by background thread to create the pipeline.
@@ -201,10 +222,23 @@ class MetalPipelineCache {
     uint32_t gs_max_input_primitives_per_mesh_threadgroup = 0;
   };
 
+  enum class NativeMeshPipelineType : uint32_t {
+    kRectangleList,
+    kPointList,
+    kQuadList,
+  };
+
+  struct NativeMeshPipelineState {
+    MTL::RenderPipelineState* pipeline = nullptr;
+    NativeMeshPipelineType type = NativeMeshPipelineType::kRectangleList;
+  };
+
   struct TessellationPipelineState {
     MTL::RenderPipelineState* pipeline = nullptr;
     IRRuntimeTessellationPipelineConfig config = {};
     IRRuntimePrimitiveType primitive = IRRuntimePrimitiveTypeTriangle;
+    bool native_msl = false;
+    uint32_t control_point_count = 0;
   };
 
   GeometryPipelineState* GetOrCreateGeometryPipelineState(
@@ -221,15 +255,43 @@ class MetalPipelineCache {
       const PipelineAttachmentFormats& attachment_formats,
       const PipelineRenderingKey& rendering_key);
 
-  // Ensure the shared DXBC translator has produced DXBC bytecode.
-  bool EnsureDxbcTranslationReady(MetalShader::MetalTranslation* translation,
-                                  const char* stage_name);
+  TessellationPipelineState* GetOrCreateNativeMslTessellationPipelineState(
+      MetalShader::MetalTranslation* domain_translation,
+      MetalShader::MetalTranslation* pixel_translation,
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+      const PipelineAttachmentFormats& attachment_formats,
+      const PipelineRenderingKey& rendering_key);
+
+  NativeMeshPipelineState* GetOrCreateNativeMslPrimitiveMeshPipelineState(
+      MetalShader::MetalTranslation* vertex_translation,
+      MetalShader::MetalTranslation* pixel_translation,
+      NativeMeshPipelineType mesh_type,
+      const PipelineAttachmentFormats& attachment_formats,
+      const PipelineRenderingKey& rendering_key);
+
+  NativeMeshPipelineState* GetOrCreateNativeMslRectanglePipelineState(
+      MetalShader::MetalTranslation* vertex_translation,
+      MetalShader::MetalTranslation* pixel_translation,
+      const PipelineAttachmentFormats& attachment_formats,
+      const PipelineRenderingKey& rendering_key);
+
   bool EnsureDxilTranslationReady(MetalShader::MetalTranslation* translation,
-                                  const char* stage_name);
-  bool EnsureMetalTranslationReady(MetalShader::MetalTranslation* translation);
+                                  const char* stage_name,
+                                  bool helper_stage_pipeline = false);
+  bool EnsureNativeMslTranslationReady(
+      MetalShader::MetalTranslation* translation, const char* stage_name);
+  bool EnsureMetalTranslationReady(MetalShader::MetalTranslation* translation,
+                                   bool native_guest_allowed = true,
+                                   const char* stage_name = "guest",
+                                   bool helper_stage_pipeline = false);
+  bool TryCompileNativeMslForDiagnostics(
+      MetalShader::MetalTranslation* translation, const char* stage_name);
+  bool CompileNativeMslForDiagnostics(
+      MetalShader::MetalTranslation* translation, const char* stage_name);
 
   // Ensure the depth-only pixel shader is compiled and ready.
   bool EnsureDepthOnlyPixelShader();
+  bool EnsureNativeDepthOnlyPixelShader();
 
   // Ucode disassembly scratch buffer (shared with command processor).
   StringBuffer& ucode_disasm_buffer() { return ucode_disasm_buffer_; }
@@ -254,12 +316,14 @@ class MetalPipelineCache {
       MetalShader::MetalTranslation* vertex_translation,
       MetalShader::MetalTranslation* pixel_translation,
       const PipelineAttachmentFormats& attachment_formats,
-      const PipelineRenderingKey& rendering_key) const;
+      const PipelineRenderingKey& rendering_key,
+      bool force_native_msl_backend = false) const;
   MetalPipelineDescription BuildPipelineDescription(
       PipelineKind kind, MetalShader::MetalTranslation* vertex_translation,
       MetalShader::MetalTranslation* pixel_translation,
       const PipelineAttachmentFormats& attachment_formats,
-      const PipelineRenderingKey& rendering_key) const;
+      const PipelineRenderingKey& rendering_key,
+      bool force_native_msl_backend = false) const;
   MetalPipelineDescription BuildGeometryPipelineDescription(
       MetalShader::MetalTranslation* vertex_translation,
       MetalShader::MetalTranslation* pixel_translation,
@@ -273,11 +337,25 @@ class MetalPipelineCache {
       xenos::TessellationMode tessellation_mode,
       const PipelineAttachmentFormats& attachment_formats,
       const PipelineRenderingKey& rendering_key) const;
+  MetalPipelineDescription BuildNativePrimitiveMeshPipelineDescription(
+      MetalShader::MetalTranslation* vertex_translation,
+      MetalShader::MetalTranslation* pixel_translation,
+      NativeMeshPipelineType mesh_type,
+      const PipelineAttachmentFormats& attachment_formats,
+      const PipelineRenderingKey& rendering_key) const;
+  MetalPipelineDescription BuildNativeRectangleMeshPipelineDescription(
+      MetalShader::MetalTranslation* vertex_translation,
+      MetalShader::MetalTranslation* pixel_translation,
+      const PipelineAttachmentFormats& attachment_formats,
+      const PipelineRenderingKey& rendering_key) const;
   void QueueStoredShader(MetalShader& shader);
   void QueueStoredPipeline(const MetalPipelineDescription& description,
                            uint64_t description_hash);
   bool EnsureDxbcTranslationReadyLocked(
       MetalShader::MetalTranslation* translation, const char* stage_name);
+  bool IsDxbcToDxilConverterAvailable() const;
+  void LogHelperDxilUnavailableOnce(uint64_t key, const char* stage_name,
+                                    uint64_t shader_hash = 0);
   bool ConvertDxbcToDxil(const std::vector<uint8_t>& dxbc_data,
                          std::vector<uint8_t>& dxil_data,
                          std::string* error_message);
@@ -293,7 +371,10 @@ class MetalPipelineCache {
   std::unique_ptr<DxbcShaderTranslator> shader_translator_;
   std::unique_ptr<DxbcToDxilConverter> dxbc_to_dxil_converter_;
   std::unique_ptr<MetalShaderConverter> metal_shader_converter_;
+  std::unique_ptr<MslShaderTranslator> native_msl_translator_;
   std::mutex shader_translation_mutex_;
+  std::mutex helper_dxil_unavailable_log_mutex_;
+  std::unordered_set<uint64_t> helper_dxil_unavailable_log_keys_;
 
   std::atomic<uint64_t> dxil_convert_requests_{0};
   std::atomic<uint64_t> dxil_cache_hits_{0};
@@ -344,12 +425,16 @@ class MetalPipelineCache {
   // MSC pipeline caches (keyed by shader combination).
   std::unordered_map<uint64_t, std::unique_ptr<PipelineHandle>> pipeline_cache_;
   std::unordered_map<uint64_t, GeometryPipelineState> geometry_pipeline_cache_;
+  std::unordered_map<uint64_t, NativeMeshPipelineState>
+      native_mesh_pipeline_cache_;
   std::unordered_map<uint64_t, TessellationPipelineState>
       tessellation_pipeline_cache_;
   std::unique_ptr<GeneratedStageCache> generated_stages_;
 
   MTL::Library* depth_only_pixel_library_ = nullptr;
   std::string depth_only_pixel_function_name_;
+  MTL::Library* native_depth_only_pixel_library_ = nullptr;
+  std::string native_depth_only_pixel_function_name_;
 
   // Shader storage paths and writers.
   ShaderStorageWriter<MetalPipelineStoredDescription> storage_writer_;
@@ -373,12 +458,22 @@ class MetalPipelineCache {
 
   std::vector<std::thread> creation_threads_;
   struct PipelineCreationRequest {
+    enum class Type : uint8_t {
+      kPipeline,
+      kNativeMslDiagnostics,
+    };
+    Type type{Type::kPipeline};
     PipelineHandle* handle{nullptr};
+    MetalShader::MetalTranslation* native_msl_translation{nullptr};
+    const char* native_msl_stage_name{nullptr};
+    uint8_t priority{0};
   };
   struct PipelineCreationPriorityCompare {
     bool operator()(const PipelineCreationRequest& a,
                     const PipelineCreationRequest& b) const {
-      return a.handle->priority < b.handle->priority;
+      uint8_t a_priority = a.handle ? a.handle->priority : a.priority;
+      uint8_t b_priority = b.handle ? b.handle->priority : b.priority;
+      return a_priority < b_priority;
     }
   };
   std::priority_queue<PipelineCreationRequest,

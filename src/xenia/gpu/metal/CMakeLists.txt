@@ -6,6 +6,7 @@ add_library(xenia-gpu-metal STATIC
   metal_backend_telemetry.h
   metal_command_processor.cc
   metal_command_processor.h
+  metal_draw_batch.cc
   metal_direct_host_resolve.cc
   metal_geometry_shader.cc
   metal_geometry_shader.h
@@ -35,6 +36,8 @@ add_library(xenia-gpu-metal STATIC
   metal_upload_buffer_pool.h
   metal_zpd_visibility_pool.cc
   metal_zpd_visibility_pool.h
+  native_msl_bindings.cc
+  native_msl_bindings.h
 )
 target_link_libraries(xenia-gpu-metal PUBLIC
   xenia-base

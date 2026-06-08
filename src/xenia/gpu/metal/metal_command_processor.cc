@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -36,12 +37,12 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
-#include "xenia/base/xxhash.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/metal/metal_backend_telemetry.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
+#include "xenia/gpu/metal/native_msl_bindings.h"
 #include "xenia/gpu/packet_disassembler.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/texture_util.h"
@@ -62,6 +63,8 @@
 
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(metal_native_msl_helper_msc);
+DECLARE_bool(metal_native_msl_render);
 DECLARE_bool(submit_on_primary_buffer_end);
 
 DEFINE_bool(
@@ -81,20 +84,16 @@ constexpr size_t kMaxPendingSharedMemoryWriteCapacity = 64;
 constexpr size_t kMaxSharedMemoryWaitSegmentsPerPending = 64;
 constexpr size_t kMaxCurrentDrawVertexFetchRanges =
     xenos::kVertexFetchConstantCount;
-
-class ScopedAutoreleasePool {
- public:
-  ScopedAutoreleasePool() : pool_(NS::AutoreleasePool::alloc()->init()) {}
-  ~ScopedAutoreleasePool() {
-    if (pool_) {
-      pool_->drain();
-    }
-  }
-
- private:
-  NS::AutoreleasePool* pool_ = nullptr;
-};
-
+constexpr uint32_t kNativeMslDrawConstantsChangeSystem = 1u << 0;
+constexpr uint32_t kNativeMslDrawConstantsChangeFloat = 1u << 1;
+constexpr uint32_t kNativeMslDrawConstantsChangeBoolLoop = 1u << 2;
+constexpr uint32_t kNativeMslDrawConstantsChangeFetch = 1u << 3;
+constexpr uint32_t kNativeMslDrawConstantsChangeDescriptorIndices = 1u << 4;
+constexpr uint32_t kNativeMslDrawConstantsChangePrimitiveIndex = 1u << 5;
+// Keep helper-stage MSC translations separate from native-MSL standard
+// VS/PS translations. The bit is outside the semantic DxbcShaderTranslator
+// modification fields and only changes the Translation cache key.
+constexpr uint64_t kMetalHelperStageMscTranslationKeyBit = 1ull << 63;
 const char* MetalTelemetryCbvSlotName(size_t slot) {
   switch (slot) {
     case 0:
@@ -152,6 +151,139 @@ MTL::RenderStages MetalAllGraphicsRenderStages() {
                            MTL::RenderStageObject | MTL::RenderStageMesh);
 }
 
+template <typename Binding>
+size_t MetalNativeBindingLayoutHash(const std::vector<Binding>& bindings,
+                                    uint64_t empty_hash) {
+  if (bindings.empty()) {
+    return static_cast<size_t>(empty_hash);
+  }
+  uint64_t hash =
+      XXH3_64bits(bindings.data(), bindings.size() * sizeof(Binding));
+  hash ^= uint64_t(bindings.size()) * 0x9E3779B185EBCA87ull;
+  hash ^= empty_hash;
+  return static_cast<size_t>(hash ? hash : empty_hash);
+}
+
+uint32_t MetalNativeDescriptorIndicesWordCount(
+    const DxbcShader::TranslationMetadata& metadata) {
+  uint32_t word_count = 1;
+  for (const DxbcShader::TextureBinding& binding : metadata.texture_bindings) {
+    word_count =
+        std::max(word_count, binding.bindless_descriptor_index + uint32_t(1));
+  }
+  for (const DxbcShader::SamplerBinding& binding : metadata.sampler_bindings) {
+    word_count =
+        std::max(word_count, binding.bindless_descriptor_index + uint32_t(1));
+  }
+  return word_count;
+}
+
+struct NativeMslTextureSignVariant {
+  uint64_t key = 0;
+  DxbcShader::TextureSignComponentMasks component_masks = {};
+  DxbcShader::TextureSignComponentMasks sign_values = {};
+};
+
+uint8_t MaskNativeMslTextureSigns(uint8_t signs, uint8_t component_mask) {
+  uint8_t masked = 0;
+  for (uint32_t i = 0; i < 4; ++i) {
+    if (component_mask & (uint8_t(1) << i)) {
+      masked |= signs & (uint8_t(0x3) << (i * 2));
+    }
+  }
+  return masked;
+}
+
+uint64_t NativeMslTextureSignInputKey(const RegisterFile& regs,
+                                      const Shader& shader) {
+  uint64_t key = UINT64_C(0x4E4D534C53696E70);  // "NMSLSinp"
+  bool has_sign_inputs = false;
+  auto mix_key = [](uint64_t hash, uint64_t value) {
+    hash ^= value + UINT64_C(0x9E3779B185EBCA87) + (hash << 6) + (hash >> 2);
+    return hash;
+  };
+  for (const Shader::TextureBinding& shader_binding :
+       shader.texture_bindings()) {
+    const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
+    if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
+        shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
+      continue;
+    }
+    uint8_t component_mask = uint8_t(fetch.result.GetUsedResultComponents() &
+                                     fetch.GetNonZeroResultComponents());
+    if (!component_mask) {
+      continue;
+    }
+    const uint32_t fetch_constant = shader_binding.fetch_constant;
+    const uint8_t signs =
+        texture_util::SwizzleSigns(regs.GetTextureFetch(fetch_constant));
+    const uint8_t masked_signs =
+        MaskNativeMslTextureSigns(signs, component_mask);
+    key = mix_key(key, fetch_constant);
+    key = mix_key(key, component_mask);
+    key = mix_key(key, masked_signs);
+    has_sign_inputs = true;
+  }
+  if (!has_sign_inputs) {
+    return 0;
+  }
+  return key ? key : 1;
+}
+
+NativeMslTextureSignVariant BuildNativeMslTextureSignVariant(
+    const RegisterFile& regs, const Shader& shader) {
+  NativeMslTextureSignVariant variant = {};
+  bool has_sign_inputs = false;
+  for (const Shader::TextureBinding& shader_binding :
+       shader.texture_bindings()) {
+    const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
+    if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
+        shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
+      continue;
+    }
+    uint8_t component_mask = uint8_t(fetch.result.GetUsedResultComponents() &
+                                     fetch.GetNonZeroResultComponents());
+    if (!component_mask) {
+      continue;
+    }
+    const uint32_t fetch_constant = shader_binding.fetch_constant;
+    const uint8_t signs =
+        texture_util::SwizzleSigns(regs.GetTextureFetch(fetch_constant));
+    variant.component_masks[fetch_constant] |= component_mask;
+    variant.sign_values[fetch_constant] |=
+        MaskNativeMslTextureSigns(signs, component_mask);
+    has_sign_inputs = true;
+  }
+  if (!has_sign_inputs) {
+    return variant;
+  }
+  XXH3_state_t hash_state;
+  XXH3_64bits_reset(&hash_state);
+  XXH3_64bits_update(&hash_state, variant.component_masks.data(),
+                     variant.component_masks.size());
+  XXH3_64bits_update(&hash_state, variant.sign_values.data(),
+                     variant.sign_values.size());
+  variant.key = XXH3_64bits_digest(&hash_state);
+  if (!variant.key) {
+    variant.key = 1;
+  }
+  return variant;
+}
+
+uint64_t NativeMslTranslationCacheKey(uint64_t shader_modification,
+                                      uint64_t texture_sign_key) {
+  if (!texture_sign_key) {
+    return shader_modification;
+  }
+  uint64_t key_data[] = {
+      shader_modification,
+      texture_sign_key,
+      UINT64_C(0x4E4D534C53676E31),  // "NMSLSgn1"
+  };
+  uint64_t key = XXH3_64bits(key_data, sizeof(key_data));
+  return key ? key : UINT64_C(0x4E4D534C53676E31);
+}
+
 uint32_t MetalRenderStageBits(MTL::RenderStages stages) {
   return uint32_t(NS::UInteger(stages));
 }
@@ -182,6 +314,31 @@ bool MetalResidencySetCvarAllowsEnable(bool supported) {
     return true;
   }
   return supported;
+}
+
+MTL::Texture* CreateNativeNullTexture(MTL::Device* device,
+                                      MTL::TextureType texture_type,
+                                      const char* label) {
+  if (!device) {
+    return nullptr;
+  }
+  MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
+  desc->setTextureType(texture_type);
+  desc->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
+  desc->setWidth(1);
+  desc->setHeight(1);
+  if (texture_type == MTL::TextureType3D) {
+    desc->setDepth(1);
+  }
+  desc->setStorageMode(MTL::StorageModeShared);
+  desc->setUsage(MTL::TextureUsageShaderRead);
+
+  MTL::Texture* texture = device->newTexture(desc);
+  desc->release();
+  if (texture && label) {
+    texture->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
+  }
+  return texture;
 }
 
 const char* MetalTelemetryRootRebuildReasonName(size_t reason) {
@@ -306,6 +463,8 @@ const char* MetalPreparedDrawQueueRejectReasonName(size_t reason) {
     case 8:
       return "rt_key_mismatch";
     case 9:
+      return "native_msl_direct_resources";
+    case 10:
       return "queue_budget";
     default:
       return "invalid";
@@ -380,6 +539,159 @@ const char* MetalTelemetryRenderEncoderBufferStageName(size_t stage) {
     default:
       return "invalid";
   }
+}
+
+const char* MetalTelemetryNativeMslDrawConstantsRebuildReasonName(
+    size_t stage_reason) {
+  constexpr size_t kReasonCount = 10;
+  const size_t stage = stage_reason / kReasonCount;
+  const size_t reason = stage_reason % kReasonCount;
+  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
+  const char* reason_name = nullptr;
+  switch (reason) {
+    case 0:
+      reason_name = "reuse";
+      break;
+    case 1:
+      reason_name = "initial";
+      break;
+    case 2:
+      reason_name = "frame_open";
+      break;
+    case 3:
+      reason_name = "system";
+      break;
+    case 4:
+      reason_name = "float";
+      break;
+    case 5:
+      reason_name = "bool_loop";
+      break;
+    case 6:
+      reason_name = "fetch";
+      break;
+    case 7:
+      reason_name = "descriptor_indices";
+      break;
+    case 8:
+      reason_name = "primitive_index";
+      break;
+    case 9:
+      reason_name = "mixed";
+      break;
+    default:
+      reason_name = "invalid";
+      break;
+  }
+  static thread_local std::string formatted;
+  formatted = fmt::format("{}.{}", stage_name, reason_name);
+  return formatted.c_str();
+}
+
+const char* MetalTelemetryNativeMslDrawConstantsChangeMaskName(
+    size_t stage_mask) {
+  constexpr size_t kMaskCount = 64;
+  const size_t stage = stage_mask / kMaskCount;
+  const uint32_t mask = uint32_t(stage_mask % kMaskCount);
+  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
+  static thread_local std::string formatted;
+  std::string mask_name;
+  auto append_field = [&](const char* name) {
+    if (!mask_name.empty()) {
+      mask_name += "+";
+    }
+    mask_name += name;
+  };
+  if (mask & kNativeMslDrawConstantsChangeSystem) {
+    append_field("system");
+  }
+  if (mask & kNativeMslDrawConstantsChangeFloat) {
+    append_field("float");
+  }
+  if (mask & kNativeMslDrawConstantsChangeBoolLoop) {
+    append_field("bool_loop");
+  }
+  if (mask & kNativeMslDrawConstantsChangeFetch) {
+    append_field("fetch");
+  }
+  if (mask & kNativeMslDrawConstantsChangeDescriptorIndices) {
+    append_field("descriptor_indices");
+  }
+  if (mask & kNativeMslDrawConstantsChangePrimitiveIndex) {
+    append_field("primitive_index");
+  }
+  if (mask_name.empty()) {
+    mask_name = "none";
+  }
+  formatted = fmt::format("{}.{}", stage_name, mask_name);
+  return formatted.c_str();
+}
+
+const char* MetalTelemetryRenderEncoderBufferSlotName(size_t stage_slot) {
+  constexpr size_t kSlotCount = 32;
+  const size_t stage = stage_slot / kSlotCount;
+  const size_t slot = stage_slot % kSlotCount;
+  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
+  const char* slot_name = nullptr;
+  switch (slot) {
+    case kNativeBufferTexture2DArrayHeap:
+      slot_name = "texture_2d_array_heap";
+      break;
+    case kNativeBufferTexture3DHeap:
+      slot_name = "texture_3d_heap";
+      break;
+    case kNativeBufferTextureCubeHeap:
+      slot_name = "texture_cube_heap";
+      break;
+    case kNativeBufferSamplerHeap:
+      slot_name = "sampler_heap";
+      break;
+    case kNativeBufferSystemConstants:
+      slot_name = "system";
+      break;
+    case kNativeBufferFloatConstants:
+      slot_name = "float";
+      break;
+    case kNativeBufferBoolLoopConstants:
+      slot_name = "bool_loop";
+      break;
+    case kNativeBufferFetchConstants:
+      slot_name = "fetch";
+      break;
+    case kNativeBufferDescriptorIndices:
+      slot_name = "descriptor_indices";
+      break;
+    case kNativeBufferSharedMemory:
+      slot_name = "shared_memory";
+      break;
+    case kNativeBufferTextureRuntimeInfo:
+      slot_name = "texture_runtime_info";
+      break;
+    case kNativeBufferMemExportDebug:
+      slot_name = "memexport_debug";
+      break;
+    case kNativeBufferPrimitiveIndexConstants:
+      slot_name = "primitive_index";
+      break;
+    case kNativeBufferDrawConstants:
+      slot_name = "draw_constants";
+      break;
+    default:
+      break;
+  }
+  static thread_local std::string formatted;
+  formatted = slot_name ? fmt::format("{}.{}", stage_name, slot_name)
+                        : fmt::format("{}.slot{}", stage_name, slot);
+  return formatted.c_str();
+}
+
+template <size_t Count>
+uint64_t MetalTelemetrySumCounts(const std::array<uint64_t, Count>& values) {
+  uint64_t sum = 0;
+  for (uint64_t value : values) {
+    sum += value;
+  }
+  return sum;
 }
 
 struct SharedMemoryRangeSegment {
@@ -767,17 +1079,6 @@ MTL::StencilOperation ToMetalStencilOperation(xenos::StencilOp op) {
   return kStencilOpMap[uint32_t(op) & 0x7];
 }
 
-bool FetchConstantDwordMasksOverlap(
-    const DxbcShader::FetchConstantDwordMask& a,
-    const DxbcShader::FetchConstantDwordMask& b) {
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (a[i] & b[i]) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool FetchConstantDwordMaskEmpty(
     const DxbcShader::FetchConstantDwordMask& mask) {
   for (uint32_t word : mask) {
@@ -860,12 +1161,19 @@ MetalCommandProcessor::~MetalCommandProcessor() {
     null_texture_->release();
     null_texture_ = nullptr;
   }
+  if (native_null_texture_3d_) {
+    native_null_texture_3d_->release();
+    native_null_texture_3d_ = nullptr;
+  }
+  if (native_null_texture_cube_) {
+    native_null_texture_cube_->release();
+    native_null_texture_cube_ = nullptr;
+  }
   if (null_sampler_) {
     null_sampler_->release();
     null_sampler_ = nullptr;
   }
-  current_bindless_stage_root_valid_.fill(false);
-  current_bindless_stage_root_serials_.fill(0);
+  graphics_root_argument_state_ = {};
   current_bindless_cbv_gpu_addresses_ = {};
   current_bindless_cbv_buffers_ = {};
   current_bindless_cbv_offsets_ = {};
@@ -874,6 +1182,7 @@ MetalCommandProcessor::~MetalCommandProcessor() {
   current_bindless_texture_resource_set_ = {};
   current_bindless_root_resource_set_ = {};
   current_bindless_fixed_resource_source_serial_ = 0;
+  current_bindless_texture_resource_input_serial_ = 0;
   current_bindless_texture_resource_source_serial_ = 0;
   current_bindless_root_resource_source_serial_ = 0;
   render_encoder_bindless_fixed_resources_serial_ = 0;
@@ -882,7 +1191,6 @@ MetalCommandProcessor::~MetalCommandProcessor() {
   render_encoder_bindless_stage_root_bind_serials_.fill(0);
   render_encoder_bindless_table_bind_mesh_path_ = false;
   render_encoder_bindless_table_bind_tessellation_ = false;
-  current_bindless_stage_root_arguments_ = {};
 }
 
 void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
@@ -1113,9 +1421,159 @@ void MetalCommandProcessor::RegisterInitialResidencySetResources() {
   AddResidencySetResource(tessellator_tables_buffer_);
   AddResidencySetResource(null_buffer_);
   AddResidencySetResource(null_texture_);
+  AddResidencySetResource(native_null_texture_3d_);
+  AddResidencySetResource(native_null_texture_cube_);
   AddResidencySetResource(view_bindless_heap_);
   AddResidencySetResource(sampler_bindless_heap_);
+  AddResidencySetResource(native_msl_texture_2d_array_heap_);
+  AddResidencySetResource(native_msl_texture_3d_heap_);
+  AddResidencySetResource(native_msl_texture_cube_heap_);
+  AddResidencySetResource(native_msl_sampler_heap_);
   AddResidencySetResource(system_view_tables_);
+}
+
+bool MetalCommandProcessor::CreateNativeMslTextureArgumentHeap(
+    MTL::TextureType texture_type, const char* label,
+    MTL::ArgumentEncoder*& encoder_out, MTL::Buffer*& buffer_out) {
+  encoder_out = nullptr;
+  buffer_out = nullptr;
+  MTL::ArgumentDescriptor* descriptor =
+      MTL::ArgumentDescriptor::argumentDescriptor();
+  if (!descriptor) {
+    XELOGE("Failed to create native MSL texture argument descriptor");
+    return false;
+  }
+  descriptor->setDataType(MTL::DataTypeTexture);
+  descriptor->setTextureType(texture_type);
+  descriptor->setArrayLength(kNativeMslTextureHeapSize);
+  descriptor->setAccess(MTL::BindingAccessReadOnly);
+  descriptor->setIndex(0);
+  NS::Array* arguments = NS::Array::array(descriptor);
+  encoder_out = device_->newArgumentEncoder(arguments);
+  if (!encoder_out) {
+    XELOGE("Failed to create native MSL texture argument encoder {}", label);
+    return false;
+  }
+  encoder_out->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
+
+  const NS::UInteger encoded_length = encoder_out->encodedLength();
+  buffer_out = device_->newBuffer(
+      encoded_length,
+      MTL::ResourceStorageModeShared | MTL::ResourceCPUCacheModeWriteCombined);
+  if (!buffer_out) {
+    XELOGE("Failed to create native MSL texture argument heap {} ({} bytes)",
+           label, uint64_t(encoded_length));
+    encoder_out->release();
+    encoder_out = nullptr;
+    return false;
+  }
+  buffer_out->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
+  std::memset(buffer_out->contents(), 0, buffer_out->length());
+  encoder_out->setArgumentBuffer(buffer_out, 0);
+  return true;
+}
+
+bool MetalCommandProcessor::CreateNativeMslSamplerArgumentHeap(
+    MTL::ArgumentEncoder*& encoder_out, MTL::Buffer*& buffer_out) {
+  encoder_out = nullptr;
+  buffer_out = nullptr;
+  MTL::ArgumentDescriptor* descriptor =
+      MTL::ArgumentDescriptor::argumentDescriptor();
+  if (!descriptor) {
+    XELOGE("Failed to create native MSL sampler argument descriptor");
+    return false;
+  }
+  descriptor->setDataType(MTL::DataTypeSampler);
+  descriptor->setArrayLength(kNativeMslSamplerHeapSize);
+  descriptor->setAccess(MTL::BindingAccessReadOnly);
+  descriptor->setIndex(0);
+  NS::Array* arguments = NS::Array::array(descriptor);
+  encoder_out = device_->newArgumentEncoder(arguments);
+  if (!encoder_out) {
+    XELOGE("Failed to create native MSL sampler argument encoder");
+    return false;
+  }
+  encoder_out->setLabel(
+      NS::String::string("XeniaNativeMslSamplerHeap", NS::UTF8StringEncoding));
+
+  const NS::UInteger encoded_length = encoder_out->encodedLength();
+  buffer_out = device_->newBuffer(
+      encoded_length,
+      MTL::ResourceStorageModeShared | MTL::ResourceCPUCacheModeWriteCombined);
+  if (!buffer_out) {
+    XELOGE("Failed to create native MSL sampler argument heap ({} bytes)",
+           uint64_t(encoded_length));
+    encoder_out->release();
+    encoder_out = nullptr;
+    return false;
+  }
+  buffer_out->setLabel(
+      NS::String::string("XeniaNativeMslSamplerHeap", NS::UTF8StringEncoding));
+  std::memset(buffer_out->contents(), 0, buffer_out->length());
+  encoder_out->setArgumentBuffer(buffer_out, 0);
+  return true;
+}
+
+bool MetalCommandProcessor::InitializeNativeMslArgumentHeaps() {
+  native_msl_argument_heaps_ready_ = false;
+  native_msl_view_indices_.clear();
+  native_msl_view_index_free_.clear();
+  native_msl_view_index_next_ = 0;
+  native_msl_view_index_exhausted_logged_ = false;
+  if (!device_) {
+    return false;
+  }
+  if (device_->argumentBuffersSupport() != MTL::ArgumentBuffersTier2) {
+    XELOGE("Native MSL resource heaps require Metal argument buffers tier 2");
+    return false;
+  }
+  if (!CreateNativeMslTextureArgumentHeap(
+          MTL::TextureType2DArray, "XeniaNativeMslTexture2DArrayHeap",
+          native_msl_texture_2d_array_heap_encoder_,
+          native_msl_texture_2d_array_heap_) ||
+      !CreateNativeMslTextureArgumentHeap(
+          MTL::TextureType3D, "XeniaNativeMslTexture3DHeap",
+          native_msl_texture_3d_heap_encoder_, native_msl_texture_3d_heap_) ||
+      !CreateNativeMslTextureArgumentHeap(MTL::TextureTypeCube,
+                                          "XeniaNativeMslTextureCubeHeap",
+                                          native_msl_texture_cube_heap_encoder_,
+                                          native_msl_texture_cube_heap_) ||
+      !CreateNativeMslSamplerArgumentHeap(native_msl_sampler_heap_encoder_,
+                                          native_msl_sampler_heap_)) {
+    ShutdownNativeMslArgumentHeaps();
+    return false;
+  }
+  native_msl_argument_heaps_ready_ = true;
+  native_msl_view_indices_.assign(kViewBindlessHeapSize, UINT32_MAX);
+  return true;
+}
+
+void MetalCommandProcessor::ShutdownNativeMslArgumentHeaps() {
+  native_msl_argument_heaps_ready_ = false;
+  native_msl_view_indices_.clear();
+  native_msl_view_index_free_.clear();
+  native_msl_view_index_next_ = 0;
+  native_msl_view_index_exhausted_logged_ = false;
+  auto release_encoder = [](MTL::ArgumentEncoder*& encoder) {
+    if (encoder) {
+      encoder->release();
+      encoder = nullptr;
+    }
+  };
+  auto release_buffer = [](MTL::Buffer*& buffer) {
+    if (buffer) {
+      buffer->release();
+      buffer = nullptr;
+    }
+  };
+  release_encoder(native_msl_texture_2d_array_heap_encoder_);
+  release_encoder(native_msl_texture_3d_heap_encoder_);
+  release_encoder(native_msl_texture_cube_heap_encoder_);
+  release_encoder(native_msl_sampler_heap_encoder_);
+  release_buffer(native_msl_texture_2d_array_heap_);
+  release_buffer(native_msl_texture_3d_heap_);
+  release_buffer(native_msl_texture_cube_heap_);
+  release_buffer(native_msl_sampler_heap_);
 }
 
 bool MetalCommandProcessor::SetupContext() {
@@ -1220,6 +1678,10 @@ bool MetalCommandProcessor::SetupContext() {
   sampler_bindless_heap_next_ = 0;
   sampler_bindless_heap_exhausted_logged_ = false;
 
+  if (cvars::metal_native_msl_render && !InitializeNativeMslArgumentHeaps()) {
+    return false;
+  }
+
   texture_cache_ = std::make_unique<MetalTextureCache>(this, *register_file_,
                                                        *shared_memory_, 1, 1);
   if (!texture_cache_->Initialize()) {
@@ -1320,6 +1782,19 @@ bool MetalCommandProcessor::SetupContext() {
   MTL::Region region =
       MTL::Region(0, 0, 0, 1, 1, 1);  // x,y,z origin, w,h,d size
   null_texture_->replaceRegion(region, 0, 0, &white_pixel, 4, 0);  // slice 0
+
+  native_null_texture_3d_ = CreateNativeNullTexture(device_, MTL::TextureType3D,
+                                                    "NativeMslNullTexture3D");
+  if (!native_null_texture_3d_) {
+    XELOGE("Failed to create native MSL null 3D texture");
+    return false;
+  }
+  native_null_texture_cube_ = CreateNativeNullTexture(
+      device_, MTL::TextureTypeCube, "NativeMslNullTextureCube");
+  if (!native_null_texture_cube_) {
+    XELOGE("Failed to create native MSL null cube texture");
+    return false;
+  }
 
   // Create a default sampler for unbound sampler slots
   // Must set supportsArgumentBuffers=YES for use in argument buffers
@@ -1527,6 +2002,8 @@ void MetalCommandProcessor::ShutdownContext() {
     texture_cache_.reset();
   }
 
+  ShutdownNativeMslArgumentHeaps();
+
   // Release persistent bindless heaps after texture/sampler caches are
   // torn down (destructors write to these heaps during release).
   if (view_bindless_heap_) {
@@ -1706,6 +2183,7 @@ void MetalCommandProcessor::FreeViewBindlessIndexNow(uint32_t index) {
   if (IRDescriptorTableEntry* entry = GetViewBindlessHeapEntry(index)) {
     std::memset(entry, 0, sizeof(IRDescriptorTableEntry));
   }
+  ClearNativeMslViewBindlessTexture(index);
   view_bindless_heap_free_.push_back(index);
   view_bindless_heap_exhausted_logged_ = false;
 }
@@ -1717,6 +2195,7 @@ void MetalCommandProcessor::FreeSamplerBindlessIndexNow(uint32_t index) {
   if (IRDescriptorTableEntry* entry = GetSamplerBindlessHeapEntry(index)) {
     std::memset(entry, 0, sizeof(IRDescriptorTableEntry));
   }
+  ClearNativeMslSamplerBindlessState(index);
   sampler_bindless_heap_free_.push_back(index);
   sampler_bindless_heap_exhausted_logged_ = false;
 }
@@ -1753,6 +2232,130 @@ IRDescriptorTableEntry* MetalCommandProcessor::GetSamplerBindlessHeapEntry(
          index;
 }
 
+void MetalCommandProcessor::SetNativeMslViewBindlessTexture(
+    uint32_t index, MTL::Texture* texture) {
+  if (!native_msl_argument_heaps_ready_ || index >= kViewBindlessHeapSize ||
+      !texture) {
+    return;
+  }
+  const uint32_t native_index = GetOrAllocateNativeMslViewBindlessIndex(index);
+  if (native_index == UINT32_MAX) {
+    return;
+  }
+  MTL::TextureType texture_type = texture->textureType();
+  auto set_heap_texture = [&](MTL::ArgumentEncoder* encoder,
+                              MTL::Texture* heap_texture) {
+    if (encoder) {
+      encoder->setTexture(heap_texture, native_index);
+    }
+  };
+  set_heap_texture(native_msl_texture_2d_array_heap_encoder_,
+                   texture_type == MTL::TextureType2DArray ? texture : nullptr);
+  set_heap_texture(native_msl_texture_3d_heap_encoder_,
+                   texture_type == MTL::TextureType3D ? texture : nullptr);
+  set_heap_texture(native_msl_texture_cube_heap_encoder_,
+                   texture_type == MTL::TextureTypeCube ? texture : nullptr);
+}
+
+void MetalCommandProcessor::ClearNativeMslViewBindlessTexture(uint32_t index) {
+  if (index >= kViewBindlessHeapSize) {
+    return;
+  }
+  const uint32_t native_index = GetNativeMslViewBindlessIndex(index);
+  if (native_index == UINT32_MAX) {
+    return;
+  }
+  if (native_msl_argument_heaps_ready_) {
+    if (native_msl_texture_2d_array_heap_encoder_) {
+      native_msl_texture_2d_array_heap_encoder_->setTexture(nullptr,
+                                                            native_index);
+    }
+    if (native_msl_texture_3d_heap_encoder_) {
+      native_msl_texture_3d_heap_encoder_->setTexture(nullptr, native_index);
+    }
+    if (native_msl_texture_cube_heap_encoder_) {
+      native_msl_texture_cube_heap_encoder_->setTexture(nullptr, native_index);
+    }
+  }
+  FreeNativeMslViewBindlessIndex(index);
+}
+
+uint32_t MetalCommandProcessor::GetNativeMslViewBindlessIndex(
+    uint32_t index) const {
+  if (index >= native_msl_view_indices_.size()) {
+    return UINT32_MAX;
+  }
+  return native_msl_view_indices_[index];
+}
+
+uint32_t MetalCommandProcessor::GetNativeMslSamplerBindlessIndex(
+    uint32_t index) const {
+  return index < kNativeMslSamplerHeapSize ? index : UINT32_MAX;
+}
+
+void MetalCommandProcessor::SetNativeMslSamplerBindlessState(
+    uint32_t index, MTL::SamplerState* sampler) {
+  if (!native_msl_argument_heaps_ready_ || index >= kSamplerBindlessHeapSize ||
+      !native_msl_sampler_heap_encoder_ || !sampler) {
+    return;
+  }
+  native_msl_sampler_heap_encoder_->setSamplerState(sampler, index);
+}
+
+void MetalCommandProcessor::ClearNativeMslSamplerBindlessState(uint32_t index) {
+  if (!native_msl_argument_heaps_ready_ || index >= kSamplerBindlessHeapSize ||
+      !native_msl_sampler_heap_encoder_) {
+    return;
+  }
+  native_msl_sampler_heap_encoder_->setSamplerState(nullptr, index);
+}
+
+uint32_t MetalCommandProcessor::GetOrAllocateNativeMslViewBindlessIndex(
+    uint32_t index) {
+  if (!native_msl_argument_heaps_ready_ || index >= kViewBindlessHeapSize) {
+    return UINT32_MAX;
+  }
+  if (native_msl_view_indices_.size() != kViewBindlessHeapSize) {
+    native_msl_view_indices_.assign(kViewBindlessHeapSize, UINT32_MAX);
+  }
+  uint32_t native_index = native_msl_view_indices_[index];
+  if (native_index != UINT32_MAX) {
+    return native_index;
+  }
+  if (!native_msl_view_index_free_.empty()) {
+    native_index = native_msl_view_index_free_.back();
+    native_msl_view_index_free_.pop_back();
+  } else {
+    if (native_msl_view_index_next_ >= kNativeMslTextureHeapSize) {
+      if (!native_msl_view_index_exhausted_logged_) {
+        XELOGE(
+            "Native MSL texture argument heap exhausted ({} slots, global "
+            "bindless index {})",
+            kNativeMslTextureHeapSize, index);
+        native_msl_view_index_exhausted_logged_ = true;
+      }
+      return UINT32_MAX;
+    }
+    native_index = native_msl_view_index_next_++;
+  }
+  native_msl_view_indices_[index] = native_index;
+  native_msl_view_index_exhausted_logged_ = false;
+  return native_index;
+}
+
+void MetalCommandProcessor::FreeNativeMslViewBindlessIndex(uint32_t index) {
+  if (index >= native_msl_view_indices_.size()) {
+    return;
+  }
+  const uint32_t native_index = native_msl_view_indices_[index];
+  if (native_index == UINT32_MAX) {
+    return;
+  }
+  native_msl_view_indices_[index] = UINT32_MAX;
+  native_msl_view_index_free_.push_back(native_index);
+  native_msl_view_index_exhausted_logged_ = false;
+}
+
 void MetalCommandProcessor::InitializeShaderStorage(
     const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
     std::function<void()> completion_callback) {
@@ -1779,6 +2382,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kSwap)) {
     XELOGE("Metal IssueSwap: failed to flush prepared draw queue");
   }
+  TryTrimPreparedDrawRetainedStorage();
 
   // End any active render encoder
   EndRenderEncoder(RenderEncoderEndReason::kSwap);
@@ -2722,6 +3326,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   auto normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
 
   bool use_tessellation_emulation = false;
+  bool use_native_msl_tessellation = false;
   if (primitive_processing_result.IsTessellated()) {
     if (!mesh_shader_supported_) {
       static bool tess_mesh_logged = false;
@@ -2743,6 +3348,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       }
     }
     use_tessellation_emulation = true;
+    use_native_msl_tessellation =
+        cvars::metal_native_msl_render && !cvars::metal_native_msl_helper_msc;
   }
 
   // Configure render targets via MetalRenderTargetCache, similar to D3D12.
@@ -2790,7 +3397,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
-  // Cast to MSC-specific shader types for the rest of this path.
+  // Cast to the Metal shader subclass for translation and resource metadata.
   auto* metal_vertex_shader = static_cast<MetalShader*>(vertex_shader);
   auto* metal_pixel_shader = static_cast<MetalShader*>(pixel_shader);
 
@@ -2807,24 +3414,85 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   Shader::HostVertexShaderType host_vertex_shader_type_for_translation =
       primitive_processing_result.host_vertex_shader_type;
-  if (host_vertex_shader_type_for_translation ==
-          Shader::HostVertexShaderType::kPointListAsTriangleStrip ||
+  bool host_point_list_as_triangle_strip =
       host_vertex_shader_type_for_translation ==
-          Shader::HostVertexShaderType::kRectangleListAsTriangleStrip) {
-    if (!mesh_shader_supported_) {
-      static bool host_vs_expansion_logged = false;
-      if (!host_vs_expansion_logged) {
-        host_vs_expansion_logged = true;
-        XELOGW(
-            "Metal: Host VS expansion requested without mesh shader support; "
-            "skipping draw");
-      }
-      return pending_draw_pass_transfer_guard.Flush();
-    }
-    // Geometry emulation handles point/rectangle expansion; use the normal
-    // vertex shader translation path to avoid unsupported host VS types.
+      Shader::HostVertexShaderType::kPointListAsTriangleStrip;
+  bool host_rectangle_list_as_triangle_strip =
+      host_vertex_shader_type_for_translation ==
+      Shader::HostVertexShaderType::kRectangleListAsTriangleStrip;
+  const bool native_primitive_mesh_supported =
+      ::cvars::metal_native_msl_render && mesh_shader_supported_ &&
+      !primitive_processing_result.IsTessellated();
+  const bool raw_point_list_for_native_msl_mesh =
+      native_primitive_mesh_supported &&
+      primitive_processing_result.host_primitive_type ==
+          xenos::PrimitiveType::kPointList &&
+      host_vertex_shader_type_for_translation ==
+          Shader::HostVertexShaderType::kVertex;
+  const bool raw_rectangle_list_for_native_msl_mesh =
+      native_primitive_mesh_supported &&
+      primitive_processing_result.host_primitive_type ==
+          xenos::PrimitiveType::kRectangleList &&
+      host_vertex_shader_type_for_translation ==
+          Shader::HostVertexShaderType::kVertex;
+  const bool raw_quad_list_for_native_msl_mesh =
+      native_primitive_mesh_supported &&
+      primitive_processing_result.host_primitive_type ==
+          xenos::PrimitiveType::kQuadList &&
+      host_vertex_shader_type_for_translation ==
+          Shader::HostVertexShaderType::kVertex;
+
+  bool use_native_msl_primitive_mesh = false;
+  MetalPipelineCache::NativeMeshPipelineType native_msl_primitive_mesh_type =
+      MetalPipelineCache::NativeMeshPipelineType::kRectangleList;
+  if (raw_point_list_for_native_msl_mesh ||
+      (native_primitive_mesh_supported && host_point_list_as_triangle_strip)) {
+    use_native_msl_primitive_mesh = true;
+    native_msl_primitive_mesh_type =
+        MetalPipelineCache::NativeMeshPipelineType::kPointList;
     host_vertex_shader_type_for_translation =
-        Shader::HostVertexShaderType::kVertex;
+        Shader::HostVertexShaderType::kPointListAsMesh;
+    host_point_list_as_triangle_strip = false;
+  } else if (raw_rectangle_list_for_native_msl_mesh ||
+             (native_primitive_mesh_supported &&
+              host_rectangle_list_as_triangle_strip)) {
+    use_native_msl_primitive_mesh = true;
+    native_msl_primitive_mesh_type =
+        MetalPipelineCache::NativeMeshPipelineType::kRectangleList;
+    host_vertex_shader_type_for_translation =
+        Shader::HostVertexShaderType::kRectangleListAsMesh;
+    host_rectangle_list_as_triangle_strip = false;
+  } else if (raw_quad_list_for_native_msl_mesh) {
+    use_native_msl_primitive_mesh = true;
+    native_msl_primitive_mesh_type =
+        MetalPipelineCache::NativeMeshPipelineType::kQuadList;
+    host_vertex_shader_type_for_translation =
+        Shader::HostVertexShaderType::kQuadListAsMesh;
+  }
+
+  if (host_point_list_as_triangle_strip ||
+      host_rectangle_list_as_triangle_strip) {
+    const bool keep_native_msl_vs_expansion =
+        host_point_list_as_triangle_strip && ::cvars::metal_native_msl_render;
+    if (keep_native_msl_vs_expansion) {
+      // Native MSL can still expand point sprites in the vertex shader on
+      // devices without mesh shader support.
+    } else {
+      if (!mesh_shader_supported_) {
+        static bool host_vs_expansion_logged = false;
+        if (!host_vs_expansion_logged) {
+          host_vs_expansion_logged = true;
+          XELOGW(
+              "Metal: Host VS expansion requested without mesh shader support; "
+              "skipping draw");
+        }
+        return pending_draw_pass_transfer_guard.Flush();
+      }
+      // Geometry emulation handles point/rectangle expansion; use the normal
+      // vertex shader translation path to avoid unsupported host VS types.
+      host_vertex_shader_type_for_translation =
+          Shader::HostVertexShaderType::kVertex;
+    }
   }
   DxbcShaderTranslator::Modification vertex_shader_modification =
       pipeline_cache_->GetCurrentVertexShaderModification(
@@ -2840,17 +3508,37 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (!primitive_processing_result.IsTessellated()) {
     switch (primitive_processing_result.host_primitive_type) {
       case xenos::PrimitiveType::kPointList:
-        geometry_shader_type = PipelineGeometryShader::kPointList;
+        if (!use_native_msl_primitive_mesh) {
+          geometry_shader_type = PipelineGeometryShader::kPointList;
+        }
         break;
       case xenos::PrimitiveType::kRectangleList:
-        geometry_shader_type = PipelineGeometryShader::kRectangleList;
+        if (!use_native_msl_primitive_mesh &&
+            host_vertex_shader_type_for_translation !=
+                Shader::HostVertexShaderType::kRectangleListAsTriangleStrip) {
+          geometry_shader_type = PipelineGeometryShader::kRectangleList;
+        }
         break;
       case xenos::PrimitiveType::kQuadList:
-        geometry_shader_type = PipelineGeometryShader::kQuadList;
+        if (!use_native_msl_primitive_mesh) {
+          geometry_shader_type = PipelineGeometryShader::kQuadList;
+        }
         break;
       default:
         break;
     }
+  }
+  if (geometry_shader_type != PipelineGeometryShader::kNone &&
+      ::cvars::metal_native_msl_render &&
+      !::cvars::metal_native_msl_helper_msc) {
+    static bool native_helper_disabled_geometry_logged = false;
+    if (!native_helper_disabled_geometry_logged) {
+      native_helper_disabled_geometry_logged = true;
+      XELOGE(
+          "Metal: native-only geometry draw reached a generated helper class; "
+          "skipping draw instead of using the disabled helper island");
+    }
+    return pending_draw_pass_transfer_guard.Flush();
   }
 
   GeometryShaderKey geometry_shader_key;
@@ -2892,28 +3580,172 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
+  bool use_helper_stage_pipeline =
+      (use_tessellation_emulation && !use_native_msl_tessellation) ||
+      use_geometry_emulation;
+  if (use_helper_stage_pipeline) {
+    vertex_shader_modification =
+        pipeline_cache_->GetCurrentVertexShaderModification(
+            *vertex_shader, host_vertex_shader_type_for_translation,
+            interpolator_mask, /*native_guest_allowed=*/false);
+    pixel_shader_modification =
+        pixel_shader ? pipeline_cache_->GetCurrentPixelShaderModification(
+                           *pixel_shader, interpolator_mask, ps_param_gen_pos,
+                           normalized_depth_control,
+                           /*native_guest_allowed=*/false)
+                     : DxbcShaderTranslator::Modification(0);
+    if (use_geometry_emulation) {
+      use_geometry_emulation =
+          GetGeometryShaderKey(geometry_shader_type, vertex_shader_modification,
+                               pixel_shader_modification, geometry_shader_key);
+      use_helper_stage_pipeline =
+          use_tessellation_emulation || use_geometry_emulation;
+    }
+    if (!use_helper_stage_pipeline) {
+      vertex_shader_modification =
+          pipeline_cache_->GetCurrentVertexShaderModification(
+              *vertex_shader, host_vertex_shader_type_for_translation,
+              interpolator_mask);
+      pixel_shader_modification =
+          pixel_shader ? pipeline_cache_->GetCurrentPixelShaderModification(
+                             *pixel_shader, interpolator_mask, ps_param_gen_pos,
+                             normalized_depth_control)
+                       : DxbcShaderTranslator::Modification(0);
+    }
+  }
+  DxbcShaderTranslator::Modification vertex_translation_modification =
+      vertex_shader_modification;
+  DxbcShaderTranslator::Modification pixel_translation_modification =
+      pixel_shader_modification;
+  if (use_helper_stage_pipeline) {
+    vertex_translation_modification.value |=
+        kMetalHelperStageMscTranslationKeyBit;
+    if (pixel_shader) {
+      pixel_translation_modification.value |=
+          kMetalHelperStageMscTranslationKeyBit;
+    }
+  }
+  const bool use_native_msl_guest_translation =
+      ::cvars::metal_native_msl_render && !use_helper_stage_pipeline;
+  NativeMslTextureSignVariant vertex_texture_sign_variant = {};
+  NativeMslTextureSignVariant pixel_texture_sign_variant = {};
+  auto get_native_msl_texture_sign_variant = [&](size_t stage,
+                                                 const Shader& shader) {
+    NativeMslTextureSignVariantCache& cache =
+        native_msl_texture_sign_variant_cache_[stage];
+    const uint64_t input_key = NativeMslTextureSignInputKey(regs, shader);
+    if (cache.shader == &shader && cache.input_key == input_key) {
+      NativeMslTextureSignVariant variant = {};
+      variant.key = cache.variant_key;
+      variant.component_masks = cache.component_masks;
+      variant.sign_values = cache.sign_values;
+      return variant;
+    }
+    NativeMslTextureSignVariant variant =
+        BuildNativeMslTextureSignVariant(regs, shader);
+    cache.shader = &shader;
+    cache.input_key = input_key;
+    cache.variant_key = variant.key;
+    cache.component_masks = variant.component_masks;
+    cache.sign_values = variant.sign_values;
+    return variant;
+  };
+  if (use_native_msl_guest_translation) {
+    vertex_texture_sign_variant =
+        get_native_msl_texture_sign_variant(kStageVertex, *vertex_shader);
+    if (pixel_shader) {
+      pixel_texture_sign_variant =
+          get_native_msl_texture_sign_variant(kStagePixel, *pixel_shader);
+    }
+  }
+  const uint64_t vertex_translation_key =
+      use_native_msl_guest_translation
+          ? NativeMslTranslationCacheKey(vertex_translation_modification.value,
+                                         vertex_texture_sign_variant.key)
+          : vertex_translation_modification.value;
+  const uint64_t pixel_translation_key =
+      (pixel_shader && use_native_msl_guest_translation)
+          ? NativeMslTranslationCacheKey(pixel_translation_modification.value,
+                                         pixel_texture_sign_variant.key)
+          : pixel_translation_modification.value;
+
   // Get or create shader translations for the selected modifications.
   auto vertex_translation = static_cast<MetalShader::MetalTranslation*>(
-      vertex_shader->GetOrCreateTranslation(vertex_shader_modification.value));
+      vertex_shader->GetOrCreateTranslation(vertex_translation_key));
 
   MetalShader::MetalTranslation* pixel_translation = nullptr;
   if (pixel_shader) {
     pixel_translation = static_cast<MetalShader::MetalTranslation*>(
-        pixel_shader->GetOrCreateTranslation(pixel_shader_modification.value));
+        pixel_shader->GetOrCreateTranslation(pixel_translation_key));
   }
 
-  if (use_tessellation_emulation || use_geometry_emulation) {
-    if (!pipeline_cache_->EnsureDxbcTranslationReady(vertex_translation,
-                                                     "vertex")) {
+  if (use_native_msl_guest_translation) {
+    if (!vertex_translation->ConfigureNativeMslVariant(
+            vertex_translation_modification.value,
+            vertex_texture_sign_variant.key,
+            vertex_texture_sign_variant.component_masks,
+            vertex_texture_sign_variant.sign_values)) {
+      XELOGE(
+          "metal_native_msl: vertex shader {:016X} texture-sign variant key "
+          "collision",
+          vertex_shader->ucode_data_hash());
       return false;
     }
-    if (!pipeline_cache_->EnsureMetalTranslationReady(pixel_translation)) {
+    if (pixel_translation && !pixel_translation->ConfigureNativeMslVariant(
+                                 pixel_translation_modification.value,
+                                 pixel_texture_sign_variant.key,
+                                 pixel_texture_sign_variant.component_masks,
+                                 pixel_texture_sign_variant.sign_values)) {
+      XELOGE(
+          "metal_native_msl: pixel shader {:016X} texture-sign variant key "
+          "collision",
+          pixel_shader->ucode_data_hash());
+      return false;
+    }
+  }
+
+  if (use_helper_stage_pipeline) {
+    if (!pipeline_cache_->EnsureDxilTranslationReady(
+            vertex_translation,
+            use_tessellation_emulation ? "tessellation helper domain"
+                                       : "geometry helper vertex",
+            /*helper_stage_pipeline=*/true)) {
+      return false;
+    }
+    if (!pipeline_cache_->EnsureMetalTranslationReady(
+            pixel_translation, /*native_guest_allowed=*/false,
+            use_tessellation_emulation ? "tessellation helper pixel"
+                                       : "geometry helper pixel",
+            /*helper_stage_pipeline=*/true)) {
+      return false;
+    }
+  }
+  if (use_native_msl_tessellation) {
+    if (!pipeline_cache_->EnsureNativeMslTranslationReady(
+            vertex_translation, "native tessellation domain")) {
+      return false;
+    }
+    if (pixel_translation &&
+        !pipeline_cache_->EnsureNativeMslTranslationReady(
+            pixel_translation, "native tessellation pixel")) {
+      return false;
+    }
+  }
+  if (use_native_msl_primitive_mesh) {
+    if (!pipeline_cache_->EnsureNativeMslTranslationReady(
+            vertex_translation, "native primitive mesh vertex")) {
+      return false;
+    }
+    if (pixel_translation &&
+        !pipeline_cache_->EnsureNativeMslTranslationReady(
+            pixel_translation, "native primitive mesh pixel")) {
       return false;
     }
   }
 
   bool use_fallback_ps =
-      (use_tessellation_emulation || use_geometry_emulation) &&
+      (use_tessellation_emulation || use_geometry_emulation ||
+       use_native_msl_primitive_mesh) &&
       !pixel_translation;
 
   // Resolve attachment formats once for all pipeline paths.
@@ -2967,7 +3799,41 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   MetalPipelineCache::TessellationPipelineState* tessellation_pipeline_state =
       nullptr;
   MetalPipelineCache::GeometryPipelineState* geometry_pipeline_state = nullptr;
-  if (use_tessellation_emulation) {
+  MetalPipelineCache::NativeMeshPipelineState* native_mesh_pipeline_state =
+      nullptr;
+  if (use_native_msl_primitive_mesh) {
+    native_mesh_pipeline_state =
+        pipeline_cache_->GetOrCreateNativeMslPrimitiveMeshPipelineState(
+            vertex_translation, pixel_translation,
+            native_msl_primitive_mesh_type, attachment_formats, rendering_key);
+    pipeline = native_mesh_pipeline_state ? native_mesh_pipeline_state->pipeline
+                                          : nullptr;
+    if (!pipeline) {
+      XELOGW(
+          "Metal: native MSL primitive mesh pipeline creation failed; "
+          "skipping draw");
+      return pending_draw_pass_transfer_guard.Flush();
+    }
+  } else if (use_native_msl_tessellation) {
+    tessellation_pipeline_state =
+        pipeline_cache_->GetOrCreateNativeMslTessellationPipelineState(
+            vertex_translation, pixel_translation, primitive_processing_result,
+            attachment_formats, rendering_key);
+    pipeline = tessellation_pipeline_state
+                   ? tessellation_pipeline_state->pipeline
+                   : nullptr;
+    if (!pipeline) {
+      static bool native_tessellation_pipeline_failure_logged = false;
+      if (!native_tessellation_pipeline_failure_logged) {
+        native_tessellation_pipeline_failure_logged = true;
+        XELOGW(
+            "Metal: native MSL tessellation pipeline creation failed; "
+            "skipping tessellation-emulated draws until native helper object/"
+            "mesh generation is implemented");
+      }
+      return pending_draw_pass_transfer_guard.Flush();
+    }
+  } else if (use_tessellation_emulation) {
     tessellation_pipeline_state =
         pipeline_cache_->GetOrCreateTessellationPipelineState(
             vertex_translation, pixel_translation, primitive_processing_result,
@@ -2975,6 +3841,17 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     pipeline = tessellation_pipeline_state
                    ? tessellation_pipeline_state->pipeline
                    : nullptr;
+    if (!pipeline) {
+      static bool tessellation_pipeline_failure_logged = false;
+      if (!tessellation_pipeline_failure_logged) {
+        tessellation_pipeline_failure_logged = true;
+        XELOGW(
+            "Metal: tessellation emulation pipeline creation failed; skipping "
+            "tessellation-emulated draws instead of submitting a null "
+            "pipeline");
+      }
+      return pending_draw_pass_transfer_guard.Flush();
+    }
   } else if (use_geometry_emulation) {
     geometry_pipeline_state = pipeline_cache_->GetOrCreateGeometryPipelineState(
         vertex_translation, pixel_translation, geometry_shader_key,
@@ -3008,14 +3885,32 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
-  pipeline_cache_->SetupShaderBindingLayoutUserUIDs(*metal_vertex_shader);
-  if (metal_pixel_shader) {
+  const bool use_native_msl =
+      (!use_tessellation_emulation || use_native_msl_tessellation) &&
+      !use_geometry_emulation && vertex_translation &&
+      vertex_translation->is_native_msl() &&
+      (!pixel_translation || pixel_translation->is_native_msl());
+  const DxbcShader::TranslationMetadata* vertex_translation_metadata =
+      use_native_msl ? &vertex_translation->native_msl_metadata() : nullptr;
+  const DxbcShader::TranslationMetadata* pixel_translation_metadata =
+      use_native_msl && pixel_translation
+          ? &pixel_translation->native_msl_metadata()
+          : nullptr;
+
+  if (!use_native_msl) {
+    pipeline_cache_->SetupShaderBindingLayoutUserUIDs(*metal_vertex_shader);
+  }
+  if (!use_native_msl && metal_pixel_shader) {
     pipeline_cache_->SetupShaderBindingLayoutUserUIDs(*metal_pixel_shader);
   }
 
   uint32_t used_texture_mask =
-      metal_vertex_shader->GetUsedTextureMaskAfterTranslation();
-  if (metal_pixel_shader) {
+      vertex_translation_metadata
+          ? vertex_translation_metadata->used_texture_mask
+          : metal_vertex_shader->GetUsedTextureMaskAfterTranslation();
+  if (pixel_translation_metadata) {
+    used_texture_mask |= pixel_translation_metadata->used_texture_mask;
+  } else if (metal_pixel_shader) {
     used_texture_mask |=
         metal_pixel_shader->GetUsedTextureMaskAfterTranslation();
   }
@@ -3033,7 +3928,15 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   MTL::RenderPassDescriptor* draw_pass_descriptor =
       GetDrawRenderPassDescriptor(fallback_depth_attachment_required);
 
-  MetalTextureCache::TextureMaterializationPlan texture_materialization_plan;
+  PreparedDraw* prepared_draw = AcquirePreparedDraw();
+  PreparedDraw& draw = *prepared_draw;
+  auto fail_prepared_draw = [&]() {
+    RecyclePreparedDraw(prepared_draw);
+    return false;
+  };
+  MetalTextureCache::TextureMaterializationPlan& texture_materialization_plan =
+      draw.texture_materialization_plan;
+  texture_materialization_plan.Reset();
   bool textures_requested_for_draw = false;
   auto request_textures_for_draw = [&](uint64_t& telemetry_counter) -> bool {
     if (!EnsureCommandBuffer()) {
@@ -3055,10 +3958,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   bool memexport_used = memexport_used_vertex || memexport_used_pixel;
   MTL::RenderStages memexport_write_stages = MTL::RenderStages(0);
   if (memexport_used_vertex) {
-    memexport_write_stages =
-        (use_geometry_emulation || use_tessellation_emulation)
-            ? MTL::RenderStages(MTL::RenderStageObject | MTL::RenderStageMesh)
-            : MTL::RenderStageVertex;
+    if (use_native_msl_primitive_mesh) {
+      memexport_write_stages = MTL::RenderStageMesh;
+    } else {
+      memexport_write_stages =
+          (use_geometry_emulation || use_tessellation_emulation)
+              ? MTL::RenderStages(MTL::RenderStageObject | MTL::RenderStageMesh)
+              : MTL::RenderStageVertex;
+    }
   }
   if (memexport_used_pixel && is_rasterization_done) {
     memexport_write_stages =
@@ -3069,17 +3976,29 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   MTL::ResourceUsage shared_memory_usage =
       shared_memory_is_uav ? (MTL::ResourceUsageRead | MTL::ResourceUsageWrite)
                            : MTL::ResourceUsageRead;
+  const bool native_mesh_guest_dma_index_load =
+      use_native_msl_primitive_mesh &&
+      primitive_processing_result.index_buffer_type ==
+          PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA;
+  const bool native_tess_guest_dma_index_load =
+      use_native_msl_tessellation &&
+      primitive_processing_result.index_buffer_type ==
+          PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA;
   const bool guest_dma_index_buffer_read =
+      !use_native_msl_primitive_mesh && !native_tess_guest_dma_index_load &&
       !memexport_used &&
       primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA;
   const bool shader_primitive_index_load =
       primitive_processing_result.index_buffer_type ==
-      PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA;
+          PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA ||
+      native_mesh_guest_dma_index_load || native_tess_guest_dma_index_load;
   std::array<SharedMemory::Range, kMaxCurrentDrawVertexFetchRanges>
       vertex_fetch_ranges;
   uint32_t vertex_fetch_range_count = 0;
-  std::vector<SharedMemory::Range> current_draw_shared_memory_ranges;
+  std::vector<SharedMemory::Range>& current_draw_shared_memory_ranges =
+      current_draw_shared_memory_ranges_scratch_;
+  current_draw_shared_memory_ranges.clear();
   current_draw_shared_memory_ranges.reserve(kMaxCurrentDrawVertexFetchRanges +
                                             memexport_ranges_.size() + 2);
   auto add_current_draw_shared_memory_range =
@@ -3105,7 +4024,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (texture_cache_ && may_texture_request_load_data) {
     if (!texture_cache_->PrepareTextureMaterialization(
             regs, used_texture_mask, texture_materialization_plan)) {
-      return false;
+      return fail_prepared_draw();
     }
     for (const SharedMemory::Range& range :
          texture_materialization_plan.source_ranges) {
@@ -3122,7 +4041,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             regs, *vertex_shader, vertex_fetch_ranges.data(),
             uint32_t(vertex_fetch_ranges.size()), &vertex_fetch_range_count,
             true)) {
-      return false;
+      return fail_prepared_draw();
     }
     for (uint32_t i = 0; i < vertex_fetch_range_count; ++i) {
       add_current_draw_shared_memory_range(
@@ -3163,7 +4082,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             primitive_processing_result.guest_index_base,
             primitive_processing_result.host_draw_vertex_count,
             primitive_processing_result.host_index_format, "guest DMA")) {
-      return false;
+      return fail_prepared_draw();
     }
     if (shader_primitive_index_load &&
         !add_guest_index_range(
@@ -3171,7 +4090,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             primitive_processing_result.guest_draw_vertex_count,
             regs.Get<reg::VGT_DRAW_INITIATOR>().index_size,
             "shader primitive")) {
-      return false;
+      return fail_prepared_draw();
     }
 
     for (const auto& binding : vb_bindings) {
@@ -3211,38 +4130,45 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             ? backend_telemetry_.texture_requests_after_encoder_begin
             : backend_telemetry_.texture_requests_before_encoder;
     if (!request_textures_for_draw(texture_request_counter)) {
-      return false;
+      return fail_prepared_draw();
     }
   }
 
   UniformBufferInfo uniforms;
   DrawDynamicState draw_dynamic_state;
   const bool prepare_uniforms = constant_buffer_pool_ && shared_memory_;
+  if (use_native_msl && !prepare_uniforms) {
+    XELOGE(
+        "Native MSL draw requested without constant-buffer pool or shared "
+        "memory");
+    return fail_prepared_draw();
+  }
   if (prepare_uniforms) {
     if (!draw_pass_descriptor) {
       XELOGE("IssueDraw: no render pass descriptor for draw constants");
-      return false;
+      return fail_prepared_draw();
     }
     if (!EnsureCommandBuffer()) {
-      return false;
+      return fail_prepared_draw();
     }
-    if (!PrepareDrawConstants(regs, vertex_shader, pixel_shader,
-                              metal_vertex_shader, metal_pixel_shader,
-                              shared_memory_is_uav, is_rasterization_done,
-                              primitive_processing_result, used_texture_mask,
-                              normalized_color_mask, draw_pass_descriptor,
-                              uniforms, draw_dynamic_state)) {
-      return false;
+    if (!PrepareDrawConstants(
+            regs, vertex_shader, pixel_shader, metal_vertex_shader,
+            metal_pixel_shader, vertex_translation_metadata,
+            pixel_translation_metadata, shared_memory_is_uav,
+            is_rasterization_done, primitive_processing_result,
+            used_texture_mask, normalized_color_mask, draw_pass_descriptor,
+            uniforms, draw_dynamic_state)) {
+      return fail_prepared_draw();
     }
   }
 
   PreparedIndexBuffer prepared_guest_dma_index_buffer;
-  if (memexport_used &&
+  if (memexport_used && !use_native_msl_primitive_mesh &&
       primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA) {
     if (!PrepareGuestDMAIndexBufferForMemexport(
             primitive_processing_result, prepared_guest_dma_index_buffer)) {
-      return false;
+      return fail_prepared_draw();
     }
   }
 
@@ -3288,66 +4214,119 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   MTL::RenderStages shared_memory_consumer_stages = MTL::RenderStages(0);
   if (vertex_range_count || guest_dma_index_buffer_read ||
       shader_primitive_index_load) {
-    shared_memory_consumer_stages =
-        (use_geometry_emulation || use_tessellation_emulation)
-            ? MTL::RenderStages(MTL::RenderStageObject | MTL::RenderStageMesh)
-            : MTL::RenderStageVertex;
+    if (use_native_msl_primitive_mesh) {
+      shared_memory_consumer_stages = MTL::RenderStageMesh;
+    } else {
+      shared_memory_consumer_stages =
+          (use_geometry_emulation || use_tessellation_emulation)
+              ? MTL::RenderStages(MTL::RenderStageObject | MTL::RenderStageMesh)
+              : MTL::RenderStageVertex;
+    }
   }
   shared_memory_consumer_stages =
       MTL::RenderStages(NS::UInteger(shared_memory_consumer_stages) |
                         NS::UInteger(memexport_write_stages));
 
-  PreparedDraw prepared_draw;
-  prepared_draw.pipeline = pipeline;
-  prepared_draw.tessellation_pipeline_state = tessellation_pipeline_state;
-  prepared_draw.geometry_pipeline_state = geometry_pipeline_state;
-  prepared_draw.primitive_processing_result = primitive_processing_result;
-  prepared_draw.uniforms = uniforms;
-  prepared_draw.dynamic_state = draw_dynamic_state;
-  prepared_draw.prepared_guest_dma_index_buffer =
-      prepared_guest_dma_index_buffer;
+  draw.pipeline = pipeline;
+  draw.tessellation_pipeline_state = tessellation_pipeline_state;
+  draw.geometry_pipeline_state = geometry_pipeline_state;
+  draw.native_mesh_pipeline_state = native_mesh_pipeline_state;
+  draw.primitive_processing_result = primitive_processing_result;
+  draw.uniforms = uniforms;
+  draw.dynamic_state = draw_dynamic_state;
+  draw.prepared_guest_dma_index_buffer = prepared_guest_dma_index_buffer;
   if (index_buffer_info) {
-    prepared_draw.index_buffer_info = *index_buffer_info;
-    prepared_draw.has_index_buffer_info = true;
+    draw.index_buffer_info = *index_buffer_info;
+    draw.has_index_buffer_info = true;
   }
-  prepared_draw.vertex_bindings = vb_bindings;
-  prepared_draw.vertex_ranges = vertex_ranges;
-  prepared_draw.vertex_range_count = vertex_range_count;
-  prepared_draw.materialization_ranges =
-      std::move(current_draw_shared_memory_ranges);
-  prepared_draw.has_invalid_shared_memory =
-      current_draw_has_invalid_shared_memory;
-  prepared_draw.shared_memory_hazard_ranges = shared_memory_hazard_ranges;
-  prepared_draw.shared_memory_hazard_range_count =
-      shared_memory_hazard_range_count;
-  prepared_draw.shared_memory_consumer_stages = shared_memory_consumer_stages;
-  prepared_draw.memexport_ranges = memexport_ranges_;
-  prepared_draw.memexport_write_stages = memexport_write_stages;
-  prepared_draw.shared_memory_usage = shared_memory_usage;
-  prepared_draw.render_target_key = render_target_key;
-  prepared_draw.texture_resource_set = current_bindless_texture_resource_set_;
-  prepared_draw.texture_upload_needed =
+  assert_true(vb_bindings.size() <= UINT32_MAX);
+  draw.vertex_bindings = {vb_bindings.data(),
+                          static_cast<uint32_t>(vb_bindings.size())};
+  draw.vertex_ranges = vertex_ranges;
+  draw.vertex_range_count = vertex_range_count;
+  draw.materialization_ranges =
+      StorePreparedDrawMaterializationRanges(current_draw_shared_memory_ranges);
+  draw.texture_source_range_count =
+      static_cast<uint32_t>(texture_materialization_plan.source_ranges.size());
+  draw.has_invalid_shared_memory = current_draw_has_invalid_shared_memory;
+  draw.shared_memory_hazard_ranges = shared_memory_hazard_ranges;
+  draw.shared_memory_hazard_range_count = shared_memory_hazard_range_count;
+  draw.shared_memory_consumer_stages = shared_memory_consumer_stages;
+  draw.memexport_ranges = StorePreparedDrawMemexportRanges(memexport_ranges_);
+  draw.memexport_write_stages = memexport_write_stages;
+  draw.shared_memory_usage = shared_memory_usage;
+  draw.render_target_key = render_target_key;
+  draw.texture_resource_set = current_bindless_texture_resource_set_;
+  draw.texture_upload_needed =
       texture_materialization_plan.NeedsTextureUpload();
-  prepared_draw.use_tessellation_emulation = use_tessellation_emulation;
-  prepared_draw.use_geometry_emulation = use_geometry_emulation;
-  prepared_draw.shared_memory_is_uav = shared_memory_is_uav;
-  prepared_draw.memexport_used = memexport_used;
-  prepared_draw.uses_vertex_fetch = uses_vertex_fetch;
-  prepared_draw.prepare_uniforms = prepare_uniforms;
-  prepared_draw.fallback_depth_attachment_required =
-      fallback_depth_attachment_required;
-  prepared_draw.may_texture_request_load_data = may_texture_request_load_data;
-  prepared_draw.texture_materialization_plan =
-      std::move(texture_materialization_plan);
-  prepared_draw.has_pending_draw_pass_transfers =
+  draw.use_tessellation_emulation = use_tessellation_emulation;
+  draw.use_geometry_emulation = use_geometry_emulation;
+  draw.shared_memory_is_uav = shared_memory_is_uav;
+  draw.memexport_used = memexport_used;
+  draw.uses_vertex_fetch = uses_vertex_fetch;
+  draw.prepare_uniforms = prepare_uniforms;
+  draw.fallback_depth_attachment_required = fallback_depth_attachment_required;
+  draw.may_texture_request_load_data = may_texture_request_load_data;
+  draw.use_native_msl = use_native_msl;
+  draw.use_native_msl_primitive_mesh = use_native_msl_primitive_mesh;
+  draw.use_native_msl_tessellation = use_native_msl_tessellation;
+  if (use_native_msl && vertex_translation_metadata) {
+    draw.native_vertex_metadata = *vertex_translation_metadata;
+  }
+  if (use_native_msl && pixel_translation_metadata) {
+    draw.native_pixel_metadata = *pixel_translation_metadata;
+    draw.native_pixel_metadata_valid = true;
+  }
+  if (use_native_msl) {
+    if (vertex_translation_metadata &&
+        !native_msl::CaptureTextureRuntimeInfo(*texture_cache_,
+                                               *vertex_translation_metadata,
+                                               draw.native_vertex_bindings)) {
+      return fail_prepared_draw();
+    }
+    if (pixel_translation_metadata &&
+        !native_msl::CaptureTextureRuntimeInfo(*texture_cache_,
+                                               *pixel_translation_metadata,
+                                               draw.native_pixel_bindings)) {
+      return fail_prepared_draw();
+    }
+
+    uint32_t primitive_index_flags = 0u;
+    const bool shader_loads_primitive_indices =
+        primitive_processing_result.index_buffer_type ==
+            PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA ||
+        native_mesh_guest_dma_index_load || native_tess_guest_dma_index_load;
+    if (shader_loads_primitive_indices) {
+      primitive_index_flags |= 1u;
+      xenos::IndexFormat primitive_index_format =
+          (native_mesh_guest_dma_index_load || native_tess_guest_dma_index_load)
+              ? primitive_processing_result.host_index_format
+              : regs.Get<reg::VGT_DRAW_INITIATOR>().index_size;
+      if (primitive_index_format == xenos::IndexFormat::kInt32) {
+        primitive_index_flags |= 2u;
+      }
+    }
+    uint32_t primitive_metadata = 0u;
+    if (use_native_msl_tessellation) {
+      primitive_metadata =
+          uint32_t(primitive_processing_result.tessellation_mode) & 3u;
+    }
+    draw.native_primitive_index_constants = {
+        primitive_index_flags, primitive_processing_result.guest_index_base,
+        primitive_processing_result.guest_draw_vertex_count,
+        primitive_metadata};
+  }
+  draw.has_pending_draw_pass_transfers =
       render_target_cache_ &&
       render_target_cache_->HasPendingDrawPassTransfers();
-  return SubmitPreparedDraw(std::move(prepared_draw));
+  return SubmitPreparedDraw(prepared_draw);
 }
 
 bool MetalCommandProcessor::PrepareDrawConstants(
     const RegisterFile& regs, Shader* vertex_shader, Shader* pixel_shader,
     MetalShader* metal_vertex_shader, MetalShader* metal_pixel_shader,
+    const DxbcShader::TranslationMetadata* vertex_translation_metadata,
+    const DxbcShader::TranslationMetadata* pixel_translation_metadata,
     bool shared_memory_is_uav, bool is_rasterization_done,
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     uint32_t used_texture_mask, uint32_t normalized_color_mask,
@@ -3505,8 +4484,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   //   b3: Fetch constants
   //   b4: Descriptor indices
   constexpr size_t kBoolLoopConstantsSize = (8 + 32) * sizeof(uint32_t);
-  const size_t kFetchConstantCount =
-      xenos::kTextureFetchConstantCount * 6;  // 192 DWORDs = 768 bytes
 
   const MetalShader::DrawConstantMetadata& vertex_draw_metadata =
       metal_vertex_shader->GetDrawConstantMetadata();
@@ -3514,20 +4491,33 @@ bool MetalCommandProcessor::PrepareDrawConstants(
       metal_pixel_shader ? &metal_pixel_shader->GetDrawConstantMetadata()
                          : nullptr;
   std::array<uint32_t, kStageCount> active_cbv_masks = {
-      vertex_draw_metadata.active_cbv_mask,
-      pixel_draw_metadata ? pixel_draw_metadata->active_cbv_mask : 0};
+      vertex_translation_metadata
+          ? vertex_translation_metadata->used_cbuffer_mask
+          : vertex_draw_metadata.active_cbv_mask,
+      pixel_translation_metadata
+          ? pixel_translation_metadata->used_cbuffer_mask
+          : (pixel_draw_metadata ? pixel_draw_metadata->active_cbv_mask : 0)};
+  auto cbv_active = [&](size_t stage, CbvSlot slot) {
+    return (active_cbv_masks[stage] & (uint32_t(1) << slot)) != 0;
+  };
   std::array<DxbcShader::FetchConstantDwordMask, kStageCount>
       fetch_constant_dword_masks = {
-          metal_vertex_shader
+          vertex_translation_metadata
+              ? vertex_translation_metadata->fetch_constant_dword_mask
+          : metal_vertex_shader
               ? metal_vertex_shader->GetFetchConstantDwordMaskAfterTranslation()
               : DxbcShader::FetchConstantDwordMask(),
-          metal_pixel_shader
+          pixel_translation_metadata
+              ? pixel_translation_metadata->fetch_constant_dword_mask
+          : metal_pixel_shader
               ? metal_pixel_shader->GetFetchConstantDwordMaskAfterTranslation()
               : DxbcShader::FetchConstantDwordMask()};
-  MergeFetchConstantDwordMask(
-      fetch_constant_dword_masks[kStageVertex],
-      vertex_draw_metadata.shader_fetch_constant_dword_mask);
-  if (pixel_draw_metadata) {
+  if (!vertex_translation_metadata) {
+    MergeFetchConstantDwordMask(
+        fetch_constant_dword_masks[kStageVertex],
+        vertex_draw_metadata.shader_fetch_constant_dword_mask);
+  }
+  if (!pixel_translation_metadata && pixel_draw_metadata) {
     MergeFetchConstantDwordMask(
         fetch_constant_dword_masks[kStagePixel],
         pixel_draw_metadata->shader_fetch_constant_dword_mask);
@@ -3578,15 +4568,89 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   }
 
   const auto& texture_bindings_vertex =
-      metal_vertex_shader->GetTextureBindingsAfterTranslation();
+      vertex_translation_metadata
+          ? vertex_translation_metadata->texture_bindings
+          : metal_vertex_shader->GetTextureBindingsAfterTranslation();
   const auto& sampler_bindings_vertex =
-      metal_vertex_shader->GetSamplerBindingsAfterTranslation();
+      vertex_translation_metadata
+          ? vertex_translation_metadata->sampler_bindings
+          : metal_vertex_shader->GetSamplerBindingsAfterTranslation();
   const size_t texture_count_vertex = texture_bindings_vertex.size();
   const size_t sampler_count_vertex = sampler_bindings_vertex.size();
+  auto get_native_texture_layout_uid = [&](size_t stage, const auto& bindings,
+                                           uint64_t empty_hash) -> size_t {
+    NativeMslBindingLayoutUidCache& cache =
+        native_msl_binding_layout_uid_cache_[stage];
+    const void* data = bindings.empty() ? nullptr : bindings.data();
+    const size_t count = bindings.size();
+    if (cache.texture_bindings_data == data &&
+        cache.texture_binding_count == count) {
+      return cache.texture_layout_uid;
+    }
+    const size_t uid = MetalNativeBindingLayoutHash(bindings, empty_hash);
+    cache.texture_bindings_data = data;
+    cache.texture_binding_count = count;
+    cache.texture_layout_uid = uid;
+    return uid;
+  };
+  auto get_native_sampler_layout_uid = [&](size_t stage, const auto& bindings,
+                                           uint64_t empty_hash) -> size_t {
+    NativeMslBindingLayoutUidCache& cache =
+        native_msl_binding_layout_uid_cache_[stage];
+    const void* data = bindings.empty() ? nullptr : bindings.data();
+    const size_t count = bindings.size();
+    if (cache.sampler_bindings_data == data &&
+        cache.sampler_binding_count == count) {
+      return cache.sampler_layout_uid;
+    }
+    const size_t uid = MetalNativeBindingLayoutHash(bindings, empty_hash);
+    cache.sampler_bindings_data = data;
+    cache.sampler_binding_count = count;
+    cache.sampler_layout_uid = uid;
+    return uid;
+  };
+  auto get_sampler_parameters_cached =
+      [&](const DxbcShader::SamplerBinding& binding,
+          std::vector<SamplerParameterInputCache>& input_cache, size_t index) {
+        if (input_cache.size() <= index) {
+          input_cache.resize(index + 1);
+        }
+        SamplerParameterInputCache& cache = input_cache[index];
+        const xenos::xe_gpu_texture_fetch_t fetch =
+            regs.GetTextureFetch(binding.fetch_constant);
+        const std::array<uint32_t, 6> fetch_dwords = {
+            fetch.dword_0, fetch.dword_1, fetch.dword_2,
+            fetch.dword_3, fetch.dword_4, fetch.dword_5};
+        if (cache.valid && cache.fetch_constant == binding.fetch_constant &&
+            cache.mag_filter == binding.mag_filter &&
+            cache.min_filter == binding.min_filter &&
+            cache.mip_filter == binding.mip_filter &&
+            cache.aniso_filter == binding.aniso_filter &&
+            cache.fetch_dwords == fetch_dwords) {
+          return cache.parameters;
+        }
+        MetalTextureCache::SamplerParameters parameters =
+            texture_cache_->GetSamplerParameters(binding);
+        cache.fetch_constant = binding.fetch_constant;
+        cache.mag_filter = binding.mag_filter;
+        cache.min_filter = binding.min_filter;
+        cache.mip_filter = binding.mip_filter;
+        cache.aniso_filter = binding.aniso_filter;
+        cache.fetch_dwords = fetch_dwords;
+        cache.parameters = parameters;
+        cache.valid = true;
+        return parameters;
+      };
   size_t texture_layout_uid_vertex =
-      metal_vertex_shader->GetTextureBindingLayoutUserUID();
+      vertex_translation_metadata
+          ? get_native_texture_layout_uid(kStageVertex, texture_bindings_vertex,
+                                          0x564D534C54657830ull)
+          : metal_vertex_shader->GetTextureBindingLayoutUserUID();
   size_t sampler_layout_uid_vertex =
-      metal_vertex_shader->GetSamplerBindingLayoutUserUID();
+      vertex_translation_metadata
+          ? get_native_sampler_layout_uid(kStageVertex, sampler_bindings_vertex,
+                                          0x564D534C536D7030ull)
+          : metal_vertex_shader->GetSamplerBindingLayoutUserUID();
   auto& next_texture_bindless_indices_vertex =
       scratch_texture_bindless_indices_vertex_;
   auto& next_texture_bindless_resources_vertex =
@@ -3596,7 +4660,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   next_texture_bindless_indices_vertex.clear();
   next_texture_bindless_resources_vertex.clear();
   next_sampler_bindless_indices_vertex.clear();
-  scratch_descriptor_indices_vertex_.clear();
   if (sampler_count_vertex) {
     if (current_sampler_layout_uid_vertex_ != sampler_layout_uid_vertex) {
       current_sampler_layout_uid_vertex_ = sampler_layout_uid_vertex;
@@ -3605,8 +4668,9 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     current_samplers_vertex_.resize(
         std::max(current_samplers_vertex_.size(), sampler_count_vertex));
     for (size_t i = 0; i < sampler_count_vertex; ++i) {
-      auto parameters =
-          texture_cache_->GetSamplerParameters(sampler_bindings_vertex[i]);
+      auto parameters = get_sampler_parameters_cached(
+          sampler_bindings_vertex[i], current_sampler_parameter_inputs_vertex_,
+          i);
       if (current_samplers_vertex_[i] != parameters) {
         current_samplers_vertex_[i] = parameters;
         cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
@@ -3631,7 +4695,13 @@ bool MetalCommandProcessor::PrepareDrawConstants(
       cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
     }
   }
-  if (!cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
+  const bool descriptor_indices_vertex_active =
+      cbv_active(kStageVertex, kCbvSlotDescriptorIndices);
+  const bool descriptor_indices_pixel_active =
+      cbv_active(kStagePixel, kCbvSlotDescriptorIndices);
+
+  if (descriptor_indices_vertex_active &&
+      !cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
     next_texture_bindless_indices_vertex.reserve(texture_count_vertex);
     next_texture_bindless_resources_vertex.reserve(texture_count_vertex);
     for (const auto& binding : texture_bindings_vertex) {
@@ -3653,6 +4723,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   size_t sampler_layout_uid_pixel = 0;
   const std::vector<DxbcShader::TextureBinding>* texture_bindings_pixel_ptr =
       nullptr;
+  const std::vector<DxbcShader::SamplerBinding>* sampler_bindings_pixel_ptr =
+      nullptr;
   auto& next_texture_bindless_indices_pixel =
       scratch_texture_bindless_indices_pixel_;
   auto& next_texture_bindless_resources_pixel =
@@ -3662,19 +4734,29 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   next_texture_bindless_indices_pixel.clear();
   next_texture_bindless_resources_pixel.clear();
   next_sampler_bindless_indices_pixel.clear();
-  scratch_descriptor_indices_pixel_.clear();
   if (metal_pixel_shader) {
     const auto& texture_bindings_pixel =
-        metal_pixel_shader->GetTextureBindingsAfterTranslation();
+        pixel_translation_metadata
+            ? pixel_translation_metadata->texture_bindings
+            : metal_pixel_shader->GetTextureBindingsAfterTranslation();
     const auto& sampler_bindings_pixel =
-        metal_pixel_shader->GetSamplerBindingsAfterTranslation();
+        pixel_translation_metadata
+            ? pixel_translation_metadata->sampler_bindings
+            : metal_pixel_shader->GetSamplerBindingsAfterTranslation();
     const size_t texture_count_pixel = texture_bindings_pixel.size();
     const size_t sampler_count_pixel = sampler_bindings_pixel.size();
     texture_bindings_pixel_ptr = &texture_bindings_pixel;
+    sampler_bindings_pixel_ptr = &sampler_bindings_pixel;
     texture_layout_uid_pixel =
-        metal_pixel_shader->GetTextureBindingLayoutUserUID();
+        pixel_translation_metadata
+            ? get_native_texture_layout_uid(kStagePixel, texture_bindings_pixel,
+                                            0x504D534C54657830ull)
+            : metal_pixel_shader->GetTextureBindingLayoutUserUID();
     sampler_layout_uid_pixel =
-        metal_pixel_shader->GetSamplerBindingLayoutUserUID();
+        pixel_translation_metadata
+            ? get_native_sampler_layout_uid(kStagePixel, sampler_bindings_pixel,
+                                            0x504D534C536D7030ull)
+            : metal_pixel_shader->GetSamplerBindingLayoutUserUID();
     if (sampler_count_pixel) {
       if (current_sampler_layout_uid_pixel_ != sampler_layout_uid_pixel) {
         current_sampler_layout_uid_pixel_ = sampler_layout_uid_pixel;
@@ -3683,8 +4765,9 @@ bool MetalCommandProcessor::PrepareDrawConstants(
       current_samplers_pixel_.resize(
           std::max(current_samplers_pixel_.size(), sampler_count_pixel));
       for (size_t i = 0; i < sampler_count_pixel; ++i) {
-        auto parameters =
-            texture_cache_->GetSamplerParameters(sampler_bindings_pixel[i]);
+        auto parameters = get_sampler_parameters_cached(
+            sampler_bindings_pixel[i], current_sampler_parameter_inputs_pixel_,
+            i);
         if (current_samplers_pixel_[i] != parameters) {
           current_samplers_pixel_[i] = parameters;
           cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
@@ -3758,62 +4841,14 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     }
     return true;
   };
-  // Pack-then-compare wrapper around upload_binding.  Honours the existing
-  // "register write dirties live constant range" semantic (the caller still
-  // gates on binding.up_to_date == false), but if the freshly packed payload
-  // is byte-identical to the previous upload we reuse the prior pool slice
-  // instead of allocating a new one.  See the descriptor-indices precedent
-  // below for the same pattern applied to the descriptor-indices CBV.
-  auto try_reuse_or_upload =
-      [&](ConstantBufferBinding& binding, size_t cbv_slot, size_t stage_index,
-          std::vector<uint8_t>& current_payload,
-          std::vector<uint8_t>& scratch_payload, size_t logical_size,
-          const char* name, auto&& writer) -> bool {
-    const size_t aligned_size = std::max(logical_size, size_t(16));
-    scratch_payload.assign(aligned_size, 0);
-    writer(scratch_payload.data(), aligned_size);
-    // Reuse the prior slice only if it was allocated in this frame. Cross-frame
-    // reuse is unsafe because frame-open reclamation may recycle older slices.
-    if (binding.buffer && binding.upload_frame == frame_current_ &&
-        current_payload.size() == aligned_size &&
-        std::memcmp(current_payload.data(), scratch_payload.data(),
-                    aligned_size) == 0) {
-      binding.up_to_date = true;
-      if (cbv_slot < backend_telemetry_.cbv_reuse_hits.size()) {
-        ++backend_telemetry_.cbv_reuse_hits[cbv_slot];
-      }
-      return true;
-    }
-    if (TryReuseConstantPayloadFromCache(binding, cbv_slot, stage_index,
-                                         scratch_payload.data(),
-                                         scratch_payload.size())) {
-      current_payload = scratch_payload;
-      return true;
-    }
-    if (!upload_binding(binding, cbv_slot, logical_size, name,
-                        [&](uint8_t* data, size_t out_size) {
-                          std::memcpy(
-                              data, scratch_payload.data(),
-                              std::min(out_size, scratch_payload.size()));
-                        })) {
-      return false;
-    }
-    StoreConstantPayloadInCache(binding, cbv_slot, stage_index,
-                                scratch_payload.data(), scratch_payload.size());
-    current_payload.swap(scratch_payload);
-    return true;
-  };
-
   if (!cbuffer_binding_system_.up_to_date) {
-    if (!try_reuse_or_upload(
-            cbuffer_binding_system_, kCbvSlotSystem,
-            kConstantPayloadSharedStage, current_payload_system_,
-            scratch_payload_system_,
-            sizeof(DxbcShaderTranslator::SystemConstants), "system",
-            [&](uint8_t* data, size_t) {
-              std::memcpy(data, &system_constants_,
-                          sizeof(DxbcShaderTranslator::SystemConstants));
-            })) {
+    if (!upload_binding(cbuffer_binding_system_, kCbvSlotSystem,
+                        sizeof(DxbcShaderTranslator::SystemConstants), "system",
+                        [&](uint8_t* data, size_t) {
+                          std::memcpy(
+                              data, &system_constants_,
+                              sizeof(DxbcShaderTranslator::SystemConstants));
+                        })) {
       return false;
     }
   } else {
@@ -3847,209 +4882,229 @@ bool MetalCommandProcessor::PrepareDrawConstants(
 
   const Shader::ConstantRegisterMap& float_map_vertex =
       vertex_shader->constant_register_map();
-  if (!cbuffer_binding_float_vertex_.up_to_date) {
+  if (cbv_active(kStageVertex, kCbvSlotFloat) &&
+      !cbuffer_binding_float_vertex_.up_to_date) {
     const size_t float_size =
         sizeof(float) * 4 * std::max(float_map_vertex.float_count, uint32_t(1));
-    if (!try_reuse_or_upload(
-            cbuffer_binding_float_vertex_, kCbvSlotFloat, kStageVertex,
-            current_payload_float_vertex_, scratch_payload_float_vertex_,
-            float_size, "vertex float", [&](uint8_t* data, size_t size) {
+    if (!upload_binding(
+            cbuffer_binding_float_vertex_, kCbvSlotFloat, float_size,
+            "vertex float", [&](uint8_t* data, size_t size) {
               write_packed_float_constants(data, size, &float_map_vertex,
                                            XE_GPU_REG_SHADER_CONSTANT_000_X);
             })) {
       return false;
     }
-  } else {
+  } else if (cbv_active(kStageVertex, kCbvSlotFloat)) {
     ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFloat];
   }
 
-  if (!cbuffer_binding_float_pixel_.up_to_date) {
+  if (cbv_active(kStagePixel, kCbvSlotFloat) &&
+      !cbuffer_binding_float_pixel_.up_to_date) {
     const Shader::ConstantRegisterMap* float_map_pixel =
         pixel_shader ? &pixel_shader->constant_register_map() : nullptr;
     const size_t float_size =
         sizeof(float) * 4 *
         std::max(float_map_pixel ? float_map_pixel->float_count : uint32_t(0),
                  uint32_t(1));
-    if (!try_reuse_or_upload(
-            cbuffer_binding_float_pixel_, kCbvSlotFloat, kStagePixel,
-            current_payload_float_pixel_, scratch_payload_float_pixel_,
-            float_size, "pixel float", [&](uint8_t* data, size_t size) {
-              write_packed_float_constants(data, size, float_map_pixel,
-                                           XE_GPU_REG_SHADER_CONSTANT_256_X);
-            })) {
+    if (!upload_binding(cbuffer_binding_float_pixel_, kCbvSlotFloat, float_size,
+                        "pixel float", [&](uint8_t* data, size_t size) {
+                          write_packed_float_constants(
+                              data, size, float_map_pixel,
+                              XE_GPU_REG_SHADER_CONSTANT_256_X);
+                        })) {
       return false;
     }
-  } else if (pixel_shader) {
+  } else if (pixel_shader && cbv_active(kStagePixel, kCbvSlotFloat)) {
     ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFloat];
   }
 
-  if (!cbuffer_binding_bool_loop_.up_to_date) {
-    if (!try_reuse_or_upload(
+  const bool bool_loop_active = cbv_active(kStageVertex, kCbvSlotBoolLoop) ||
+                                cbv_active(kStagePixel, kCbvSlotBoolLoop);
+  if (bool_loop_active && !cbuffer_binding_bool_loop_.up_to_date) {
+    if (!upload_binding(
             cbuffer_binding_bool_loop_, kCbvSlotBoolLoop,
-            kConstantPayloadSharedStage, current_payload_bool_loop_,
-            scratch_payload_bool_loop_, kBoolLoopConstantsSize, "bool loop",
-            [&](uint8_t* data, size_t) {
+            kBoolLoopConstantsSize, "bool loop", [&](uint8_t* data, size_t) {
               std::memcpy(data,
                           &regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031],
                           kBoolLoopConstantsSize);
             })) {
       return false;
     }
-  } else {
+  } else if (bool_loop_active) {
     ++backend_telemetry_.cbv_reuse_hits[kCbvSlotBoolLoop];
   }
 
-  std::array<bool, kStageCount> fetch_binding_active = {};
+  bool fetch_binding_active = false;
   for (size_t stage = 0; stage < kStageCount; ++stage) {
     if (!(active_cbv_masks[stage] & (uint32_t(1) << kCbvSlotFetch))) {
       continue;
     }
-    fetch_binding_active[stage] = true;
-    if (FetchConstantDwordMasksOverlap(fetch_constant_dirty_masks_[stage],
-                                       fetch_constant_dword_masks[stage])) {
-      cbuffer_binding_fetch_[stage].up_to_date = false;
-    }
+    fetch_binding_active = true;
   }
-  const size_t fetch_size = kFetchConstantCount * sizeof(uint32_t);
-  for (size_t stage = 0; stage < kStageCount; ++stage) {
-    if (!fetch_binding_active[stage]) {
-      continue;
-    }
-    if (!cbuffer_binding_fetch_[stage].up_to_date) {
-      if (!try_reuse_or_upload(
-              cbuffer_binding_fetch_[stage], kCbvSlotFetch,
-              kConstantPayloadSharedStage, current_payload_fetch_[stage],
-              scratch_payload_fetch_[stage], fetch_size, "fetch",
-              [&](uint8_t* data, size_t) {
-                std::memcpy(data,
-                            &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0],
-                            fetch_size);
-              })) {
-        return false;
+  const size_t fetch_size = kFetchConstantDwordCount * sizeof(uint32_t);
+  const uint32_t* fetch_constants =
+      &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+  if (fetch_binding_active) {
+    if (!cbuffer_binding_fetch_.up_to_date) {
+      const bool can_reuse_fetch_payload =
+          cbuffer_binding_fetch_.buffer &&
+          cbuffer_binding_fetch_.upload_frame == frame_current_ &&
+          current_fetch_constant_payload_valid_ &&
+          std::memcmp(current_fetch_constant_payload_.data(), fetch_constants,
+                      fetch_size) == 0;
+      if (can_reuse_fetch_payload) {
+        cbuffer_binding_fetch_.up_to_date = true;
+        ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
+      } else {
+        if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch, fetch_size,
+                            "fetch", [&](uint8_t* data, size_t) {
+                              std::memcpy(data, fetch_constants, fetch_size);
+                            })) {
+          return false;
+        }
+        std::memcpy(current_fetch_constant_payload_.data(), fetch_constants,
+                    fetch_size);
+        current_fetch_constant_payload_valid_ = true;
       }
-      fetch_constant_dirty_masks_[stage].fill(0);
     } else {
       ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
     }
   }
 
-  auto build_descriptor_indices =
-      [&](MetalShader* shader, std::vector<uint32_t>& words,
-          const MetalShader::DrawConstantMetadata* metadata,
+  const bool use_native_msl_descriptor_indices =
+      vertex_translation_metadata || pixel_translation_metadata;
+  auto write_descriptor_indices =
+      [&](uint32_t* words, uint32_t word_count,
+          const std::vector<DxbcShader::TextureBinding>& texture_bindings,
+          const std::vector<DxbcShader::SamplerBinding>& sampler_bindings,
           const std::vector<uint32_t>& texture_indices,
           const std::vector<uint32_t>& sampler_indices) {
-        words.assign(metadata ? metadata->descriptor_indices_word_count : 1, 0);
-        if (!shader || !texture_cache_) {
+        std::fill_n(words, std::max(word_count, uint32_t(1)), 0u);
+        if (!texture_cache_) {
           return;
         }
-        const auto& tex_bindings = shader->GetTextureBindingsAfterTranslation();
+        auto map_native_texture_index = [&](uint32_t index) {
+          if (!use_native_msl_descriptor_indices) {
+            return index;
+          }
+          const uint32_t native_index =
+              texture_cache_->GetNativeMslSRVIndexForBindlessIndex(index);
+          if (native_index != UINT32_MAX) {
+            return native_index;
+          }
+          static bool logged_native_texture_index_failure = false;
+          if (!logged_native_texture_index_failure) {
+            XELOGW("Native MSL texture bindless index {} is not mapped", index);
+            logged_native_texture_index_failure = true;
+          }
+          return 0u;
+        };
+        auto map_native_sampler_index = [&](uint32_t index) {
+          if (!use_native_msl_descriptor_indices) {
+            return index;
+          }
+          const uint32_t native_index =
+              texture_cache_->GetNativeMslSamplerIndexForBindlessIndex(index);
+          if (native_index != UINT32_MAX) {
+            return native_index;
+          }
+          static bool logged_native_sampler_index_failure = false;
+          if (!logged_native_sampler_index_failure) {
+            XELOGW("Native MSL sampler bindless index {} is not mapped", index);
+            logged_native_sampler_index_failure = true;
+          }
+          return 0u;
+        };
         for (size_t i = 0;
-             i < tex_bindings.size() && i < texture_indices.size(); ++i) {
-          uint32_t d = tex_bindings[i].bindless_descriptor_index;
-          assert_true(d < words.size());
-          if (d >= words.size()) {
+             i < texture_bindings.size() && i < texture_indices.size(); ++i) {
+          uint32_t d = texture_bindings[i].bindless_descriptor_index;
+          assert_true(d < word_count);
+          if (d >= word_count) {
             continue;
           }
-          words[d] = texture_indices[i];
+          words[d] = map_native_texture_index(texture_indices[i]);
         }
-        const auto& smp_bindings = shader->GetSamplerBindingsAfterTranslation();
         for (size_t i = 0;
-             i < smp_bindings.size() && i < sampler_indices.size(); ++i) {
-          uint32_t d = smp_bindings[i].bindless_descriptor_index;
-          assert_true(d < words.size());
-          if (d >= words.size()) {
+             i < sampler_bindings.size() && i < sampler_indices.size(); ++i) {
+          uint32_t d = sampler_bindings[i].bindless_descriptor_index;
+          assert_true(d < word_count);
+          if (d >= word_count) {
             continue;
           }
-          words[d] = sampler_indices[i];
+          words[d] = map_native_sampler_index(sampler_indices[i]);
         }
       };
 
   auto upload_descriptor_indices = [&](ConstantBufferBinding& binding,
-                                       const std::vector<uint32_t>& words,
+                                       uint32_t word_count,
+                                       auto&& writer,
                                        size_t stage, const char* name) -> bool {
-    const size_t descriptor_indices_bytes = words.size() * sizeof(uint32_t);
-    const size_t descriptor_payload_size =
-        std::max(descriptor_indices_bytes, size_t(16));
-    std::vector<uint8_t> descriptor_payload(descriptor_payload_size, 0);
-    if (descriptor_indices_bytes) {
-      std::memcpy(descriptor_payload.data(), words.data(),
-                  descriptor_indices_bytes);
-    }
-    if (TryReuseConstantPayloadFromCache(binding, kCbvSlotDescriptorIndices,
-                                         stage, descriptor_payload.data(),
-                                         descriptor_payload.size())) {
-      return true;
-    }
+    const size_t descriptor_indices_bytes =
+        std::max(word_count, uint32_t(1)) * sizeof(uint32_t);
     if (stage < backend_telemetry_.descriptor_index_uploads.size()) {
       ++backend_telemetry_.descriptor_index_uploads[stage];
     }
     if (!upload_binding(
             binding, kCbvSlotDescriptorIndices, descriptor_indices_bytes, name,
             [&](uint8_t* data, size_t size) {
-              std::memcpy(data, descriptor_payload.data(),
-                          std::min(size, descriptor_payload.size()));
+              writer(reinterpret_cast<uint32_t*>(data), word_count);
             })) {
       return false;
     }
-    StoreConstantPayloadInCache(binding, kCbvSlotDescriptorIndices, stage,
-                                descriptor_payload.data(),
-                                descriptor_payload.size());
     return true;
   };
 
   if (!cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
-    build_descriptor_indices(
-        metal_vertex_shader, scratch_descriptor_indices_vertex_,
-        &vertex_draw_metadata, next_texture_bindless_indices_vertex,
-        next_sampler_bindless_indices_vertex);
-    const bool can_reuse_descriptor_indices =
-        cbuffer_binding_descriptor_indices_vertex_.buffer &&
-        cbuffer_binding_descriptor_indices_vertex_.upload_frame ==
-            frame_current_ &&
-        current_descriptor_indices_vertex_ ==
-            scratch_descriptor_indices_vertex_;
-    if (can_reuse_descriptor_indices) {
-      cbuffer_binding_descriptor_indices_vertex_.up_to_date = true;
-      ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
-    } else {
-      if (!upload_descriptor_indices(cbuffer_binding_descriptor_indices_vertex_,
-                                     scratch_descriptor_indices_vertex_,
-                                     kStageVertex,
-                                     "vertex descriptor indices")) {
-        return false;
-      }
-      current_descriptor_indices_vertex_.swap(
-          scratch_descriptor_indices_vertex_);
+    uint32_t descriptor_indices_word_count =
+        vertex_translation_metadata
+            ? MetalNativeDescriptorIndicesWordCount(
+                  *vertex_translation_metadata)
+            : vertex_draw_metadata.descriptor_indices_word_count;
+    if (!upload_descriptor_indices(
+            cbuffer_binding_descriptor_indices_vertex_,
+            descriptor_indices_word_count,
+            [&](uint32_t* words, uint32_t word_count) {
+              write_descriptor_indices(words, word_count, texture_bindings_vertex,
+                                       sampler_bindings_vertex,
+                                       next_texture_bindless_indices_vertex,
+                                       next_sampler_bindless_indices_vertex);
+            },
+            kStageVertex, "vertex descriptor indices")) {
+      return false;
     }
     descriptor_indices_vertex_written = true;
-  } else {
+  } else if (descriptor_indices_vertex_active) {
     ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
   }
 
-  if (metal_pixel_shader &&
+  if (metal_pixel_shader && descriptor_indices_pixel_active &&
       !cbuffer_binding_descriptor_indices_pixel_.up_to_date) {
-    build_descriptor_indices(
-        metal_pixel_shader, scratch_descriptor_indices_pixel_,
-        pixel_draw_metadata, next_texture_bindless_indices_pixel,
-        next_sampler_bindless_indices_pixel);
-    const bool can_reuse_descriptor_indices =
-        cbuffer_binding_descriptor_indices_pixel_.buffer &&
-        cbuffer_binding_descriptor_indices_pixel_.upload_frame ==
-            frame_current_ &&
-        current_descriptor_indices_pixel_ == scratch_descriptor_indices_pixel_;
-    if (can_reuse_descriptor_indices) {
-      cbuffer_binding_descriptor_indices_pixel_.up_to_date = true;
-      ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
-    } else {
-      if (!upload_descriptor_indices(cbuffer_binding_descriptor_indices_pixel_,
-                                     scratch_descriptor_indices_pixel_,
-                                     kStagePixel, "pixel descriptor indices")) {
-        return false;
-      }
-      current_descriptor_indices_pixel_.swap(scratch_descriptor_indices_pixel_);
+    uint32_t descriptor_indices_word_count =
+        pixel_translation_metadata
+            ? MetalNativeDescriptorIndicesWordCount(*pixel_translation_metadata)
+            : (pixel_draw_metadata
+                   ? pixel_draw_metadata->descriptor_indices_word_count
+                   : 1);
+    static const std::vector<DxbcShader::TextureBinding> kNoTextureBindings;
+    static const std::vector<DxbcShader::SamplerBinding> kNoSamplerBindings;
+    if (!upload_descriptor_indices(
+            cbuffer_binding_descriptor_indices_pixel_,
+            descriptor_indices_word_count,
+            [&](uint32_t* words, uint32_t word_count) {
+              write_descriptor_indices(
+                  words, word_count,
+                  texture_bindings_pixel_ptr ? *texture_bindings_pixel_ptr
+                                             : kNoTextureBindings,
+                  sampler_bindings_pixel_ptr ? *sampler_bindings_pixel_ptr
+                                             : kNoSamplerBindings,
+                  next_texture_bindless_indices_pixel,
+                  next_sampler_bindless_indices_pixel);
+            },
+            kStagePixel, "pixel descriptor indices")) {
+      return false;
     }
     descriptor_indices_pixel_written = true;
-  } else if (metal_pixel_shader) {
+  } else if (metal_pixel_shader && descriptor_indices_pixel_active) {
     ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
   }
 
@@ -4112,7 +5167,7 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                   uniforms_out.active_cbv_masks[kStageVertex] &
                       (uint32_t(1) << kCbvSlotBoolLoop));
   set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotFetch],
-                  cbuffer_binding_fetch_[kStageVertex],
+                  cbuffer_binding_fetch_,
                   uniforms_out.active_cbv_masks[kStageVertex] &
                       (uint32_t(1) << kCbvSlotFetch));
   set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotDescriptorIndices],
@@ -4132,7 +5187,7 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                   uniforms_out.active_cbv_masks[kStagePixel] &
                       (uint32_t(1) << kCbvSlotBoolLoop));
   set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotFetch],
-                  cbuffer_binding_fetch_[kStagePixel],
+                  cbuffer_binding_fetch_,
                   uniforms_out.active_cbv_masks[kStagePixel] &
                       (uint32_t(1) << kCbvSlotFetch));
   set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotDescriptorIndices],
@@ -4140,7 +5195,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                   uniforms_out.active_cbv_masks[kStagePixel] &
                       (uint32_t(1) << kCbvSlotDescriptorIndices));
   uniforms_out.fetch_constant_dword_masks = fetch_constant_dword_masks;
-  current_fetch_constant_dword_masks_ = uniforms_out.fetch_constant_dword_masks;
   return true;
 }
 
@@ -4182,95 +5236,539 @@ void MetalCommandProcessor::ApplyDrawDynamicState(
   }
 }
 
-MetalCommandProcessor::StageRootArgumentEntries
-MetalCommandProcessor::BuildGraphicsRootArgumentEntries(
-    const UniformBufferInfo& uniforms, bool shared_memory_is_uav,
-    bool use_tessellation_emulation) const {
-  StageRootArgumentEntries entries = {};
-  constexpr uint64_t kDescriptorEntrySize = sizeof(IRDescriptorTableEntry);
-  uint64_t view_heap_gpu = view_bindless_heap_->gpuAddress();
-  uint64_t sampler_heap_gpu = sampler_bindless_heap_->gpuAddress();
-  uint64_t system_view_gpu = system_view_tables_->gpuAddress();
-  uint64_t srv_space0_gpu =
-      system_view_gpu + (shared_memory_is_uav
-                             ? kSystemViewTableSRVNull
-                             : kSystemViewTableSRVSharedMemory) *
-                            kDescriptorEntrySize;
-  uint64_t uav_space0_gpu =
-      system_view_gpu + (shared_memory_is_uav
-                             ? kSystemViewTableUAVSharedMemoryStart
-                             : kSystemViewTableUAVNullStart) *
-                            kDescriptorEntrySize;
-  uint64_t null_uav_gpu =
-      system_view_gpu + kSystemViewTableUAVNullStart * kDescriptorEntrySize;
-  const uint64_t null_gpu = null_buffer_->gpuAddress();
-
-  entries[kGraphicsRootABSlotSRVSpace0] = srv_space0_gpu;
-  entries[kGraphicsRootABSlotSRVSpace1] = view_heap_gpu;
-  entries[kGraphicsRootABSlotSRVSpace2] = view_heap_gpu;
-  entries[kGraphicsRootABSlotSRVSpace3] = view_heap_gpu;
-  entries[kGraphicsRootABSlotSRVSpace10] = view_heap_gpu;
-  entries[kGraphicsRootABSlotUAVSpace0] = uav_space0_gpu;
-  entries[kGraphicsRootABSlotUAVSpace1] = null_uav_gpu;
-  entries[kGraphicsRootABSlotUAVSpace2] = null_uav_gpu;
-  entries[kGraphicsRootABSlotUAVSpace3] = null_uav_gpu;
-  entries[kGraphicsRootABSlotSamplerSpace0] = sampler_heap_gpu;
-
-  auto cbv_address = [&](size_t stage, size_t cbv) -> uint64_t {
-    const uint32_t cbv_bit = uint32_t(1) << cbv;
-    if (!(uniforms.active_cbv_masks[stage] & cbv_bit)) {
-      return null_gpu;
-    }
-    const UniformBufferInfo::Cbv& uniform_cbv = uniforms.cbvs[stage][cbv];
-    return uniform_cbv.gpu_address ? uniform_cbv.gpu_address : null_gpu;
-  };
-  auto common_cbv_address = [&](size_t cbv) -> uint64_t {
-    uint64_t vertex_address = cbv_address(kStageVertex, cbv);
-    if (vertex_address != null_gpu) {
-      return vertex_address;
-    }
-    return cbv_address(kStagePixel, cbv);
-  };
-  auto set_stage_local_cbvs = [&](uint32_t float_slot, uint32_t fetch_slot,
-                                  uint32_t descriptor_slot, size_t stage) {
-    entries[float_slot] = cbv_address(stage, kCbvSlotFloat);
-    entries[fetch_slot] = cbv_address(stage, kCbvSlotFetch);
-    entries[descriptor_slot] = cbv_address(stage, kCbvSlotDescriptorIndices);
-  };
-
-  entries[kGraphicsRootABSlotCBVSystem] = common_cbv_address(kCbvSlotSystem);
-  entries[kGraphicsRootABSlotCBVBoolLoop] =
-      common_cbv_address(kCbvSlotBoolLoop);
-  set_stage_local_cbvs(
-      kGraphicsRootABSlotCBVVertexFloat, kGraphicsRootABSlotCBVVertexFetch,
-      kGraphicsRootABSlotCBVVertexDescriptorIndices, kStageVertex);
-  if (use_tessellation_emulation) {
-    // Hull and domain generated stages consume the same guest constant state as
-    // the vertex/domain translation they expand. Keep these slots null on
-    // ordinary draws so normal vertex root churn doesn't patch inactive stages.
-    set_stage_local_cbvs(
-        kGraphicsRootABSlotCBVHullFloat, kGraphicsRootABSlotCBVHullFetch,
-        kGraphicsRootABSlotCBVHullDescriptorIndices, kStageVertex);
-    set_stage_local_cbvs(
-        kGraphicsRootABSlotCBVDomainFloat, kGraphicsRootABSlotCBVDomainFetch,
-        kGraphicsRootABSlotCBVDomainDescriptorIndices, kStageVertex);
-  } else {
-    entries[kGraphicsRootABSlotCBVHullFloat] = null_gpu;
-    entries[kGraphicsRootABSlotCBVHullFetch] = null_gpu;
-    entries[kGraphicsRootABSlotCBVHullDescriptorIndices] = null_gpu;
-    entries[kGraphicsRootABSlotCBVDomainFloat] = null_gpu;
-    entries[kGraphicsRootABSlotCBVDomainFetch] = null_gpu;
-    entries[kGraphicsRootABSlotCBVDomainDescriptorIndices] = null_gpu;
+bool MetalCommandProcessor::BindNativeMslDrawResources(
+    const PreparedDraw& draw) {
+  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
+      !texture_cache_ || !null_buffer_) {
+    XELOGE("Native MSL draw binding requested before Metal resources exist");
+    return false;
   }
-  set_stage_local_cbvs(
-      kGraphicsRootABSlotCBVPixelFloat, kGraphicsRootABSlotCBVPixelFetch,
-      kGraphicsRootABSlotCBVPixelDescriptorIndices, kStagePixel);
-  return entries;
+
+  constexpr size_t kNativeRuntimeInfoAlignment = 256;
+  const bool draw_needs_primitive_index_constants =
+      draw.native_vertex_metadata.uses_primitive_index_constants ||
+      (draw.native_pixel_metadata_valid &&
+       draw.native_pixel_metadata.uses_primitive_index_constants);
+  MTL::Buffer* primitive_index_buffer = nullptr;
+  size_t primitive_index_offset = 0;
+  uint64_t primitive_index_gpu_address = 0;
+  if (draw_needs_primitive_index_constants) {
+    NativeMslPrimitiveIndexUploadCache& primitive_index_cache =
+        native_msl_primitive_index_upload_cache_;
+    const bool can_reuse_primitive_index =
+        primitive_index_cache.payload_valid && primitive_index_cache.buffer &&
+        primitive_index_cache.upload_frame == frame_current_ &&
+        primitive_index_cache.payload == draw.native_primitive_index_constants;
+    if (can_reuse_primitive_index) {
+      primitive_index_buffer = primitive_index_cache.buffer;
+      primitive_index_offset = primitive_index_cache.offset;
+      primitive_index_gpu_address = primitive_index_cache.gpu_address;
+    } else {
+      uint8_t* primitive_index_data = constant_buffer_pool_->Request(
+          frame_current_, sizeof(draw.native_primitive_index_constants),
+          kNativeRuntimeInfoAlignment, &primitive_index_buffer,
+          primitive_index_offset, primitive_index_gpu_address);
+      if (!primitive_index_data || !primitive_index_buffer) {
+        XELOGE("Native MSL primitive-index constant allocation failed");
+        return false;
+      }
+      std::memcpy(primitive_index_data,
+                  draw.native_primitive_index_constants.data(),
+                  sizeof(draw.native_primitive_index_constants));
+      primitive_index_cache.payload = draw.native_primitive_index_constants;
+      primitive_index_cache.buffer = primitive_index_buffer;
+      primitive_index_cache.offset =
+          static_cast<NS::UInteger>(primitive_index_offset);
+      primitive_index_cache.gpu_address = primitive_index_gpu_address;
+      primitive_index_cache.payload_valid = true;
+      primitive_index_cache.upload_frame = frame_current_;
+    }
+  }
+
+  auto cbv_for_stage = [&](size_t stage,
+                           CbvSlot slot) -> const UniformBufferInfo::Cbv& {
+    return draw.uniforms.cbvs[stage][slot];
+  };
+
+  auto require_cbv = [&](const UniformBufferInfo::Cbv& cbv,
+                         const char* name) -> bool {
+    if (cbv.active && cbv.buffer) {
+      return true;
+    }
+    XELOGE("Native MSL draw missing active {} CBV", name);
+    return false;
+  };
+
+  auto bind_stage = [&](const DxbcShader::TranslationMetadata& metadata,
+                        size_t stage, bool vertex_stage, bool fragment_stage,
+                        bool mesh_stage, bool object_stage) -> bool {
+    const auto& system_cbv = cbv_for_stage(stage, kCbvSlotSystem);
+    const auto& float_cbv = cbv_for_stage(stage, kCbvSlotFloat);
+    const auto& bool_loop_cbv = cbv_for_stage(stage, kCbvSlotBoolLoop);
+    const auto& fetch_cbv = cbv_for_stage(stage, kCbvSlotFetch);
+    const auto& descriptor_indices_cbv =
+        cbv_for_stage(stage, kCbvSlotDescriptorIndices);
+    auto metadata_uses_cbv = [&](CbvSlot slot) {
+      return (metadata.used_cbuffer_mask & (uint32_t(1) << slot)) != 0;
+    };
+    const bool needs_system = metadata_uses_cbv(kCbvSlotSystem);
+    const bool needs_float = metadata_uses_cbv(kCbvSlotFloat);
+    const bool needs_bool_loop = metadata_uses_cbv(kCbvSlotBoolLoop);
+    const bool needs_fetch = metadata_uses_cbv(kCbvSlotFetch);
+    const bool needs_descriptor_indices =
+        metadata_uses_cbv(kCbvSlotDescriptorIndices);
+    if ((needs_system && !require_cbv(system_cbv, "system")) ||
+        (needs_float && !require_cbv(float_cbv, "float")) ||
+        (needs_bool_loop && !require_cbv(bool_loop_cbv, "bool/loop")) ||
+        (needs_fetch && !require_cbv(fetch_cbv, "fetch")) ||
+        (needs_descriptor_indices &&
+         !require_cbv(descriptor_indices_cbv, "descriptor-indices"))) {
+      return false;
+    }
+
+    MTL::RenderStages stage_render_stages = MTL::RenderStages(0);
+    auto add_render_stage = [&](MTL::RenderStages stage_bits) {
+      stage_render_stages =
+          MTL::RenderStages(NS::UInteger(stage_render_stages) |
+                            NS::UInteger(stage_bits));
+    };
+    if (vertex_stage) {
+      add_render_stage(MTL::RenderStageVertex);
+    }
+    if (fragment_stage) {
+      add_render_stage(MTL::RenderStageFragment);
+    }
+    if (mesh_stage) {
+      add_render_stage(MTL::RenderStageMesh);
+    }
+    if (object_stage) {
+      add_render_stage(MTL::RenderStageObject);
+    }
+
+    const bool needs_runtime_info =
+        native_msl::UsesTextureRuntimeInfo(metadata);
+    const uint32_t runtime_row_count =
+        needs_runtime_info
+            ? std::max<uint32_t>(uint32_t(metadata.texture_bindings.size()), 1)
+            : 0;
+    const native_msl::NativeMslStageBindings& native_bindings =
+        stage == kStagePixel ? draw.native_pixel_bindings
+                             : draw.native_vertex_bindings;
+    if (needs_runtime_info &&
+        native_bindings.runtime_info.size() < runtime_row_count) {
+      XELOGE("Native MSL draw missing captured texture runtime info");
+      return false;
+    }
+    bool needs_texture_2d_array_heap = false;
+    bool needs_texture_3d_heap = false;
+    bool needs_texture_cube_heap = false;
+    for (const DxbcShader::TextureBinding& binding :
+         metadata.texture_bindings) {
+      switch (binding.dimension) {
+        case xenos::FetchOpDimension::kCube:
+          needs_texture_cube_heap = true;
+          break;
+        case xenos::FetchOpDimension::k3DOrStacked:
+          needs_texture_2d_array_heap = true;
+          needs_texture_3d_heap = true;
+          break;
+        case xenos::FetchOpDimension::k1D:
+        case xenos::FetchOpDimension::k2D:
+        default:
+          needs_texture_2d_array_heap = true;
+          break;
+      }
+    }
+    if ((needs_texture_2d_array_heap && !native_msl_texture_2d_array_heap_) ||
+        (needs_texture_3d_heap && !native_msl_texture_3d_heap_) ||
+        (needs_texture_cube_heap && !native_msl_texture_cube_heap_)) {
+      XELOGE("Native MSL draw missing required texture argument heap buffer");
+      return false;
+    }
+    if (!metadata.sampler_bindings.empty() && !native_msl_sampler_heap_) {
+      XELOGE("Native MSL draw missing sampler argument heap buffer");
+      return false;
+    }
+
+    MTL::Buffer* runtime_info_buffer = nullptr;
+    size_t runtime_info_offset = 0;
+    if (needs_runtime_info) {
+      const size_t runtime_info_size =
+          runtime_row_count * sizeof(native_msl::NativeMslTextureRuntimeInfo);
+      NativeMslRuntimeInfoUploadCache& runtime_cache =
+          native_msl_runtime_info_upload_cache_[stage];
+      const bool can_reuse_runtime_info =
+          runtime_cache.buffer &&
+          runtime_cache.upload_frame == frame_current_ &&
+          runtime_cache.size == runtime_info_size &&
+          runtime_cache.payload.size() == runtime_row_count &&
+          std::memcmp(runtime_cache.payload.data(),
+                      native_bindings.runtime_info.data(),
+                      runtime_info_size) == 0;
+      if (can_reuse_runtime_info) {
+        runtime_info_buffer = runtime_cache.buffer;
+        runtime_info_offset = runtime_cache.offset;
+      } else {
+        uint64_t runtime_info_gpu_address = 0;
+        uint8_t* runtime_info_data = constant_buffer_pool_->Request(
+            frame_current_, runtime_info_size, kNativeRuntimeInfoAlignment,
+            &runtime_info_buffer, runtime_info_offset,
+            runtime_info_gpu_address);
+        (void)runtime_info_gpu_address;
+        if (!runtime_info_data || !runtime_info_buffer) {
+          XELOGE("Native MSL texture runtime-info allocation failed");
+          return false;
+        }
+        std::memcpy(runtime_info_data, native_bindings.runtime_info.data(),
+                    runtime_info_size);
+        runtime_cache.payload.resize(runtime_row_count);
+        std::memcpy(runtime_cache.payload.data(),
+                    native_bindings.runtime_info.data(), runtime_info_size);
+        runtime_cache.buffer = runtime_info_buffer;
+        runtime_cache.offset = static_cast<NS::UInteger>(runtime_info_offset);
+        runtime_cache.size = runtime_info_size;
+        runtime_cache.upload_frame = frame_current_;
+      }
+    }
+
+    MTL::Buffer* shared_memory_buffer = nullptr;
+    if (metadata.uses_shared_memory) {
+      shared_memory_buffer = shared_memory_->GetBuffer();
+      if (!shared_memory_buffer) {
+        XELOGE("Native MSL draw missing shared-memory buffer");
+        return false;
+      }
+    }
+
+    const uint64_t null_gpu_address = null_buffer_->gpuAddress();
+    auto cbv_gpu_address_or_null = [&](const UniformBufferInfo::Cbv& cbv,
+                                       bool needed) -> uint64_t {
+      if (!needed) {
+        return null_gpu_address;
+      }
+      return cbv.gpu_address ? cbv.gpu_address : null_gpu_address;
+    };
+    native_msl::NativeMslDrawConstantPointers draw_constants = {};
+    draw_constants.system =
+        cbv_gpu_address_or_null(system_cbv, needs_system);
+    draw_constants.float_constants_data =
+        cbv_gpu_address_or_null(float_cbv, needs_float);
+    draw_constants.bool_loop_constants_data =
+        cbv_gpu_address_or_null(bool_loop_cbv, needs_bool_loop);
+    draw_constants.fetch_constants_data =
+        cbv_gpu_address_or_null(fetch_cbv, needs_fetch);
+    draw_constants.descriptor_indices =
+        cbv_gpu_address_or_null(descriptor_indices_cbv,
+                                needs_descriptor_indices);
+    draw_constants.primitive_index =
+        metadata.uses_primitive_index_constants && primitive_index_gpu_address
+            ? primitive_index_gpu_address
+            : null_gpu_address;
+
+    MTL::Buffer* draw_constants_buffer = nullptr;
+    size_t draw_constants_offset = 0;
+    NativeMslDrawConstantsUploadCache& draw_constants_cache =
+        native_msl_draw_constants_upload_cache_[stage];
+    const bool can_reuse_draw_constants =
+        draw_constants_cache.payload_valid && draw_constants_cache.buffer &&
+        draw_constants_cache.upload_frame == frame_current_ &&
+        std::memcmp(&draw_constants_cache.payload, &draw_constants,
+                    sizeof(draw_constants)) == 0;
+    auto compute_draw_constants_change_mask = [&]() {
+      uint32_t changed_mask = 0;
+      auto mark_changed = [&](bool changed, uint32_t bit) {
+        if (changed) {
+          changed_mask |= bit;
+        }
+      };
+      mark_changed(draw_constants_cache.payload.system !=
+                       draw_constants.system,
+                   kNativeMslDrawConstantsChangeSystem);
+      mark_changed(draw_constants_cache.payload.float_constants_data !=
+                       draw_constants.float_constants_data,
+                   kNativeMslDrawConstantsChangeFloat);
+      mark_changed(draw_constants_cache.payload.bool_loop_constants_data !=
+                       draw_constants.bool_loop_constants_data,
+                   kNativeMslDrawConstantsChangeBoolLoop);
+      mark_changed(draw_constants_cache.payload.fetch_constants_data !=
+                       draw_constants.fetch_constants_data,
+                   kNativeMslDrawConstantsChangeFetch);
+      mark_changed(draw_constants_cache.payload.descriptor_indices !=
+                       draw_constants.descriptor_indices,
+                   kNativeMslDrawConstantsChangeDescriptorIndices);
+      mark_changed(draw_constants_cache.payload.primitive_index !=
+                       draw_constants.primitive_index,
+                   kNativeMslDrawConstantsChangePrimitiveIndex);
+      return changed_mask;
+    };
+    auto record_draw_constants_reason =
+        [&](RenderEncoderBufferStage encoder_stage,
+            NativeMslDrawConstantsRebuildReason reason) {
+          const size_t stage_index = size_t(encoder_stage);
+          if (stage_index >= kRenderEncoderBufferStageTelemetryCount) {
+            return;
+          }
+          const size_t reason_index =
+              stage_index * kNativeMslDrawConstantsRebuildReasonCount +
+              size_t(reason);
+          if (reason_index <
+              backend_telemetry_
+                  .native_msl_draw_constants_rebuild_reasons.size()) {
+            ++backend_telemetry_
+                  .native_msl_draw_constants_rebuild_reasons[reason_index];
+          }
+        };
+    auto record_draw_constants_change_mask =
+        [&](RenderEncoderBufferStage encoder_stage, uint32_t changed_mask) {
+          const size_t stage_index = size_t(encoder_stage);
+          if (stage_index >= kRenderEncoderBufferStageTelemetryCount ||
+              changed_mask >= kNativeMslDrawConstantsChangeMaskCount) {
+            return;
+          }
+          const size_t mask_index =
+              stage_index * kNativeMslDrawConstantsChangeMaskCount +
+              changed_mask;
+          if (mask_index <
+              backend_telemetry_.native_msl_draw_constants_change_masks
+                  .size()) {
+            ++backend_telemetry_.native_msl_draw_constants_change_masks
+                  [mask_index];
+          }
+        };
+    auto record_draw_constants_reason_for_bound_stages =
+        [&](NativeMslDrawConstantsRebuildReason reason) {
+          if (vertex_stage) {
+            record_draw_constants_reason(RenderEncoderBufferStage::kVertex,
+                                         reason);
+          }
+          if (fragment_stage) {
+            record_draw_constants_reason(RenderEncoderBufferStage::kFragment,
+                                         reason);
+          }
+          if (mesh_stage) {
+            record_draw_constants_reason(RenderEncoderBufferStage::kMesh,
+                                         reason);
+          }
+          if (object_stage) {
+            record_draw_constants_reason(RenderEncoderBufferStage::kObject,
+                                         reason);
+          }
+        };
+    auto record_draw_constants_change_mask_for_bound_stages =
+        [&](uint32_t changed_mask) {
+          if (vertex_stage) {
+            record_draw_constants_change_mask(RenderEncoderBufferStage::kVertex,
+                                              changed_mask);
+          }
+          if (fragment_stage) {
+            record_draw_constants_change_mask(
+                RenderEncoderBufferStage::kFragment, changed_mask);
+          }
+          if (mesh_stage) {
+            record_draw_constants_change_mask(RenderEncoderBufferStage::kMesh,
+                                              changed_mask);
+          }
+          if (object_stage) {
+            record_draw_constants_change_mask(RenderEncoderBufferStage::kObject,
+                                              changed_mask);
+          }
+        };
+    const bool can_record_draw_constants_change_mask =
+        !can_reuse_draw_constants && draw_constants_cache.payload_valid &&
+        draw_constants_cache.buffer &&
+        draw_constants_cache.upload_frame == frame_current_;
+    const uint32_t draw_constants_change_mask =
+        can_record_draw_constants_change_mask
+            ? compute_draw_constants_change_mask()
+            : 0;
+    if (draw_constants_change_mask) {
+      record_draw_constants_change_mask_for_bound_stages(
+          draw_constants_change_mask);
+    }
+    auto classify_draw_constants_reason =
+        [&]() -> NativeMslDrawConstantsRebuildReason {
+      if (can_reuse_draw_constants) {
+        return kNativeMslDrawConstantsReuse;
+      }
+      if (!draw_constants_cache.payload_valid || !draw_constants_cache.buffer) {
+        return kNativeMslDrawConstantsInitial;
+      }
+      if (draw_constants_cache.upload_frame != frame_current_) {
+        return kNativeMslDrawConstantsFrameOpen;
+      }
+      const uint32_t changed_mask = draw_constants_change_mask;
+      if (!changed_mask || (changed_mask & (changed_mask - 1))) {
+        return kNativeMslDrawConstantsMixed;
+      }
+      switch (changed_mask) {
+        case kNativeMslDrawConstantsChangeSystem:
+          return kNativeMslDrawConstantsSystemChanged;
+        case kNativeMslDrawConstantsChangeFloat:
+          return kNativeMslDrawConstantsFloatChanged;
+        case kNativeMslDrawConstantsChangeBoolLoop:
+          return kNativeMslDrawConstantsBoolLoopChanged;
+        case kNativeMslDrawConstantsChangeFetch:
+          return kNativeMslDrawConstantsFetchChanged;
+        case kNativeMslDrawConstantsChangeDescriptorIndices:
+          return kNativeMslDrawConstantsDescriptorIndicesChanged;
+        case kNativeMslDrawConstantsChangePrimitiveIndex:
+          return kNativeMslDrawConstantsPrimitiveIndexChanged;
+        default:
+          return kNativeMslDrawConstantsMixed;
+      }
+    };
+    record_draw_constants_reason_for_bound_stages(
+        classify_draw_constants_reason());
+    if (can_reuse_draw_constants) {
+      draw_constants_buffer = draw_constants_cache.buffer;
+      draw_constants_offset = draw_constants_cache.offset;
+    } else {
+      uint64_t draw_constants_gpu_address = 0;
+      uint8_t* draw_constants_data = constant_buffer_pool_->Request(
+          frame_current_, sizeof(draw_constants), kNativeRuntimeInfoAlignment,
+          &draw_constants_buffer, draw_constants_offset,
+          draw_constants_gpu_address);
+      (void)draw_constants_gpu_address;
+      if (!draw_constants_data || !draw_constants_buffer) {
+        XELOGE("Native MSL draw-constant pointer allocation failed");
+        return false;
+      }
+      std::memcpy(draw_constants_data, &draw_constants,
+                  sizeof(draw_constants));
+      draw_constants_cache.payload = draw_constants;
+      draw_constants_cache.buffer = draw_constants_buffer;
+      draw_constants_cache.offset =
+          static_cast<NS::UInteger>(draw_constants_offset);
+      draw_constants_cache.payload_valid = true;
+      draw_constants_cache.upload_frame = frame_current_;
+    }
+
+    auto bind_native_buffer_for_stage =
+        [&](RenderEncoderBufferStage stage, MTL::Buffer* buffer,
+            NS::UInteger offset, NS::UInteger slot) {
+          if (RenderEncoderBufferBindingMatches(stage, buffer, offset, slot)) {
+            return;
+          }
+          SetRenderEncoderBuffer(stage, buffer, offset, slot);
+        };
+    auto bind_native_buffer = [&](MTL::Buffer* buffer, NS::UInteger offset,
+                                  NS::UInteger slot) {
+      if (!buffer) {
+        return;
+      }
+      if (vertex_stage) {
+        bind_native_buffer_for_stage(RenderEncoderBufferStage::kVertex, buffer,
+                                     offset, slot);
+      }
+      if (fragment_stage) {
+        bind_native_buffer_for_stage(RenderEncoderBufferStage::kFragment,
+                                     buffer, offset, slot);
+      }
+      if (mesh_stage) {
+        bind_native_buffer_for_stage(RenderEncoderBufferStage::kMesh, buffer,
+                                     offset, slot);
+      }
+      if (object_stage) {
+        bind_native_buffer_for_stage(RenderEncoderBufferStage::kObject, buffer,
+                                     offset, slot);
+      }
+    };
+    bind_native_buffer(draw_constants_buffer, draw_constants_offset,
+                       kNativeBufferDrawConstants);
+    if (needs_runtime_info) {
+      bind_native_buffer(runtime_info_buffer, runtime_info_offset,
+                         kNativeBufferTextureRuntimeInfo);
+    }
+    if (needs_texture_2d_array_heap) {
+      bind_native_buffer(native_msl_texture_2d_array_heap_, 0,
+                         kNativeBufferTexture2DArrayHeap);
+    }
+    if (needs_texture_3d_heap) {
+      bind_native_buffer(native_msl_texture_3d_heap_, 0,
+                         kNativeBufferTexture3DHeap);
+    }
+    if (needs_texture_cube_heap) {
+      bind_native_buffer(native_msl_texture_cube_heap_, 0,
+                         kNativeBufferTextureCubeHeap);
+    }
+    if (!metadata.sampler_bindings.empty()) {
+      bind_native_buffer(native_msl_sampler_heap_, 0, kNativeBufferSamplerHeap);
+    }
+    if (metadata.uses_shared_memory) {
+      bind_native_buffer(shared_memory_buffer, 0, kNativeBufferSharedMemory);
+    }
+
+    std::array<const MTL::Resource*, 8> draw_constant_resources;
+    uint32_t draw_constant_resource_count = 0;
+    auto add_draw_constant_resource = [&](MTL::Resource* resource) {
+      if (!resource) {
+        return;
+      }
+      for (uint32_t i = 0; i < draw_constant_resource_count; ++i) {
+        if (draw_constant_resources[i] == resource) {
+          return;
+        }
+      }
+      assert_true(draw_constant_resource_count <
+                  draw_constant_resources.size());
+      if (draw_constant_resource_count < draw_constant_resources.size()) {
+        draw_constant_resources[draw_constant_resource_count++] = resource;
+      }
+    };
+    if (needs_system) {
+      add_draw_constant_resource(system_cbv.buffer);
+    }
+    if (needs_float) {
+      add_draw_constant_resource(float_cbv.buffer);
+    }
+    if (needs_bool_loop) {
+      add_draw_constant_resource(bool_loop_cbv.buffer);
+    }
+    if (needs_fetch) {
+      add_draw_constant_resource(fetch_cbv.buffer);
+    }
+    if (needs_descriptor_indices) {
+      add_draw_constant_resource(descriptor_indices_cbv.buffer);
+    }
+    if (metadata.uses_primitive_index_constants) {
+      add_draw_constant_resource(primitive_index_buffer);
+    }
+    if (draw_constant_resource_count) {
+      UseRenderEncoderResources(draw_constant_resources.data(),
+                                draw_constant_resource_count,
+                                MTL::ResourceUsageRead, stage_render_stages);
+    }
+
+    if (metadata.uses_shared_memory) {
+      if (!IsResidencySetResourceCovered(shared_memory_buffer)) {
+        UseRenderEncoderResource(shared_memory_buffer,
+                                 draw.shared_memory_usage,
+                                 stage_render_stages);
+      }
+    }
+    return true;
+  };
+
+  const bool native_vertex_stage =
+      !draw.use_native_msl_primitive_mesh && !draw.use_native_msl_tessellation;
+  const bool native_mesh_stage =
+      draw.use_native_msl_primitive_mesh || draw.use_native_msl_tessellation;
+  const bool native_object_stage = draw.use_native_msl_tessellation;
+  if (!bind_stage(draw.native_vertex_metadata, kStageVertex,
+                  native_vertex_stage, false, native_mesh_stage,
+                  native_object_stage)) {
+    return false;
+  }
+  if (draw.native_pixel_metadata_valid &&
+      !bind_stage(draw.native_pixel_metadata, kStagePixel, false, true, false,
+                  false)) {
+    return false;
+  }
+  return true;
 }
 
-bool MetalCommandProcessor::AllocateStageRootArgument(
-    size_t /* stage_index */, const StageRootArgumentEntries& entries,
-    StageRootArgumentAllocation& allocation_out) {
+bool MetalCommandProcessor::MaterializeGraphicsRootArguments(
+    GraphicsRootArgumentState& state) {
   MTL::Buffer* top_level_buffer = nullptr;
   size_t top_level_offset = 0;
   uint64_t top_level_gpu_address = 0;
@@ -4283,322 +5781,275 @@ bool MetalCommandProcessor::AllocateStageRootArgument(
     return false;
   }
 
-  std::memcpy(top_level_entries, entries.data(), kTopLevelABBytesPerTable);
+  std::memcpy(top_level_entries, state.entries.data(),
+              kTopLevelABBytesPerTable);
 
-  allocation_out = {top_level_buffer,
-                    static_cast<NS::UInteger>(top_level_offset),
-                    top_level_gpu_address, frame_current_, true};
+  state.allocation = {top_level_buffer,
+                      static_cast<NS::UInteger>(top_level_offset),
+                      top_level_gpu_address, frame_current_, true};
+  state.valid = true;
+  state.frame_open_rebuild_pending = false;
+  state.dirty_slot_mask = 0;
+  ++state.serial;
+  if (!state.serial) {
+    state.serial = 1;
+  }
   return true;
-}
-
-bool MetalCommandProcessor::TryReuseConstantPayloadFromCache(
-    ConstantBufferBinding& binding, size_t cbv_slot, size_t stage_index,
-    const uint8_t* payload, size_t size) {
-  if (!cvars::metal_constant_payload_cache) {
-    return false;
-  }
-  if (!payload || !size) {
-    return false;
-  }
-  const uint64_t hash = XXH3_64bits(payload, size);
-  auto it = constant_payload_cache_.find(hash);
-  if (it != constant_payload_cache_.end()) {
-    for (const ConstantPayloadCacheEntry& entry : it->second) {
-      if (entry.cbv_slot != cbv_slot || entry.stage_index != stage_index ||
-          entry.size != size || entry.binding.upload_frame != frame_current_) {
-        continue;
-      }
-      if (entry.bytes.size() != size ||
-          std::memcmp(entry.bytes.data(), payload, size) != 0) {
-        continue;
-      }
-      binding = entry.binding;
-      binding.up_to_date = true;
-      if (cbv_slot < backend_telemetry_.constant_payload_cache_hits.size()) {
-        ++backend_telemetry_.constant_payload_cache_hits[cbv_slot];
-        backend_telemetry_.constant_payload_cache_bytes_saved[cbv_slot] += size;
-        ++backend_telemetry_.cbv_reuse_hits[cbv_slot];
-      }
-      if (cbv_slot == kCbvSlotDescriptorIndices && stage_index < kStageCount) {
-        ++backend_telemetry_.descriptor_index_payload_cache_hits[stage_index];
-        backend_telemetry_
-            .descriptor_index_payload_cache_bytes_saved[stage_index] += size;
-      }
-      return true;
-    }
-  }
-  if (cbv_slot < backend_telemetry_.constant_payload_cache_misses.size()) {
-    ++backend_telemetry_.constant_payload_cache_misses[cbv_slot];
-  }
-  if (cbv_slot == kCbvSlotDescriptorIndices && stage_index < kStageCount) {
-    ++backend_telemetry_.descriptor_index_payload_cache_misses[stage_index];
-  }
-  return false;
-}
-
-void MetalCommandProcessor::StoreConstantPayloadInCache(
-    const ConstantBufferBinding& binding, size_t cbv_slot, size_t stage_index,
-    const uint8_t* payload, size_t size) {
-  if (!cvars::metal_constant_payload_cache) {
-    return;
-  }
-  if (!binding.buffer || !payload || !size ||
-      binding.upload_frame != frame_current_ ||
-      constant_payload_cache_bytes_ + size > kConstantPayloadCacheMaxBytes) {
-    return;
-  }
-  const uint64_t hash = XXH3_64bits(payload, size);
-  auto& entries = constant_payload_cache_[hash];
-  for (const ConstantPayloadCacheEntry& entry : entries) {
-    if (entry.cbv_slot == cbv_slot && entry.stage_index == stage_index &&
-        entry.size == size && entry.bytes.size() == size &&
-        std::memcmp(entry.bytes.data(), payload, size) == 0) {
-      return;
-    }
-  }
-  ConstantPayloadCacheEntry entry;
-  entry.cbv_slot = cbv_slot;
-  entry.stage_index = stage_index;
-  entry.size = size;
-  entry.binding = binding;
-  entry.bytes.assign(payload, payload + size);
-  entries.push_back(std::move(entry));
-  constant_payload_cache_bytes_ += size;
 }
 
 bool MetalCommandProcessor::PopulateBindlessTables(
     bool shared_memory_is_uav, MTL::ResourceUsage shared_memory_usage,
     bool use_geometry_emulation, bool use_tessellation_emulation,
     const UniformBufferInfo& uniforms) {
-  for (size_t stage = 0; stage < kStageCount; ++stage) {
-    if (current_bindless_stage_root_valid_[stage]) {
-      assert_true(current_bindless_stage_root_arguments_[stage].upload_frame ==
-                  frame_current_);
-    }
-  }
-
   constexpr size_t kGraphicsRootStage = kStageVertex;
+  GraphicsRootArgumentState& root_state = graphics_root_argument_state_;
+  if (root_state.valid) {
+    assert_true(root_state.allocation.upload_frame == frame_current_);
+  }
+  const bool entries_were_initialized = root_state.entries_initialized;
   const bool bindless_shared_memory_uav_mismatch =
       current_bindless_shared_memory_is_uav_ != shared_memory_is_uav;
-  StageRootArgumentEntries entries = BuildGraphicsRootArgumentEntries(
-      uniforms, shared_memory_is_uav, use_tessellation_emulation);
-  const bool entries_were_valid =
-      current_bindless_stage_root_entries_valid_[kGraphicsRootStage];
   const bool root_rebuild_detail_telemetry =
       cvars::metal_root_rebuild_detail_telemetry;
-  const uint64_t null_gpu = root_rebuild_detail_telemetry && null_buffer_
-                                ? null_buffer_->gpuAddress()
-                                : 0;
-  struct RootCbvIdentity {
-    bool active = false;
-    MTL::Buffer* buffer = nullptr;
-    NS::UInteger offset = 0;
-  };
-  auto root_slot_to_cbv = [&](size_t slot, size_t& stage, size_t& cbv,
-                              bool& common) -> bool {
-    common = false;
+  const uint64_t null_gpu = null_buffer_->gpuAddress();
+  struct RootUpdateStats {
+    size_t slots_patched = 0;
+    bool descriptor_indices_pointer_mismatch = false;
+    bool other_cbv_pointer_mismatch = false;
+    bool root_resource_identity_changed = false;
+    bool root_resource_identity_same = false;
+  } root_update_stats;
+  auto root_slot_is_descriptor_indices_cbv = [](size_t slot) {
     switch (slot) {
-      case kGraphicsRootABSlotCBVSystem:
-        common = true;
-        cbv = kCbvSlotSystem;
-        return true;
-      case kGraphicsRootABSlotCBVBoolLoop:
-        common = true;
-        cbv = kCbvSlotBoolLoop;
-        return true;
-      case kGraphicsRootABSlotCBVVertexFloat:
-      case kGraphicsRootABSlotCBVHullFloat:
-      case kGraphicsRootABSlotCBVDomainFloat:
-        stage = kStageVertex;
-        cbv = kCbvSlotFloat;
-        return true;
-      case kGraphicsRootABSlotCBVVertexFetch:
-      case kGraphicsRootABSlotCBVHullFetch:
-      case kGraphicsRootABSlotCBVDomainFetch:
-        stage = kStageVertex;
-        cbv = kCbvSlotFetch;
-        return true;
       case kGraphicsRootABSlotCBVVertexDescriptorIndices:
       case kGraphicsRootABSlotCBVHullDescriptorIndices:
       case kGraphicsRootABSlotCBVDomainDescriptorIndices:
-        stage = kStageVertex;
-        cbv = kCbvSlotDescriptorIndices;
-        return true;
-      case kGraphicsRootABSlotCBVPixelFloat:
-        stage = kStagePixel;
-        cbv = kCbvSlotFloat;
-        return true;
-      case kGraphicsRootABSlotCBVPixelFetch:
-        stage = kStagePixel;
-        cbv = kCbvSlotFetch;
-        return true;
       case kGraphicsRootABSlotCBVPixelDescriptorIndices:
-        stage = kStagePixel;
-        cbv = kCbvSlotDescriptorIndices;
         return true;
       default:
         return false;
     }
   };
-  auto uniform_cbv_identity = [&](size_t stage, size_t cbv) -> RootCbvIdentity {
+  auto root_slot_is_other_cbv = [](size_t slot) {
+    switch (slot) {
+      case kGraphicsRootABSlotCBVSystem:
+      case kGraphicsRootABSlotCBVVertexFloat:
+      case kGraphicsRootABSlotCBVBoolLoop:
+      case kGraphicsRootABSlotCBVVertexFetch:
+      case kGraphicsRootABSlotCBVHullFloat:
+      case kGraphicsRootABSlotCBVHullFetch:
+      case kGraphicsRootABSlotCBVDomainFloat:
+      case kGraphicsRootABSlotCBVDomainFetch:
+      case kGraphicsRootABSlotCBVPixelFloat:
+      case kGraphicsRootABSlotCBVPixelFetch:
+        return true;
+      default:
+        return false;
+    }
+  };
+  auto uniform_cbv_identity = [&](size_t stage, size_t cbv) {
     const uint32_t cbv_bit = uint32_t(1) << cbv;
     if (!(uniforms.active_cbv_masks[stage] & cbv_bit)) {
-      return {};
+      return RootSlotIdentity{true, false, nullptr, 0};
     }
     const UniformBufferInfo::Cbv& uniform_cbv = uniforms.cbvs[stage][cbv];
-    return {true, uniform_cbv.buffer, uniform_cbv.offset};
+    return RootSlotIdentity{true, true, uniform_cbv.buffer, uniform_cbv.offset};
   };
-  auto current_cbv_identity = [&](size_t stage, size_t cbv) -> RootCbvIdentity {
+  auto cbv_gpu_address = [&](size_t stage, size_t cbv) -> uint64_t {
     const uint32_t cbv_bit = uint32_t(1) << cbv;
-    if (!(current_bindless_active_cbv_masks_[stage] & cbv_bit)) {
-      return {};
+    if (!(uniforms.active_cbv_masks[stage] & cbv_bit)) {
+      return null_gpu;
     }
-    return {true, current_bindless_cbv_buffers_[stage][cbv],
-            current_bindless_cbv_offsets_[stage][cbv]};
+    const UniformBufferInfo::Cbv& uniform_cbv = uniforms.cbvs[stage][cbv];
+    return uniform_cbv.gpu_address ? uniform_cbv.gpu_address : null_gpu;
   };
-  auto select_common_uniform_cbv_identity = [&](size_t cbv) -> RootCbvIdentity {
-    RootCbvIdentity vertex_identity = uniform_cbv_identity(kStageVertex, cbv);
+  auto common_cbv_gpu_address = [&](size_t cbv) -> uint64_t {
+    uint64_t vertex_address = cbv_gpu_address(kStageVertex, cbv);
+    if (vertex_address != null_gpu) {
+      return vertex_address;
+    }
+    return cbv_gpu_address(kStagePixel, cbv);
+  };
+  auto select_common_uniform_cbv_identity = [&](size_t cbv) {
+    RootSlotIdentity vertex_identity = uniform_cbv_identity(kStageVertex, cbv);
     if (vertex_identity.active) {
       return vertex_identity;
     }
     return uniform_cbv_identity(kStagePixel, cbv);
   };
-  auto select_common_current_cbv_identity = [&](size_t cbv) -> RootCbvIdentity {
-    RootCbvIdentity vertex_identity = current_cbv_identity(kStageVertex, cbv);
-    if (vertex_identity.active) {
-      return vertex_identity;
+  auto set_root_slot = [&](size_t slot, uint64_t gpu_address,
+                           RootSlotIdentity identity) {
+    assert_true(slot < root_state.entries.size());
+    if (slot >= root_state.entries.size()) {
+      return;
     }
-    return current_cbv_identity(kStagePixel, cbv);
-  };
-  size_t slots_patched = 0;
-  bool descriptor_indices_pointer_mismatch = false;
-  bool other_cbv_pointer_mismatch = false;
-  bool root_resource_identity_changed = false;
-  bool root_resource_identity_same = false;
-  for (size_t slot = 0; slot < entries.size(); ++slot) {
-    const bool slot_changed =
-        entries_were_valid
-            ? current_bindless_stage_root_entries_[kGraphicsRootStage][slot] !=
-                  entries[slot]
-            : entries[slot] != 0;
+    const uint64_t previous_gpu_address = root_state.entries[slot];
+    const RootSlotIdentity previous_identity = root_state.identities[slot];
+    const bool slot_changed = entries_were_initialized
+                                  ? previous_gpu_address != gpu_address
+                                  : gpu_address != 0;
     if (!slot_changed) {
-      continue;
+      root_state.identities[slot] = identity;
+      return;
     }
-    ++slots_patched;
+    root_state.entries[slot] = gpu_address;
+    root_state.identities[slot] = identity;
+    if (slot < 64) {
+      root_state.dirty_slot_mask |= uint64_t(1) << slot;
+    }
+    ++root_update_stats.slots_patched;
     if (slot < backend_telemetry_.bindless_root_arg_slot_patches.size()) {
       ++backend_telemetry_.bindless_root_arg_slot_patches[slot];
     }
     if (root_rebuild_detail_telemetry) {
       const bool previous_slot_active =
-          entries_were_valid &&
-          current_bindless_stage_root_entries_[kGraphicsRootStage][slot] !=
-              null_gpu;
-      const bool new_slot_active = entries[slot] != null_gpu;
-      size_t cbv_stage = kStageVertex;
-      size_t cbv_slot = 0;
-      bool common_cbv = false;
-      const bool root_slot_is_cbv =
-          root_slot_to_cbv(slot, cbv_stage, cbv_slot, common_cbv);
-      if (root_slot_is_cbv) {
-        RootCbvIdentity previous_identity =
-            common_cbv ? select_common_current_cbv_identity(cbv_slot)
-                       : current_cbv_identity(cbv_stage, cbv_slot);
-        RootCbvIdentity new_identity =
-            common_cbv ? select_common_uniform_cbv_identity(cbv_slot)
-                       : uniform_cbv_identity(cbv_stage, cbv_slot);
-        previous_identity.active &= previous_slot_active;
-        new_identity.active &= new_slot_active;
-        previous_identity.buffer =
-            previous_identity.active ? previous_identity.buffer : nullptr;
-        new_identity.buffer =
-            new_identity.active ? new_identity.buffer : nullptr;
-        if (previous_identity.buffer == new_identity.buffer &&
-            previous_identity.buffer &&
-            previous_identity.offset != new_identity.offset) {
+          entries_were_initialized && previous_gpu_address != null_gpu;
+      const bool new_slot_active = gpu_address != null_gpu;
+      if (previous_identity.is_cbv || identity.is_cbv) {
+        const bool previous_cbv_active =
+            previous_identity.active && previous_slot_active;
+        const bool new_cbv_active = identity.active && new_slot_active;
+        MTL::Buffer* previous_buffer =
+            previous_cbv_active ? previous_identity.buffer : nullptr;
+        MTL::Buffer* new_buffer = new_cbv_active ? identity.buffer : nullptr;
+        if (previous_buffer == new_buffer && previous_buffer &&
+            previous_identity.offset != identity.offset) {
           ++backend_telemetry_.bindless_root_rebuild_details
                 [kBindlessRootDetailSameBufferOffsetChanged];
-          root_resource_identity_same = true;
-        } else if (previous_identity.buffer != new_identity.buffer) {
+          root_update_stats.root_resource_identity_same = true;
+        } else if (previous_buffer != new_buffer) {
           ++backend_telemetry_.bindless_root_rebuild_details
                 [kBindlessRootDetailDifferentBuffer];
-          root_resource_identity_changed = true;
-        } else if (previous_identity.buffer) {
-          root_resource_identity_same = true;
+          root_update_stats.root_resource_identity_changed = true;
+        } else if (previous_buffer) {
+          root_update_stats.root_resource_identity_same = true;
         }
       } else {
-        root_resource_identity_changed = true;
+        root_update_stats.root_resource_identity_changed = true;
       }
     }
-    if (entries_were_valid) {
-      switch (slot) {
-        case kGraphicsRootABSlotCBVVertexDescriptorIndices:
-        case kGraphicsRootABSlotCBVHullDescriptorIndices:
-        case kGraphicsRootABSlotCBVDomainDescriptorIndices:
-        case kGraphicsRootABSlotCBVPixelDescriptorIndices:
-          descriptor_indices_pointer_mismatch = true;
-          break;
-        case kGraphicsRootABSlotCBVSystem:
-        case kGraphicsRootABSlotCBVVertexFloat:
-        case kGraphicsRootABSlotCBVBoolLoop:
-        case kGraphicsRootABSlotCBVVertexFetch:
-        case kGraphicsRootABSlotCBVHullFloat:
-        case kGraphicsRootABSlotCBVHullFetch:
-        case kGraphicsRootABSlotCBVDomainFloat:
-        case kGraphicsRootABSlotCBVDomainFetch:
-        case kGraphicsRootABSlotCBVPixelFloat:
-        case kGraphicsRootABSlotCBVPixelFetch:
-          other_cbv_pointer_mismatch = true;
-          break;
-        default:
-          break;
+    if (entries_were_initialized) {
+      if (root_slot_is_descriptor_indices_cbv(slot)) {
+        root_update_stats.descriptor_indices_pointer_mismatch = true;
+      } else if (root_slot_is_other_cbv(slot)) {
+        root_update_stats.other_cbv_pointer_mismatch = true;
       }
     }
-  }
+  };
+  auto set_cbv_slot = [&](size_t root_slot, size_t stage, size_t cbv) {
+    set_root_slot(root_slot, cbv_gpu_address(stage, cbv),
+                  uniform_cbv_identity(stage, cbv));
+  };
+  auto set_common_cbv_slot = [&](size_t root_slot, size_t cbv) {
+    set_root_slot(root_slot, common_cbv_gpu_address(cbv),
+                  select_common_uniform_cbv_identity(cbv));
+  };
 
-  const bool root_valid =
-      current_bindless_stage_root_valid_[kGraphicsRootStage] &&
-      current_bindless_stage_root_arguments_[kGraphicsRootStage].valid;
-  const bool root_update_needed = !root_valid || !entries_were_valid ||
-                                  slots_patched ||
-                                  bindless_shared_memory_uav_mismatch;
+  constexpr uint64_t kDescriptorEntrySize = sizeof(IRDescriptorTableEntry);
+  const uint64_t view_heap_gpu = view_bindless_heap_->gpuAddress();
+  const uint64_t sampler_heap_gpu = sampler_bindless_heap_->gpuAddress();
+  const uint64_t system_view_gpu = system_view_tables_->gpuAddress();
+  const uint64_t srv_space0_gpu =
+      system_view_gpu + (shared_memory_is_uav
+                             ? kSystemViewTableSRVNull
+                             : kSystemViewTableSRVSharedMemory) *
+                            kDescriptorEntrySize;
+  const uint64_t uav_space0_gpu =
+      system_view_gpu + (shared_memory_is_uav
+                             ? kSystemViewTableUAVSharedMemoryStart
+                             : kSystemViewTableUAVNullStart) *
+                            kDescriptorEntrySize;
+  const uint64_t null_uav_gpu =
+      system_view_gpu + kSystemViewTableUAVNullStart * kDescriptorEntrySize;
+  set_root_slot(kGraphicsRootABSlotSRVSpace0, srv_space0_gpu, {});
+  set_root_slot(kGraphicsRootABSlotSRVSpace1, view_heap_gpu, {});
+  set_root_slot(kGraphicsRootABSlotSRVSpace2, view_heap_gpu, {});
+  set_root_slot(kGraphicsRootABSlotSRVSpace3, view_heap_gpu, {});
+  set_root_slot(kGraphicsRootABSlotSRVSpace10, view_heap_gpu, {});
+  set_root_slot(kGraphicsRootABSlotUAVSpace0, uav_space0_gpu, {});
+  set_root_slot(kGraphicsRootABSlotUAVSpace1, null_uav_gpu, {});
+  set_root_slot(kGraphicsRootABSlotUAVSpace2, null_uav_gpu, {});
+  set_root_slot(kGraphicsRootABSlotUAVSpace3, null_uav_gpu, {});
+  set_root_slot(kGraphicsRootABSlotSamplerSpace0, sampler_heap_gpu, {});
+  set_common_cbv_slot(kGraphicsRootABSlotCBVSystem, kCbvSlotSystem);
+  set_common_cbv_slot(kGraphicsRootABSlotCBVBoolLoop, kCbvSlotBoolLoop);
+  set_cbv_slot(kGraphicsRootABSlotCBVVertexFloat, kStageVertex, kCbvSlotFloat);
+  set_cbv_slot(kGraphicsRootABSlotCBVVertexFetch, kStageVertex, kCbvSlotFetch);
+  set_cbv_slot(kGraphicsRootABSlotCBVVertexDescriptorIndices, kStageVertex,
+               kCbvSlotDescriptorIndices);
+  if (use_tessellation_emulation) {
+    // Hull and domain generated stages consume the same guest constant state as
+    // the vertex/domain translation they expand. Keep these slots null on
+    // ordinary draws so normal vertex root churn doesn't patch inactive stages.
+    set_cbv_slot(kGraphicsRootABSlotCBVHullFloat, kStageVertex, kCbvSlotFloat);
+    set_cbv_slot(kGraphicsRootABSlotCBVHullFetch, kStageVertex, kCbvSlotFetch);
+    set_cbv_slot(kGraphicsRootABSlotCBVHullDescriptorIndices, kStageVertex,
+                 kCbvSlotDescriptorIndices);
+    set_cbv_slot(kGraphicsRootABSlotCBVDomainFloat, kStageVertex,
+                 kCbvSlotFloat);
+    set_cbv_slot(kGraphicsRootABSlotCBVDomainFetch, kStageVertex,
+                 kCbvSlotFetch);
+    set_cbv_slot(kGraphicsRootABSlotCBVDomainDescriptorIndices, kStageVertex,
+                 kCbvSlotDescriptorIndices);
+  } else {
+    const RootSlotIdentity inactive_cbv{true, false, nullptr, 0};
+    set_root_slot(kGraphicsRootABSlotCBVHullFloat, null_gpu, inactive_cbv);
+    set_root_slot(kGraphicsRootABSlotCBVHullFetch, null_gpu, inactive_cbv);
+    set_root_slot(kGraphicsRootABSlotCBVHullDescriptorIndices, null_gpu,
+                  inactive_cbv);
+    set_root_slot(kGraphicsRootABSlotCBVDomainFloat, null_gpu, inactive_cbv);
+    set_root_slot(kGraphicsRootABSlotCBVDomainFetch, null_gpu, inactive_cbv);
+    set_root_slot(kGraphicsRootABSlotCBVDomainDescriptorIndices, null_gpu,
+                  inactive_cbv);
+  }
+  set_cbv_slot(kGraphicsRootABSlotCBVPixelFloat, kStagePixel, kCbvSlotFloat);
+  set_cbv_slot(kGraphicsRootABSlotCBVPixelFetch, kStagePixel, kCbvSlotFetch);
+  set_cbv_slot(kGraphicsRootABSlotCBVPixelDescriptorIndices, kStagePixel,
+               kCbvSlotDescriptorIndices);
+  root_state.entries_initialized = true;
+
+  const bool root_valid = root_state.valid && root_state.allocation.valid &&
+                          root_state.allocation.upload_frame == frame_current_;
+  const bool root_update_needed = !root_valid || root_state.dirty_slot_mask;
   if (root_update_needed) {
     if (root_rebuild_detail_telemetry) {
       const size_t slots_changed_bin =
-          std::min(slots_patched,
+          std::min(root_update_stats.slots_patched,
                    backend_telemetry_.bindless_root_slots_changed.size() - 1);
       ++backend_telemetry_.bindless_root_slots_changed[slots_changed_bin];
-      if (descriptor_indices_pointer_mismatch && !other_cbv_pointer_mismatch) {
+      if (root_update_stats.descriptor_indices_pointer_mismatch &&
+          !root_update_stats.other_cbv_pointer_mismatch) {
         ++backend_telemetry_.bindless_root_rebuild_details
               [kBindlessRootDetailDescriptorIndicesOnly];
-      } else if (!descriptor_indices_pointer_mismatch &&
-                 other_cbv_pointer_mismatch) {
+      } else if (!root_update_stats.descriptor_indices_pointer_mismatch &&
+                 root_update_stats.other_cbv_pointer_mismatch) {
         ++backend_telemetry_
               .bindless_root_rebuild_details[kBindlessRootDetailOtherCbvOnly];
-      } else if (descriptor_indices_pointer_mismatch &&
-                 other_cbv_pointer_mismatch) {
+      } else if (root_update_stats.descriptor_indices_pointer_mismatch &&
+                 root_update_stats.other_cbv_pointer_mismatch) {
         ++backend_telemetry_.bindless_root_rebuild_details
               [kBindlessRootDetailMixedDescriptorAndOther];
       }
-      if (root_resource_identity_changed) {
+      if (root_update_stats.root_resource_identity_changed) {
         ++backend_telemetry_.bindless_root_rebuild_details
               [kBindlessRootDetailResourceIdentityChanged];
-      } else if (root_resource_identity_same || slots_patched) {
+      } else if (root_update_stats.root_resource_identity_same ||
+                 root_update_stats.slots_patched) {
         ++backend_telemetry_.bindless_root_rebuild_details
               [kBindlessRootDetailResourceIdentitySame];
       }
     }
-    const bool frame_open_rebuild =
-        current_bindless_stage_root_frame_open_rebuild_pending_
-            [kGraphicsRootStage];
+    const bool frame_open_rebuild = root_state.frame_open_rebuild_pending;
     if (frame_open_rebuild) {
       ++backend_telemetry_
             .bindless_root_rebuild_reasons[kBindlessRootRebuildFrameOpen];
     }
-    if (!frame_open_rebuild && descriptor_indices_pointer_mismatch) {
+    if (!frame_open_rebuild &&
+        root_update_stats.descriptor_indices_pointer_mismatch) {
       ++backend_telemetry_.bindless_root_rebuild_reasons
             [kBindlessRootRebuildDescriptorIndicesPointerChange];
     }
-    if (!frame_open_rebuild && other_cbv_pointer_mismatch) {
+    if (!frame_open_rebuild && root_update_stats.other_cbv_pointer_mismatch) {
       ++backend_telemetry_.bindless_root_rebuild_reasons
             [kBindlessRootRebuildOtherCbvPointerChange];
     }
@@ -4606,29 +6057,19 @@ bool MetalCommandProcessor::PopulateBindlessTables(
       ++backend_telemetry_.bindless_root_rebuild_reasons
             [kBindlessRootRebuildSharedMemoryUavChange];
     }
-    if (entries_were_valid && !slots_patched && root_valid) {
+    if (entries_were_initialized && !root_update_stats.slots_patched &&
+        root_valid) {
       ++backend_telemetry_.bindless_root_arg_noop_updates[kGraphicsRootStage];
     } else {
-      StageRootArgumentAllocation allocation;
-      if (!AllocateStageRootArgument(kGraphicsRootStage, entries, allocation)) {
+      if (!MaterializeGraphicsRootArguments(root_state)) {
         return false;
       }
-      current_bindless_stage_root_arguments_[kGraphicsRootStage] = allocation;
       ++backend_telemetry_.bindless_root_allocations[kGraphicsRootStage];
       backend_telemetry_.bindless_root_arg_slots_patched[kGraphicsRootStage] +=
-          slots_patched;
+          root_update_stats.slots_patched;
       backend_telemetry_.bindless_root_arg_bytes_copied[kGraphicsRootStage] +=
           kTopLevelABBytesPerTable;
-      ++current_bindless_stage_root_serials_[kGraphicsRootStage];
-      if (!current_bindless_stage_root_serials_[kGraphicsRootStage]) {
-        current_bindless_stage_root_serials_[kGraphicsRootStage] = 1;
-      }
     }
-    current_bindless_stage_root_entries_[kGraphicsRootStage] = entries;
-    current_bindless_stage_root_entries_valid_[kGraphicsRootStage] = true;
-    current_bindless_stage_root_valid_[kGraphicsRootStage] = true;
-    current_bindless_stage_root_frame_open_rebuild_pending_
-        [kGraphicsRootStage] = false;
   } else {
     ++backend_telemetry_.bindless_root_reuse_hits[kGraphicsRootStage];
   }
@@ -4650,9 +6091,6 @@ bool MetalCommandProcessor::PopulateBindlessTables(
     current_bindless_active_cbv_masks_[stage] =
         uniforms.active_cbv_masks[stage];
   }
-  current_bindless_stage_root_valid_[kStagePixel] = false;
-  current_bindless_stage_root_frame_open_rebuild_pending_[kStagePixel] = false;
-  current_bindless_stage_root_serials_[kStagePixel] = 0;
   current_bindless_shared_memory_is_uav_ = shared_memory_is_uav;
 
   PublishBindlessFixedResourceSet(shared_memory_usage);
@@ -4666,11 +6104,9 @@ bool MetalCommandProcessor::PopulateBindlessTables(
       render_encoder_bindless_table_bind_tessellation_ !=
           use_tessellation_emulation;
   {
-    constexpr size_t kGraphicsRootStage = kStageVertex;
     const StageRootArgumentAllocation& graphics_root_arguments =
-        current_bindless_stage_root_arguments_[kGraphicsRootStage];
-    const uint64_t graphics_root_serial =
-        current_bindless_stage_root_serials_[kGraphicsRootStage];
+        graphics_root_argument_state_.allocation;
+    const uint64_t graphics_root_serial = graphics_root_argument_state_.serial;
     assert_true(graphics_root_arguments.valid);
     assert_true(graphics_root_arguments.upload_frame == frame_current_);
     const bool vertex_root_argument_binding_needs_update =
@@ -4907,78 +6343,15 @@ MetalCommandProcessor::BuildPreparedDrawRenderTargetKey(
   return key;
 }
 
-bool MetalCommandProcessor::PreparedDrawQueueHasActiveZPD() const {
-  if (GetZPDMode() == ZPDMode::kFake) {
-    return false;
-  }
-  return zpd_active_segment_.logical_active ||
-         zpd_active_segment_.segment_active ||
-         zpd_active_segment_.segment_pending_begin ||
-         zpd_active_query_.is_open();
-}
-
-void MetalCommandProcessor::RecordPreparedDrawQueueReject(
-    PreparedDrawQueueRejectReason reject_reason) {
-  const size_t reject_index = static_cast<size_t>(reject_reason);
-  if (reject_index <
-      backend_telemetry_.prepared_draw_queue_reject_reasons.size()) {
-    ++backend_telemetry_.prepared_draw_queue_reject_reasons[reject_index];
-  }
-}
-
-bool MetalCommandProcessor::CanQueuePreparedDraw(
-    const PreparedDraw& draw,
-    PreparedDrawQueueRejectReason& reject_reason) const {
-  reject_reason = PreparedDrawQueueRejectReason::kNone;
-  if (draw.memexport_used) {
-    reject_reason = PreparedDrawQueueRejectReason::kMemexport;
-    return false;
-  }
-  if (draw.has_pending_draw_pass_transfers) {
-    reject_reason = PreparedDrawQueueRejectReason::kPendingDrawPassTransfers;
-    return false;
-  }
-  if (PreparedDrawQueueHasActiveZPD()) {
-    reject_reason = PreparedDrawQueueRejectReason::kZPDActive;
-    return false;
-  }
-  if (draw.materialization_ranges.empty() && !draw.texture_upload_needed) {
-    reject_reason = PreparedDrawQueueRejectReason::kNoSharedMemoryRanges;
-    return false;
-  }
-  if (!draw.has_invalid_shared_memory && prepared_draw_queue_.empty() &&
-      current_render_encoder_ && !draw.texture_upload_needed) {
-    reject_reason = PreparedDrawQueueRejectReason::kResidentWithoutActiveQueue;
-    return false;
-  }
-  if (prepared_draw_queue_render_target_key_valid_ &&
-      draw.render_target_key != prepared_draw_queue_render_target_key_) {
-    reject_reason = PreparedDrawQueueRejectReason::kRenderTargetKeyMismatch;
-    return false;
-  }
-
-  size_t range_count = draw.materialization_ranges.size();
-  uint64_t byte_count = 0;
-  for (const SharedMemory::Range& range : draw.materialization_ranges) {
-    byte_count += range.length;
-  }
-  for (const PreparedDraw& queued_draw : prepared_draw_queue_) {
-    range_count += queued_draw.materialization_ranges.size();
-    for (const SharedMemory::Range& range :
-         queued_draw.materialization_ranges) {
-      byte_count += range.length;
-    }
-  }
-  if (prepared_draw_queue_.size() + 1 > kPreparedDrawQueueMaxDraws ||
-      range_count > kPreparedDrawQueueMaxRanges ||
-      byte_count > kPreparedDrawQueueMaxBytes) {
-    reject_reason = PreparedDrawQueueRejectReason::kQueueBudget;
-    return false;
-  }
-  return true;
-}
-
 bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
+  if (!draw.pipeline) {
+    static bool null_pipeline_logged = false;
+    if (!null_pipeline_logged) {
+      null_pipeline_logged = true;
+      XELOGW("Metal: prepared draw had no pipeline; skipping draw");
+    }
+    return true;
+  }
   if (!BeginRenderEncoderForDraw(draw.fallback_depth_attachment_required)) {
     static bool no_command_buffer_logged = false;
     if (!no_command_buffer_logged) {
@@ -5038,7 +6411,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   } else {
     ++backend_telemetry_.pipeline_set_skips;
   }
-  if (draw.use_tessellation_emulation) {
+  if (draw.use_tessellation_emulation && !draw.use_native_msl_tessellation) {
     if (!tessellator_tables_buffer_) {
       XELOGE("Tessellation emulation requires tessellator tables buffer");
       return false;
@@ -5047,20 +6420,30 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
                                  kIRRuntimeTessellatorTablesBindPoint);
     SetRenderEncoderMeshBuffer(tessellator_tables_buffer_, 0,
                                kIRRuntimeTessellatorTablesBindPoint);
-    UseRenderEncoderResource(tessellator_tables_buffer_,
-                             MTL::ResourceUsageRead);
+    if (!IsResidencySetResourceCovered(tessellator_tables_buffer_)) {
+      UseRenderEncoderResource(tessellator_tables_buffer_,
+                               MTL::ResourceUsageRead);
+    }
   }
 
   if (draw.prepare_uniforms) {
     ApplyDrawDynamicState(draw.dynamic_state);
 
-    RestoreBindlessTextureResourceSet(draw.texture_resource_set);
+    if (draw.use_native_msl) {
+      RestoreBindlessTextureResourceSet(draw.texture_resource_set);
+      ApplyRenderEncoderResourceSets();
+      if (!BindNativeMslDrawResources(draw)) {
+        return false;
+      }
+    } else {
+      RestoreBindlessTextureResourceSet(draw.texture_resource_set);
 
-    if (!PopulateBindlessTables(
-            draw.shared_memory_is_uav, draw.shared_memory_usage,
-            draw.use_geometry_emulation, draw.use_tessellation_emulation,
-            draw.uniforms)) {
-      return false;
+      if (!PopulateBindlessTables(
+              draw.shared_memory_is_uav, draw.shared_memory_usage,
+              draw.use_geometry_emulation, draw.use_tessellation_emulation,
+              draw.uniforms)) {
+        return false;
+      }
     }
   }
 
@@ -5069,7 +6452,8 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   return DispatchDraw(
       draw.primitive_processing_result, draw.use_tessellation_emulation,
       draw.tessellation_pipeline_state, draw.use_geometry_emulation,
-      draw.geometry_pipeline_state, draw.shared_memory_is_uav,
+      draw.geometry_pipeline_state, draw.native_mesh_pipeline_state,
+      draw.use_native_msl_tessellation, draw.shared_memory_is_uav,
       draw.shared_memory_usage, draw.memexport_used,
       draw.memexport_write_stages, draw.uses_vertex_fetch,
       draw.prepare_uniforms,
@@ -5081,191 +6465,36 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
       draw.memexport_ranges);
 }
 
-bool MetalCommandProcessor::FlushPreparedDrawQueue(
-    PreparedDrawFlushReason reason) {
-  if (prepared_draw_queue_.empty()) {
-    return true;
-  }
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index <
-      backend_telemetry_.prepared_draw_queue_flush_reasons.size()) {
-    ++backend_telemetry_.prepared_draw_queue_flush_reasons[reason_index];
-  }
-  ++backend_telemetry_.prepared_draw_queue_flushes;
-  if (prepared_draw_queue_.size() == 1) {
-    ++backend_telemetry_.prepared_draw_queue_single_draw_flushes;
-  }
-
-  std::vector<PreparedDraw> draws = std::move(prepared_draw_queue_);
-  prepared_draw_queue_.clear();
-  prepared_draw_queue_render_target_key_valid_ = false;
-  prepared_draw_queue_render_target_key_ = {};
-
-  std::vector<SharedMemory::Range> ranges;
-  size_t range_count = 0;
-  uint64_t byte_count = 0;
-  bool has_invalid_shared_memory = false;
-  bool has_texture_materialization = false;
-  for (const PreparedDraw& draw : draws) {
-    range_count += draw.materialization_ranges.size();
-    has_invalid_shared_memory =
-        has_invalid_shared_memory || draw.has_invalid_shared_memory;
-    has_texture_materialization =
-        has_texture_materialization ||
-        draw.texture_materialization_plan.NeedsTextureUpload();
-    for (const SharedMemory::Range& range : draw.materialization_ranges) {
-      byte_count += range.length;
-    }
-  }
-  ranges.reserve(range_count);
-  for (const PreparedDraw& draw : draws) {
-    ranges.insert(ranges.end(), draw.materialization_ranges.begin(),
-                  draw.materialization_ranges.end());
-  }
-  backend_telemetry_.prepared_draw_queue_draws_flushed += draws.size();
-  backend_telemetry_.prepared_draw_queue_ranges_flushed += ranges.size();
-  backend_telemetry_.prepared_draw_queue_bytes_flushed += byte_count;
-  if (has_invalid_shared_memory) {
-    ++backend_telemetry_.prepared_draw_queue_invalid_flushes;
-  }
-
-  const bool previous_flushing = flushing_prepared_draw_queue_;
-  flushing_prepared_draw_queue_ = true;
-
-  if (has_invalid_shared_memory && shared_memory_ && !ranges.empty()) {
-    PrepareSharedMemoryUploadBeforeDrawPass(
-        ranges.data(), static_cast<uint32_t>(ranges.size()));
-    if (!RequestSharedMemoryRanges(
-            SharedMemoryRequestReason::kDrawMaterialization, ranges.data(),
-            static_cast<uint32_t>(ranges.size()))) {
-      XELOGE("Failed to request {} prepared-draw shared-memory ranges",
-             ranges.size());
-      flushing_prepared_draw_queue_ = previous_flushing;
-      return false;
-    }
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kMaterializationDrain);
-  }
-
-  if (has_texture_materialization && texture_cache_) {
-    if (current_render_encoder_) {
-      EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
-    }
-    if (!EnsureCommandBuffer()) {
-      flushing_prepared_draw_queue_ = previous_flushing;
-      return false;
-    }
-    texture_cache_->BeginTextureUploadBatch();
-    bool texture_materialization_succeeded = true;
-    for (PreparedDraw& draw : draws) {
-      if (!draw.texture_materialization_plan.NeedsTextureUpload()) {
-        continue;
-      }
-      ++backend_telemetry_.prepared_draw_queue_texture_plans_flushed;
-      backend_telemetry_.prepared_draw_queue_texture_loads_planned +=
-          draw.texture_materialization_plan.planned_load_count;
-      if (!texture_cache_->ExecuteTextureMaterialization(
-              draw.texture_materialization_plan)) {
-        texture_materialization_succeeded = false;
-        break;
-      }
-      backend_telemetry_.prepared_draw_queue_texture_loads_executed +=
-          draw.texture_materialization_plan.executed_load_count;
-    }
-    if (!texture_cache_->EndTextureUploadBatch()) {
-      texture_materialization_succeeded = false;
-    }
-    if (!texture_materialization_succeeded) {
-      flushing_prepared_draw_queue_ = previous_flushing;
-      return false;
-    }
-  }
-
-  for (const PreparedDraw& draw : draws) {
-    if (!EncodePreparedDraw(draw)) {
-      flushing_prepared_draw_queue_ = previous_flushing;
-      return false;
-    }
-  }
-
-  flushing_prepared_draw_queue_ = previous_flushing;
-  return true;
-}
-
-bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw&& draw) {
-  PreparedDrawQueueRejectReason reject_reason =
-      PreparedDrawQueueRejectReason::kNone;
-  if (CanQueuePreparedDraw(draw, reject_reason)) {
-    if (prepared_draw_queue_.empty()) {
-      prepared_draw_queue_render_target_key_ = draw.render_target_key;
-      prepared_draw_queue_render_target_key_valid_ = true;
-    }
-    prepared_draw_queue_.push_back(std::move(draw));
-    ++backend_telemetry_.prepared_draw_queue_appends;
-    if (prepared_draw_queue_.size() >= kPreparedDrawQueueMaxDraws) {
-      return FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueBudget);
-    }
-    return true;
-  }
-
-  RecordPreparedDrawQueueReject(reject_reason);
-  if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueReject)) {
-    return false;
-  }
-
-  if (draw.has_invalid_shared_memory && shared_memory_ &&
-      !draw.materialization_ranges.empty()) {
-    PrepareSharedMemoryUploadBeforeDrawPass(
-        draw.materialization_ranges.data(),
-        static_cast<uint32_t>(draw.materialization_ranges.size()));
-    if (!RequestSharedMemoryRanges(
-            SharedMemoryRequestReason::kDrawMaterialization,
-            draw.materialization_ranges.data(),
-            static_cast<uint32_t>(draw.materialization_ranges.size()))) {
-      XELOGE("Failed to request {} current-draw shared-memory ranges",
-             draw.materialization_ranges.size());
-      return false;
-    }
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kMaterializationDrain);
-  }
-
-  if (draw.texture_materialization_plan.NeedsTextureUpload() &&
-      texture_cache_) {
-    if (current_render_encoder_) {
-      EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
-    }
-    if (!EnsureCommandBuffer()) {
-      return false;
-    }
-    if (!texture_cache_->ExecuteTextureMaterialization(
-            draw.texture_materialization_plan)) {
-      return false;
-    }
-  }
-
-  return EncodePreparedDraw(draw);
-}
-
 bool MetalCommandProcessor::DispatchDraw(
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     bool use_tessellation_emulation,
     MetalPipelineCache::TessellationPipelineState* tessellation_pipeline_state,
     bool use_geometry_emulation,
     MetalPipelineCache::GeometryPipelineState* geometry_pipeline_state,
-    bool shared_memory_is_uav, MTL::ResourceUsage shared_memory_usage,
-    bool memexport_used, MTL::RenderStages memexport_write_stages,
-    bool uses_vertex_fetch, bool shared_memory_resource_registered,
+    MetalPipelineCache::NativeMeshPipelineState* native_mesh_pipeline_state,
+    bool use_native_msl_tessellation, bool shared_memory_is_uav,
+    MTL::ResourceUsage shared_memory_usage, bool memexport_used,
+    MTL::RenderStages memexport_write_stages, bool uses_vertex_fetch,
+    bool shared_memory_resource_registered,
     const PreparedIndexBuffer* prepared_guest_dma_index_buffer,
-    const std::vector<Shader::VertexBinding>& vb_bindings,
+    PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
     const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
     const IndexBufferInfo* index_buffer_info,
-    const std::vector<draw_util::MemExportRange>& memexport_ranges) {
+    PreparedDrawSpan<draw_util::MemExportRange> memexport_ranges) {
+  const bool use_native_msl_primitive_mesh =
+      native_mesh_pipeline_state != nullptr;
+  auto use_resource_if_not_residency_covered = [&](MTL::Resource* resource,
+                                                   MTL::ResourceUsage usage) {
+    if (!resource || IsResidencySetResourceCovered(resource)) {
+      return;
+    }
+    UseRenderEncoderResource(resource, usage);
+  };
   auto use_shared_memory_resource_if_needed = [&](MTL::Buffer* buffer) {
     if (!buffer || shared_memory_resource_registered) {
       return;
     }
-    UseRenderEncoderResource(buffer, shared_memory_usage);
+    use_resource_if_not_residency_covered(buffer, shared_memory_usage);
   };
 
   // Bind vertex buffers / descriptors.
@@ -5422,11 +6651,74 @@ bool MetalCommandProcessor::DispatchDraw(
              uint32_t(primitive_processing_result.index_buffer_type));
       return false;
     }
-    UseRenderEncoderResource(index_buffer_out, MTL::ResourceUsageRead);
+    use_resource_if_not_residency_covered(index_buffer_out,
+                                          MTL::ResourceUsageRead);
     return true;
   };
 
-  if (use_tessellation_emulation) {
+  if (use_native_msl_primitive_mesh) {
+    uint32_t mesh_threadgroup_count = 0;
+    switch (native_mesh_pipeline_state->type) {
+      case MetalPipelineCache::NativeMeshPipelineType::kPointList:
+        mesh_threadgroup_count =
+            primitive_processing_result.guest_draw_vertex_count;
+        if (!mesh_threadgroup_count) {
+          mesh_threadgroup_count =
+              primitive_processing_result.host_draw_vertex_count;
+        }
+        break;
+      case MetalPipelineCache::NativeMeshPipelineType::kRectangleList:
+        mesh_threadgroup_count =
+            primitive_processing_result.guest_draw_vertex_count / 3u;
+        if (!mesh_threadgroup_count) {
+          mesh_threadgroup_count =
+              primitive_processing_result.host_draw_vertex_count / 4u;
+        }
+        break;
+      case MetalPipelineCache::NativeMeshPipelineType::kQuadList:
+        mesh_threadgroup_count =
+            primitive_processing_result.guest_draw_vertex_count / 4u;
+        if (!mesh_threadgroup_count) {
+          mesh_threadgroup_count =
+              primitive_processing_result.host_draw_vertex_count / 4u;
+        }
+        break;
+    }
+    if (!mesh_threadgroup_count) {
+      return true;
+    }
+    current_render_encoder_->drawMeshThreadgroups(
+        MTL::Size::Make(mesh_threadgroup_count, 1, 1), MTL::Size::Make(1, 1, 1),
+        MTL::Size::Make(1, 1, 1));
+  } else if (use_tessellation_emulation) {
+    if (use_native_msl_tessellation) {
+      if (!tessellation_pipeline_state ||
+          !tessellation_pipeline_state->native_msl) {
+        XELOGE("Native MSL tessellation draw missing native pipeline state");
+        return false;
+      }
+      uint32_t control_point_count =
+          tessellation_pipeline_state->control_point_count;
+      if (!control_point_count) {
+        XELOGE("Native MSL tessellation draw has no control point count");
+        return false;
+      }
+      uint32_t patch_count =
+          primitive_processing_result.guest_draw_vertex_count /
+          control_point_count;
+      if (!patch_count) {
+        patch_count = primitive_processing_result.host_draw_vertex_count /
+                      control_point_count;
+      }
+      if (!patch_count) {
+        return true;
+      }
+      current_render_encoder_->drawMeshThreadgroups(
+          MTL::Size::Make(patch_count, 1, 1), MTL::Size::Make(1, 1, 1),
+          MTL::Size::Make(1, 1, 1));
+      return true;
+    }
+
     IRRuntimePrimitiveType tess_primitive = IRRuntimePrimitiveTypeTriangle;
     switch (primitive_processing_result.host_primitive_type) {
       case xenos::PrimitiveType::kTriangleList:
@@ -5878,13 +7170,8 @@ bool MetalCommandProcessor::FloatConstantRangeNeedsDirty(
 
 void MetalCommandProcessor::DirtyFetchConstantDwords(
     const DxbcShader::FetchConstantDwordMask& dirty_mask) {
-  for (size_t stage = 0; stage < kStageCount; ++stage) {
-    MergeFetchConstantDwordMask(fetch_constant_dirty_masks_[stage], dirty_mask);
-    if (FetchConstantDwordMasksOverlap(
-            dirty_mask, current_fetch_constant_dword_masks_[stage])) {
-      cbuffer_binding_fetch_[stage].up_to_date = false;
-    }
-  }
+  (void)dirty_mask;
+  cbuffer_binding_fetch_.up_to_date = false;
 }
 
 void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -5950,22 +7237,18 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   EnsureCommandBufferAutoreleasePool();
 
   // Note: commandBuffer() returns an autoreleased object, we must retain it.
-  {
-    ScopedAutoreleasePool autorelease_pool;
-    current_command_buffer_ = command_queue_->commandBuffer();
-    if (current_command_buffer_) {
-      current_command_buffer_->retain();
-      current_command_buffer_->setLabel(
-          NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
-    }
-  }
+  current_command_buffer_ = command_queue_->commandBuffer();
   if (!current_command_buffer_) {
     XELOGE("EnsureCommandBuffer: failed to create command buffer");
     DrainCommandBufferAutoreleasePool();
     return nullptr;
   }
+  current_command_buffer_->retain();
 
   ++submission_current_;
+
+  current_command_buffer_->setLabel(
+      NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
 
   pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
   current_command_buffer_->addCompletedHandler(
@@ -6084,31 +7367,32 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
   cbuffer_binding_float_vertex_.up_to_date = false;
   cbuffer_binding_float_pixel_.up_to_date = false;
   cbuffer_binding_bool_loop_.up_to_date = false;
-  for (auto& fetch_binding : cbuffer_binding_fetch_) {
-    fetch_binding.up_to_date = false;
-  }
+  cbuffer_binding_fetch_.up_to_date = false;
+  current_fetch_constant_payload_valid_ = false;
   cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
   cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
   std::memset(current_float_constant_map_vertex_, 0,
               sizeof(current_float_constant_map_vertex_));
   std::memset(current_float_constant_map_pixel_, 0,
               sizeof(current_float_constant_map_pixel_));
-  current_payload_system_.clear();
-  current_payload_float_vertex_.clear();
-  current_payload_float_pixel_.clear();
-  current_payload_bool_loop_.clear();
-  for (auto& payload : current_payload_fetch_) {
-    payload.clear();
+  for (NativeMslRuntimeInfoUploadCache& cache :
+       native_msl_runtime_info_upload_cache_) {
+    cache.buffer = nullptr;
+    cache.offset = 0;
+    cache.size = 0;
+    cache.upload_frame = 0;
   }
-  for (auto& payload : scratch_payload_fetch_) {
-    payload.clear();
+  for (NativeMslDrawConstantsUploadCache& cache :
+      native_msl_draw_constants_upload_cache_) {
+    cache.payload = {};
+    cache.buffer = nullptr;
+    cache.offset = 0;
+    cache.payload_valid = false;
+    cache.upload_frame = 0;
   }
-  constant_payload_cache_.clear();
-  constant_payload_cache_bytes_ = 0;
+  native_msl_primitive_index_upload_cache_ = {};
 
-  current_bindless_stage_root_valid_.fill(false);
-  current_bindless_stage_root_frame_open_rebuild_pending_.fill(true);
-  current_bindless_stage_root_serials_.fill(0);
+  graphics_root_argument_state_ = {};
   current_bindless_cbv_gpu_addresses_ = {};
   current_bindless_cbv_buffers_ = {};
   current_bindless_cbv_offsets_ = {};
@@ -6116,9 +7400,6 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
   current_bindless_root_resource_set_ = {};
   current_bindless_root_resource_source_serial_ = 0;
   render_encoder_bindless_root_resources_serial_ = 0;
-  current_bindless_stage_root_arguments_ = {};
-  current_bindless_stage_root_entries_ = {};
-  current_bindless_stage_root_entries_valid_.fill(false);
   current_bindless_shared_memory_is_uav_ = false;
 }
 
@@ -6202,6 +7483,41 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       MetalFormatNamedCounts(
           backend_telemetry_.texture_upload_source_fallback_reasons,
           MetalTextureUploadSourceFallbackReasonName);
+  const std::string texture_upload_compatibility_counts =
+      MetalFormatNamedCounts(
+          backend_telemetry_.texture_upload_compatibility_counts,
+          MetalTextureUploadCompatibilityClassName);
+  const std::string texture_upload_compatibility_bytes = MetalFormatNamedCounts(
+      backend_telemetry_.texture_upload_compatibility_bytes,
+      MetalTextureUploadCompatibilityClassName);
+  const std::string texture_upload_compute_blockers = MetalFormatNamedCounts(
+      backend_telemetry_.texture_upload_compute_blocker_counts,
+      MetalTextureUploadComputeBlockerName);
+  const std::string texture_upload_compute_blocker_bytes =
+      MetalFormatNamedCounts(
+          backend_telemetry_.texture_upload_compute_blocker_bytes,
+          MetalTextureUploadComputeBlockerName);
+  const std::string texture_upload_execution_details = MetalFormatNamedCounts(
+      backend_telemetry_.texture_upload_execution_details,
+      MetalTextureUploadExecutionDetailName);
+  const std::string texture_reload_reason_counts =
+      MetalFormatNamedCounts(backend_telemetry_.texture_reload_reason_counts,
+                             MetalTextureReloadReasonName);
+  const std::string texture_reload_reason_bytes =
+      MetalFormatNamedCounts(backend_telemetry_.texture_reload_reason_bytes,
+                             MetalTextureReloadReasonName);
+  const std::string texture_watch_invalidation_counts = MetalFormatNamedCounts(
+      backend_telemetry_.texture_watch_invalidation_counts,
+      MetalTextureWatchInvalidationReasonName);
+  const std::string texture_watch_invalidation_bytes = MetalFormatNamedCounts(
+      backend_telemetry_.texture_watch_invalidation_bytes,
+      MetalTextureWatchInvalidationReasonName);
+  const std::string texture_resolve_reload_counts =
+      MetalFormatNamedCounts(backend_telemetry_.texture_resolve_reload_counts,
+                             MetalTextureResolveReloadReasonName);
+  const std::string texture_resolve_reload_bytes =
+      MetalFormatNamedCounts(backend_telemetry_.texture_resolve_reload_bytes,
+                             MetalTextureResolveReloadReasonName);
   const std::string shared_memory_upload_encoder_end_reasons =
       MetalFormatNamedCounts(
           backend_telemetry_.shared_memory_upload_encoder_end_reasons,
@@ -6233,27 +7549,6 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
   const std::string descriptor_index_uploads =
       MetalFormatNamedCounts(backend_telemetry_.descriptor_index_uploads,
                              MetalTelemetryShaderStageName);
-  const std::string constant_payload_cache_hits =
-      MetalFormatNamedCounts(backend_telemetry_.constant_payload_cache_hits,
-                             MetalTelemetryCbvSlotName);
-  const std::string constant_payload_cache_misses =
-      MetalFormatNamedCounts(backend_telemetry_.constant_payload_cache_misses,
-                             MetalTelemetryCbvSlotName);
-  const std::string constant_payload_cache_bytes_saved = MetalFormatNamedCounts(
-      backend_telemetry_.constant_payload_cache_bytes_saved,
-      MetalTelemetryCbvSlotName);
-  const std::string descriptor_index_payload_cache_hits =
-      MetalFormatNamedCounts(
-          backend_telemetry_.descriptor_index_payload_cache_hits,
-          MetalTelemetryShaderStageName);
-  const std::string descriptor_index_payload_cache_misses =
-      MetalFormatNamedCounts(
-          backend_telemetry_.descriptor_index_payload_cache_misses,
-          MetalTelemetryShaderStageName);
-  const std::string descriptor_index_payload_cache_bytes_saved =
-      MetalFormatNamedCounts(
-          backend_telemetry_.descriptor_index_payload_cache_bytes_saved,
-          MetalTelemetryShaderStageName);
   const std::string bindless_root_allocations =
       MetalFormatNamedCounts(backend_telemetry_.bindless_root_allocations,
                              MetalTelemetryRootScopeName);
@@ -6274,6 +7569,14 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
   const std::string bindless_root_rebuild_reasons =
       MetalFormatNamedCounts(backend_telemetry_.bindless_root_rebuild_reasons,
                              MetalTelemetryRootRebuildReasonName);
+  const std::string native_msl_draw_constants_rebuild_reasons =
+      MetalFormatNamedCounts(
+          backend_telemetry_.native_msl_draw_constants_rebuild_reasons,
+          MetalTelemetryNativeMslDrawConstantsRebuildReasonName);
+  const std::string native_msl_draw_constants_change_masks =
+      MetalFormatNamedCounts(
+          backend_telemetry_.native_msl_draw_constants_change_masks,
+          MetalTelemetryNativeMslDrawConstantsChangeMaskName);
   const std::string encoder_buffer_full_binds = MetalFormatNamedCounts(
       backend_telemetry_.render_encoder_buffer_full_binds,
       MetalTelemetryRenderEncoderBufferStageName);
@@ -6289,6 +7592,27 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
   const std::string encoder_buffer_untracked_binds = MetalFormatNamedCounts(
       backend_telemetry_.render_encoder_buffer_untracked_binds,
       MetalTelemetryRenderEncoderBufferStageName);
+  const std::string encoder_buffer_slot_full_binds = MetalFormatNamedCounts(
+      backend_telemetry_.render_encoder_buffer_slot_full_binds,
+      MetalTelemetryRenderEncoderBufferSlotName);
+  const std::string encoder_buffer_slot_offset_binds = MetalFormatNamedCounts(
+      backend_telemetry_.render_encoder_buffer_slot_offset_binds,
+      MetalTelemetryRenderEncoderBufferSlotName);
+  const std::string encoder_buffer_slot_noop_binds = MetalFormatNamedCounts(
+      backend_telemetry_.render_encoder_buffer_slot_noop_binds,
+      MetalTelemetryRenderEncoderBufferSlotName);
+  const uint64_t encoder_buffer_full_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_full_binds);
+  const uint64_t encoder_buffer_offset_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_offset_binds);
+  const uint64_t encoder_buffer_noop_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_noop_binds);
+  const uint64_t encoder_buffer_slot_full_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_slot_full_binds);
+  const uint64_t encoder_buffer_slot_offset_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_slot_offset_binds);
+  const uint64_t encoder_buffer_slot_noop_bind_total = MetalTelemetrySumCounts(
+      backend_telemetry_.render_encoder_buffer_slot_noop_binds);
   const std::string render_resource_set_applies =
       MetalFormatNamedCounts(backend_telemetry_.render_resource_set_applies,
                              MetalTelemetryRenderResourceSetName);
@@ -6387,6 +7711,26 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       texture_upload_source_route_bytes,
       texture_upload_source_fallback_reasons);
   XELOGI(
+      "MetalTelemetry[{}]: texture_upload_classification "
+      "classes counts={{ {} }} bytes={{ {} }} blockers={{ {} }} "
+      "blocker_bytes={{ {} }} execution={{ {} }}",
+      reason, texture_upload_compatibility_counts,
+      texture_upload_compatibility_bytes, texture_upload_compute_blockers,
+      texture_upload_compute_blocker_bytes, texture_upload_execution_details);
+  XELOGI(
+      "MetalTelemetry[{}]: texture_reload reasons counts={{ {} }} "
+      "bytes={{ {} }}",
+      reason, texture_reload_reason_counts, texture_reload_reason_bytes);
+  XELOGI(
+      "MetalTelemetry[{}]: texture_watch_invalidations counts={{ {} }} "
+      "bytes={{ {} }}",
+      reason, texture_watch_invalidation_counts,
+      texture_watch_invalidation_bytes);
+  XELOGI(
+      "MetalTelemetry[{}]: texture_resolve_reload counts={{ {} }} "
+      "bytes={{ {} }}",
+      reason, texture_resolve_reload_counts, texture_resolve_reload_bytes);
+  XELOGI(
       "MetalTelemetry[{}]: draw_materialization ranges={{ {} }} bytes={{ {} }} "
       "invalid_ranges={{ {} }} invalid_bytes={{ {} }} "
       "per_draw requests/invalid/resident_skip={}/{}/{}",
@@ -6426,14 +7770,6 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       backend_telemetry_.frame_slot_wait_submission_count,
       backend_telemetry_.frame_slot_wait_submission_last);
   XELOGI(
-      "MetalTelemetry[{}]: binding_cache constant_payload hits={{ {} }} "
-      "misses={{ {} }} bytes_saved={{ {} }} descriptor_payload hits={{ {} }} "
-      "misses={{ {} }} bytes_saved={{ {} }}",
-      reason, constant_payload_cache_hits, constant_payload_cache_misses,
-      constant_payload_cache_bytes_saved, descriptor_index_payload_cache_hits,
-      descriptor_index_payload_cache_misses,
-      descriptor_index_payload_cache_bytes_saved);
-  XELOGI(
       "MetalTelemetry[{}]: root_args allocs={{ {} }} reuse={{ {} }} "
       "noop={{ {} }} slots_patched={{ {} }} bytes_copied={{ {} }} "
       "slot_patches={{ {} }} rebuild_reasons={{ {} }}",
@@ -6469,6 +7805,25 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       backend_telemetry_.render_encoder_use_resources_skips,
       render_resource_set_applies, render_resource_set_skips,
       render_resource_set_resources);
+  XELOGI(
+      "MetalTelemetry[{}]: encoder_binding_slots full={{ {} }} offset={{ {} }} "
+      "noop={{ {} }}",
+      reason, encoder_buffer_slot_full_binds, encoder_buffer_slot_offset_binds,
+      encoder_buffer_slot_noop_binds);
+  XELOGI(
+      "MetalTelemetry[{}]: native_msl_draw_constants reasons={{ {} }}",
+      reason, native_msl_draw_constants_rebuild_reasons);
+  XELOGI(
+      "MetalTelemetry[{}]: native_msl_draw_constants change_masks={{ {} }}",
+      reason, native_msl_draw_constants_change_masks);
+  XELOGI(
+      "MetalTelemetry[{}]: encoder_binding_slot_totals "
+      "stage_full/slot_full={} / {} stage_offset/slot_offset={} / {} "
+      "stage_noop/slot_noop={} / {}",
+      reason, encoder_buffer_full_bind_total,
+      encoder_buffer_slot_full_bind_total, encoder_buffer_offset_bind_total,
+      encoder_buffer_slot_offset_bind_total, encoder_buffer_noop_bind_total,
+      encoder_buffer_slot_noop_bind_total);
   XELOGI(
       "MetalTelemetry[{}]: resource_registry serial_skip={{ {} }} "
       "build={{ {} }} register={{ {} }}",
@@ -6928,6 +8283,65 @@ void MetalCommandProcessor::RecordTextureUploadSourceFallback(
   }
 }
 
+void MetalCommandProcessor::RecordTextureUploadCompatibility(
+    TextureUploadCompatibilityClass type, uint64_t bytes) {
+  const size_t type_index = static_cast<size_t>(type);
+  if (type_index >= kTextureUploadCompatibilityClassCount) {
+    return;
+  }
+  ++backend_telemetry_.texture_upload_compatibility_counts[type_index];
+  backend_telemetry_.texture_upload_compatibility_bytes[type_index] += bytes;
+}
+
+void MetalCommandProcessor::RecordTextureUploadComputeBlocker(
+    TextureUploadComputeBlocker blocker, uint64_t bytes) {
+  const size_t blocker_index = static_cast<size_t>(blocker);
+  if (blocker_index >= kTextureUploadComputeBlockerCount) {
+    return;
+  }
+  ++backend_telemetry_.texture_upload_compute_blocker_counts[blocker_index];
+  backend_telemetry_.texture_upload_compute_blocker_bytes[blocker_index] +=
+      bytes;
+}
+
+void MetalCommandProcessor::RecordTextureUploadExecutionDetail(
+    TextureUploadExecutionDetail detail, uint64_t count) {
+  const size_t detail_index = static_cast<size_t>(detail);
+  if (detail_index < kTextureUploadExecutionDetailCount) {
+    backend_telemetry_.texture_upload_execution_details[detail_index] += count;
+  }
+}
+
+void MetalCommandProcessor::RecordTextureReloadReason(
+    TextureReloadReason reason, uint64_t bytes, uint64_t count) {
+  const size_t reason_index = static_cast<size_t>(reason);
+  if (reason_index >= kTextureReloadReasonCount) {
+    return;
+  }
+  backend_telemetry_.texture_reload_reason_counts[reason_index] += count;
+  backend_telemetry_.texture_reload_reason_bytes[reason_index] += bytes;
+}
+
+void MetalCommandProcessor::RecordTextureWatchInvalidation(
+    TextureWatchInvalidationReason reason, uint64_t bytes, uint64_t count) {
+  const size_t reason_index = static_cast<size_t>(reason);
+  if (reason_index >= kTextureWatchInvalidationReasonCount) {
+    return;
+  }
+  backend_telemetry_.texture_watch_invalidation_counts[reason_index] += count;
+  backend_telemetry_.texture_watch_invalidation_bytes[reason_index] += bytes;
+}
+
+void MetalCommandProcessor::RecordTextureResolveReload(
+    TextureResolveReloadReason reason, uint64_t bytes, uint64_t count) {
+  const size_t reason_index = static_cast<size_t>(reason);
+  if (reason_index >= kTextureResolveReloadReasonCount) {
+    return;
+  }
+  backend_telemetry_.texture_resolve_reload_counts[reason_index] += count;
+  backend_telemetry_.texture_resolve_reload_bytes[reason_index] += bytes;
+}
+
 void MetalCommandProcessor::RecordSharedMemoryUploadEncoderCopy() {
   ++backend_telemetry_.shared_memory_upload_encoder_copies;
 }
@@ -6977,19 +8391,13 @@ MetalCommandProcessor::CreateStandaloneTransferCommandBuffer(
   if (!command_queue_) {
     return nullptr;
   }
-  MTL::CommandBuffer* cmd = nullptr;
-  {
-    ScopedAutoreleasePool autorelease_pool;
-    cmd = command_queue_->commandBuffer();
-    if (cmd) {
-      cmd->retain();
-      if (label) {
-        cmd->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
-      }
-    }
-  }
+  MTL::CommandBuffer* cmd = command_queue_->commandBuffer();
   if (!cmd) {
     return nullptr;
+  }
+  cmd->retain();
+  if (label) {
+    cmd->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
   }
   return cmd;
 }
@@ -7023,6 +8431,19 @@ void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {
   render_encoder_bindless_fixed_resources_serial_ = 0;
   render_encoder_bindless_texture_resources_serial_ = 0;
   render_encoder_bindless_root_resources_serial_ = 0;
+}
+
+void MetalCommandProcessor::AddRenderHeapRef(RenderResourceSet& set,
+                                             MTL::Heap* heap) {
+  if (!heap) {
+    return;
+  }
+  for (MTL::Heap* existing : set.heaps) {
+    if (existing == heap) {
+      return;
+    }
+  }
+  set.heaps.push_back(heap);
 }
 
 void MetalCommandProcessor::AddRenderResourceRef(RenderResourceSet& set,
@@ -7069,7 +8490,16 @@ void MetalCommandProcessor::RestoreRenderResourceSet(
     return;
   }
 
-  bool same = current.resources.size() == snapshot.resources.size();
+  bool same = current.heaps.size() == snapshot.heaps.size() &&
+              current.resources.size() == snapshot.resources.size();
+  if (same) {
+    for (size_t i = 0; i < current.heaps.size(); ++i) {
+      if (current.heaps[i] != snapshot.heaps[i]) {
+        same = false;
+        break;
+      }
+    }
+  }
   if (same) {
     for (size_t i = 0; i < current.resources.size(); ++i) {
       const RenderResourceRef& current_ref = current.resources[i];
@@ -7096,6 +8526,7 @@ void MetalCommandProcessor::RestoreRenderResourceSet(
   if (!next_serial) {
     next_serial = 1;
   }
+  current.heaps = snapshot.heaps;
   current.resources = snapshot.resources;
   current.serial = next_serial;
   current.source_serial = snapshot.source_serial;
@@ -7106,7 +8537,16 @@ void MetalCommandProcessor::PublishRenderResourceSet(RenderResourceSet& current,
   if (next.source_serial && current.source_serial == next.source_serial) {
     return;
   }
-  bool same = current.resources.size() == next.resources.size();
+  bool same = current.heaps.size() == next.heaps.size() &&
+              current.resources.size() == next.resources.size();
+  if (same) {
+    for (size_t i = 0; i < current.heaps.size(); ++i) {
+      if (current.heaps[i] != next.heaps[i]) {
+        same = false;
+        break;
+      }
+    }
+  }
   if (same) {
     for (size_t i = 0; i < current.resources.size(); ++i) {
       const RenderResourceRef& current_ref = current.resources[i];
@@ -7129,6 +8569,7 @@ void MetalCommandProcessor::PublishRenderResourceSet(RenderResourceSet& current,
   if (!next_serial) {
     next_serial = 1;
   }
+  current.heaps = std::move(next.heaps);
   current.resources = std::move(next.resources);
   current.serial = next_serial;
   current.source_serial = next.source_serial;
@@ -7144,7 +8585,7 @@ uint64_t MetalCommandProcessor::GetBindlessFixedResourceSourceSerial(
   return (rt_serial << 8) ^ shared_memory_usage_bits;
 }
 
-uint64_t MetalCommandProcessor::GetBindlessTextureResourceSourceSerial() const {
+uint64_t MetalCommandProcessor::GetBindlessTextureResourceInputSerial() const {
   uint64_t hash = 1469598103934665603ull;
   auto hash_value = [&](uint64_t value) {
     hash ^= value;
@@ -7162,6 +8603,78 @@ uint64_t MetalCommandProcessor::GetBindlessTextureResourceSourceSerial() const {
   return hash ? hash : 1;
 }
 
+uint64_t MetalCommandProcessor::GetRenderResourceSetSourceSerial(
+    const RenderResourceSet& set) const {
+  uint64_t hash = 1469598103934665603ull;
+  auto hash_value = [&](uint64_t value) {
+    hash ^= value;
+    hash *= 1099511628211ull;
+  };
+  hash_value(set.heaps.size());
+  for (MTL::Heap* heap : set.heaps) {
+    hash_value(reinterpret_cast<uintptr_t>(heap));
+  }
+  hash_value(0x9e3779b97f4a7c15ull);
+  hash_value(set.resources.size());
+  for (const RenderResourceRef& ref : set.resources) {
+    hash_value(reinterpret_cast<uintptr_t>(ref.resource));
+    hash_value(MetalResourceUsageBits(ref.usage));
+    hash_value(MetalRenderStageBits(ref.stages));
+  }
+  return hash ? hash : 1;
+}
+
+void MetalCommandProcessor::BuildBindlessTextureResourceSet(
+    RenderResourceSet& set) {
+  set.heaps.clear();
+  set.resources.clear();
+  set.serial = 0;
+  set.source_serial = 0;
+  const MTL::RenderStages stages = MetalAllGraphicsRenderStages();
+  auto add_texture_residency_ref = [&](MTL::Texture* texture) {
+    if (!texture) {
+      return;
+    }
+    // Bindless texture paths sample through argument-buffer resource IDs. For
+    // read-only heap-backed texture-cache allocations, Apple's model is to make
+    // the containing heap resident instead of declaring every texture
+    // individually for every encoder.
+    if (MTL::Heap* heap = texture->heap()) {
+      AddRenderHeapRef(set, heap);
+      return;
+    }
+    AddRenderResourceRef(set, texture, MTL::ResourceUsageRead, stages);
+  };
+  for (MTL::Texture* texture : current_texture_bindless_resources_vertex_) {
+    add_texture_residency_ref(texture);
+  }
+  for (MTL::Texture* texture : current_texture_bindless_resources_pixel_) {
+    add_texture_residency_ref(texture);
+  }
+  std::sort(set.heaps.begin(), set.heaps.end(),
+            [](MTL::Heap* a, MTL::Heap* b) {
+              return reinterpret_cast<uintptr_t>(a) <
+                     reinterpret_cast<uintptr_t>(b);
+            });
+  std::sort(set.resources.begin(), set.resources.end(),
+            [](const RenderResourceRef& a, const RenderResourceRef& b) {
+              const uintptr_t a_resource =
+                  reinterpret_cast<uintptr_t>(a.resource);
+              const uintptr_t b_resource =
+                  reinterpret_cast<uintptr_t>(b.resource);
+              if (a_resource != b_resource) {
+                return a_resource < b_resource;
+              }
+              const uint32_t a_usage = MetalResourceUsageBits(a.usage);
+              const uint32_t b_usage = MetalResourceUsageBits(b.usage);
+              if (a_usage != b_usage) {
+                return a_usage < b_usage;
+              }
+              return MetalRenderStageBits(a.stages) <
+                     MetalRenderStageBits(b.stages);
+            });
+}
+
 uint64_t MetalCommandProcessor::GetBindlessRootResourceSourceSerial(
     const UniformBufferInfo& uniforms) const {
   uint64_t hash = 1469598103934665603ull;
@@ -7169,9 +8682,8 @@ uint64_t MetalCommandProcessor::GetBindlessRootResourceSourceSerial(
     hash ^= value;
     hash *= 1099511628211ull;
   };
-  constexpr size_t kGraphicsRootStage = kStageVertex;
   const StageRootArgumentAllocation& allocation =
-      current_bindless_stage_root_arguments_[kGraphicsRootStage];
+      graphics_root_argument_state_.allocation;
   hash_value(reinterpret_cast<uintptr_t>(allocation.valid ? allocation.buffer
                                                           : nullptr));
   for (size_t stage = 0; stage < kStageCount; ++stage) {
@@ -7229,29 +8741,34 @@ void MetalCommandProcessor::RestoreBindlessTextureResourceSet(
     const RenderResourceSet& set) {
   RestoreRenderResourceSet(RenderResourceSetKind::kTexture,
                            current_bindless_texture_resource_set_, set);
+  current_bindless_texture_resource_input_serial_ = 0;
+  current_bindless_texture_resource_source_serial_ =
+      current_bindless_texture_resource_set_.source_serial;
 }
 
 void MetalCommandProcessor::PublishBindlessTextureResourceSet() {
   constexpr size_t kTextureKindIndex = size_t(RenderResourceSetKind::kTexture);
-  const uint64_t source_serial = GetBindlessTextureResourceSourceSerial();
-  if (source_serial &&
-      current_bindless_texture_resource_source_serial_ == source_serial) {
+  const uint64_t input_serial = GetBindlessTextureResourceInputSerial();
+  if (input_serial &&
+      current_bindless_texture_resource_input_serial_ == input_serial) {
+    ++backend_telemetry_
+          .render_resource_registry_serial_skips[kTextureKindIndex];
+    return;
+  }
+  RenderResourceSet next;
+  BuildBindlessTextureResourceSet(next);
+  next.source_serial = GetRenderResourceSetSourceSerial(next);
+  if (next.source_serial &&
+      current_bindless_texture_resource_source_serial_ == next.source_serial) {
+    current_bindless_texture_resource_input_serial_ = input_serial;
     ++backend_telemetry_
           .render_resource_registry_serial_skips[kTextureKindIndex];
     return;
   }
   ++backend_telemetry_.render_resource_registry_builds[kTextureKindIndex];
-  RenderResourceSet next;
-  next.source_serial = source_serial;
-  const MTL::RenderStages stages = MetalAllGraphicsRenderStages();
-  for (MTL::Texture* texture : current_texture_bindless_resources_vertex_) {
-    AddRenderResourceRef(next, texture, MTL::ResourceUsageRead, stages);
-  }
-  for (MTL::Texture* texture : current_texture_bindless_resources_pixel_) {
-    AddRenderResourceRef(next, texture, MTL::ResourceUsageRead, stages);
-  }
   PublishRenderResourceSet(current_bindless_texture_resource_set_,
                            std::move(next));
+  current_bindless_texture_resource_input_serial_ = input_serial;
   current_bindless_texture_resource_source_serial_ =
       current_bindless_texture_resource_set_.source_serial;
 }
@@ -7270,9 +8787,8 @@ void MetalCommandProcessor::PublishBindlessRootResourceSet(
   RenderResourceSet next;
   next.source_serial = root_source_serial;
   const MTL::RenderStages stages = MetalAllGraphicsRenderStages();
-  constexpr size_t kGraphicsRootStage = kStageVertex;
   const StageRootArgumentAllocation& allocation =
-      current_bindless_stage_root_arguments_[kGraphicsRootStage];
+      graphics_root_argument_state_.allocation;
   if (allocation.valid) {
     AddRenderResourceRef(next, allocation.buffer, MTL::ResourceUsageRead,
                          stages);
@@ -7319,8 +8835,11 @@ void MetalCommandProcessor::ApplyRenderEncoderResourceSet(
   if (kind_index < backend_telemetry_.render_resource_set_applies.size()) {
     ++backend_telemetry_.render_resource_set_applies[kind_index];
     backend_telemetry_.render_resource_set_resources[kind_index] +=
-        set.resources.size();
+        set.heaps.size() + set.resources.size();
     ++backend_telemetry_.render_resource_registry_registers[kind_index];
+  }
+  for (MTL::Heap* heap : set.heaps) {
+    UseRenderEncoderHeap(heap);
   }
   constexpr size_t kResourceBatchSize = 128;
   std::array<const MTL::Resource*, kResourceBatchSize> batch;
@@ -7452,6 +8971,19 @@ void MetalCommandProcessor::InvalidateRenderEncoderBufferBinding(
   }
 }
 
+bool MetalCommandProcessor::RenderEncoderBufferBindingMatches(
+    RenderEncoderBufferStage stage, MTL::Buffer* buffer, NS::UInteger offset,
+    NS::UInteger index) const {
+  const size_t stage_index = size_t(stage);
+  if (stage_index >= render_encoder_buffer_bindings_.size() ||
+      index >= kTrackedRenderEncoderBufferBindingCount) {
+    return false;
+  }
+  const RenderEncoderBufferBinding& binding =
+      render_encoder_buffer_bindings_[stage_index][index];
+  return binding.valid && binding.buffer == buffer && binding.offset == offset;
+}
+
 void MetalCommandProcessor::SetRenderEncoderBuffer(
     RenderEncoderBufferStage stage, MTL::Buffer* buffer, NS::UInteger offset,
     NS::UInteger index) {
@@ -7517,6 +9049,16 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
     set_buffer(buffer, offset);
     return;
   }
+  const size_t stage_slot_index =
+      stage_index * kTrackedRenderEncoderBufferBindingCount + size_t(index);
+  auto increment_slot_count =
+      [stage_slot_index](std::array<uint64_t,
+                                    kRenderEncoderBufferSlotTelemetryCount>&
+                             counts) {
+    if (stage_slot_index < counts.size()) {
+      ++counts[stage_slot_index];
+    }
+  };
   auto& binding = render_encoder_buffer_bindings_[stage_index][index];
   if (binding.valid && binding.buffer == buffer) {
     if (binding.offset != offset) {
@@ -7524,11 +9066,15 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
           backend_telemetry_.render_encoder_buffer_offset_binds.size()) {
         ++backend_telemetry_.render_encoder_buffer_offset_binds[stage_index];
       }
+      increment_slot_count(
+          backend_telemetry_.render_encoder_buffer_slot_offset_binds);
       set_buffer_offset();
       binding.offset = offset;
     } else if (stage_index <
                backend_telemetry_.render_encoder_buffer_noop_binds.size()) {
       ++backend_telemetry_.render_encoder_buffer_noop_binds[stage_index];
+      increment_slot_count(
+          backend_telemetry_.render_encoder_buffer_slot_noop_binds);
     }
     return;
   }
@@ -7536,6 +9082,8 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
       backend_telemetry_.render_encoder_buffer_full_binds.size()) {
     ++backend_telemetry_.render_encoder_buffer_full_binds[stage_index];
   }
+  increment_slot_count(
+      backend_telemetry_.render_encoder_buffer_slot_full_binds);
   set_buffer(buffer, offset);
   binding = {buffer, offset, true};
 }
@@ -7740,12 +9288,12 @@ void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
   // See IsResidencySetResourceCovered: heap-backed textures and render targets
   // still need this usage declaration until texture / RT hazards are tracked
   // explicitly by the backend.
-  ++backend_telemetry_.residency_set_use_heaps_fallback;
   for (MTL::Heap* used_heap : render_encoder_heap_usage_) {
     if (used_heap == heap) {
       return;
     }
   }
+  ++backend_telemetry_.residency_set_use_heaps_fallback;
   render_encoder_heap_usage_.push_back(heap);
   current_render_encoder_->useHeap(heap);
 }
@@ -7874,27 +9422,22 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // avoid leaking cached binding state into the new encoder.
     // Note: renderCommandEncoder() returns an autoreleased object, we must
     // retain it.
-    {
-      ScopedAutoreleasePool autorelease_pool;
-      current_render_encoder_ =
-          current_command_buffer_->renderCommandEncoder(pass_descriptor);
-      if (current_render_encoder_) {
-        current_render_encoder_->retain();
-        current_render_encoder_->setLabel(
-            NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
-      }
-    }
+    current_render_encoder_ =
+        current_command_buffer_->renderCommandEncoder(pass_descriptor);
     if (!current_render_encoder_) {
       ++backend_telemetry_.begin_encoder_creation_failures;
       XELOGE("Failed to create render command encoder");
       return false;
     }
     ++backend_telemetry_.begin_encoder_created;
+    current_render_encoder_->retain();
     current_render_encoder_has_zpd_visibility_ =
         zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
         pass_descriptor->visibilityResultBuffer() ==
             zpd_visibility_pool_->visibility_buffer();
     ResetRenderEncoderBufferBindings();
+    current_render_encoder_->setLabel(
+        NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
     current_render_pipeline_state_ = nullptr;
     ff_blend_factor_valid_ = false;
     rasterizer_state_valid_ = false;
@@ -7939,6 +9482,7 @@ void MetalCommandProcessor::EndCommandBuffer() {
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kCommandBufferEnd)) {
     XELOGE("Metal EndCommandBuffer: failed to flush prepared draw queue");
   }
+  TryTrimPreparedDrawRetainedStorage();
   EndRenderEncoder(RenderEncoderEndReason::kCommandBufferEnd);
   EndSharedMemoryUploadBlitEncoder(
       SharedMemoryUploadEncoderEndReason::kCommandBufferEnd);
