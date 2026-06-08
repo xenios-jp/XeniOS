@@ -18,9 +18,13 @@
 #else
 #include <sys/types.h>
 #endif
+#if XE_PLATFORM_APPLE
+#include <os/lock.h>  // os_unfair_lock
+#endif
 #include "memory.h"
 #define XE_ENABLE_FAST_WIN32_MUTEX 1
 #define XE_ENABLE_FAST_LINUX_MUTEX 1
+#define XE_ENABLE_FAST_APPLE_MUTEX 1
 namespace xe {
 
 #if XE_PLATFORM_WIN32 == 1 && XE_ENABLE_FAST_WIN32_MUTEX == 1
@@ -157,6 +161,48 @@ class xe_unlikely_mutex {
 };
 
 using xe_mutex = xe_fast_mutex;
+#elif XE_PLATFORM_APPLE == 1 && XE_ENABLE_FAST_APPLE_MUTEX == 1
+// Apple (macOS / iOS): os_unfair_lock (<os/lock.h>) is the documented OSSpinLock
+// replacement -- a lightweight lock that "allows waiters to block efficiently
+// on contention" and "contain[s] thread ownership information that the system
+// may use to attempt to resolve priority inversions" (Apple os/lock.h). The
+// std::recursive_mutex fallback used otherwise wraps a "firstfit" pthread mutex
+// that traps into the kernel (__psynch_mutexwait) on every contended acquire;
+// os_unfair_lock spins-then-blocks and is priority-inversion aware across
+// P/E cores. It is non-recursive, so recursion is tracked here (owner thread +
+// count) and the underlying lock is taken only on the first acquire, mirroring
+// the Win32 SRWLOCK implementation.
+class alignas(4096) xe_global_mutex {
+  os_unfair_lock lock_ = OS_UNFAIR_LOCK_INIT;
+  std::atomic<uint64_t> owner_{0};  // pthread_self() of owner, 0 = unowned
+  uint32_t recursion_count_ = 0;
+
+ public:
+  xe_global_mutex() = default;
+  ~xe_global_mutex() = default;
+
+  void lock();
+  void unlock();
+  bool try_lock();
+};
+using global_mutex_type = xe_global_mutex;
+
+// Non-recursive mutex via os_unfair_lock.
+class alignas(64) xe_fast_mutex {
+  os_unfair_lock lock_ = OS_UNFAIR_LOCK_INIT;
+
+ public:
+  xe_fast_mutex() = default;
+  ~xe_fast_mutex() = default;
+
+  void lock();
+  void unlock();
+  bool try_lock();
+};
+using xe_mutex = xe_fast_mutex;
+
+// Rarely-contended lock: a plain std::mutex is sufficient.
+using xe_unlikely_mutex = std::mutex;
 #else
 using global_mutex_type = std::recursive_mutex;
 using xe_mutex = std::mutex;
