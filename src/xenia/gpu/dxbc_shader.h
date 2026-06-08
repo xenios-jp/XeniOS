@@ -81,12 +81,18 @@ class DxbcShader : public Shader {
       kFetchConstantDwordCount / 32;
   using FetchConstantDwordMask =
       std::array<uint32_t, kFetchConstantDwordMaskWordCount>;
+  using TextureSignComponentMasks =
+      std::array<uint8_t, xenos::kTextureFetchConstantCount>;
   uint32_t GetUsedCbufferMaskAfterTranslation() const {
     return used_cbuffer_mask_;
   }
   const FetchConstantDwordMask& GetFetchConstantDwordMaskAfterTranslation()
       const {
     return fetch_constant_dword_mask_;
+  }
+  const TextureSignComponentMasks&
+  GetTextureSignComponentMasksAfterTranslation() const {
+    return texture_sign_component_masks_;
   }
 
   struct TranslationMetadata {
@@ -95,6 +101,9 @@ class DxbcShader : public Shader {
     uint32_t used_texture_mask = 0;
     uint32_t used_cbuffer_mask = 0;
     FetchConstantDwordMask fetch_constant_dword_mask = {};
+    TextureSignComponentMasks texture_sign_component_masks = {};
+    bool uses_shared_memory = false;
+    bool uses_primitive_index_constants = false;
   };
 
   TranslationMetadata GetTranslationMetadata() const;
@@ -112,6 +121,9 @@ class DxbcShader : public Shader {
   uint32_t used_texture_mask_ = 0;
   uint32_t used_cbuffer_mask_ = 0;
   FetchConstantDwordMask fetch_constant_dword_mask_ = {};
+  TextureSignComponentMasks texture_sign_component_masks_ = {};
+  bool uses_shared_memory_ = false;
+  bool uses_primitive_index_constants_ = false;
 };
 
 }  // namespace gpu

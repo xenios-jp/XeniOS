@@ -27,6 +27,9 @@ DxbcShader::TranslationMetadata DxbcShader::GetTranslationMetadata() const {
   metadata.used_texture_mask = used_texture_mask_;
   metadata.used_cbuffer_mask = used_cbuffer_mask_;
   metadata.fetch_constant_dword_mask = fetch_constant_dword_mask_;
+  metadata.texture_sign_component_masks = texture_sign_component_masks_;
+  metadata.uses_shared_memory = uses_shared_memory_;
+  metadata.uses_primitive_index_constants = uses_primitive_index_constants_;
   return metadata;
 }
 
@@ -36,6 +39,9 @@ void DxbcShader::SetTranslationMetadata(const TranslationMetadata& metadata) {
   used_texture_mask_ = metadata.used_texture_mask;
   used_cbuffer_mask_ = metadata.used_cbuffer_mask;
   fetch_constant_dword_mask_ = metadata.fetch_constant_dword_mask;
+  texture_sign_component_masks_ = metadata.texture_sign_component_masks;
+  uses_shared_memory_ = metadata.uses_shared_memory;
+  uses_primitive_index_constants_ = metadata.uses_primitive_index_constants;
 }
 
 Shader::Translation* DxbcShader::CreateTranslationInstance(

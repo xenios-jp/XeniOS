@@ -682,6 +682,11 @@ class Shader {
     // strip orientation, for implementations without unconditional geometry
     // shader support.
     kRectangleListAsTriangleStrip,
+    // Native Metal mesh wrappers around a normal guest vertex shader for
+    // primitive-list expansion.
+    kRectangleListAsMesh,
+    kPointListAsMesh,
+    kQuadListAsMesh,
   };
   // For packing HostVertexShaderType in bit fields.
   static constexpr uint32_t kHostVertexShaderTypeBitCount = 4;
