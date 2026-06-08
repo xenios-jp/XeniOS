@@ -20,6 +20,9 @@ DECLARE_uint32(volume)
   // write the config-value layer that SaveConfig() serializes.
   void SetVolumePersistent(uint32_t percent);
 
+  // Applies volume for the session only (no config write); used for mute.
+  void SetVolume(uint32_t percent);
+
   }  // namespace apu
 }  // namespace xe
 

@@ -1143,7 +1143,10 @@ bool EmulatorWindow::Initialize() {
       auto* audio_sizer = new wxBoxSizer(wxHORIZONTAL);
       wx_toolbar_state_->audio_icon = new wxStaticBitmap(
           audio_group, wxID_ANY, wx_toolbar_state_->audio_no_bundle);
-      wx_toolbar_state_->audio_icon->SetToolTip(_("Volume"));
+      wx_toolbar_state_->audio_icon->SetToolTip(_("Mute"));
+      wx_toolbar_state_->audio_icon->SetCursor(wxCursor(wxCURSOR_HAND));
+      wx_toolbar_state_->audio_icon->Bind(
+          wxEVT_LEFT_DOWN, [this](wxMouseEvent&) { ToggleMute(); });
       audio_sizer->Add(wx_toolbar_state_->audio_icon, 0,
                        wxALIGN_CENTER_VERTICAL);
       wx_toolbar_state_->audio_slider = new wxSlider(
@@ -2775,6 +2778,17 @@ void EmulatorWindow::ToggleAudioDialog() {
   audio_dialog_->SetOnChangeCallback([this]() { RefreshAudioIcon(); });
 }
 
+void EmulatorWindow::ToggleMute() {
+  uint32_t current = cvars::volume > 100 ? 100 : cvars::volume;
+  if (current > 0) {
+    pre_mute_volume_ = current;
+    apu::SetVolume(0);
+  } else {
+    apu::SetVolume(pre_mute_volume_ > 0 ? pre_mute_volume_ : 100);
+  }
+  RefreshAudioIcon();
+}
+
 void EmulatorWindow::RefreshAudioIcon() {
   if (!wx_toolbar_state_ || !wx_toolbar_state_->toolbar) {
     return;
@@ -2805,6 +2819,8 @@ void EmulatorWindow::RefreshAudioIcon() {
         break;
     }
     wx_toolbar_state_->audio_icon->SetBitmap(*bundle);
+    wx_toolbar_state_->audio_icon->SetToolTip(bucket == 0 ? _("Unmute")
+                                                          : _("Mute"));
   }
 
   // HasFocus filters out the user-drag case: the slider already shows the

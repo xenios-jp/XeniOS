@@ -926,6 +926,11 @@ msgstr "Moğolistan"
 msgid "Morocco"
 msgstr "Fas"
 
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "Sesi kapat"
+
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
 msgstr "Ad: %s"
@@ -1417,6 +1422,10 @@ msgstr "Amerika Birleşik Devletleri"
 #: src/xenia/ui/game_list_panel_wx.cc:103
 msgid "Unknown"
 msgstr "Bilinmiyor"
+
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "Sesi aç"
 
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"

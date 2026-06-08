@@ -21,5 +21,7 @@ DEFINE_uint32(volume, 100,
     OVERRIDE_PERSIST_uint32(volume, percent);
   }
 
+  void SetVolume(uint32_t percent) { OVERRIDE_uint32(volume, percent); }
+
   }  // namespace apu
 }  // namespace xe

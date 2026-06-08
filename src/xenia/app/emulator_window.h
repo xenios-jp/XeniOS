@@ -290,6 +290,7 @@ class EmulatorWindow {
   ui::MenuItem* audio_menu_ = nullptr;
   // Dedupes audio-icon bucket updates (no-audio/low/mid/full).
   int audio_icon_key_ = -1;
+  uint32_t pre_mute_volume_ = 100;
   ui::MenuItem* view_show_toolbar_item_ = nullptr;
   bool show_toolbar_ = true;
   void RefreshProfileMenu();
@@ -304,6 +305,7 @@ class EmulatorWindow {
   void RefreshProfileIcon();
   // Sync the toolbar's audio icon (bucket) and slider value from cvars::volume.
   void RefreshAudioIcon();
+  void ToggleMute();
   void ShowProfilePopupMenu();
   // Show or hide the icon toolbar pane and persist the preference.
   void SetToolbarVisible(bool visible);

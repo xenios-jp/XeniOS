@@ -926,6 +926,11 @@ msgstr "मंगोलिया"
 msgid "Morocco"
 msgstr "मोरक्को"
 
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "म्यूट करें"
+
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
 msgstr "नाम: %s"
@@ -1414,6 +1419,10 @@ msgstr "अमेरिका"
 #: src/xenia/ui/game_list_panel_wx.cc:103
 msgid "Unknown"
 msgstr "अज्ञात"
+
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "अनम्यूट करें"
 
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"

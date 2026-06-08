@@ -928,6 +928,11 @@ msgstr "Mongólia"
 msgid "Morocco"
 msgstr "Marrocos"
 
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "Silenciar"
+
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
 msgstr "Nome: %s"
@@ -1420,6 +1425,10 @@ msgstr "Estados Unidos"
 #: src/xenia/ui/game_list_panel_wx.cc:103
 msgid "Unknown"
 msgstr "Desconhecido"
+
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "Ativar som"
 
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"
