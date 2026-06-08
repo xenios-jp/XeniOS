@@ -17,7 +17,6 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <utility>
 
 #include "xenia/cpu/processor.h"
 #include "xenia/gpu/register_file.h"
@@ -115,14 +114,12 @@ class GraphicsSystem {
   static std::pair<uint16_t, uint16_t> GetInternalDisplayResolution();
 
   std::pair<uint32_t, uint32_t> GetScaledAspectRatio() const {
-    return {scaled_aspect_x_.load(std::memory_order_relaxed),
-            scaled_aspect_y_.load(std::memory_order_relaxed)};
-  }
-  void SetScaledAspectRatio(uint32_t x, uint32_t y);
-  using ScaledAspectRatioChangedCallback =
-      std::function<void(uint32_t x, uint32_t y)>;
-  void SetScaledAspectRatioChangedCallback(
-      ScaledAspectRatioChangedCallback callback);
+    return {scaled_aspect_x_, scaled_aspect_y_};
+  };
+  void SetScaledAspectRatio(uint32_t x, uint32_t y) {
+    scaled_aspect_x_ = x;
+    scaled_aspect_y_ = y;
+  };
 
  protected:
   GraphicsSystem();
@@ -162,10 +159,8 @@ class GraphicsSystem {
 
   bool paused_ = false;
 
-  std::atomic<uint32_t> scaled_aspect_x_{0};
-  std::atomic<uint32_t> scaled_aspect_y_{0};
-  std::mutex scaled_aspect_ratio_changed_callback_mutex_;
-  ScaledAspectRatioChangedCallback scaled_aspect_ratio_changed_callback_;
+  uint32_t scaled_aspect_x_ = 0;
+  uint32_t scaled_aspect_y_ = 0;
 
  private:
   std::unique_ptr<ui::Presenter> presenter_;

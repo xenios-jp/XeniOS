@@ -266,7 +266,8 @@ void TextureCache::BeginFrame() {
 }
 
 void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled,
-                                       uint32_t length_unscaled) {
+                                       uint32_t length_unscaled,
+                                       ResolveProvenanceSource source) {
   if (length_unscaled == 0) {
     return;
   }
@@ -294,7 +295,26 @@ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled,
 
   // Invalidate textures. Toggling individual textures between scaled and
   // unscaled also relies on invalidation through shared memory.
+  TextureWatchInvalidationSource previous_watch_invalidation_source =
+      texture_watch_invalidation_source_;
+  uint32_t previous_watch_invalidation_range_start =
+      texture_watch_invalidation_range_start_;
+  uint32_t previous_watch_invalidation_range_length =
+      texture_watch_invalidation_range_length_;
+  ResolveProvenanceSource previous_watch_resolve_source =
+      texture_watch_resolve_source_;
+  texture_watch_invalidation_source_ =
+      TextureWatchInvalidationSource::kGpuResolve;
+  texture_watch_invalidation_range_start_ = start_unscaled;
+  texture_watch_invalidation_range_length_ = length_unscaled;
+  texture_watch_resolve_source_ = source;
   shared_memory().RangeWrittenByGpu(start_unscaled, length_unscaled);
+  texture_watch_invalidation_source_ = previous_watch_invalidation_source;
+  texture_watch_invalidation_range_start_ =
+      previous_watch_invalidation_range_start;
+  texture_watch_invalidation_range_length_ =
+      previous_watch_invalidation_range_length;
+  texture_watch_resolve_source_ = previous_watch_resolve_source;
 }
 
 uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle,
@@ -453,7 +473,6 @@ bool TextureCache::MayRequestTexturesLoadData(
                        texture->mips_outdated_lockless());
   };
   auto key_may_need_load = [this, &is_texture_outdated](TextureKey key) {
-    key = GetHostTextureKey(key);
     auto texture_it = textures_.find(key);
     if (texture_it == textures_.end()) {
       return true;
@@ -595,9 +614,9 @@ uint32_t TextureCache::GetUsedTextureRangeOverlapMask(
       layout = &computed_layout;
     }
     if (key.base_page &&
-        overlaps(
-            key.base_page << 12,
-            xe::align(layout->base.level_data_extent_bytes, UINT32_C(16)))) {
+        overlaps(key.base_page << 12,
+                 xe::align(layout->base.level_data_extent_bytes,
+                           UINT32_C(16)))) {
       overlap_mask |= index_bit;
       continue;
     }
@@ -793,15 +812,25 @@ void TextureCache::Texture::MarkAsUsed() {
 }
 
 void TextureCache::Texture::WatchCallback(
-    [[maybe_unused]] const global_unique_lock_type& global_lock, bool is_mip) {
+    [[maybe_unused]] const global_unique_lock_type& global_lock, bool is_mip,
+    TextureWatchInvalidationSource source, uint32_t source_start,
+    uint32_t source_length, ResolveProvenanceSource resolve_source) {
   if (is_mip) {
     assert_not_zero(GetGuestMipsSize());
     mips_outdated_ = true;
     mips_watch_handle_ = nullptr;
+    last_mips_watch_invalidation_source_ = source;
+    last_mips_watch_invalidation_range_start_ = source_start;
+    last_mips_watch_invalidation_range_length_ = source_length;
+    last_mips_watch_resolve_source_ = resolve_source;
   } else {
     assert_not_zero(GetGuestBaseSize());
     base_outdated_ = true;
     base_watch_handle_ = nullptr;
+    last_base_watch_invalidation_source_ = source;
+    last_base_watch_invalidation_range_start_ = source_start;
+    last_base_watch_invalidation_range_length_ = source_length;
+    last_base_watch_resolve_source_ = resolve_source;
   }
 }
 
@@ -809,7 +838,29 @@ void TextureCache::WatchCallback(const global_unique_lock_type& global_lock,
                                  void* context, void* data, uint64_t argument,
                                  bool invalidated_by_gpu) {
   Texture& texture = *static_cast<Texture*>(context);
-  texture.WatchCallback(global_lock, argument != 0);
+  bool is_mip = argument != 0;
+  uint32_t byte_count =
+      is_mip ? texture.GetGuestMipsSize() : texture.GetGuestBaseSize();
+  TextureWatchInvalidationSource source =
+      invalidated_by_gpu
+          ? texture.texture_cache().texture_watch_invalidation_source_
+          : TextureWatchInvalidationSource::kCpu;
+  uint32_t source_start =
+      invalidated_by_gpu
+          ? texture.texture_cache().texture_watch_invalidation_range_start_
+          : 0;
+  uint32_t source_length =
+      invalidated_by_gpu
+          ? texture.texture_cache().texture_watch_invalidation_range_length_
+          : 0;
+  ResolveProvenanceSource resolve_source =
+      source == TextureWatchInvalidationSource::kGpuResolve
+          ? texture.texture_cache().texture_watch_resolve_source_
+          : ResolveProvenanceSource::kUnknown;
+  texture.texture_cache().RecordTextureWatchInvalidation(
+      texture, is_mip, source, byte_count);
+  texture.WatchCallback(global_lock, is_mip, source, source_start,
+                        source_length, resolve_source);
   texture.texture_cache().texture_became_outdated_.store(
       true, std::memory_order_release);
 }
@@ -839,7 +890,7 @@ bool TextureCache::DestroyOldestTextureIfUnused(
   return true;
 }
 
-TextureCache::TextureKey TextureCache::GetHostTextureKey(TextureKey key) const {
+TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   // Check if the texture is a scaled resolve texture.
   if (IsDrawResolutionScaled() && key.tiled &&
       IsScaledResolveSupportedForFormat(key)) {
@@ -856,11 +907,6 @@ TextureCache::TextureKey TextureCache::GetHostTextureKey(TextureKey key) const {
       key.scaled_resolve = 1;
     }
   }
-  return key;
-}
-
-TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
-  key = GetHostTextureKey(key);
 
   uint32_t host_width = key.GetWidth();
   uint32_t host_height = key.GetHeight();
@@ -956,7 +1002,8 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
   if (nkept == 0) {
     return;
   }
-  if (!PrepareTextureDataLoadRanges(textures, n_textures, index_base_outdated,
+  if (!PrepareTextureDataLoadRanges(textures, n_textures,
+                                    index_base_outdated,
                                     index_mips_outdated)) {
     return;
   }
@@ -1064,9 +1111,9 @@ bool TextureCache::LoadTextureData(Texture& texture) {
 
   TextureKey texture_key = texture.key();
   Texture* texture_to_load = &texture;
-  if (!PrepareTextureDataLoadRanges(&texture_to_load, 1,
-                                    base_outdated ? UINT64_C(1) : 0,
-                                    mips_outdated ? UINT64_C(1) : 0)) {
+  if (!PrepareTextureDataLoadRanges(
+          &texture_to_load, 1, base_outdated ? UINT64_C(1) : 0,
+          mips_outdated ? UINT64_C(1) : 0)) {
     return false;
   }
 
@@ -1086,14 +1133,16 @@ bool TextureCache::LoadTextureData(Texture& texture) {
   // TODO(Triang3l): Load unscaled parts.
   if (base_outdated) {
     if (!RequestTextureDataRange(
-            texture, TextureDataRangeSource::kBase, texture_key.base_page << 12,
+            texture, TextureDataRangeSource::kBase,
+            texture_key.base_page << 12,
             xe::align(texture.GetGuestBaseSize(), UINT32_C(16)))) {
       return false;
     }
   }
   if (mips_outdated) {
     if (!RequestTextureDataRange(
-            texture, TextureDataRangeSource::kMips, texture_key.mip_page << 12,
+            texture, TextureDataRangeSource::kMips,
+            texture_key.mip_page << 12,
             xe::align(texture.GetGuestMipsSize(), UINT32_C(16)))) {
       return false;
     }
@@ -1261,7 +1310,7 @@ void TextureCache::UpdateTexturesTotalHostMemoryUsage(uint64_t add,
 }
 
 bool TextureCache::IsRangeScaledResolved(uint32_t start_unscaled,
-                                         uint32_t length_unscaled) const {
+                                         uint32_t length_unscaled) {
   if (!IsDrawResolutionScaled()) {
     return false;
   }

@@ -650,8 +650,7 @@ PipelineCache::GetCurrentVertexShaderModification(
 DxbcShaderTranslator::Modification
 PipelineCache::GetCurrentPixelShaderModification(
     const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
-    reg::RB_DEPTHCONTROL normalized_depth_control,
-    bool apply_polygon_offset_in_shader) const {
+    reg::RB_DEPTHCONTROL normalized_depth_control) const {
   assert_true(shader.type() == xenos::ShaderType::kPixel);
   assert_true(shader.is_ucode_analyzed());
   const auto& regs = register_file_;
@@ -690,21 +689,14 @@ PipelineCache::GetCurrentPixelShaderModification(
         regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
             xenos::DepthRenderTargetFormat::kD24FS8) {
       modification.pixel.depth_stencil_mode =
-          apply_polygon_offset_in_shader
-              ? (render_target_cache_.depth_float24_round()
-                     ? DepthStencilMode::kFloat24RoundingPolygonOffset
-                     : DepthStencilMode::kFloat24TruncatingPolygonOffset)
-              : (render_target_cache_.depth_float24_round()
-                     ? DepthStencilMode::kFloat24Rounding
-                     : DepthStencilMode::kFloat24Truncating);
+          render_target_cache_.depth_float24_round()
+              ? DepthStencilMode::kFloat24Rounding
+              : DepthStencilMode::kFloat24Truncating;
     } else {
-      if (apply_polygon_offset_in_shader) {
-        modification.pixel.depth_stencil_mode =
-            DepthStencilMode::kPolygonOffset;
-      } else if (shader.implicit_early_z_write_allowed() &&
-                 (!shader.writes_color_target(0) ||
-                  !draw_util::DoesCoverageDependOnAlpha(
-                      regs.Get<reg::RB_COLORCONTROL>()))) {
+      if (shader.implicit_early_z_write_allowed() &&
+          (!shader.writes_color_target(0) ||
+           !draw_util::DoesCoverageDependOnAlpha(
+               regs.Get<reg::RB_COLORCONTROL>()))) {
         modification.pixel.depth_stencil_mode = DepthStencilMode::kEarlyHint;
       } else {
         modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
@@ -752,7 +744,7 @@ bool PipelineCache::ConfigurePipeline(
     D3D12Shader::D3D12Translation* pixel_shader,
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     reg::RB_DEPTHCONTROL normalized_depth_control,
-    uint32_t normalized_color_mask, bool apply_polygon_offset_in_shader,
+    uint32_t normalized_color_mask,
     uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
     void** pipeline_handle_out, ID3D12RootSignature** root_signature_out) {
@@ -834,7 +826,6 @@ bool PipelineCache::ConfigurePipeline(
   if (!GetCurrentStateDescription(
           vertex_shader, pixel_shader, primitive_processing_result,
           normalized_depth_control, normalized_color_mask,
-          apply_polygon_offset_in_shader,
           bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, runtime_description,
           use_async)) {
@@ -1235,7 +1226,7 @@ bool PipelineCache::GetCurrentStateDescription(
     D3D12Shader::D3D12Translation* pixel_shader,
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
     reg::RB_DEPTHCONTROL normalized_depth_control,
-    uint32_t normalized_color_mask, bool depth_bias_in_pixel_shader,
+    uint32_t normalized_color_mask,
     uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
     PipelineRuntimeDescription& runtime_description_out, bool for_placeholder) {
@@ -1429,7 +1420,7 @@ bool PipelineCache::GetCurrentStateDescription(
     cull_front = false;
     cull_back = false;
   }
-  if (!edram_rov_used && !depth_bias_in_pixel_shader) {
+  if (!edram_rov_used) {
     float polygon_offset, polygon_offset_scale;
     draw_util::GetPreferredFacePolygonOffset(
         regs, primitive_polygonal, polygon_offset_scale, polygon_offset);

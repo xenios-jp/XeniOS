@@ -22,8 +22,8 @@ namespace gpu {
 
 // Geometry-shader emulation modes shared by the host backends. The Xbox 360
 // expands point/rectangle/quad lists that desktop APIs render via a geometry
-// shader; this DXBC generator is shared by the D3D12 and Metal backends (Metal
-// then converts the DXBC through the Metal Shader Converter). Vulkan uses a
+// shader. D3D12 uses the DXBC generator below, and Metal keeps it only as a
+// legacy fallback while the DXIL path generates HLSL directly. Vulkan uses a
 // separate SPIR-V path and is intentionally not part of this module.
 enum class PipelineGeometryShader : uint32_t {
   kNone,

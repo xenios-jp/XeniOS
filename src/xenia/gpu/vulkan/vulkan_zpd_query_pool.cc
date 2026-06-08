@@ -751,8 +751,8 @@ void VulkanZPDQueryPool::InvalidateReadback() {
 
     if (!readback_is_coherent_ && readback_memory_ != VK_NULL_HANDLE &&
         readback_mapping_) {
-      // Invalidates the CPU-side cache so the persistent mapping reflects the
-      // GPU writes made by vkCmdCopyQueryPoolResults. Not needed on
+      // Flushes the CPU-side cache so the persistent mapping reflects the GPU
+      // writes made by vkCmdCopyQueryPoolResults. Not needed on
       // HOST_COHERENT.
       VkMappedMemoryRange range;
       range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;

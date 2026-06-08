@@ -67,27 +67,6 @@ namespace xe {
 namespace gpu {
 namespace vulkan {
 
-namespace {
-
-bool IsPrimitiveRestartAlwaysEnabledOnMoltenVK(
-    const ui::vulkan::VulkanDevice::Properties& device_properties,
-    VkPrimitiveTopology topology) {
-  if (device_properties.driverID != VK_DRIVER_ID_MOLTENVK) {
-    return false;
-  }
-
-  switch (topology) {
-    case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP:
-    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
-    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
-      return true;
-    default:
-      return false;
-  }
-}
-
-}  // namespace
-
 VulkanPipelineCache::VulkanPipelineCache(
     VulkanCommandProcessor& command_processor,
     const RegisterFile& register_file,
@@ -450,7 +429,7 @@ SpirvShaderTranslator::Modification
 VulkanPipelineCache::GetCurrentPixelShaderModification(
     const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
     reg::RB_DEPTHCONTROL normalized_depth_control,
-    uint32_t normalized_color_mask, bool apply_polygon_offset_in_shader) const {
+    uint32_t normalized_color_mask) const {
   assert_true(shader.type() == xenos::ShaderType::kPixel);
   assert_true(shader.is_ucode_analyzed());
   const auto& regs = register_file_;
@@ -489,22 +468,13 @@ VulkanPipelineCache::GetCurrentPixelShaderModification(
         regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
             xenos::DepthRenderTargetFormat::kD24FS8) {
       modification.pixel.depth_stencil_mode =
-          apply_polygon_offset_in_shader
-              ? (render_target_cache_.depth_float24_round()
-                     ? DepthStencilMode::kFloat24RoundingPolygonOffset
-                     : DepthStencilMode::kFloat24TruncatingPolygonOffset)
-              : (render_target_cache_.depth_float24_round()
-                     ? DepthStencilMode::kFloat24Rounding
-                     : DepthStencilMode::kFloat24Truncating);
+          render_target_cache_.depth_float24_round()
+              ? DepthStencilMode::kFloat24Rounding
+              : DepthStencilMode::kFloat24Truncating;
     } else {
-      if (apply_polygon_offset_in_shader) {
-        modification.pixel.depth_stencil_mode =
-            DepthStencilMode::kPolygonOffset;
-      } else {
-        // kEarlyHint was tried here but it seems to trigger GPU fault on nvidia
-        // (entering gameplay in Alan Wake), so going with the safe alternative.
-        modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
-      }
+      // kEarlyHint was tried here but it seems to trigger GPU fault on nvidia
+      // (entering gameplay in Alan Wake), so going with the safe alternative.
+      modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
     }
 
     // Check if MIN/MAX blend is used with non-trivial source factors.
@@ -2794,15 +2764,8 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
       assert_unhandled_case(description.primitive_topology);
       return false;
   }
-  // MoltenVK lowers strip/fan primitive restart to Metal, where it can't be
-  // disabled for these topologies. Request the behavior Metal will use anyway
-  // so MoltenVK doesn't warn on every affected pipeline.
   input_assembly_state.primitiveRestartEnable =
-      description.primitive_restart ||
-              IsPrimitiveRestartAlwaysEnabledOnMoltenVK(
-                  vulkan_device->properties(), input_assembly_state.topology)
-          ? VK_TRUE
-          : VK_FALSE;
+      description.primitive_restart ? VK_TRUE : VK_FALSE;
 
   VkPipelineViewportStateCreateInfo viewport_state;
   viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;

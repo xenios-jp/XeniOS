@@ -473,16 +473,16 @@ class D3D12CommandProcessor final : public CommandProcessor {
       bool shared_memory_is_uav, uint32_t line_loop_closing_index,
       xenos::Endian index_endian, const draw_util::ViewportInfo& viewport_info,
       uint32_t used_texture_mask, reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask,
-      const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset);
+      uint32_t normalized_color_mask);
 
-  void UpdateSystemConstantValues(
-      bool shared_memory_is_uav, bool primitive_polygonal,
-      uint32_t line_loop_closing_index, xenos::Endian index_endian,
-      const draw_util::ViewportInfo& viewport_info, uint32_t used_texture_mask,
-      reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask,
-      const draw_util::HostDepthPolygonOffset* host_depth_polygon_offset);
+  void UpdateSystemConstantValues(bool shared_memory_is_uav,
+                                  bool primitive_polygonal,
+                                  uint32_t line_loop_closing_index,
+                                  xenos::Endian index_endian,
+                                  const draw_util::ViewportInfo& viewport_info,
+                                  uint32_t used_texture_mask,
+                                  reg::RB_DEPTHCONTROL normalized_depth_control,
+                                  uint32_t normalized_color_mask);
   bool UpdateBindings(const D3D12Shader* vertex_shader,
                       const D3D12Shader* pixel_shader,
                       ID3D12RootSignature* root_signature,
@@ -517,8 +517,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
     zpd_active_query_index_ = UINT32_MAX;
     zpd_active_query_generation_ = 0;
     zpd_active_query_is_rov_ = false;
-    bindful_zpd_rov_counter_buffer_ = nullptr;
-    bindful_zpd_rov_counter_capacity_ = 0;
     if (zpd_host_query_pool_) {
       zpd_host_query_pool_->Shutdown();
     }
@@ -598,10 +596,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
   std::unique_ptr<D3D12RenderTargetCache> render_target_cache_;
 
   std::unique_ptr<D3D12ZPDQueryPool> zpd_host_query_pool_;
-  // Tracks the ROV counter buffer captured by the current bindful page so we
-  // can invalidate the page when the counter resource changes.
-  ID3D12Resource* bindful_zpd_rov_counter_buffer_ = nullptr;
-  uint32_t bindful_zpd_rov_counter_capacity_ = 0;
 
   std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> constant_buffer_pool_;
 
@@ -726,9 +720,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
     uint32_t scale_y;          // 1 to kMaxDrawResolutionScaleAlongAxis
     uint32_t pixel_size_log2;  // 0=8bit, 1=16bit, 2=32bit, 3=64bit
     uint32_t tile_count;       // Number of 32x32 tiles to process
-    // Byte offset into the source buffer. Always 0 on D3D12 (the offset is
-    // baked into the source SRV); kept for a shared shader with Vulkan.
-    uint32_t source_offset_bytes;
     // When non-zero, apply half-pixel offset correction by sampling from
     // (scale/2, scale/2) within each scaled block instead of (0, 0).
     uint32_t half_pixel_offset;

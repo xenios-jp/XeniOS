@@ -170,7 +170,6 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
 void D3D12ZPDQueryPool::Shutdown() {
   resolve_batch_pending_.clear();
   resolve_batch_indices_.clear();
-  resolve_batch_ranges_.clear();
   rov_counter_resolve_batch_pending_.clear();
   rov_counter_resolve_batch_indices_.clear();
   free_indices_.clear();
@@ -188,9 +187,6 @@ void D3D12ZPDQueryPool::Shutdown() {
     rov_counter_readback_buffer_->Unmap(0, &written_range);
   }
 
-  readback_mapping_ = nullptr;
-  readback_buffer_.Reset();
-  query_heap_.Reset();
   rov_counter_readback_mapping_ = nullptr;
   rov_counter_readback_buffer_.Reset();
   rov_counter_buffer_.Reset();

@@ -83,30 +83,6 @@ GraphicsSystem::GraphicsSystem() : frame_limiter_worker_running_(false) {
 
 GraphicsSystem::~GraphicsSystem() = default;
 
-void GraphicsSystem::SetScaledAspectRatio(uint32_t x, uint32_t y) {
-  uint32_t old_x = scaled_aspect_x_.exchange(x, std::memory_order_relaxed);
-  uint32_t old_y = scaled_aspect_y_.exchange(y, std::memory_order_relaxed);
-  if (old_x == x && old_y == y) {
-    return;
-  }
-
-  ScaledAspectRatioChangedCallback callback;
-  {
-    std::lock_guard<std::mutex> lock(
-        scaled_aspect_ratio_changed_callback_mutex_);
-    callback = scaled_aspect_ratio_changed_callback_;
-  }
-  if (callback) {
-    callback(x, y);
-  }
-}
-
-void GraphicsSystem::SetScaledAspectRatioChangedCallback(
-    ScaledAspectRatioChangedCallback callback) {
-  std::lock_guard<std::mutex> lock(scaled_aspect_ratio_changed_callback_mutex_);
-  scaled_aspect_ratio_changed_callback_ = std::move(callback);
-}
-
 X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                                kernel::KernelState* kernel_state,
                                ui::WindowedAppContext* app_context,
@@ -174,10 +150,9 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
           kernel_state_, 128 * 1024, 0,
           [this]() {
             uint64_t last_frame_time = Clock::QueryGuestTickCount();
-    // Sleep for 90% of the vblank duration on Windows/Apple, spin for
-    // 10%. Linux uses full sleep duration due to scheduler quantum
-    // issues.
-#if XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
+    // Sleep for 90% of the vblank duration on Windows/macOS, spin for 10%
+    // Linux uses full sleep duration due to scheduler quantum issues
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
             constexpr double duration_scalar = 0.90;
 #elif XE_PLATFORM_LINUX
             constexpr double duration_scalar = 1.0;
@@ -198,8 +173,8 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                     (1000000000.0 / static_cast<double>(vblank_hz)) *
                     duration_scalar);
 
-#if XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
-                // Windows/Apple: time-gating + 90% sleep + 10% spin.
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+                // Windows/macOS: time-gating + 90% sleep + 10% spin
                 const uint64_t tick_freq = Clock::guest_tick_frequency();
                 const uint64_t target_duration_ticks = tick_freq / vblank_hz;
                 const uint64_t current_time = Clock::QueryGuestTickCount();
@@ -213,7 +188,7 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                     last_frame_time += target_duration_ticks;
                   }
                   MarkVblank();
-#if XE_PLATFORM_APPLE
+#if XE_PLATFORM_MAC
                   threading::NanoSleepPrecise(sleep_ns);
 #else
                   threading::NanoSleep(sleep_ns);
@@ -249,18 +224,16 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 }
 
 void GraphicsSystem::Shutdown() {
-  // The frame limiter thread calls MarkVblank, which touches the command
-  // processor. Stop it before tearing the command processor down.
-  if (frame_limiter_worker_thread_) {
-    frame_limiter_worker_running_ = false;
-    frame_limiter_worker_thread_->Wait(0, 0, 0, nullptr);
-    frame_limiter_worker_thread_.reset();
-  }
-
   if (command_processor_) {
     EndTracing();
     command_processor_->Shutdown();
     command_processor_.reset();
+  }
+
+  if (frame_limiter_worker_thread_) {
+    frame_limiter_worker_running_ = false;
+    frame_limiter_worker_thread_->Wait(0, 0, 0, nullptr);
+    frame_limiter_worker_thread_.reset();
   }
 
   if (presenter_) {

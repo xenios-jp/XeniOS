@@ -41,7 +41,7 @@ DECLARE_bool(occlusion_query_fast_trust_report);
 
 DECLARE_int32(occlusion_query_querybatch_range);
 
-DECLARE_double(occlusion_query_saturation);
+DECLARE_double(occlusion_query_sample_count_saturation);
 
 // Returns the guest vblank rate in Hz (50 for PAL, 60 for NTSC).
 // Based on use_50Hz_mode cvar.
@@ -71,13 +71,16 @@ DECLARE_bool(readback_resolve_half_pixel_offset);
 DECLARE_bool(gpu_3d_to_2d_texture);
 
 DECLARE_bool(metal_shader_disk_cache);
+DECLARE_bool(metal_msc_debug_validation);
+DECLARE_bool(metal_native_msl_debug_validation);
+DECLARE_bool(metal_native_msl_fast_math);
+DECLARE_int32(metal_native_msl_max_control_flow_cases);
 DECLARE_bool(metal_pipeline_binary_archive);
 DECLARE_int32(metal_draw_ring_count);
 DECLARE_bool(metal_use_heaps);
 DECLARE_int32(metal_heap_min_bytes);
 DECLARE_bool(metal_texture_cache_use_private);
 DECLARE_bool(metal_texture_upload_via_blit);
-DECLARE_bool(metal_constant_payload_cache);
 DECLARE_string(metal_residency_sets);
 DECLARE_bool(metal_backend_telemetry);
 DECLARE_int32(metal_backend_telemetry_interval);

@@ -108,7 +108,7 @@ DEFINE_int32(occlusion_query_querybatch_range, 0,
              "specific title.",
              "GPU");
 DEFINE_double(
-    occlusion_query_saturation, 1.0,
+    occlusion_query_sample_count_saturation, 1.0,
     "Compress higher occlusion query sample counts before guest writeback.\n"
     "This can be useful if effects such as lens flares appear too bright\n"
     "or too strong.\n"
@@ -222,6 +222,34 @@ DEFINE_bool(metal_shader_disk_cache, true,
             "the packed Metal artifact store.",
             "Metal");
 
+DEFINE_bool(
+    metal_msc_debug_validation, false,
+    "Enable conservative Metal Shader Converter diagnostics while developing "
+    "the DXIL translator. This forces MSC validation-all, enables the known "
+    "runtime compatibility flags, and targets macOS / Metal3 for converted "
+    "shader code.",
+    "Metal");
+
+DEFINE_bool(
+    metal_native_msl_debug_validation, true,
+    "Compile generated native MSL with Metal shader logging, safe math, "
+    "invariance preservation, and diagnostic logging while developing the "
+    "native MSL translator.",
+    "Metal");
+
+DEFINE_bool(metal_native_msl_fast_math, false,
+            "Use Metal global fast-math when compiling generated native MSL "
+            "outside debug validation. This can violate Xenos NaN/Inf "
+            "semantics; the default optimized path uses Metal safe math mode "
+            "with fast floating-point functions instead.",
+            "Metal");
+
+DEFINE_int32(
+    metal_native_msl_max_control_flow_cases, 80,
+    "Maximum flattened switch cases allowed in a native MSL shader before "
+    "falling back to the MSC path. Set to 0 to disable the temporary cap.",
+    "Metal");
+
 DEFINE_bool(metal_pipeline_binary_archive, true,
             "Use MTLBinaryArchive for Metal pipeline compilation caching. "
             "Requires store_shaders and a compatible OS/driver.",
@@ -233,7 +261,7 @@ DEFINE_int32(
     "Higher reduces ring churn but uses more memory.",
     "Metal");
 
-DEFINE_bool(metal_backend_telemetry, false,
+DEFINE_bool(metal_backend_telemetry, true,
             "Log concise Metal backend decision counters for render encoder "
             "lifetime, resolve/transfer planning, bindless binding, and "
             "texture upload/load behavior.",
@@ -248,12 +276,6 @@ DEFINE_bool(
     "change histograms and CBV resource identity details. Leave disabled for "
     "normal profiling.",
     "Metal");
-
-DEFINE_bool(metal_constant_payload_cache, false,
-            "Reuse identical Metal constant/descriptor payload uploads across "
-            "draws within a frame. Disable to A/B hash/cache CPU cost against "
-            "extra CBV uploads and root argument churn.",
-            "Metal");
 
 DEFINE_string(
     metal_residency_sets, "auto",

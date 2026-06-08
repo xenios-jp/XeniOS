@@ -97,7 +97,14 @@ class TextureCache {
   virtual void BeginSubmission(uint64_t new_submission_index);
   virtual void BeginFrame();
 
-  void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
+  enum class ResolveProvenanceSource : uint32_t {
+    kUnknown,
+    kDirectHost,
+    kRenderTarget,
+  };
+  void MarkRangeAsResolved(
+      uint32_t start_unscaled, uint32_t length_unscaled,
+      ResolveProvenanceSource source = ResolveProvenanceSource::kUnknown);
   // Ensures the memory backing the range in the scaled resolve address space is
   // allocated and returns whether it is.
   virtual bool EnsureScaledResolveMemoryCommitted(
@@ -259,6 +266,12 @@ class TextureCache {
     void LogAction(const char* action) const;
   };
 
+  enum class TextureWatchInvalidationSource : uint32_t {
+    kCpu,
+    kGpuOther,
+    kGpuResolve,
+  };
+
   class Texture {
    public:
     Texture(const Texture& texture) = delete;
@@ -302,12 +315,39 @@ class TextureCache {
     // not).
     bool base_outdated_lockless() const { return base_outdated_; }
     bool mips_outdated_lockless() const { return mips_outdated_; }
+    TextureWatchInvalidationSource last_base_watch_invalidation_source() const {
+      return last_base_watch_invalidation_source_;
+    }
+    TextureWatchInvalidationSource last_mips_watch_invalidation_source() const {
+      return last_mips_watch_invalidation_source_;
+    }
+    uint32_t last_base_watch_invalidation_range_start() const {
+      return last_base_watch_invalidation_range_start_;
+    }
+    uint32_t last_base_watch_invalidation_range_length() const {
+      return last_base_watch_invalidation_range_length_;
+    }
+    uint32_t last_mips_watch_invalidation_range_start() const {
+      return last_mips_watch_invalidation_range_start_;
+    }
+    uint32_t last_mips_watch_invalidation_range_length() const {
+      return last_mips_watch_invalidation_range_length_;
+    }
+    ResolveProvenanceSource last_base_watch_resolve_source() const {
+      return last_base_watch_resolve_source_;
+    }
+    ResolveProvenanceSource last_mips_watch_resolve_source() const {
+      return last_mips_watch_resolve_source_;
+    }
     void MakeUpToDateAndWatch(const global_unique_lock_type& global_lock);
     void MakeLoadedDataUpToDateAndWatch(
         const global_unique_lock_type& global_lock, bool loaded_base,
         bool loaded_mips);
 
-    void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip);
+    void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip,
+                       TextureWatchInvalidationSource source,
+                       uint32_t source_start, uint32_t source_length,
+                       ResolveProvenanceSource resolve_source);
 
     // For LRU caching - updates the last usage frame and moves the texture to
     // the end of the usage queue. Must be called any time the texture is
@@ -357,6 +397,18 @@ class TextureCache {
     bool base_outdated_ = false;
     // Whether the recent mip data needs reloading from the memory.
     bool mips_outdated_ = false;
+    TextureWatchInvalidationSource last_base_watch_invalidation_source_ =
+        TextureWatchInvalidationSource::kCpu;
+    TextureWatchInvalidationSource last_mips_watch_invalidation_source_ =
+        TextureWatchInvalidationSource::kCpu;
+    uint32_t last_base_watch_invalidation_range_start_ = 0;
+    uint32_t last_base_watch_invalidation_range_length_ = 0;
+    uint32_t last_mips_watch_invalidation_range_start_ = 0;
+    uint32_t last_mips_watch_invalidation_range_length_ = 0;
+    ResolveProvenanceSource last_base_watch_resolve_source_ =
+        ResolveProvenanceSource::kUnknown;
+    ResolveProvenanceSource last_mips_watch_resolve_source_ =
+        ResolveProvenanceSource::kUnknown;
     // Watch handles for the memory ranges.
     SharedMemory::WatchHandle base_watch_handle_ = nullptr;
     SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
@@ -621,7 +673,8 @@ class TextureCache {
     kBase,
     kMips,
   };
-  virtual bool RequestTextureDataRange(Texture&, TextureDataRangeSource,
+  virtual bool RequestTextureDataRange(Texture&,
+                                       TextureDataRangeSource,
                                        uint32_t start, uint32_t length) {
     // TODO(xenios-jp): Backend texture caches with encoder-lifetime ownership
     // must not use this default direct shared-memory request while an encoder
@@ -661,10 +714,13 @@ class TextureCache {
   // Called when something in a texture binding is changed for the
   // implementation to update the internal dependencies of the binding.
   virtual void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {}
+  virtual void RecordTextureWatchInvalidation(
+      [[maybe_unused]] const Texture& texture, [[maybe_unused]] bool is_mip,
+      [[maybe_unused]] TextureWatchInvalidationSource source,
+      [[maybe_unused]] uint32_t byte_count) {}
 
  private:
   void UpdateTexturesTotalHostMemoryUsage(uint64_t add, uint64_t subtract);
-  TextureKey GetHostTextureKey(TextureKey key) const;
 
   // Shared memory callback for texture data invalidation.
   static void WatchCallback(const global_unique_lock_type& global_lock,
@@ -673,8 +729,7 @@ class TextureCache {
 
   // Checks if there are any pages that contain scaled resolve data within the
   // range.
-  bool IsRangeScaledResolved(uint32_t start_unscaled,
-                             uint32_t length_unscaled) const;
+  bool IsRangeScaledResolved(uint32_t start_unscaled, uint32_t length_unscaled);
   // Global shared memory invalidation callback for invalidating scaled resolved
   // texture data.
   static void ScaledResolveGlobalWatchCallbackThunk(
@@ -686,6 +741,12 @@ class TextureCache {
 
   const RegisterFile& register_file_;
   SharedMemory& shared_memory_;
+  TextureWatchInvalidationSource texture_watch_invalidation_source_ =
+      TextureWatchInvalidationSource::kGpuOther;
+  uint32_t texture_watch_invalidation_range_start_ = 0;
+  uint32_t texture_watch_invalidation_range_length_ = 0;
+  ResolveProvenanceSource texture_watch_resolve_source_ =
+      ResolveProvenanceSource::kUnknown;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
   divisors::MagicDiv draw_resolution_scale_x_divisor_;

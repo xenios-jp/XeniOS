@@ -22,7 +22,6 @@
 #include <vector>
 
 #include "xenia/base/math.h"
-#include "xenia/base/platform.h"
 #include "xenia/base/ring_buffer.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/trace_writer.h"
@@ -53,10 +52,9 @@ enum class ReadbackResolveMode {
 
 // Occlusion queries - ZPD report mode.
 enum class ZPDMode {
-  kFake,     // Fake sample counts, no real GPU queries (fake)
-  kFast,     // Real queries with speculative cached writes (fast)
-  kFastAlt,  // Fast queries, but preserves cached zeroes (fast-alt)
-  kStrict,   // Real queries, waits before writeback. May hang. (strict)
+  kFake,    // Fake sample counts, no real GPU queries (fake)
+  kFast,    // Real queries with speculative cached writes (fast)
+  kStrict,  // Real queries, waits before writeback. May hang. (strict)
 };
 
 void SaveGPUSetting(GPUSetting setting, uint64_t value);
@@ -355,10 +353,8 @@ class CommandProcessor {
     uint32_t begin_value = 0;
     uint32_t pending_segments = 0;
     // Last known delta. Carried forward on forced close so slot doesn't
-    // briefly look fully occluded. 0 is a valid delta for alternate fast path.
+    // briefly look fully occluded.
     uint32_t cached_delta = 0;
-    // Distinguishes "we resolved to zero" from "we have no cached value yet".
-    bool has_cached_delta = false;
     bool ended = false;
   };
 
@@ -376,7 +372,6 @@ class CommandProcessor {
   struct PendingZPDSlot {
     ReportHandle report_handle = kInvalidReportHandle;
     uint32_t cached_delta = 0;
-    bool has_cached_delta = false;
   };
 
   // Logged by the backend every 100 frames if ZPD logging cvar is true.
@@ -471,12 +466,7 @@ class CommandProcessor {
     zpd_pending_retire_handle_ = kInvalidReportHandle;
     zpd_pending_retire_stalls_ = 0;
     zpd_pending_retire_start_ms_ = 0;
-    zpd_force_fake_fallback_ = false;
   }
-
-#if XE_PLATFORM_IOS
-  bool IsTitleStopRequestedIOS() const;
-#endif  // XE_PLATFORM_IOS
 
 #include "pm4_command_processor_declare.h"
 
@@ -523,11 +513,6 @@ class CommandProcessor {
   std::unordered_map<uint32_t, uint32_t> fast_zpd_report_cached_values_;
 
   uint32_t querybatch_zpd_sample_count_ = UINT32_MAX;
-
-  // Sticky after host pool init failure. Forces EVENT_WRITE_ZPD onto the fake
-  // path so guests don't stall waiting on a pending sentinel that will never
-  // be written. Cleared by ResetZPDState.
-  bool zpd_force_fake_fallback_ = false;
 
   // Strict mode defers guest completion until the queued END has retired.
   ReportHandle zpd_pending_retire_handle_ = kInvalidReportHandle;

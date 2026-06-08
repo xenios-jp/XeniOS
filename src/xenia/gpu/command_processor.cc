@@ -14,7 +14,6 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
-#include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
@@ -65,10 +64,7 @@ DEFINE_string(
     "       though some effects may look slightly wrong.\n"
     " fast: Ask the GPU but don't wait for the answer. Writes a cached\n"
     "       result immediately and updates it when the GPU catches up.\n"
-    "       Cached results bias toward visible when guessing. (default)\n"
-    " fast-alt: Variant of fast mode that keeps cached zero results for\n"
-    "           unresolved reports. May improve effects relying on precise\n"
-    "           visibility, but may be less stable for occlusion culling.\n"
+    "       (default)\n"
     " strict: Ask the GPU and wait for the real result before continuing.\n"
     "         Most accurate, but may be somewhat less performant.",
     "GPU");
@@ -154,8 +150,6 @@ static ZPDMode ParseZPDMode() {
     return ZPDMode::kStrict;
   } else if (mode == "fast") {
     return ZPDMode::kFast;
-  } else if (mode == "fast-alt") {
-    return ZPDMode::kFastAlt;
   } else {
     // Default to "fake" for any unrecognized value.
     return ZPDMode::kFake;
@@ -187,12 +181,6 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
 }
 
 CommandProcessor::~CommandProcessor() = default;
-
-#if XE_PLATFORM_IOS
-bool CommandProcessor::IsTitleStopRequestedIOS() const {
-  return kernel_state_ && kernel_state_->IsTitleStopRequestedIOS();
-}
-#endif  // XE_PLATFORM_IOS
 
 bool CommandProcessor::Initialize() {
   // Initialize the gamma ramps to their default (linear) values - taken from
@@ -396,9 +384,6 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
     case ZPDMode::kFast:
       mode_str = "fast";
       break;
-    case ZPDMode::kFastAlt:
-      mode_str = "fast-alt";
-      break;
     case ZPDMode::kStrict:
       mode_str = "strict";
       break;
@@ -515,10 +500,9 @@ void CommandProcessor::WorkerThreadMain() {
       // event is too high.
       PrepareForWait();
       uint32_t loop_count = 0;
-      constexpr uint32_t idle_spin_yields = 500;
       do {
         // If we spin around too much, revert to a "low-power" state.
-        if (loop_count >= idle_spin_yields) {
+        if (loop_count > 500) {
           constexpr int wait_time_ms = 2;
           xe::threading::Wait(write_ptr_index_event_.get(), true,
                               std::chrono::milliseconds(wait_time_ms));
@@ -1069,37 +1053,24 @@ CommandProcessor::PendingZPDSlot CommandProcessor::GetPendingZPDSlot(
       pending_slot.report_handle = report_pair.first;
     }
 
-    // Slot reuse needs to be handled carefully in fast mode. Keep the biggest
-    // cached delta, not the newest one. A stale zero is a lot more dangerous
-    // than a stale nonzero.
-    if (report.has_cached_delta) {
-      if (!pending_slot.has_cached_delta ||
-          report.cached_delta > pending_slot.cached_delta) {
-        pending_slot.cached_delta = report.cached_delta;
-      }
-      pending_slot.has_cached_delta = true;
-    }
+    // Keep the strongest fallback delta if this slot has to be reused early.
+    pending_slot.cached_delta =
+        std::max(pending_slot.cached_delta, report.cached_delta);
 
     if (report.end_record) {
       auto report_cache_it =
           fast_zpd_report_cached_values_.find(report.end_record);
       if (report_cache_it != fast_zpd_report_cached_values_.end()) {
-        if (!pending_slot.has_cached_delta ||
-            report_cache_it->second > pending_slot.cached_delta) {
-          pending_slot.cached_delta = report_cache_it->second;
-        }
-        pending_slot.has_cached_delta = true;
+        pending_slot.cached_delta =
+            std::max(pending_slot.cached_delta, report_cache_it->second);
       }
     }
   }
 
   auto end_record_cache_it = fast_zpd_report_cached_values_.find(end_record);
   if (end_record_cache_it != fast_zpd_report_cached_values_.end()) {
-    if (!pending_slot.has_cached_delta ||
-        end_record_cache_it->second > pending_slot.cached_delta) {
-      pending_slot.cached_delta = end_record_cache_it->second;
-    }
-    pending_slot.has_cached_delta = true;
+    pending_slot.cached_delta =
+        std::max(pending_slot.cached_delta, end_record_cache_it->second);
   }
 
   return pending_slot;
@@ -1112,7 +1083,6 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
 
   // Track any delta to carry forward if the same slot is immediately reused.
   uint32_t carried_cached_delta = 0;
-  bool has_carried_cached_delta = false;
   uint32_t carried_from_slot_base = 0;
 
   if (zpd_active_segment_.logical_active) {
@@ -1133,10 +1103,8 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
       auto dying_report =
           logical_zpd_reports_.find(zpd_active_segment_.report_handle);
       // Carry prior delta forward so the slot doesn't briefly look occluded.
-      if (dying_report != logical_zpd_reports_.end() &&
-          dying_report->second.has_cached_delta) {
+      if (dying_report != logical_zpd_reports_.end()) {
         carried_cached_delta = dying_report->second.cached_delta;
-        has_carried_cached_delta = true;
       }
 
       if (zpd_active_segment_.segment_active) {
@@ -1175,12 +1143,10 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
 
   if (pending_slot.report_handle != kInvalidReportHandle) {
     zpd_stats_.same_slot_reuse++;
-    if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
-      if (pending_slot.has_cached_delta) {
-        carried_cached_delta = pending_slot.cached_delta;
-        has_carried_cached_delta = true;
-        carried_from_slot_base = slot_base;
-      }
+    if (GetZPDMode() == ZPDMode::kFast) {
+      carried_cached_delta =
+          pending_slot.cached_delta ? pending_slot.cached_delta : 1;
+      carried_from_slot_base = slot_base;
     } else {
       while (pending_slot.report_handle != kInvalidReportHandle) {
         auto report_it = logical_zpd_reports_.find(pending_slot.report_handle);
@@ -1197,7 +1163,6 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
         if (!wait_succeeded) {
           if (pending_slot.cached_delta != 0) {
             carried_cached_delta = pending_slot.cached_delta;
-            has_carried_cached_delta = true;
             carried_from_slot_base = slot_base;
           }
           break;
@@ -1213,10 +1178,10 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
   // Bump slot sequence — invalidates pending writes from prior lifetime.
   uint64_t slot_sequence_id = ++zpd_slot_sequences_[slot_base];
 
-  // By default, BEGIN drops the cached value so an orphaned END doesn't replay
-  // something from a prior lifetime. The alternate fast path keeps it around
-  // long enough for an async zero to help the next unresolved write.
-  if (GetZPDMode() != ZPDMode::kFastAlt) {
+  // Clear the cached delta for this address so an orphan END can't carry a
+  // value from the previous lifetime into the new one. A real END will write
+  // the cache again when it resolves.
+  if (cvars::occlusion_query_fast_trust_report) {
     fast_zpd_report_cached_values_.erase(end_record);
   }
 
@@ -1236,12 +1201,10 @@ bool CommandProcessor::BeginZPDReport(uint32_t report_address) {
   logical.last_segment_end_submission = 0;
   logical.pending_segments = 0;
   logical.cached_delta = 0;
-  logical.has_cached_delta = false;
   logical.ended = false;
 
-  if (slot_base == carried_from_slot_base && has_carried_cached_delta) {
+  if (slot_base == carried_from_slot_base && carried_cached_delta != 0) {
     logical.cached_delta = carried_cached_delta;
-    logical.has_cached_delta = true;
   }
 
   zpd_active_segment_.report_handle = report_handle;
@@ -1296,8 +1259,7 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
   uint32_t begin_record = 0;
   uint32_t begin_value = 0;
   uint32_t final_value = 0;
-  uint32_t cached_delta = 0;
-  bool has_cached_delta = false;
+  uint32_t cached_delta = 1;
 
   auto it = logical_zpd_reports_.find(report_handle);
   if (it == logical_zpd_reports_.end()) {
@@ -1315,10 +1277,13 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
     resolved_immediately = true;
     final_value = NormalizeSampleCount(logical.accumulated_samples);
 
-    cached_delta = final_value;
-    has_cached_delta = true;
+    // Use the current report's result. A cached delta carried over from an
+    // earlier lifetime on this slot should not replace a real zero.
+    cached_delta = cvars::occlusion_query_fast_trust_report ? final_value
+                   : (final_value == 0 && logical.cached_delta != 0)
+                       ? logical.cached_delta
+                       : final_value;
     logical.cached_delta = cached_delta;
-    logical.has_cached_delta = true;
     if (fast_zpd_report_cached_values_.size() >= kFastZPDCacheMaxEntries &&
         !fast_zpd_report_cached_values_.count(report_record_base)) {
       fast_zpd_report_cached_values_.clear();
@@ -1326,14 +1291,12 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
     fast_zpd_report_cached_values_[report_record_base] = cached_delta;
     final_value = cached_delta;
   } else {
-    if (logical.has_cached_delta) {
+    if (logical.cached_delta != 0) {
       cached_delta = logical.cached_delta;
-      has_cached_delta = true;
     }
     auto cache_it = fast_zpd_report_cached_values_.find(report_record_base);
     if (cache_it != fast_zpd_report_cached_values_.end()) {
       cached_delta = cache_it->second;
-      has_cached_delta = true;
     }
   }
 
@@ -1348,20 +1311,15 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
     WriteZPDReport(0, stored_end_record, 0, begin_value, false);
   }
 
-  if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
+  if (GetZPDMode() == ZPDMode::kFast) {
     bool write_begin = begin_record && report_record_base &&
                        begin_record != report_record_base;
-    // Unknown still means visible in fast mode. Reusing cached zeroes can help
-    // flares stop shining through walls, but it also tends to break occlusion
-    // culling, so only do it in the alternate fast path.
-    uint32_t speculative = cached_delta;
-    if (!resolved_immediately) {
-      speculative = 1;
-      if (has_cached_delta &&
-          (cached_delta != 0 || GetZPDMode() == ZPDMode::kFastAlt)) {
-        speculative = cached_delta;
-      }
-    }
+    // Promote zero to one only while segments are still pending. Once the real
+    // result is ready, write it as is.
+    bool escape_zero =
+        write_begin && cached_delta == 0 &&
+        (!cvars::occlusion_query_fast_trust_report || !resolved_immediately);
+    uint32_t speculative = escape_zero ? 1 : cached_delta;
     WriteZPDReport(begin_record, report_record_base, begin_value, speculative,
                    write_begin);
   } else if (!resolved_immediately) {
@@ -1385,8 +1343,7 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
 }
 
 void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
-  if (GetZPDMode() == ZPDMode::kFake || zpd_force_fake_fallback_ ||
-      !zpd_active_segment_.logical_active ||
+  if (GetZPDMode() == ZPDMode::kFake || !zpd_active_segment_.logical_active ||
       !zpd_active_segment_.segment_pending_begin || !CanOpenZPDQuery()) {
     return;
   }
@@ -1395,9 +1352,6 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
 
   if (!IsZPDQueryPoolReady()) {
     zpd_stats_.failed++;
-    zpd_force_fake_fallback_ = true;
-    logical_zpd_reports_.erase(zpd_active_segment_.report_handle);
-    zpd_active_segment_ = {};
     return;
   }
 
@@ -1413,7 +1367,7 @@ void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
       return;
     case QueryOpenResult::kPoolExhausted: {
       zpd_stats_.pool_exhausted++;
-      if (GetZPDMode() == ZPDMode::kFast || GetZPDMode() == ZPDMode::kFastAlt) {
+      if (GetZPDMode() == ZPDMode::kFast) {
         // Fast mode favors forward progress over accuracy. Keep a minimal
         // accumulated value instead of waiting for a slot to become available.
         auto it = logical_zpd_reports_.find(zpd_active_segment_.report_handle);
@@ -1492,7 +1446,6 @@ void CommandProcessor::OnZPDQueryResolved(ReportHandle report_handle,
     uint32_t final_value = NormalizeSampleCount(logical.accumulated_samples);
 
     logical.cached_delta = final_value;
-    logical.has_cached_delta = true;
     if (logical.end_record) {
       if (fast_zpd_report_cached_values_.size() >= kFastZPDCacheMaxEntries &&
           !fast_zpd_report_cached_values_.count(logical.end_record)) {
@@ -1566,10 +1519,8 @@ void CommandProcessor::PumpPendingRetire() {
     }
     // Write the cached delta to guest memory to avoid a sudden occlusion flash.
     if (IsZPDReportCurrent(logical_report->second)) {
-      uint32_t fallback_delta = logical_report->second.cached_delta
-                                    ? logical_report->second.cached_delta
-                                    : 1;
-      CommitZPDReport(logical_report->second, fallback_delta);
+      CommitZPDReport(logical_report->second,
+                      logical_report->second.cached_delta);
     }
     logical_zpd_reports_.erase(logical_report);
     zpd_pending_retire_handle_ = kInvalidReportHandle;
