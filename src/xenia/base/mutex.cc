@@ -14,6 +14,9 @@
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif XE_PLATFORM_APPLE == 1
+#include <os/lock.h>
+#include <pthread.h>
 #endif
 
 namespace xe {
@@ -246,6 +249,58 @@ bool xe_fast_mutex::try_lock() {
   return state_.compare_exchange_strong(expected, 1, std::memory_order_acquire,
                                         std::memory_order_relaxed);
 }
+
+#elif XE_PLATFORM_APPLE == 1 && XE_ENABLE_FAST_APPLE_MUTEX == 1
+
+namespace {
+// Cheap, stable per-thread identity. pthread_self() reads thread-local storage
+// (no syscall) and is unique among live threads; it is only ever compared for
+// equality here to detect recursive acquisition by the current owner.
+inline uint64_t xe_current_thread_id() {
+  return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pthread_self()));
+}
+}  // namespace
+
+// xe_global_mutex implementation (recursive, built on os_unfair_lock).
+// os_unfair_lock is non-recursive, so the owner thread and recursion depth are
+// tracked here and the underlying lock is taken only on the outermost acquire
+// (mirrors the Win32 SRWLOCK implementation above).
+void xe_global_mutex::lock() {
+  uint64_t self = xe_current_thread_id();
+  if (owner_.load(std::memory_order_relaxed) == self) {
+    ++recursion_count_;  // already own it; underlying lock is held
+    return;
+  }
+  os_unfair_lock_lock(&lock_);
+  owner_.store(self, std::memory_order_relaxed);
+  recursion_count_ = 1;
+}
+
+void xe_global_mutex::unlock() {
+  if (--recursion_count_ == 0) {
+    owner_.store(0, std::memory_order_relaxed);
+    os_unfair_lock_unlock(&lock_);
+  }
+}
+
+bool xe_global_mutex::try_lock() {
+  uint64_t self = xe_current_thread_id();
+  if (owner_.load(std::memory_order_relaxed) == self) {
+    ++recursion_count_;
+    return true;
+  }
+  if (os_unfair_lock_trylock(&lock_)) {
+    owner_.store(self, std::memory_order_relaxed);
+    recursion_count_ = 1;
+    return true;
+  }
+  return false;
+}
+
+// xe_fast_mutex implementation (non-recursive).
+void xe_fast_mutex::lock() { os_unfair_lock_lock(&lock_); }
+void xe_fast_mutex::unlock() { os_unfair_lock_unlock(&lock_); }
+bool xe_fast_mutex::try_lock() { return os_unfair_lock_trylock(&lock_); }
 
 #endif
 global_mutex_type& global_critical_region::mutex() {
