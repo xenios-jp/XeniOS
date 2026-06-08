@@ -847,6 +847,10 @@ msgstr "الترخيص:"
 msgid "Liechtenstein"
 msgstr "ليختنشتاين"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "ليتوانيا"
@@ -1011,6 +1015,10 @@ msgstr "فتح لعبة"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "فتح المجلد المُحتوي"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "فتح باستخدام Rosetta"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1439,6 +1447,18 @@ msgstr "تغييرات غير محفوظة"
 msgid "Uruguay"
 msgstr "الأوروغواي"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "استخدام GameMode"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "استخدام MTL HUD"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "استخدام MangoHud"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
 msgstr "أوزبكستان"
@@ -1502,6 +1522,10 @@ msgstr "زيمبابوي"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "بواسطة %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"

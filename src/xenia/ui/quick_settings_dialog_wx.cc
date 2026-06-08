@@ -256,12 +256,12 @@ void QuickSettingsDialog::Build() {
     grid->AddGrowableCol(1, 1);
 
     auto* mangohud = add_check(box, "use_mangohud");
-    auto* mangohud_label = add_label(box, _("MangoHUD overlay:"));
+    auto* mangohud_label = add_label(box, _("Use MangoHud"));
     remember_label("use_mangohud", mangohud_label);
     add_form_row(grid, mangohud_label, mangohud);
 
     auto* gamemode = add_check(box, "use_gamemode");
-    auto* gamemode_label = add_label(box, _("Feral GameMode:"));
+    auto* gamemode_label = add_label(box, _("Use GameMode"));
     remember_label("use_gamemode", gamemode_label);
     add_form_row(grid, gamemode_label, gamemode);
 
@@ -277,12 +277,12 @@ void QuickSettingsDialog::Build() {
     grid->AddGrowableCol(1, 1);
 
     auto* metal_hud = add_check(box, "use_metal_hud");
-    auto* metal_hud_label = add_label(box, _("Metal performance HUD:"));
+    auto* metal_hud_label = add_label(box, _("Use MTL HUD"));
     remember_label("use_metal_hud", metal_hud_label);
     add_form_row(grid, metal_hud_label, metal_hud);
 
     auto* rosetta = add_check(box, "use_rosetta");
-    auto* rosetta_label = add_label(box, _("Run under Rosetta 2 (x86_64):"));
+    auto* rosetta_label = add_label(box, _("Open using Rosetta"));
     remember_label("use_rosetta", rosetta_label);
     add_form_row(grid, rosetta_label, rosetta);
 

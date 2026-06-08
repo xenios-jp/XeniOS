@@ -846,6 +846,10 @@ msgstr "授權:"
 msgid "Liechtenstein"
 msgstr "列支敦斯登"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "立陶宛"
@@ -1009,6 +1013,10 @@ msgstr "開啟遊戲"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "開啟所在資料夾"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "使用 Rosetta 開啟"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1436,6 +1444,18 @@ msgstr "未儲存的變更"
 msgid "Uruguay"
 msgstr "烏拉圭"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "使用 GameMode"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "使用 MTL HUD"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "使用 MangoHud"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
 msgstr "烏茲別克"
@@ -1499,6 +1519,10 @@ msgstr "辛巴威"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "作者: %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"

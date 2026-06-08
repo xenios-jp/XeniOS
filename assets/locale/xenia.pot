@@ -4,7 +4,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: xenia-edge\n"
-"POT-Creation-Date: 2026-06-08 00:27+0000\n"
+"POT-Creation-Date: 2026-06-08 00:46+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -492,10 +492,6 @@ msgstr ""
 msgid "Faroe Islands"
 msgstr ""
 
-#: src/xenia/ui/quick_settings_dialog_wx.cc:264
-msgid "Feral GameMode:"
-msgstr ""
-
 #: src/xenia/ui/game_list_panel_wx.cc:1249
 msgid "File Corrupted"
 msgstr ""
@@ -877,16 +873,8 @@ msgstr ""
 msgid "MangoHUD not in PATH; install to enable."
 msgstr ""
 
-#: src/xenia/ui/quick_settings_dialog_wx.cc:259
-msgid "MangoHUD overlay:"
-msgstr ""
-
 #: src/xenia/ui/game_list_panel_wx.cc:1054
 msgid "Master"
-msgstr ""
-
-#: src/xenia/ui/quick_settings_dialog_wx.cc:280
-msgid "Metal performance HUD:"
 msgstr ""
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:135
@@ -995,6 +983,10 @@ msgstr ""
 
 #: src/xenia/ui/game_list_panel_wx.cc:959
 msgid "Open containing folder"
+msgstr ""
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
 msgstr ""
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:296
@@ -1161,10 +1153,6 @@ msgstr ""
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:151
 msgid "Romania"
-msgstr ""
-
-#: src/xenia/ui/quick_settings_dialog_wx.cc:285
-msgid "Run under Rosetta 2 (x86_64):"
 msgstr ""
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:62
@@ -1420,6 +1408,18 @@ msgstr ""
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:168
 msgid "Uruguay"
+msgstr ""
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr ""
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr ""
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
 msgstr ""
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:169

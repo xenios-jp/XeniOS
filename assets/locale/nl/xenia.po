@@ -846,6 +846,10 @@ msgstr "Licentie:"
 msgid "Liechtenstein"
 msgstr "Liechtenstein"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "Litouwen"
@@ -1012,6 +1016,10 @@ msgstr "Een titel openen"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "Bovenliggende map openen"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "Openen met Rosetta"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1441,6 +1449,18 @@ msgstr "Niet-opgeslagen wijzigingen"
 msgid "Uruguay"
 msgstr "Uruguay"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "GameMode gebruiken"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "MTL HUD gebruiken"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "MangoHud gebruiken"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
 msgstr "Oezbekistan"
@@ -1508,6 +1528,10 @@ msgstr "Zimbabwe"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "door %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"
