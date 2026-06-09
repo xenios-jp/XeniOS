@@ -917,63 +917,93 @@ class CodeCacheBase : public CodeCache {
     return found;
   }
 
-  static bool IOSHasTXM() {
-    static const bool has_txm = []() -> bool {
-      if (const char* env = std::getenv("HAS_TXM")) {
-        if (env[0] == '1' && env[1] == '\0') {
-          return true;
-        }
-        if (env[0] == '0' && env[1] == '\0') {
-          return false;
-        }
-      }
-
-      const std::string preboot_uuid =
-          FindChildWithNameLength("/System/Volumes/Preboot", 36);
-      if (!preboot_uuid.empty()) {
-        const std::string txm_root =
-            FindChildWithNameLength(preboot_uuid + "/boot", 96);
-        if (!txm_root.empty()) {
-          const std::string txm_path =
-              txm_root +
-              "/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4";
-          if (access(txm_path.c_str(), F_OK) == 0) {
-            return true;
-          }
-        }
-      }
-
-      const std::string private_preboot_root =
-          FindChildWithNameLength("/private/preboot", 96);
-      if (!private_preboot_root.empty()) {
-        const std::string txm_path = private_preboot_root +
-                                     "/usr/standalone/firmware/FUD/"
-                                     "Ap,TrustedExecutionMonitor.img4";
+  // Definitive check: the on-disk TXM firmware image under the preboot volume.
+  // Present => the device is running with TXM. Absent is NOT conclusive: the
+  // app sandbox frequently cannot read these paths on newer OSes, so a false
+  // result just means "unconfirmed" and the caller falls back to inference.
+  static bool IOSProbePrebootTXMFirmware() {
+    const std::string preboot_uuid =
+        FindChildWithNameLength("/System/Volumes/Preboot", 36);
+    if (!preboot_uuid.empty()) {
+      const std::string txm_root =
+          FindChildWithNameLength(preboot_uuid + "/boot", 96);
+      if (!txm_root.empty()) {
+        const std::string txm_path =
+            txm_root +
+            "/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4";
         if (access(txm_path.c_str(), F_OK) == 0) {
           return true;
         }
       }
+    }
 
-      // Definitive preboot probe came up empty. On newer devices the app
-      // sandbox often can't read /private/preboot at all (so access() fails
-      // even though the SoC ships TXM), which would misclassify e.g. an
-      // iPhone 17 as non-TXM. Fall back to a SoC + OS capability inference.
-      return IOSInfersTXMClassHardware();
+    const std::string private_preboot_root =
+        FindChildWithNameLength("/private/preboot", 96);
+    if (!private_preboot_root.empty()) {
+      const std::string txm_path = private_preboot_root +
+                                   "/usr/standalone/firmware/FUD/"
+                                   "Ap,TrustedExecutionMonitor.img4";
+      if (access(txm_path.c_str(), F_OK) == 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  static bool IOSHasTXM() {
+    static const bool has_txm = []() -> bool {
+      if (const char* env = std::getenv("HAS_TXM")) {
+        if (env[0] == '1' && env[1] == '\0') {
+          XELOGI("iOS TXM: forced ON via HAS_TXM=1 (detection skipped)");
+          return true;
+        }
+        if (env[0] == '0' && env[1] == '\0') {
+          XELOGI("iOS TXM: forced OFF via HAS_TXM=0 (detection skipped)");
+          return false;
+        }
+      }
+
+      // Two independent signals: the definitive on-disk firmware probe and the
+      // SoC/OS capability inference. The probe wins when it finds the image;
+      // otherwise we trust the inference (it covers the common case where the
+      // sandbox can't read the preboot paths on a TXM-class device).
+      const bool preboot_probe = IOSProbePrebootTXMFirmware();
+      const bool hw_inference = IOSInfersTXMClassHardware();
+      const bool result = preboot_probe || hw_inference;
+
+      // Diagnostic context. This lambda runs exactly once, so it logs a single
+      // line capturing every input that fed the decision.
+      const uint32_t family = IOSReadCpuFamily();
+      const int os_major = IOSProductMajorVersion();
+      const bool app_on_mac = IOSRunningAsAppOnMac();
+      XELOGI(
+          "iOS TXM detection: result={} (preboot_probe={} hw_inference={}) "
+          "cpufamily=0x{:08X} os_major={} ios_app_on_mac={}",
+          result, preboot_probe, hw_inference, family, os_major, app_on_mac);
+
+      // Warn when the two signals disagree in either direction.
+      if (preboot_probe && !hw_inference) {
+        XELOGW(
+            "iOS TXM: preboot firmware IS present but the hardware/OS "
+            "inference reported non-TXM (cpufamily=0x{:08X} os_major={} "
+            "ios_app_on_mac={}). The pre-TXM family list is likely stale for "
+            "this SoC; trusting the firmware and treating as TXM-capable.",
+            family, os_major, app_on_mac);
+      } else if (!preboot_probe && hw_inference) {
+        XELOGW(
+            "iOS TXM: hardware/OS indicates TXM-class (cpufamily=0x{:08X} "
+            "os_major={}) but the preboot firmware probe found NOTHING "
+            "(sandbox restriction or changed layout). Relying on inference; "
+            "JIT will take the TXM path.",
+            family, os_major);
+      }
+
+      return result;
     }();
     return has_txm;
   }
 
-  // Capability inference used only when the definitive preboot probe above is
-  // unavailable. Apple's Platform Security guide ("Operating system
-  // integrity") states: "In the A15 or later and M2 or later SOCs, SPTM (in
-  // combination with TXM) replaces the PPL." Apple does NOT publish a
-  // chip<->hw.cpufamily mapping or an OS-version floor, so:
-  //   - the family values below are empirical, taken from xnu
-  //     osfmk/mach/machine.h (verified against the current header), and
-  //   - the iOS 17 floor is the release that shipped SPTM/TXM, not an Apple
-  //     requirement (an A15 on iOS 15/16 predates it).
-  // Treat the result as an inference, not proof. Unknown/newer SoCs default to
-  // true so future hardware keeps the TXM-aware JIT path by default.
   // True when this iOS binary is running as an "iPhone/iPad app on Mac" on
   // Apple silicon. In that case hw.cpufamily reports the host Mac's SoC, so the
   // TXM inference below would read the Mac chip instead of a real iOS device.
@@ -1001,6 +1031,29 @@ class CodeCacheBase : public CodeCache {
     return reinterpret_cast<BoolFn>(objc_msgSend)(process_info, selector) != NO;
   }
 
+  // Reads hw.cpufamily. Returns 0 when it can't be determined. On an
+  // iOS-app-on-Mac this reports the host Mac's SoC (see IOSRunningAsAppOnMac).
+  static uint32_t IOSReadCpuFamily() {
+    uint32_t family = 0;
+    size_t size = sizeof(family);
+    if (sysctlbyname("hw.cpufamily", &family, &size, nullptr, 0) != 0 ||
+        size != sizeof(family)) {
+      return 0;
+    }
+    return family;
+  }
+
+  // Capability inference used only when the definitive preboot probe is
+  // unavailable. Apple's Platform Security guide ("Operating system
+  // integrity") states: "In the A15 or later and M2 or later SOCs, SPTM (in
+  // combination with TXM) replaces the PPL." Apple does NOT publish a
+  // chip<->hw.cpufamily mapping or an OS-version floor, so:
+  //   - the family values below are empirical, taken from xnu
+  //     osfmk/mach/machine.h (verified against the current header), and
+  //   - the iOS 17 floor is the release that shipped SPTM/TXM, not an Apple
+  //     requirement (an A15 on iOS 15/16 predates it).
+  // Treat the result as an inference, not proof. Unknown/newer SoCs default to
+  // true so future hardware keeps the TXM-aware JIT path by default.
   static bool IOSInfersTXMClassHardware() {
     // iOS-app-on-Mac exposes the host Mac's hw.cpufamily; never infer TXM from
     // it (see IOSRunningAsAppOnMac).
@@ -1013,10 +1066,8 @@ class CodeCacheBase : public CodeCache {
       return false;
     }
 
-    uint32_t family = 0;
-    size_t size = sizeof(family);
-    if (sysctlbyname("hw.cpufamily", &family, &size, nullptr, 0) != 0 ||
-        size != sizeof(family) || family == 0) {
+    const uint32_t family = IOSReadCpuFamily();
+    if (family == 0) {
       return false;  // can't determine -> stay conservative
     }
 
