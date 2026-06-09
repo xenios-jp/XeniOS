@@ -41,6 +41,8 @@
 #include <dirent.h>
 #include <mach/mach.h>
 #include <mach/vm_map.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -972,7 +974,40 @@ class CodeCacheBase : public CodeCache {
   //     requirement (an A15 on iOS 15/16 predates it).
   // Treat the result as an inference, not proof. Unknown/newer SoCs default to
   // true so future hardware keeps the TXM-aware JIT path by default.
+  // True when this iOS binary is running as an "iPhone/iPad app on Mac" on
+  // Apple silicon. In that case hw.cpufamily reports the host Mac's SoC, so the
+  // TXM inference below would read the Mac chip instead of a real iOS device.
+  // NSProcessInfo.isiOSAppOnMac (iOS 14+) is the documented signal; it is false
+  // for Mac Catalyst and on real devices. Invoked via the Objective-C runtime
+  // so this C++ header needs no Objective-C++ translation unit.
+  static bool IOSRunningAsAppOnMac() {
+    Class process_info_class = objc_getClass("NSProcessInfo");
+    if (!process_info_class) {
+      return false;
+    }
+    using SharedFn = id (*)(Class, SEL);
+    const id process_info = reinterpret_cast<SharedFn>(objc_msgSend)(
+        process_info_class, sel_registerName("processInfo"));
+    if (!process_info) {
+      return false;
+    }
+    const SEL selector = sel_registerName("isiOSAppOnMac");
+    using RespondsFn = BOOL (*)(id, SEL, SEL);
+    if (!reinterpret_cast<RespondsFn>(objc_msgSend)(
+            process_info, sel_registerName("respondsToSelector:"), selector)) {
+      return false;
+    }
+    using BoolFn = BOOL (*)(id, SEL);
+    return reinterpret_cast<BoolFn>(objc_msgSend)(process_info, selector) != NO;
+  }
+
   static bool IOSInfersTXMClassHardware() {
+    // iOS-app-on-Mac exposes the host Mac's hw.cpufamily; never infer TXM from
+    // it (see IOSRunningAsAppOnMac).
+    if (IOSRunningAsAppOnMac()) {
+      return false;
+    }
+
     const int major = IOSProductMajorVersion();
     if (major > 0 && major < 17) {
       return false;
