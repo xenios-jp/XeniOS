@@ -952,9 +952,54 @@ class CodeCacheBase : public CodeCache {
         }
       }
 
-      return false;
+      // Definitive preboot probe came up empty. On newer devices the app
+      // sandbox often can't read /private/preboot at all (so access() fails
+      // even though the SoC ships TXM), which would misclassify e.g. an
+      // iPhone 17 as non-TXM. Fall back to a SoC + OS capability inference.
+      return IOSInfersTXMClassHardware();
     }();
     return has_txm;
+  }
+
+  // Capability inference used only when the definitive preboot probe above is
+  // unavailable. Apple's Platform Security guide ("Operating system
+  // integrity") states: "In the A15 or later and M2 or later SOCs, SPTM (in
+  // combination with TXM) replaces the PPL." Apple does NOT publish a
+  // chip<->hw.cpufamily mapping or an OS-version floor, so:
+  //   - the family values below are empirical, taken from xnu
+  //     osfmk/mach/machine.h (verified against the current header), and
+  //   - the iOS 17 floor is the release that shipped SPTM/TXM, not an Apple
+  //     requirement (an A15 on iOS 15/16 predates it).
+  // Treat the result as an inference, not proof. Unknown/newer SoCs default to
+  // true so future hardware keeps the TXM-aware JIT path by default.
+  static bool IOSInfersTXMClassHardware() {
+    const int major = IOSProductMajorVersion();
+    if (major > 0 && major < 17) {
+      return false;
+    }
+
+    uint32_t family = 0;
+    size_t size = sizeof(family);
+    if (sysctlbyname("hw.cpufamily", &family, &size, nullptr, 0) != 0 ||
+        size != sizeof(family) || family == 0) {
+      return false;  // can't determine -> stay conservative
+    }
+
+    switch (family) {
+      case 0x1e2d6381u:  // Swift              (A6)
+      case 0x37a09642u:  // Cyclone            (A7)
+      case 0x2c91a47eu:  // Typhoon            (A8)
+      case 0x92fb37c8u:  // Twister            (A9)
+      case 0x67ceee93u:  // Hurricane          (A10)
+      case 0xe81e7ef6u:  // Monsoon/Mistral    (A11)
+      case 0x07d34b9fu:  // Vortex/Tempest     (A12)
+      case 0x462504d2u:  // Lightning/Thunder  (A13)
+      case 0x1b588bb3u:  // Firestorm/Icestorm (A14 / M1) - last pre-TXM family
+        return false;
+      default:
+        // 0xda33d83d (Blizzard/Avalanche = A15 / M2) and everything newer.
+        return true;
+    }
   }
 
   static int IOSProductMajorVersion() {
