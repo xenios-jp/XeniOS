@@ -13,6 +13,7 @@ from glob import glob
 from json import loads as jsonloads
 import os
 import platform
+import re
 from shutil import rmtree, which as shutil_which
 import subprocess
 import sys
@@ -604,7 +605,7 @@ def run_cmake_configure(cc=None, generator=None, build_tests=False,
                         enable_ftrace=False,
                         target_arch=None, target_os=None, config=None,
                         build_dir=None, configuration_types=None,
-                        xcode_generate_schemes=False):
+                        xcode_generate_schemes=False, extra_cmake_args=None):
     """Runs `cmake` to (re)configure build/ from the source root.
 
     Uses Ninja Multi-Config by default on all platforms. On Linux the
@@ -733,21 +734,262 @@ def run_cmake_configure(cc=None, generator=None, build_tests=False,
         args += [f"-DCMAKE_CONFIGURATION_TYPES={configuration_types}"]
     if xcode_generate_schemes:
         args += ["-DCMAKE_XCODE_GENERATE_SCHEME=ON"]
+    if extra_cmake_args:
+        args += list(extra_cmake_args)
     ret = subprocess.call(args)
     if ret == 0:
         generate_version_h(build_dir)
     return ret
 
 
-def run_ios_xcode_configure():
+def _is_full_xcode_developer_dir(dev_dir):
+    """A full Xcode developer dir ships xcodebuild; Command Line Tools does not."""
+    return bool(dev_dir) and os.path.isfile(
+        os.path.join(dev_dir, "usr", "bin", "xcodebuild"))
+
+
+def _find_xcode_developer_dir():
+    """Locates an installed Xcode.app's Contents/Developer, or None."""
+    candidates = sorted(glob("/Applications/Xcode*.app"))
+    candidates += sorted(glob(os.path.expanduser("~/Applications/Xcode*.app")))
+    # Spotlight catches Xcodes installed outside /Applications.
+    try:
+        out = subprocess.run(
+            ["mdfind", "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"],
+            capture_output=True, text=True)
+        if out.returncode == 0:
+            candidates += [p for p in out.stdout.splitlines() if p.strip()]
+    except FileNotFoundError:
+        pass
+    # Prefer a stable "Xcode.app" over beta/versioned installs.
+    def rank(app_path):
+        return 0 if os.path.basename(app_path) == "Xcode.app" else 1
+    seen = set()
+    for app in sorted(candidates, key=rank):
+        if app in seen:
+            continue
+        seen.add(app)
+        dev_dir = os.path.join(app, "Contents", "Developer")
+        if _is_full_xcode_developer_dir(dev_dir):
+            return dev_dir
+    return None
+
+
+def ensure_ios_xcode_developer_dir():
+    """Ensures a full Xcode (not just Command Line Tools) is active for the
+    Xcode generator, setting DEVELOPER_DIR for this process when needed.
+
+    The Xcode project generator needs xcodebuild; if xcode-select points at
+    Command Line Tools (a very common state), CMake misreads the version and
+    fails. This finds an installed Xcode.app and points DEVELOPER_DIR at it
+    without requiring `sudo xcode-select`. Returns True if usable.
+    """
+    if _is_full_xcode_developer_dir(os.environ.get("DEVELOPER_DIR")):
+        return True
+    try:
+        selected = subprocess.run(
+            ["xcode-select", "-p"], capture_output=True, text=True)
+        selected_dir = (selected.stdout.strip()
+                        if selected.returncode == 0 else "")
+    except FileNotFoundError:
+        selected_dir = ""
+    if _is_full_xcode_developer_dir(selected_dir):
+        return True  # xcode-select already points at a full Xcode.
+    dev_dir = _find_xcode_developer_dir()
+    if not dev_dir:
+        print_error(
+            "The Xcode project generator needs a full Xcode, but the active "
+            "developer dir is Command Line Tools and no Xcode.app was found.\n"
+            "  Install Xcode, then either:\n"
+            "    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer\n"
+            "  or set DEVELOPER_DIR to your Xcode's Contents/Developer.")
+        return False
+    os.environ["DEVELOPER_DIR"] = dev_dir
+    print(f"  Active toolchain is {selected_dir or 'Command Line Tools'}; "
+          f"using Xcode at {dev_dir} via DEVELOPER_DIR.")
+    return True
+
+
+def run_ios_xcode_configure(config=None, development_team=None):
+    """Configures the Xcode iOS build tree.
+
+    When config is given, the generated project is pinned to that single
+    configuration (Checked/Debug/Release) so Xcode's scheme — including the
+    Run action — defaults to it instead of falling back to Debug. With no
+    config the tree keeps all three configurations (used by the headless CLI
+    build, which selects the configuration via xcodebuild -configuration).
+
+    development_team, when set, enables Xcode automatic signing with that
+    Apple Developer team ID so device builds sign without manual setup.
+    """
+    if not ensure_ios_xcode_developer_dir():
+        return 1
+    configuration_types = config.title() if config else "Checked;Debug;Release"
+    extra_cmake_args = []
+    if development_team:
+        extra_cmake_args += [
+            f"-DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM={development_team}",
+            "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE=Automatic",
+        ]
     return run_cmake_configure(
         generator="Xcode",
         target_arch="arm64",
         target_os="ios",
+        config=config,
         build_dir=get_ios_xcode_build_dir(),
-        configuration_types="Checked;Debug;Release",
+        configuration_types=configuration_types,
         xcode_generate_schemes=True,
+        extra_cmake_args=extra_cmake_args,
     )
+
+
+def detect_ios_development_team():
+    """Best-effort lookup of an Apple Developer team ID for iOS code signing.
+
+    Nothing is hardcoded — this picks up whatever signing identity exists on
+    the machine building the repo, so a clone signs with its own team.
+
+    Resolution order:
+      1. XENIA_IOS_DEVELOPMENT_TEAM / DEVELOPMENT_TEAM environment override.
+      2. Teams the user has signed into Xcode with (IDEProvisioningTeams).
+      3. Any installed provisioning profile's TeamIdentifier.
+      4. The team ID (cert OU) of an Apple Development identity in the keychain.
+    Returns a team ID string, or None if nothing usable is found.
+    """
+    for env_key in ("XENIA_IOS_DEVELOPMENT_TEAM", "DEVELOPMENT_TEAM"):
+        team = os.environ.get(env_key)
+        if team and team.strip():
+            return team.strip()
+    if sys.platform != "darwin":
+        return None
+    return (_detect_team_from_xcode_prefs() or
+            _detect_team_from_provisioning_profiles() or
+            _detect_team_from_keychain_identities())
+
+
+def _plist_text_to_obj(text):
+    """Parses an XML/plist string into a Python object via plutil -> JSON."""
+    if not text:
+        return None
+    try:
+        conv = subprocess.run(
+            ["plutil", "-convert", "json", "-o", "-", "-"],
+            input=text, capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if conv.returncode != 0 or not conv.stdout:
+        return None
+    try:
+        return jsonloads(conv.stdout)
+    except ValueError:
+        return None
+
+
+def _detect_team_from_xcode_prefs():
+    try:
+        raw = subprocess.run(
+            ["defaults", "export", "com.apple.dt.Xcode", "-"],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if raw.returncode != 0:
+        return None
+    prefs = _plist_text_to_obj(raw.stdout)
+    if not isinstance(prefs, dict):
+        return None
+    teams = prefs.get("IDEProvisioningTeams")
+    if not isinstance(teams, dict):
+        return None
+    # IDEProvisioningTeams maps each signed-in Apple ID to a list of teams.
+    candidates = []
+    for account_teams in teams.values():
+        if not isinstance(account_teams, list):
+            continue
+        for entry in account_teams:
+            if isinstance(entry, dict) and entry.get("teamID"):
+                candidates.append(entry)
+    if not candidates:
+        return None
+    # Prefer a real (paid) team over a free personal team when both exist.
+    candidates.sort(key=lambda e: 1 if e.get("isFreeProvisioningTeam") else 0)
+    return candidates[0]["teamID"]
+
+
+def _detect_team_from_provisioning_profiles():
+    prof_dir = os.path.expanduser(
+        "~/Library/MobileDevice/Provisioning Profiles")
+    if not os.path.isdir(prof_dir):
+        return None
+    for name in sorted(os.listdir(prof_dir)):
+        if not name.endswith((".mobileprovision", ".provisionprofile")):
+            continue
+        try:
+            decoded = subprocess.run(
+                ["security", "cms", "-D", "-i", os.path.join(prof_dir, name)],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            return None
+        if decoded.returncode != 0:
+            continue
+        plist = _plist_text_to_obj(decoded.stdout)
+        if not isinstance(plist, dict):
+            continue
+        team_ids = plist.get("TeamIdentifier")
+        if isinstance(team_ids, list) and team_ids:
+            return team_ids[0]
+    return None
+
+
+def _detect_team_from_keychain_identities():
+    """Returns the team ID of the first Apple Development/Distribution code
+    signing identity in the keychain (the cert's Organizational Unit), or None.
+    """
+    try:
+        out = subprocess.run(
+            ["security", "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if out.returncode != 0 or not out.stdout:
+        return None
+    # Lines look like:  1) <40-hex sha1> "Apple Development: Name (XXXXXXXXXX)"
+    identity_re = re.compile(
+        r'"((?:Apple Development|Apple Distribution|iPhone Developer|'
+        r'iPhone Distribution)[^"]*)"')
+    for line in out.stdout.splitlines():
+        match = identity_re.search(line)
+        if not match:
+            continue
+        team = _team_id_from_cert_subject(match.group(1))
+        if team:
+            return team
+    return None
+
+
+def _team_id_from_cert_subject(common_name):
+    """Extracts the team ID (subject OU) from the named keychain certificate."""
+    try:
+        pem = subprocess.run(
+            ["security", "find-certificate", "-c", common_name, "-p"],
+            capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if pem.returncode != 0 or not pem.stdout:
+        return None
+    try:
+        subj = subprocess.run(
+            ["openssl", "x509", "-noout", "-subject", "-nameopt",
+             "sep_multiline"],
+            input=pem.stdout, capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if subj.returncode != 0 or not subj.stdout:
+        return None
+    for line in subj.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("OU="):
+            return stripped[len("OU="):].strip()
+    return None
 
 
 def build_ios_xcode_app(config, force=False, configure=True, pass_args=None):
@@ -1697,12 +1939,20 @@ class DevenvCommand(Command):
         self.parser.add_argument(
             "--no-open", action="store_true",
             help="Configure the IDE build tree without launching the IDE.")
+        self.parser.add_argument(
+            "--development-team", default=None,
+            help="Apple Developer team ID for iOS code signing in Xcode. "
+                 "Defaults to autodetection (Xcode accounts / installed "
+                 "provisioning profiles) or the XENIA_IOS_DEVELOPMENT_TEAM "
+                 "environment variable.")
 
     def execute(self, args, pass_args, cwd):
         target_arch = args.get("target_arch")
         target_os = args.get("target_os")
         if sys.platform == "darwin" and target_os == "ios":
-            return self._launch_xcode_ios(args["config"], open_project=not args["no_open"])
+            return self._launch_xcode_ios(
+                args["config"], open_project=not args["no_open"],
+                development_team=args.get("development_team"))
         if sys.platform == "win32":
             return self._launch_visual_studio(target_arch, args["config"])
         # Non-Windows: CLion is the only IDE we know how to launch
@@ -1759,12 +2009,22 @@ class DevenvCommand(Command):
         shell_call(["devenv", sln_path])
         return 0
 
-    def _launch_xcode_ios(self, config="debug", open_project=True):
+    def _launch_xcode_ios(self, config="debug", open_project=True,
+                          development_team=None):
         """Configures a separate Xcode iOS build tree, then opens it."""
         config_title = config.title()
         build_dir = get_ios_xcode_build_dir()
+        if development_team is None:
+            development_team = detect_ios_development_team()
         print(f"Configuring Xcode iOS build tree ({config_title}) in {build_dir}...")
-        ret = run_ios_xcode_configure()
+        print(f"  Project pinned to the {config_title} configuration.")
+        if development_team:
+            print(f"  Signing automatically with development team {development_team}.")
+        else:
+            print("  No development team found; set one in Signing & Capabilities,")
+            print("  or pass --development-team / set XENIA_IOS_DEVELOPMENT_TEAM.")
+        ret = run_ios_xcode_configure(
+            config=config, development_team=development_team)
         if ret != 0:
             print_error("cmake configure failed for the Xcode iOS build tree")
             return ret

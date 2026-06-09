@@ -28,11 +28,13 @@ DEFINE_bool(
     "is necessary for certain games to display the scene graphics).",
     "GPU");
 
-DEFINE_double(
-    depth_bias_decal_clamp, 0.0,
-    "Minimum depth bias for projected decals. Set to 0 to disable. UE3 titles "
-    "often use very small bias values (~0.00005) that cause Z-fighting on "
-    "near-coplanar decal projections with host render target paths.",
+DEFINE_bool(
+    depth_bias_shader_offset, false,
+    "Route decal host render target draws with polygon offset through shader "
+    "depth. This avoids Z-fighting in games that rely on tiny depth bias "
+    "values that host fixed function depth bias cannot reproduce reliably."
+    "This likely causes some minor performance penalty, but the cost should "
+    "be minimal if only a small portion of the scene is affected.",
     "GPU");
 
 namespace xe {
@@ -85,6 +87,57 @@ reg::RB_DEPTHCONTROL GetNormalizedDepthControl(const RegisterFile& regs) {
   return depthcontrol;
 }
 
+bool GetHostDepthPolygonOffsetIfNeeded(
+    const RegisterFile& regs, bool primitive_polygonal,
+    reg::RB_DEPTHCONTROL normalized_depth_control,
+    uint32_t normalized_color_mask,
+    HostDepthPolygonOffset& polygon_offset_out) {
+  polygon_offset_out = {};
+  if (!cvars::depth_bias_shader_offset) {
+    return false;
+  }
+
+  const xenos::CompareFunction zfunc = normalized_depth_control.zfunc;
+  // Keep this on the decal-style redraws that need it. Larger use of shader
+  // depth changes early-Z and coverage behavior in places like hair, foliage,
+  // and stencil masked effects.
+  if (!primitive_polygonal || !normalized_depth_control.z_enable ||
+      !(zfunc == xenos::CompareFunction::kLessEqual ||
+        zfunc == xenos::CompareFunction::kGreaterEqual) ||
+      !normalized_color_mask || normalized_depth_control.stencil_enable ||
+      regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable) {
+    return false;
+  }
+
+  auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  if (pa_su_sc_mode_cntl.poly_offset_front_enable) {
+    polygon_offset_out.front_scale =
+        regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE);
+    polygon_offset_out.front_offset =
+        regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET);
+  }
+  if (pa_su_sc_mode_cntl.poly_offset_back_enable) {
+    polygon_offset_out.back_scale =
+        regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE);
+    polygon_offset_out.back_offset =
+        regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET);
+  }
+
+  if (!polygon_offset_out.front_scale && !polygon_offset_out.front_offset &&
+      !polygon_offset_out.back_scale && !polygon_offset_out.back_offset) {
+    return false;
+  }
+
+  polygon_offset_out.front_scale *= xenos::kPolygonOffsetScaleSubpixelUnit;
+  polygon_offset_out.back_scale *= xenos::kPolygonOffsetScaleSubpixelUnit;
+  if (regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
+      xenos::DepthRenderTargetFormat::kD24FS8) {
+    polygon_offset_out.front_offset *= 0.5f;
+    polygon_offset_out.back_offset *= 0.5f;
+  }
+  return true;
+}
+
 // https://docs.microsoft.com/en-us/windows/win32/api/d3d11/ne-d3d11-d3d11_standard_multisample_quality_levels
 constexpr int8_t kD3D10StandardSamplePositions2x[2][2] = {{4, 4}, {-4, -4}};
 constexpr int8_t kD3D10StandardSamplePositions4x[4][2] = {
@@ -117,22 +170,6 @@ void GetPreferredFacePolygonOffset(const RegisterFile& regs,
       offset = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET);
     }
   }
-  // Clamp small positive depth bias to prevent Z-fighting on decals.
-  // UE3 titles often use very small bias values (~0.00005f) that cause
-  // Z-fighting on near-coplanar projected decals (static deferred decal style
-  // draws). A minimum of ~0.01f keeps them stable even at extreme grazing
-  // angles. The threshold where Z-fighting typically kicks in is around
-  // 0.001f or smaller.
-  float min_depth_bias = float(cvars::depth_bias_decal_clamp);
-  if (min_depth_bias > 0.0f && offset > 0.0f && offset < min_depth_bias) {
-    offset = min_depth_bias;
-    // When pushing geometry away (positive offset), ensure the slope scale
-    // doesn't counteract it by going negative at grazing angles.
-    if (scale < 0.0f) {
-      scale = 0.0f;
-    }
-  }
-
   scale_out = scale;
   offset_out = offset;
 }

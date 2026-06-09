@@ -26,6 +26,8 @@
 	<string>NSApplication</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMotionUsageDescription</key>
+	<string>Head tracking adjusts spatial audio to your head movement when using the PHASE audio backend with supported headphones.</string>
 	<key>LSSupportsGameMode</key>
 	<true/>
 </dict>

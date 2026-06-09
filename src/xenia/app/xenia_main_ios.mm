@@ -50,6 +50,7 @@
 #endif
 
 // Audio systems.
+#include "xenia/apu/phase/phase_audio_system.h"
 #include "xenia/apu/sdl/sdl_audio_system.h"
 
 // Input drivers.
@@ -79,7 +80,7 @@ DEFINE_path(cache_root, "",
             "Root path for cache files. If empty, the cache folder under the storage "
             "root will be used.",
             "Storage");
-DEFINE_string(apu, "sdl", "Audio system. Use: [sdl, nop]", "APU");
+DEFINE_string(apu, "phase", "Audio system. Use: [sdl, phase, nop]", "APU");
 DEFINE_string(gpu, "metal", "Graphics system. Use: [metal, vulkan]", "GPU");
 DEFINE_bool(mount_scratch, false, "Enable scratch mount", "Storage");
 DEFINE_bool(mount_cache, true, "Enable cache mount", "Storage");
@@ -111,40 +112,49 @@ std::string NSErrorDescription(NSError* error) {
 void ConfigureAudioSession() {
   static std::once_flag once;
   std::call_once(once, []() {
-    @autoreleasepool {
-      AVAudioSession* session = [AVAudioSession sharedInstance];
-      NSError* error = nil;
+    // AVAudioSession's setters — especially setActive: — are synchronous and can
+    // block for a noticeable amount of time, so calling them on the main thread
+    // risks UI unresponsiveness. Configuration here is fire-and-forget at init
+    // time (audio playback only begins once a title is running), so hop onto a
+    // background queue and let it complete asynchronously.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      @autoreleasepool {
+        AVAudioSession* session = [AVAudioSession sharedInstance];
+        NSError* error = nil;
 
-      if (![session setCategory:AVAudioSessionCategoryPlayback
-                           mode:AVAudioSessionModeDefault
-                        options:0
-                          error:&error]) {
-        XELOGW("iOS audio session: setCategory failed: {}", NSErrorDescription(error));
-        error = nil;
+        if (![session setCategory:AVAudioSessionCategoryPlayback
+                             mode:AVAudioSessionModeDefault
+                          options:0
+                            error:&error]) {
+          XELOGW("iOS audio session: setCategory failed: {}", NSErrorDescription(error));
+          error = nil;
+        }
+
+        if (![session setPreferredSampleRate:48000.0 error:&error]) {
+          XELOGW("iOS audio session: setPreferredSampleRate failed: {}",
+                 NSErrorDescription(error));
+          error = nil;
+        }
+
+        constexpr NSTimeInterval kPreferredIOBufferDuration = 0.02;
+        if (![session setPreferredIOBufferDuration:kPreferredIOBufferDuration error:&error]) {
+          XELOGW("iOS audio session: setPreferredIOBufferDuration failed: {}",
+                 NSErrorDescription(error));
+          error = nil;
+        }
+
+        if (![session setActive:YES error:&error]) {
+          XELOGW("iOS audio session: activation failed: {}", NSErrorDescription(error));
+          error = nil;
+        }
+
+        XELOGI("iOS audio session: category={}, sample_rate={}, "
+               "preferred_sample_rate={}, io_buffer={}, preferred_io_buffer={}",
+               [[session category] UTF8String], [session sampleRate],
+               [session preferredSampleRate], [session IOBufferDuration],
+               [session preferredIOBufferDuration]);
       }
-
-      if (![session setPreferredSampleRate:48000.0 error:&error]) {
-        XELOGW("iOS audio session: setPreferredSampleRate failed: {}", NSErrorDescription(error));
-        error = nil;
-      }
-
-      constexpr NSTimeInterval kPreferredIOBufferDuration = 0.02;
-      if (![session setPreferredIOBufferDuration:kPreferredIOBufferDuration error:&error]) {
-        XELOGW("iOS audio session: setPreferredIOBufferDuration failed: {}",
-               NSErrorDescription(error));
-        error = nil;
-      }
-
-      if (![session setActive:YES error:&error]) {
-        XELOGW("iOS audio session: activation failed: {}", NSErrorDescription(error));
-        error = nil;
-      }
-
-      XELOGI("iOS audio session: category={}, sample_rate={}, "
-             "preferred_sample_rate={}, io_buffer={}, preferred_io_buffer={}",
-             [[session category] UTF8String], [session sampleRate], [session preferredSampleRate],
-             [session IOBufferDuration], [session preferredIOBufferDuration]);
-    }
+    });
   });
 }
 
@@ -1532,7 +1542,13 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 }
 
 std::unique_ptr<apu::AudioSystem> EmulatorAppIOS::CreateAudioSystem(cpu::Processor* processor) {
+  // Opt-in PHASE backend renders the native 5.1 bed as spatial audio; default
   // SDL uses CoreAudio on iOS for audio output.
+  if (cvars::apu == "phase") {
+    XELOGI("Audio backend: PHASE (spatial) selected via --apu/apu cvar");
+    return std::make_unique<apu::phase::PHASEAudioSystem>(processor);
+  }
+  XELOGI("Audio backend: SDL (apu cvar = '{}')", std::string(cvars::apu));
   return std::make_unique<apu::sdl::SDLAudioSystem>(processor);
 }
 

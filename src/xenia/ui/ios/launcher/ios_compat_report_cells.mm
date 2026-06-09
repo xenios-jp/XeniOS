@@ -153,8 +153,11 @@
           section == 2 ? (option_index == selected_status) : (option_index == selected_perf);
       BOOL enabled = YES;
       if (section == 3) {
-        BOOL force_na = (selected_status == 4);
-        enabled = !force_na || option_index == 3;
+        // "n/a" (index 3) is only valid when the status is "nothing" (index 4);
+        // the real tiers are only valid for every other status. Keep the button
+        // states in sync with the server's invariant in both directions.
+        BOOL status_is_nothing = (selected_status == 4);
+        enabled = (option_index == 3) ? status_is_nothing : !status_is_nothing;
       }
 
       UIButton* button =

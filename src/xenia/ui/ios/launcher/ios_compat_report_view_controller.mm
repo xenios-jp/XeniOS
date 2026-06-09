@@ -186,8 +186,13 @@
 
 - (void)reportStatusButtonTapped:(UIButton*)sender {
   selected_status_ = sender.tag;
+  // The server only accepts the "n/a" performance tier when the status is
+  // "nothing". Force it for "nothing", and clear any stale "n/a" selection when
+  // switching to another status so the user is required to pick a real tier.
   if (selected_status_ == 4) {
     selected_perf_ = 3;
+  } else if (selected_perf_ == 3) {
+    selected_perf_ = -1;
   }
   [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(2, 2)]
                 withRowAnimation:UITableViewRowAnimationNone];
@@ -195,6 +200,10 @@
 
 - (void)reportPerfButtonTapped:(UIButton*)sender {
   if (selected_status_ == 4 && sender.tag != 3) {
+    return;
+  }
+  // "n/a" performance is only valid for the "nothing" status.
+  if (selected_status_ != 4 && sender.tag == 3) {
     return;
   }
   selected_perf_ = sender.tag;

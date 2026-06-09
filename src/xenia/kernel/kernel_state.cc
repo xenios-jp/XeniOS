@@ -98,8 +98,22 @@ KernelState::~KernelState() {
   ShutdownDispatchThread();
 #if XE_PLATFORM_IOS
   if (ios_title_stop) {
-    guest_scheduler()->Shutdown();
+    // Let guest threads observe the title-stop request and exit on their own
+    // first, with the guest scheduler still running. That lets any in-flight
+    // save / content writes finish and their files close normally. Shutting the
+    // scheduler down before this wait (as we previously did) stopped guest
+    // fibers from ever reaching their title-stop exit points, so every stop
+    // force-terminated threads mid-write and dropped unsaved content.
     if (!WaitForTitleThreadsToExitIOS(500)) {
+      // Threads are stuck. Freeze the scheduler so no fiber can run (and no new
+      // writes can begin), commit whatever guest code already wrote by closing
+      // any still-open content packages, then force-terminate the stragglers.
+      guest_scheduler()->Shutdown();
+      if (auto* xam = xam_state()) {
+        if (auto* content_manager = xam->content_manager()) {
+          content_manager->CloseAllOpenedContent();
+        }
+      }
       TerminateTitleThreadsIOS();
       if (!WaitForTitleThreadsToExitIOS(500)) {
         XELOGW(

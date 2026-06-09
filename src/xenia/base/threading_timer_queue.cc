@@ -16,6 +16,7 @@
 #include "third_party/disruptorplus/include/disruptorplus/spin_wait.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/spin_wait_strategy.hpp"
 #include "xenia/base/assert.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/threading.h"
 #include "xenia/base/threading_timer_queue.h"
 
@@ -38,11 +39,24 @@ using WaitItem = TimerQueueWaitItem;
 
 */
 
+#if XE_PLATFORM_APPLE
+// On Apple platforms, block on a condition variable instead of busy-spinning.
+// In iOS CPU traces the spin strategy showed up as a recurring busy-yield plus a
+// hardware_concurrency() sysctl per reset; busy-yield wastes energy/thermal on
+// mobile. blocking_wait_strategy supports the timed (time_point) overload of
+// wait_until_published that the dispatch loop uses, and the claim/sequence-
+// barrier publish path calls signal_all_when_blocking(), so QueueTimer still
+// wakes the dispatch thread immediately. The Windows/proton concern below does
+// not apply on Apple (proton is a Windows-on-Linux layer), so this only changes
+// Apple behavior; other platforms keep the spin strategy unchanged.
+using WaitStrat = dp::blocking_wait_strategy;
+#else
 /*
     edit2: (30.12.2024) After uplifting version of MSVC compiler Xenia cannot be
    correctly initialized if you're using proton.
 */
 using WaitStrat = dp::spin_wait_strategy;
+#endif
 
 class TimerQueue {
  public:

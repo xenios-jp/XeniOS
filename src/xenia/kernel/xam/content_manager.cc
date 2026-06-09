@@ -453,6 +453,20 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
   return X_ERROR_SUCCESS;
 }
 
+void ContentManager::CloseAllOpenedContent() {
+  auto global_lock = global_critical_region_.Acquire();
+
+  for (auto it = open_packages_.begin(); it != open_packages_.end();) {
+    // Release any guest file handles living inside this package so their
+    // host-side writes are flushed and the files are closed before the package
+    // is dropped.
+    CloseOpenedFilesFromContent(it->first.view());
+    ContentPackage* package = it->second;
+    it = open_packages_.erase(it);
+    delete package;
+  }
+}
+
 X_RESULT ContentManager::GetContentThumbnail(
     const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
     std::vector<uint8_t>* buffer) {

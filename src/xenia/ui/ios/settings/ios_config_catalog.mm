@@ -23,6 +23,31 @@
 
 #import "xenia/ui/ios/settings/ios_config_storage.h"
 
+// SecTask entitlement APIs aren't public on iOS, so detect a granted entitlement
+// by scanning the bundle's embedded provisioning profile, where granted
+// entitlement keys appear verbatim in the (CMS-wrapped) Entitlements plist.
+// Conservative: if there's no profile to inspect, assume granted so we never
+// show a false "missing entitlement" warning.
+static bool IOSHasHeadPoseEntitlement() {
+  @autoreleasepool {
+    NSString* path = [[NSBundle mainBundle] pathForResource:@"embedded"
+                                                     ofType:@"mobileprovision"];
+    if (!path.length) {
+      return true;
+    }
+    NSData* data = [NSData dataWithContentsOfFile:path];
+    if (!data || data.length == 0) {
+      return true;
+    }
+    NSData* needle = [@"com.apple.developer.coremotion.head-pose"
+        dataUsingEncoding:NSUTF8StringEncoding];
+    NSRange found = [data rangeOfData:needle
+                              options:0
+                                range:NSMakeRange(0, data.length)];
+    return found.location != NSNotFound;
+  }
+}
+
 static std::string TrimAscii(std::string value) {
   size_t start = 0;
   while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
@@ -324,14 +349,15 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
 
   IOSConfigSection scheduler;
   scheduler.title = "Thread QoS";
-  scheduler.footer = "Xenia's regular iOS threads use Default QoS. These options are "
-                     "experimental promotions; leave them off unless you are testing CPU, GPU, "
-                     "or audio scheduling behavior after a full relaunch.";
+  scheduler.footer = "Xenia's regular iOS threads use Default QoS. The GPU Commands "
+                     "promotion is on by default; the others are experimental — leave "
+                     "them off unless you are testing CPU or audio scheduling behavior "
+                     "after a full relaunch.";
   AddBoolSetting(scheduler.items, "ios_gpu_commands_user_initiated_qos",
                  "GPU Commands User-Initiated QoS",
                  "Runs the Metal command processor host thread at user-initiated QoS. "
                  "Try this first if frames appear to miss submission deadlines.",
-                 false);
+                 true);
   AddBoolSetting(scheduler.items, "ios_guest_threads_user_initiated_qos",
                  "Guest Threads User-Initiated QoS",
                  "Runs guest XThreads at user-initiated QoS. This may help CPU-bound "
@@ -350,9 +376,39 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
 static std::vector<IOSConfigSection> BuildAudioSections() {
   std::vector<IOSConfigSection> sections;
 
+  const bool phase_selected = IOSConfigGetConfigVarString("apu", "phase") == "phase";
+  const bool head_pose_entitlement = IOSHasHeadPoseEntitlement();
+
   IOSConfigSection audio;
   audio.title = "Audio";
-  audio.footer = "These settings control mute state and XMA decoding behavior.";
+  audio.footer = "These settings control the audio backend, mute state and XMA decoding "
+                 "behavior.";
+  // Surface the head-pose entitlement status when PHASE is in use, since head
+  // tracking silently falls back to a fixed listener without it.
+  if (phase_selected && !head_pose_entitlement) {
+    audio.footer =
+        "PHASE backend selected. Head tracking is UNAVAILABLE: the head-pose entitlement "
+        "(com.apple.developer.coremotion.head-pose) is not present in this build's code "
+        "signature, so AirPods head tracking can't run — spatial audio still works with a "
+        "fixed listener. Re-sign with a profile that grants that entitlement to enable it.";
+  }
+  AddStringChoiceSetting(audio.items, "apu", "Audio Backend",
+                         "Select the audio output backend, applied after the next full "
+                         "relaunch. SDL is the stereo path. PHASE renders the game's 5.1 "
+                         "mix as spatial audio over headphones (Apple PHASE engine); "
+                         "requires compatible headphones for the full effect.",
+                         "phase", {{"SDL (Stereo)", "sdl"}, {"PHASE (Spatial)", "phase"}});
+  std::string head_tracking_subtitle =
+      "Only affects the PHASE backend. Tracks compatible AirPods head motion so the sound "
+      "stage stays anchored to the screen as you turn your head. Applied after a full "
+      "relaunch.";
+  if (!head_pose_entitlement) {
+    head_tracking_subtitle +=
+        "  \xE2\x9A\xA0\xEF\xB8\x8F Head-pose entitlement NOT detected in this build — head "
+        "tracking will not run (PHASE keeps a fixed listener).";
+  }
+  AddBoolSetting(audio.items, "apu_phase_head_tracking", "PHASE Head Tracking",
+                 head_tracking_subtitle, false);
   AddBoolSetting(audio.items, "mute", "Mute Audio",
                  "Immediately silences all emulator audio. Useful for background testing "
                  "or silent repro runs.",

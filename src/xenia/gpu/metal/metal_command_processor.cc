@@ -74,6 +74,21 @@ DEFINE_bool(
     "dirty-on-write behavior.",
     "Metal");
 
+DEFINE_bool(
+    metal_backend_hazard_model, false,
+    "Experimental: let the Metal backend own GPU read/write hazard tracking "
+    "(explicit fences/events) for heap-backed textures, render targets, and the "
+    "shared-memory/EDRAM buffers so they can be MTLResidencySet-covered and the "
+    "per-encoder useResource/useHeap re-apply can be dropped. Off = current "
+    "useResource path. See scratch/metal_hazard_model_design.md.",
+    "Metal");
+DEFINE_bool(
+    metal_backend_hazard_model_validate, false,
+    "Shadow-validate the hazard model: run the tracker alongside the existing "
+    "useResource path and log when they disagree (a missed hazard). Verify on "
+    "each game before enabling metal_backend_hazard_model.",
+    "Metal");
+
 namespace xe {
 namespace gpu {
 namespace metal {
@@ -194,27 +209,23 @@ uint8_t MaskNativeMslTextureSigns(uint8_t signs, uint8_t component_mask) {
   return masked;
 }
 
-uint64_t NativeMslTextureSignInputKey(const RegisterFile& regs,
-                                      const Shader& shader) {
+// Computes the texture-sign cache key from the precomputed, shader-invariant
+// (fetch_constant, component_mask) list. Only the per-draw register reads
+// (SwizzleSigns) happen here; the result is byte-identical to walking the
+// shader's texture bindings directly.
+uint64_t NativeMslTextureSignInputKey(const uint32_t* fetch_constants,
+                                      const uint8_t* component_masks,
+                                      uint32_t binding_count,
+                                      const RegisterFile& regs) {
   uint64_t key = UINT64_C(0x4E4D534C53696E70);  // "NMSLSinp"
   bool has_sign_inputs = false;
   auto mix_key = [](uint64_t hash, uint64_t value) {
     hash ^= value + UINT64_C(0x9E3779B185EBCA87) + (hash << 6) + (hash >> 2);
     return hash;
   };
-  for (const Shader::TextureBinding& shader_binding :
-       shader.texture_bindings()) {
-    const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
-    if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
-        shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
-      continue;
-    }
-    uint8_t component_mask = uint8_t(fetch.result.GetUsedResultComponents() &
-                                     fetch.GetNonZeroResultComponents());
-    if (!component_mask) {
-      continue;
-    }
-    const uint32_t fetch_constant = shader_binding.fetch_constant;
+  for (uint32_t i = 0; i < binding_count; ++i) {
+    const uint32_t fetch_constant = fetch_constants[i];
+    const uint8_t component_mask = component_masks[i];
     const uint8_t signs =
         texture_util::SwizzleSigns(regs.GetTextureFetch(fetch_constant));
     const uint8_t masked_signs =
@@ -231,22 +242,13 @@ uint64_t NativeMslTextureSignInputKey(const RegisterFile& regs,
 }
 
 NativeMslTextureSignVariant BuildNativeMslTextureSignVariant(
-    const RegisterFile& regs, const Shader& shader) {
+    const uint32_t* fetch_constants, const uint8_t* component_masks,
+    uint32_t binding_count, const RegisterFile& regs) {
   NativeMslTextureSignVariant variant = {};
   bool has_sign_inputs = false;
-  for (const Shader::TextureBinding& shader_binding :
-       shader.texture_bindings()) {
-    const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
-    if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
-        shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
-      continue;
-    }
-    uint8_t component_mask = uint8_t(fetch.result.GetUsedResultComponents() &
-                                     fetch.GetNonZeroResultComponents());
-    if (!component_mask) {
-      continue;
-    }
-    const uint32_t fetch_constant = shader_binding.fetch_constant;
+  for (uint32_t i = 0; i < binding_count; ++i) {
+    const uint32_t fetch_constant = fetch_constants[i];
+    const uint8_t component_mask = component_masks[i];
     const uint8_t signs =
         texture_util::SwizzleSigns(regs.GetTextureFetch(fetch_constant));
     variant.component_masks[fetch_constant] |= component_mask;
@@ -3633,7 +3635,38 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                                  const Shader& shader) {
     NativeMslTextureSignVariantCache& cache =
         native_msl_texture_sign_variant_cache_[stage];
-    const uint64_t input_key = NativeMslTextureSignInputKey(regs, shader);
+    // component_mask is derived only from the shader's parsed fetch
+    // instructions, so precompute the (fetch_constant, component_mask) list
+    // once per shader. The per-draw key/variant below then only reads the
+    // register file, not GetUsedResultComponents/GetNonZeroResultComponents.
+    if (cache.precomputed_shader != &shader) {
+      cache.precomputed_fetch_constants.clear();
+      cache.precomputed_component_masks.clear();
+      for (const Shader::TextureBinding& shader_binding :
+           shader.texture_bindings()) {
+        const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
+        if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
+            shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
+          continue;
+        }
+        uint8_t component_mask =
+            uint8_t(fetch.result.GetUsedResultComponents() &
+                    fetch.GetNonZeroResultComponents());
+        if (!component_mask) {
+          continue;
+        }
+        cache.precomputed_fetch_constants.push_back(
+            shader_binding.fetch_constant);
+        cache.precomputed_component_masks.push_back(component_mask);
+      }
+      cache.precomputed_shader = &shader;
+      cache.shader = nullptr;  // Invalidate variant cache for the new shader.
+    }
+    const uint32_t binding_count =
+        uint32_t(cache.precomputed_fetch_constants.size());
+    const uint64_t input_key = NativeMslTextureSignInputKey(
+        cache.precomputed_fetch_constants.data(),
+        cache.precomputed_component_masks.data(), binding_count, regs);
     if (cache.shader == &shader && cache.input_key == input_key) {
       NativeMslTextureSignVariant variant = {};
       variant.key = cache.variant_key;
@@ -3641,8 +3674,9 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       variant.sign_values = cache.sign_values;
       return variant;
     }
-    NativeMslTextureSignVariant variant =
-        BuildNativeMslTextureSignVariant(regs, shader);
+    NativeMslTextureSignVariant variant = BuildNativeMslTextureSignVariant(
+        cache.precomputed_fetch_constants.data(),
+        cache.precomputed_component_masks.data(), binding_count, regs);
     cache.shader = &shader;
     cache.input_key = input_key;
     cache.variant_key = variant.key;
@@ -4858,25 +4892,46 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   auto write_packed_float_constants =
       [&](uint8_t* dst, size_t dst_size, const Shader::ConstantRegisterMap* map,
           uint32_t regs_base) {
-        std::memset(dst, 0, dst_size);
         if (!map || !map->float_count) {
+          std::memset(dst, 0, dst_size);
           return;
         }
+        // float_count == popcount(float_bitmap) and dst_size == 16 *
+        // max(float_count, 1) (see Shader::ConstantRegisterMap), so the packed
+        // copies below fill the whole buffer whenever any constant is used --
+        // the previous up-front memset of the entire buffer was dead work.
+        // Consecutive set bits map to a contiguous run of source registers
+        // (regs.values is uint32_t[], 4 per float4), so copy each run in a
+        // single memcpy instead of one per register.
         uint8_t* out = dst;
-        uint8_t* end = dst + dst_size;
-        for (uint32_t i = 0; i < 4; ++i) {
+        uint8_t* const end = dst + dst_size;
+        for (uint32_t i = 0; i < 4 && out < end; ++i) {
           uint64_t bits = map->float_bitmap[i];
-          uint32_t constant_index;
-          while (xe::bit_scan_forward(bits, &constant_index)) {
-            bits &= ~(uint64_t(1) << constant_index);
-            if (out + 4 * sizeof(uint32_t) > end) {
-              return;
+          const uint32_t* word_values = &regs.values[regs_base + (i << 8)];
+          uint32_t run_start;
+          while (xe::bit_scan_forward(bits, &run_start)) {
+            // Length of the contiguous run of set bits starting at run_start.
+            uint64_t run = bits >> run_start;
+            uint32_t first_zero;
+            uint32_t run_len = xe::bit_scan_forward(~run, &first_zero)
+                                   ? first_zero
+                                   : (64u - run_start);
+            size_t bytes = size_t(run_len) * 4 * sizeof(uint32_t);
+            if (out + bytes > end) {
+              bytes = static_cast<size_t>(end - out);
             }
-            std::memcpy(
-                out, &regs.values[regs_base + (i << 8) + (constant_index << 2)],
-                4 * sizeof(uint32_t));
-            out += 4 * sizeof(uint32_t);
+            std::memcpy(out, word_values + (run_start << 2), bytes);
+            out += bytes;
+            if (run_start + run_len >= 64u) {
+              bits = 0;
+            } else {
+              bits &= ~((((uint64_t(1) << run_len) - 1)) << run_start);
+            }
           }
+        }
+        // Defensive: zero any tail if float_count ever lags the bitmap popcount.
+        if (out < end) {
+          std::memset(out, 0, static_cast<size_t>(end - out));
         }
       };
 
@@ -6382,10 +6437,13 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     InvalidateRenderEncoderStateAfterDrawPassTransfers(transfer_mutations);
   }
 
-  if (draw.shared_memory_hazard_range_count &&
-      PendingSharedMemoryWritesOverlapRanges(
-          draw.shared_memory_hazard_ranges.data(),
-          draw.shared_memory_hazard_range_count)) {
+  // EncodeSharedMemoryRenderReadDependencies already early-outs when the pending
+  // write list is empty and when no pending write overlaps these ranges, so the
+  // previous PendingSharedMemoryWritesOverlapRanges gate here was a redundant
+  // second full scan of the pending-write list on every hazard draw. Call it
+  // directly; the behavior is identical (the error path inside is still only
+  // reachable on a real overlap).
+  if (draw.shared_memory_hazard_range_count) {
     if (!EncodeSharedMemoryRenderReadDependencies(
             draw.shared_memory_hazard_ranges.data(),
             draw.shared_memory_hazard_range_count,
@@ -8186,6 +8244,18 @@ void MetalCommandProcessor::PrepareSharedMemoryUploadBeforeDrawPass(
     return;
   }
   const bool render_encoder_active = current_render_encoder_ != nullptr;
+  // Resident-draw fast path: if every range is already valid there is nothing to
+  // upload, and GetUploadRouteInfo would scan every page (one IsRangeValid call
+  // per page) only to return an empty route. AnySharedMemoryRangeInvalid checks
+  // each whole range with a single coarse validity scan that early-exits, so
+  // skip the per-page scan when nothing is invalid. When all ranges are valid,
+  // GetUploadRouteInfo can only yield upload_bytes == 0, so this is behavior-
+  // identical: same no-upload telemetry, no staged bytes, no encoder teardown.
+  if (!AnySharedMemoryRangeInvalid(ranges, range_count)) {
+    RecordSharedMemoryLazyUploadRoute(MetalSharedMemory::UploadRouteInfo(),
+                                      render_encoder_active);
+    return;
+  }
   MetalSharedMemory::UploadRouteInfo route_info =
       shared_memory_->GetUploadRouteInfo(ranges, range_count);
   RecordSharedMemoryLazyUploadRoute(route_info, render_encoder_active);

@@ -97,10 +97,26 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
     reader_.BeginPrefetchedRead<swcache::PrefetchTag::Level2>(
         COMMAND_PROCESSOR::GetCurrentRingReadCount());
     do {
+#if XE_PLATFORM_IOS
+      if (COMMAND_PROCESSOR::IsTitleStopRequestedIOS() || !worker_running_) {
+        XELOGI(
+            "iOS: abandoning indirect ringbuffer decode during title "
+            "stop/shutdown");
+        break;
+      }
+#endif  // XE_PLATFORM_IOS
       if (COMMAND_PROCESSOR::ExecutePacket()) {
         continue;
       } else {
         // Return up a level if we encounter a bad packet.
+#if XE_PLATFORM_IOS
+        if (COMMAND_PROCESSOR::IsTitleStopRequestedIOS() || !worker_running_) {
+          XELOGI(
+              "iOS: ignoring indirect ringbuffer decode failure during title "
+              "stop/shutdown");
+          break;
+        }
+#endif  // XE_PLATFORM_IOS
         XELOGE("**** INDIRECT RINGBUFFER: Failed to execute packet.");
         assert_always();
         break;
@@ -1186,7 +1202,6 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
   // QueryBatch titles can have multiple pending sentinels in a row and don't
   // necessarily update in an order we currently observe.
   bool guest_marks_end = report && XenosZPDReport::HasPendingSentinel(report);
-  uint32_t slot_base = XenosZPDReport::GetSlotBase(report_address);
   bool logical_active = zpd_active_segment_.logical_active;
 
   if (cvars::occlusion_query_log && report) {
@@ -1214,11 +1229,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
     return true;
   }
 
-  if (COMMAND_PROCESSOR::GetZPDMode() != ZPDMode::kFake) {
+  if (COMMAND_PROCESSOR::GetZPDMode() != ZPDMode::kFake &&
+      !zpd_force_fake_fallback_) {
     if (logical_active && is_end_record) {
-      if (slot_base == zpd_active_segment_.slot_base) {
-        COMMAND_PROCESSOR::EndZPDReport(report_address, false);
-      }
+      COMMAND_PROCESSOR::EndZPDReport(report_address, false);
       return true;
     }
     if (is_begin_record) {
@@ -1234,7 +1248,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
       // No logical report is active for this slot, so this is likely an
       // orphaned END. In fast mode, replay the last cached delta so polling
       // code does not sit on the sentinel forever.
-      if (COMMAND_PROCESSOR::GetZPDMode() == ZPDMode::kFast) {
+      if (COMMAND_PROCESSOR::GetZPDMode() == ZPDMode::kFast ||
+          COMMAND_PROCESSOR::GetZPDMode() == ZPDMode::kFastAlt) {
         uint32_t cached_delta = 1;
         auto cache_it = fast_zpd_report_cached_values_.find(report_record_base);
         if (cache_it != fast_zpd_report_cached_values_.end()) {
@@ -1735,8 +1750,24 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
   reader_.BeginPrefetchedRead<swcache::PrefetchTag::Level2>(
       GetCurrentRingReadCount());
   do {
+#if XE_PLATFORM_IOS
+    if (COMMAND_PROCESSOR::IsTitleStopRequestedIOS() || !worker_running_) {
+      XELOGI(
+          "iOS: abandoning primary ringbuffer decode during title "
+          "stop/shutdown");
+      break;
+    }
+#endif  // XE_PLATFORM_IOS
     if (!COMMAND_PROCESSOR::ExecutePacket()) {
       // This probably should be fatal - but we're going to continue anyways.
+#if XE_PLATFORM_IOS
+      if (COMMAND_PROCESSOR::IsTitleStopRequestedIOS() || !worker_running_) {
+        XELOGI(
+            "iOS: ignoring primary ringbuffer decode failure during title "
+            "stop/shutdown");
+        break;
+      }
+#endif  // XE_PLATFORM_IOS
       XELOGE("**** PRIMARY RINGBUFFER: Failed to execute packet.");
       assert_always();
       break;
