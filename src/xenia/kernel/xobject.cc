@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xobject.h"
 
+#include <algorithm>
+#include <chrono>
 #include <optional>
 
 #include "xenia/base/byte_stream.h"
@@ -28,8 +30,81 @@
 #include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
+#include "xenia/base/cvar.h"
+#include "xenia/base/threading.h"
+
+DEFINE_bool(
+    wait_timeout_backoff, false,
+    "On a guest wait that keeps timing out immediately (a zero-timeout poll "
+    "loop), park the thread briefly after a short fast-yield window instead of "
+    "sched_yield-spinning every iteration, so the core can idle. Off = the "
+    "previous unconditional MaybeYield.",
+    "CPU");
+DEFINE_int32(
+    wait_backoff_spin_polls, 64,
+    "wait_timeout_backoff: consecutive immediate timeouts to keep cheap-yielding "
+    "before parking.",
+    "CPU");
+DEFINE_int32(wait_backoff_step_us, 25,
+             "wait_timeout_backoff: park-interval growth per extra miss (us).",
+             "CPU");
+DEFINE_int32(
+    wait_backoff_cap_us, 250,
+    "wait_timeout_backoff: max park interval per poll (us); bounds added "
+    "latency.",
+    "CPU");
+DEFINE_int32(
+    wait_backoff_reset_us, 1000,
+    "wait_timeout_backoff: gap since the last immediate timeout that resets the "
+    "spin counter (so only tight loops are parked), microseconds.",
+    "CPU");
+
 namespace xe {
 namespace kernel {
+
+namespace {
+
+// Adaptive backoff for the wait-timeout path (XObject::Wait / SignalAndWait /
+// WaitMultiple). A guest zero-timeout poll loop otherwise costs one sched_yield
+// (MaybeYield) per iteration -- the top non-JIT CPU cost on device for poll-
+// heavy titles (~11-15%) and an energy/thermal drain on mobile. Keep cheap
+// yields for short waits; after a sustained tight spin, park briefly so the core
+// can idle. The inter-miss gap self-detects a tight loop, so a real blocking
+// wait that merely times out keeps the cheap yield. Gated off by default.
+thread_local uint32_t t_wait_spin_count = 0;
+thread_local std::chrono::steady_clock::time_point t_wait_spin_last{};
+
+void WaitTimeoutBackoff() {
+  if (!cvars::wait_timeout_backoff) {
+    xe::threading::MaybeYield();
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (t_wait_spin_last == std::chrono::steady_clock::time_point{} ||
+      now - t_wait_spin_last >
+          std::chrono::microseconds(cvars::wait_backoff_reset_us)) {
+    t_wait_spin_count = 0;  // gap since last miss => not a tight poll loop
+  }
+  t_wait_spin_last = now;
+  const uint32_t spin_polls =
+      static_cast<uint32_t>(std::max(cvars::wait_backoff_spin_polls, 0));
+  if (++t_wait_spin_count <= spin_polls) {
+    xe::threading::MaybeYield();  // short wait: stay fast
+    return;
+  }
+  const uint32_t over = t_wait_spin_count - spin_polls;
+  const uint32_t step =
+      static_cast<uint32_t>(std::max(cvars::wait_backoff_step_us, 0));
+  const uint32_t cap =
+      static_cast<uint32_t>(std::max(cvars::wait_backoff_cap_us, 0));
+  uint32_t us = cap;
+  if (step > 0 && over <= cap / step) {
+    us = over * step;  // bounded by cap, no overflow
+  }
+  xe::threading::Sleep(std::chrono::microseconds(us));
+}
+
+}  // namespace
 
 #if XE_PLATFORM_IOS
 namespace {
@@ -439,7 +514,7 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
       return X_STATUS_USER_APC;
     }
     case xe::threading::WaitResult::kTimeout:
-      xe::threading::MaybeYield();
+      WaitTimeoutBackoff();
       WaitExit(kthread, X_STATUS_TIMEOUT);
       return X_STATUS_TIMEOUT;
     default:
@@ -540,7 +615,7 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
       return X_STATUS_USER_APC;
     }
     case xe::threading::WaitResult::kTimeout:
-      xe::threading::MaybeYield();
+      WaitTimeoutBackoff();
       WaitExit(kthread, X_STATUS_TIMEOUT);
       return X_STATUS_TIMEOUT;
     default:
@@ -664,7 +739,7 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
         status = X_STATUS_USER_APC;
         break;
       case xe::threading::WaitResult::kTimeout:
-        xe::threading::MaybeYield();
+        WaitTimeoutBackoff();
         status = X_STATUS_TIMEOUT;
         break;
       case xe::threading::WaitResult::kAbandoned:
@@ -703,7 +778,7 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
         status = X_STATUS_USER_APC;
         break;
       case xe::threading::WaitResult::kTimeout:
-        xe::threading::MaybeYield();
+        WaitTimeoutBackoff();
         status = X_STATUS_TIMEOUT;
         break;
       default:

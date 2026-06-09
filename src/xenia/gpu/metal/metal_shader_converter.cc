@@ -20,16 +20,26 @@ namespace gpu {
 namespace metal {
 
 constexpr uint32_t kFunctionConstantRegisterSpace = 2147420894u;
+// Metal Shader Converter 4.0 enables NaN/Inf optimization by default, in which
+// Metal assumes float operands are neither NaN nor Inf (per Apple's MSC user
+// manual). Xenia's DXBC translator deliberately depends on real IEEE NaN/Inf
+// semantics: it writes NaN to SV_Position to cull primitives, flushes NaN to 0
+// on saturate, uses ordered (NaN-false) comparisons for alpha test, and emits
+// explicit ==/!= INFINITY clamps in rcp/rsq/log. Keep IRCompatibilityFlag-
+// DisableNanInfOptimization set so the upgrade preserves pre-4.0 behavior;
+// drop it only after auditing those paths for the GPU-side perf gain.
 constexpr uint32_t kDefaultCompatibilityFlags =
     IRCompatibilityFlagForceTextureArray | IRCompatibilityFlagBoundsCheck |
-    IRCompatibilityFlagVertexPositionInfToNan;
+    IRCompatibilityFlagVertexPositionInfToNan |
+    IRCompatibilityFlagDisableNanInfOptimization;
 constexpr uint32_t kDebugCompatibilityFlags =
     IRCompatibilityFlagBoundsCheck | IRCompatibilityFlagVertexPositionInfToNan |
     IRCompatibilityFlagTextureMinLODClamp | IRCompatibilityFlagSamplerLODBias |
     IRCompatibilityFlagPositionInvariance | IRCompatibilityFlagSampleNanToZero |
     IRCompatibilityFlagTexWriteRoundingRTZ |
     IRCompatibilityFlagSuppress2DComputeDerivativeErrors |
-    IRCompatibilityFlagForceTextureArray;
+    IRCompatibilityFlagForceTextureArray |
+    IRCompatibilityFlagDisableNanInfOptimization;
 constexpr uint32_t kUnsetCompilerOption = UINT32_MAX;
 
 MetalShaderConverter::MetalShaderConverter()

@@ -70,10 +70,14 @@
       </array>
     </dict>
   </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.games</string>
   <key>LSApplicationQueriesSchemes</key>
   <array>
     <string>stikjit</string>
   </array>
+  <key>NSMotionUsageDescription</key>
+  <string>Head tracking adjusts spatial audio to your head movement when using the PHASE audio backend with supported headphones.</string>
   <key>LSSupportsGameMode</key>
   <true/>
   <key>LSSupportsOpeningDocumentsInPlace</key>

@@ -249,6 +249,11 @@ class ContentManager {
                        uint32_t& content_license,
                        const uint32_t disc_number = -1);
   X_RESULT CloseContent(const std::string_view root_name);
+  // Closes every currently-open content package, flushing and closing the
+  // host-side save files behind them. Used on iOS title stop so a save that
+  // reached the guest file system is committed to disk before guest threads
+  // are torn down.
+  void CloseAllOpenedContent();
   X_RESULT GetContentThumbnail(const uint64_t xuid,
                                const XCONTENT_AGGREGATE_DATA& data,
                                std::vector<uint8_t>* buffer);

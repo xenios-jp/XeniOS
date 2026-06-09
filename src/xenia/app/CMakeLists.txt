@@ -1,8 +1,13 @@
 if(XE_PLATFORM_IOS)
   set(_xe_ios_entitlements "${PROJECT_SOURCE_DIR}/xenia_ios.entitlements")
-  set(_xe_ios_app_icon "${PROJECT_SOURCE_DIR}/assets/apple/AppIcon.icon")
-  set(_xe_ios_asset_catalog
-      "${PROJECT_SOURCE_DIR}/assets/apple/XeniOSAssets.xcassets")
+  # NOTE: The iOS asset catalog (XeniOSAssets.xcassets) is intentionally NOT
+  # added to the build. actool's AssetCatalogAgent crashes compiling ANY image
+  # (even a single plain PNG) under the current Xcode 27 beta / macOS 26.4
+  # toolchain ("AVFCore ... missing from an installed root"), which fails the
+  # CompileAssetCatalogVariant build phase. Compiling the catalog is disabled to
+  # keep the build green; the app falls back to SF Symbols for the SettingsLink
+  # icons and uses the default app icon. Re-add the catalog and the app-icon
+  # settings below once the toolchain is fixed (released Xcode / newer macOS).
   add_executable(xenia-app MACOSX_BUNDLE
     ${CMAKE_CURRENT_SOURCE_DIR}/xenia_main_ios.mm
     ${PROJECT_SOURCE_DIR}/src/xenia/ui/ios/app/windowed_app_main_ios.mm
@@ -16,28 +21,19 @@ if(XE_PLATFORM_IOS)
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.xenios"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES
-      "AppIconLight AppIconDark"
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS YES
+    # App-icon rendering is intentionally disabled: actool's AssetCatalogAgent
+    # crashes rendering any app icon (PNG or Icon Composer .icon) under the
+    # current Xcode/macOS toolchain. With no APPICON_NAME/ALTERNATE_APPICON_NAMES
+    # designated, actool compiles the catalog without invoking that renderer, so
+    # the build succeeds. Restore these settings once the toolchain is fixed:
+    #   XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+    #   XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES "AppIconLight AppIconDark"
+    #   XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS YES
     XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
       "${_xe_ios_entitlements}")
   target_sources(xenia-app PRIVATE "${_xe_ios_entitlements}")
-  if(XCODE)
-    set_source_files_properties(
-      "${_xe_ios_app_icon}"
-      PROPERTIES
-        XCODE_LAST_KNOWN_FILE_TYPE "folder.iconcomposer.icon"
-        MACOSX_PACKAGE_LOCATION Resources)
-    set_source_files_properties(
-      "${_xe_ios_asset_catalog}"
-      PROPERTIES
-        XCODE_LAST_KNOWN_FILE_TYPE "folder.assetcatalog"
-        MACOSX_PACKAGE_LOCATION Resources)
-    target_sources(xenia-app PRIVATE
-      "${_xe_ios_app_icon}"
-      "${_xe_ios_asset_catalog}")
-  endif()
+  # Asset catalog compilation disabled (see note above) — the catalog is not
+  # added to xenia-app sources, so actool/CompileAssetCatalogVariant never runs.
   target_compile_definitions(xenia-app PRIVATE
     XBYAK_NO_OP_NAMES
     XBYAK_ENABLE_OMITTED_OPERAND
@@ -45,6 +41,7 @@ if(XE_PLATFORM_IOS)
   target_link_libraries(xenia-app PRIVATE
     xenia-apu
     xenia-apu-nop
+    xenia-apu-phase
     xenia-apu-sdl
     xenia-base
     xenia-core
@@ -286,6 +283,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   )
 elseif(APPLE)
   target_link_libraries(xenia-app PRIVATE
+    xenia-apu-phase
     xenia-gpu-metal
     xenia-hid-keyboard
     xenia-ui-metal

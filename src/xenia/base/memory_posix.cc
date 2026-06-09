@@ -77,7 +77,12 @@ void AndroidShutdown() {
 }
 #endif
 
-size_t page_size() { return getpagesize(); }
+size_t page_size() {
+  // getpagesize() is fixed for the process lifetime but showed up as ~0.3% of
+  // total CPU (a repeated syscall on hot paths); cache it once.
+  static const size_t cached_page_size = getpagesize();
+  return cached_page_size;
+}
 size_t allocation_granularity() { return page_size(); }
 
 uint32_t ToPosixProtectFlags(PageAccess access) {

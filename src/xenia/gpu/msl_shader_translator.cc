@@ -1983,18 +1983,26 @@ void MslShaderTranslator::EmitHelperFunctions() {
     EmitLine("}");
   }
   if (helper_usage.uses_mul_sm3) {
+    // Shader Model 3 multiply: +-0 or denormal * anything (incl. Inf/NaN) = +0.
+    // fmin(|a|, |b|) == 0 detects a zero operand even when the other is NaN,
+    // because MSL fmin returns the non-NaN argument (OpenCL/C99 semantics); this
+    // is the same formulation the DXBC/SPIR-V backends use (SPIR-V's NMin), and
+    // is one ALU op cheaper than OR-ing two equality compares. Must be fmin, not
+    // min (min is `y < x ? y : x` and would propagate NaN). fabs folds to a free
+    // source modifier on Apple GPUs. Relies on MathModeSafe (default) for the
+    // NaN behavior to be honored.
     EmitLine(
-        "inline float XeMulSM3(float a, float b) { return (a == 0.0f || b == "
-        "0.0f) ? 0.0f : a * b; }");
+        "inline float XeMulSM3(float a, float b) { return fmin(fabs(a), "
+        "fabs(b)) == 0.0f ? 0.0f : a * b; }");
     EmitLine(
         "inline float2 XeMulSM3(float2 a, float2 b) { return select(a * b, "
-        "float2(0.0f), (a == float2(0.0f)) | (b == float2(0.0f))); }");
+        "float2(0.0f), fmin(fabs(a), fabs(b)) == float2(0.0f)); }");
     EmitLine(
         "inline float3 XeMulSM3(float3 a, float3 b) { return select(a * b, "
-        "float3(0.0f), (a == float3(0.0f)) | (b == float3(0.0f))); }");
+        "float3(0.0f), fmin(fabs(a), fabs(b)) == float3(0.0f)); }");
     EmitLine(
         "inline float4 XeMulSM3(float4 a, float4 b) { return select(a * b, "
-        "float4(0.0f), (a == float4(0.0f)) | (b == float4(0.0f))); }");
+        "float4(0.0f), fmin(fabs(a), fabs(b)) == float4(0.0f)); }");
   }
   if (helper_usage.uses_clamp_inf_to_max) {
     EmitLine(

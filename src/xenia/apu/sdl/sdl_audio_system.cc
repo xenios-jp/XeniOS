@@ -13,41 +13,13 @@
 
 #include "xenia/apu/apu_flags.h"
 #include "xenia/apu/sdl/sdl_audio_driver.h"
+#include "xenia/apu/silent_audio_driver.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
 
 namespace xe {
 namespace apu {
 namespace sdl {
-
-namespace {
-
-#if XE_PLATFORM_IOS
-// Fallback used when SDL/CoreAudio device creation fails on iOS.
-// Keeps guest audio callback flow alive without real audio output.
-class SilentAudioDriver final : public AudioDriver {
- public:
-  explicit SilentAudioDriver(xe::threading::Semaphore* semaphore)
-      : semaphore_(semaphore) {}
-
-  bool Initialize() override { return true; }
-  void Shutdown() override {}
-  void SubmitFrame(float* samples) override {
-    (void)samples;
-    if (semaphore_) {
-      semaphore_->Release(1, nullptr);
-    }
-  }
-  void Pause() override {}
-  void Resume() override {}
-  void SetVolume(float volume) override { (void)volume; }
-
- private:
-  xe::threading::Semaphore* semaphore_ = nullptr;
-};
-#endif  // XE_PLATFORM_IOS
-
-}  // namespace
 
 std::unique_ptr<AudioSystem> SDLAudioSystem::Create(cpu::Processor* processor) {
   return std::make_unique<SDLAudioSystem>(processor);

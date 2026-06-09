@@ -845,6 +845,13 @@ class MetalCommandProcessor final : public CommandProcessor {
     uint64_t begin_encoder_descriptor_failures = 0;
     uint64_t begin_encoder_creation_failures = 0;
 
+    // Hazard model (scratch/metal_hazard_model_design.md); 0 until enabled.
+    uint64_t hazard_barriers_emitted = 0;
+    uint64_t hazard_fences_emitted = 0;
+    uint64_t hazard_events_emitted = 0;
+    uint64_t hazard_useresource_suppressed = 0;
+    uint64_t hazard_validation_disagreements = 0;
+
     uint64_t end_encoder_active = 0;
     uint64_t end_encoder_no_active = 0;
     std::array<uint64_t, kRenderEncoderEndReasonCount> end_reasons = {};
@@ -1527,6 +1534,13 @@ class MetalCommandProcessor final : public CommandProcessor {
     uint64_t variant_key = 0;
     DxbcShader::TextureSignComponentMasks component_masks = {};
     DxbcShader::TextureSignComponentMasks sign_values = {};
+    // Shader-invariant (fetch_constant, component_mask) pairs in texture-binding
+    // order. component_mask comes only from the parsed fetch instruction, so it
+    // is precomputed once per shader; the per-draw key/variant computation then
+    // only reads the register file (SwizzleSigns). Reused across rebuilds.
+    const Shader* precomputed_shader = nullptr;
+    std::vector<uint32_t> precomputed_fetch_constants;
+    std::vector<uint8_t> precomputed_component_masks;
   };
   std::array<NativeMslTextureSignVariantCache, kStageCount>
       native_msl_texture_sign_variant_cache_ = {};
