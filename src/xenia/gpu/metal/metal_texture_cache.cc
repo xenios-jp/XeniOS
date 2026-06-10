@@ -108,6 +108,18 @@ DEFINE_bool(metal_texture_upload_via_blit, true,
             "of CPU replaceRegion.",
             "Metal");
 DECLARE_bool(metal_use_heaps);
+DEFINE_bool(
+    metal_backend_hazard_model_texture_heaps, false,
+    "Hazard model texture-heap phase: create texture-cache heap memory "
+    "untracked and order texture uploads (untile compute / upload blits) "
+    "against sampling draws through an explicit fence instead of driver "
+    "hazard tracking, removing the false cross-texture dependencies of "
+    "whole-heap tracking. Texture eviction is already gated on completed "
+    "submissions, so heap reuse cannot alias in-flight reads. Validate per "
+    "title with metal_backend_hazard_model_validate before enabling. See "
+    "docs/metal_hazard_model_design.md.",
+    "Metal");
+DECLARE_bool(metal_backend_hazard_model_validate);
 DECLARE_int32(metal_heap_min_bytes);
 
 namespace xe {
@@ -735,6 +747,28 @@ bool MetalTextureCache::EndDeferredUploadEncoderBatch() {
   return FlushDeferredUploadEncoderBatch();
 }
 
+void MetalTextureCache::TextureUploadHazardUpdate(
+    MTL::ComputeCommandEncoder* encoder) {
+  if (!encoder || !command_processor_) {
+    return;
+  }
+  if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
+    encoder->updateFence(fence);
+    command_processor_->RecordHazardFenceUpdate(/*compute_encoder=*/true);
+  }
+}
+
+void MetalTextureCache::TextureUploadHazardUpdate(
+    MTL::BlitCommandEncoder* encoder) {
+  if (!encoder || !command_processor_) {
+    return;
+  }
+  if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
+    encoder->updateFence(fence);
+    command_processor_->RecordHazardFenceUpdate(/*compute_encoder=*/false);
+  }
+}
+
 bool MetalTextureCache::FlushDeferredUploadEncoderBatch() {
   MTL::CommandBuffer* cmd = deferred_upload_command_buffer_;
   if (!deferred_upload_compute_encoder_ && deferred_upload_copies_.empty()) {
@@ -745,6 +779,7 @@ bool MetalTextureCache::FlushDeferredUploadEncoderBatch() {
     MTL::ComputeCommandEncoder* compute_encoder =
         deferred_upload_compute_encoder_;
     deferred_upload_compute_encoder_ = nullptr;
+    TextureUploadHazardUpdate(compute_encoder);
     compute_encoder->endEncoding();
     compute_encoder->release();
   }
@@ -769,6 +804,7 @@ bool MetalTextureCache::FlushDeferredUploadEncoderBatch() {
             copy.destination_texture, copy.destination_slice,
             copy.destination_level, MTL::Origin::Make(0, 0, 0));
       }
+      TextureUploadHazardUpdate(blit);
       blit->endEncoding();
     }
   }
@@ -2476,6 +2512,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     if (!compute_encoder_open || using_deferred_upload_encoder) {
       return;
     }
+    // Producer edge for shared-storage textures written directly by the
+    // untile dispatches (the blit-upload path's texture writes update on the
+    // blit encoder instead; an extra update only widens the ordering).
+    TextureUploadHazardUpdate(encoder);
     encoder->endEncoding();
     compute_encoder_open = false;
   };
@@ -2708,6 +2748,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           command_buffer_has_work = true;
         }
 
+        TextureUploadHazardUpdate(blit);
         blit->endEncoding();
       }
     }
@@ -2890,7 +2931,10 @@ bool MetalTextureCache::Initialize() {
   if (::cvars::metal_use_heaps) {
     size_t min_heap_bytes = std::max<int32_t>(0, ::cvars::metal_heap_min_bytes);
     texture_heap_pool_ = std::make_unique<MetalHeapPool>(
-        device, GetCacheTextureStorageMode(), min_heap_bytes, "XeniaTex");
+        device, GetCacheTextureStorageMode(), min_heap_bytes, "XeniaTex",
+        ::cvars::metal_backend_hazard_model_texture_heaps
+            ? MTL::HazardTrackingModeUntracked
+            : MTL::HazardTrackingModeTracked);
     texture_heap_pool_->SetHeapCreatedCallback([this](MTL::Heap* heap) {
       if (command_processor_) {
         command_processor_->AddResidencySetHeap(heap);

@@ -314,6 +314,19 @@ class MetalCommandProcessor final : public CommandProcessor {
   MTL::Fence* GetSharedMemoryHazardFence() const {
     return shared_memory_hazard_fence_edges_ ? shared_memory_fence_ : nullptr;
   }
+  // Texture-heap phase: producers (texture-cache upload compute/blit
+  // encoders) update this fence at end; render encoders wait at creation
+  // before the sampling stages. Null when the phase's edges are off.
+  MTL::Fence* GetTextureUploadHazardFence() const {
+    return texture_heap_hazard_fence_edges_ ? texture_upload_fence_ : nullptr;
+  }
+  // Render-target phase: render encoders update after Fragment at end and
+  // wait before Fragment at creation; compute/blit consumers of RT textures
+  // (EDRAM dump, host depth store, direct host resolve, RT transfers) wait at
+  // creation and update at end. Null when the phase's edges are off.
+  MTL::Fence* GetRenderTargetHazardFence() const {
+    return render_target_hazard_fence_edges_ ? render_target_fence_ : nullptr;
+  }
   void RecordHazardFenceUpdate(bool compute_encoder);
   void RecordHazardFenceWait(uint32_t encoder_kind);
 
@@ -1266,9 +1279,15 @@ class MetalCommandProcessor final : public CommandProcessor {
   MTL::SharedEvent* wait_shared_event_ = nullptr;
   uint64_t wait_shared_event_value_ = 0;
   MTL::Fence* shared_memory_fence_ = nullptr;
+  MTL::Fence* texture_upload_fence_ = nullptr;
+  MTL::Fence* render_target_fence_ = nullptr;
   // True when metal_backend_hazard_model or its validate mode is on; cached
   // at setup so the per-encoder checks are branch-on-bool.
   bool shared_memory_hazard_fence_edges_ = false;
+  // Per-phase equivalents (metal_backend_hazard_model_texture_heaps /
+  // _render_targets, or validate mode).
+  bool texture_heap_hazard_fence_edges_ = false;
+  bool render_target_hazard_fence_edges_ = false;
   // Set when the open shared-memory upload blit encoder has encoded at least
   // one copy; consumed by EndSharedMemoryUploadBlitEncoder to decide whether
   // the producer fence update is needed.

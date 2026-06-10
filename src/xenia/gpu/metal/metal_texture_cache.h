@@ -207,6 +207,12 @@ class MetalTextureCache : public TextureCache {
   bool EndDeferredUploadEncoderBatch();
   bool FlushDeferredUploadEncoderBatch();
   class UploadBatchScope;
+  // Texture-heap hazard phase producer edges: encoders that write
+  // texture-cache textures update the command processor's texture upload
+  // fence at end; render encoders wait at creation before sampling. No-ops
+  // when the phase's edges are off.
+  void TextureUploadHazardUpdate(MTL::ComputeCommandEncoder* encoder);
+  void TextureUploadHazardUpdate(MTL::BlitCommandEncoder* encoder);
   MTL::ComputeCommandEncoder* GetDeferredUploadComputeEncoder(
       MTL::CommandBuffer* command_buffer);
   void QueueDeferredUploadCopy(MTL::Buffer* source_buffer,

@@ -63,6 +63,8 @@
 
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(metal_backend_hazard_model_render_targets);
+DECLARE_bool(metal_backend_hazard_model_texture_heaps);
 DECLARE_bool(metal_native_msl_helper_msc);
 DECLARE_bool(metal_native_msl_render);
 DECLARE_bool(submit_on_primary_buffer_end);
@@ -1636,6 +1638,30 @@ bool MetalCommandProcessor::SetupContext() {
       NS::String::string("XeniaSharedMemoryFence", NS::UTF8StringEncoding));
   shared_memory_hazard_fence_edges_ = cvars::metal_backend_hazard_model ||
                                       cvars::metal_backend_hazard_model_validate;
+  texture_heap_hazard_fence_edges_ =
+      cvars::metal_backend_hazard_model_texture_heaps ||
+      cvars::metal_backend_hazard_model_validate;
+  render_target_hazard_fence_edges_ =
+      cvars::metal_backend_hazard_model_render_targets ||
+      cvars::metal_backend_hazard_model_validate;
+  if (texture_heap_hazard_fence_edges_) {
+    texture_upload_fence_ = device_->newFence();
+    if (!texture_upload_fence_) {
+      XELOGE("MetalCommandProcessor: failed to create texture upload fence");
+      return false;
+    }
+    texture_upload_fence_->setLabel(
+        NS::String::string("XeniaTextureUploadFence", NS::UTF8StringEncoding));
+  }
+  if (render_target_hazard_fence_edges_) {
+    render_target_fence_ = device_->newFence();
+    if (!render_target_fence_) {
+      XELOGE("MetalCommandProcessor: failed to create render target fence");
+      return false;
+    }
+    render_target_fence_->setLabel(
+        NS::String::string("XeniaRenderTargetFence", NS::UTF8StringEncoding));
+  }
   if (cvars::metal_backend_hazard_model) {
     XELOGI(
         "Metal hazard model: shared-memory buffer untracked; ordering through "
@@ -2086,6 +2112,14 @@ void MetalCommandProcessor::ShutdownContext() {
   if (shared_memory_fence_) {
     shared_memory_fence_->release();
     shared_memory_fence_ = nullptr;
+  }
+  if (texture_upload_fence_) {
+    texture_upload_fence_->release();
+    texture_upload_fence_ = nullptr;
+  }
+  if (render_target_fence_) {
+    render_target_fence_->release();
+    render_target_fence_ = nullptr;
   }
   if (wait_shared_event_) {
     wait_shared_event_->release();
@@ -8153,6 +8187,14 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
     CloseQuerySegment();
   }
   UpdateSharedMemoryFenceForActiveRenderEncoder();
+  // Render-target phase producer edge: this pass's attachment writes are
+  // fragment-stage output; later passes wait before Fragment and RT-reading
+  // compute/blit consumers wait at encoder creation.
+  if (render_target_hazard_fence_edges_ && render_target_fence_) {
+    current_render_encoder_->updateFence(render_target_fence_,
+                                         MTL::RenderStageFragment);
+    RecordHazardFenceUpdate(/*compute_encoder=*/false);
+  }
   current_render_encoder_->endEncoding();
   current_render_encoder_->release();
   current_render_encoder_ = nullptr;
@@ -9540,9 +9582,16 @@ void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
   if (!current_render_encoder_ || !heap) {
     return;
   }
-  // See IsResidencySetResourceCovered: heap-backed textures and render targets
-  // still need this usage declaration until texture / RT hazards are tracked
-  // explicitly by the backend.
+  // See IsResidencySetResourceCovered: for a TRACKED heap this usage
+  // declaration also feeds the driver's hazard analysis, so it must stay
+  // until the heap's hazards are ordered by the backend. Once a hazard-model
+  // phase creates the heap untracked, useHeap only declares residency, and a
+  // queue-residency-set-covered heap no longer needs the per-encoder call.
+  if (heap->hazardTrackingMode() == MTL::HazardTrackingModeUntracked &&
+      IsResidencySetHeapCovered(heap)) {
+    ++backend_telemetry_.residency_set_use_heaps_covered;
+    return;
+  }
   for (MTL::Heap* used_heap : render_encoder_heap_usage_) {
     if (used_heap == heap) {
       return;
@@ -9713,6 +9762,26 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
           shared_memory_fence_, MTL::RenderStageVertex |
                                     MTL::RenderStageObject |
                                     MTL::RenderStageMesh);
+      RecordHazardFenceWait(0);
+    }
+    // Texture-heap phase consumer edge: order texture-cache upload encoders
+    // (untile compute / upload blits, in this or an earlier-committed command
+    // buffer) before this encoder samples their textures. Guest texture
+    // fetches happen in every programmable stage this backend uses.
+    if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
+      current_render_encoder_->waitForFence(
+          texture_upload_fence_,
+          MTL::RenderStageVertex | MTL::RenderStageObject |
+              MTL::RenderStageMesh | MTL::RenderStageFragment);
+      RecordHazardFenceWait(0);
+    }
+    // Render-target phase consumer edge: order prior passes' attachment
+    // writes before this pass's attachment loads and transfer draws that
+    // sample other render targets (both fragment-stage reads). Vertex work
+    // of this pass may still overlap prior fragment work.
+    if (render_target_hazard_fence_edges_ && render_target_fence_) {
+      current_render_encoder_->waitForFence(render_target_fence_,
+                                            MTL::RenderStageFragment);
       RecordHazardFenceWait(0);
     }
     current_render_pipeline_state_ = nullptr;
