@@ -161,6 +161,8 @@ class MetalTextureCache : public TextureCache {
   void RecordTextureWatchInvalidation(const Texture& texture, bool is_mip,
                                       TextureWatchInvalidationSource source,
                                       uint32_t byte_count) override;
+  void RecordTextureContentRevalidation(bool is_mip,
+                                        uint32_t byte_count) override;
   bool RequestTextureDataRange(Texture& texture, TextureDataRangeSource source,
                                uint32_t start, uint32_t length) override;
 

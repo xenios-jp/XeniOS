@@ -941,6 +941,17 @@ void MetalTextureCache::RecordTextureWatchInvalidation(
   command_processor_->RecordTextureWatchInvalidation(reason, byte_count);
 }
 
+void MetalTextureCache::RecordTextureContentRevalidation(bool is_mip,
+                                                         uint32_t byte_count) {
+  if (!command_processor_) {
+    return;
+  }
+  using Reason = MetalCommandProcessor::TextureWatchInvalidationReason;
+  command_processor_->RecordTextureWatchInvalidation(
+      is_mip ? Reason::kRevalidatedMips : Reason::kRevalidatedBase,
+      byte_count);
+}
+
 MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
     MTL::CommandBuffer* command_buffer) {
   if (!deferred_upload_batch_depth_ || !command_buffer) {
@@ -3767,6 +3778,7 @@ MTL::Texture* MetalTextureCache::CreateNullTextureCube() {
 // RequestTextures override - integrates with standard texture binding pipeline
 void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
   SCOPE_profile_cpu_f("gpu");
+  TryRevalidateUsedOutdatedTextures(used_texture_mask);
   const bool may_load_data = MayRequestTexturesLoadData(used_texture_mask);
   uint64_t load_calls_before = loaded_texture_data_count_;
 
@@ -4922,6 +4934,9 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
     auto global_lock = AcquireGlobalLock();
     texture.MakeLoadedDataUpToDateAndWatch(global_lock, base_outdated,
                                            mips_outdated);
+    // The bytes just consumed came straight from CPU guest memory, so their
+    // hash can prove a later watch invalidation was page false sharing.
+    texture.StoreCpuContentHashes(global_lock, base_outdated, mips_outdated);
   }
   if (command_processor_) {
     command_processor_->RecordTextureUploadSourceRoute(

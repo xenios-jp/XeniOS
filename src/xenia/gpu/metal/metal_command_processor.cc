@@ -4093,6 +4093,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
   const bool has_texture_request_work =
       texture_cache_ && used_texture_mask && texture_request_work_mask;
+  if (has_texture_request_work) {
+    // False-sharing invalidations revalidated here don't force the
+    // texture-upload encoder boundary below.
+    texture_cache_->TryRevalidateUsedOutdatedTextures(used_texture_mask);
+  }
   const bool may_texture_request_load_data =
       has_texture_request_work &&
       texture_cache_->MayRequestTexturesLoadData(used_texture_mask);
@@ -5170,11 +5175,34 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         cbuffer_binding_fetch_.up_to_date = true;
         ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
       } else {
-        if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch, fetch_size,
-                            "fetch", [&](uint8_t* data, size_t) {
-                              std::memcpy(data, fetch_constants, fetch_size);
-                            })) {
-          return false;
+        // The binding's own payload differs - check the recent frame-lifetime
+        // snapshots for identical contents before uploading a new one.
+        const FetchPayloadCacheEntry* cache_hit = nullptr;
+        for (const FetchPayloadCacheEntry& entry : fetch_payload_cache_) {
+          if (entry.binding.buffer &&
+              entry.binding.upload_frame == frame_current_ &&
+              std::memcmp(entry.payload.data(), fetch_constants,
+                          fetch_size) == 0) {
+            cache_hit = &entry;
+            break;
+          }
+        }
+        if (cache_hit) {
+          cbuffer_binding_fetch_ = cache_hit->binding;
+          ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
+        } else {
+          if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch,
+                              fetch_size, "fetch", [&](uint8_t* data, size_t) {
+                                std::memcpy(data, fetch_constants, fetch_size);
+                              })) {
+            return false;
+          }
+          FetchPayloadCacheEntry& cache_slot =
+              fetch_payload_cache_[fetch_payload_cache_next_];
+          fetch_payload_cache_next_ =
+              (fetch_payload_cache_next_ + 1) % kFetchPayloadCacheSize;
+          std::memcpy(cache_slot.payload.data(), fetch_constants, fetch_size);
+          cache_slot.binding = cbuffer_binding_fetch_;
         }
         std::memcpy(current_fetch_constant_payload_.data(), fetch_constants,
                     fetch_size);

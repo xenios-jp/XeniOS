@@ -292,6 +292,10 @@ const char* MetalTextureWatchInvalidationReasonName(size_t reason) {
       return "gpu_resolve_base";
     case 5:
       return "gpu_resolve_mips";
+    case 6:
+      return "revalidated_base";
+    case 7:
+      return "revalidated_mips";
     default:
       return "invalid";
   }

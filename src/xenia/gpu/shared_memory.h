@@ -92,8 +92,8 @@ class SharedMemory {
   // Non-mutating residency check for paths that must not open transfer
   // encoders. Returns true only if RequestRange would fast-path without upload.
   bool IsRangeValid(uint32_t start, uint32_t length) const;
-  // Non-mutating check for CPU-backed upload paths. Returns true only if no page
-  // in the range is currently valid in the host GPU shared-memory copy.
+  // Non-mutating check for CPU-backed upload paths. Returns true only if no
+  // page in the range is currently valid in the host GPU shared-memory copy.
   bool IsRangeInvalid(uint32_t start, uint32_t length) const;
   // Enables CPU write invalidation callbacks for a range without changing
   // shared-memory residency. Used by paths that upload directly from CPU memory
@@ -131,6 +131,8 @@ class SharedMemory {
   // regions in those pages.
   void RangeWrittenByGpu(uint32_t start, uint32_t length);
 
+  Memory& memory() const { return memory_; }
+
  protected:
   SharedMemory(Memory& memory);
   // Call in implementation-specific initialization.
@@ -145,8 +147,6 @@ class SharedMemory {
   // much).
   static constexpr uint32_t kHostGpuMemoryOptimalSparseAllocationLog2 = 22;
   static_assert(kHostGpuMemoryOptimalSparseAllocationLog2 <= kBufferSizeLog2);
-
-  Memory& memory() const { return memory_; }
 
   uint32_t page_size_log2() const { return page_size_log2_; }
 
