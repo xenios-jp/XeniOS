@@ -27,6 +27,8 @@ DEFINE_bool(
     "buffer instead of staging them through a blit.",
     "Metal");
 
+DECLARE_bool(metal_backend_hazard_model);
+
 namespace xe {
 namespace gpu {
 namespace metal {
@@ -59,7 +61,14 @@ bool MetalSharedMemory::Initialize() {
     return false;
   }
 
-  buffer_ = device->newBuffer(kBufferSize, MTL::ResourceStorageModeShared);
+  MTL::ResourceOptions buffer_options = MTL::ResourceStorageModeShared;
+  if (cvars::metal_backend_hazard_model) {
+    // The backend owns shared-memory hazards through explicit fences (see
+    // docs/metal_hazard_model_design.md); dropping driver tracking removes
+    // per-encoder dependency analysis for the hottest buffer in the backend.
+    buffer_options |= MTL::ResourceHazardTrackingModeUntracked;
+  }
+  buffer_ = device->newBuffer(kBufferSize, buffer_options);
   if (!buffer_) {
     XELOGE("Failed to create Metal shared memory buffer");
     return false;

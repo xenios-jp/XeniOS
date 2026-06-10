@@ -1634,6 +1634,17 @@ bool MetalCommandProcessor::SetupContext() {
   }
   shared_memory_fence_->setLabel(
       NS::String::string("XeniaSharedMemoryFence", NS::UTF8StringEncoding));
+  shared_memory_hazard_fence_edges_ = cvars::metal_backend_hazard_model ||
+                                      cvars::metal_backend_hazard_model_validate;
+  if (cvars::metal_backend_hazard_model) {
+    XELOGI(
+        "Metal hazard model: shared-memory buffer untracked; ordering through "
+        "explicit fence edges");
+  } else if (cvars::metal_backend_hazard_model_validate) {
+    XELOGI(
+        "Metal hazard model: validate mode - fence edges emitted alongside "
+        "driver hazard tracking");
+  }
 
   bool supports_apple7 = device_->supportsFamily(MTL::GPUFamilyApple7);
   bool supports_mac2 = device_->supportsFamily(MTL::GPUFamilyMac2);
@@ -3271,8 +3282,20 @@ bool MetalCommandProcessor::EncodeSharedMemoryRenderReadDependencies(
 
 bool MetalCommandProcessor::EncodeSharedMemoryBlitReadDependency(
     MTL::BlitCommandEncoder* encoder, uint32_t start, uint32_t length) {
-  if (!encoder || !length ||
-      !PendingSharedMemoryWritesOverlapRange(start, length)) {
+  if (!encoder || !length) {
+    return true;
+  }
+  // Hazard model: with driver tracking off, this read must wait for every
+  // class of prior writer (upload blits and compute, not only the tracked
+  // render writes), all of which signal the same fence at encoder end.
+  if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
+    encoder->waitForFence(shared_memory_fence_);
+    RecordHazardFenceWait(1);
+    SharedMemoryRange range = {start, length};
+    RetireFenceWaitedSharedMemoryWrites(&range, 1);
+    return true;
+  }
+  if (!PendingSharedMemoryWritesOverlapRange(start, length)) {
     return true;
   }
   if (!shared_memory_fence_) {
@@ -6433,6 +6456,15 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
   // Encode the copy into the shared upload blit encoder instead of creating
   // a dedicated blit encoder per memexport draw; BeginRenderEncoderForDraw
   // ends the shared encoder before the draw consumes the scratch buffer.
+  // Under the hazard model the untracked shared-memory buffer has no
+  // intra-encoder write->read ordering, so if this encoder already holds
+  // upload copies, split it first: the end updates the producer fence and
+  // the fresh encoder's read dependency below waits on it.
+  if (shared_memory_hazard_fence_edges_ && shared_memory_upload_blit_encoder_ &&
+      shared_memory_upload_encoder_has_writes_) {
+    EndSharedMemoryUploadBlitEncoder(
+        SharedMemoryUploadEncoderEndReason::kTransferRequest);
+  }
   MTL::BlitCommandEncoder* blit_encoder = GetSharedMemoryUploadBlitEncoder();
   if (!blit_encoder) {
     if (direct_scratch_buffer) {
@@ -7994,6 +8026,17 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       backend_telemetry_.residency_set_use_heaps_covered,
       backend_telemetry_.residency_set_use_heaps_fallback,
       residency_set_ ? uint64_t(residency_set_->allocationCount()) : 0);
+  if (shared_memory_hazard_fence_edges_) {
+    XELOGI(
+        "MetalTelemetry[{}]: hazard_model mode={} fence updates "
+        "blit/compute={}/{} waits render/blit/compute={}/{}/{}",
+        reason, cvars::metal_backend_hazard_model ? "untracked" : "validate",
+        backend_telemetry_.hazard_fence_updates_blit,
+        backend_telemetry_.hazard_fence_updates_compute,
+        backend_telemetry_.hazard_fence_waits[0],
+        backend_telemetry_.hazard_fence_waits[1],
+        backend_telemetry_.hazard_fence_waits[2]);
+  }
   XELOGI(
       "MetalTelemetry[{}]: resolve_direct_host attempt/success={}/{} "
       "reject gamma/exp_bias/format/sample/depth_no_fast={}/{}/{}/{}/{}",
@@ -8525,6 +8568,21 @@ void MetalCommandProcessor::RecordTextureResolveReload(
 
 void MetalCommandProcessor::RecordSharedMemoryUploadEncoderCopy() {
   ++backend_telemetry_.shared_memory_upload_encoder_copies;
+  shared_memory_upload_encoder_has_writes_ = true;
+}
+
+void MetalCommandProcessor::RecordHazardFenceUpdate(bool compute_encoder) {
+  if (compute_encoder) {
+    ++backend_telemetry_.hazard_fence_updates_compute;
+  } else {
+    ++backend_telemetry_.hazard_fence_updates_blit;
+  }
+}
+
+void MetalCommandProcessor::RecordHazardFenceWait(uint32_t encoder_kind) {
+  if (encoder_kind < 3) {
+    ++backend_telemetry_.hazard_fence_waits[encoder_kind];
+  }
 }
 
 MTL::BlitCommandEncoder*
@@ -8561,6 +8619,15 @@ void MetalCommandProcessor::EndSharedMemoryUploadBlitEncoder(
   if (reason_index < kSharedMemoryUploadEncoderEndReasonCount) {
     ++backend_telemetry_.shared_memory_upload_encoder_end_reasons[reason_index];
   }
+  // Hazard model producer edge: copies into the (untracked) shared-memory
+  // buffer must signal the ordering fence so subsequent consumer encoders
+  // can wait (D3D12 COPY_DEST producer -> Blit stage).
+  if (shared_memory_hazard_fence_edges_ && shared_memory_fence_ &&
+      shared_memory_upload_encoder_has_writes_) {
+    shared_memory_upload_blit_encoder_->updateFence(shared_memory_fence_);
+    RecordHazardFenceUpdate(/*compute_encoder=*/false);
+  }
+  shared_memory_upload_encoder_has_writes_ = false;
   shared_memory_upload_blit_encoder_->endEncoding();
   shared_memory_upload_blit_encoder_->release();
   shared_memory_upload_blit_encoder_ = nullptr;
@@ -9629,6 +9696,18 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     ResetRenderEncoderBufferBindings();
     current_render_encoder_->setLabel(
         NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
+    // Hazard model consumer edge: order all prior shared-memory writers
+    // (upload blits, compute resolves, earlier memexport encoders) before
+    // this encoder's shared-memory reads. Vertex covers vertex/index fetch
+    // (D3D12 VERTEX_AND_CONSTANT_BUFFER / INDEX_BUFFER -> Vertex); object and
+    // mesh cover the mesh-shader draw paths.
+    if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
+      current_render_encoder_->waitForFence(
+          shared_memory_fence_, MTL::RenderStageVertex |
+                                    MTL::RenderStageObject |
+                                    MTL::RenderStageMesh);
+      RecordHazardFenceWait(0);
+    }
     current_render_pipeline_state_ = nullptr;
     ff_blend_factor_valid_ = false;
     rasterizer_state_valid_ = false;

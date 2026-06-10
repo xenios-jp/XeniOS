@@ -911,6 +911,17 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
           "{} rects={} dest={}", kDirectHostResolveEncoderLabel, sources.size(),
           draw_resolution_scaled ? "scaled_resolve_memory" : "shared_memory"));
 
+  // Hazard model consumer edge: when the shared-memory buffer is untracked,
+  // this dispatch must order after prior shared-memory writers (it both
+  // reads around and overwrites bytes in its destination window).
+  MTL::Fence* shared_memory_hazard_fence =
+      draw_resolution_scaled ? nullptr
+                             : command_processor_.GetSharedMemoryHazardFence();
+  if (shared_memory_hazard_fence) {
+    encoder->waitForFence(shared_memory_hazard_fence);
+    command_processor_.RecordHazardFenceWait(2);
+  }
+
   if (draw_resolution_scaled) {
     encoder->setBytes(&copy_constants.dest_relative,
                       sizeof(copy_constants.dest_relative), 0);
@@ -987,6 +998,13 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   }
 
   encoder->popDebugGroup();
+  // Hazard model producer edge: the resolve wrote the (untracked)
+  // shared-memory buffer; signal the ordering fence for later readers
+  // (D3D12 UNORDERED_ACCESS producer -> Dispatch stage).
+  if (shared_memory_hazard_fence) {
+    encoder->updateFence(shared_memory_hazard_fence);
+    command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
+  }
   encoder->endEncoding();
   if (standalone) {
     command_processor_.CommitStandaloneAndWait(cmd);
