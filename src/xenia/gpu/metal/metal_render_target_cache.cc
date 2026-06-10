@@ -85,6 +85,24 @@ DEFINE_bool(metal_use_heaps, true,
             "Metal");
 DEFINE_int32(metal_heap_min_bytes, 33554432,
              "Minimum heap size (bytes) for Metal heap allocations.", "Metal");
+DEFINE_bool(
+    metal_backend_hazard_model_edram, false,
+    "Hazard model EDRAM phase: create the EDRAM buffer untracked and order "
+    "every EDRAM-touching encoder (dump, host depth store, resolve copy, "
+    "init/snapshot fills) through an explicit fence instead of driver hazard "
+    "tracking. Validate per title with metal_backend_hazard_model_validate "
+    "before enabling. See docs/metal_hazard_model_design.md.",
+    "Metal");
+DEFINE_bool(
+    metal_backend_hazard_model_render_targets, false,
+    "Hazard model render-target phase: create render-target heap memory "
+    "untracked and order render passes against their compute/blit consumers "
+    "(EDRAM dump, host depth store, direct host resolve, RT transfers) "
+    "through an explicit fence instead of driver hazard tracking. Validate "
+    "per title with metal_backend_hazard_model_validate before enabling. See "
+    "docs/metal_hazard_model_design.md.",
+    "Metal");
+DECLARE_bool(metal_backend_hazard_model_validate);
 
 namespace xe {
 namespace gpu {
@@ -590,6 +608,41 @@ RenderTargetCache::Path MetalRenderTargetCache::GetPath() const {
   return Path::kHostRenderTargets;
 }
 
+void MetalRenderTargetCache::EdramHazardWait(
+    MTL::ComputeCommandEncoder* encoder) {
+  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
+    return;
+  }
+  encoder->waitForFence(edram_fence_);
+  command_processor_.RecordHazardFenceWait(2);
+}
+
+void MetalRenderTargetCache::EdramHazardUpdate(
+    MTL::ComputeCommandEncoder* encoder) {
+  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
+    return;
+  }
+  encoder->updateFence(edram_fence_);
+  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
+}
+
+void MetalRenderTargetCache::EdramHazardWait(MTL::BlitCommandEncoder* encoder) {
+  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
+    return;
+  }
+  encoder->waitForFence(edram_fence_);
+  command_processor_.RecordHazardFenceWait(1);
+}
+
+void MetalRenderTargetCache::EdramHazardUpdate(
+    MTL::BlitCommandEncoder* encoder) {
+  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
+    return;
+  }
+  encoder->updateFence(edram_fence_);
+  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
+}
+
 bool MetalRenderTargetCache::InitializeEdramBufferViews() {
   ReleaseEdramBufferViews();
   if (!edram_buffer_) {
@@ -762,16 +815,34 @@ bool MetalRenderTargetCache::Initialize() {
                               size_t(scale_x) * size_t(scale_y);
   const size_t edram_size_bytes = edram_dwords * sizeof(uint32_t);
   const bool edram_cpu_visible = false;
-  const MTL::ResourceOptions edram_storage_mode =
+  MTL::ResourceOptions edram_buffer_options =
       edram_cpu_visible ? MTL::ResourceStorageModeShared
                         : MTL::ResourceStorageModePrivate;
-  edram_buffer_ = device_->newBuffer(edram_size_bytes, edram_storage_mode);
+  edram_hazard_fence_edges_ = ::cvars::metal_backend_hazard_model_edram ||
+                              ::cvars::metal_backend_hazard_model_validate;
+  if (::cvars::metal_backend_hazard_model_edram) {
+    // Hazard model EDRAM phase: ordering comes from edram_fence_ edges (every
+    // EDRAM encoder waits at creation and updates at end). GetPath() is
+    // always kHostRenderTargets on this backend, so the bindless EDRAM UAV
+    // views have no pixel-shader-interlock consumers to order.
+    edram_buffer_options |= MTL::ResourceHazardTrackingModeUntracked;
+  }
+  edram_buffer_ = device_->newBuffer(edram_size_bytes, edram_buffer_options);
   if (!edram_buffer_) {
     XELOGE("MetalRenderTargetCache: Failed to create EDRAM buffer");
     return false;
   }
   edram_buffer_->setLabel(
       NS::String::string("EDRAM Buffer", NS::UTF8StringEncoding));
+  if (edram_hazard_fence_edges_) {
+    edram_fence_ = device_->newFence();
+    if (!edram_fence_) {
+      XELOGE("MetalRenderTargetCache: Failed to create EDRAM hazard fence");
+      return false;
+    }
+    edram_fence_->setLabel(
+        NS::String::string("XeniaEdramFence", NS::UTF8StringEncoding));
+  }
   if (edram_cpu_visible) {
     void* edram_contents = edram_buffer_->contents();
     if (edram_contents) {
@@ -788,6 +859,10 @@ bool MetalRenderTargetCache::Initialize() {
         blit->fillBuffer(
             edram_buffer_,
             NS::Range::Make(0, static_cast<NS::UInteger>(edram_size_bytes)), 0);
+        // First EDRAM encoder ever: update only (no prior producer to wait
+        // on); commits before any consumer exists, so every later
+        // EdramHazardWait has a committed prior update.
+        EdramHazardUpdate(blit);
         blit->endEncoding();
         command_processor_.CommitStandaloneAsync(cmd);
       } else {
@@ -819,6 +894,11 @@ bool MetalRenderTargetCache::Initialize() {
 void MetalRenderTargetCache::Shutdown(bool from_destructor) {
   if (!from_destructor) {
     ClearCache();
+  }
+
+  if (edram_fence_) {
+    edram_fence_->release();
+    edram_fence_ = nullptr;
   }
 
   // Clean up dummy target
@@ -2615,7 +2695,9 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
       return;
     }
 
+    EdramHazardWait(blit);
     blit->copyFromBuffer(staging, 0, edram_buffer_, 0, kSnapshotSize);
+    EdramHazardUpdate(blit);
     blit->endEncoding();
     command_processor_.CommitStandaloneAndWait(cmd);
     staging->release();
@@ -3470,6 +3552,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
   }
   SetEncoderLabel(encoder,
                   encoder_label ? encoder_label : "XeniaEDRAMDumpEncoder");
+  EdramHazardWait(encoder);
   PushEncoderDebugGroup(
       encoder,
       fmt::format("{} base={} rows={} pitch={}",
@@ -3651,6 +3734,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
   }
 
   encoder->popDebugGroup();
+  EdramHazardUpdate(encoder);
   encoder->endEncoding();
   if (standalone) {
     command_processor_.CommitStandaloneAndWait(cmd);
@@ -4117,6 +4201,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
               } else {
                 SetEncoderLabel(
                     encoder, ResolveCopyEncoderLabel(direct_host_rt_candidate));
+                EdramHazardWait(encoder);
                 PushEncoderDebugGroup(
                     encoder,
                     fmt::format(
@@ -4164,6 +4249,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                 }
 
                 encoder->popDebugGroup();
+                EdramHazardUpdate(encoder);
                 encoder->endEncoding();
                 if (standalone) {
                   command_processor_.CommitStandaloneAndWait(cmd);
@@ -4494,6 +4580,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           }
           depth_store_encoder->setLabel(NS::String::string(
               "XeniaHostDepthStoreEncoder", NS::UTF8StringEncoding));
+          EdramHazardWait(depth_store_encoder);
           depth_store_encoder->setComputePipelineState(
               host_depth_store_pipelines_[pipeline_index]);
           depth_store_encoder->setBuffer(edram_buffer_, 0, 1);
@@ -4526,6 +4613,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       break;
     }
     if (depth_store_encoder) {
+      EdramHazardUpdate(depth_store_encoder);
       depth_store_encoder->endEncoding();
     }
   }
