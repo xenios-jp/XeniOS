@@ -298,6 +298,25 @@ class MetalCommandProcessor final : public CommandProcessor {
                                   uint64_t bytes, uint64_t count = 1);
   uint64_t GetCurrentTextureTelemetryFrame() const { return frame_current_; }
   void RecordSharedMemoryUploadEncoderCopy();
+
+  // Backend-owned hazard model (docs/metal_hazard_model_design.md). When the
+  // metal_backend_hazard_model cvar is set, the shared-memory buffer is
+  // created untracked and ordering comes exclusively from these fence edges;
+  // in validate mode the edges are emitted while driver tracking stays on so
+  // the model can be soak-tested without changing behavior.
+  bool HazardModelFenceEdgesEnabled() const {
+    return shared_memory_hazard_fence_edges_;
+  }
+  // Returns the shared-memory ordering fence when hazard fence edges are
+  // active, null otherwise. Consumers outside the command processor (texture
+  // cache compute untiling, direct host resolve) wait on / update this fence
+  // around their shared-memory access.
+  MTL::Fence* GetSharedMemoryHazardFence() const {
+    return shared_memory_hazard_fence_edges_ ? shared_memory_fence_ : nullptr;
+  }
+  void RecordHazardFenceUpdate(bool compute_encoder);
+  void RecordHazardFenceWait(uint32_t encoder_kind);
+
   bool RequestSharedMemoryRange(SharedMemoryRequestReason reason,
                                 uint32_t start, uint32_t length);
   bool RequestSharedMemoryRangeBeforeDrawPass(SharedMemoryRequestReason reason,
@@ -939,6 +958,12 @@ class MetalCommandProcessor final : public CommandProcessor {
     uint64_t shared_memory_upload_encoder_acquisitions = 0;
     uint64_t shared_memory_upload_encoder_reuses = 0;
     uint64_t shared_memory_upload_encoder_copies = 0;
+    // Hazard model (docs/metal_hazard_model_design.md) edge accounting:
+    // producer fence updates and consumer fence waits per encoder kind
+    // (0 = render, 1 = blit, 2 = compute).
+    uint64_t hazard_fence_updates_blit = 0;
+    uint64_t hazard_fence_updates_compute = 0;
+    uint64_t hazard_fence_waits[3] = {};
     std::array<uint64_t, kSharedMemoryUploadEncoderEndReasonCount>
         shared_memory_upload_encoder_end_reasons = {};
     std::array<uint64_t, kDrawMaterializationSourceCount>
@@ -1233,6 +1258,13 @@ class MetalCommandProcessor final : public CommandProcessor {
   MTL::SharedEvent* wait_shared_event_ = nullptr;
   uint64_t wait_shared_event_value_ = 0;
   MTL::Fence* shared_memory_fence_ = nullptr;
+  // True when metal_backend_hazard_model or its validate mode is on; cached
+  // at setup so the per-encoder checks are branch-on-bool.
+  bool shared_memory_hazard_fence_edges_ = false;
+  // Set when the open shared-memory upload blit encoder has encoded at least
+  // one copy; consumed by EndSharedMemoryUploadBlitEncoder to decide whether
+  // the producer fence update is needed.
+  bool shared_memory_upload_encoder_has_writes_ = false;
   SharedMemoryRequestReason current_shared_memory_upload_reason_ =
       SharedMemoryRequestReason::kUnknown;
   // Current command buffer and encoder

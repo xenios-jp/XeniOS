@@ -1,8 +1,40 @@
 # Metal backend-owned hazard model — design and rollout plan
 
 Referenced by the `metal_backend_hazard_model` / `metal_backend_hazard_model_validate`
-cvars (`metal_command_processor.cc`). As of this writing the cvars are defined
-but unconsumed; this document is the implementation checklist for wiring them.
+cvars (`metal_command_processor.cc`).
+
+## Status
+
+- **Phase 1 (shared-memory buffer) is implemented.** `metal_backend_hazard_model`
+  creates the buffer `HazardTrackingModeUntracked` with ordering through the
+  fence edges below; `metal_backend_hazard_model_validate` emits the same
+  edges while driver tracking stays on (soak mode, no behavior change).
+  Edge accounting is reported in the telemetry dump (`hazard_model` line).
+- **Residency sets are implemented** (`metal_residency_sets`, auto-detected,
+  on when supported): shared memory, EDRAM, the bindless and native-MSL
+  argument heaps, and texture pool heaps are queue-resident, and covered
+  resources skip the per-encoder useResource/useHeap re-apply. This matches
+  the Metal 4 direction (Game Porting Toolkit 4 skills: useResource/useHeap
+  are removed in Metal 4 in favor of MTLResidencySet).
+- Phases 2+ (EDRAM buffer, texture heaps untracked) remain. Do not flip them
+  without running validate mode per title first.
+
+Per the GPTK 4 `managing-metal4-synchronization` skill: the producer stage is
+the resource's previous usage and the consumer stage its new usage; `MTLFence`
+orders encoders on the same queue **across command buffers** (commit order
+applies), so the standalone-command-buffer edges are fence-coverable;
+`MTLEvent` is only needed for cross-queue work.
+
+Implemented phase-1 fence edges (producer -> fence -> consumer):
+
+| Edge | Producer | Consumer |
+|---|---|---|
+| Upload blit -> draws | `EndSharedMemoryUploadBlitEncoder` updateFence when copies were encoded | render encoder creation waits before Vertex/Object/Mesh |
+| Upload blit -> untile compute | same | texture cache compute encoder creation waits |
+| Upload blit -> DMA index copy | encoder split when the open upload encoder has writes | `EncodeSharedMemoryBlitReadDependency` waits unconditionally under the model |
+| Memexport render writes -> readers | existing `UpdateSharedMemoryFenceForActiveRenderEncoder` | waits above |
+| Direct host resolve compute -> readers | resolve encoder updateFence | waits above |
+| CPU direct writes | none needed: ordered by command buffer commit boundaries | — |
 
 ## What is already done (do not redo)
 

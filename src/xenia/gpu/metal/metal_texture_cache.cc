@@ -886,6 +886,16 @@ MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
       SetEncoderLabel(deferred_upload_compute_encoder_,
                       "XeniaTextureUploadDeferredComputeEncoder");
       deferred_upload_compute_encoder_->retain();
+      // Hazard model consumer edge: untile dispatches read the (untracked)
+      // shared-memory buffer as their guest source; order after the upload
+      // blits that made those ranges resident.
+      if (command_processor_) {
+        if (MTL::Fence* hazard_fence =
+                command_processor_->GetSharedMemoryHazardFence()) {
+          deferred_upload_compute_encoder_->waitForFence(hazard_fence);
+          command_processor_->RecordHazardFenceWait(2);
+        }
+      }
     }
   }
   return deferred_upload_compute_encoder_;
@@ -2399,6 +2409,15 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
               kTextureCompute);
     }
     encoder = cmd->computeCommandEncoder();
+    // Hazard model consumer edge: untile dispatches read the (untracked)
+    // shared-memory buffer as their guest source.
+    if (encoder && command_processor_) {
+      if (MTL::Fence* hazard_fence =
+              command_processor_->GetSharedMemoryHazardFence()) {
+        encoder->waitForFence(hazard_fence);
+        command_processor_->RecordHazardFenceWait(2);
+      }
+    }
   }
   if (!encoder) {
     release_repack_staging_immediate();
