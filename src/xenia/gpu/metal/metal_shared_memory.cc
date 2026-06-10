@@ -27,6 +27,16 @@ DEFINE_bool(
     "buffer instead of staging them through a blit.",
     "Metal");
 
+DEFINE_bool(
+    metal_shared_memory_zero_copy, false,
+    "UMA spike: wrap the guest physical memory region itself as the "
+    "shared-memory buffer (newBuffer bytesNoCopy) so the GPU reads "
+    "vertex/index data and writes memexport/resolve results directly in "
+    "guest RAM, eliminating mirror uploads entirely. Faithful to the real "
+    "360's unified memory; titles that rewrite in-flight buffers without "
+    "fencing may flicker. Falls back to the mirror if creation fails. "
+    "Validate per title.",
+    "Metal");
 DECLARE_bool(metal_backend_hazard_model);
 
 namespace xe {
@@ -68,7 +78,30 @@ bool MetalSharedMemory::Initialize() {
     // per-encoder dependency analysis for the hottest buffer in the backend.
     buffer_options |= MTL::ResourceHazardTrackingModeUntracked;
   }
-  buffer_ = device->newBuffer(kBufferSize, buffer_options);
+  if (::cvars::metal_shared_memory_zero_copy) {
+    // The 512MB guest physical view is page-aligned, fully committed up
+    // front (memory.cc commits it because the real 360 GPU could access all
+    // of it), and a single VM region this early in init (the write-watch
+    // mprotects that fragment it haven't started yet).
+    void* xbox_ram = memory().TranslatePhysical(0);
+    if (xbox_ram) {
+      buffer_ = device->newBuffer(xbox_ram, kBufferSize, buffer_options,
+                                  /*deallocator=*/nullptr);
+    }
+    if (buffer_) {
+      zero_copy_ = true;
+      XELOGI(
+          "Metal shared memory: zero-copy guest RAM buffer (uploads become "
+          "validity bookkeeping only)");
+    } else {
+      XELOGW(
+          "Metal shared memory: bytesNoCopy wrap failed; falling back to the "
+          "mirror buffer");
+    }
+  }
+  if (!buffer_) {
+    buffer_ = device->newBuffer(kBufferSize, buffer_options);
+  }
   if (!buffer_) {
     XELOGE("Failed to create Metal shared memory buffer");
     return false;
@@ -190,7 +223,9 @@ void MetalSharedMemory::TrackStandaloneGpuAccess(
 MetalSharedMemory::UploadRouteInfo MetalSharedMemory::GetUploadRouteInfo(
     const SharedMemory::Range* ranges, uint32_t range_count) {
   UploadRouteInfo info;
-  if (!ranges || !range_count) {
+  if (!ranges || !range_count || zero_copy_) {
+    // Zero-copy: the GPU reads guest RAM itself; there is never upload work
+    // (and so never a staged-upload render pass break).
     return info;
   }
 
@@ -271,6 +306,26 @@ bool MetalSharedMemory::UploadRanges(
   }
 
   if (!buffer_ || num_upload_ranges == 0) {
+    return true;
+  }
+
+  if (zero_copy_) {
+    // The buffer IS guest RAM: copying would be memcpy onto itself. Only the
+    // validity bookkeeping remains (ranges marked valid so requests stop
+    // re-reporting them).
+    const uint32_t zero_copy_page_size = 1u << page_size_log2();
+    for (uint32_t i = 0; i < num_upload_ranges; ++i) {
+      uint64_t start =
+          uint64_t(upload_page_ranges[i].first) * zero_copy_page_size;
+      uint64_t length =
+          uint64_t(upload_page_ranges[i].second) * zero_copy_page_size;
+      if (start >= kBufferSize || !length) {
+        continue;
+      }
+      length = std::min<uint64_t>(length, kBufferSize - start);
+      MakeRangeValid(static_cast<uint32_t>(start),
+                     static_cast<uint32_t>(length), false);
+    }
     return true;
   }
 

@@ -41,16 +41,16 @@ class MetalSharedMemory : public SharedMemory {
   }
   void MarkGpuAccess(uint32_t start, uint32_t length,
                      uint64_t submission_index);
-  void TrackStandaloneGpuAccess(
-      MTL::CommandBuffer* command_buffer,
-      const std::pair<uint32_t, uint32_t>* ranges, uint32_t range_count);
+  void TrackStandaloneGpuAccess(MTL::CommandBuffer* command_buffer,
+                                const std::pair<uint32_t, uint32_t>* ranges,
+                                uint32_t range_count);
   struct UploadRouteInfo {
     uint64_t upload_bytes = 0;
     uint64_t direct_bytes = 0;
     uint64_t staged_bytes = 0;
   };
   UploadRouteInfo GetUploadRouteInfo(const SharedMemory::Range* ranges,
-                                      uint32_t range_count);
+                                     uint32_t range_count);
 
   // For trace dump, simplified - just make buffer available for reading
   void UseForReading() {
@@ -71,6 +71,10 @@ class MetalSharedMemory : public SharedMemory {
   uint32_t last_gpu_access_page_first_ = 1;
   uint32_t last_gpu_access_page_last_ = 0;
   uint64_t last_gpu_access_submission_ = 0;
+  // UMA zero-copy: buffer_ wraps guest RAM itself; uploads are no-op copies
+  // (validity bookkeeping only) because source and destination are the same
+  // memory.
+  bool zero_copy_ = false;
   std::mutex standalone_gpu_access_mutex_;
   std::vector<uint32_t> page_standalone_gpu_access_counts_;
   MTL::Buffer* buffer_ = nullptr;
