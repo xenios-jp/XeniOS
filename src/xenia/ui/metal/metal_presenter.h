@@ -86,10 +86,17 @@ class MetalPresenter : public Presenter {
   Surface::TypeFlags GetSupportedSurfaceTypes() const override;
   bool CaptureGuestOutput(RawImage& image_out) override;
 
+  // wait_event/wait_event_value: optional MTLSharedEvent edge the copy
+  // command buffer waits on before reading source_texture. The copy runs on
+  // the presenter's own queue, and fences / hazard tracking do not order
+  // across queues, so the producing queue must publish its progress through
+  // an event for the copy to be ordered after the source texture's writes.
   bool CopyTextureToGuestOutput(MTL::Texture* source_texture, id dest_texture,
                                 uint32_t source_width, uint32_t source_height,
                                 bool force_swap_rb, bool use_pwl_gamma_ramp,
-                                uint64_t* submission_out = nullptr);
+                                uint64_t* submission_out = nullptr,
+                                MTL::SharedEvent* wait_event = nullptr,
+                                uint64_t wait_event_value = 0);
 
   bool UpdateGammaRamp(const void* table_data, size_t table_bytes,
                        const void* pwl_data, size_t pwl_bytes);
