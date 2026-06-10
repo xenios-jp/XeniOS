@@ -3810,6 +3810,10 @@ void MetalRenderTargetCache::DumpRenderTargets(
 
   encoder->popDebugGroup();
   if (keep_open_encoder_out && !standalone) {
+    // The encoder is autoreleased into this function's pool; the caller's
+    // reference must survive the pool drain at return (and the caller
+    // releases after endEncoding).
+    encoder->retain();
     *keep_open_encoder_out = encoder;
     return;
   }
@@ -4227,6 +4231,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
           EdramHazardUpdate(dump_encoder);
           RenderTargetHazardUpdate(dump_encoder);
           dump_encoder->endEncoding();
+          // Balances the keep-open retain.
+          dump_encoder->release();
           dump_encoder = nullptr;
         };
 
@@ -4368,6 +4374,10 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                   RenderTargetHazardUpdate(encoder);
                 }
                 encoder->endEncoding();
+                if (adopted_dump_encoder) {
+                  // Balances the keep-open retain.
+                  encoder->release();
+                }
                 if (standalone) {
                   command_processor_.CommitStandaloneAndWait(cmd);
                 }
