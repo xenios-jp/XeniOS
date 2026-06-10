@@ -4511,6 +4511,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.has_pending_draw_pass_transfers =
       render_target_cache_ &&
       render_target_cache_->HasPendingDrawPassTransfers();
+  ++backend_telemetry_.draws_submitted;
   return SubmitPreparedDraw(prepared_draw);
 }
 
@@ -7870,11 +7871,11 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
   }
 
   XELOGI(
-      "MetalTelemetry[{}]: work swaps={} draws={} pipelines set/skip={}/{} "
-      "texture_requests before/after_encoder={}/{}",
+      "MetalTelemetry[{}]: work swaps={} draws={} submitted={} pipelines "
+      "set/skip={}/{} texture_requests before/after_encoder={}/{}",
       reason, backend_telemetry_.swaps - backend_telemetry_last_dump_swap_,
-      backend_telemetry_.draw_calls, backend_telemetry_.pipeline_sets,
-      backend_telemetry_.pipeline_set_skips,
+      backend_telemetry_.draw_calls, backend_telemetry_.draws_submitted,
+      backend_telemetry_.pipeline_sets, backend_telemetry_.pipeline_set_skips,
       backend_telemetry_.texture_requests_before_encoder,
       backend_telemetry_.texture_requests_after_encoder_begin);
   XELOGI(

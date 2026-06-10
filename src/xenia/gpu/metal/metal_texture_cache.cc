@@ -1042,9 +1042,8 @@ bool MetalTextureCache::PrepareTextureMaterialization(
     return true;
   }
 
-  auto append_texture = [&](TextureKey key) {
+  auto append_texture = [&](TextureKey key, Texture* texture) {
     ++plan.request_count;
-    Texture* texture = FindOrCreateTexture(key);
     bool base_outdated =
         texture ? texture->base_outdated_lockless() : false;
     bool mips_outdated =
@@ -1239,30 +1238,84 @@ bool MetalTextureCache::PrepareTextureMaterialization(
     ++plan.planned_load_count;
   };
 
+  // The fetch-constant parse and texture lookup repeat with identical inputs
+  // for almost every draw (the binding path dirty-tracks fetch constants; this
+  // per-draw planning path did not), so memo them per slot. See
+  // FetchPlanMemoSlot for the invalidation rules.
+  const bool memo_usable = !IsDrawResolutionScaled();
   uint32_t remaining_bits = used_texture_mask;
   uint32_t index = 0;
   while (xe::bit_scan_forward(remaining_bits, &index)) {
     remaining_bits = xe::clear_lowest_bit(remaining_bits);
 
+    const xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(index);
+    FetchPlanMemoSlot& memo = fetch_plan_memo_[index];
+    static_assert(sizeof(fetch) == sizeof(memo.dwords));
+    const bool memo_hit =
+        memo_usable && memo.valid &&
+        memo.destroy_epoch == texture_destroy_epoch_ &&
+        !std::memcmp(&fetch, memo.dwords, sizeof(memo.dwords));
+
     TextureKey key;
     uint8_t swizzled_signs = kSwizzledSignsUnsigned;
-    BindingInfoFromFetchConstant(regs.GetTextureFetch(index), key,
-                                 &swizzled_signs);
+    if (memo_hit) {
+      key = memo.key;
+      swizzled_signs = memo.swizzled_signs;
+    } else {
+      memo.valid = false;
+      BindingInfoFromFetchConstant(fetch, key, &swizzled_signs);
+    }
     if (!key.is_valid) {
+      if (!memo_hit && memo_usable) {
+        std::memcpy(memo.dwords, &fetch, sizeof(memo.dwords));
+        memo.key = key;
+        memo.swizzled_signs = swizzled_signs;
+        memo.texture = nullptr;
+        memo.texture_signed = nullptr;
+        memo.destroy_epoch = texture_destroy_epoch_;
+        memo.valid = true;
+      }
       continue;
     }
 
+    bool want_unsigned = true;
+    bool want_signed = false;
     if (IsSignedVersionSeparateForFormat(key)) {
-      if (texture_util::IsAnySignNotSigned(swizzled_signs)) {
-        append_texture(key);
-      }
-      if (texture_util::IsAnySignSigned(swizzled_signs)) {
-        TextureKey signed_key = key;
-        signed_key.signed_separate = 1;
-        append_texture(signed_key);
-      }
-    } else {
-      append_texture(key);
+      want_unsigned = texture_util::IsAnySignNotSigned(swizzled_signs);
+      want_signed = texture_util::IsAnySignSigned(swizzled_signs);
+    }
+    TextureKey signed_key = key;
+    signed_key.signed_separate = 1;
+
+    Texture* texture_unsigned = nullptr;
+    Texture* texture_signed = nullptr;
+    bool find_failed = false;
+    if (want_unsigned) {
+      texture_unsigned = memo_hit ? memo.texture : FindOrCreateTexture(key);
+      find_failed |= !texture_unsigned;
+    }
+    if (want_signed) {
+      texture_signed =
+          memo_hit ? memo.texture_signed : FindOrCreateTexture(signed_key);
+      find_failed |= !texture_signed;
+    }
+    // Only memo successful lookups: a failed creation keeps retrying per
+    // draw exactly as before.
+    if (!memo_hit && memo_usable && !find_failed) {
+      std::memcpy(memo.dwords, &fetch, sizeof(memo.dwords));
+      memo.key = key;
+      memo.swizzled_signs = swizzled_signs;
+      memo.texture = texture_unsigned;
+      memo.texture_signed = texture_signed;
+      memo.destroy_epoch = texture_destroy_epoch_;
+      memo.valid = true;
+    }
+
+    if (want_unsigned) {
+      append_texture(key, texture_unsigned);
+    }
+    if (want_signed) {
+      append_texture(signed_key, texture_signed);
     }
   }
 
@@ -4904,6 +4957,8 @@ MetalTextureCache::MetalTexture::MetalTexture(MetalTextureCache& texture_cache,
 }
 
 MetalTextureCache::MetalTexture::~MetalTexture() {
+  // Invalidate the fetch-constant plan memo: it may hold this pointer.
+  ++texture_cache_.texture_destroy_epoch_;
   // Release persistent bindless SRV slots before destroying the texture.
   if (bindless_srv_index_ != UINT32_MAX) {
     texture_cache_.command_processor_->ReleaseViewBindlessIndex(
