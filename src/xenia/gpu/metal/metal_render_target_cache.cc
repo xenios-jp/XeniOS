@@ -643,6 +643,66 @@ void MetalRenderTargetCache::EdramHazardUpdate(
   command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
 }
 
+void MetalRenderTargetCache::RenderTargetHazardWait(
+    MTL::RenderCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->waitForFence(fence, MTL::RenderStageFragment);
+  command_processor_.RecordHazardFenceWait(0);
+}
+
+void MetalRenderTargetCache::RenderTargetHazardUpdate(
+    MTL::RenderCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->updateFence(fence, MTL::RenderStageFragment);
+  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
+}
+
+void MetalRenderTargetCache::RenderTargetHazardWait(
+    MTL::ComputeCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->waitForFence(fence);
+  command_processor_.RecordHazardFenceWait(2);
+}
+
+void MetalRenderTargetCache::RenderTargetHazardUpdate(
+    MTL::ComputeCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->updateFence(fence);
+  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
+}
+
+void MetalRenderTargetCache::RenderTargetHazardWait(
+    MTL::BlitCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->waitForFence(fence);
+  command_processor_.RecordHazardFenceWait(1);
+}
+
+void MetalRenderTargetCache::RenderTargetHazardUpdate(
+    MTL::BlitCommandEncoder* encoder) {
+  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
+  if (!fence || !encoder) {
+    return;
+  }
+  encoder->updateFence(fence);
+  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
+}
+
 bool MetalRenderTargetCache::InitializeEdramBufferViews() {
   ReleaseEdramBufferViews();
   if (!edram_buffer_) {
@@ -793,8 +853,15 @@ bool MetalRenderTargetCache::Initialize() {
 
   if (::cvars::metal_use_heaps) {
     size_t min_heap_bytes = std::max<int32_t>(0, ::cvars::metal_heap_min_bytes);
+    // Render-target phase: untracked heap memory; ordering through the
+    // command processor's render-target fence (render targets are only
+    // destroyed at cache clear, so heap aliasing on reuse is not reachable
+    // mid-session).
     render_target_heap_pool_ = std::make_unique<MetalHeapPool>(
-        device_, MTL::StorageModePrivate, min_heap_bytes, "XeniaRT");
+        device_, MTL::StorageModePrivate, min_heap_bytes, "XeniaRT",
+        ::cvars::metal_backend_hazard_model_render_targets
+            ? MTL::HazardTrackingModeUntracked
+            : MTL::HazardTrackingModeTracked);
     render_target_heap_pool_->SetHeapCreatedCallback(
         [this](MTL::Heap* heap) {
           command_processor_.AddResidencySetHeap(heap);
@@ -2774,9 +2841,11 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
     return;
   }
 
+  RenderTargetHazardWait(blit);
   blit->copyFromBuffer(staging, 0, bytes_per_row, 0,
                        MTL::Size::Make(kWidth, kHeight, 1), texture, 0, 0,
                        MTL::Origin::Make(0, 0, 0));
+  RenderTargetHazardUpdate(blit);
   blit->endEncoding();
   command_processor_.CommitStandaloneAndWait(cmd);
   staging->release();
@@ -3553,6 +3622,8 @@ void MetalRenderTargetCache::DumpRenderTargets(
   SetEncoderLabel(encoder,
                   encoder_label ? encoder_label : "XeniaEDRAMDumpEncoder");
   EdramHazardWait(encoder);
+  // Reads host render-target textures.
+  RenderTargetHazardWait(encoder);
   PushEncoderDebugGroup(
       encoder,
       fmt::format("{} base={} rows={} pitch={}",
@@ -3735,6 +3806,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
 
   encoder->popDebugGroup();
   EdramHazardUpdate(encoder);
+  RenderTargetHazardUpdate(encoder);
   encoder->endEncoding();
   if (standalone) {
     command_processor_.CommitStandaloneAndWait(cmd);
@@ -4581,6 +4653,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           depth_store_encoder->setLabel(NS::String::string(
               "XeniaHostDepthStoreEncoder", NS::UTF8StringEncoding));
           EdramHazardWait(depth_store_encoder);
+          // Reads the host depth render-target texture.
+          RenderTargetHazardWait(depth_store_encoder);
           depth_store_encoder->setComputePipelineState(
               host_depth_store_pipelines_[pipeline_index]);
           depth_store_encoder->setBuffer(edram_buffer_, 0, 1);
@@ -4614,6 +4688,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
     if (depth_store_encoder) {
       EdramHazardUpdate(depth_store_encoder);
+      RenderTargetHazardUpdate(depth_store_encoder);
       depth_store_encoder->endEncoding();
     }
   }
@@ -4729,6 +4804,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           cmd->renderCommandEncoder(merged_clear_pass);
       if (merged_clear_encoder) {
         SetEncoderLabel(merged_clear_encoder, "XeniaResolveClearEncoder");
+        RenderTargetHazardWait(merged_clear_encoder);
+        RenderTargetHazardUpdate(merged_clear_encoder);
         // The clear load actions perform all the work of this pass.
         merged_clear_encoder->endEncoding();
         auto consume_merged_clear = [&](uint32_t index) {
@@ -4909,6 +4986,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         if (blit_encoder) {
           blit_encoder->setLabel(NS::String::string(
               "XeniaRTTransferBlitEncoder", NS::UTF8StringEncoding));
+          // Copies between render-target textures.
+          RenderTargetHazardWait(blit_encoder);
         }
       }
       return blit_encoder;
@@ -5001,6 +5080,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
 
     if (blit_encoder) {
+      RenderTargetHazardUpdate(blit_encoder);
       blit_encoder->endEncoding();
     }
 
@@ -5133,6 +5213,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       if (transfer_encoder) {
         transfer_encoder->setLabel(
             NS::String::string("XeniaTransferEncoder", NS::UTF8StringEncoding));
+        // Samples source render-target textures in fragment draws and writes
+        // the destination attachment. The active-render-encoder reuse path
+        // gets its edges from the command processor's begin/end.
+        RenderTargetHazardWait(transfer_encoder);
       }
       return transfer_encoder;
     };
@@ -5970,6 +6054,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
 
     if (transfer_encoder && !use_active_render_encoder) {
+      RenderTargetHazardUpdate(transfer_encoder);
       transfer_encoder->endEncoding();
     }
   }

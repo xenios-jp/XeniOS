@@ -42,9 +42,11 @@ size_t GetMaxHeapBytes(MTL::Device* device) {
 }  // namespace
 
 MetalHeapPool::MetalHeapPool(MTL::Device* device, MTL::StorageMode storage_mode,
-                             size_t min_heap_size, const char* label_prefix)
+                             size_t min_heap_size, const char* label_prefix,
+                             MTL::HazardTrackingMode hazard_tracking_mode)
     : device_(device),
       storage_mode_(storage_mode),
+      hazard_tracking_mode_(hazard_tracking_mode),
       min_heap_size_(min_heap_size),
       max_heap_bytes_(GetMaxHeapBytes(device)),
       label_prefix_(label_prefix ? label_prefix : "") {}
@@ -107,7 +109,7 @@ MTL::Heap* MetalHeapPool::GetHeapForSize(size_t size, size_t alignment) {
 
   MTL::HeapDescriptor* desc = MTL::HeapDescriptor::alloc()->init();
   desc->setStorageMode(storage_mode_);
-  desc->setHazardTrackingMode(MTL::HazardTrackingModeTracked);
+  desc->setHazardTrackingMode(hazard_tracking_mode_);
   desc->setSize(heap_size);
 
   MTL::Heap* heap = device_->newHeap(desc);

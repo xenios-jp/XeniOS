@@ -23,8 +23,14 @@ namespace metal {
 
 class MetalHeapPool {
  public:
+  // hazard_tracking_mode: Tracked keeps driver hazard tracking for the heap
+  // and everything suballocated from it; Untracked requires the owner to
+  // order GPU accesses itself (backend hazard model phases,
+  // docs/metal_hazard_model_design.md).
   MetalHeapPool(MTL::Device* device, MTL::StorageMode storage_mode,
-                size_t min_heap_size, const char* label_prefix);
+                size_t min_heap_size, const char* label_prefix,
+                MTL::HazardTrackingMode hazard_tracking_mode =
+                    MTL::HazardTrackingModeTracked);
   ~MetalHeapPool();
 
   using HeapCreatedCallback = std::function<void(MTL::Heap*)>;
@@ -43,6 +49,8 @@ class MetalHeapPool {
 
   MTL::Device* device_ = nullptr;
   MTL::StorageMode storage_mode_ = MTL::StorageModePrivate;
+  MTL::HazardTrackingMode hazard_tracking_mode_ =
+      MTL::HazardTrackingModeTracked;
   size_t min_heap_size_ = 0;
   size_t max_heap_bytes_ = 0;
   size_t total_heap_bytes_ = 0;

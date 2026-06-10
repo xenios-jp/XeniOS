@@ -921,6 +921,16 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     encoder->waitForFence(shared_memory_hazard_fence);
     command_processor_.RecordHazardFenceWait(2);
   }
+  // Render-target phase consumer edge: this dispatch samples host
+  // render-target textures, so it orders after prior passes' attachment
+  // writes; the matching update at end orders later attachment writes after
+  // these reads (write-after-read).
+  MTL::Fence* render_target_hazard_fence =
+      command_processor_.GetRenderTargetHazardFence();
+  if (render_target_hazard_fence) {
+    encoder->waitForFence(render_target_hazard_fence);
+    command_processor_.RecordHazardFenceWait(2);
+  }
 
   if (draw_resolution_scaled) {
     encoder->setBytes(&copy_constants.dest_relative,
@@ -1003,6 +1013,10 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   // (D3D12 UNORDERED_ACCESS producer -> Dispatch stage).
   if (shared_memory_hazard_fence) {
     encoder->updateFence(shared_memory_hazard_fence);
+    command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
+  }
+  if (render_target_hazard_fence) {
+    encoder->updateFence(render_target_hazard_fence);
     command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
   }
   encoder->endEncoding();

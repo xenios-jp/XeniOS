@@ -294,6 +294,17 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   void EdramHazardUpdate(MTL::ComputeCommandEncoder* encoder);
   void EdramHazardWait(MTL::BlitCommandEncoder* encoder);
   void EdramHazardUpdate(MTL::BlitCommandEncoder* encoder);
+  // Render-target phase edges (fence owned by the command processor): every
+  // encoder that touches render-target textures waits at creation and updates
+  // at end — readers update too, so a later attachment write orders after an
+  // in-flight dump/resolve/transfer read (write-after-read). Render encoders
+  // scope the edges to the fragment stage so vertex work still overlaps.
+  void RenderTargetHazardWait(MTL::RenderCommandEncoder* encoder);
+  void RenderTargetHazardUpdate(MTL::RenderCommandEncoder* encoder);
+  void RenderTargetHazardWait(MTL::ComputeCommandEncoder* encoder);
+  void RenderTargetHazardUpdate(MTL::ComputeCommandEncoder* encoder);
+  void RenderTargetHazardWait(MTL::BlitCommandEncoder* encoder);
+  void RenderTargetHazardUpdate(MTL::BlitCommandEncoder* encoder);
   MTL::Library* GetOrCreateEdramLoadLibrary(bool msaa);
   MTL::RenderPipelineState* GetOrCreateEdramLoadPipeline(
       MTL::PixelFormat dest_format, uint32_t sample_count);
