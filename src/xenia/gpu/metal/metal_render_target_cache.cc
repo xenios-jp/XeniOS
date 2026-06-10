@@ -1679,6 +1679,8 @@ void MetalRenderTargetCache::ClearCache() {
   }
   current_depth_target_ = nullptr;
   MarkRenderPassDescriptorDirty();
+  // The base ClearCache below may delete the render targets these point to.
+  cached_render_pass_descriptor_pending_clears_.fill(nullptr);
 
   dummy_color_target_owner_.reset();
   dummy_color_target_ = nullptr;
@@ -2973,6 +2975,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
   cached_render_pass_descriptor_fallback_depth_required_ =
       fallback_depth_attachment_required;
   render_pass_descriptor_dirty_ = false;
+  cached_render_pass_descriptor_pending_clears_.fill(nullptr);
 
   AttachmentPlan attachment_plan;
   if (!BuildCurrentAttachmentPlan(expected_sample_count, attachment_plan)) {
@@ -3000,8 +3003,10 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     SetAttachmentLoadStoreActions(depth_attachment, depth_load_store);
     if (depth_needs_clear) {
       depth_attachment->setClearDepth(GetDepthTargetClearDepth());
-      depth_plan.render_target->SetNeedsInitialClear(false);
-      MarkRenderPassDescriptorDirty();
+      // Consumed only when an encoder is actually created from this
+      // descriptor - see ConsumeRenderPassDescriptorClears.
+      cached_render_pass_descriptor_pending_clears_[0] =
+          depth_plan.render_target;
     }
 
     // If the depth texture includes stencil, bind the same texture to the
@@ -3046,8 +3051,8 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
       if (color_needs_clear) {
         color_attachment->setClearColor(
             MTL::ClearColor::Make(0.0, 0.0, 0.0, 0.0));
-        color_plan.render_target->SetNeedsInitialClear(false);
-        MarkRenderPassDescriptorDirty();
+        cached_render_pass_descriptor_pending_clears_[1 + i] =
+            color_plan.render_target;
       }
 
       has_any_color_target = true;
@@ -3207,6 +3212,28 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
   }
 
   return cached_render_pass_descriptor_;
+}
+
+void MetalRenderTargetCache::ConsumeRenderPassDescriptorClears(
+    MTL::RenderPassDescriptor* pass_descriptor) {
+  if (!pass_descriptor || pass_descriptor != cached_render_pass_descriptor_) {
+    return;
+  }
+  bool any_consumed = false;
+  for (MetalRenderTarget*& render_target :
+       cached_render_pass_descriptor_pending_clears_) {
+    if (!render_target) {
+      continue;
+    }
+    render_target->SetNeedsInitialClear(false);
+    render_target = nullptr;
+    any_consumed = true;
+  }
+  if (any_consumed) {
+    // The cached descriptor still has clear load actions baked in; the next
+    // pass must rebuild it so the cleared contents are loaded, not re-cleared.
+    MarkRenderPassDescriptorDirty();
+  }
 }
 
 bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
