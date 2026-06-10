@@ -550,7 +550,8 @@ uint32_t MslShaderTranslator::GetTextureArgumentSlotCount(
 
 bool MslShaderTranslator::UsesNativeSystemConstants() const {
   // Generated vertex/pixel finalization code references system constants even
-  // when the guest shader itself doesn't read cbuffer b0. Keep this conservative.
+  // when the guest shader itself doesn't read cbuffer b0. Keep this
+  // conservative.
   return true;
 }
 
@@ -611,8 +612,7 @@ bool MslShaderTranslator::UsesNativeDescriptorIndices() const {
 bool MslShaderTranslator::UsesNativeDrawConstants() const {
   return UsesNativeSystemConstants() || UsesNativeFloatConstants() ||
          UsesNativeBoolLoopConstants() || UsesNativeFetchConstants() ||
-         UsesNativeDescriptorIndices() ||
-         UsesNativePrimitiveIndexConstants();
+         UsesNativeDescriptorIndices() || UsesNativePrimitiveIndexConstants();
 }
 
 bool MslShaderTranslator::UsesNativeTexture2DArrayHeap() const {
@@ -1697,12 +1697,12 @@ ShaderTranslationMetadata MslShaderTranslator::BuildNativeMetadata() const {
   if (UsesNativeFetchConstants()) {
     mark_used_cbuffer(ShaderCbufferRegister::kFetchConstants);
   }
-  if (!metadata.texture_bindings.empty() || !metadata.sampler_bindings.empty()) {
+  if (!metadata.texture_bindings.empty() ||
+      !metadata.sampler_bindings.empty()) {
     mark_used_cbuffer(ShaderCbufferRegister::kDescriptorIndices);
   }
   metadata.uses_shared_memory = UsesNativeSharedMemory();
-  metadata.uses_primitive_index_constants =
-      UsesNativePrimitiveIndexConstants();
+  metadata.uses_primitive_index_constants = UsesNativePrimitiveIndexConstants();
   return metadata;
 }
 
@@ -1765,6 +1765,21 @@ void MslShaderTranslator::EmitSystemConstants() {
 }
 
 void MslShaderTranslator::EmitInputOutputDeclarations() {
+  // Emit only the interpolators in the live mask carried by the shader
+  // modification. A pipeline's vertex and pixel stages always receive the same
+  // interpolator_mask (computed once per draw in
+  // MetalCommandProcessor::IssueDraw and passed to both
+  // GetCurrentVertex/PixelShaderModification), so the named [[user(...)]]
+  // attributes emitted here agree across the pair. Inter-stage varyings are
+  // matched by the user attribute name (Metal shader converter UserManual:
+  // "match the shader interface using the user attribute in your struct member
+  // declarations"), and the attribute name is derived from the interpolator
+  // index N rather than packing order, so masking out members keeps the
+  // surviving locations stable and the VS/PS interfaces consistent.
+  Modification modification = GetMslShaderModification();
+  uint32_t output_interpolator_mask =
+      is_vertex_shader() ? modification.vertex.interpolator_mask
+                         : modification.pixel.interpolator_mask;
   EmitLine("struct XeVertexOutput {");
   Indent();
   EmitLine("float4 xe_position [[position]];");
@@ -1777,6 +1792,9 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
              std::to_string(clip_distance_count) + "];");
   }
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(output_interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     EmitLine("float4 xe_interpolator_" + std::to_string(i) +
              " [[user(xe_interpolator_" + std::to_string(i) + ")]];");
   }
@@ -1794,6 +1812,9 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
                std::to_string(clip_distance_count) + "];");
     }
     for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+      if (!(output_interpolator_mask & (UINT32_C(1) << i))) {
+        continue;
+      }
       EmitLine("float4 xe_interpolator_" + std::to_string(i) +
                " [[user(xe_interpolator_" + std::to_string(i) + ")]];");
     }
@@ -1821,10 +1842,18 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
   Indent();
   EmitLine("float4 xe_position [[position]];");
   EmitLine("bool xe_is_front_face [[front_facing]];");
-  Modification modification = GetMslShaderModification();
+  // Pixel-stage interpolator inputs are gated on the same live mask. The mask
+  // matches the producing vertex stage (identical interpolator_mask per
+  // pipeline pair), so the named [[user(...)]] varyings line up; centroid
+  // qualification stays bound to the per-interpolator index N.
+  uint32_t pixel_interpolator_mask =
+      is_pixel_shader() ? modification.pixel.interpolator_mask : 0;
   uint32_t centroid_interpolators =
       is_pixel_shader() ? modification.pixel.interpolators_centroid : 0;
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(pixel_interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     bool centroid = (centroid_interpolators & (UINT32_C(1) << i)) != 0;
     EmitLine("float4 xe_interpolator_" + std::to_string(i) +
              " [[user(xe_interpolator_" + std::to_string(i) + ")" +
@@ -1985,12 +2014,12 @@ void MslShaderTranslator::EmitHelperFunctions() {
   if (helper_usage.uses_mul_sm3) {
     // Shader Model 3 multiply: +-0 or denormal * anything (incl. Inf/NaN) = +0.
     // fmin(|a|, |b|) == 0 detects a zero operand even when the other is NaN,
-    // because MSL fmin returns the non-NaN argument (OpenCL/C99 semantics); this
-    // is the same formulation the DXBC/SPIR-V backends use (SPIR-V's NMin), and
-    // is one ALU op cheaper than OR-ing two equality compares. Must be fmin, not
-    // min (min is `y < x ? y : x` and would propagate NaN). fabs folds to a free
-    // source modifier on Apple GPUs. Relies on MathModeSafe (default) for the
-    // NaN behavior to be honored.
+    // because MSL fmin returns the non-NaN argument (OpenCL/C99 semantics);
+    // this is the same formulation the DXBC/SPIR-V backends use (SPIR-V's
+    // NMin), and is one ALU op cheaper than OR-ing two equality compares. Must
+    // be fmin, not min (min is `y < x ? y : x` and would propagate NaN). fabs
+    // folds to a free source modifier on Apple GPUs. Relies on MathModeSafe
+    // (default) for the NaN behavior to be honored.
     EmitLine(
         "inline float XeMulSM3(float a, float b) { return fmin(fabs(a), "
         "fabs(b)) == 0.0f ? 0.0f : a * b; }");
@@ -2278,7 +2307,8 @@ void MslShaderTranslator::EmitHelperFunctions() {
         "piece_at_least_3), piece_at_least_2); float2 offset = "
         "select(select(float2(0.0f), float2(-64.0f), piece_at_least_1), "
         "select(float2(-256.0f), float2(-1024.0f), piece_at_least_3), "
-        "piece_at_least_2); float2 linear_value = fma(clamped * float2(255.0f * "
+        "piece_at_least_2); float2 linear_value = fma(clamped * float2(255.0f "
+        "* "
         "1024.0f), scale, offset); linear_value += trunc(linear_value * "
         "scale); return linear_value * float2(1.0f / 1023.0f); }");
   }
@@ -2294,7 +2324,8 @@ void MslShaderTranslator::EmitHelperFunctions() {
         "piece_at_least_3), piece_at_least_2); float3 offset = "
         "select(select(float3(0.0f), float3(-64.0f), piece_at_least_1), "
         "select(float3(-256.0f), float3(-1024.0f), piece_at_least_3), "
-        "piece_at_least_2); float3 linear_value = fma(clamped * float3(255.0f * "
+        "piece_at_least_2); float3 linear_value = fma(clamped * float3(255.0f "
+        "* "
         "1024.0f), scale, offset); linear_value += trunc(linear_value * "
         "scale); return linear_value * float3(1.0f / 1023.0f); }");
   }
@@ -2310,7 +2341,8 @@ void MslShaderTranslator::EmitHelperFunctions() {
         "piece_at_least_3), piece_at_least_2); float4 offset = "
         "select(select(float4(0.0f), float4(-64.0f), piece_at_least_1), "
         "select(float4(-256.0f), float4(-1024.0f), piece_at_least_3), "
-        "piece_at_least_2); float4 linear_value = fma(clamped * float4(255.0f * "
+        "piece_at_least_2); float4 linear_value = fma(clamped * float4(255.0f "
+        "* "
         "1024.0f), scale, offset); linear_value += trunc(linear_value * "
         "scale); return linear_value * float4(1.0f / 1023.0f); }");
   }
@@ -2820,7 +2852,14 @@ void MslShaderTranslator::EmitVertexOutputInitialization() {
   for (uint32_t i = 0; i < VertexShaderCullDistanceCount(); ++i) {
     EmitLine("xe_cull_distance[" + std::to_string(i) + "] = 0.0f;");
   }
+  // Only initialize interpolators that exist in XeVertexOutput for this mask;
+  // masked-out members were pruned from the struct.
+  uint32_t interpolator_mask =
+      GetMslShaderModification().vertex.interpolator_mask;
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     EmitLine("output.xe_interpolator_" + std::to_string(i) +
              " = float4(0.0f);");
   }
@@ -3417,7 +3456,13 @@ void MslShaderTranslator::EmitVertexFinalizerFunction() {
       EmitLine("mesh_output.xe_clip_distance[" + std::to_string(i) +
                "] = output.xe_clip_distance[" + std::to_string(i) + "];");
     }
+    // Copy only the interpolators present in both structs (same vertex mask).
+    uint32_t mesh_interpolator_mask =
+        GetMslShaderModification().vertex.interpolator_mask;
     for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+      if (!(mesh_interpolator_mask & (UINT32_C(1) << i))) {
+        continue;
+      }
       const std::string interpolator = "xe_interpolator_" + std::to_string(i);
       EmitLine("mesh_output." + interpolator + " = output." + interpolator +
                ";");
@@ -4215,8 +4260,8 @@ void MslShaderTranslator::EmitVertexEntryPointWrappers() {
     Indent();
     Emit(indent_string_ + "uint xe_vertex_id [[vertex_id]],\n");
     Emit(indent_string_ + "uint xe_instance_id [[instance_id]],\n");
-    // baseInstance carries this draw's draw-constants slot index. The host binds
-    // a page of XeNativeDrawConstants tables once (no per-draw
+    // baseInstance carries this draw's draw-constants slot index. The host
+    // binds a page of XeNativeDrawConstants tables once (no per-draw
     // setVertexBufferOffset) and selects this draw's table by baseInstance.
     Emit(indent_string_ + "uint xe_base_instance [[base_instance]]");
     EmitDirectResourceArguments(true, true, /*draw_constants_as_array=*/true);
