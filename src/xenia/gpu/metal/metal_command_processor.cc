@@ -4017,7 +4017,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     ++telemetry_counter;
     return true;
   };
-  std::array<VertexBindingRange, 32> vertex_ranges;
+  std::array<VertexBindingRange, kMaxCurrentDrawVertexFetchRanges>
+      vertex_ranges;
   uint32_t vertex_range_count = 0;
   const auto& vb_bindings = vertex_shader->vertex_bindings();
   bool uses_vertex_fetch = ShaderUsesVertexFetch(*vertex_shader);

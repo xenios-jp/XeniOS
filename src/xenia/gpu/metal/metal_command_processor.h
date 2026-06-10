@@ -677,7 +677,9 @@ class MetalCommandProcessor final : public CommandProcessor {
     bool has_index_buffer_info = false;
 
     PreparedDrawSpan<Shader::VertexBinding> vertex_bindings;
-    std::array<VertexBindingRange, 32> vertex_ranges = {};
+    // A shader can use every vertex fetch binding (3 per fetch constant).
+    std::array<VertexBindingRange, xenos::kVertexFetchConstantCount>
+        vertex_ranges = {};
     uint32_t vertex_range_count = 0;
     PreparedDrawSpan<SharedMemory::Range> materialization_ranges;
     uint32_t texture_source_range_count = 0;
