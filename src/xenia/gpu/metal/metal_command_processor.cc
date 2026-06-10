@@ -7367,8 +7367,13 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
           std::lock_guard<std::mutex> lock(completion_mutex_);
           completed_command_buffers_.fetch_add(1, std::memory_order_release);
           pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
+          // Notify under the lock so the object cannot be destroyed before
+          // notify_all() runs.  WaitForPendingCompletionHandlers spins on
+          // pending_completion_handlers_ and could see 0 after the lock is
+          // released but before notify_all() fires, leaving notify_all()
+          // running on a destroyed condition_variable.
+          completion_cond_.notify_all();
         }
-        completion_cond_.notify_all();
       });
 
   if (texture_cache_) {
