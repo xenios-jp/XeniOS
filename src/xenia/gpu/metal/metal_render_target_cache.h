@@ -730,10 +730,19 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+  // keep_open_encoder_out: when non-null and command_buffer was supplied (not
+  // the internal standalone path), the dump's compute encoder is returned
+  // OPEN instead of ended — the caller continues encoding into it (resolve
+  // copies read what the dump wrote, ordered by an intra-encoder barrier) and
+  // then owns the deferred EdramHazardUpdate + RenderTargetHazardUpdate +
+  // endEncoding. Every caller path must close it or the command buffer is
+  // wedged.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
                          uint32_t dump_rows, uint32_t dump_pitch,
                          MTL::CommandBuffer* command_buffer = nullptr,
-                         const char* encoder_label = nullptr);
+                         const char* encoder_label = nullptr,
+                         MTL::ComputeCommandEncoder** keep_open_encoder_out =
+                             nullptr);
 
   bool TryDirectHostResolveCopy(
       const draw_util::ResolveInfo& resolve_info,
