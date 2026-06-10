@@ -64,6 +64,13 @@ class MetalSharedMemory : public SharedMemory {
   MetalCommandProcessor& command_processor_;
   std::unique_ptr<MetalUploadBufferPool> upload_buffer_pool_;
   std::vector<uint64_t> page_last_main_gpu_access_submission_;
+  // Last page range fully stamped by MarkGpuAccess and the submission it was
+  // stamped with. Consecutive draws overwhelmingly mark the same vertex/index
+  // ranges, so a contained repeat within the same submission can skip the
+  // per-page walk. Only touched on the command processor thread.
+  uint32_t last_gpu_access_page_first_ = 1;
+  uint32_t last_gpu_access_page_last_ = 0;
+  uint64_t last_gpu_access_submission_ = 0;
   std::mutex standalone_gpu_access_mutex_;
   std::vector<uint32_t> page_standalone_gpu_access_counts_;
   MTL::Buffer* buffer_ = nullptr;

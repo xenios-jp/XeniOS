@@ -79,6 +79,9 @@ bool MetalSharedMemory::Initialize() {
                         size_t(1) << page_size_log2()));
   page_last_main_gpu_access_submission_.assign(
       kBufferSize >> page_size_log2(), 0);
+  last_gpu_access_page_first_ = 1;
+  last_gpu_access_page_last_ = 0;
+  last_gpu_access_submission_ = 0;
   page_standalone_gpu_access_counts_.assign(kBufferSize >> page_size_log2(),
                                             0);
 
@@ -111,11 +114,22 @@ void MetalSharedMemory::MarkGpuAccess(uint32_t start, uint32_t length,
   page_last = std::min<uint32_t>(
       page_last,
       static_cast<uint32_t>(page_last_main_gpu_access_submission_.size() - 1));
-  for (uint32_t page = page_first; page <= page_last; ++page) {
-    page_last_main_gpu_access_submission_[page] =
-        std::max(page_last_main_gpu_access_submission_[page],
-                 submission_index);
+  // Contained repeat with the same submission: every page already holds a
+  // value >= submission_index, so the walk below would be a no-op.
+  if (submission_index == last_gpu_access_submission_ &&
+      page_first >= last_gpu_access_page_first_ &&
+      page_last <= last_gpu_access_page_last_) {
+    return;
   }
+  uint64_t* pages = page_last_main_gpu_access_submission_.data();
+  for (uint32_t page = page_first; page <= page_last; ++page) {
+    if (pages[page] < submission_index) {
+      pages[page] = submission_index;
+    }
+  }
+  last_gpu_access_submission_ = submission_index;
+  last_gpu_access_page_first_ = page_first;
+  last_gpu_access_page_last_ = page_last;
 }
 
 void MetalSharedMemory::TrackStandaloneGpuAccess(
@@ -196,6 +210,12 @@ MetalSharedMemory::UploadRouteInfo MetalSharedMemory::GetUploadRouteInfo(
     uint64_t end =
         std::min(uint64_t(range.start) + range.length, uint64_t(kBufferSize));
     if (end <= range.start) {
+      continue;
+    }
+    // Fully-resident range: the per-page walk below only accumulates bytes for
+    // invalid pages, so one whole-range validity scan (64 pages per bitmap
+    // word) replaces a per-page IsRangeValid call on the most common case.
+    if (IsRangeValid(range.start, static_cast<uint32_t>(end - range.start))) {
       continue;
     }
     uint32_t page_first = range.start >> page_size_log2();
