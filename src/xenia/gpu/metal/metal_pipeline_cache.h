@@ -218,6 +218,7 @@ class MetalPipelineCache {
 
   struct GeometryPipelineState {
     MTL::RenderPipelineState* pipeline = nullptr;
+    MetalPipelineDescription description = {};
     uint32_t gs_vertex_size_in_bytes = 0;
     uint32_t gs_max_input_primitives_per_mesh_threadgroup = 0;
   };
@@ -231,10 +232,12 @@ class MetalPipelineCache {
   struct NativeMeshPipelineState {
     MTL::RenderPipelineState* pipeline = nullptr;
     NativeMeshPipelineType type = NativeMeshPipelineType::kRectangleList;
+    MetalPipelineDescription description = {};
   };
 
   struct TessellationPipelineState {
     MTL::RenderPipelineState* pipeline = nullptr;
+    MetalPipelineDescription description = {};
     IRRuntimeTessellationPipelineConfig config = {};
     IRRuntimePrimitiveType primitive = IRRuntimePrimitiveTypeTriangle;
     bool native_msl = false;

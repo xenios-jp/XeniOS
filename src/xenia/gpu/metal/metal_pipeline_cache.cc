@@ -2969,13 +2969,25 @@ MetalPipelineCache::GetOrCreatePipelineState(
       requires_native_msl);
   uint64_t key = XXH3_64bits(&description, sizeof(description));
 
-  // Check cache.
+  // Check cache.  Verify the stored description on hit to guard against the
+  // rare but possible case where two distinct descriptions hash to the same
+  // 64-bit XXH3 value (hash collision).
   auto it = pipeline_cache_.find(key);
   if (it != pipeline_cache_.end()) {
-    if (it->second->creation_failed.load(std::memory_order_acquire)) {
-      return nullptr;
+    if (std::memcmp(&it->second->description, &description,
+                    sizeof(description)) != 0) {
+      // Hash collision: fall through to create a new entry with a distinct key.
+      // Two entries cannot share the same key in an unordered_map so treat this
+      // as a cache miss; the colliding pipeline will be recreated this frame.
+      XELOGW(
+          "Pipeline cache: XXH3 hash collision ({:016X}); recreating pipeline",
+          key);
+    } else {
+      if (it->second->creation_failed.load(std::memory_order_acquire)) {
+        return nullptr;
+      }
+      return it->second.get();
     }
-    return it->second.get();
   }
 
   // Create a new handle.
@@ -3405,9 +3417,23 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
               sizeof(key_data.blendcontrol));
   uint64_t key = XXH3_64bits(&key_data, sizeof(key_data));
 
+  // Build the description used both for equality-checking on cache hit and for
+  // archival storage.  Compute it before the lookup so a single call path
+  // handles both the hit and miss cases.
+  MetalPipelineDescription stored_description_geom =
+      BuildGeometryPipelineDescription(vertex_translation, pixel_translation,
+                                       geometry_shader_key, attachment_formats,
+                                       rendering_key);
+
   auto it = geometry_pipeline_cache_.find(key);
   if (it != geometry_pipeline_cache_.end()) {
-    return &it->second;
+    if (std::memcmp(&it->second.description, &stored_description_geom,
+                    sizeof(stored_description_geom)) == 0) {
+      return &it->second;
+    }
+    XELOGW(
+        "Geometry pipeline cache: XXH3 hash collision ({:016X}); recreating",
+        key);
   }
 
   if (!generated_stages_) {
@@ -3489,23 +3515,20 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
 
   GeometryPipelineState state;
   state.pipeline = pipeline;
+  state.description = stored_description_geom;
   state.gs_vertex_size_in_bytes = ir_desc.pipelineConfig.gsVertexSizeInBytes;
   state.gs_max_input_primitives_per_mesh_threadgroup =
       ir_desc.pipelineConfig.gsMaxInputPrimitivesPerMeshThreadgroup;
 
   auto [inserted_it, inserted] =
       geometry_pipeline_cache_.emplace(key, std::move(state));
-  MetalPipelineDescription stored_description =
-      BuildGeometryPipelineDescription(vertex_translation, pixel_translation,
-                                       geometry_shader_key, attachment_formats,
-                                       rendering_key);
   QueueStoredShader(static_cast<MetalShader&>(vertex_translation->shader()));
   if (pixel_translation) {
     QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
   }
   QueueStoredPipeline(
-      stored_description,
-      XXH3_64bits(&stored_description, sizeof(stored_description)));
+      stored_description_geom,
+      XXH3_64bits(&stored_description_geom, sizeof(stored_description_geom)));
   return &inserted_it->second;
 }
 
@@ -3584,10 +3607,16 @@ MetalPipelineCache::GetOrCreateNativeMslPrimitiveMeshPipelineState(
   uint64_t key = XXH3_64bits(&description, sizeof(description));
   auto it = native_mesh_pipeline_cache_.find(key);
   if (it != native_mesh_pipeline_cache_.end()) {
-    if (use_fallback_pixel_shader && pixel_function) {
-      pixel_function->release();
+    if (std::memcmp(&it->second.description, &description,
+                    sizeof(description)) == 0) {
+      if (use_fallback_pixel_shader && pixel_function) {
+        pixel_function->release();
+      }
+      return &it->second;
     }
-    return &it->second;
+    XELOGW(
+        "Native mesh pipeline cache: XXH3 hash collision ({:016X}); recreating",
+        key);
   }
 
   NS::String* mesh_name =
@@ -3663,6 +3692,7 @@ MetalPipelineCache::GetOrCreateNativeMslPrimitiveMeshPipelineState(
   NativeMeshPipelineState state;
   state.pipeline = pipeline;
   state.type = mesh_type;
+  state.description = description;
   auto [inserted_it, inserted] =
       native_mesh_pipeline_cache_.emplace(key, std::move(state));
   QueueStoredShader(static_cast<MetalShader&>(vertex_translation->shader()));
@@ -3762,13 +3792,27 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
               sizeof(key_data.blendcontrol));
   uint64_t key = XXH3_64bits(&key_data, sizeof(key_data));
 
-  auto it = tessellation_pipeline_cache_.find(key);
-  if (it != tessellation_pipeline_cache_.end()) {
-    return &it->second;
-  }
-
   xenos::TessellationMode tessellation_mode =
       primitive_processing_result.tessellation_mode;
+
+  // Build description before the lookup for equality-checking on hit and
+  // archival on miss.
+  MetalPipelineDescription stored_description_tess =
+      BuildTessellationPipelineDescription(
+          domain_translation, pixel_translation, primitive_processing_result,
+          tessellation_mode, attachment_formats, rendering_key);
+
+  auto it = tessellation_pipeline_cache_.find(key);
+  if (it != tessellation_pipeline_cache_.end()) {
+    if (std::memcmp(&it->second.description, &stored_description_tess,
+                    sizeof(stored_description_tess)) == 0) {
+      return &it->second;
+    }
+    XELOGW(
+        "Tessellation pipeline cache: XXH3 hash collision ({:016X}); "
+        "recreating",
+        key);
+  }
 
   if (!generated_stages_) {
     XELOGE("Tessellation pipeline: generated stage cache is not initialized");
@@ -3923,23 +3967,20 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
 
   TessellationPipelineState state;
   state.pipeline = pipeline;
+  state.description = stored_description_tess;
   state.config = ir_desc.pipelineConfig;
   state.primitive = geometry_primitive;
   state.control_point_count = ir_desc.pipelineConfig.hsInputControlPointCount;
 
   auto [inserted_it, inserted] =
       tessellation_pipeline_cache_.emplace(key, std::move(state));
-  MetalPipelineDescription stored_description =
-      BuildTessellationPipelineDescription(
-          domain_translation, pixel_translation, primitive_processing_result,
-          tessellation_mode, attachment_formats, rendering_key);
   QueueStoredShader(static_cast<MetalShader&>(domain_translation->shader()));
   if (pixel_translation) {
     QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
   }
   QueueStoredPipeline(
-      stored_description,
-      XXH3_64bits(&stored_description, sizeof(stored_description)));
+      stored_description_tess,
+      XXH3_64bits(&stored_description_tess, sizeof(stored_description_tess)));
   return &inserted_it->second;
 }
 
@@ -3974,7 +4015,14 @@ MetalPipelineCache::GetOrCreateNativeMslTessellationPipelineState(
   uint64_t key = XXH3_64bits(&description, sizeof(description));
   auto it = tessellation_pipeline_cache_.find(key);
   if (it != tessellation_pipeline_cache_.end()) {
-    return &it->second;
+    if (std::memcmp(&it->second.description, &description,
+                    sizeof(description)) == 0) {
+      return &it->second;
+    }
+    XELOGW(
+        "Native tessellation pipeline cache: XXH3 hash collision ({:016X}); "
+        "recreating",
+        key);
   }
 
   const uint32_t control_point_count =
@@ -4101,6 +4149,7 @@ MetalPipelineCache::GetOrCreateNativeMslTessellationPipelineState(
 
   TessellationPipelineState state;
   state.pipeline = pipeline;
+  state.description = description;
   state.native_msl = true;
   state.control_point_count = control_point_count;
 
