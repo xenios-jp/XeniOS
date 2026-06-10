@@ -9506,6 +9506,11 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     }
     ++backend_telemetry_.begin_encoder_created;
     current_render_encoder_->retain();
+    // This encoder performs the descriptor's baked first-use clears; tell the
+    // cache so the next pass loads the cleared contents instead.
+    if (render_target_cache_) {
+      render_target_cache_->ConsumeRenderPassDescriptorClears(pass_descriptor);
+    }
     current_render_encoder_has_zpd_visibility_ =
         zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
         pass_descriptor->visibilityResultBuffer() ==

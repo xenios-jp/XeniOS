@@ -160,6 +160,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       MTL::RenderPassDescriptor* pass_descriptor,
       uint32_t expected_sample_count = 1,
       bool fallback_depth_attachment_required = false) const;
+  // Must be called when an encoder has actually been created from
+  // pass_descriptor. Marks the first-use clears baked into it as performed and
+  // dirties the descriptor so the next pass loads the cleared contents instead
+  // of clearing again. No-op if pass_descriptor is not the cached descriptor
+  // (it was rebuilt before any encoder performed the clears).
+  void ConsumeRenderPassDescriptorClears(
+      MTL::RenderPassDescriptor* pass_descriptor);
   bool HasPendingDrawPassTransfers() const {
     return pending_draw_pass_transfer_mask_ != 0;
   }
@@ -541,6 +548,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool render_pass_descriptor_dirty_ = true;
   uint32_t cached_render_pass_descriptor_sample_count_ = 0;
   bool cached_render_pass_descriptor_fallback_depth_required_ = false;
+  // Attachments with a first-use clear baked into
+  // cached_render_pass_descriptor_ that no encoder has performed yet (index 0
+  // is depth, 1 + i are color targets). needs_initial_clear() stays set on
+  // these until ConsumeRenderPassDescriptorClears, so descriptor builds that
+  // never become an encoder don't drop the clear.
+  std::array<MetalRenderTarget*, 1 + xenos::kMaxColorRenderTargets>
+      cached_render_pass_descriptor_pending_clears_ = {};
 
   // Transient dummy color target used for passes with no bound color render
   // targets, so the render pass/pipeline still has a matching color output.
