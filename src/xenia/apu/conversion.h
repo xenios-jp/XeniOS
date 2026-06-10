@@ -15,6 +15,10 @@
 #include "xenia/base/byte_order.h"
 #include "xenia/base/platform.h"
 
+#if XE_ARCH_ARM64
+#include <arm_neon.h>
+#endif
+
 namespace xe {
 namespace apu {
 namespace conversion {
@@ -107,6 +111,55 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output,
         _mm_add_ps(fc_mix, _mm_add_ps(_mm_mul_ps(br, surround_gain), lfe_mix)));
     _mm_storeu_ps(&output[sample * 2], _mm_unpacklo_ps(left, right));
     _mm_storeu_ps(&output[(sample + 2) * 2], _mm_unpackhi_ps(left, right));
+  }
+}
+#elif XE_ARCH_ARM64
+inline void sequential_6_BE_to_interleaved_6_LE(float* output,
+                                                const float* input,
+                                                size_t ch_sample_count) {
+  for (size_t sample = 0; sample < ch_sample_count; sample++) {
+    for (size_t channel = 0; channel < 6; channel++) {
+      output[sample * 6 + channel] =
+          xe::byte_swap(input[channel * ch_sample_count + sample]);
+    }
+  }
+}
+inline void sequential_6_BE_to_interleaved_2_LE(float* output,
+                                                const float* input,
+                                                size_t ch_sample_count) {
+  assert_true(ch_sample_count % 4 == 0);
+  // NEON mirror of the SSE2 path above. Byte swap is done in the integer
+  // domain (rev32 within each 32-bit lane) so NaN-pattern floats round-trip
+  // bit-exactly. The adds keep the same association as the SSE2 version so
+  // results match x86 builds bit-for-bit.
+  const float32x4_t surround_gain = vdupq_n_f32(0.707106781f);
+  const float32x4_t lfe_gain = vdupq_n_f32(0.5f);
+  for (size_t sample = 0; sample < ch_sample_count; sample += 4) {
+    const uint8_t* in_bytes = reinterpret_cast<const uint8_t*>(input);
+    auto load_swap = [&](size_t channel) {
+      const uint8x16_t raw = vld1q_u8(
+          &in_bytes[(channel * ch_sample_count + sample) * sizeof(float)]);
+      return vreinterpretq_f32_u8(vrev32q_u8(raw));
+    };
+    const float32x4_t fl = load_swap(0);
+    const float32x4_t fr = load_swap(1);
+    const float32x4_t fc = load_swap(2);
+    const float32x4_t lfe = load_swap(3);
+    const float32x4_t bl = load_swap(4);
+    const float32x4_t br = load_swap(5);
+
+    const float32x4_t fc_mix = vmulq_f32(fc, surround_gain);
+    const float32x4_t lfe_mix = vmulq_f32(lfe, lfe_gain);
+    const float32x4_t left = vaddq_f32(
+        fl,
+        vaddq_f32(fc_mix, vaddq_f32(vmulq_f32(bl, surround_gain), lfe_mix)));
+    const float32x4_t right = vaddq_f32(
+        fr,
+        vaddq_f32(fc_mix, vaddq_f32(vmulq_f32(br, surround_gain), lfe_mix)));
+    // Interleave L/R pairs (same lane order as unpacklo/unpackhi).
+    const float32x4x2_t zipped = vzipq_f32(left, right);
+    vst1q_f32(&output[sample * 2], zipped.val[0]);
+    vst1q_f32(&output[(sample + 2) * 2], zipped.val[1]);
   }
 }
 #else
