@@ -1047,6 +1047,15 @@ struct SWIZZLE
       } else if (w0 == 1 && w1 == 0 && w2 == 3 && w3 == 2) {
         // Swap pairs within 64-bit halves.
         e.rev64(VReg(d).s4, VReg(s).s4);
+      } else if (w0 == 2 && w1 == 3 && w2 == 0 && w3 == 1) {
+        // Swap 64-bit halves.
+        e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, 8);
+      } else if (w0 == 0 && w1 == 1 && w2 == 0 && w3 == 1) {
+        // Broadcast low 64-bit half.
+        e.dup(VReg(d).d2, VReg(s).d2[0]);
+      } else if (w0 == 2 && w1 == 3 && w2 == 2 && w3 == 3) {
+        // Broadcast high 64-bit half.
+        e.dup(VReg(d).d2, VReg(s).d2[1]);
       } else {
         // General case: TBL.
         uint8_t ctrl[16];
@@ -1919,16 +1928,15 @@ struct STVL_V128 : Sequence<STVL_V128, I<OPCODE_STVL, VoidOp, I64Op, V128Op>> {
     // This equals: ctrl = identity + (mask & delta)
     //   where mask = (i >= offset), delta = (16 - offset).
     auto addr = ComputeMemoryAddress(e, i.src1);
-    int s = SrcVReg(e, i.src2, 2);
 
     // x0 = host address, w17 = offset, x16 = aligned address (saved).
     e.add(e.x0, e.GetMembaseReg(), addr);
     e.and_(e.w17, e.w0, 0xF);
-    e.and_(e.x0, e.x0, ~0xFull);
-    e.mov(e.x16, e.x0);  // save aligned addr for final store
+    e.and_(e.x16, e.x0, ~0xFull);  // save aligned addr for final store
 
-    // v0 = original mem (table reg 0), v1 = rev32(src) (table reg 1).
-    e.ldr(QReg(0), ptr(e.x0));
+    // v1 = rev32(src) (table reg 1). Resolve the source only after the
+    // address is safely in x16/w17 — LoadV128Const may clobber x0.
+    int s = SrcVReg(e, i.src2, 1);
     e.rev32(VReg(1).b16, VReg(s).b16);
 
     // Build identity {0,1,...,15} in v2.
@@ -1937,26 +1945,22 @@ struct STVL_V128 : Sequence<STVL_V128, I<OPCODE_STVL, VoidOp, I64Op, V128Op>> {
     e.mov(e.x0, 0x0F0E0D0C0B0A0908ull);
     e.ins(VReg(2).d2[1], e.x0);
 
-    // Save identity to stack scratch (needed after mask computation).
-    e.str(QReg(2),
-          ptr(e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH)));
+    // v3 = mask: 0xFF where i >= offset (offset splat staged in v0,
+    // which is not live yet).
+    e.dup(VReg(0).b16, e.w17);
+    e.cmhs(VReg(3).b16, VReg(2).b16, VReg(0).b16);
 
-    // v3 = mask: 0xFF where i >= offset.
-    e.dup(VReg(3).b16, e.w17);
-    e.cmhs(VReg(3).b16, VReg(2).b16, VReg(3).b16);
-
-    // v2 = delta splat = (16 - offset).
+    // v0 = delta splat = (16 - offset).
     e.mov(e.w0, 16);
     e.sub(e.w0, e.w0, e.w17);
-    e.dup(VReg(2).b16, e.w0);
+    e.dup(VReg(0).b16, e.w0);
 
-    // v3 = masked delta = mask & delta.
-    e.and_(VReg(3).b16, VReg(3).b16, VReg(2).b16);
-
-    // Restore identity and compute ctrl = identity + masked_delta.
-    e.ldr(QReg(2),
-          ptr(e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH)));
+    // ctrl = identity + (mask & delta).
+    e.and_(VReg(3).b16, VReg(3).b16, VReg(0).b16);
     e.add(VReg(2).b16, VReg(2).b16, VReg(3).b16);
+
+    // v0 = original mem (table reg 0), loaded last so v0 was free above.
+    e.ldr(QReg(0), ptr(e.x16));
 
     // 2-register TBL: blend original mem and rev32(src).
     e.tbl(VReg(2).b16, VReg(0).b16, 2, VReg(2).b16);
@@ -1979,16 +1983,15 @@ struct STVR_V128 : Sequence<STVR_V128, I<OPCODE_STVR, VoidOp, I64Op, V128Op>> {
     // When offset == 0, no bytes are written (mask is all-zero → identity →
     // load and store back the same memory, effectively a no-op).
     auto addr = ComputeMemoryAddress(e, i.src1);
-    int s = SrcVReg(e, i.src2, 2);
 
     // x0 = host address, w17 = offset, x16 = aligned address (saved).
     e.add(e.x0, e.GetMembaseReg(), addr);
     e.and_(e.w17, e.w0, 0xF);
-    e.and_(e.x0, e.x0, ~0xFull);
-    e.mov(e.x16, e.x0);
+    e.and_(e.x16, e.x0, ~0xFull);  // save aligned addr for final store
 
-    // v0 = original mem (table reg 0), v1 = rev32(src) (table reg 1).
-    e.ldr(QReg(0), ptr(e.x0));
+    // v1 = rev32(src) (table reg 1). Resolve the source only after the
+    // address is safely in x16/w17 — LoadV128Const may clobber x0.
+    int s = SrcVReg(e, i.src2, 1);
     e.rev32(VReg(1).b16, VReg(s).b16);
 
     // Build identity in v2.
@@ -1997,26 +2000,22 @@ struct STVR_V128 : Sequence<STVR_V128, I<OPCODE_STVR, VoidOp, I64Op, V128Op>> {
     e.mov(e.x0, 0x0F0E0D0C0B0A0908ull);
     e.ins(VReg(2).d2[1], e.x0);
 
-    // Save identity to stack scratch.
-    e.str(QReg(2),
-          ptr(e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH)));
+    // v3 = mask: 0xFF where i < offset (offset splat staged in v0,
+    // which is not live yet).
+    e.dup(VReg(0).b16, e.w17);
+    e.cmhi(VReg(3).b16, VReg(0).b16, VReg(2).b16);
 
-    // v3 = mask: 0xFF where i < offset (complement of STVL's mask).
-    e.dup(VReg(3).b16, e.w17);
-    e.cmhi(VReg(3).b16, VReg(3).b16, VReg(2).b16);
-
-    // v2 = delta splat = (32 - offset).
+    // v0 = delta splat = (32 - offset).
     e.mov(e.w0, 32);
     e.sub(e.w0, e.w0, e.w17);
-    e.dup(VReg(2).b16, e.w0);
+    e.dup(VReg(0).b16, e.w0);
 
-    // v3 = masked delta.
-    e.and_(VReg(3).b16, VReg(3).b16, VReg(2).b16);
-
-    // Restore identity and compute ctrl.
-    e.ldr(QReg(2),
-          ptr(e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH)));
+    // ctrl = identity + (mask & delta).
+    e.and_(VReg(3).b16, VReg(3).b16, VReg(0).b16);
     e.add(VReg(2).b16, VReg(2).b16, VReg(3).b16);
+
+    // v0 = original mem (table reg 0), loaded last so v0 was free above.
+    e.ldr(QReg(0), ptr(e.x16));
 
     // 2-register TBL and store.
     e.tbl(VReg(2).b16, VReg(0).b16, 2, VReg(2).b16);

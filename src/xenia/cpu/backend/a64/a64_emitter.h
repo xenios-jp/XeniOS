@@ -170,6 +170,12 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // routing the long branch through unconditional b (±128 MiB). The
   // int64_t-immediate overloads remain available via the using-declarations
   // for hand-tuned thunks that pass literal byte offsets.
+  //
+  // When the target label is already bound (backward branch — e.g. loop
+  // back-edges) the distance is known exactly, so a single direct branch is
+  // emitted whenever it is in range. This halves the hottest branches in
+  // guest code and keeps the natural taken/not-taken polarity for the
+  // branch predictor.
   using Xbyak_aarch64::CodeGenerator::b;
   using Xbyak_aarch64::CodeGenerator::cbnz;
   using Xbyak_aarch64::CodeGenerator::cbz;
@@ -188,6 +194,40 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
             const Xbyak_aarch64::Label& label);
   void tbnz(const Xbyak_aarch64::XReg& rt, uint32_t imm,
             const Xbyak_aarch64::Label& label);
+
+  // Single-instruction conditional branches for forward targets that are
+  // PROVABLY within range because the label is bound a bounded number of
+  // instructions later within the same sequence/helper emission (e.g.
+  // intra-sequence fast-path skips). Callers must guarantee the bound:
+  // ±1 MiB for b_near/cbz_near/cbnz_near. Backward targets are handled
+  // automatically by the shadows above.
+  void b_near(const Xbyak_aarch64::Cond cond,
+              const Xbyak_aarch64::Label& label) {
+    CodeGenerator::b(cond, label);
+  }
+  void cbz_near(const Xbyak_aarch64::WReg& rt,
+                const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbz(rt, label);
+  }
+  void cbz_near(const Xbyak_aarch64::XReg& rt,
+                const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbz(rt, label);
+  }
+  void cbnz_near(const Xbyak_aarch64::WReg& rt,
+                 const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbnz(rt, label);
+  }
+  void cbnz_near(const Xbyak_aarch64::XReg& rt,
+                 const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbnz(rt, label);
+  }
+
+  // Shadow of CodeGenerator::L that records the bind offset so later
+  // branches to this label can be emitted in single-instruction form.
+  void L(Xbyak_aarch64::Label& label) {
+    CodeGenerator::L(label);
+    label_bind_offsets_.emplace(label.getId(), getSize());
+  }
 
   // Get or create a xbyak_aarch64 label for a HIR label ID.
   Xbyak_aarch64::Label& GetLabel(uint32_t label_id);
@@ -231,6 +271,35 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   // Map from HIR label IDs to xbyak_aarch64 Labels.
   std::unordered_map<uint32_t, Xbyak_aarch64::Label*> label_map_;
+
+  // Byte offsets at which labels were bound (keyed by xbyak label id).
+  // Used to emit short-form backward branches when the distance is known
+  // to be in range. Must be cleared whenever the code generator is reset
+  // (xbyak reuses label ids after reset()).
+  std::unordered_map<int, size_t> label_bind_offsets_;
+
+  // True if `label` is bound at most `max_backward_bytes` behind the
+  // current emission offset.
+  bool IsBoundLabelInRange(const Xbyak_aarch64::Label& label,
+                           int64_t max_backward_bytes) const {
+    const int id = label.getId();
+    if (id == 0) {
+      return false;
+    }
+    const auto it = label_bind_offsets_.find(id);
+    if (it == label_bind_offsets_.end()) {
+      return false;
+    }
+    const int64_t distance =
+        static_cast<int64_t>(it->second) - static_cast<int64_t>(getSize());
+    return distance >= -max_backward_bytes;
+  }
+
+  // Conservative reach limits (exact architectural ranges are ±1 MiB for
+  // b.cond/cbz/cbnz and ±32 KiB for tbz/tbnz; leave one instruction of
+  // margin).
+  static constexpr int64_t kCondBranchBackwardRange = (1ll << 20) - 8;
+  static constexpr int64_t kTestBranchBackwardRange = (1ll << 15) - 8;
 
   FPCRMode fpcr_mode_ = FPCRMode::Unknown;
   bool synchronize_stack_on_next_instruction_ = false;
