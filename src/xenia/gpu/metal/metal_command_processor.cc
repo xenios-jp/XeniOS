@@ -2413,6 +2413,13 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     XELOGE("Metal: failed to flush texture upload encoder before swap");
   }
+  // The swap commit below bypasses EndCommandBuffer, so flush the pipeline
+  // cache's persistent storage and kick the creation threads here too --
+  // otherwise these are deferred for as long as submissions keep ending via
+  // the swap path.
+  if (pipeline_cache_) {
+    pipeline_cache_->EndSubmission();
+  }
 
   // Submit and wait for command buffer
   if (current_command_buffer_) {
@@ -3833,11 +3840,9 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
     return pending_draw_pass_transfer_guard.Flush();
   }
-  if (render_target_cache_) {
-    render_target_key = BuildPreparedDrawRenderTargetKey(
-        regs, is_rasterization_done, normalized_depth_control,
-        normalized_color_mask);
-  }
+  // render_target_key was already built from the same registers and
+  // normalized state before the render target cache Update() above; none of
+  // its inputs change within IssueDraw, so it does not need recomputing here.
   if (current_render_encoder_ && render_target_cache_ &&
       !render_target_cache_->IsRenderPassDescriptorCompatible(
           current_render_pass_descriptor_, 1,
@@ -3853,9 +3858,25 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       pass_desc_for_fmts = cache_desc;
     }
   }
-  auto attachment_formats = ResolvePipelineAttachmentFormats(
-      render_target_cache_.get(), pass_desc_for_fmts,
-      pixel_shader_writes_depth_for_fmts, "Pipeline");
+  // Resolving the attachment formats walks every attachment of the pass
+  // descriptor through the Metal API; reuse the previous result while the
+  // same descriptor build is current instead of re-querying per draw.
+  const uint64_t pass_desc_build_id =
+      render_target_cache_
+          ? render_target_cache_->GetRenderPassDescriptorBuildId()
+          : 0;
+  if (!cached_attachment_formats_valid_ || !pass_desc_for_fmts ||
+      cached_attachment_formats_descriptor_ != pass_desc_for_fmts ||
+      cached_attachment_formats_build_id_ != pass_desc_build_id) {
+    cached_attachment_formats_ = ResolvePipelineAttachmentFormats(
+        render_target_cache_.get(), pass_desc_for_fmts,
+        pixel_shader_writes_depth_for_fmts, "Pipeline");
+    cached_attachment_formats_descriptor_ = pass_desc_for_fmts;
+    cached_attachment_formats_build_id_ = pass_desc_build_id;
+    cached_attachment_formats_valid_ = pass_desc_for_fmts != nullptr;
+  }
+  const PipelineAttachmentFormats& attachment_formats =
+      cached_attachment_formats_;
 
   // Derive the shared rendering key (color mask, blend, alpha-to-mask) once
   // for all pipeline paths instead of re-reading registers in each method.
