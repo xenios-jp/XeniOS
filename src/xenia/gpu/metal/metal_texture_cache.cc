@@ -442,7 +442,18 @@ class MetalTextureCache::UploadBufferPool
   void Shutdown() {
     std::lock_guard<std::mutex> lock(mutex_);
     for (Entry& entry : entries_) {
-      if (entry.buffer) {
+      if (!entry.buffer) {
+        continue;
+      }
+      if (entry.in_use) {
+        // Buffer is in-flight: a pending completion handler holds it in
+        // PendingReleasesMap and will call ReleaseImmediateBatch when the GPU
+        // finishes.  After we clear entry_indices_by_buffer_ below,
+        // ReleaseImmediateBatch will treat it as a transient buffer and call
+        // buffer->release() exactly once.  Skip the release here so the buffer
+        // is not released twice.
+        entry.buffer = nullptr;
+      } else {
         entry.buffer->release();
         entry.buffer = nullptr;
       }
