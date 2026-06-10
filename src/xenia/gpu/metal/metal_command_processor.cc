@@ -70,6 +70,17 @@ DECLARE_bool(metal_native_msl_render);
 DECLARE_bool(submit_on_primary_buffer_end);
 
 DEFINE_bool(
+    metal_command_buffer_unretained, false,
+    "Create the main draw command buffer with unretained references "
+    "(commandBufferWithUnretainedReferences), removing per-bind retain/"
+    "release traffic across the per-draw encoder calls. Requires every "
+    "referenced resource to stay alive until the command buffer completes "
+    "on the GPU (Apple-documented contract); this backend keys pool/cache "
+    "lifetimes to completed submissions, but validate per title before "
+    "enabling by default.",
+    "Metal");
+
+DEFINE_bool(
     metal_float_constants_dirty_on_change, true,
     "Only invalidate Metal float constant CBVs when a register write changes a "
     "currently live float constant value. Disable to restore conservative "
@@ -6706,10 +6717,10 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
       draw.primitive_processing_result, draw.use_tessellation_emulation,
       draw.tessellation_pipeline_state, draw.use_geometry_emulation,
       draw.geometry_pipeline_state, draw.native_mesh_pipeline_state,
-      draw.use_native_msl_tessellation, draw.shared_memory_is_uav,
-      draw.shared_memory_usage, draw.memexport_used,
-      draw.memexport_write_stages, draw.uses_vertex_fetch,
-      draw.prepare_uniforms,
+      draw.use_native_msl_tessellation, draw.use_native_msl,
+      draw.shared_memory_is_uav, draw.shared_memory_usage,
+      draw.memexport_used, draw.memexport_write_stages,
+      draw.uses_vertex_fetch, draw.prepare_uniforms,
       draw.prepared_guest_dma_index_buffer.buffer
           ? &draw.prepared_guest_dma_index_buffer
           : nullptr,
@@ -6725,10 +6736,10 @@ bool MetalCommandProcessor::DispatchDraw(
     bool use_geometry_emulation,
     MetalPipelineCache::GeometryPipelineState* geometry_pipeline_state,
     MetalPipelineCache::NativeMeshPipelineState* native_mesh_pipeline_state,
-    bool use_native_msl_tessellation, bool shared_memory_is_uav,
-    MTL::ResourceUsage shared_memory_usage, bool memexport_used,
-    MTL::RenderStages memexport_write_stages, bool uses_vertex_fetch,
-    bool shared_memory_resource_registered,
+    bool use_native_msl_tessellation, bool use_native_msl,
+    bool shared_memory_is_uav, MTL::ResourceUsage shared_memory_usage,
+    bool memexport_used, MTL::RenderStages memexport_write_stages,
+    bool uses_vertex_fetch, bool shared_memory_resource_registered,
     const PreparedIndexBuffer* prepared_guest_dma_index_buffer,
     PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
     const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
@@ -7110,12 +7121,22 @@ bool MetalCommandProcessor::DispatchDraw(
         return false;
     }
 
-    // Draw using primitive processor output.
+    // Draw using primitive processor output. Native-MSL vertex functions
+    // take [[vertex_id]] directly (msl_shader_translator.cc) and never read
+    // the MSC IR draw-arguments/index-type bindpoints, so they encode the
+    // draw directly instead of through the IR runtime wrappers, which issue
+    // two unconditional setVertexBytes per draw for MSC-converted shaders.
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
-      IRRuntimeDrawPrimitives(
-          current_render_encoder_, mtl_primitive, NS::UInteger(0),
-          NS::UInteger(primitive_processing_result.host_draw_vertex_count));
+      if (use_native_msl) {
+        current_render_encoder_->drawPrimitives(
+            mtl_primitive, NS::UInteger(0),
+            NS::UInteger(primitive_processing_result.host_draw_vertex_count));
+      } else {
+        IRRuntimeDrawPrimitives(
+            current_render_encoder_, mtl_primitive, NS::UInteger(0),
+            NS::UInteger(primitive_processing_result.host_draw_vertex_count));
+      }
     } else {
       MTL::IndexType index_type =
           (primitive_processing_result.host_index_format ==
@@ -7127,10 +7148,17 @@ bool MetalCommandProcessor::DispatchDraw(
       if (!resolve_index_buffer(index_type, index_buffer, index_offset)) {
         return false;
       }
-      IRRuntimeDrawIndexedPrimitives(
-          current_render_encoder_, mtl_primitive,
-          NS::UInteger(primitive_processing_result.host_draw_vertex_count),
-          index_type, index_buffer, index_offset, NS::UInteger(1), 0, 0);
+      if (use_native_msl) {
+        current_render_encoder_->drawIndexedPrimitives(
+            mtl_primitive,
+            NS::UInteger(primitive_processing_result.host_draw_vertex_count),
+            index_type, index_buffer, index_offset);
+      } else {
+        IRRuntimeDrawIndexedPrimitives(
+            current_render_encoder_, mtl_primitive,
+            NS::UInteger(primitive_processing_result.host_draw_vertex_count),
+            index_type, index_buffer, index_offset, NS::UInteger(1), 0, 0);
+      }
     }
   }
 
@@ -7490,7 +7518,10 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   EnsureCommandBufferAutoreleasePool();
 
   // Note: commandBuffer() returns an autoreleased object, we must retain it.
-  current_command_buffer_ = command_queue_->commandBuffer();
+  current_command_buffer_ =
+      cvars::metal_command_buffer_unretained
+          ? command_queue_->commandBufferWithUnretainedReferences()
+          : command_queue_->commandBuffer();
   if (!current_command_buffer_) {
     XELOGE("EnsureCommandBuffer: failed to create command buffer");
     DrainCommandBufferAutoreleasePool();
