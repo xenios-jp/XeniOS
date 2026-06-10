@@ -80,7 +80,7 @@ DEFINE_bool(
     "(explicit fences/events) for heap-backed textures, render targets, and the "
     "shared-memory/EDRAM buffers so they can be MTLResidencySet-covered and the "
     "per-encoder useResource/useHeap re-apply can be dropped. Off = current "
-    "useResource path. See scratch/metal_hazard_model_design.md.",
+    "useResource path. See docs/metal_hazard_model_design.md.",
     "Metal");
 DEFINE_bool(
     metal_backend_hazard_model_validate, false,
@@ -3318,9 +3318,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     XELOGW("IssueDraw: No vertex shader");
     return false;
   }
-  if (!vertex_shader->is_ucode_analyzed()) {
-    vertex_shader->AnalyzeUcode(pipeline_cache_->ucode_disasm_buffer());
-  }
+  pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
   bool memexport_used_vertex = vertex_shader->memexport_eM_written() != 0;
 
   // Pixel shader analysis.
@@ -3332,9 +3330,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     if (edram_mode == xenos::EdramMode::kColorDepth) {
       pixel_shader = active_pixel_shader();
       if (pixel_shader) {
-        if (!pixel_shader->is_ucode_analyzed()) {
-          pixel_shader->AnalyzeUcode(pipeline_cache_->ucode_disasm_buffer());
-        }
+        pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
         if (!draw_util::IsPixelShaderNeededWithRasterization(*pixel_shader,
                                                              regs)) {
           pixel_shader = nullptr;
@@ -3798,33 +3794,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
-  // Helper-stage (geometry/tessellation emulation) shader translation and
-  // MSC compilation run inside Create*PipelineContents on the pipeline
-  // creation threads (or inline in synchronous mode) - never on the draw
-  // thread, where a cold shader used to stall the frame for the full
-  // translate+compile time.
-  if (use_native_msl_tessellation) {
-    if (!pipeline_cache_->EnsureNativeMslTranslationReady(
-            vertex_translation, "native tessellation domain")) {
-      return false;
-    }
-    if (pixel_translation &&
-        !pipeline_cache_->EnsureNativeMslTranslationReady(
-            pixel_translation, "native tessellation pixel")) {
-      return false;
-    }
-  }
-  if (use_native_msl_primitive_mesh) {
-    if (!pipeline_cache_->EnsureNativeMslTranslationReady(
-            vertex_translation, "native primitive mesh vertex")) {
-      return false;
-    }
-    if (pixel_translation &&
-        !pipeline_cache_->EnsureNativeMslTranslationReady(
-            pixel_translation, "native primitive mesh pixel")) {
-      return false;
-    }
-  }
+  // Helper-stage (geometry/tessellation emulation) and native MSL
+  // mesh/tessellation shader translation and compilation run inside
+  // Create*PipelineContents on the pipeline creation threads (or inline in
+  // synchronous mode) - never on the draw thread, where a cold shader used
+  // to stall the frame for the full translate+compile time.
 
   bool use_fallback_ps =
       (use_tessellation_emulation || use_geometry_emulation ||
@@ -3903,12 +3877,24 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         pipeline_cache_->GetOrCreateNativeMslPrimitiveMeshPipelineState(
             vertex_translation, pixel_translation,
             native_msl_primitive_mesh_type, attachment_formats, rendering_key);
-    pipeline = native_mesh_pipeline_state ? native_mesh_pipeline_state->pipeline
-                                          : nullptr;
+    pipeline = native_mesh_pipeline_state
+                   ? native_mesh_pipeline_state->pipeline.load(
+                         std::memory_order_acquire)
+                   : nullptr;
     if (!pipeline) {
-      XELOGW(
-          "Metal: native MSL primitive mesh pipeline creation failed; "
-          "skipping draw");
+      // Still compiling in the background - skip the draw silently; only log
+      // genuine creation failures.
+      if (!native_mesh_pipeline_state ||
+          native_mesh_pipeline_state->creation_failed.load(
+              std::memory_order_acquire)) {
+        static bool native_mesh_pipeline_failure_logged = false;
+        if (!native_mesh_pipeline_failure_logged) {
+          native_mesh_pipeline_failure_logged = true;
+          XELOGW(
+              "Metal: native MSL primitive mesh pipeline creation failed; "
+              "skipping draw");
+        }
+      }
       return pending_draw_pass_transfer_guard.Flush();
     }
   } else if (use_native_msl_tessellation) {
@@ -3921,13 +3907,19 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                          std::memory_order_acquire)
                    : nullptr;
     if (!pipeline) {
-      static bool native_tessellation_pipeline_failure_logged = false;
-      if (!native_tessellation_pipeline_failure_logged) {
-        native_tessellation_pipeline_failure_logged = true;
-        XELOGW(
-            "Metal: native MSL tessellation pipeline creation failed; "
-            "skipping tessellation-emulated draws until native helper object/"
-            "mesh generation is implemented");
+      // Still compiling in the background - skip the draw silently; only log
+      // genuine creation failures.
+      if (!tessellation_pipeline_state ||
+          tessellation_pipeline_state->creation_failed.load(
+              std::memory_order_acquire)) {
+        static bool native_tessellation_pipeline_failure_logged = false;
+        if (!native_tessellation_pipeline_failure_logged) {
+          native_tessellation_pipeline_failure_logged = true;
+          XELOGW(
+              "Metal: native MSL tessellation pipeline creation failed; "
+              "skipping tessellation-emulated draws until native helper "
+              "object/mesh generation is implemented");
+        }
       }
       return pending_draw_pass_transfer_guard.Flush();
     }
