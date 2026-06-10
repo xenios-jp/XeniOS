@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_METAL_METAL_TEXTURE_CACHE_H_
 #define XENIA_GPU_METAL_METAL_TEXTURE_CACHE_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -400,6 +401,24 @@ class MetalTextureCache : public TextureCache {
   std::vector<DeferredUploadCopy> deferred_upload_copies_;
   uint32_t deferred_upload_batch_depth_ = 0;
   std::unique_ptr<MetalHeapPool> texture_heap_pool_;
+  // Per-fetch-slot memo of BindingInfoFromFetchConstant + FindOrCreateTexture
+  // for PrepareTextureMaterialization, which runs for every draw (unlike the
+  // binding path, which already dirty-tracks fetch constants). Keyed on the
+  // raw fetch-constant dwords; invalidated wholesale by the destroy epoch
+  // (bumped in ~MetalTexture) so cached Texture pointers can never dangle.
+  // Bypassed when draw resolution scaling is active, where the texture a
+  // fetch constant resolves to can change with resolve state.
+  struct FetchPlanMemoSlot {
+    uint32_t dwords[6] = {};
+    TextureKey key = {};
+    uint8_t swizzled_signs = 0;
+    bool valid = false;
+    Texture* texture = nullptr;
+    Texture* texture_signed = nullptr;
+    uint64_t destroy_epoch = 0;
+  };
+  std::array<FetchPlanMemoSlot, 32> fetch_plan_memo_ = {};
+  uint64_t texture_destroy_epoch_ = 1;
   bool supports_bc_texture_compression_ = false;
 
   std::vector<ScaledResolveBuffer> scaled_resolve_buffers_;

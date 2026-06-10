@@ -903,6 +903,10 @@ class MetalCommandProcessor final : public CommandProcessor {
   struct BackendTelemetryStats {
     uint64_t swaps = 0;
     uint64_t draw_calls = 0;
+    // Draw calls that reached SubmitPreparedDraw; draw_calls minus this is
+    // the silent early-out count inside IssueDraw (zero-prim, skipped
+    // emulated draws, not-ready pipelines, ...) — the draw-count audit.
+    uint64_t draws_submitted = 0;
     uint64_t pipeline_sets = 0;
     uint64_t pipeline_set_skips = 0;
     uint64_t texture_requests_before_encoder = 0;
