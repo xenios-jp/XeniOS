@@ -9406,7 +9406,12 @@ MTL::RenderPassDescriptor* MetalCommandProcessor::GetDrawRenderPassDescriptor(
           zpd_visibility_pool_->is_initialized()) {
         cache_desc->setVisibilityResultBuffer(
             zpd_visibility_pool_->visibility_buffer());
-        cache_desc->setVisibilityResultType(MTL::VisibilityResultTypeReset);
+        // Accumulate, not Reset: query slots are read back asynchronously
+        // across submissions, and a Reset pass would zero slots whose queries
+        // are still pending readback. The pool zeroes each slot on the CPU
+        // when it's acquired, so no per-pass reset is needed.
+        cache_desc->setVisibilityResultType(
+            MTL::VisibilityResultTypeAccumulate);
       } else {
         cache_desc->setVisibilityResultBuffer(nullptr);
       }
