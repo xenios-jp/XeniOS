@@ -526,6 +526,9 @@ class MetalPipelineCache {
   std::mutex pipeline_binary_archive_mutex_;
 
   // Async pipeline compilation thread pool.
+  // Forward-declared so EnqueueHelperPipelineCreation() below can name it; the
+  // definition lives with creation_queue_ further down.
+  struct PipelineCreationRequest;
   void CreationThread(size_t thread_index);
   MTL::RenderPipelineState* CreatePipelineFromHandle(
       const PipelineHandle* handle);
