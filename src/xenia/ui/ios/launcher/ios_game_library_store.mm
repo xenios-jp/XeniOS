@@ -332,13 +332,21 @@ bool IsHiddenExternalGameIdentity(const IOSDiscoveredGame& game,
     if (!hidden_game.title_id || hidden_game.title_id != game.title_id) {
       continue;
     }
+    // A mismatch only rules out this hidden record - other hidden records may
+    // still match (e.g. several hidden discs or copies of the same title).
     if (hidden_game.media_id && game.media_id) {
-      return hidden_game.media_id == game.media_id;
+      if (hidden_game.media_id == game.media_id) {
+        return true;
+      }
+      continue;
     }
     if (hidden_game.disc_number && game.disc_number &&
         hidden_game.disc_number == game.disc_number) {
-      return hidden_game.disc_count == game.disc_count || !hidden_game.disc_count ||
-             !game.disc_count;
+      if (hidden_game.disc_count == game.disc_count || !hidden_game.disc_count ||
+          !game.disc_count) {
+        return true;
+      }
+      continue;
     }
     if (!hidden_game.media_id && !game.media_id && !hidden_game.disc_number && !game.disc_number) {
       return true;
@@ -681,6 +689,64 @@ BOOL RemoveIOSExternalLibraryLocationForPath(const std::filesystem::path& path,
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
   XELOGI("iOS: Removed external library location for {}", path.string());
+  return YES;
+}
+
+BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
+                                            NSString** removedName, NSError** error) {
+  if (removedName) {
+    *removedName = nil;
+  }
+
+  // Unlike RemoveIOSExternalLibraryLocationForPath, which matches by path
+  // containment (intended for "remove the location providing this game"),
+  // this matches the record root exactly so that unlinking a folder nested
+  // inside another linked folder doesn't also unlink the parent.
+  const std::filesystem::path normalized_root = WeaklyCanonicalOrAbsolute(path);
+  NSMutableArray<NSDictionary*>* records =
+      [[ExternalLibraryLocationRecords() mutableCopy] autorelease];
+  BOOL removed = NO;
+  for (NSInteger i = static_cast<NSInteger>(records.count) - 1; i >= 0; --i) {
+    NSDictionary* record = records[static_cast<NSUInteger>(i)];
+    BOOL record_matches_root = NO;
+    NSString* stored_path = [record objectForKey:kExternalLibraryPathKey];
+    if ([stored_path isKindOfClass:[NSString class]] && stored_path.length > 0) {
+      record_matches_root =
+          WeaklyCanonicalOrAbsolute(std::filesystem::path(
+              std::string([stored_path UTF8String]))) == normalized_root;
+    }
+    BOOL stale = NO;
+    NSURL* url = ResolveExternalLibraryRecord(record, &stale, nullptr);
+    if (!record_matches_root && url.path.length > 0) {
+      record_matches_root =
+          WeaklyCanonicalOrAbsolute(std::filesystem::path(
+              std::string([url.path UTF8String]))) == normalized_root;
+    }
+    if (!record_matches_root) {
+      continue;
+    }
+
+    if (removedName && !*removedName) {
+      NSString* name = ExternalLibraryRecordName(record, url);
+      *removedName = [[name copy] autorelease];
+    }
+    [records removeObjectAtIndex:static_cast<NSUInteger>(i)];
+    removed = YES;
+  }
+
+  if (!removed) {
+    if (error) {
+      *error = [NSError
+          errorWithDomain:@"XeniaIOSExternalLibrary"
+                     code:2004
+                 userInfo:@{NSLocalizedDescriptionKey : @"Linked external folder was not found."}];
+    }
+    return NO;
+  }
+
+  [[NSUserDefaults standardUserDefaults] setObject:records
+                                            forKey:kExternalLibraryLocationsDefaultsKey];
+  XELOGI("iOS: Removed external library location rooted at {}", path.string());
   return YES;
 }
 

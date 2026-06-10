@@ -39,6 +39,11 @@
   UIButton* _exitButton;
   UIMenu* _displayMenu;
   NSLayoutConstraint* _panelWidthConstraint;
+  // Tracks the last applied compact-landscape mode so layoutSubviews doesn't
+  // reassign button configurations (which invalidates intrinsic sizes and
+  // re-dirties layout, looping at display refresh rate) on every pass.
+  BOOL _hasAppliedMenuLayout;
+  BOOL _appliedCompactLandscape;
   NSLayoutConstraint* _resumeHeightConstraint;
   NSLayoutConstraint* _rowOneHeightConstraint;
   NSLayoutConstraint* _rowTwoHeightConstraint;
@@ -553,7 +558,11 @@
   } else {
     _panelWidthConstraint.constant = isLandscape ? 540.0 : 420.0;
   }
-  [self applyMenuLayoutForCompactLandscape:compactLandscape];
+  if (!_hasAppliedMenuLayout || _appliedCompactLandscape != compactLandscape) {
+    _hasAppliedMenuLayout = YES;
+    _appliedCompactLandscape = compactLandscape;
+    [self applyMenuLayoutForCompactLandscape:compactLandscape];
+  }
 }
 
 - (void)resumePressed:(UIButton*)__unused sender {

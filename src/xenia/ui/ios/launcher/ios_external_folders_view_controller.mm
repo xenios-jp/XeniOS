@@ -97,16 +97,15 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 - (BOOL)unlinkExternalFolderAtPath:(const std::filesystem::path&)path {
   NSString* removed_name = nil;
   NSError* error = nil;
-  if (!xe::ui::RemoveIOSExternalLibraryLocationForPath(path, &removed_name, &error)) {
+  if (!xe::ui::RemoveIOSExternalLibraryLocationAtRoot(path, &removed_name, &error)) {
     XEPresentOKAlert(self, @"Unlink Failed",
                      error.localizedDescription ?: @"Could not unlink the selected folder.");
     return NO;
   }
   XELOGI("iOS external folders: unlinked '{}'", path.string());
 
-  // RemoveIOSExternalLibraryLocationForPath matches by path containment, so it
-  // can drop more than one record (a folder nested inside another linked folder),
-  // and the list collapses to the empty-state row when nothing is left. Reload
+  // Duplicate records resolving to the same root are all dropped at once, and
+  // the list collapses to the empty-state row when nothing is left. Reload
   // rather than animate a single-row delete, which would assert on a row-count
   // mismatch.
   folders_ = xe::ui::ListIOSExternalLibraryLocations();

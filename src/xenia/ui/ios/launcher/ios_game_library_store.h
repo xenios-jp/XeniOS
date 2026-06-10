@@ -50,6 +50,10 @@ BOOL HideIOSExternalLibraryGameAtPath(const std::filesystem::path& path, NSStrin
                                       NSError** error);
 BOOL RemoveIOSExternalLibraryLocationForPath(const std::filesystem::path& path,
                                              NSString** removedName, NSError** error);
+// Removes only the location whose root matches `path` exactly (for the linked
+// folders list, where containment matching would also unlink parent folders).
+BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
+                                            NSString** removedName, NSError** error);
 XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
     const std::filesystem::path& path, BOOL* matchedExternalLocation, NSError** error);
 
