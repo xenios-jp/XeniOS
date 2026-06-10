@@ -2607,6 +2607,27 @@ bool MetalCommandProcessor::CanOpenZPDQuery() const {
          current_render_encoder_has_zpd_visibility_;
 }
 
+bool MetalCommandProcessor::BeginZPDReport(uint32_t report_address) {
+  // Draws deferred in the prepared-draw queue logically precede this report
+  // transition; encode them now so they are counted toward the correct
+  // (previous, if any) logical query.
+  if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
+    XELOGE("Metal BeginZPDReport: failed to flush prepared draw queue");
+  }
+  return CommandProcessor::BeginZPDReport(report_address);
+}
+
+bool MetalCommandProcessor::EndZPDReport(uint32_t report_address,
+                                         bool guest_forced_end) {
+  // Deferred draws issued inside the query window must be encoded before the
+  // logical lifetime closes; EncodePreparedDraw arms pending segments per
+  // draw, so flushing here guarantees they are counted.
+  if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
+    XELOGE("Metal EndZPDReport: failed to flush prepared draw queue");
+  }
+  return CommandProcessor::EndZPDReport(report_address, guest_forced_end);
+}
+
 CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenZPDQuery(
     ReportHandle report_handle, bool can_close_submission) {
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
@@ -8162,9 +8183,70 @@ bool MetalCommandProcessor::RequestSharedMemoryRangeBeforeDrawPass(
   return RequestSharedMemoryRanges(reason, &range, 1);
 }
 
+// Drops zero-length entries, sorts by start and merges overlapping or
+// adjacent ranges in place.
+static void SortAndCoalesceSharedMemoryRanges(
+    std::vector<SharedMemory::Range>& ranges) {
+  size_t write_index = 0;
+  for (size_t i = 0; i < ranges.size(); ++i) {
+    if (ranges[i].length) {
+      ranges[write_index++] = ranges[i];
+    }
+  }
+  ranges.resize(write_index);
+  if (ranges.empty()) {
+    return;
+  }
+  std::sort(ranges.begin(), ranges.end(),
+            [](const SharedMemory::Range& a, const SharedMemory::Range& b) {
+              return a.start < b.start;
+            });
+  size_t coalesced_count = 0;
+  for (SharedMemory::Range range : ranges) {
+    uint64_t range_end = uint64_t(range.start) + range.length;
+    if (range_end > SharedMemory::kBufferSize) {
+      ranges[coalesced_count++] = range;
+      continue;
+    }
+    if (!coalesced_count) {
+      ranges[coalesced_count++] = range;
+      continue;
+    }
+    SharedMemory::Range& previous = ranges[coalesced_count - 1];
+    uint64_t previous_end = uint64_t(previous.start) + previous.length;
+    if (range.start <= previous_end) {
+      uint64_t merged_end = std::max(previous_end, range_end);
+      previous.length = static_cast<uint32_t>(merged_end - previous.start);
+    } else {
+      ranges[coalesced_count++] = range;
+    }
+  }
+  ranges.resize(coalesced_count);
+}
+
 bool MetalCommandProcessor::RequestSharedMemoryRanges(
     SharedMemoryRequestReason reason, const SharedMemory::Range* ranges,
     uint32_t range_count) {
+  if (range_count && !ranges) {
+    const size_t reason_index = static_cast<size_t>(reason);
+    if (reason_index < kSharedMemoryRequestReasonCount) {
+      ++backend_telemetry_.shared_memory_request_failures[reason_index];
+    }
+    RecordSharedMemoryRequestOutcome(
+        SharedMemoryRequestOutcome::kRequestFailed);
+    return false;
+  }
+  // The local copy keeps this entry point reentrancy-safe: encoder
+  // acquisition inside SharedMemory::RequestRanges can end the render
+  // encoder, which flushes the prepared-draw queue, which requests ranges
+  // again through RequestSharedMemoryRangesInPlace.
+  std::vector<SharedMemory::Range> local_ranges(ranges, ranges + range_count);
+  return RequestSharedMemoryRangesInPlace(reason, local_ranges);
+}
+
+bool MetalCommandProcessor::RequestSharedMemoryRangesInPlace(
+    SharedMemoryRequestReason reason,
+    std::vector<SharedMemory::Range>& ranges) {
   const bool was_active = current_render_encoder_ != nullptr;
   const size_t reason_index = static_cast<size_t>(reason);
   const bool reason_valid = reason_index < kSharedMemoryRequestReasonCount;
@@ -8176,62 +8258,17 @@ bool MetalCommandProcessor::RequestSharedMemoryRanges(
     }
     return false;
   }
-  if (range_count && !ranges) {
-    if (reason_valid) {
-      ++backend_telemetry_.shared_memory_request_failures[reason_index];
-    }
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kRequestFailed);
-    return false;
-  }
 
-  std::vector<SharedMemory::Range> coalesced_ranges;
-  const SharedMemory::Range* request_ranges = ranges;
-  uint32_t request_range_count = range_count;
-  if (ranges && range_count) {
-    coalesced_ranges.reserve(range_count);
-    for (uint32_t i = 0; i < range_count; ++i) {
-      const SharedMemory::Range& range = ranges[i];
-      if (!range.length) {
-        continue;
-      }
-      coalesced_ranges.push_back(range);
-    }
-    if (!coalesced_ranges.empty()) {
-      std::sort(coalesced_ranges.begin(), coalesced_ranges.end(),
-                [](const SharedMemory::Range& a, const SharedMemory::Range& b) {
-                  return a.start < b.start;
-                });
-      size_t coalesced_count = 0;
-      for (SharedMemory::Range range : coalesced_ranges) {
-        uint64_t range_end = uint64_t(range.start) + range.length;
-        if (range_end > SharedMemory::kBufferSize) {
-          coalesced_ranges[coalesced_count++] = range;
-          continue;
-        }
-        if (!coalesced_count) {
-          coalesced_ranges[coalesced_count++] = range;
-          continue;
-        }
-        SharedMemory::Range& previous = coalesced_ranges[coalesced_count - 1];
-        uint64_t previous_end = uint64_t(previous.start) + previous.length;
-        if (range.start <= previous_end) {
-          uint64_t merged_end = std::max(previous_end, range_end);
-          previous.length = static_cast<uint32_t>(merged_end - previous.start);
-        } else {
-          coalesced_ranges[coalesced_count++] = range;
-        }
-      }
-      coalesced_ranges.resize(coalesced_count);
-    }
-    request_ranges = coalesced_ranges.data();
-    request_range_count = static_cast<uint32_t>(coalesced_ranges.size());
-    if (request_range_count) {
-      ++backend_telemetry_.shared_memory_upload_batches;
-      backend_telemetry_.shared_memory_upload_batch_input_ranges += range_count;
-      backend_telemetry_.shared_memory_upload_batch_coalesced_ranges +=
-          request_range_count;
-    }
+  const uint32_t input_range_count = static_cast<uint32_t>(ranges.size());
+  SortAndCoalesceSharedMemoryRanges(ranges);
+  const SharedMemory::Range* request_ranges = ranges.data();
+  const uint32_t request_range_count = static_cast<uint32_t>(ranges.size());
+  if (request_range_count) {
+    ++backend_telemetry_.shared_memory_upload_batches;
+    backend_telemetry_.shared_memory_upload_batch_input_ranges +=
+        input_range_count;
+    backend_telemetry_.shared_memory_upload_batch_coalesced_ranges +=
+        request_range_count;
   }
 
   SharedMemory::RequestRangeStats stats;

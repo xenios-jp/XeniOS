@@ -424,8 +424,12 @@ class CommandProcessor {
     return false;
   }
 
-  bool BeginZPDReport(uint32_t report_address);
-  bool EndZPDReport(uint32_t report_address, bool guest_forced_end);
+  // Virtual so backends that defer draw encoding (Metal's prepared-draw
+  // queue) can flush deferred draws before the logical query state changes;
+  // draws issued inside the query window must be encoded while the query can
+  // still count them.
+  virtual bool BeginZPDReport(uint32_t report_address);
+  virtual bool EndZPDReport(uint32_t report_address, bool guest_forced_end);
   // Opens a new host query segment when CanOpenZPDQuery is true.
   void OpenQuerySegment(bool can_close_submission);
   // Closes the current segment at a submission or render pass boundary.
