@@ -302,10 +302,6 @@ bool PackHostDirectoryToZar(
     if (CheckCancellation(cancel_callback, result)) {
       return false;
     }
-    if (ec) {
-      SetError(result, "Failed scanning input folder: " + ec.message());
-      return false;
-    }
 
     const std::filesystem::directory_entry& entry = *it;
     std::filesystem::path relative_path =
@@ -337,6 +333,13 @@ bool PackHostDirectoryToZar(
                              result, progress_callback, cancel_callback)) {
       return false;
     }
+  }
+  // A failed increment() resets the iterator to end(), terminating the loop,
+  // so the error must be checked here - an archive missing files must not be
+  // reported as a successful conversion.
+  if (ec) {
+    SetError(result, "Failed scanning input folder: " + ec.message());
+    return false;
   }
 
   return true;
