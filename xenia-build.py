@@ -596,7 +596,15 @@ def get_ios_xcode_project_path():
 
 
 def get_ios_xcode_bin_dir(config):
-    return os.path.join(self_path, get_ios_xcode_build_dir(), "bin", "iOS", config.title())
+    base = os.path.join(self_path, get_ios_xcode_build_dir(), "bin", "iOS")
+    # CMake's Xcode generator appends $(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
+    # to the runtime output directory, so device builds land in
+    # "<Config>-iphoneos" rather than the Ninja-style bare "<Config>".
+    for suffix in ("-iphoneos", ""):
+        candidate = os.path.join(base, config.title() + suffix)
+        if os.path.isdir(candidate):
+            return candidate
+    return os.path.join(base, config.title())
 
 
 def run_cmake_configure(cc=None, generator=None, build_tests=False,
