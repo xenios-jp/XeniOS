@@ -44,9 +44,10 @@ bool MetalPrimitiveProcessor::Initialize() {
   // Keep the legacy helper-backed path unchanged for non-native rendering. In
   // native MSL mode, expose raw point and quad lists to IssueDraw only when the
   // device can run Metal mesh shaders, where they are expanded by native mesh
-  // entry points. Rectangle-list policy remains controlled by the bring-up cvar:
-  // when requested, the common processor performs the existing VS expansion and
-  // IssueDraw maps that host type back onto the native rectangle mesh wrapper.
+  // entry points. Rectangle-list policy remains controlled by the bring-up
+  // cvar: when requested, the common processor performs the existing VS
+  // expansion and IssueDraw maps that host type back onto the native rectangle
+  // mesh wrapper.
   if (!InitializeCommon(
           true,   // full_32bit_vertex_indices_supported
           false,  // triangle_fans_supported (will convert)
@@ -64,13 +65,12 @@ bool MetalPrimitiveProcessor::Initialize() {
                ui::GraphicsUploadBufferPool::kDefaultPageSize));
 
   XELOGI("MetalPrimitiveProcessor initialized ({})",
-         native_msl_render
-             ? (native_msl_mesh_primitive_lists
-                    ? "native MSL primitive mesh path"
-                    : (native_msl_expand_rectangle_lists
-                           ? "native MSL point VS expansion path"
-                           : "native MSL helper-limited path"))
-             : "MSC path");
+         native_msl_render ? (native_msl_mesh_primitive_lists
+                                  ? "native MSL primitive mesh path"
+                                  : (native_msl_expand_rectangle_lists
+                                         ? "native MSL point VS expansion path"
+                                         : "native MSL helper-limited path"))
+                           : "MSC path");
   return true;
 }
 
@@ -92,8 +92,14 @@ void MetalPrimitiveProcessor::Shutdown(bool from_destructor) {
 void MetalPrimitiveProcessor::BeginFrame() {
   converted_index_buffers_.clear();
   if (frame_index_buffer_pool_) {
-    frame_index_buffer_pool_->Reclaim(
-        command_processor_.GetCompletedSubmission());
+    // Reclaim by completed FRAME, not by completed submission.  The converted-
+    // index cache (converted_index_buffers_) lives for the whole guest frame:
+    // a later submission in the same frame can still reference a page that was
+    // tagged with an earlier submission's index.  Using GetCompletedFrame()
+    // mirrors D3D12's frame_index_buffer_pool_->Reclaim(GetCompletedFrame())
+    // and ensures a page is only returned to the pool once the frame that
+    // allocated it is fully retired.
+    frame_index_buffer_pool_->Reclaim(command_processor_.GetCompletedFrame());
   }
 }
 
@@ -171,9 +177,12 @@ void* MetalPrimitiveProcessor::RequestHostConvertedIndexBufferForCurrentFrame(
   MTL::Buffer* buffer = nullptr;
   size_t offset = 0;
   uint64_t gpu_address = 0;
+  // Tag pages with the frame index so Reclaim(GetCompletedFrame()) releases
+  // them at the right granularity.  This matches the constant_buffer_pool_
+  // pattern in MetalCommandProcessor and D3D12's frame-tagged index pool.
   uint8_t* mapping = frame_index_buffer_pool_->Request(
-      command_processor_.GetCurrentSubmission(), request_size, index_size,
-      &buffer, offset, gpu_address);
+      command_processor_.GetCurrentFrame(), request_size, index_size, &buffer,
+      offset, gpu_address);
   if (!mapping || !buffer) {
     XELOGE("Failed to allocate Metal index buffer for primitive conversion");
     backend_handle_out = 0;
