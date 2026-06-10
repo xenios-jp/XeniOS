@@ -286,6 +286,11 @@ Surface::TypeFlags MetalPresenter::GetSupportedSurfaceTypes() const {
 }
 
 bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
+  // Callers (such as the trace dump tool) may invoke this on a thread without
+  // an autorelease pool; the readback command buffer and blit encoder below
+  // are autoreleased, and all GPU work completes before returning.
+  XE_SCOPED_AUTORELEASE_POOL("MetalPresenter::CaptureGuestOutput");
+
   uint32_t guest_output_mailbox_index;
   {
     std::unique_lock<std::mutex> guest_output_consumer_lock(
@@ -841,6 +846,15 @@ void MetalPresenter::DisconnectPaintingFromSurfaceFromUIThreadImpl() {
 bool MetalPresenter::RefreshGuestOutputImpl(
     uint32_t mailbox_index, uint32_t frontbuffer_width, uint32_t frontbuffer_height,
     std::function<bool(GuestOutputRefreshContext& context)> refresher, bool& is_8bpc_out_ref) {
+  // Runs synchronously on the caller's thread (the GPU command processor
+  // thread for swaps), which doesn't guarantee an enclosing autorelease pool.
+  // Scope one so the autoreleased objects created per refresh (command buffer,
+  // encoders, texture descriptors) are released instead of leaked. Objects
+  // kept past this scope (guest output / gamma textures) are owned new*
+  // references, and the committed copy command buffer is owned by its queue,
+  // so draining here releases nothing that is still in use.
+  XE_SCOPED_AUTORELEASE_POOL("MetalPresenter::RefreshGuestOutputImpl");
+
   // Validate mailbox index
   if (mailbox_index >= kGuestOutputMailboxSize) {
     XELOGE("Metal RefreshGuestOutputImpl: Invalid mailbox index {}", mailbox_index);
@@ -895,6 +909,10 @@ bool MetalPresenter::RefreshGuestOutputImpl(
 
 bool MetalPresenter::UpdateGammaRamp(const void* table_data, size_t table_bytes,
                                      const void* pwl_data, size_t pwl_bytes) {
+  // Called from the GPU command processor thread; the gamma ramp texture
+  // descriptors below are autoreleased - see RefreshGuestOutputImpl.
+  XE_SCOPED_AUTORELEASE_POOL("MetalPresenter::UpdateGammaRamp");
+
   if (!table_data || !pwl_data || !table_bytes || !pwl_bytes) {
     XELOGW("MetalPresenter::UpdateGammaRamp: missing gamma ramp data");
     gamma_ramp_table_valid_ = false;
