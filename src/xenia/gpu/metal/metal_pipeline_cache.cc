@@ -1222,9 +1222,23 @@ PipelineRenderingKey ResolvePipelineRenderingKey(
   // would apply a second coverage mask on top of the shader result.
   key.alpha_to_mask_enable = 0;
   for (uint32_t i = 0; i < 4; ++i) {
-    key.blendcontrol[i] = regs.Get<reg::RB_BLENDCONTROL>(
-                                  reg::RB_BLENDCONTROL::rt_register_indices[i])
-                              .value;
+    // Normalize the per-RT blend control: only an RT whose write mask is
+    // non-zero ever consults blendcontrol[i] in ApplyBlendStateToDescriptor
+    // (write-masked-out and unbound RTs disable blending and ignore the value
+    // entirely). Reading the register only when the RT is actually written
+    // collapses pipeline descriptions that differ purely in the blend register
+    // of an RT that is never blended, avoiding redundant PSO variants. This
+    // mirrors the D3D12 pipeline cache's GetCurrentStateDescription, which
+    // gates its blendcontrol read on `if (rt.write_mask)` and forces canonical
+    // defaults otherwise. Behavior is unchanged because the value is never used
+    // when the write-mask nibble is zero.
+    uint32_t rt_write_mask = (key.normalized_color_mask >> (i * 4)) & 0xF;
+    key.blendcontrol[i] =
+        rt_write_mask
+            ? regs.Get<reg::RB_BLENDCONTROL>(
+                      reg::RB_BLENDCONTROL::rt_register_indices[i])
+                  .value
+            : 0u;
   }
   return key;
 }
