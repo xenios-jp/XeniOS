@@ -80,7 +80,14 @@ dword_result_t XAudioGetVoiceCategoryVolumeChangeMask_entry(
     lpunknown_t driver_ptr, lpdword_t out_ptr) {
   assert_true((driver_ptr.guest_address() & 0xFFFF0000) == 0x41550000);
 
+#if !XE_PLATFORM_APPLE
+  // Throttle high-frequency polling. Skipped on Apple: Darwin nanosleep has no
+  // sub-quantum precision, so a 1us request deschedules the calling guest
+  // thread for tens of microseconds per call -- games that poll this from
+  // their main loop (e.g. Call of Duty 4, thousands of calls/s) lose
+  // milliseconds of frame time to it.
   xe::threading::NanoSleep(1000);
+#endif
 
   // Checking these bits to see if any voice volume changed.
   // I think.
