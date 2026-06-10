@@ -4900,6 +4900,235 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
   }
 
+  // When a partial-rectangle resolve clears both a depth and a color render
+  // target, the clear can't ride a clear load action (MTLLoadAction.clear
+  // "writes a value to every pixel in the attachment" per Apple's
+  // documentation, and these render targets span the whole EDRAM column while
+  // the clear covers only the resolve region). The clear is therefore done by
+  // scissored clear draws, exactly as the per-target fallback does, but both
+  // attachments can share one render pass instead of two single-attachment
+  // passes - on tile-based GPUs each pass is a full tile load/store round trip.
+  // Only pure-clear targets (no ownership-transfer rectangles) are merged here;
+  // targets that also need transfer draws/blits keep the per-target path.
+  if (resolve_clear_needed && !use_active_render_encoder &&
+      ::cvars::metal_resolve_clear_via_load_action) {
+    uint32_t draw_clear_depth_index = UINT32_MAX;
+    uint32_t draw_clear_color_index = UINT32_MAX;
+    MTL::Texture* draw_clear_depth_texture = nullptr;
+    MTL::Texture* draw_clear_color_texture = nullptr;
+    MTL::PixelFormat draw_clear_depth_format = MTL::PixelFormatInvalid;
+    MTL::PixelFormat draw_clear_color_format = MTL::PixelFormatInvalid;
+    float draw_clear_depth_value = 0.0f;
+    uint32_t draw_clear_stencil_value = 0;
+    TransferClearColorFloatConstants draw_clear_color_value = {};
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      if (resolve_clear_done_via_merged_pass[i]) {
+        continue;
+      }
+      RenderTarget* dest_rt = render_targets[i];
+      if (!dest_rt) {
+        continue;
+      }
+      const std::vector<TransferRectanglePlan>* target_transfer_rectangles =
+          transfer_rectangle_plans[i];
+      if (target_transfer_rectangles && !target_transfer_rectangles->empty()) {
+        continue;
+      }
+      auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
+      RenderTargetKey dest_key = dest_metal_rt->key();
+      uint64_t clear_value = render_target_resolve_clear_values[i];
+      if (dest_key.is_depth) {
+        if (draw_clear_depth_index != UINT32_MAX) {
+          continue;
+        }
+        MTL::Texture* dest_texture = dest_metal_rt->texture();
+        if (!dest_texture) {
+          continue;
+        }
+        uint32_t depth_guest_clear_value =
+            (uint32_t(clear_value) >> 8) & 0xFFFFFF;
+        float depth_host_clear_value = 0.0f;
+        switch (dest_key.GetDepthFormat()) {
+          case xenos::DepthRenderTargetFormat::kD24S8:
+            depth_host_clear_value =
+                xenos::UNorm24To32(depth_guest_clear_value);
+            break;
+          case xenos::DepthRenderTargetFormat::kD24FS8:
+            depth_host_clear_value =
+                xenos::Float20e4To32(depth_guest_clear_value) * 0.5f;
+            break;
+          default:
+            continue;
+        }
+        draw_clear_depth_index = i;
+        draw_clear_depth_texture = dest_texture;
+        draw_clear_depth_format =
+            GetDepthPixelFormat(dest_key.GetDepthFormat());
+        draw_clear_depth_value = depth_host_clear_value;
+        draw_clear_stencil_value = uint32_t(clear_value) & 0xFF;
+      } else {
+        if (draw_clear_color_index != UINT32_MAX) {
+          continue;
+        }
+        // Only merge color clears expressible as a plain float clear draw -
+        // uint formats and the precision-lossy 32-bit float cases keep the
+        // per-target path. GetResolveClearLoadActionValues rejects exactly
+        // those, so reuse it to compute the float clear color.
+        MTL::ClearColor color = MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
+        double unused_depth = 1.0;
+        uint32_t unused_stencil = 0;
+        if (!GetResolveClearLoadActionValues(dest_key, clear_value, color,
+                                             unused_depth, unused_stencil)) {
+          continue;
+        }
+        MTL::Texture* dest_texture = dest_metal_rt->transfer_texture();
+        if (!dest_texture) {
+          continue;
+        }
+        bool dest_is_uint = false;
+        draw_clear_color_format = GetColorOwnershipTransferPixelFormat(
+            dest_key.GetColorFormat(), &dest_is_uint);
+        if (dest_is_uint) {
+          continue;
+        }
+        draw_clear_color_index = i;
+        draw_clear_color_texture = dest_texture;
+        draw_clear_color_value.color[0] = float(color.red);
+        draw_clear_color_value.color[1] = float(color.green);
+        draw_clear_color_value.color[2] = float(color.blue);
+        draw_clear_color_value.color[3] = float(color.alpha);
+      }
+    }
+    if (draw_clear_depth_index != UINT32_MAX &&
+        draw_clear_color_index != UINT32_MAX &&
+        draw_clear_depth_texture->width() ==
+            draw_clear_color_texture->width() &&
+        draw_clear_depth_texture->height() ==
+            draw_clear_color_texture->height() &&
+        draw_clear_depth_texture->sampleCount() ==
+            draw_clear_color_texture->sampleCount()) {
+      uint32_t merged_sample_count =
+          uint32_t(draw_clear_depth_texture->sampleCount());
+      uint32_t merged_width = uint32_t(draw_clear_depth_texture->width());
+      uint32_t merged_height = uint32_t(draw_clear_depth_texture->height());
+      MTL::PixelFormat merged_stencil_format =
+          (draw_clear_depth_format == MTL::PixelFormatDepth32Float_Stencil8 ||
+           draw_clear_depth_format == MTL::PixelFormatDepth24Unorm_Stencil8)
+              ? draw_clear_depth_format
+              : MTL::PixelFormatInvalid;
+      TransferColorAttachmentFormats merged_color_formats;
+      merged_color_formats.fill(MTL::PixelFormatInvalid);
+      merged_color_formats[0] = draw_clear_color_format;
+      // Both clear pipelines must declare the full merged-pass attachment set
+      // so the pipeline output configuration matches the render pass.
+      MTL::RenderPipelineState* depth_clear_pipeline =
+          GetOrCreateTransferClearPipeline(
+              draw_clear_depth_format, false, true, merged_sample_count, 0,
+              &merged_color_formats, draw_clear_depth_format,
+              merged_stencil_format);
+      MTL::RenderPipelineState* color_clear_pipeline =
+          GetOrCreateTransferClearPipeline(
+              draw_clear_color_format, false, false, merged_sample_count, 0,
+              &merged_color_formats, draw_clear_depth_format,
+              merged_stencil_format);
+      MTL::DepthStencilState* depth_clear_state = GetTransferDepthClearState();
+      MTL::DepthStencilState* no_depth_state = GetTransferNoDepthStencilState();
+      if (depth_clear_pipeline && color_clear_pipeline && depth_clear_state &&
+          no_depth_state) {
+        // The clear rectangle, scaled and clamped to the shared attachment
+        // extent. Both attachments share dimensions (validated above).
+        uint32_t clear_rect_x = resolve_clear_rectangle->x_pixels * scale_x;
+        uint32_t clear_rect_y = resolve_clear_rectangle->y_pixels * scale_y;
+        uint32_t clear_rect_width =
+            resolve_clear_rectangle->width_pixels * scale_x;
+        uint32_t clear_rect_height =
+            resolve_clear_rectangle->height_pixels * scale_y;
+        bool clear_rect_valid =
+            clear_rect_x < merged_width && clear_rect_y < merged_height;
+        if (clear_rect_valid) {
+          clear_rect_width =
+              std::min(clear_rect_width, merged_width - clear_rect_x);
+          clear_rect_height =
+              std::min(clear_rect_height, merged_height - clear_rect_y);
+          clear_rect_valid = clear_rect_width != 0 && clear_rect_height != 0;
+        }
+        if (clear_rect_valid) {
+          MTL::RenderPassDescriptor* merged_clear_pass =
+              MTL::RenderPassDescriptor::renderPassDescriptor();
+          auto* color_attachment =
+              merged_clear_pass->colorAttachments()->object(0);
+          color_attachment->setTexture(draw_clear_color_texture);
+          color_attachment->setLoadAction(MTL::LoadActionLoad);
+          color_attachment->setStoreAction(MTL::StoreActionStore);
+          auto* depth_attachment = merged_clear_pass->depthAttachment();
+          depth_attachment->setTexture(draw_clear_depth_texture);
+          depth_attachment->setLoadAction(MTL::LoadActionLoad);
+          depth_attachment->setStoreAction(MTL::StoreActionStore);
+          if (merged_stencil_format != MTL::PixelFormatInvalid) {
+            auto* stencil_attachment = merged_clear_pass->stencilAttachment();
+            stencil_attachment->setTexture(draw_clear_depth_texture);
+            stencil_attachment->setLoadAction(MTL::LoadActionLoad);
+            stencil_attachment->setStoreAction(MTL::StoreActionStore);
+          }
+          EndSharedMemoryUploadBlitEncoderForCommandBuffer(command_processor_,
+                                                           cmd);
+          MTL::RenderCommandEncoder* merged_clear_encoder =
+              cmd->renderCommandEncoder(merged_clear_pass);
+          if (merged_clear_encoder) {
+            SetEncoderLabel(merged_clear_encoder, "XeniaResolveClearEncoder");
+            RenderTargetHazardWait(merged_clear_encoder);
+            MTL::Viewport vp;
+            vp.originX = double(clear_rect_x);
+            vp.originY = double(clear_rect_y);
+            vp.width = double(clear_rect_width);
+            vp.height = double(clear_rect_height);
+            vp.znear = 0.0;
+            vp.zfar = 1.0;
+            merged_clear_encoder->setViewport(vp);
+            MTL::ScissorRect scissor;
+            scissor.x = clear_rect_x;
+            scissor.y = clear_rect_y;
+            scissor.width = clear_rect_width;
+            scissor.height = clear_rect_height;
+            merged_clear_encoder->setScissorRect(scissor);
+            // Depth (and stencil) clear draw.
+            TransferClearDepthConstants depth_constants = {};
+            depth_constants.depth = draw_clear_depth_value;
+            merged_clear_encoder->setRenderPipelineState(depth_clear_pipeline);
+            merged_clear_encoder->setDepthStencilState(depth_clear_state);
+            merged_clear_encoder->setStencilReferenceValue(
+                draw_clear_stencil_value);
+            merged_clear_encoder->setFragmentBytes(&depth_constants,
+                                                   sizeof(depth_constants), 0);
+            merged_clear_encoder->drawPrimitives(
+                MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+            // Color clear draw (does not touch depth/stencil).
+            merged_clear_encoder->setRenderPipelineState(color_clear_pipeline);
+            merged_clear_encoder->setDepthStencilState(no_depth_state);
+            merged_clear_encoder->setFragmentBytes(
+                &draw_clear_color_value, sizeof(draw_clear_color_value), 0);
+            merged_clear_encoder->drawPrimitives(
+                MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+            RenderTargetHazardUpdate(merged_clear_encoder);
+            merged_clear_encoder->endEncoding();
+            auto consume_draw_clear = [&](uint32_t index) {
+              auto* merged_metal_rt =
+                  static_cast<MetalRenderTarget*>(render_targets[index]);
+              if (merged_metal_rt->needs_initial_clear()) {
+                merged_metal_rt->SetNeedsInitialClear(false);
+                MarkRenderPassDescriptorDirty();
+              }
+              resolve_clear_done_via_merged_pass[index] = true;
+            };
+            consume_draw_clear(draw_clear_depth_index);
+            consume_draw_clear(draw_clear_color_index);
+            ++telemetry_.resolve_clear.load_action_merged_passes;
+          }
+        }
+      }
+    }
+  }
+
   for (uint32_t i = 0; i < render_target_count; ++i) {
     RenderTarget* dest_rt = render_targets[i];
     if (!dest_rt) {
