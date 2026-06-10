@@ -1524,7 +1524,11 @@ MTL::PixelFormat MetalTextureCache::GetPixelFormatForKey(TextureKey key) const {
     case xenos::TextureFormat::k_8_8:
       return MTL::PixelFormatRG8Unorm;
     case xenos::TextureFormat::k_1_5_5_5:
-      return MTL::PixelFormatA1BGR5Unorm;
+      // The R5G5B5A1ToB5G5R5A1 load shader outputs the layout D3D12 pairs
+      // with DXGI_FORMAT_B5G5R5A1_UNORM and Vulkan with
+      // VK_FORMAT_A1R5G5B5_UNORM_PACK16, which is BGR5A1Unorm, not
+      // A1BGR5Unorm.
+      return MTL::PixelFormatBGR5A1Unorm;
     case xenos::TextureFormat::k_5_6_5:
     case xenos::TextureFormat::k_6_5_5:
       return MTL::PixelFormatB5G6R5Unorm;
