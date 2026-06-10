@@ -202,13 +202,17 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     };
 
     struct ResolveClearTelemetry {
-      // Render passes clearing both the depth and the color destination of
-      // one resolve through clear load actions (counted once per pass).
+      // Render passes clearing both the depth and the color destination of one
+      // resolve in a single pass (counted once per pass) - either through clear
+      // load actions when the clear covers the whole attachment, or through one
+      // merged pass of two scissored clear draws when it covers only a
+      // sub-rectangle. The printed telemetry label calls this "merged_pass".
       uint64_t load_action_merged_passes = 0;
       // Per-target clears performed by the clear load action of an
       // otherwise-empty render pass.
       uint64_t load_action_single_target = 0;
-      // Per-target clears performed by a clear draw within a transfer pass.
+      // Per-target clears performed by a single-attachment clear draw - genuine
+      // partial-rectangle fallbacks that could not be merged.
       uint64_t draw_clears = 0;
     };
 
