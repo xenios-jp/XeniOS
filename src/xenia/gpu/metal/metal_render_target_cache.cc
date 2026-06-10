@@ -4264,6 +4264,23 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
 
         if (pipeline && group_count_x && group_count_y) {
           ResolveDestinationBuffer destination = {};
+          if (dump_encoder) {
+            // PrepareResolveDestinationBuffer requests the copy destination
+            // range in shared memory; an invalid range routes a staged
+            // upload through the shared-memory blit encoder on this command
+            // buffer, and no other encoder may be encoding when that
+            // happens. Close the kept-open dump encoder first in that case
+            // (the cross-encoder fence edges then order dump before resolve
+            // exactly as before the merge). Destinations are almost always
+            // already resident, so the merge survives the common case.
+            auto* resolve_shared_memory = command_processor_.shared_memory();
+            if (!resolve_shared_memory ||
+                !resolve_shared_memory->IsRangeValid(
+                    resolve_info.copy_dest_extent_start,
+                    resolve_info.copy_dest_extent_length)) {
+              close_dump_encoder();
+            }
+          }
           if (!PrepareResolveDestinationBuffer(
                   resolve_info, draw_resolution_scaled, destination)) {
             XELOGE(
