@@ -282,6 +282,18 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
  private:
   static uint32_t GetMetalEdramDumpFormat(RenderTargetKey key);
+  // Backend-owned hazard model, EDRAM phase
+  // (docs/metal_hazard_model_design.md): when metal_backend_hazard_model_edram
+  // is set the EDRAM buffer is created untracked, and every encoder that
+  // touches it waits on this fence at creation and updates it at end —
+  // linearizing EDRAM encoders exactly as driver tracking would, without the
+  // per-encoder dependency analysis. In validate mode the edges are emitted
+  // while tracking stays on. The Initialize-time fill encoder only updates
+  // (nothing precedes it), so every later wait has a committed prior update.
+  void EdramHazardWait(MTL::ComputeCommandEncoder* encoder);
+  void EdramHazardUpdate(MTL::ComputeCommandEncoder* encoder);
+  void EdramHazardWait(MTL::BlitCommandEncoder* encoder);
+  void EdramHazardUpdate(MTL::BlitCommandEncoder* encoder);
   MTL::Library* GetOrCreateEdramLoadLibrary(bool msaa);
   MTL::RenderPipelineState* GetOrCreateEdramLoadPipeline(
       MTL::PixelFormat dest_format, uint32_t sample_count);
@@ -301,6 +313,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
   // EDRAM buffer (10MB embedded DRAM)
   MTL::Buffer* edram_buffer_ = nullptr;
+  MTL::Fence* edram_fence_ = nullptr;
+  bool edram_hazard_fence_edges_ = false;
   MTL::Texture* edram_r32_uint_buffer_view_ = nullptr;
   MTL::Texture* edram_r32g32_uint_buffer_view_ = nullptr;
   MTL::Texture* edram_r32g32b32a32_uint_buffer_view_ = nullptr;
