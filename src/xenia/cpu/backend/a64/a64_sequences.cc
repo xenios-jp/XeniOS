@@ -275,8 +275,12 @@ struct STORE_CONTEXT_I8
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     auto offset = static_cast<uint32_t>(i.src1.value);
     if (i.src2.is_constant) {
-      e.mov(e.w0, static_cast<uint64_t>(i.src2.constant() & 0xFF));
-      e.strb(e.w0, ptr(e.GetContextReg(), offset));
+      if ((i.src2.constant() & 0xFF) == 0) {
+        e.strb(e.wzr, ptr(e.GetContextReg(), offset));
+      } else {
+        e.mov(e.w0, static_cast<uint64_t>(i.src2.constant() & 0xFF));
+        e.strb(e.w0, ptr(e.GetContextReg(), offset));
+      }
     } else {
       e.strb(i.src2, ptr(e.GetContextReg(), offset));
     }
@@ -288,8 +292,12 @@ struct STORE_CONTEXT_I16
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     auto offset = static_cast<uint32_t>(i.src1.value);
     if (i.src2.is_constant) {
-      e.mov(e.w0, static_cast<uint64_t>(i.src2.constant() & 0xFFFF));
-      e.strh(e.w0, ptr(e.GetContextReg(), offset));
+      if ((i.src2.constant() & 0xFFFF) == 0) {
+        e.strh(e.wzr, ptr(e.GetContextReg(), offset));
+      } else {
+        e.mov(e.w0, static_cast<uint64_t>(i.src2.constant() & 0xFFFF));
+        e.strh(e.w0, ptr(e.GetContextReg(), offset));
+      }
     } else {
       e.strh(i.src2, ptr(e.GetContextReg(), offset));
     }
@@ -384,6 +392,88 @@ EMITTER_OPCODE_TABLE(OPCODE_STORE_CONTEXT, STORE_CONTEXT_I8, STORE_CONTEXT_I16,
                      STORE_CONTEXT_F64, STORE_CONTEXT_V128);
 
 // ============================================================================
+// Immediate-form helpers
+// ============================================================================
+// dest = src + imm (wrapping), in a single instruction whenever the
+// immediate or its negation is encodable as an add/sub immediate
+// (12 bits, optionally shifted left by 12). Falls back to mov+add via w0/x0.
+static void EmitAddConstant(A64Emitter& e, const WReg& dest, const WReg& src,
+                            uint32_t imm) {
+  const uint32_t neg = 0u - imm;
+  if (imm == 0) {
+    if (dest.getIdx() != src.getIdx()) {
+      e.mov(dest, src);
+    }
+  } else if (imm <= 0xFFF) {
+    e.add(dest, src, imm);
+  } else if (!(imm & 0xFFF) && (imm >> 12) <= 0xFFF) {
+    e.add(dest, src, imm >> 12, 12);
+  } else if (neg <= 0xFFF) {
+    // Adding a negative immediate wraps identically to subtracting.
+    e.sub(dest, src, neg);
+  } else if (!(neg & 0xFFF) && (neg >> 12) <= 0xFFF) {
+    e.sub(dest, src, neg >> 12, 12);
+  } else {
+    e.mov(e.w0, static_cast<uint64_t>(imm));
+    e.add(dest, src, e.w0);
+  }
+}
+static void EmitAddConstant(A64Emitter& e, const XReg& dest, const XReg& src,
+                            uint64_t imm) {
+  const uint64_t neg = 0ull - imm;
+  if (imm == 0) {
+    if (dest.getIdx() != src.getIdx()) {
+      e.mov(dest, src);
+    }
+  } else if (imm <= 0xFFF) {
+    e.add(dest, src, static_cast<uint32_t>(imm));
+  } else if (!(imm & 0xFFF) && (imm >> 12) <= 0xFFF) {
+    e.add(dest, src, static_cast<uint32_t>(imm >> 12), 12);
+  } else if (neg <= 0xFFF) {
+    e.sub(dest, src, static_cast<uint32_t>(neg));
+  } else if (!(neg & 0xFFF) && (neg >> 12) <= 0xFFF) {
+    e.sub(dest, src, static_cast<uint32_t>(neg >> 12), 12);
+  } else {
+    e.mov(e.x0, imm);
+    e.add(dest, src, e.x0);
+  }
+}
+
+// cmp src, #imm in a single instruction whenever possible. For small
+// negative immediates uses cmn: cmp a, -n and cmn a, n compute the same
+// a + n and set identical NZCV for n in [1, 4095] (and shifted forms).
+static void EmitCmpConstant(A64Emitter& e, const WReg& src, uint32_t imm) {
+  const uint32_t neg = 0u - imm;
+  if (imm <= 0xFFF) {
+    e.cmp(src, imm);
+  } else if (!(imm & 0xFFF) && (imm >> 12) <= 0xFFF) {
+    e.cmp(src, imm >> 12, 12);
+  } else if (neg <= 0xFFF) {
+    e.cmn(src, neg);
+  } else if (!(neg & 0xFFF) && (neg >> 12) <= 0xFFF) {
+    e.cmn(src, neg >> 12, 12);
+  } else {
+    e.mov(e.w0, static_cast<uint64_t>(imm));
+    e.cmp(src, e.w0);
+  }
+}
+static void EmitCmpConstant(A64Emitter& e, const XReg& src, uint64_t imm) {
+  const uint64_t neg = 0ull - imm;
+  if (imm <= 0xFFF) {
+    e.cmp(src, static_cast<uint32_t>(imm));
+  } else if (!(imm & 0xFFF) && (imm >> 12) <= 0xFFF) {
+    e.cmp(src, static_cast<uint32_t>(imm >> 12), 12);
+  } else if (neg <= 0xFFF) {
+    e.cmn(src, static_cast<uint32_t>(neg));
+  } else if (!(neg & 0xFFF) && (neg >> 12) <= 0xFFF) {
+    e.cmn(src, static_cast<uint32_t>(neg >> 12), 12);
+  } else {
+    e.mov(e.x0, imm);
+    e.cmp(src, e.x0);
+  }
+}
+
+// ============================================================================
 // OPCODE_ADD (Integer)
 // ============================================================================
 struct ADD_I8 : Sequence<ADD_I8, I<OPCODE_ADD, I8Op, I8Op, I8Op>> {
@@ -432,21 +522,11 @@ struct ADD_I32 : Sequence<ADD_I32, I<OPCODE_ADD, I32Op, I32Op, I32Op>> {
       e.mov(i.dest, static_cast<uint64_t>(static_cast<uint32_t>(
                         i.src1.constant() + i.src2.constant())));
     } else if (i.src2.is_constant) {
-      uint32_t imm = static_cast<uint32_t>(i.src2.constant());
-      if (imm <= 4095) {
-        e.add(i.dest, i.src1, imm);
-      } else {
-        e.mov(e.w0, static_cast<uint64_t>(imm));
-        e.add(i.dest, i.src1, e.w0);
-      }
+      EmitAddConstant(e, i.dest, i.src1,
+                      static_cast<uint32_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
-      uint32_t imm = static_cast<uint32_t>(i.src1.constant());
-      if (imm <= 4095) {
-        e.add(i.dest, i.src2, imm);
-      } else {
-        e.mov(e.w0, static_cast<uint64_t>(imm));
-        e.add(i.dest, i.src2, e.w0);
-      }
+      EmitAddConstant(e, i.dest, i.src2,
+                      static_cast<uint32_t>(i.src1.constant()));
     } else {
       e.add(i.dest, i.src1, i.src2);
     }
@@ -458,21 +538,11 @@ struct ADD_I64 : Sequence<ADD_I64, I<OPCODE_ADD, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() + i.src2.constant()));
     } else if (i.src2.is_constant) {
-      uint64_t imm = static_cast<uint64_t>(i.src2.constant());
-      if (imm <= 4095) {
-        e.add(i.dest, i.src1, static_cast<uint32_t>(imm));
-      } else {
-        e.mov(e.x0, imm);
-        e.add(i.dest, i.src1, e.x0);
-      }
+      EmitAddConstant(e, i.dest, i.src1,
+                      static_cast<uint64_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
-      uint64_t imm = static_cast<uint64_t>(i.src1.constant());
-      if (imm <= 4095) {
-        e.add(i.dest, i.src2, static_cast<uint32_t>(imm));
-      } else {
-        e.mov(e.x0, imm);
-        e.add(i.dest, i.src2, e.x0);
-      }
+      EmitAddConstant(e, i.dest, i.src2,
+                      static_cast<uint64_t>(i.src1.constant()));
     } else {
       e.add(i.dest, i.src1, i.src2);
     }
@@ -497,7 +567,7 @@ static void EmitFpBinOpWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1,
   // condition is false (i.e. s1 was already NaN), preserving V=1.
   e.fcmp(s1, s1);
   e.fccmp(s2, s2, 0b0001, VC);
-  e.b(VS, nan_path);
+  e.b_near(VS, nan_path);
 
   // Fast path: no NaN input — hardware op.
   switch (op) {
@@ -515,7 +585,7 @@ static void EmitFpBinOpWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1,
       break;
   }
   e.fcmp(dest, dest);
-  e.b(VC, done);
+  e.b_near(VC, done);
   e.mov(e.w0, static_cast<uint64_t>(0xFFC00000u));
   e.fmov(dest, e.w0);
   e.b(done);
@@ -524,7 +594,7 @@ static void EmitFpBinOpWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1,
   e.L(nan_path);
   auto& s1_not_nan = e.NewCachedLabel();
   e.fcmp(s1, s1);
-  e.b(VC, s1_not_nan);
+  e.b_near(VC, s1_not_nan);
   e.fmov(e.w0, s1);
   e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
   e.fmov(dest, e.w0);
@@ -547,7 +617,7 @@ static void EmitFpBinOpWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1,
   // condition is false (i.e. s1 was already NaN), preserving V=1.
   e.fcmp(s1, s1);
   e.fccmp(s2, s2, 0b0001, VC);
-  e.b(VS, nan_path);
+  e.b_near(VS, nan_path);
 
   // Fast path: no NaN input — hardware op.
   switch (op) {
@@ -565,7 +635,7 @@ static void EmitFpBinOpWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1,
       break;
   }
   e.fcmp(dest, dest);
-  e.b(VC, done);
+  e.b_near(VC, done);
   e.mov(e.x0, static_cast<uint64_t>(0xFFF8000000000000ull));
   e.fmov(dest, e.x0);
   e.b(done);
@@ -574,7 +644,7 @@ static void EmitFpBinOpWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1,
   e.L(nan_path);
   auto& s1_not_nan = e.NewCachedLabel();
   e.fcmp(s1, s1);
-  e.b(VC, s1_not_nan);
+  e.b_near(VC, s1_not_nan);
   e.fmov(e.x0, s1);
   e.orr(e.x0, e.x0, static_cast<uint64_t>(1ull << 51));
   e.fmov(dest, e.x0);
@@ -603,7 +673,7 @@ static void EmitFmaWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1, DReg s2,
   e.fcmp(s1, s1);
   e.fccmp(s2, s2, 0b0001, VC);
   e.fccmp(s3, s3, 0b0001, VC);
-  e.b(VS, nan_path);
+  e.b_near(VS, nan_path);
 
   // Fast path: no NaN input → hardware FMA.
   if (is_sub) {
@@ -613,7 +683,7 @@ static void EmitFmaWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1, DReg s2,
   }
   // If result is NaN (0*inf or inf-inf), canonicalize to PPC default.
   e.fcmp(dest, dest);
-  e.b(VC, done);
+  e.b_near(VC, done);
   e.mov(e.x0, static_cast<uint64_t>(0xFFF8000000000000ull));
   e.fmov(dest, e.x0);
   e.b(done);
@@ -622,7 +692,7 @@ static void EmitFmaWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1, DReg s2,
   e.L(nan_path);
   auto& s1_not_nan = e.NewCachedLabel();
   e.fcmp(s1, s1);
-  e.b(VC, s1_not_nan);
+  e.b_near(VC, s1_not_nan);
   e.fmov(e.x0, s1);
   e.orr(e.x0, e.x0, static_cast<uint64_t>(1ull << 51));  // ensure quiet
   e.fmov(dest, e.x0);
@@ -631,7 +701,7 @@ static void EmitFmaWithPpcNan_F64(A64Emitter& e, DReg dest, DReg s1, DReg s2,
 
   auto& s2_not_nan = e.NewCachedLabel();
   e.fcmp(s2, s2);
-  e.b(VC, s2_not_nan);
+  e.b_near(VC, s2_not_nan);
   e.fmov(e.x0, s2);
   e.orr(e.x0, e.x0, static_cast<uint64_t>(1ull << 51));
   e.fmov(dest, e.x0);
@@ -655,7 +725,7 @@ static void EmitFmaWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1, SReg s2,
   e.fcmp(s1, s1);
   e.fccmp(s2, s2, 0b0001, VC);
   e.fccmp(s3, s3, 0b0001, VC);
-  e.b(VS, nan_path);
+  e.b_near(VS, nan_path);
 
   if (is_sub) {
     e.fnmsub(dest, s1, s2, s3);
@@ -663,7 +733,7 @@ static void EmitFmaWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1, SReg s2,
     e.fmadd(dest, s1, s2, s3);
   }
   e.fcmp(dest, dest);
-  e.b(VC, done);
+  e.b_near(VC, done);
   e.mov(e.w0, static_cast<uint64_t>(0xFFC00000u));
   e.fmov(dest, e.w0);
   e.b(done);
@@ -671,7 +741,7 @@ static void EmitFmaWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1, SReg s2,
   e.L(nan_path);
   auto& s1_not_nan = e.NewCachedLabel();
   e.fcmp(s1, s1);
-  e.b(VC, s1_not_nan);
+  e.b_near(VC, s1_not_nan);
   e.fmov(e.w0, s1);
   e.orr(e.w0, e.w0, static_cast<uint32_t>(1u << 22));
   e.fmov(dest, e.w0);
@@ -680,7 +750,7 @@ static void EmitFmaWithPpcNan_F32(A64Emitter& e, SReg dest, SReg s1, SReg s2,
 
   auto& s2_not_nan = e.NewCachedLabel();
   e.fcmp(s2, s2);
-  e.b(VC, s2_not_nan);
+  e.b_near(VC, s2_not_nan);
   e.fmov(e.w0, s2);
   e.orr(e.w0, e.w0, static_cast<uint32_t>(1u << 22));
   e.fmov(dest, e.w0);
@@ -910,12 +980,9 @@ static void EmitSubInt(A64Emitter& e, const T& i) {
         static_cast<
             typename std::make_unsigned<decltype(i.src2.constant())>::type>(
             i.src2.constant()));
-    if (imm <= 4095) {
-      e.sub(i.dest, i.src1, static_cast<uint32_t>(imm));
-    } else {
-      e.mov(e.w0, static_cast<uint64_t>(imm));
-      e.sub(i.dest, i.src1, REG(0));
-    }
+    // src - imm == src + (-imm) with 32-bit wrap; the helper picks the
+    // shortest add/sub immediate encoding.
+    EmitAddConstant(e, i.dest, i.src1, 0u - static_cast<uint32_t>(imm));
   } else if (i.src1.is_constant) {
     uint64_t imm = static_cast<uint64_t>(
         static_cast<
@@ -949,13 +1016,8 @@ struct SUB_I64 : Sequence<SUB_I64, I<OPCODE_SUB, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() - i.src2.constant()));
     } else if (i.src2.is_constant) {
-      uint64_t imm = static_cast<uint64_t>(i.src2.constant());
-      if (imm <= 4095) {
-        e.sub(i.dest, i.src1, static_cast<uint32_t>(imm));
-      } else {
-        e.mov(e.x0, imm);
-        e.sub(i.dest, i.src1, e.x0);
-      }
+      EmitAddConstant(e, i.dest, i.src1,
+                      0ull - static_cast<uint64_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
       // Use scratch register to avoid clobbering src2 when dest == src2.
       e.mov(e.x17, static_cast<uint64_t>(i.src1.constant()));
@@ -1150,15 +1212,29 @@ struct MUL_I32 : Sequence<MUL_I32, I<OPCODE_MUL, I32Op, I32Op, I32Op>> {
       e.mov(i.dest, static_cast<uint64_t>(static_cast<uint32_t>(
                         i.src1.constant() * i.src2.constant())));
     } else if (i.src1.is_constant) {
-      e.mov(e.w0,
-            static_cast<uint64_t>(static_cast<uint32_t>(i.src1.constant())));
-      e.mul(i.dest, e.w0, i.src2);
+      EmitMulConstant(e, i.dest, i.src2,
+                      static_cast<uint32_t>(i.src1.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.w0,
-            static_cast<uint64_t>(static_cast<uint32_t>(i.src2.constant())));
-      e.mul(i.dest, i.src1, e.w0);
+      EmitMulConstant(e, i.dest, i.src1,
+                      static_cast<uint32_t>(i.src2.constant()));
     } else {
       e.mul(i.dest, i.src1, i.src2);
+    }
+  }
+
+  // dest = src * imm; power-of-two multiplies become shifts (the low 32
+  // result bits are identical for signed/unsigned and for shift vs mul).
+  static void EmitMulConstant(A64Emitter& e, const WReg& dest, const WReg& src,
+                              uint32_t imm) {
+    if (imm == 0) {
+      // mov(dest, wzr) would assemble as ADD dest, SP, #0 (reg 31 = SP in
+      // the register-mov alias); the immediate form is MOVZ.
+      e.mov(dest, uint64_t(0));
+    } else if (!(imm & (imm - 1))) {
+      e.lsl(dest, src, xe::tzcnt(imm));
+    } else {
+      e.mov(e.w0, static_cast<uint64_t>(imm));
+      e.mul(dest, src, e.w0);
     }
   }
 };
@@ -1168,13 +1244,29 @@ struct MUL_I64 : Sequence<MUL_I64, I<OPCODE_MUL, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() * i.src2.constant()));
     } else if (i.src1.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
-      e.mul(i.dest, e.x0, i.src2);
+      EmitMulConstant(e, i.dest, i.src2,
+                      static_cast<uint64_t>(i.src1.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
-      e.mul(i.dest, i.src1, e.x0);
+      EmitMulConstant(e, i.dest, i.src1,
+                      static_cast<uint64_t>(i.src2.constant()));
     } else {
       e.mul(i.dest, i.src1, i.src2);
+    }
+  }
+
+  // dest = src * imm; power-of-two multiplies become shifts (the low 64
+  // result bits are identical for signed/unsigned and for shift vs mul).
+  static void EmitMulConstant(A64Emitter& e, const XReg& dest, const XReg& src,
+                              uint64_t imm) {
+    if (imm == 0) {
+      // mov(dest, xzr) would assemble as ADD dest, SP, #0 (reg 31 = SP in
+      // the register-mov alias); the immediate form is MOVZ.
+      e.mov(dest, uint64_t(0));
+    } else if (!(imm & (imm - 1))) {
+      e.lsl(dest, src, static_cast<uint32_t>(xe::tzcnt(imm)));
+    } else {
+      e.mov(e.x0, imm);
+      e.mul(dest, src, e.x0);
     }
   }
 };
@@ -1536,13 +1628,21 @@ struct AND_I64 : Sequence<AND_I64, I<OPCODE_AND, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() & i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
-      e.and_(i.dest, i.src1, e.x0);
+      EmitAndImm(e, i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
-      e.and_(i.dest, i.src2, e.x0);
+      EmitAndImm(e, i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()));
     } else {
       e.and_(i.dest, i.src1, i.src2);
+    }
+  }
+
+  static void EmitAndImm(A64Emitter& e, const XReg& dest, const XReg& src,
+                         uint64_t imm) {
+    if (IsValidLogicalImm(imm, 64)) {
+      e.and_(dest, src, imm);
+    } else {
+      e.mov(e.x0, imm);
+      e.and_(dest, src, e.x0);
     }
   }
 };
@@ -1599,9 +1699,15 @@ struct AND_NOT_I32
       e.mov(i.dest, static_cast<uint64_t>(static_cast<uint32_t>(
                         i.src1.constant() & ~i.src2.constant())));
     } else if (i.src2.is_constant) {
-      e.mov(e.w0,
-            static_cast<uint64_t>(static_cast<uint32_t>(i.src2.constant())));
-      e.bic(i.dest, i.src1, e.w0);
+      // src1 & ~imm: prefer the AND immediate form with the complement.
+      const uint32_t not_imm = ~static_cast<uint32_t>(i.src2.constant());
+      if (IsValidLogicalImm(not_imm, 32)) {
+        e.and_(i.dest, i.src1, static_cast<uint64_t>(not_imm));
+      } else {
+        e.mov(e.w0,
+              static_cast<uint64_t>(static_cast<uint32_t>(i.src2.constant())));
+        e.bic(i.dest, i.src1, e.w0);
+      }
     } else if (i.src1.is_constant) {
       e.mov(e.w0,
             static_cast<uint64_t>(static_cast<uint32_t>(i.src1.constant())));
@@ -1618,8 +1724,14 @@ struct AND_NOT_I64
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() & ~i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
-      e.bic(i.dest, i.src1, e.x0);
+      // src1 & ~imm: prefer the AND immediate form with the complement.
+      const uint64_t not_imm = ~static_cast<uint64_t>(i.src2.constant());
+      if (IsValidLogicalImm(not_imm, 64)) {
+        e.and_(i.dest, i.src1, not_imm);
+      } else {
+        e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
+        e.bic(i.dest, i.src1, e.x0);
+      }
     } else if (i.src1.is_constant) {
       e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
       e.bic(i.dest, e.x0, i.src2);
@@ -1691,13 +1803,21 @@ struct OR_I64 : Sequence<OR_I64, I<OPCODE_OR, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() | i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
-      e.orr(i.dest, i.src1, e.x0);
+      EmitOrrImm(e, i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
-      e.orr(i.dest, i.src2, e.x0);
+      EmitOrrImm(e, i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()));
     } else {
       e.orr(i.dest, i.src1, i.src2);
+    }
+  }
+
+  static void EmitOrrImm(A64Emitter& e, const XReg& dest, const XReg& src,
+                         uint64_t imm) {
+    if (IsValidLogicalImm(imm, 64)) {
+      e.orr(dest, src, imm);
+    } else {
+      e.mov(e.x0, imm);
+      e.orr(dest, src, e.x0);
     }
   }
 };
@@ -1761,13 +1881,21 @@ struct XOR_I64 : Sequence<XOR_I64, I<OPCODE_XOR, I64Op, I64Op, I64Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(i.src1.constant() ^ i.src2.constant()));
     } else if (i.src2.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src2.constant()));
-      e.eor(i.dest, i.src1, e.x0);
+      EmitEorImm(e, i.dest, i.src1, static_cast<uint64_t>(i.src2.constant()));
     } else if (i.src1.is_constant) {
-      e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));
-      e.eor(i.dest, i.src2, e.x0);
+      EmitEorImm(e, i.dest, i.src2, static_cast<uint64_t>(i.src1.constant()));
     } else {
       e.eor(i.dest, i.src1, i.src2);
+    }
+  }
+
+  static void EmitEorImm(A64Emitter& e, const XReg& dest, const XReg& src,
+                         uint64_t imm) {
+    if (IsValidLogicalImm(imm, 64)) {
+      e.eor(dest, src, imm);
+    } else {
+      e.mov(e.x0, imm);
+      e.eor(dest, src, e.x0);
     }
   }
 };
@@ -2416,13 +2544,8 @@ EMITTER_OPCODE_TABLE(OPCODE_CNTLZ, CNTLZ_I8, CNTLZ_I16, CNTLZ_I32, CNTLZ_I64);
           e.cmp(e.w0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint32_t imm = static_cast<uint32_t>(i.src2.constant() & 0xFF);        \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, imm);                                                  \
-        } else {                                                               \
-          e.mov(e.w0, static_cast<uint64_t>(imm));                             \
-          e.cmp(i.src1, e.w0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint32_t>(i.src2.constant() & 0xFF));      \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \
@@ -2441,13 +2564,8 @@ EMITTER_OPCODE_TABLE(OPCODE_CNTLZ, CNTLZ_I8, CNTLZ_I16, CNTLZ_I32, CNTLZ_I64);
           e.cmp(e.w0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint32_t imm = static_cast<uint32_t>(i.src2.constant() & 0xFFFF);      \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, imm);                                                  \
-        } else {                                                               \
-          e.mov(e.w0, static_cast<uint64_t>(imm));                             \
-          e.cmp(i.src1, e.w0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint32_t>(i.src2.constant() & 0xFFFF));    \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \
@@ -2468,13 +2586,8 @@ EMITTER_OPCODE_TABLE(OPCODE_CNTLZ, CNTLZ_I8, CNTLZ_I16, CNTLZ_I32, CNTLZ_I64);
           e.cmp(e.w0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint32_t imm = static_cast<uint32_t>(i.src2.constant());               \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, imm);                                                  \
-        } else {                                                               \
-          e.mov(e.w0, static_cast<uint64_t>(imm));                             \
-          e.cmp(i.src1, e.w0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint32_t>(i.src2.constant()));             \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \
@@ -2493,13 +2606,8 @@ EMITTER_OPCODE_TABLE(OPCODE_CNTLZ, CNTLZ_I8, CNTLZ_I16, CNTLZ_I32, CNTLZ_I64);
           e.cmp(e.x0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint64_t imm = static_cast<uint64_t>(i.src2.constant());               \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, static_cast<uint32_t>(imm));                           \
-        } else {                                                               \
-          e.mov(e.x0, imm);                                                    \
-          e.cmp(i.src1, e.x0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint64_t>(i.src2.constant()));             \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \
@@ -2567,13 +2675,8 @@ DEFINE_COMPARE_XX(COMPARE_NE, NE);
           e.cmp(e.w0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint32_t imm = static_cast<uint32_t>(i.src2.constant());               \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, imm);                                                  \
-        } else {                                                               \
-          e.mov(e.w0, static_cast<uint64_t>(imm));                             \
-          e.cmp(i.src1, e.w0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint32_t>(i.src2.constant()));             \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \
@@ -2592,13 +2695,8 @@ DEFINE_COMPARE_XX(COMPARE_NE, NE);
           e.cmp(e.x0, i.src2);                                                 \
         }                                                                      \
       } else if (i.src2.is_constant) {                                         \
-        uint64_t imm = static_cast<uint64_t>(i.src2.constant());               \
-        if (imm <= 4095) {                                                     \
-          e.cmp(i.src1, static_cast<uint32_t>(imm));                           \
-        } else {                                                               \
-          e.mov(e.x0, imm);                                                    \
-          e.cmp(i.src1, e.x0);                                                 \
-        }                                                                      \
+        EmitCmpConstant(e, i.src1,                                             \
+                        static_cast<uint64_t>(i.src2.constant()));             \
       } else {                                                                 \
         e.cmp(i.src1, i.src2);                                                 \
       }                                                                        \

@@ -10,6 +10,7 @@
 #ifndef XENIA_CPU_BACKEND_A64_A64_SEQ_UTIL_H_
 #define XENIA_CPU_BACKEND_A64_A64_SEQ_UTIL_H_
 
+#include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/vec128.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
@@ -66,6 +67,37 @@ inline bool IsMovi64Imm(uint64_t value) {
     }
   }
   return true;
+}
+
+// True iff `imm` is encodable as an AArch64 logical immediate (AND/ORR/EOR
+// immediate forms) for the given register size (32 or 64). A logical
+// immediate is a power-of-two-sized element (2..64 bits) containing a single
+// circular run of ones, replicated to fill the register. All-zeros and
+// all-ones are not encodable.
+inline bool IsValidLogicalImm(uint64_t imm, unsigned reg_size) {
+  if (reg_size == 32) {
+    imm &= 0xFFFFFFFFull;
+    imm |= imm << 32;
+  }
+  if (imm == 0 || imm == ~0ull) {
+    return false;
+  }
+  // Find the smallest power-of-two period of the pattern.
+  unsigned size = 64;
+  do {
+    const unsigned half = size / 2;
+    const uint64_t mask = (1ull << half) - 1;
+    if ((imm & mask) != ((imm >> half) & mask)) {
+      break;
+    }
+    size = half;
+  } while (size > 2);
+  // The element must be a single circular run of ones: exactly two 0<->1
+  // transitions when traversed circularly.
+  const uint64_t elem_mask = (size == 64) ? ~0ull : ((1ull << size) - 1);
+  const uint64_t elem = imm & elem_mask;
+  const uint64_t rot1 = ((elem >> 1) | (elem << (size - 1))) & elem_mask;
+  return xe::bit_count(elem ^ rot1) == 2;
 }
 
 // Try to see if the provided double value can be compressed into an 8-bit value
@@ -271,12 +303,11 @@ inline XReg ComputeMemoryAddress(A64Emitter& e, const I64Op& guest) {
     // applying the host membase so guest pointers can't escape above 4 GB.
     e.mov(e.w0, WReg(src.getIdx()));
     if (xe::memory::allocation_granularity() > 0x1000) {
+      // Branch-free: w17 = w0 + 0x1000, kept only when w0 >= 0xE0000000.
       e.mov(e.w17, 0xE0000000u);
       e.cmp(e.w0, e.w17);
-      auto& skip = e.NewCachedLabel();
-      e.b(LO, skip);
-      e.add(e.w0, e.w0, 1, 12);  // add 0x1000 via LSL #12
-      e.L(skip);
+      e.add(e.w17, e.w0, 1, 12);  // w17 = w0 + 0x1000 via LSL #12
+      e.csel(e.w0, e.w0, e.w17, LO);
     }
     return e.x0;
   }
@@ -290,9 +321,23 @@ inline XReg AddGuestMemoryOffset(A64Emitter& e, const XReg& base,
   // the final host pointer.
   e.mov(e.w0, WReg(base.getIdx()));
   if (offset.is_constant) {
-    e.mov(e.w17,
-          static_cast<uint64_t>(static_cast<uint32_t>(offset.constant())));
-    e.add(e.w0, e.w0, e.w17);
+    const uint32_t imm = static_cast<uint32_t>(offset.constant());
+    const uint32_t neg = 0u - imm;
+    if (imm == 0) {
+      // Nothing to add.
+    } else if (imm <= 0xFFF) {
+      e.add(e.w0, e.w0, imm);
+    } else if (!(imm & 0xFFF) && (imm >> 12) <= 0xFFF) {
+      e.add(e.w0, e.w0, imm >> 12, 12);
+    } else if (neg <= 0xFFF) {
+      // Adding a small negative offset wraps identically to subtracting.
+      e.sub(e.w0, e.w0, neg);
+    } else if (!(neg & 0xFFF) && (neg >> 12) <= 0xFFF) {
+      e.sub(e.w0, e.w0, neg >> 12, 12);
+    } else {
+      e.mov(e.w17, static_cast<uint64_t>(imm));
+      e.add(e.w0, e.w0, e.w17);
+    }
   } else {
     e.add(e.w0, e.w0, WReg(offset.reg().getIdx()));
   }
@@ -379,7 +424,8 @@ inline void FixupVmxNan_V128(A64Emitter& e) {
   e.fcmeq(VReg(3).s4, VReg(2).s4, VReg(2).s4);  // all-1s for non-NaN
   e.uminv(SReg(3), VReg(3).s4);                 // min across lanes
   e.fmov(e.w0, SReg(3));
-  e.cbnz(e.w0, done);  // all non-NaN → skip
+  // `done` is bound a bounded number of instructions below — near is safe.
+  e.cbnz_near(e.w0, done);  // all non-NaN → skip
 
   // Save s1/s2 to stack for scalar lane extraction.
   e.str(QReg(0), ptr(e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH)));
@@ -398,14 +444,14 @@ inline void FixupVmxNan_V128(A64Emitter& e) {
     e.umov(e.w0, VReg(2).s4[lane]);
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, lane_ok);
+    e.b_near(LS, lane_ok);
 
     // Result is NaN. Check s1[lane].
     e.ldr(e.w0, ptr(e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) +
                               lane * 4));
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, s1_not_nan);
+    e.b_near(LS, s1_not_nan);
 
     // s1 is NaN: quiet it and insert.
     e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
@@ -418,7 +464,7 @@ inline void FixupVmxNan_V128(A64Emitter& e) {
                               16 + lane * 4));
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, use_default);
+    e.b_near(LS, use_default);
 
     // s2 is NaN: quiet it and insert.
     e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
@@ -451,7 +497,8 @@ inline void FixupVmxNan_V128_Fma(A64Emitter& e) {
   e.fcmeq(VReg(3).s4, VReg(2).s4, VReg(2).s4);
   e.uminv(SReg(3), VReg(3).s4);
   e.fmov(e.w0, SReg(3));
-  e.cbnz(e.w0, done);
+  // `done` is bound a bounded number of instructions below — near is safe.
+  e.cbnz_near(e.w0, done);
 
   // NaN threshold constant.
   e.mov(e.w16, 0xFF000000u);
@@ -466,14 +513,14 @@ inline void FixupVmxNan_V128_Fma(A64Emitter& e) {
     e.umov(e.w0, VReg(2).s4[lane]);
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, lane_ok);
+    e.b_near(LS, lane_ok);
 
     // Result is NaN. Check src1[lane].
     e.ldr(e.w0, ptr(e.sp, static_cast<int32_t>(StackLayout::GUEST_SCRATCH) +
                               lane * 4));
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, s1_not_nan);
+    e.b_near(LS, s1_not_nan);
     e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
     e.ins(VReg(2).s4[lane], e.w0);
     e.b(lane_ok);
@@ -484,7 +531,7 @@ inline void FixupVmxNan_V128_Fma(A64Emitter& e) {
                               16 + lane * 4));
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, s2_not_nan);
+    e.b_near(LS, s2_not_nan);
     e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
     e.ins(VReg(2).s4[lane], e.w0);
     e.b(lane_ok);
@@ -495,7 +542,7 @@ inline void FixupVmxNan_V128_Fma(A64Emitter& e) {
                               32 + lane * 4));
     e.lsl(e.w17, e.w0, 1);
     e.cmp(e.w17, e.w16);
-    e.b(LS, use_default);
+    e.b_near(LS, use_default);
     e.orr(e.w0, e.w0, static_cast<uint64_t>(1u << 22));
     e.ins(VReg(2).s4[lane], e.w0);
     e.b(lane_ok);
