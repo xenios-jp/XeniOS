@@ -9,6 +9,7 @@
 
 #include "xenia/hid/touch/touch_layout_ios.h"
 
+#include <memory>
 #include <utility>
 
 namespace xe {
@@ -26,10 +27,26 @@ IOSTouchResolvedState IOSTouchResolvedStateBuffer::Load() const {
 }
 
 IOSTouchRuntimeModel::IOSTouchRuntimeModel()
-    : layout_(CreateDefaultIOSFPSLayoutModel()) {}
+    : layout_(CreateDefaultIOSFPSLayoutModel()) {
+  PublishControlsSnapshot();
+}
 
 void IOSTouchRuntimeModel::SetLayout(IOSTouchLayoutModel layout) {
   layout_ = std::move(layout);
+  PublishControlsSnapshot();
+}
+
+void IOSTouchRuntimeModel::PublishControlsSnapshot() {
+  auto snapshot = std::make_shared<const std::vector<IOSTouchControlDefinition>>(
+      layout_.controls);
+  std::lock_guard<std::mutex> lock(controls_snapshot_mutex_);
+  controls_snapshot_ = std::move(snapshot);
+}
+
+std::shared_ptr<const std::vector<IOSTouchControlDefinition>>
+IOSTouchRuntimeModel::LoadControlsSnapshot() const {
+  std::lock_guard<std::mutex> lock(controls_snapshot_mutex_);
+  return controls_snapshot_;
 }
 
 void IOSTouchRuntimeModel::StoreResolvedState(

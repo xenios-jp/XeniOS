@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -268,6 +269,15 @@ class IOSTouchRuntimeModel {
   IOSTouchLayoutModel& mutable_layout() { return layout_; }
   void SetLayout(IOSTouchLayoutModel layout);
 
+  // Copies the current layout's controls into a snapshot that cross-thread
+  // consumers (e.g. the HID driver answering guest capability queries while
+  // the layout editor mutates the live layout) can read safely. Must be
+  // called on the layout-owning (main) thread after structural layout
+  // changes; SetLayout publishes automatically.
+  void PublishControlsSnapshot();
+  std::shared_ptr<const std::vector<IOSTouchControlDefinition>>
+  LoadControlsSnapshot() const;
+
   void StoreResolvedState(const IOSTouchResolvedState& state);
   IOSTouchResolvedState LoadResolvedState() const;
   void ResetResolvedState();
@@ -275,6 +285,9 @@ class IOSTouchRuntimeModel {
  private:
   IOSTouchLayoutModel layout_;
   IOSTouchResolvedStateBuffer resolved_state_;
+  mutable std::mutex controls_snapshot_mutex_;
+  std::shared_ptr<const std::vector<IOSTouchControlDefinition>>
+      controls_snapshot_;
 };
 
 IOSTouchLayoutModel CreateDefaultIOSFPSLayoutModel();

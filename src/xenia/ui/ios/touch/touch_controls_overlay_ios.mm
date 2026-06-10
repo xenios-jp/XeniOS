@@ -1513,6 +1513,11 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
     return;
   }
 
+  // Every structural layout mutation (add/duplicate/delete/import) funnels
+  // through this rebuild, so republish the cross-thread controls snapshot the
+  // HID driver uses for guest capability queries.
+  runtime_model_->PublishControlsSnapshot();
+
   const auto& controls = runtime_model_->layout().controls;
   resolved_control_frames_.resize(controls.size());
   conflicting_control_indices_.assign(controls.size(), false);
