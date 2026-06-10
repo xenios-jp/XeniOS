@@ -4634,6 +4634,12 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   if (!TryGpuLoadTexture(texture, load_base, load_mips)) {
     return false;
   }
+  // If this is a 3D base texture (not a wrapper itself), drop the cached 2D
+  // wrapper so it is re-built from the freshly-loaded base data on next use.
+  if (!metal_texture->is_3d_as_2d_wrapper_ &&
+      texture.key().dimension == xenos::DataDimension::k3D) {
+    metal_texture->texture_3d_as_2d_.reset();
+  }
   if (command_processor_) {
     const TextureKey& texture_key = texture.key();
     const uint64_t upload_bytes =
@@ -4711,6 +4717,11 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
   if (!TryGpuLoadTexture(texture, base_outdated, mips_outdated,
                          TextureLoadSourceMode::kCpuGuestMemory)) {
     return false;
+  }
+  // Drop the cached 2D wrapper so it is re-built from the fresh base data.
+  if (!metal_texture->is_3d_as_2d_wrapper_ &&
+      texture_key.dimension == xenos::DataDimension::k3D) {
+    metal_texture->texture_3d_as_2d_.reset();
   }
 
   {
