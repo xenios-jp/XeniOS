@@ -138,6 +138,11 @@ class TextureCache {
   // Conservative non-mutating check for whether RequestTextures may call
   // LoadTextureDataFromResidentMemoryImpl for any used texture.
   bool MayRequestTexturesLoadData(uint32_t used_texture_mask) const;
+  // Clears outdated state for used bound textures whose guest bytes are
+  // unchanged since their last CPU-guest-source load (page-granular watch
+  // false sharing), so neither encoder boundaries nor reloads are triggered
+  // for them. Call before acting on MayRequestTexturesLoadData.
+  void TryRevalidateUsedOutdatedTextures(uint32_t used_texture_mask);
   uint32_t GetUsedTextureRequestWorkMask(uint32_t used_texture_mask) const;
   uint32_t GetUsedTextureRangeOverlapMask(uint32_t used_texture_mask,
                                           uint32_t start,
@@ -344,6 +349,22 @@ class TextureCache {
         const global_unique_lock_type& global_lock, bool loaded_base,
         bool loaded_mips);
 
+    // Content-hash revalidation for page-granular watch false sharing: when
+    // many small textures share one host page, a CPU write to any of them
+    // invalidates all of them, and most of the resulting reloads consume
+    // unchanged bytes. Hashes are stored only when the texture data was read
+    // directly from CPU guest memory (so the hashed bytes are exactly the
+    // bytes the host texture was built from), are dropped on any GPU-sourced
+    // invalidation (GPU-written content is not derived from guest RAM), and
+    // are checked only against CPU-write invalidations.
+    void StoreCpuContentHashes(const global_unique_lock_type& global_lock,
+                               bool loaded_base, bool loaded_mips);
+    // Clears outdated state for parts whose guest bytes hash identically to
+    // the last CPU-guest-source load, re-arming the watches. Returns true if
+    // nothing remains outdated.
+    bool TryRevalidateCpuInvalidation(
+        const global_unique_lock_type& global_lock);
+
     void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip,
                        TextureWatchInvalidationSource source,
                        uint32_t source_start, uint32_t source_length,
@@ -412,6 +433,13 @@ class TextureCache {
     // Watch handles for the memory ranges.
     SharedMemory::WatchHandle base_watch_handle_ = nullptr;
     SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
+    // Content hashes of the guest bytes consumed by the last
+    // CPU-guest-source load, for revalidating false-sharing watch
+    // invalidations. Accessed within the global critical region.
+    uint64_t base_content_hash_ = 0;
+    uint64_t mips_content_hash_ = 0;
+    bool base_content_hash_valid_ = false;
+    bool mips_content_hash_valid_ = false;
   };
 
   // Rules of data access in load shaders:
@@ -718,6 +746,8 @@ class TextureCache {
       [[maybe_unused]] const Texture& texture, [[maybe_unused]] bool is_mip,
       [[maybe_unused]] TextureWatchInvalidationSource source,
       [[maybe_unused]] uint32_t byte_count) {}
+  virtual void RecordTextureContentRevalidation(
+      [[maybe_unused]] bool is_mip, [[maybe_unused]] uint32_t byte_count) {}
 
  private:
   void UpdateTexturesTotalHostMemoryUsage(uint64_t add, uint64_t subtract);

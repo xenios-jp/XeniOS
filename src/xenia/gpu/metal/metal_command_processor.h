@@ -231,6 +231,10 @@ class MetalCommandProcessor final : public CommandProcessor {
     kGpuOtherMips,
     kGpuResolveBase,
     kGpuResolveMips,
+    // CPU-write invalidations proven to be page false sharing by a content
+    // hash match - the reload was skipped.
+    kRevalidatedBase,
+    kRevalidatedMips,
     kCount,
   };
   static constexpr size_t kTextureWatchInvalidationReasonCount =
@@ -1579,6 +1583,21 @@ class MetalCommandProcessor final : public CommandProcessor {
   std::array<uint32_t, kFetchConstantDwordCount>
       current_fetch_constant_payload_ = {};
   bool current_fetch_constant_payload_valid_ = false;
+  // Recently uploaded fetch-constant snapshots within the current frame. The
+  // single current_fetch_constant_payload_ comparator only catches
+  // back-to-back repeats; draws commonly ping-pong between a few fetch sets
+  // across passes, and pool slices are frame-lifetime, so an
+  // identical-content snapshot from earlier in the frame can be rebound
+  // instead of re-uploaded. Entries are valid only while their
+  // binding.upload_frame matches frame_current_.
+  static constexpr size_t kFetchPayloadCacheSize = 8;
+  struct FetchPayloadCacheEntry {
+    std::array<uint32_t, kFetchConstantDwordCount> payload = {};
+    ConstantBufferBinding binding;
+  };
+  std::array<FetchPayloadCacheEntry, kFetchPayloadCacheSize>
+      fetch_payload_cache_ = {};
+  size_t fetch_payload_cache_next_ = 0;
 
   // Float constant usage bitmaps for the current shader pair.
   // Used to gate WriteRegister invalidation: only dirty the float CBV

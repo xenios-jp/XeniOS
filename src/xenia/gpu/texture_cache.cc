@@ -14,8 +14,26 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/shared_memory.h"
+#include "xenia/memory.h"
+
+DEFINE_bool(
+    texture_cache_revalidate_unchanged, true,
+    "Before reloading a texture invalidated by a CPU write, hash its guest "
+    "bytes and skip the reload when they are identical to what the last load "
+    "consumed. Host memory write watches are page-granular, so a write to "
+    "any texture sharing a page invalidates all of them; this filters out "
+    "those false-sharing reloads. Only applies to textures loaded directly "
+    "from CPU guest memory.",
+    "GPU");
+DEFINE_uint32(
+    texture_cache_revalidate_size_limit, 1048576,
+    "Largest guest data size (bytes, per base/mips part) eligible for "
+    "content-hash revalidation. Larger textures always reload when "
+    "invalidated.",
+    "GPU");
 
 DEFINE_int32(
     draw_resolution_scale_x, 1,
@@ -346,6 +364,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask, bool load_data) {
   // Clear the aggregate flag, but invalidate only actually used outdated
   // bindings below to avoid resyncing all slots on unrelated texture updates.
   texture_became_outdated_.exchange(false, std::memory_order_acquire);
+  TryRevalidateUsedOutdatedTextures(used_texture_mask);
   InvalidateUsedOutdatedBindings(used_texture_mask);
 
   // Update the texture keys and the textures.
@@ -629,6 +648,43 @@ uint32_t TextureCache::GetUsedTextureRangeOverlapMask(
   return overlap_mask;
 }
 
+void TextureCache::TryRevalidateUsedOutdatedTextures(
+    uint32_t used_texture_mask) {
+  if (!cvars::texture_cache_revalidate_unchanged) {
+    return;
+  }
+  // Lockless sweep first so the global lock is only taken when a used
+  // binding actually has an outdated texture. False positives are safe -
+  // the state is rechecked under the lock.
+  Texture* candidates[64];
+  uint32_t candidate_count = 0;
+  uint32_t remaining_bits = used_texture_mask;
+  uint32_t index = 0;
+  while (xe::bit_scan_forward(remaining_bits, &index)) {
+    remaining_bits = xe::clear_lowest_bit(remaining_bits);
+    const TextureBinding& binding = texture_bindings_[index];
+    if (!binding.key.is_valid) {
+      continue;
+    }
+    for (Texture* texture : {binding.texture, binding.texture_signed}) {
+      if (texture && candidate_count < xe::countof(candidates) &&
+          (texture->base_outdated_lockless() ||
+           texture->mips_outdated_lockless())) {
+        candidates[candidate_count++] = texture;
+      }
+    }
+  }
+  if (!candidate_count) {
+    return;
+  }
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t i = 0; i < candidate_count; ++i) {
+    // Duplicate bindings of the same texture are fine - the second attempt
+    // sees the flags already cleared or the hash already dropped.
+    candidates[i]->TryRevalidateCpuInvalidation(global_lock);
+  }
+}
+
 bool TextureCache::IsBindingOutdatedForUse(
     const TextureBinding& binding) const {
   auto is_texture_outdated = [](const Texture* texture) {
@@ -781,6 +837,75 @@ void TextureCache::Texture::MakeLoadedDataUpToDateAndWatch(
   }
 }
 
+void TextureCache::Texture::StoreCpuContentHashes(
+    const global_unique_lock_type& global_lock, bool loaded_base,
+    bool loaded_mips) {
+  if (!cvars::texture_cache_revalidate_unchanged) {
+    base_content_hash_valid_ = false;
+    mips_content_hash_valid_ = false;
+    return;
+  }
+  Memory& memory = texture_cache().shared_memory().memory();
+  uint32_t size_limit = cvars::texture_cache_revalidate_size_limit;
+  if (loaded_base) {
+    uint32_t base_size = GetGuestBaseSize();
+    base_content_hash_valid_ = base_size != 0 && base_size <= size_limit;
+    if (base_content_hash_valid_) {
+      base_content_hash_ =
+          XXH3_64bits(memory.TranslatePhysical(key().base_page << 12),
+                      base_size);
+    }
+  }
+  if (loaded_mips) {
+    uint32_t mips_size = GetGuestMipsSize();
+    mips_content_hash_valid_ = mips_size != 0 && mips_size <= size_limit;
+    if (mips_content_hash_valid_) {
+      mips_content_hash_ = XXH3_64bits(
+          memory.TranslatePhysical(key().mip_page << 12), mips_size);
+    }
+  }
+}
+
+bool TextureCache::Texture::TryRevalidateCpuInvalidation(
+    const global_unique_lock_type& global_lock) {
+  if (!cvars::texture_cache_revalidate_unchanged) {
+    return !base_outdated_ && !mips_outdated_;
+  }
+  Memory& memory = texture_cache().shared_memory().memory();
+  bool base_match = false;
+  if (base_outdated_ && base_content_hash_valid_) {
+    if (XXH3_64bits(memory.TranslatePhysical(key().base_page << 12),
+                    GetGuestBaseSize()) == base_content_hash_) {
+      base_match = true;
+    } else {
+      // Genuinely modified - don't rehash on later attempts; the next
+      // CPU-guest-source load stores a fresh hash.
+      base_content_hash_valid_ = false;
+    }
+  }
+  bool mips_match = false;
+  if (mips_outdated_ && mips_content_hash_valid_) {
+    if (XXH3_64bits(memory.TranslatePhysical(key().mip_page << 12),
+                    GetGuestMipsSize()) == mips_content_hash_) {
+      mips_match = true;
+    } else {
+      mips_content_hash_valid_ = false;
+    }
+  }
+  if (base_match || mips_match) {
+    MakeLoadedDataUpToDateAndWatch(global_lock, base_match, mips_match);
+    if (base_match) {
+      texture_cache().RecordTextureContentRevalidation(false,
+                                                       GetGuestBaseSize());
+    }
+    if (mips_match) {
+      texture_cache().RecordTextureContentRevalidation(true,
+                                                       GetGuestMipsSize());
+    }
+  }
+  return !base_outdated_ && !mips_outdated_;
+}
+
 void TextureCache::Texture::MarkAsUsed() {
   // Textures not in usage tracking (track_usage=false) should not be linked.
   if (!in_usage_list_) {
@@ -823,6 +948,11 @@ void TextureCache::Texture::WatchCallback(
     last_mips_watch_invalidation_range_start_ = source_start;
     last_mips_watch_invalidation_range_length_ = source_length;
     last_mips_watch_resolve_source_ = resolve_source;
+    if (source != TextureWatchInvalidationSource::kCpu) {
+      // GPU-written content isn't derived from guest RAM - the stored hash
+      // can no longer prove the host texture matches the guest bytes.
+      mips_content_hash_valid_ = false;
+    }
   } else {
     assert_not_zero(GetGuestBaseSize());
     base_outdated_ = true;
@@ -831,6 +961,9 @@ void TextureCache::Texture::WatchCallback(
     last_base_watch_invalidation_range_start_ = source_start;
     last_base_watch_invalidation_range_length_ = source_length;
     last_base_watch_resolve_source_ = resolve_source;
+    if (source != TextureWatchInvalidationSource::kCpu) {
+      base_content_hash_valid_ = false;
+    }
   }
 }
 
