@@ -244,9 +244,15 @@ class MetalPipelineCache {
   };
 
   struct NativeMeshPipelineState {
-    MTL::RenderPipelineState* pipeline = nullptr;
+    std::atomic<MTL::RenderPipelineState*> pipeline{nullptr};
+    std::atomic<bool> creation_failed{false};
     NativeMeshPipelineType type = NativeMeshPipelineType::kRectangleList;
     MetalPipelineDescription description = {};
+    // Inputs captured for deferred creation.
+    MetalShader::MetalTranslation* pending_vertex_translation = nullptr;
+    MetalShader::MetalTranslation* pending_pixel_translation = nullptr;
+    PipelineAttachmentFormats pending_formats = {};
+    PipelineRenderingKey pending_rendering_key = {};
   };
 
   struct TessellationPipelineState {
@@ -320,6 +326,9 @@ class MetalPipelineCache {
 
   // Ucode disassembly scratch buffer (shared with command processor).
   StringBuffer& ucode_disasm_buffer() { return ucode_disasm_buffer_; }
+  // Analyzes the shader's ucode under the per-shader translation stripe so
+  // the draw thread cannot race a creation thread analyzing the same shader.
+  void AnalyzeShaderUcode(Shader& shader);
 
   // Serialize pipeline binary archive to disk.
   void SerializePipelineBinaryArchive();
@@ -399,11 +408,10 @@ class MetalPipelineCache {
   std::unique_ptr<DxbcToDxilConverter> dxbc_to_dxil_converter_;
   std::unique_ptr<MetalShaderConverter> metal_shader_converter_;
   std::unique_ptr<MslShaderTranslator> native_msl_translator_;
-  // Serializes native MSL translation (single shared native translator).
-  std::mutex shader_translation_mutex_;
-  // Per-shader striped locks for the MSC DXBC/DXIL translation path so
-  // different shaders can translate concurrently on the creation threads
-  // while the same shader is never translated or analyzed twice in parallel.
+  // Per-shader striped locks for translation (both the MSC DXBC/DXIL path
+  // and native MSL) so different shaders can translate concurrently on the
+  // creation threads while the same shader is never translated or analyzed
+  // twice in parallel.
   std::array<std::mutex, 16> shader_translation_stripes_;
   // Construction parameters for per-thread translators; written by
   // InitializeShaderTranslation before the generation counter is bumped.
@@ -487,8 +495,10 @@ class MetalPipelineCache {
       geometry_pipeline_cache_;
   std::vector<std::unique_ptr<GeometryPipelineState>>
       geometry_pipeline_overflow_;
-  std::unordered_map<uint64_t, NativeMeshPipelineState>
+  std::unordered_map<uint64_t, std::unique_ptr<NativeMeshPipelineState>>
       native_mesh_pipeline_cache_;
+  std::vector<std::unique_ptr<NativeMeshPipelineState>>
+      native_mesh_pipeline_overflow_;
   std::unordered_map<uint64_t, std::unique_ptr<TessellationPipelineState>>
       tessellation_pipeline_cache_;
   std::vector<std::unique_ptr<TessellationPipelineState>>
@@ -525,12 +535,18 @@ class MetalPipelineCache {
   // creation thread. Publishes the result through the atomic pipeline field.
   bool CreateGeometryPipelineContents(GeometryPipelineState& state);
   bool CreateTessellationPipelineContents(TessellationPipelineState& state);
+  bool CreateNativeTessellationPipelineContents(
+      TessellationPipelineState& state);
+  bool CreateNativeMeshPipelineContents(NativeMeshPipelineState& state);
   bool AsyncHelperPipelineCreationEnabled() const;
   void EnqueueHelperPipelineCreation(PipelineCreationRequest request);
   // Per-thread DXBC shader translator so background creation threads do not
   // serialize on a single shared translator instance (matches the D3D12
   // pipeline cache's thread-local translators).
   DxbcShaderTranslator& GetThreadShaderTranslator();
+  // Per-thread native MSL translator; returns nullptr when the native MSL
+  // feature is not initialized.
+  MslShaderTranslator* GetThreadNativeMslTranslator();
   std::mutex& GetShaderTranslationStripe(const Shader& shader);
 
   std::vector<std::thread> creation_threads_;
@@ -540,6 +556,7 @@ class MetalPipelineCache {
       kNativeMslDiagnostics,
       kGeometryPipeline,
       kTessellationPipeline,
+      kNativeMeshPipeline,
     };
     Type type{Type::kPipeline};
     PipelineHandle* handle{nullptr};
@@ -547,6 +564,7 @@ class MetalPipelineCache {
     const char* native_msl_stage_name{nullptr};
     GeometryPipelineState* geometry_state{nullptr};
     TessellationPipelineState* tessellation_state{nullptr};
+    NativeMeshPipelineState* native_mesh_state{nullptr};
     uint8_t priority{0};
   };
   struct PipelineCreationPriorityCompare {
