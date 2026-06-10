@@ -327,6 +327,12 @@ class MetalCommandProcessor final : public CommandProcessor {
   uint64_t GetCurrentSubmission() const;
   uint64_t GetCompletedSubmission() const override;
   uint64_t GetLatestSubmissionStarted() const { return submission_current_; }
+  // Frame-granularity indices used to fence pools that must live for the full
+  // guest frame (e.g. the converted-index-buffer pool).  Mirroring D3D12's
+  // GetCurrentFrame() / GetCompletedFrame() so per-frame pool pages are only
+  // reclaimed once the entire frame — not just the current submission — is done.
+  uint64_t GetCurrentFrame() const { return frame_current_; }
+  uint64_t GetCompletedFrame() const { return frame_completed_; }
   MTL::CommandBuffer* EnsureCommandBuffer();
   void EndRenderEncoder();
   void InvalidateRenderEncoderStateAfterDrawPassTransfers(

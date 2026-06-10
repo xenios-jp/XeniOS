@@ -92,8 +92,15 @@ void MetalPrimitiveProcessor::Shutdown(bool from_destructor) {
 void MetalPrimitiveProcessor::BeginFrame() {
   converted_index_buffers_.clear();
   if (frame_index_buffer_pool_) {
+    // Reclaim by completed FRAME, not by completed submission.  The converted-
+    // index cache (converted_index_buffers_) lives for the whole guest frame:
+    // a later submission in the same frame can still reference a page that was
+    // tagged with an earlier submission's index.  Using GetCompletedFrame()
+    // mirrors D3D12's frame_index_buffer_pool_->Reclaim(GetCompletedFrame())
+    // and ensures a page is only returned to the pool once the frame that
+    // allocated it is fully retired.
     frame_index_buffer_pool_->Reclaim(
-        command_processor_.GetCompletedSubmission());
+        command_processor_.GetCompletedFrame());
   }
 }
 
@@ -171,8 +178,11 @@ void* MetalPrimitiveProcessor::RequestHostConvertedIndexBufferForCurrentFrame(
   MTL::Buffer* buffer = nullptr;
   size_t offset = 0;
   uint64_t gpu_address = 0;
+  // Tag pages with the frame index so Reclaim(GetCompletedFrame()) releases
+  // them at the right granularity.  This matches the constant_buffer_pool_
+  // pattern in MetalCommandProcessor and D3D12's frame-tagged index pool.
   uint8_t* mapping = frame_index_buffer_pool_->Request(
-      command_processor_.GetCurrentSubmission(), request_size, index_size,
+      command_processor_.GetCurrentFrame(), request_size, index_size,
       &buffer, offset, gpu_address);
   if (!mapping || !buffer) {
     XELOGE("Failed to allocate Metal index buffer for primitive conversion");
