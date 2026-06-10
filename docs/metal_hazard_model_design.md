@@ -10,14 +10,60 @@ cvars (`metal_command_processor.cc`).
   fence edges below; `metal_backend_hazard_model_validate` emits the same
   edges while driver tracking stays on (soak mode, no behavior change).
   Edge accounting is reported in the telemetry dump (`hazard_model` line).
+- **Phase 2 (EDRAM buffer) is implemented** behind
+  `metal_backend_hazard_model_edram`: the buffer is created untracked and
+  every EDRAM-touching encoder (RT dump, host depth store, resolve copy,
+  init fill, snapshot restore) waits on `XeniaEdramFence` at creation and
+  updates it at end. Readers update too — a fence wait only orders against
+  the last update, so the read-side update is what orders a later writer
+  after an in-flight reader (WAR). The init fill updates without waiting and
+  commits before any other EDRAM work, so every later wait has a committed
+  prior update. Caveat: the `edram_load_vs/ps` draw path (fragment-stage
+  EDRAM reads) is currently dead code; if revived it needs a render-stage
+  wait/update pair.
+- **Phase 3 (render targets) is implemented** behind
+  `metal_backend_hazard_model_render_targets`: the RT heap pool is untracked
+  and `XeniaRenderTargetFence` linearizes RT access with fragment-stage
+  scoping (render encoders wait before Fragment / update after Fragment, so
+  vertex/binning of pass N+1 still overlaps fragment of pass N; EDRAM dump,
+  host depth store, direct host resolve, RT transfer blits and RT texture
+  uploads wait at creation / update at end). RTs are destroyed only at cache
+  clear, so RT heap reuse cannot alias mid-session. Trace-dump readback paths
+  drain the queue and are not separately fenced.
+- **Phase 4 (texture-cache heaps) is implemented** behind
+  `metal_backend_hazard_model_texture_heaps`: the texture heap pool is
+  untracked; texture-writing encoders (untile compute, upload blits,
+  deferred-batch compute/blit) update `XeniaTextureUploadFence` at end and
+  render encoders wait at creation before Vertex|Object|Mesh|Fragment.
+  Standalone upload command buffers commit before the main command buffer
+  (the MTLFence cross-CB requirement). Texture eviction is gated on completed
+  submissions (`TextureCache::CompletedSubmissionUpdated`), so heap reuse
+  cannot alias in-flight reads. The CPU (non-blit) upload path writes
+  textures after `waitUntilCompleted` and needs no GPU edge.
+- **useHeap suppression**: a heap that is untracked AND covered by the queue
+  residency set skips the per-encoder `useHeap` (counted as
+  `use_heap covered` in telemetry). Per Apple, hazard tracking only covers
+  directly-bound resources within one command queue, so an untracked heap's
+  `useHeap` carried residency only — which `MTLResidencySet` already
+  provides. Tracked heaps (phase off, or validate mode) keep the call.
+- **Cross-queue presenter reads** of the swap texture
+  (`MetalPresenter::CopyTextureToGuestOutput`, separate `MTLCommandQueue`)
+  were never ordered by hazard tracking (tracking is per-queue) and continue
+  to rely on the existing commit/submission handshake; the phases neither
+  depend on nor change this.
 - **Residency sets are implemented** (`metal_residency_sets`, auto-detected,
   on when supported): shared memory, EDRAM, the bindless and native-MSL
   argument heaps, and texture pool heaps are queue-resident, and covered
   resources skip the per-encoder useResource/useHeap re-apply. This matches
   the Metal 4 direction (Game Porting Toolkit 4 skills: useResource/useHeap
   are removed in Metal 4 in favor of MTLResidencySet).
-- Phases 2+ (EDRAM buffer, texture heaps untracked) remain. Do not flip them
-  without running validate mode per title first.
+- **Rollout per title**: run with `metal_backend_hazard_model_validate=true`
+  first (all phases' edges emitted, tracking kept, zero behavior change),
+  soak ~60s of gameplay, confirm no visual diffs and read the `hazard_model`
+  telemetry line; then enable the per-phase cvars one at a time
+  (`metal_backend_hazard_model`, `_edram`, `_texture_heaps`,
+  `_render_targets`) with a visual A/B each. A missed edge manifests as
+  flicker/corruption, not a crash.
 
 Per the GPTK 4 `managing-metal4-synchronization` skill: the producer stage is
 the resource's previous usage and the consumer stage its new usage; `MTLFence`
