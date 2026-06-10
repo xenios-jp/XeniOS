@@ -590,6 +590,11 @@ std::vector<uint8_t> MetalShader::MetalTranslation::GetDxilDataCopy() const {
   return dxil_data_;
 }
 
+bool MetalShader::MetalTranslation::HasDxilData() const {
+  std::lock_guard<std::mutex> lock(metal_translation_mutex_);
+  return !dxil_data_.empty();
+}
+
 Shader::Translation* MetalShader::CreateTranslationInstance(
     uint64_t modification) {
   return new MetalTranslation(*this, modification);

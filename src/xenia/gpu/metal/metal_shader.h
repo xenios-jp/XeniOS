@@ -55,6 +55,8 @@ class MetalShader : public DxbcShader {
 
     void SetDxilData(std::vector<uint8_t> dxil_data);
     std::vector<uint8_t> GetDxilDataCopy() const;
+    // Emptiness check without copying the (potentially large) DXIL blob.
+    bool HasDxilData() const;
 
     // Get the Metal library (contains compiled shader)
     MTL::Library* metal_library() const { return metal_library_; }
