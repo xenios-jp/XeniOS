@@ -1233,6 +1233,16 @@ class MetalCommandProcessor final : public CommandProcessor {
   bool current_render_encoder_has_zpd_visibility_ = false;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;
 
+  // Per-draw cache of the pipeline attachment formats resolved from the
+  // render pass descriptor. Valid while the same descriptor object (pointer +
+  // render target cache build id) is in use; avoids re-querying attachment
+  // textures through the Metal API on every draw.
+  PipelineAttachmentFormats cached_attachment_formats_ = {};
+  const MTL::RenderPassDescriptor* cached_attachment_formats_descriptor_ =
+      nullptr;
+  uint64_t cached_attachment_formats_build_id_ = 0;
+  bool cached_attachment_formats_valid_ = false;
+
   // Tracks resources marked via useResource for the current render encoder to
   // avoid redundant driver calls across draws within the same encoder.
   struct EncoderResourceUsageTableEntry {
@@ -1246,9 +1256,14 @@ class MetalCommandProcessor final : public CommandProcessor {
   BackendTelemetryStats backend_telemetry_;
   uint64_t backend_telemetry_last_dump_swap_ = 0;
 
-  static constexpr size_t kPreparedDrawQueueMaxDraws = 64;
-  static constexpr size_t kPreparedDrawQueueMaxRanges = 4096;
-  static constexpr uint64_t kPreparedDrawQueueMaxBytes = 64ull * 1024 * 1024;
+  // Each flush of the prepared-draw queue that needs uploads costs at least
+  // one blit + one render encoder (a full render pass break on TBDR), so the
+  // batch budgets directly bound the per-frame encoder count. The byte budget
+  // counts referenced (possibly overlapping) guest ranges, not actual upload
+  // bytes, so it is intentionally generous.
+  static constexpr size_t kPreparedDrawQueueMaxDraws = 256;
+  static constexpr size_t kPreparedDrawQueueMaxRanges = 16384;
+  static constexpr uint64_t kPreparedDrawQueueMaxBytes = 128ull * 1024 * 1024;
   template <typename T>
   struct PreparedDrawPayloadStorage {
     struct Chunk {
@@ -1276,6 +1291,11 @@ class MetalCommandProcessor final : public CommandProcessor {
   PreparedDrawRenderTargetKey prepared_draw_queue_render_target_key_ = {};
   bool prepared_draw_queue_render_target_key_valid_ = false;
   bool flushing_prepared_draw_queue_ = false;
+  // Running totals over prepared_draw_queue_ so the budget check in
+  // CanQueuePreparedDraw stays O(1) per draw instead of rescanning every
+  // queued draw's materialization ranges.
+  size_t prepared_draw_queue_range_count_ = 0;
+  uint64_t prepared_draw_queue_byte_count_ = 0;
 
   // Shared memory for Xbox 360 memory access
   std::unique_ptr<MetalSharedMemory> shared_memory_;
