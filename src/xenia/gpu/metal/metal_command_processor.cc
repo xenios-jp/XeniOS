@@ -3836,14 +3836,54 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                          pixel_texture_sign_variant.key)
           : pixel_translation_modification.value;
 
-  // Get or create shader translations for the selected modifications.
+  // Sign-variant churn: count draws whose native-MSL shader pair matches the
+  // previous draw exactly (same shader hashes + modifications) but selects a
+  // different texture-sign key. These are the pipeline switches the
+  // PSO-multiplier hypothesis predicts could be folded into a runtime uniform.
+  if (use_native_msl_guest_translation) {
+    const uint64_t vertex_shader_hash = vertex_shader->ucode_data_hash();
+    const uint64_t pixel_shader_hash =
+        pixel_shader ? pixel_shader->ucode_data_hash() : 0;
+    NativeMslSignChurnTracker& churn = native_msl_sign_churn_tracker_;
+    if (churn.valid &&
+        churn.vertex_shader_hash == vertex_shader_hash &&
+        churn.pixel_shader_hash == pixel_shader_hash &&
+        churn.vertex_modification == vertex_translation_modification.value &&
+        churn.pixel_modification == pixel_translation_modification.value &&
+        (churn.vertex_sign_key != vertex_texture_sign_variant.key ||
+         churn.pixel_sign_key != pixel_texture_sign_variant.key)) {
+      ++backend_telemetry_.pipeline_sets_sign_key_change;
+    }
+    churn.valid = true;
+    churn.vertex_shader_hash = vertex_shader_hash;
+    churn.pixel_shader_hash = pixel_shader_hash;
+    churn.vertex_modification = vertex_translation_modification.value;
+    churn.pixel_modification = pixel_translation_modification.value;
+    churn.vertex_sign_key = vertex_texture_sign_variant.key;
+    churn.pixel_sign_key = pixel_texture_sign_variant.key;
+  }
+
+  // Get or create shader translations for the selected modifications. When the
+  // native-MSL path bakes texture signs into the translation key, a freshly
+  // created translation is a new distinct (modification, sign-variant) tuple -
+  // count it as a live native-MSL sign variant (PSO-multiplier hypothesis).
+  bool vertex_translation_is_new = false;
   auto vertex_translation = static_cast<MetalShader::MetalTranslation*>(
-      vertex_shader->GetOrCreateTranslation(vertex_translation_key));
+      vertex_shader->GetOrCreateTranslation(vertex_translation_key,
+                                            &vertex_translation_is_new));
+  if (use_native_msl_guest_translation && vertex_translation_is_new) {
+    ++backend_telemetry_.native_msl_sign_variants_live;
+  }
 
   MetalShader::MetalTranslation* pixel_translation = nullptr;
   if (pixel_shader) {
+    bool pixel_translation_is_new = false;
     pixel_translation = static_cast<MetalShader::MetalTranslation*>(
-        pixel_shader->GetOrCreateTranslation(pixel_translation_key));
+        pixel_shader->GetOrCreateTranslation(pixel_translation_key,
+                                              &pixel_translation_is_new));
+    if (use_native_msl_guest_translation && pixel_translation_is_new) {
+      ++backend_telemetry_.native_msl_sign_variants_live;
+    }
   }
 
   if (use_native_msl_guest_translation) {
@@ -8240,6 +8280,12 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       "MetalTelemetry[{}]: native_msl_draw_constants change_masks={{ {} }}",
       reason, native_msl_draw_constants_change_masks);
   XELOGI(
+      "MetalTelemetry[{}]: native_msl_texture_sign sign_only_switches={} "
+      "live_variants={} (of pipeline_sets={})",
+      reason, backend_telemetry_.pipeline_sets_sign_key_change,
+      backend_telemetry_.native_msl_sign_variants_live,
+      backend_telemetry_.pipeline_sets);
+  XELOGI(
       "MetalTelemetry[{}]: encoder_binding_slot_totals "
       "stage_full/slot_full={} / {} stage_offset/slot_offset={} / {} "
       "stage_noop/slot_noop={} / {}",
@@ -8338,8 +8384,14 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
 
 void MetalCommandProcessor::ResetBackendTelemetry() {
   backend_telemetry_last_dump_swap_ = backend_telemetry_.swaps;
+  // native_msl_sign_variants_live is a monotonic gauge (translations are never
+  // freed per window), so carry it across resets like swaps.
+  uint64_t native_msl_sign_variants_live =
+      backend_telemetry_.native_msl_sign_variants_live;
   backend_telemetry_ = BackendTelemetryStats();
   backend_telemetry_.swaps = backend_telemetry_last_dump_swap_;
+  backend_telemetry_.native_msl_sign_variants_live =
+      native_msl_sign_variants_live;
 }
 
 void MetalCommandProcessor::EnsureCommandBufferAutoreleasePool() {

@@ -1062,6 +1062,15 @@ class MetalCommandProcessor final : public CommandProcessor {
     // collapse to ~0 as a result.
     uint64_t native_msl_draw_constants_slot_page_binds = 0;
     uint64_t native_msl_draw_constants_slot_writes = 0;
+    // Native-MSL texture-sign variant churn (PSO-multiplier hypothesis test,
+    // scratch/perf_roadmap_deferred.md). Sign churn = how many render-pipeline
+    // switches were driven only by a change in the per-stage texture-sign key
+    // (vertex or pixel) since the previous draw; live variants = distinct
+    // native-MSL sign-variant translations created (a gauge, monotonically
+    // increasing). High churn relative to pipeline_sets on a title argues for
+    // moving texture signs to a runtime uniform; near-zero kills the hypothesis.
+    uint64_t pipeline_sets_sign_key_change = 0;
+    uint64_t native_msl_sign_variants_live = 0;
     std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
         render_encoder_buffer_full_binds = {};
     std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
@@ -1685,6 +1694,20 @@ class MetalCommandProcessor final : public CommandProcessor {
   };
   std::array<NativeMslTextureSignVariantCache, kStageCount>
       native_msl_texture_sign_variant_cache_ = {};
+  // Tracks the previous native-MSL draw's shader identity and texture-sign keys
+  // so IssueDraw can count sign-only variant switches (the cheap fallback for
+  // pipeline_sets_sign_key_change: same shaders + modifications, different sign
+  // key). valid_ guards the first draw.
+  struct NativeMslSignChurnTracker {
+    bool valid = false;
+    uint64_t vertex_shader_hash = 0;
+    uint64_t pixel_shader_hash = 0;
+    uint64_t vertex_modification = 0;
+    uint64_t pixel_modification = 0;
+    uint64_t vertex_sign_key = 0;
+    uint64_t pixel_sign_key = 0;
+  };
+  NativeMslSignChurnTracker native_msl_sign_churn_tracker_ = {};
   struct NativeMslRuntimeInfoUploadCache {
     std::vector<native_msl::NativeMslTextureRuntimeInfo> payload;
     MTL::Buffer* buffer = nullptr;

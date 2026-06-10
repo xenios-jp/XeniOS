@@ -1765,6 +1765,21 @@ void MslShaderTranslator::EmitSystemConstants() {
 }
 
 void MslShaderTranslator::EmitInputOutputDeclarations() {
+  // Emit only the interpolators in the live mask carried by the shader
+  // modification. A pipeline's vertex and pixel stages always receive the same
+  // interpolator_mask (computed once per draw in
+  // MetalCommandProcessor::IssueDraw and passed to both
+  // GetCurrentVertex/PixelShaderModification), so the named [[user(...)]]
+  // attributes emitted here agree across the pair. Inter-stage varyings are
+  // matched by the user attribute name (Metal shader converter UserManual:
+  // "match the shader interface using the user attribute in your struct member
+  // declarations"), and the attribute name is derived from the interpolator
+  // index N rather than packing order, so masking out members keeps the
+  // surviving locations stable and the VS/PS interfaces consistent.
+  Modification modification = GetMslShaderModification();
+  uint32_t output_interpolator_mask =
+      is_vertex_shader() ? modification.vertex.interpolator_mask
+                         : modification.pixel.interpolator_mask;
   EmitLine("struct XeVertexOutput {");
   Indent();
   EmitLine("float4 xe_position [[position]];");
@@ -1777,6 +1792,9 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
              std::to_string(clip_distance_count) + "];");
   }
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(output_interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     EmitLine("float4 xe_interpolator_" + std::to_string(i) +
              " [[user(xe_interpolator_" + std::to_string(i) + ")]];");
   }
@@ -1794,6 +1812,9 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
                std::to_string(clip_distance_count) + "];");
     }
     for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+      if (!(output_interpolator_mask & (UINT32_C(1) << i))) {
+        continue;
+      }
       EmitLine("float4 xe_interpolator_" + std::to_string(i) +
                " [[user(xe_interpolator_" + std::to_string(i) + ")]];");
     }
@@ -1821,10 +1842,18 @@ void MslShaderTranslator::EmitInputOutputDeclarations() {
   Indent();
   EmitLine("float4 xe_position [[position]];");
   EmitLine("bool xe_is_front_face [[front_facing]];");
-  Modification modification = GetMslShaderModification();
+  // Pixel-stage interpolator inputs are gated on the same live mask. The mask
+  // matches the producing vertex stage (identical interpolator_mask per
+  // pipeline pair), so the named [[user(...)]] varyings line up; centroid
+  // qualification stays bound to the per-interpolator index N.
+  uint32_t pixel_interpolator_mask =
+      is_pixel_shader() ? modification.pixel.interpolator_mask : 0;
   uint32_t centroid_interpolators =
       is_pixel_shader() ? modification.pixel.interpolators_centroid : 0;
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(pixel_interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     bool centroid = (centroid_interpolators & (UINT32_C(1) << i)) != 0;
     EmitLine("float4 xe_interpolator_" + std::to_string(i) +
              " [[user(xe_interpolator_" + std::to_string(i) + ")" +
@@ -2820,7 +2849,13 @@ void MslShaderTranslator::EmitVertexOutputInitialization() {
   for (uint32_t i = 0; i < VertexShaderCullDistanceCount(); ++i) {
     EmitLine("xe_cull_distance[" + std::to_string(i) + "] = 0.0f;");
   }
+  // Only initialize interpolators that exist in XeVertexOutput for this mask;
+  // masked-out members were pruned from the struct.
+  uint32_t interpolator_mask = GetMslShaderModification().vertex.interpolator_mask;
   for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+    if (!(interpolator_mask & (UINT32_C(1) << i))) {
+      continue;
+    }
     EmitLine("output.xe_interpolator_" + std::to_string(i) +
              " = float4(0.0f);");
   }
@@ -3417,7 +3452,13 @@ void MslShaderTranslator::EmitVertexFinalizerFunction() {
       EmitLine("mesh_output.xe_clip_distance[" + std::to_string(i) +
                "] = output.xe_clip_distance[" + std::to_string(i) + "];");
     }
+    // Copy only the interpolators present in both structs (same vertex mask).
+    uint32_t mesh_interpolator_mask =
+        GetMslShaderModification().vertex.interpolator_mask;
     for (uint32_t i = 0; i < xenos::kMaxInterpolators; ++i) {
+      if (!(mesh_interpolator_mask & (UINT32_C(1) << i))) {
+        continue;
+      }
       const std::string interpolator = "xe_interpolator_" + std::to_string(i);
       EmitLine("mesh_output." + interpolator + " = output." + interpolator +
                ";");

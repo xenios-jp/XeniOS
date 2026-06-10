@@ -179,7 +179,11 @@ class MetalPipelineCache {
     // baseInstance-indexed slot page; main_vs gained a [[base_instance]] input
     // and the draw-constants binding at kNativeBufferDrawConstants is now a
     // pointer-to-array, so cached pipelines/translations must regenerate.
-    static constexpr uint32_t kVersion = 0x20260611;
+    // 0x20260612: native-MSL inter-stage interpolator structs (XeVertexOutput,
+    // XeTriangleMeshVertexOutput, XePixelInput) are now pruned to the live
+    // interpolator_mask, changing generated MSL; cached translations must
+    // regenerate.
+    static constexpr uint32_t kVersion = 0x20260612;
   });
 
   XEPACKEDSTRUCT(MetalPipelineStoredDescription, {
