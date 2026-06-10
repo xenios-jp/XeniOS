@@ -2599,6 +2599,14 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   size_t source_buffer_offset = 0;
   size_t source_buffer_length = 0;
 
+  // Slots 0 (constants) and 1 (host destination) keep the same buffer for
+  // every dispatch of this load; bind them once and step the offsets with
+  // setBufferOffset, which skips the full rebind the per-dispatch setBuffer
+  // paid (these dispatches are the dominant compute-encoder CPU cost on
+  // texture-streaming titles).
+  encoder->setBuffer(constants_buffer, 0, 0);
+  encoder->setBuffer(dest_buffer, 0, 1);
+
   size_t dispatch_index = 0;
   for (const StoredLevelHostLayout& stored_level : stored_levels) {
     bool is_base_storage = stored_level.is_base;
@@ -2714,11 +2722,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           dispatch_index * constants_size;
       std::memcpy(constants_ptr, &constants, sizeof(constants));
 
-      encoder->setBuffer(constants_buffer, dispatch_index * constants_size, 0);
-      encoder->setBuffer(dest_buffer,
-                         stored_level.dest_offset_bytes +
-                             slice * stored_level.slice_size_bytes,
-                         1);
+      encoder->setBufferOffset(dispatch_index * constants_size, 0);
+      encoder->setBufferOffset(stored_level.dest_offset_bytes +
+                                   slice * stored_level.slice_size_bytes,
+                               1);
       encoder->dispatchThreadgroups(threadgroups, threads_per_group);
       command_buffer_has_work = true;
       ++dispatch_index;
