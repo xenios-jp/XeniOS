@@ -201,7 +201,16 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint64_t direct_host_reject_depth_no_fast = 0;
     };
 
+    struct ResolveClearTelemetry {
+      // Per-target clears performed by the clear load action of an
+      // otherwise-empty render pass.
+      uint64_t load_action_single_target = 0;
+      // Per-target clears performed by a clear draw within a transfer pass.
+      uint64_t draw_clears = 0;
+    };
+
     ResolveDirectHostTelemetry resolve_direct_host = {};
+    ResolveClearTelemetry resolve_clear = {};
   };
   TelemetryStats GetAndResetTelemetryStats();
 
@@ -660,6 +669,17 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::DepthStencilState* BuildTransferDepthStencilState(
       MTL::CompareFunction depth_compare, bool depth_write, bool stencil_enable,
       uint32_t stencil_write_mask);
+
+  // Converts a guest resolve clear value to Metal render pass clear values
+  // for the destination render target. Returns false when the clear value
+  // cannot be expressed as a clear load action on the pixel format used for
+  // transfers and clears (packed-integer ownership formats, and 32-bit float
+  // raw values not exactly representable as float).
+  bool GetResolveClearLoadActionValues(RenderTargetKey dest_key,
+                                       uint64_t clear_value,
+                                       MTL::ClearColor& clear_color_out,
+                                       double& clear_depth_out,
+                                       uint32_t& clear_stencil_out) const;
 
   // Sole host-side transfer and resolve-clear execution entry point.
   bool PerformTransfersAndResolveClears(
