@@ -387,9 +387,8 @@ bool MetalSharedMemory::UploadRanges(
 
   auto direct_write_run = [&](uint32_t start, uint32_t end) {
     uint32_t size = end - start;
-    copy_guest_bytes(shared_buffer_contents + start, start, size);
-    swcache::WriteFence();
     MakeRangeValid(start, size, false);
+    copy_guest_bytes(shared_buffer_contents + start, start, size);
     command_processor_.RecordSharedMemoryUploadRoute(
         MetalCommandProcessor::SharedMemoryUploadRoute::kDirectWrite, size);
   };
