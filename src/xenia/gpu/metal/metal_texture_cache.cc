@@ -4289,14 +4289,16 @@ bool MetalTextureCache::GetScaledResolveRange(
 
   uint32_t scale_area = draw_resolution_scale_x() * draw_resolution_scale_y();
   uint64_t start_scaled = uint64_t(start_unscaled) * scale_area;
-  uint64_t end_scaled =
-      uint64_t(start_unscaled + (length_unscaled - 1)) * scale_area;
+  // The last unscaled byte maps to scale_area scaled bytes; end_scaled must
+  // cover all of them (i.e. last_unscaled * scale_area + scale_area - 1),
+  // matching the D3D12 backend's rounding of length_unscaled * scale_area.
+  uint64_t length_scaled = uint64_t(length_unscaled) * scale_area;
   if (length_scaled_alignment_log2) {
     uint64_t alignment_mask = (uint64_t(1) << length_scaled_alignment_log2) - 1;
-    end_scaled = (end_scaled + alignment_mask) & ~alignment_mask;
+    length_scaled = (length_scaled + alignment_mask) & ~alignment_mask;
   }
   start_scaled_out = start_scaled;
-  length_scaled_out = end_scaled - start_scaled + 1;
+  length_scaled_out = length_scaled;
   return true;
 }
 
