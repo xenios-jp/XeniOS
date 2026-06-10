@@ -2956,13 +2956,19 @@ void MetalCommandProcessor::MarkSharedMemoryWritePending(
     return;
   }
 
+  // Collapse to the envelope of the tracked writes rather than the whole
+  // buffer - a whole-buffer sentinel makes every subsequent draw "overlap"
+  // GPU-written memory until the list prunes, forcing the full dependency
+  // path per draw.
   PendingSharedMemoryWrite collapsed = {};
-  collapsed.start = 0;
-  collapsed.end = SharedMemory::kBufferSize;
+  collapsed.start = SharedMemory::kBufferSize;
+  collapsed.end = 0;
   collapsed.submission_id = GetCurrentSubmission();
   collapsed.fence_updated = true;
   for (const PendingSharedMemoryWrite& pending :
        pending_shared_memory_writes_) {
+    collapsed.start = std::min(collapsed.start, pending.start);
+    collapsed.end = std::max(collapsed.end, pending.end);
     collapsed.submission_id =
         std::max(collapsed.submission_id, pending.submission_id);
     collapsed.producer_stages =
@@ -3165,13 +3171,19 @@ void MetalCommandProcessor::RetireFenceWaitedSharedMemoryWrites(
     return;
   }
 
+  // Collapse to the envelope of the tracked writes rather than the whole
+  // buffer - a whole-buffer sentinel makes every subsequent draw "overlap"
+  // GPU-written memory until the list prunes, forcing the full dependency
+  // path per draw.
   PendingSharedMemoryWrite collapsed = {};
-  collapsed.start = 0;
-  collapsed.end = SharedMemory::kBufferSize;
+  collapsed.start = SharedMemory::kBufferSize;
+  collapsed.end = 0;
   collapsed.submission_id = GetCurrentSubmission();
   collapsed.fence_updated = true;
   for (const PendingSharedMemoryWrite& pending :
        pending_shared_memory_writes_) {
+    collapsed.start = std::min(collapsed.start, pending.start);
+    collapsed.end = std::max(collapsed.end, pending.end);
     collapsed.submission_id =
         std::max(collapsed.submission_id, pending.submission_id);
     collapsed.producer_stages =
@@ -4229,8 +4241,20 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   std::array<SharedMemoryRange, 96> shared_memory_hazard_ranges = {};
   uint32_t shared_memory_hazard_range_count = 0;
   auto add_shared_memory_hazard_range = [&](uint32_t start, uint32_t length) {
-    if (!length || shared_memory_hazard_range_count >=
-                       shared_memory_hazard_ranges.size()) {
+    if (!length) {
+      return;
+    }
+    if (shared_memory_hazard_range_count >=
+        shared_memory_hazard_ranges.size()) {
+      // Out of slots: widen the last range into an envelope covering the
+      // overflow instead of silently dropping the dependency (a dropped
+      // range means a missed barrier).
+      SharedMemoryRange& last =
+          shared_memory_hazard_ranges[shared_memory_hazard_ranges.size() - 1];
+      uint32_t merged_start = std::min(last.start, start);
+      uint32_t merged_end = std::max(last.start + last.length, start + length);
+      last.start = merged_start;
+      last.length = merged_end - merged_start;
       return;
     }
     shared_memory_hazard_ranges[shared_memory_hazard_range_count++] =
