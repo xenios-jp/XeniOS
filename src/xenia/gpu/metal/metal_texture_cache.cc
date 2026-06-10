@@ -116,10 +116,16 @@ namespace metal {
 namespace {
 
 #if XE_PLATFORM_IOS
-constexpr uint64_t kUploadBufferPoolMaxBytes = 128ull * 1024ull * 1024ull;
+constexpr uint64_t kUploadBufferPoolMaxBytes = 512ull * 1024ull * 1024ull;
+// Idle (not-in-flight) staging memory the pool may retain between bursts.
+// Texture-heavy frames can still stage up to kUploadBufferPoolMaxBytes, but
+// holding that high-water mark in CPU-visible memory forever is what gets the
+// process jetsam-killed on iOS, so trim back down once uploads retire.
+constexpr uint64_t kUploadBufferPoolMaxIdleBytes = 128ull * 1024ull * 1024ull;
 constexpr uint64_t kScaledResolveRetiredMaxBytes = 64ull * 1024ull * 1024ull;
 #else
 constexpr uint64_t kUploadBufferPoolMaxBytes = 512ull * 1024ull * 1024ull;
+constexpr uint64_t kUploadBufferPoolMaxIdleBytes = 256ull * 1024ull * 1024ull;
 constexpr uint64_t kScaledResolveRetiredMaxBytes = 256ull * 1024ull * 1024ull;
 #endif
 constexpr uint32_t kViewBindlessHeapPressureThreshold = 65536;
@@ -328,6 +334,7 @@ class MetalTextureCache::UploadBufferPool
           available_entries_by_size_.erase(available_it);
           entry.in_use = true;
           entry.last_used_tick = usage_tick_;
+          available_bytes_ -= entry.size;
           return entry.buffer;
         }
         // Defensive cleanup if an old entry was left in the size index.
@@ -386,6 +393,7 @@ class MetalTextureCache::UploadBufferPool
               entry.in_use = false;
               entry.last_used_tick = release_tick;
               available_entries_by_size_.emplace(entry.size, entry_it->second);
+              available_bytes_ += entry.size;
             }
             release_transient = false;
           }
@@ -402,6 +410,7 @@ class MetalTextureCache::UploadBufferPool
               entry.in_use = false;
               entry.last_used_tick = release_tick;
               available_entries_by_size_.emplace(entry.size, i);
+              available_bytes_ += entry.size;
             }
             release_transient = false;
             break;
@@ -411,6 +420,7 @@ class MetalTextureCache::UploadBufferPool
           transient_buffers.push_back(buffer);
         }
       }
+      TrimIdleLocked(transient_buffers);
     }
     for (MTL::Buffer* buffer : transient_buffers) {
       buffer->release();
@@ -459,6 +469,7 @@ class MetalTextureCache::UploadBufferPool
       }
     }
     pooled_bytes_ = 0;
+    available_bytes_ = 0;
     entries_.clear();
     available_entries_by_size_.clear();
     entry_indices_by_buffer_.clear();
@@ -507,6 +518,36 @@ class MetalTextureCache::UploadBufferPool
 
   static void HandleCommandBufferCompleted(MTL::CommandBuffer* cmd);
 
+  // Evicts the least recently used idle entries until the idle (not-in-use)
+  // pooled bytes fit kUploadBufferPoolMaxIdleBytes, so upload bursts don't
+  // permanently pin the pool's high-water mark in CPU-visible memory. The
+  // evicted buffers are appended to buffers_to_release for releasing outside
+  // the lock. Must be called with mutex_ held.
+  void TrimIdleLocked(std::vector<MTL::Buffer*>& buffers_to_release) {
+    while (available_bytes_ > kUploadBufferPoolMaxIdleBytes) {
+      auto lru_it = available_entries_by_size_.end();
+      uint64_t lru_tick = UINT64_MAX;
+      for (auto it = available_entries_by_size_.begin();
+           it != available_entries_by_size_.end(); ++it) {
+        const Entry& entry = entries_[it->second];
+        if (entry.buffer && !entry.in_use && entry.last_used_tick < lru_tick) {
+          lru_tick = entry.last_used_tick;
+          lru_it = it;
+        }
+      }
+      if (lru_it == available_entries_by_size_.end()) {
+        break;
+      }
+      Entry& entry = entries_[lru_it->second];
+      buffers_to_release.push_back(entry.buffer);
+      entry_indices_by_buffer_.erase(entry.buffer);
+      entry.buffer = nullptr;
+      pooled_bytes_ -= entry.size;
+      available_bytes_ -= entry.size;
+      available_entries_by_size_.erase(lru_it);
+    }
+  }
+
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   std::multimap<size_t, size_t> available_entries_by_size_;
@@ -514,6 +555,7 @@ class MetalTextureCache::UploadBufferPool
   MTL::Device* device_ = nullptr;
   uint64_t max_pooled_bytes_ = 0;
   uint64_t pooled_bytes_ = 0;
+  uint64_t available_bytes_ = 0;
   uint64_t usage_tick_ = 0;
   uint64_t transient_allocations_ = 0;
 };
