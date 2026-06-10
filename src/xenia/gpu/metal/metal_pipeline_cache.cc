@@ -1259,6 +1259,16 @@ MetalPipelineCache::~MetalPipelineCache() {
     }
   }
   pipeline_cache_.clear();
+  for (auto& overflow_handle : pipeline_collision_overflow_) {
+    if (overflow_handle) {
+      auto* ps = overflow_handle->state.load(std::memory_order_relaxed);
+      if (ps) {
+        ps->release();
+      }
+    }
+  }
+  pipeline_collision_overflow_.clear();
+  last_standard_pipeline_handle_ = nullptr;
 
   bindless_sampler_layout_map_.clear();
   bindless_sampler_layouts_.clear();
@@ -2610,11 +2620,11 @@ bool MetalPipelineCache::EnsureDxilTranslationReady(
         memexport_eM_mask);
     return false;
   }
-  if (!translation->GetDxilDataCopy().empty()) {
+  if (translation->HasDxilData()) {
     return true;
   }
   std::lock_guard<std::mutex> lock(shader_translation_mutex_);
-  if (!translation->GetDxilDataCopy().empty()) {
+  if (translation->HasDxilData()) {
     return true;
   }
 
@@ -2967,22 +2977,39 @@ MetalPipelineCache::GetOrCreatePipelineState(
   MetalPipelineDescription description = BuildStandardPipelineDescription(
       vertex_translation, pixel_translation, attachment_formats, rendering_key,
       requires_native_msl);
+
+  // Consecutive draws overwhelmingly reuse the previous pipeline; compare the
+  // description against the most recently returned handle before paying for
+  // the hash and the map lookup (mirrors D3D12's current_pipeline_ shortcut).
+  if (last_standard_pipeline_handle_ &&
+      std::memcmp(&last_standard_pipeline_handle_->description, &description,
+                  sizeof(description)) == 0) {
+    if (last_standard_pipeline_handle_->creation_failed.load(
+            std::memory_order_acquire)) {
+      return nullptr;
+    }
+    return last_standard_pipeline_handle_;
+  }
+
   uint64_t key = XXH3_64bits(&description, sizeof(description));
 
   // Check cache.  Verify the stored description on hit to guard against the
   // rare but possible case where two distinct descriptions hash to the same
   // 64-bit XXH3 value (hash collision).
+  bool hash_collision = false;
   auto it = pipeline_cache_.find(key);
   if (it != pipeline_cache_.end()) {
     if (std::memcmp(&it->second->description, &description,
                     sizeof(description)) != 0) {
-      // Hash collision: fall through to create a new entry with a distinct key.
-      // Two entries cannot share the same key in an unordered_map so treat this
-      // as a cache miss; the colliding pipeline will be recreated this frame.
+      // Hash collision: the map can only hold one entry per key, so the new
+      // handle is kept alive in the overflow list instead and recreated on
+      // every lookup miss.
+      hash_collision = true;
       XELOGW(
           "Pipeline cache: XXH3 hash collision ({:016X}); recreating pipeline",
           key);
     } else {
+      last_standard_pipeline_handle_ = it->second.get();
       if (it->second->creation_failed.load(std::memory_order_acquire)) {
         return nullptr;
       }
@@ -3004,7 +3031,15 @@ MetalPipelineCache::GetOrCreatePipelineState(
   handle->storage_write_pending = true;
 
   PipelineHandle* raw_handle = handle.get();
-  pipeline_cache_.emplace(key, std::move(handle));
+  if (hash_collision) {
+    // The map slot for this key belongs to a different description. Keep the
+    // handle owned outside the map so the returned pointer (and any queued
+    // background creation request) stays valid.
+    pipeline_collision_overflow_.push_back(std::move(handle));
+  } else {
+    pipeline_cache_.emplace(key, std::move(handle));
+  }
+  last_standard_pipeline_handle_ = raw_handle;
 
   // Async path: enqueue for background compilation.
   if (cvars::async_shader_compilation && !creation_threads_.empty()) {

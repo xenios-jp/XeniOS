@@ -427,6 +427,15 @@ class MetalPipelineCache {
 
   // MSC pipeline caches (keyed by shader combination).
   std::unordered_map<uint64_t, std::unique_ptr<PipelineHandle>> pipeline_cache_;
+  // Most recently returned standard pipeline handle. Consecutive draws very
+  // commonly use the same pipeline; comparing the freshly built description
+  // against this handle skips the XXH3 hash and map lookup (the same
+  // shortcut the D3D12 pipeline cache takes via current_pipeline_).
+  PipelineHandle* last_standard_pipeline_handle_ = nullptr;
+  // Handles whose 64-bit description hash collided with a different
+  // description already in pipeline_cache_; owned here because the map can
+  // only hold one entry per key.
+  std::vector<std::unique_ptr<PipelineHandle>> pipeline_collision_overflow_;
   std::unordered_map<uint64_t, GeometryPipelineState> geometry_pipeline_cache_;
   std::unordered_map<uint64_t, NativeMeshPipelineState>
       native_mesh_pipeline_cache_;
