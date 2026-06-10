@@ -2558,7 +2558,8 @@ void MslShaderTranslator::EmitNativeResourceHeapDeclarations() {
 }
 
 void MslShaderTranslator::EmitDirectResourceArguments(
-    bool first_argument_written, bool emit_attributes) {
+    bool first_argument_written, bool emit_attributes,
+    bool draw_constants_as_array) {
   auto buffer_attribute = [&](uint32_t slot) {
     return emit_attributes ? " [[buffer(" + std::to_string(slot) + ")]]" : "";
   };
@@ -2568,9 +2569,19 @@ void MslShaderTranslator::EmitDirectResourceArguments(
   };
   if (UsesNativeDrawConstants()) {
     comma();
-    Emit(indent_string_ +
-         "const device XeNativeDrawConstants& xe_draw_constants" +
-         buffer_attribute(kNativeBufferDrawConstants));
+    if (draw_constants_as_array) {
+      // Plain-vertex main_vs: the host binds a page of consecutive
+      // XeNativeDrawConstants tables once and selects this draw's table with
+      // the draw call's baseInstance, surfaced as [[base_instance]]. The caller
+      // aliases xe_draw_constants_array[xe_base_instance] to xe_draw_constants.
+      Emit(indent_string_ +
+           "const device XeNativeDrawConstants* xe_draw_constants_array" +
+           buffer_attribute(kNativeBufferDrawConstants));
+    } else {
+      Emit(indent_string_ +
+           "const device XeNativeDrawConstants& xe_draw_constants" +
+           buffer_attribute(kNativeBufferDrawConstants));
+    }
   }
   if (UsesNativeSharedMemory()) {
     comma();
@@ -4203,11 +4214,20 @@ void MslShaderTranslator::EmitVertexEntryPointWrappers() {
     EmitLine("vertex XeVertexOutput main_vs(");
     Indent();
     Emit(indent_string_ + "uint xe_vertex_id [[vertex_id]],\n");
-    Emit(indent_string_ + "uint xe_instance_id [[instance_id]]");
-    EmitDirectResourceArguments(true, true);
+    Emit(indent_string_ + "uint xe_instance_id [[instance_id]],\n");
+    // baseInstance carries this draw's draw-constants slot index. The host binds
+    // a page of XeNativeDrawConstants tables once (no per-draw
+    // setVertexBufferOffset) and selects this draw's table by baseInstance.
+    Emit(indent_string_ + "uint xe_base_instance [[base_instance]]");
+    EmitDirectResourceArguments(true, true, /*draw_constants_as_array=*/true);
     Emit(") {\n");
     Outdent();
     Indent();
+    if (UsesNativeDrawConstants()) {
+      EmitLine(
+          "const device XeNativeDrawConstants& xe_draw_constants = "
+          "xe_draw_constants_array[xe_base_instance];");
+    }
     EmitNativeDrawConstantAliases();
     EmitLine("return XeFinalizeVertexOutput(XeRunGuestVertex(");
     Indent();

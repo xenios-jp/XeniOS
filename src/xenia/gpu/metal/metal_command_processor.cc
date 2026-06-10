@@ -5552,6 +5552,58 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     return false;
   };
 
+  // Reserve the next free 48-byte XeNativeDrawConstants table slot in the
+  // plain-vertex-stage draw-constants slot page, (re)binding the page buffer to
+  // the vertex stage once when a new page is needed (frame open, page rollover,
+  // or render-encoder reset clearing render_encoder_buffer_bindings_). Returns a
+  // CPU pointer to write the 48-byte table; *slot_out receives the slot index to
+  // pass as the draw call's baseInstance. Returns nullptr on allocation
+  // failure.
+  auto reserve_native_msl_draw_constants_slot =
+      [&](uint32_t& slot_out) -> uint8_t* {
+    NativeMslDrawConstantsSlotPage& page = native_msl_draw_constants_slot_page_;
+    const bool page_usable =
+        page.valid && page.buffer && page.mapping &&
+        page.upload_frame == frame_current_ &&
+        page.next_slot < kNativeMslDrawConstantsSlotCount;
+    if (!page_usable) {
+      MTL::Buffer* page_buffer = nullptr;
+      size_t page_offset = 0;
+      uint64_t page_gpu_address = 0;
+      const size_t page_bytes =
+          size_t(kNativeMslDrawConstantsSlotCount) *
+          kNativeMslDrawConstantsSlotStride;
+      uint8_t* page_data = constant_buffer_pool_->Request(
+          frame_current_, page_bytes, kNativeRuntimeInfoAlignment, &page_buffer,
+          page_offset, page_gpu_address);
+      (void)page_gpu_address;
+      if (!page_data || !page_buffer) {
+        XELOGE("Native MSL draw-constants slot page allocation failed");
+        return nullptr;
+      }
+      page.buffer = page_buffer;
+      page.base_offset = static_cast<NS::UInteger>(page_offset);
+      page.mapping = page_data;
+      page.next_slot = 0;
+      page.upload_frame = frame_current_;
+      page.valid = true;
+    }
+    // Bind (or rebind after an encoder reset) the page through the tracking
+    // layer so the next draw re-binds on demand; matching binds are no-ops. The
+    // page base is bound at offset 0 of its slot region; the per-draw selection
+    // is the baseInstance index, never a setVertexBufferOffset.
+    if (!RenderEncoderBufferBindingMatches(RenderEncoderBufferStage::kVertex,
+                                           page.buffer, page.base_offset,
+                                           kNativeBufferDrawConstants)) {
+      SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex, page.buffer,
+                             page.base_offset, kNativeBufferDrawConstants);
+      ++backend_telemetry_.native_msl_draw_constants_slot_page_binds;
+    }
+    slot_out = page.next_slot;
+    return page.mapping +
+           size_t(page.next_slot) * kNativeMslDrawConstantsSlotStride;
+  };
+
   auto bind_stage = [&](const DxbcShader::TranslationMetadata& metadata,
                         size_t stage, bool vertex_stage, bool fragment_stage,
                         bool mesh_stage, bool object_stage) -> bool {
@@ -5720,6 +5772,12 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
 
     MTL::Buffer* draw_constants_buffer = nullptr;
     size_t draw_constants_offset = 0;
+    // Plain-vertex draws (non-mesh, non-object) select their XeNativeDrawConstants
+    // table via baseInstance indexing into the bound-once slot page instead of a
+    // per-draw setVertexBufferOffset. Mesh/object draws (drawMeshThreadgroups,
+    // no baseInstance) and the fragment stage keep the per-draw offset-bind.
+    const bool use_vertex_slot_ring =
+        vertex_stage && !mesh_stage && !object_stage;
     NativeMslDrawConstantsUploadCache& draw_constants_cache =
         native_msl_draw_constants_upload_cache_[stage];
     const bool can_reuse_draw_constants =
@@ -5872,7 +5930,54 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     };
     record_draw_constants_reason_for_bound_stages(
         classify_draw_constants_reason());
-    if (can_reuse_draw_constants) {
+    if (use_vertex_slot_ring) {
+      // (Re)bind the slot page for this draw. The reserve helper handles a fresh
+      // page on frame open / rollover and re-binds after a render-encoder reset;
+      // it returns a pointer to the next free slot but does NOT advance the
+      // cursor (the write branch below does), so a cached slot stays valid as
+      // long as the page identity is unchanged.
+      uint32_t slot_index = 0;
+      uint8_t* slot_data = reserve_native_msl_draw_constants_slot(slot_index);
+      if (!slot_data) {
+        return false;
+      }
+      // Reuse the previously written slot only when the payload is unchanged AND
+      // it lives in the page that is now bound (a fresh page invalidates it).
+      const bool reuse_slot =
+          can_reuse_draw_constants &&
+          draw_constants_cache.slot_buffer ==
+              native_msl_draw_constants_slot_page_.buffer &&
+          draw_constants_cache.slot <
+              native_msl_draw_constants_slot_page_.next_slot;
+      if (reuse_slot) {
+        current_native_msl_draw_constants_slot_ = draw_constants_cache.slot;
+      } else {
+        std::memcpy(slot_data, &draw_constants, sizeof(draw_constants));
+        ++native_msl_draw_constants_slot_page_.next_slot;
+        ++backend_telemetry_.native_msl_draw_constants_slot_writes;
+        current_native_msl_draw_constants_slot_ = slot_index;
+        draw_constants_cache.payload = draw_constants;
+        draw_constants_cache.slot_buffer =
+            native_msl_draw_constants_slot_page_.buffer;
+        draw_constants_cache.slot = slot_index;
+        // Keep buffer/offset pointing at THIS slot's exact byte range so the
+        // shared kStageVertex cache stays self-consistent: a later mesh/object
+        // single-table draw that memcmp-reuses this payload binds the page at
+        // the slot's offset (which holds the matching table), and
+        // can_reuse_draw_constants / change-mask telemetry keep operating on
+        // this entry.
+        draw_constants_cache.buffer =
+            native_msl_draw_constants_slot_page_.buffer;
+        draw_constants_cache.offset = static_cast<NS::UInteger>(
+            native_msl_draw_constants_slot_page_.base_offset +
+            NS::UInteger(slot_index) * kNativeMslDrawConstantsSlotStride);
+        draw_constants_cache.payload_valid = true;
+        draw_constants_cache.upload_frame = frame_current_;
+      }
+      // draw_constants_buffer stays null: the page was bound by the reserve
+      // helper, so the per-draw bind_native_buffer below must skip the vertex
+      // stage's draw-constants slot.
+    } else if (can_reuse_draw_constants) {
       draw_constants_buffer = draw_constants_cache.buffer;
       draw_constants_offset = draw_constants_cache.offset;
     } else {
@@ -5892,6 +5997,12 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       draw_constants_cache.buffer = draw_constants_buffer;
       draw_constants_cache.offset =
           static_cast<NS::UInteger>(draw_constants_offset);
+      // This is a single-table allocation (fragment/mesh/object), not a slot in
+      // the vertex page: invalidate any cached slot so a later plain-vertex draw
+      // that memcmp-matches this payload cannot falsely reuse a stale slot whose
+      // page content differs. (The kStageVertex cache entry is shared between the
+      // slot-ring path and the mesh/object single-table path.)
+      draw_constants_cache.slot_buffer = nullptr;
       draw_constants_cache.payload_valid = true;
       draw_constants_cache.upload_frame = frame_current_;
     }
@@ -7129,9 +7240,17 @@ bool MetalCommandProcessor::DispatchDraw(
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
       if (use_native_msl) {
+        // baseInstance carries the plain-vertex draw-constants slot index. The
+        // generated vertex function reads it via [[base_instance]] to index the
+        // bound-once slot page (see BindNativeMslDrawResources). instanceCount=1
+        // keeps the single Xbox 360 invocation per vertex; [[instance_id]] is
+        // unused by the guest vertex path so it is harmless that it now equals
+        // the slot index (instance_id == baseInstance when instanceCount == 1).
         current_render_encoder_->drawPrimitives(
             mtl_primitive, NS::UInteger(0),
-            NS::UInteger(primitive_processing_result.host_draw_vertex_count));
+            NS::UInteger(primitive_processing_result.host_draw_vertex_count),
+            NS::UInteger(1),
+            NS::UInteger(current_native_msl_draw_constants_slot_));
       } else {
         IRRuntimeDrawPrimitives(
             current_render_encoder_, mtl_primitive, NS::UInteger(0),
@@ -7149,10 +7268,17 @@ bool MetalCommandProcessor::DispatchDraw(
         return false;
       }
       if (use_native_msl) {
+        // baseVertex stays 0 (so [[vertex_id]] is unchanged: it ranges 0..N-1);
+        // baseInstance carries the plain-vertex draw-constants slot index read
+        // via [[base_instance]] (see BindNativeMslDrawResources). instanceCount
+        // is 1, so [[instance_id]] == baseInstance, which the guest vertex path
+        // ignores.
         current_render_encoder_->drawIndexedPrimitives(
             mtl_primitive,
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
-            index_type, index_buffer, index_offset);
+            index_type, index_buffer, index_offset, NS::UInteger(1),
+            NS::Integer(0),
+            NS::UInteger(current_native_msl_draw_constants_slot_));
       } else {
         IRRuntimeDrawIndexedPrimitives(
             current_render_encoder_, mtl_primitive,
@@ -7676,9 +7802,17 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
     cache.payload = {};
     cache.buffer = nullptr;
     cache.offset = 0;
+    cache.slot_buffer = nullptr;
+    cache.slot = 0;
     cache.payload_valid = false;
     cache.upload_frame = 0;
   }
+  // Drop the plain-vertex draw-constants slot page so the next frame allocates a
+  // fresh page from the (now reclaimed) constant buffer pool. The page is also
+  // guarded by upload_frame == frame_current_, but clearing it avoids retaining
+  // a stale buffer pointer across the frame boundary.
+  native_msl_draw_constants_slot_page_ = {};
+  current_native_msl_draw_constants_slot_ = 0;
   native_msl_primitive_index_upload_cache_ = {};
 
   graphics_root_argument_state_ = {};

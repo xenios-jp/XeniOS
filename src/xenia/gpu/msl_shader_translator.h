@@ -140,8 +140,16 @@ class MslShaderTranslator : public ShaderTranslator {
   void EmitInputOutputDeclarations();
   void EmitHelperFunctions();
   void EmitNativeResourceHeapDeclarations();
+  // When draw_constants_as_array is true (the plain-vertex main_vs entry point
+  // only), the draw-constants argument is emitted as a pointer to an array of
+  // XeNativeDrawConstants tables ("xe_draw_constants_array") indexed by
+  // [[base_instance]] instead of a single reference; the caller is responsible
+  // for aliasing the selected element to "xe_draw_constants". Mesh/object and
+  // tessellation entry points keep draw_constants_as_array=false (they are
+  // dispatched via drawMeshThreadgroups, which has no base_instance).
   void EmitDirectResourceArguments(bool first_argument_written,
-                                   bool emit_attributes);
+                                   bool emit_attributes,
+                                   bool draw_constants_as_array = false);
   void EmitDirectResourceArgumentNames(bool first_argument_written);
   void EmitNativeDrawConstantAliases();
   void EmitEntryPointBegin();

@@ -1054,6 +1054,14 @@ class MetalCommandProcessor final : public CommandProcessor {
         native_msl_draw_constants_rebuild_reasons = {};
     std::array<uint64_t, kNativeMslDrawConstantsChangeMaskTelemetryCount>
         native_msl_draw_constants_change_masks = {};
+    // Plain-vertex-stage draw-constants slot ring (vertex stage only): number
+    // of times the slot page itself was (re)bound to the vertex stage (once per
+    // page rollover or encoder reset) and number of 48-byte table slots written
+    // (one per non-reused plain-vertex draw). The vertex-stage entries of
+    // render_encoder_buffer_slot_offset_binds for kNativeBufferDrawConstants
+    // collapse to ~0 as a result.
+    uint64_t native_msl_draw_constants_slot_page_binds = 0;
+    uint64_t native_msl_draw_constants_slot_writes = 0;
     std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
         render_encoder_buffer_full_binds = {};
     std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
@@ -1688,6 +1696,12 @@ class MetalCommandProcessor final : public CommandProcessor {
     native_msl::NativeMslDrawConstantPointers payload = {};
     MTL::Buffer* buffer = nullptr;
     NS::UInteger offset = 0;
+    // For the plain-vertex slot-ring path (vertex stage only): the slot index
+    // written for the cached payload, reused on a memcmp hit without rewriting
+    // or advancing the page cursor. Only meaningful when slot_buffer matches the
+    // current slot page for the current frame.
+    MTL::Buffer* slot_buffer = nullptr;
+    uint32_t slot = 0;
     bool payload_valid = false;
     uint64_t upload_frame = 0;
   };
@@ -1703,6 +1717,36 @@ class MetalCommandProcessor final : public CommandProcessor {
       native_msl_runtime_info_upload_cache_ = {};
   std::array<NativeMslDrawConstantsUploadCache, kStageCount>
       native_msl_draw_constants_upload_cache_ = {};
+  // Plain-vertex-stage draw-constants slot ring. The plain (non-mesh,
+  // non-object) native-MSL vertex function reads its XeNativeDrawConstants
+  // table as xe_draw_constants_array[xe_base_instance] (xe_base_instance being
+  // the [[base_instance]] input), so a page of
+  // kNativeMslDrawConstantsSlotCount consecutive 48-byte tables is bound to the
+  // vertex stage ONCE per page and each draw selects its table by passing the
+  // slot index as the draw call's baseInstance. This removes the per-draw
+  // setVertexBufferOffset rebind of slot kNativeBufferDrawConstants on the
+  // vertex stage; the fragment/mesh/object stages still offset-bind per draw.
+  static constexpr uint32_t kNativeMslDrawConstantsSlotCount = 1024;
+  // Stride is the natural size of NativeMslDrawConstantPointers (6 * uint64 =
+  // 48 bytes). MSL reads each xe_draw_constants_array element as an
+  // argument-buffer struct of six 8-byte device pointers, which requires only
+  // 8-byte alignment, and 48 is a multiple of 8. The old 256-byte alignment was
+  // only needed for setVertexBufferOffset, which this path no longer issues.
+  static constexpr size_t kNativeMslDrawConstantsSlotStride =
+      sizeof(native_msl::NativeMslDrawConstantPointers);
+  struct NativeMslDrawConstantsSlotPage {
+    MTL::Buffer* buffer = nullptr;
+    NS::UInteger base_offset = 0;
+    uint8_t* mapping = nullptr;
+    uint32_t next_slot = 0;
+    uint64_t upload_frame = 0;
+    bool valid = false;
+  };
+  NativeMslDrawConstantsSlotPage native_msl_draw_constants_slot_page_;
+  // Slot index of the table the current plain-vertex draw must select via
+  // baseInstance, set in BindNativeMslDrawResources and consumed by
+  // DispatchDraw within the same EncodePreparedDraw call.
+  uint32_t current_native_msl_draw_constants_slot_ = 0;
   NativeMslPrimitiveIndexUploadCache native_msl_primitive_index_upload_cache_;
   GraphicsRootArgumentState graphics_root_argument_state_;
   std::array<std::array<uint64_t, kCbvSlotCount>, kStageCount>
