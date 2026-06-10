@@ -175,7 +175,11 @@ class MetalPipelineCache {
         [kNativeMslTextureSignCount];
     uint32_t shader_backend;
 
-    static constexpr uint32_t kVersion = 0x20260607;
+    // 0x20260611: native-MSL plain-vertex draw constants moved to a
+    // baseInstance-indexed slot page; main_vs gained a [[base_instance]] input
+    // and the draw-constants binding at kNativeBufferDrawConstants is now a
+    // pointer-to-array, so cached pipelines/translations must regenerate.
+    static constexpr uint32_t kVersion = 0x20260611;
   });
 
   XEPACKEDSTRUCT(MetalPipelineStoredDescription, {
