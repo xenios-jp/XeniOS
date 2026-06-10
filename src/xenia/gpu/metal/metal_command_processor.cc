@@ -2468,6 +2468,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   // Submit and wait for command buffer
   if (current_command_buffer_) {
+    EncodeGpuOrderSignal(current_command_buffer_);
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
@@ -2566,10 +2567,17 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       bool force_swap_rb_copy = force_swap_rb;
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
       auto aspect = graphics_system_->GetScaledAspectRatio();
+      // The copy runs on the presenter's queue; order it after everything
+      // committed to the main queue so far (the frame's command buffer and
+      // the standalone command buffer RequestSwapTexture just used to upload
+      // the frontbuffer texture all signal the order event at commit).
+      MTL::SharedEvent* gpu_order_event = GetGpuOrderEvent();
+      uint64_t gpu_order_value = GetGpuOrderSignaledValue();
       presenter->RefreshGuestOutput(
           output_width, output_height, aspect.first, aspect.second,
           [source_texture, metal_presenter, source_width, source_height,
-           force_swap_rb_copy, use_pwl_gamma_ramp_copy](
+           force_swap_rb_copy, use_pwl_gamma_ramp_copy, gpu_order_event,
+           gpu_order_value](
               ui::Presenter::GuestOutputRefreshContext& context) -> bool {
             auto& metal_context =
                 static_cast<ui::metal::MetalGuestOutputRefreshContext&>(
@@ -2579,7 +2587,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
             bool copy_success = metal_presenter->CopyTextureToGuestOutput(
                 source_texture, metal_context.resource_uav_capable(),
                 source_width, source_height, force_swap_rb_copy,
-                use_pwl_gamma_ramp_copy, &submission_id);
+                use_pwl_gamma_ramp_copy, &submission_id, gpu_order_event,
+                gpu_order_value);
             if (copy_success && submission_id) {
               metal_context.SetSubmissionId(submission_id);
             }
@@ -8699,10 +8708,18 @@ MetalCommandProcessor::CreateStandaloneTransferCommandBuffer(
   return cmd;
 }
 
+void MetalCommandProcessor::EncodeGpuOrderSignal(MTL::CommandBuffer* cmd) {
+  if (!cmd || !wait_shared_event_) {
+    return;
+  }
+  cmd->encodeSignalEvent(wait_shared_event_, ++wait_shared_event_value_);
+}
+
 void MetalCommandProcessor::CommitStandaloneAsync(MTL::CommandBuffer* cmd) {
   if (!cmd) {
     return;
   }
+  EncodeGpuOrderSignal(cmd);
   cmd->addCompletedHandler(^(MTL::CommandBuffer* completed_cmd) {
     completed_cmd->release();
   });
@@ -8713,6 +8730,7 @@ void MetalCommandProcessor::CommitStandaloneAndWait(MTL::CommandBuffer* cmd) {
   if (!cmd) {
     return;
   }
+  EncodeGpuOrderSignal(cmd);
   cmd->commit();
   cmd->waitUntilCompleted();
   cmd->release();
@@ -9843,6 +9861,7 @@ void MetalCommandProcessor::EndCommandBuffer() {
   }
 
   if (current_command_buffer_) {
+    EncodeGpuOrderSignal(current_command_buffer_);
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;

@@ -330,6 +330,19 @@ class MetalCommandProcessor final : public CommandProcessor {
   void RecordHazardFenceUpdate(bool compute_encoder);
   void RecordHazardFenceWait(uint32_t encoder_kind);
 
+  // GPU-queue order event: every command buffer committed to the main queue
+  // signals wait_shared_event_ with the next monotonic value, so other queues
+  // (the presenter's guest-output copy) can encodeWaitForEvent on the latest
+  // value to order after all main-queue work committed so far. MTLFence
+  // cannot express this edge: fences and hazard tracking are scoped to one
+  // queue. The same event/value protocol backs the CPU-side
+  // waitUntilSignaledValue paths (FlushCommandBufferAndWait, PrepareForWait).
+  MTL::SharedEvent* GetGpuOrderEvent() const { return wait_shared_event_; }
+  uint64_t GetGpuOrderSignaledValue() const { return wait_shared_event_value_; }
+  // Encodes the next order-event signal into a command buffer about to be
+  // committed to the main queue.
+  void EncodeGpuOrderSignal(MTL::CommandBuffer* cmd);
+
   bool RequestSharedMemoryRange(SharedMemoryRequestReason reason,
                                 uint32_t start, uint32_t length);
   bool RequestSharedMemoryRangeBeforeDrawPass(SharedMemoryRequestReason reason,

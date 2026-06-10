@@ -1336,7 +1336,9 @@ bool MetalPresenter::EnsureGuestOutputPaintResources(uint32_t pixel_format) {
 bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id dest_texture,
                                               uint32_t source_width, uint32_t source_height,
                                               bool force_swap_rb, bool use_pwl_gamma_ramp,
-                                              uint64_t* submission_out) {
+                                              uint64_t* submission_out,
+                                              MTL::SharedEvent* wait_event,
+                                              uint64_t wait_event_value) {
   if (!source_texture || !dest_texture) {
     XELOGE("MetalPresenter::CopyTextureToGuestOutput: Invalid textures");
     return false;
@@ -1350,6 +1352,13 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
     XELOGE("MetalPresenter::CopyTextureToGuestOutput: Failed to create "
            "command buffer");
     return false;
+  }
+  if (wait_event && wait_event_value) {
+    // Order this copy after the producing queue's committed work; without
+    // this the copy can read the swap texture mid-upload (cross-queue
+    // accesses are not covered by fences or hazard tracking).
+    [copy_command_buffer encodeWaitForEvent:(id<MTLSharedEvent>)wait_event
+                                      value:wait_event_value];
   }
   if (cvars::metal_presenter_debug_markers) {
     copy_command_buffer.label = @"XeniaGuestOutputCopy";
