@@ -247,17 +247,11 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
     return false;
   }
 
-  size_t range_count = draw.materialization_ranges.size();
-  uint64_t byte_count = 0;
+  size_t range_count =
+      prepared_draw_queue_range_count_ + draw.materialization_ranges.size();
+  uint64_t byte_count = prepared_draw_queue_byte_count_;
   for (const SharedMemory::Range& range : draw.materialization_ranges) {
     byte_count += range.length;
-  }
-  for (const PreparedDraw* queued_draw : prepared_draw_queue_) {
-    range_count += queued_draw->materialization_ranges.size();
-    for (const SharedMemory::Range& range :
-         queued_draw->materialization_ranges) {
-      byte_count += range.length;
-    }
   }
   if (prepared_draw_queue_.size() + 1 > kPreparedDrawQueueMaxDraws ||
       range_count > kPreparedDrawQueueMaxRanges ||
@@ -289,6 +283,8 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
   prepared_draw_queue_.clear();
   prepared_draw_queue_render_target_key_valid_ = false;
   prepared_draw_queue_render_target_key_ = {};
+  prepared_draw_queue_range_count_ = 0;
+  prepared_draw_queue_byte_count_ = 0;
 
   if (texture_cache_) {
     std::vector<MetalTextureCache::TextureMaterializationPlan*>& texture_plans =
@@ -443,6 +439,10 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
       prepared_draw_queue_render_target_key_valid_ = true;
     }
     prepared_draw_queue_.push_back(draw);
+    prepared_draw_queue_range_count_ += draw->materialization_ranges.size();
+    for (const SharedMemory::Range& range : draw->materialization_ranges) {
+      prepared_draw_queue_byte_count_ += range.length;
+    }
     ++backend_telemetry_.prepared_draw_queue_appends;
     if (prepared_draw_queue_.size() >= kPreparedDrawQueueMaxDraws) {
       return FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueBudget);
