@@ -1544,6 +1544,9 @@ MTL::PixelFormat MetalTextureCache::GetPixelFormatForKey(TextureKey key) const {
     case xenos::TextureFormat::k_6_5_5:
       return MTL::PixelFormatB5G6R5Unorm;
     case xenos::TextureFormat::k_4_4_4_4:
+      // Metal's only 4444 format. It reads the RGBA4ToARGB4 load shader
+      // output with red and blue exchanged - compensated for in
+      // GetHostFormatSwizzle.
       return MTL::PixelFormatABGR4Unorm;
     case xenos::TextureFormat::k_8_8_8_8:
       return MTL::PixelFormatRGBA8Unorm;
@@ -1600,6 +1603,9 @@ MTL::PixelFormat MetalTextureCache::GetPixelFormatForKey(TextureKey key) const {
     case xenos::TextureFormat::k_DXT5A:
       return MTL::PixelFormatR8Unorm;
     case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
+      // Metal's only 4444 format. It reads the DXT3AAs1111ToARGB4 load
+      // shader output with red and blue exchanged - compensated for in
+      // GetHostFormatSwizzle.
       return MTL::PixelFormatABGR4Unorm;
     case xenos::TextureFormat::k_CTX1:
       // CTX1 is always decoded via the texture load shader to RG8.
@@ -4165,6 +4171,18 @@ uint32_t MetalTextureCache::GetHostFormatSwizzle(TextureKey key) const {
     case xenos::TextureFormat::k_6_5_5:
       // On the host, green bits in blue, blue bits in green.
       return XE_GPU_MAKE_TEXTURE_SWIZZLE(R, B, G, G);
+
+    case xenos::TextureFormat::k_4_4_4_4:
+    case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
+      // The RGBA4ToARGB4 and DXT3AAs1111ToARGB4 load shaders output the
+      // layout Vulkan pairs with VK_FORMAT_B4G4R4A4_UNORM_PACK16 (blue in
+      // bits 15:12, green in 11:8, red in 7:4, alpha in 3:0). ABGR4Unorm,
+      // the only 4444 format on Metal, corresponds to
+      // VK_FORMAT_R4G4B4A4_UNORM_PACK16 (red in bits 15:12, blue in 7:4) -
+      // MoltenVK exposes VK_FORMAT_B4G4R4A4_UNORM_PACK16 on it with this
+      // same (B, G, R, A) swizzle - so red and blue are sampled exchanged
+      // and need to be swapped back.
+      return XE_GPU_MAKE_TEXTURE_SWIZZLE(B, G, R, A);
 
     case xenos::TextureFormat::k_8_8_8_8:
     case xenos::TextureFormat::k_8_8_8_8_A:
