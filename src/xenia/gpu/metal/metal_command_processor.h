@@ -305,6 +305,12 @@ class MetalCommandProcessor final : public CommandProcessor {
   bool RequestSharedMemoryRanges(SharedMemoryRequestReason reason,
                                  const SharedMemory::Range* ranges,
                                  uint32_t range_count);
+  // Coalesces and consumes the caller's vector in place instead of copying
+  // it; for large per-flush batches. The vector must not be a buffer that a
+  // reentrant flush could also write (the prepared-draw flush scratch is safe
+  // because nested flushes early-out while a flush is in progress).
+  bool RequestSharedMemoryRangesInPlace(SharedMemoryRequestReason reason,
+                                        std::vector<SharedMemory::Range>& ranges);
   void RecordSharedMemoryRequestOutcome(SharedMemoryRequestOutcome outcome);
   MTL::BlitCommandEncoder* GetSharedMemoryUploadBlitEncoder();
   void EndSharedMemoryUploadBlitEncoder(
@@ -445,6 +451,11 @@ class MetalCommandProcessor final : public CommandProcessor {
   void PumpQueryResolves() override;
   bool AwaitQueryResolve(ReportHandle report_handle,
                          uint64_t wait_for_submission) override;
+  // Flush deferred prepared draws before the logical ZPD lifetime changes so
+  // draws issued inside the query window are encoded while OpenQuerySegment
+  // can still count them (EncodePreparedDraw arms pending segments per draw).
+  bool BeginZPDReport(uint32_t report_address) override;
+  bool EndZPDReport(uint32_t report_address, bool guest_forced_end) override;
 
   void WriteRegister(uint32_t index, uint32_t value) override;
   void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
@@ -760,7 +771,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   bool SubmitPreparedDraw(PreparedDraw* draw);
   bool EncodePreparedDraw(const PreparedDraw& draw);
   bool FlushPreparedDrawQueue(PreparedDrawFlushReason reason);
-  bool PreparedDrawQueueHasActiveZPD() const;
   bool CanQueuePreparedDraw(const PreparedDraw& draw,
                             PreparedDrawQueueRejectReason& reject_reason) const;
   void RecordPreparedDrawQueueReject(

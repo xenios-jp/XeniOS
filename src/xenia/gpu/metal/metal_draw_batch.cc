@@ -197,16 +197,6 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.has_pending_draw_pass_transfers = false;
 }
 
-bool MetalCommandProcessor::PreparedDrawQueueHasActiveZPD() const {
-  if (GetZPDMode() == ZPDMode::kFake) {
-    return false;
-  }
-  return zpd_active_segment_.logical_active ||
-         zpd_active_segment_.segment_active ||
-         zpd_active_segment_.segment_pending_begin ||
-         zpd_active_query_.is_open();
-}
-
 void MetalCommandProcessor::RecordPreparedDrawQueueReject(
     PreparedDrawQueueRejectReason reject_reason) {
   const size_t reject_index = static_cast<size_t>(reject_reason);
@@ -228,11 +218,16 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
     reject_reason = PreparedDrawQueueRejectReason::kPendingDrawPassTransfers;
     return false;
   }
-  if (PreparedDrawQueueHasActiveZPD()) {
-    reject_reason = PreparedDrawQueueRejectReason::kZPDActive;
-    return false;
-  }
-  if (draw.materialization_ranges.empty() && !draw.texture_upload_needed) {
+  // Draws inside an active ZPD query window may queue: EncodePreparedDraw
+  // arms pending query segments before every dispatch, every path that
+  // disables visibility counting (CloseZPDQuery, DiscardZPDQuery,
+  // EndRenderEncoder) flushes the queue first, and the BeginZPDReport /
+  // EndZPDReport overrides flush before the logical lifetime changes.
+  if (draw.materialization_ranges.empty() && !draw.texture_upload_needed &&
+      prepared_draw_queue_.empty()) {
+    // Nothing to batch and nothing queued to keep ordering with - encode
+    // immediately. When the queue is non-empty, joining it is free (the draw
+    // adds no upload work) and keeps the batch alive instead of flushing it.
     reject_reason = PreparedDrawQueueRejectReason::kNoSharedMemoryRanges;
     return false;
   }
@@ -373,11 +368,9 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
   if (has_invalid_shared_memory && shared_memory_ && !ranges.empty()) {
     PrepareSharedMemoryUploadBeforeDrawPass(
         ranges.data(), static_cast<uint32_t>(ranges.size()));
-    if (!RequestSharedMemoryRanges(
-            SharedMemoryRequestReason::kDrawMaterialization, ranges.data(),
-            static_cast<uint32_t>(ranges.size()))) {
-      XELOGE("Failed to request {} prepared-draw shared-memory ranges",
-             ranges.size());
+    if (!RequestSharedMemoryRangesInPlace(
+            SharedMemoryRequestReason::kDrawMaterialization, ranges)) {
+      XELOGE("Failed to request prepared-draw shared-memory ranges");
       return fail_flush();
     }
     EndSharedMemoryUploadBlitEncoder(
