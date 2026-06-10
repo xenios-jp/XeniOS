@@ -4131,17 +4131,23 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   current_draw_shared_memory_ranges.clear();
   current_draw_shared_memory_ranges.reserve(kMaxCurrentDrawVertexFetchRanges +
                                             memexport_ranges_.size() + 2);
+  uint64_t current_draw_invalid_shared_memory_bytes = 0;
   auto add_current_draw_shared_memory_range =
       [&](DrawMaterializationSource source, uint32_t start, uint32_t length) {
         if (!length) {
           return;
+        }
+        const bool range_invalid =
+            shared_memory_ && !shared_memory_->IsRangeValid(start, length);
+        if (range_invalid) {
+          current_draw_invalid_shared_memory_bytes += length;
         }
         size_t source_index = static_cast<size_t>(source);
         if (source_index < kDrawMaterializationSourceCount) {
           ++backend_telemetry_.draw_materialization_source_ranges[source_index];
           backend_telemetry_.draw_materialization_source_bytes[source_index] +=
               length;
-          if (shared_memory_ && !shared_memory_->IsRangeValid(start, length)) {
+          if (range_invalid) {
             ++backend_telemetry_
                   .draw_materialization_source_invalid_ranges[source_index];
             backend_telemetry_
@@ -4391,6 +4397,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.texture_source_range_count =
       static_cast<uint32_t>(texture_materialization_plan.source_ranges.size());
   draw.has_invalid_shared_memory = current_draw_has_invalid_shared_memory;
+  draw.invalid_byte_count = current_draw_invalid_shared_memory_bytes;
   draw.shared_memory_hazard_ranges = shared_memory_hazard_ranges;
   draw.shared_memory_hazard_range_count = shared_memory_hazard_range_count;
   draw.shared_memory_consumer_stages = shared_memory_consumer_stages;
