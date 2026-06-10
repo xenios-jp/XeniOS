@@ -265,9 +265,14 @@ X_RESULT TouchInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
   out_caps->type = XINPUT_DEVTYPE_GAMEPAD;
   out_caps->sub_type = XINPUT_DEVSUBTYPE_GAMEPAD;
   out_caps->flags = 0;
-  const auto& controls = runtime_model_->layout().controls;
-  for (const auto& control : controls) {
-    ApplyControlCapabilities(control, out_caps);
+  // This runs on emulator threads while the layout editor may be mutating
+  // layout().controls on the main thread, so read the published snapshot
+  // instead of the live vector.
+  auto controls = runtime_model_->LoadControlsSnapshot();
+  if (controls) {
+    for (const auto& control : *controls) {
+      ApplyControlCapabilities(control, out_caps);
+    }
   }
   return X_ERROR_SUCCESS;
 }
