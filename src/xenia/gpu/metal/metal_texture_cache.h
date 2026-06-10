@@ -273,6 +273,9 @@ class MetalTextureCache : public TextureCache {
     }
 
    private:
+    // The cache manages 3D-as-2D wrapper invalidation on reload directly.
+    friend class MetalTextureCache;
+
     uint64_t GetViewKey(uint32_t host_swizzle,
                         xenos::FetchOpDimension dimension, bool is_signed,
                         MTL::PixelFormat view_format) const;
