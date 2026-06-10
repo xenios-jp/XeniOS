@@ -2461,11 +2461,15 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
       const size_t total = requests_holder->size();
+      // The next loop iteration keeps writing into requests_holder while the
+      // main queue reads, so hand the UI an immutable snapshot instead.
+      auto requests_snapshot =
+          std::make_shared<const std::vector<XeniaIOSZarConversionRequest>>(*requests_holder);
       dispatch_async(dispatch_get_main_queue(), ^{
         if (unsafe_self->zar_conversion_preflight_controller_ != preflight_controller) {
           return;
         }
-        [preflight_controller updateWithRequests:*requests_holder
+        [preflight_controller updateWithRequests:*requests_snapshot
                                       estimating:YES
                                        completed:completed
                                            total:total
@@ -2534,11 +2538,15 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
       const size_t total = requests_holder->size();
+      // The next loop iteration keeps writing into requests_holder while the
+      // main queue reads, so hand the UI an immutable snapshot instead.
+      auto requests_snapshot =
+          std::make_shared<const std::vector<XeniaIOSZarConversionRequest>>(*requests_holder);
       dispatch_async(dispatch_get_main_queue(), ^{
         if (unsafe_self->zar_conversion_preflight_controller_ != preflight_controller) {
           return;
         }
-        [preflight_controller updateWithRequests:*requests_holder
+        [preflight_controller updateWithRequests:*requests_snapshot
                                       estimating:YES
                                        completed:completed
                                            total:total
@@ -2590,11 +2598,15 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
       const size_t total = requests_holder->size();
+      // The next loop iteration keeps writing into requests_holder while the
+      // main queue reads, so hand the UI an immutable snapshot instead.
+      auto requests_snapshot =
+          std::make_shared<const std::vector<XeniaIOSZarConversionRequest>>(*requests_holder);
       dispatch_async(dispatch_get_main_queue(), ^{
         if (unsafe_self->zar_conversion_preflight_controller_ != preflight_controller) {
           return;
         }
-        [preflight_controller updateWithRequests:*requests_holder
+        [preflight_controller updateWithRequests:*requests_snapshot
                                       estimating:YES
                                        completed:completed
                                            total:total

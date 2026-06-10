@@ -1959,12 +1959,13 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [title_name_cache release];
     dispatch_async(dispatch_get_main_queue(), ^{
       std::unique_ptr<std::vector<IOSDiscoveredGame>> scanned_games_owner(scanned_games);
-      if (refresh_generation != unsafe_self->library_refresh_generation_) {
-        [completion_copy release];
-        return;
+      if (refresh_generation == unsafe_self->library_refresh_generation_) {
+        unsafe_self->discovered_games_ = std::move(*scanned_games_owner);
+        [unsafe_self finishImportedGamesRefresh];
       }
-      unsafe_self->discovered_games_ = std::move(*scanned_games_owner);
-      [unsafe_self finishImportedGamesRefresh];
+      // Run the completion even when a newer refresh superseded this scan:
+      // callers (e.g. the ZAR conversion flow presenting its results sheet)
+      // rely on it for flow continuation, not for library consistency.
       if (completion_copy) {
         completion_copy();
       }
