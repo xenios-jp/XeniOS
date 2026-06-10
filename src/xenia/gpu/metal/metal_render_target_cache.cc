@@ -73,6 +73,11 @@ DEFINE_bool(metal_direct_host_resolve, true,
             "Resolve eligible fast color/depth copies directly from Metal host "
             "render targets to shared/scaled resolve memory",
             "Metal");
+DEFINE_bool(metal_resolve_clear_via_load_action, true,
+            "Perform resolve clears that cover the entire destination render "
+            "target with render pass clear load actions instead of clear "
+            "draws",
+            "Metal");
 DEFINE_bool(metal_use_heaps, true,
             "Use MTLHeap-backed texture allocations in Metal to reduce "
             "allocation overhead and fragmentation.",
@@ -4222,6 +4227,95 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   return false;
 }
 
+bool MetalRenderTargetCache::GetResolveClearLoadActionValues(
+    RenderTargetKey dest_key, uint64_t clear_value,
+    MTL::ClearColor& clear_color_out, double& clear_depth_out,
+    uint32_t& clear_stencil_out) const {
+  if (dest_key.is_depth) {
+    uint32_t depth_guest_clear_value = (uint32_t(clear_value) >> 8) & 0xFFFFFF;
+    switch (dest_key.GetDepthFormat()) {
+      case xenos::DepthRenderTargetFormat::kD24S8:
+        clear_depth_out = xenos::UNorm24To32(depth_guest_clear_value);
+        break;
+      case xenos::DepthRenderTargetFormat::kD24FS8:
+        // Taking [0, 2) -> [0, 1) remapping into account.
+        clear_depth_out = xenos::Float20e4To32(depth_guest_clear_value) * 0.5f;
+        break;
+      default:
+        return false;
+    }
+    clear_stencil_out = uint32_t(clear_value) & 0xFF;
+    return true;
+  }
+  float color[4] = {};
+  bool clear_via_drawing = false;
+  switch (dest_key.GetColorFormat()) {
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8: {
+      for (uint32_t j = 0; j < 4; ++j) {
+        color[j] = ((clear_value >> (j * 8)) & 0xFF) * (1.0f / 0xFF);
+      }
+    } break;
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA: {
+      for (uint32_t j = 0; j < 4; ++j) {
+        color[j] = ((clear_value >> (j * 8)) & 0xFF) * (1.0f / 0xFF);
+      }
+      if (gamma_render_target_as_unorm16_) {
+        for (uint32_t j = 0; j < 3; ++j) {
+          color[j] = xenos::PWLGammaToLinear(color[j]);
+        }
+      }
+    } break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10: {
+      for (uint32_t j = 0; j < 3; ++j) {
+        color[j] = ((clear_value >> (j * 10)) & 0x3FF) * (1.0f / 0x3FF);
+      }
+      color[3] = ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
+    } break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16: {
+      for (uint32_t j = 0; j < 3; ++j) {
+        color[j] = xenos::Float7e3To32((clear_value >> (j * 10)) & 0x3FF);
+      }
+      color[3] = ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
+    } break;
+    case xenos::ColorRenderTargetFormat::k_16_16:
+    case xenos::ColorRenderTargetFormat::k_16_16_FLOAT: {
+      for (uint32_t j = 0; j < 2; ++j) {
+        color[j] = float((clear_value >> (j * 16)) & 0xFFFF);
+      }
+    } break;
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT: {
+      for (uint32_t j = 0; j < 4; ++j) {
+        color[j] = float((clear_value >> (j * 16)) & 0xFFFF);
+      }
+    } break;
+    case xenos::ColorRenderTargetFormat::k_32_FLOAT: {
+      color[0] = float(uint32_t(clear_value));
+      if (uint64_t(color[0]) != uint32_t(clear_value)) {
+        clear_via_drawing = true;
+      }
+    } break;
+    case xenos::ColorRenderTargetFormat::k_32_32_FLOAT: {
+      color[0] = float(uint32_t(clear_value));
+      color[1] = float(uint32_t(clear_value >> 32));
+      if (uint64_t(color[0]) != uint32_t(clear_value) ||
+          uint64_t(color[1]) != uint32_t(clear_value >> 32)) {
+        clear_via_drawing = true;
+      }
+    } break;
+  }
+  bool clear_is_uint = false;
+  GetColorOwnershipTransferPixelFormat(dest_key.GetColorFormat(),
+                                       &clear_is_uint);
+  if (clear_is_uint || clear_via_drawing) {
+    return false;
+  }
+  clear_color_out = MTL::ClearColor(color[0], color[1], color[2], color[3]);
+  return true;
+}
+
 bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     uint32_t render_target_count, RenderTarget* const* render_targets,
     const std::vector<Transfer>* render_target_transfers,
@@ -4730,114 +4824,22 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           is_full_target_rectangle(*resolve_clear_rectangle);
     }
 
-    bool resolve_clear_via_load_action = false;
+    // A clear that covers every pixel of the destination can be performed by
+    // the pass's clear load action instead of a clear draw - per Apple's
+    // MTLLoadAction.clear documentation, "the GPU writes a value to every
+    // pixel in the attachment at the start of the render pass". The clear
+    // rectangle is cut out of the transfer rectangles, so a fully-covering
+    // clear also implies this pass has no transfer draws and the load action
+    // is its only work.
     MTL::ClearColor resolve_clear_color = MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
     double resolve_clear_depth = 1.0;
     uint32_t resolve_clear_stencil = 0;
-    if (resolve_clear_needed && resolve_clear_fully_overwrites_target) {
-      const uint64_t clear_value = render_target_resolve_clear_values[i];
-      if (dest_is_depth) {
-        uint32_t depth_guest_clear_value =
-            (uint32_t(clear_value) >> 8) & 0xFFFFFF;
-        switch (dest_key.GetDepthFormat()) {
-          case xenos::DepthRenderTargetFormat::kD24S8:
-            resolve_clear_depth = xenos::UNorm24To32(depth_guest_clear_value);
-            resolve_clear_via_load_action = true;
-            break;
-          case xenos::DepthRenderTargetFormat::kD24FS8:
-            resolve_clear_depth =
-                xenos::Float20e4To32(depth_guest_clear_value) * 0.5f;
-            resolve_clear_via_load_action = true;
-            break;
-        }
-        resolve_clear_stencil = uint32_t(clear_value) & 0xFF;
-      } else {
-        TransferClearColorFloatConstants float_constants = {};
-        bool clear_via_drawing = false;
-        switch (dest_key.GetColorFormat()) {
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8: {
-            for (uint32_t j = 0; j < 4; ++j) {
-              float_constants.color[j] =
-                  ((clear_value >> (j * 8)) & 0xFF) * (1.0f / 0xFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA: {
-            for (uint32_t j = 0; j < 4; ++j) {
-              float_constants.color[j] =
-                  ((clear_value >> (j * 8)) & 0xFF) * (1.0f / 0xFF);
-            }
-            if (gamma_render_target_as_unorm16_) {
-              for (uint32_t j = 0; j < 3; ++j) {
-                float_constants.color[j] =
-                    xenos::PWLGammaToLinear(float_constants.color[j]);
-              }
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10:
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  ((clear_value >> (j * 10)) & 0x3FF) * (1.0f / 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
-          case xenos::ColorRenderTargetFormat::
-              k_2_10_10_10_FLOAT_AS_16_16_16_16: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  xenos::Float7e3To32((clear_value >> (j * 10)) & 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 2; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 4; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value)) {
-              clear_via_drawing = true;
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            float_constants.color[1] = float(uint32_t(clear_value >> 32));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value) ||
-                uint64_t(float_constants.color[1]) !=
-                    uint32_t(clear_value >> 32)) {
-              clear_via_drawing = true;
-            }
-          } break;
-        }
-
-        bool clear_is_uint = false;
-        GetColorOwnershipTransferPixelFormat(dest_key.GetColorFormat(),
-                                             &clear_is_uint);
-        if (!clear_is_uint && !clear_via_drawing) {
-          resolve_clear_color = MTL::ClearColor(
-              float_constants.color[0], float_constants.color[1],
-              float_constants.color[2], float_constants.color[3]);
-          resolve_clear_via_load_action = true;
-        }
-      }
-    }
-    if (resolve_clear_via_load_action &&
-        transfer_plan_indices_for_shaders.empty()) {
-      resolve_clear_via_load_action = false;
-    }
+    bool resolve_clear_via_load_action =
+        resolve_clear_needed && resolve_clear_fully_overwrites_target &&
+        ::cvars::metal_resolve_clear_via_load_action &&
+        GetResolveClearLoadActionValues(
+            dest_key, render_target_resolve_clear_values[i],
+            resolve_clear_color, resolve_clear_depth, resolve_clear_stencil);
 
     // Depth transfers that fully overwrite the destination still need a clean
     // stencil surface before the per-bit stencil draws run. A load-action
@@ -5537,7 +5539,16 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       }
     }
 
-    if (resolve_clear_needed && !resolve_clear_via_load_action) {
+    if (resolve_clear_needed && resolve_clear_via_load_action) {
+      // The clear is performed entirely by this pass's clear load action.
+      // Fully-covering clears never have transfer draws, so explicitly create
+      // the otherwise-empty pass that carries the load action - without an
+      // encoder, the clear would silently never happen.
+      if (ensure_transfer_encoder()) {
+        ++telemetry_.resolve_clear.load_action_single_target;
+      }
+    } else if (resolve_clear_needed) {
+      ++telemetry_.resolve_clear.draw_clears;
       uint64_t clear_value = render_target_resolve_clear_values[i];
       if (dest_is_depth) {
         uint32_t depth_guest_clear_value =

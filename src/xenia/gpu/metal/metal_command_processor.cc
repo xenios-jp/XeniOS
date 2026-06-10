@@ -7965,6 +7965,9 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
       direct_host_stats.direct_host_reject_format_mismatch,
       direct_host_stats.direct_host_reject_sample_select,
       direct_host_stats.direct_host_reject_depth_no_fast);
+  XELOGI("MetalTelemetry[{}]: resolve_clear load_action_single={} draw={}",
+         reason, rt_stats.resolve_clear.load_action_single_target,
+         rt_stats.resolve_clear.draw_clears);
   XELOGI(
       "MetalTelemetry[{}]: stage_compile requests={} hits/misses={}/{} "
       "waits={} failures={} persistent hits/misses={}/{} "
