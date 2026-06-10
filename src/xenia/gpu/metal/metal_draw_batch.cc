@@ -164,6 +164,7 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.materialization_ranges = {};
   draw.texture_source_range_count = 0;
   draw.has_invalid_shared_memory = false;
+  draw.invalid_byte_count = 0;
   draw.shared_memory_hazard_range_count = 0;
   draw.shared_memory_consumer_stages = MTL::RenderStages(0);
 
@@ -244,10 +245,10 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
 
   size_t range_count =
       prepared_draw_queue_range_count_ + draw.materialization_ranges.size();
-  uint64_t byte_count = prepared_draw_queue_byte_count_;
-  for (const SharedMemory::Range& range : draw.materialization_ranges) {
-    byte_count += range.length;
-  }
+  // Budget on bytes that actually need uploading, not on the spans of the
+  // (mostly resident) fetch ranges -- see PreparedDraw::invalid_byte_count.
+  uint64_t byte_count =
+      prepared_draw_queue_byte_count_ + draw.invalid_byte_count;
   if (prepared_draw_queue_.size() + 1 > kPreparedDrawQueueMaxDraws ||
       range_count > kPreparedDrawQueueMaxRanges ||
       byte_count > kPreparedDrawQueueMaxBytes) {
@@ -433,9 +434,7 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
     }
     prepared_draw_queue_.push_back(draw);
     prepared_draw_queue_range_count_ += draw->materialization_ranges.size();
-    for (const SharedMemory::Range& range : draw->materialization_ranges) {
-      prepared_draw_queue_byte_count_ += range.length;
-    }
+    prepared_draw_queue_byte_count_ += draw->invalid_byte_count;
     ++backend_telemetry_.prepared_draw_queue_appends;
     if (prepared_draw_queue_.size() >= kPreparedDrawQueueMaxDraws) {
       return FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueBudget);

@@ -720,6 +720,14 @@ class MetalCommandProcessor final : public CommandProcessor {
     PreparedDrawSpan<SharedMemory::Range> materialization_ranges;
     uint32_t texture_source_range_count = 0;
     bool has_invalid_shared_memory = false;
+    // Bytes of materialization ranges that were invalid (needing upload) at
+    // append time. The queue byte budget counts these instead of the full
+    // range sizes: fetch-constant ranges routinely span tens of megabytes of
+    // already-resident memory, and budgeting on the full size forced a queue
+    // flush (and with it a render-pass break when staged uploads were
+    // pending) every few dozen draws. Validity can still change between
+    // append and flush, so this is a budget heuristic, not an upload bound.
+    uint64_t invalid_byte_count = 0;
 
     std::array<SharedMemoryRange, 96> shared_memory_hazard_ranges = {};
     uint32_t shared_memory_hazard_range_count = 0;
