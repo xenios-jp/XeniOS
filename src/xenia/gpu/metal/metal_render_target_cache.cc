@@ -76,7 +76,8 @@ DEFINE_bool(metal_direct_host_resolve, true,
 DEFINE_bool(metal_resolve_clear_via_load_action, true,
             "Perform resolve clears that cover the entire destination render "
             "target with render pass clear load actions instead of clear "
-            "draws",
+            "draws, merging depth and color clears of one resolve into a "
+            "single render pass",
             "Metal");
 DEFINE_bool(metal_use_heaps, true,
             "Use MTLHeap-backed texture allocations in Metal to reduce "
@@ -4528,6 +4529,135 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
   }
 
+  // When one resolve clears both a depth and a color render target, and both
+  // clears can ride clear load actions (which write "a value to every pixel
+  // in the attachment at the start of the render pass" per Apple's
+  // MTLLoadAction.clear documentation), both attachments can be cleared by a
+  // single render pass instead of two single-attachment passes - on
+  // tile-based GPUs each pass is a full tile load/store round trip.
+  // Fully-covering clears never have transfer rectangles (the clear rectangle
+  // is cut out of them), so this pass has no draws.
+  std::array<bool, 1 + xenos::kMaxColorRenderTargets>
+      resolve_clear_done_via_merged_pass = {};
+  if (resolve_clear_needed && !use_active_render_encoder &&
+      ::cvars::metal_resolve_clear_via_load_action) {
+    uint32_t merged_clear_depth_index = UINT32_MAX;
+    uint32_t merged_clear_color_index = UINT32_MAX;
+    MTL::Texture* merged_clear_depth_texture = nullptr;
+    MTL::Texture* merged_clear_color_texture = nullptr;
+    MTL::ClearColor merged_clear_color = MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
+    double merged_clear_depth = 1.0;
+    uint32_t merged_clear_stencil = 0;
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      RenderTarget* dest_rt = render_targets[i];
+      if (!dest_rt) {
+        continue;
+      }
+      const std::vector<TransferRectanglePlan>* target_transfer_rectangles =
+          transfer_rectangle_plans[i];
+      if (target_transfer_rectangles && !target_transfer_rectangles->empty()) {
+        continue;
+      }
+      auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
+      RenderTargetKey dest_key = dest_metal_rt->key();
+      MTL::Texture* dest_texture = dest_key.is_depth
+                                       ? dest_metal_rt->texture()
+                                       : dest_metal_rt->transfer_texture();
+      if (!dest_texture) {
+        continue;
+      }
+      // The clear rectangle must cover every pixel of the destination, since
+      // the load action clears the entire attachment.
+      if (resolve_clear_rectangle->x_pixels ||
+          resolve_clear_rectangle->y_pixels ||
+          resolve_clear_rectangle->width_pixels * scale_x <
+              uint32_t(dest_texture->width()) ||
+          resolve_clear_rectangle->height_pixels * scale_y <
+              uint32_t(dest_texture->height())) {
+        continue;
+      }
+      MTL::ClearColor load_action_clear_color =
+          MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
+      double load_action_clear_depth = 1.0;
+      uint32_t load_action_clear_stencil = 0;
+      if (!GetResolveClearLoadActionValues(
+              dest_key, render_target_resolve_clear_values[i],
+              load_action_clear_color, load_action_clear_depth,
+              load_action_clear_stencil)) {
+        continue;
+      }
+      if (dest_key.is_depth) {
+        if (merged_clear_depth_index == UINT32_MAX) {
+          merged_clear_depth_index = i;
+          merged_clear_depth_texture = dest_texture;
+          merged_clear_depth = load_action_clear_depth;
+          merged_clear_stencil = load_action_clear_stencil;
+        }
+      } else {
+        if (merged_clear_color_index == UINT32_MAX) {
+          merged_clear_color_index = i;
+          merged_clear_color_texture = dest_texture;
+          merged_clear_color = load_action_clear_color;
+        }
+      }
+    }
+    // Attachments of one render pass must have matching dimensions and sample
+    // counts; resolve clear destinations share the pitch and MSAA mode, so
+    // this normally holds - fall back to per-target passes otherwise.
+    if (merged_clear_depth_index != UINT32_MAX &&
+        merged_clear_color_index != UINT32_MAX &&
+        merged_clear_depth_texture->width() ==
+            merged_clear_color_texture->width() &&
+        merged_clear_depth_texture->height() ==
+            merged_clear_color_texture->height() &&
+        merged_clear_depth_texture->sampleCount() ==
+            merged_clear_color_texture->sampleCount()) {
+      MTL::RenderPassDescriptor* merged_clear_pass =
+          MTL::RenderPassDescriptor::renderPassDescriptor();
+      auto* color_attachment =
+          merged_clear_pass->colorAttachments()->object(0);
+      color_attachment->setTexture(merged_clear_color_texture);
+      color_attachment->setLoadAction(MTL::LoadActionClear);
+      color_attachment->setStoreAction(MTL::StoreActionStore);
+      color_attachment->setClearColor(merged_clear_color);
+      auto* depth_attachment = merged_clear_pass->depthAttachment();
+      depth_attachment->setTexture(merged_clear_depth_texture);
+      depth_attachment->setLoadAction(MTL::LoadActionClear);
+      depth_attachment->setStoreAction(MTL::StoreActionStore);
+      depth_attachment->setClearDepth(merged_clear_depth);
+      MTL::PixelFormat merged_clear_depth_format =
+          merged_clear_depth_texture->pixelFormat();
+      if (merged_clear_depth_format == MTL::PixelFormatDepth32Float_Stencil8 ||
+          merged_clear_depth_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+        auto* stencil_attachment = merged_clear_pass->stencilAttachment();
+        stencil_attachment->setTexture(merged_clear_depth_texture);
+        stencil_attachment->setLoadAction(MTL::LoadActionClear);
+        stencil_attachment->setStoreAction(MTL::StoreActionStore);
+        stencil_attachment->setClearStencil(merged_clear_stencil);
+      }
+      EndSharedMemoryUploadBlitEncoderForCommandBuffer(command_processor_, cmd);
+      MTL::RenderCommandEncoder* merged_clear_encoder =
+          cmd->renderCommandEncoder(merged_clear_pass);
+      if (merged_clear_encoder) {
+        SetEncoderLabel(merged_clear_encoder, "XeniaResolveClearEncoder");
+        // The clear load actions perform all the work of this pass.
+        merged_clear_encoder->endEncoding();
+        auto consume_merged_clear = [&](uint32_t index) {
+          auto* merged_metal_rt =
+              static_cast<MetalRenderTarget*>(render_targets[index]);
+          if (merged_metal_rt->needs_initial_clear()) {
+            merged_metal_rt->SetNeedsInitialClear(false);
+            MarkRenderPassDescriptorDirty();
+          }
+          resolve_clear_done_via_merged_pass[index] = true;
+        };
+        consume_merged_clear(merged_clear_depth_index);
+        consume_merged_clear(merged_clear_color_index);
+        ++telemetry_.resolve_clear.load_action_merged_passes;
+      }
+    }
+  }
+
   for (uint32_t i = 0; i < render_target_count; ++i) {
     RenderTarget* dest_rt = render_targets[i];
     if (!dest_rt) {
@@ -4538,7 +4668,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     const std::vector<TransferRectanglePlan>* target_transfer_rectangles =
         transfer_rectangle_plans[i];
     if ((!target_transfer_rectangles || target_transfer_rectangles->empty()) &&
-        !resolve_clear_needed) {
+        (!resolve_clear_needed || resolve_clear_done_via_merged_pass[i])) {
       continue;
     }
 
