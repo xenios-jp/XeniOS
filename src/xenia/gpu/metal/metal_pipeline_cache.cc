@@ -9,7 +9,10 @@
 
 #include "xenia/gpu/metal/metal_pipeline_cache.h"
 
+#include <Availability.h>
+#include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -25,7 +28,6 @@
 #include <utility>
 #include <vector>
 
-#include "third_party/metal-cpp/Foundation/NSProcessInfo.hpp"
 #include "third_party/metal-cpp/Foundation/NSURL.hpp"
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -1451,13 +1453,29 @@ bool MetalPipelineCache::InitializeShaderTranslation(
       min_family = IRGPUFamilyMetal3;
     }
 
-    NS::OperatingSystemVersion os_version =
-        NS::ProcessInfo::processInfo()->operatingSystemVersion();
+    // MSC emits Metal IR for the given minimum deployment target; without a
+    // valid one it targets the newest OS it knows about, producing metallibs
+    // the Metal runtime on older OS releases (iOS 18 / macOS 15) refuses to
+    // load. Pass the platform we are actually running on - iOS versions are
+    // meaningless on the macOS timeline (there is no "macOS 18") - and the
+    // app's deployment target rather than the runtime OS version, so the
+    // generated metallibs stay loadable on every OS release the app supports.
+#if XE_PLATFORM_IOS
+#if TARGET_OS_SIMULATOR
+    const IROperatingSystem min_os = IROperatingSystem_iOSSimulator;
+#else
+    const IROperatingSystem min_os = IROperatingSystem_iOS;
+#endif
+    constexpr uint32_t kMinOsVersion = __IPHONE_OS_VERSION_MIN_REQUIRED;
+#else
+    const IROperatingSystem min_os = IROperatingSystem_macOS;
+    constexpr uint32_t kMinOsVersion = __MAC_OS_X_VERSION_MIN_REQUIRED;
+#endif
     std::ostringstream version_stream;
-    version_stream << os_version.majorVersion << "." << os_version.minorVersion
-                   << "." << os_version.patchVersion;
-    metal_shader_converter_->SetMinimumTarget(
-        min_family, IROperatingSystem_macOS, version_stream.str());
+    version_stream << (kMinOsVersion / 10000) << "."
+                   << (kMinOsVersion / 100 % 100) << "." << (kMinOsVersion % 100);
+    metal_shader_converter_->SetMinimumTarget(min_family, min_os,
+                                              version_stream.str());
   }
 
   // Spawn async pipeline creation threads if enabled.
