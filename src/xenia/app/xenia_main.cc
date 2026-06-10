@@ -493,10 +493,13 @@ std::unique_ptr<gpu::GraphicsSystem> EmulatorApp::CreateGraphicsSystem() {
 #if XE_PLATFORM_WIN32
   factory.Add<gpu::d3d12::D3D12GraphicsSystem>("d3d12");
 #endif  // XE_PLATFORM_WIN32
-  factory.Add<gpu::vulkan::VulkanGraphicsSystem>("vulkan");
+  // Metal is registered before Vulkan so that auto-selection (used when the
+  // gpu cvar holds an unknown backend name) picks the platform-default Metal
+  // backend rather than MoltenVK.
 #if XE_PLATFORM_MAC
   factory.Add<gpu::metal::MetalGraphicsSystem>("metal");
 #endif  // XE_PLATFORM_MAC
+  factory.Add<gpu::vulkan::VulkanGraphicsSystem>("vulkan");
   std::unique_ptr<gpu::GraphicsSystem> gpu_implementation =
       factory.Create(gpu_implementation_name);
   if (!gpu_implementation) {
