@@ -220,6 +220,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool IsRenderPassDescriptorDirty() const {
     return render_pass_descriptor_dirty_;
   }
+  // Incremented every time the cached render pass descriptor is rebuilt.
+  // Combined with the descriptor pointer, this lets callers cache state
+  // derived from the descriptor (such as pipeline attachment formats) without
+  // being fooled by a new descriptor reusing the same allocation address.
+  uint64_t GetRenderPassDescriptorBuildId() const {
+    return render_pass_descriptor_build_id_;
+  }
 
   // Get current render targets for capture
   MTL::Texture* GetColorTarget(uint32_t index) const;
@@ -558,6 +565,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Render pass descriptor cache
   MTL::RenderPassDescriptor* cached_render_pass_descriptor_ = nullptr;
   bool render_pass_descriptor_dirty_ = true;
+  uint64_t render_pass_descriptor_build_id_ = 0;
   uint32_t cached_render_pass_descriptor_sample_count_ = 0;
   bool cached_render_pass_descriptor_fallback_depth_required_ = false;
   // Attachments with a first-use clear baked into

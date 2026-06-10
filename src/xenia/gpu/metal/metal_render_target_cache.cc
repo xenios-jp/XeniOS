@@ -2981,6 +2981,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
   cached_render_pass_descriptor_fallback_depth_required_ =
       fallback_depth_attachment_required;
   render_pass_descriptor_dirty_ = false;
+  ++render_pass_descriptor_build_id_;
   cached_render_pass_descriptor_pending_clears_.fill(nullptr);
 
   AttachmentPlan attachment_plan;
