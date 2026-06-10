@@ -3551,8 +3551,12 @@ double MetalRenderTargetCache::GetDepthTargetClearDepth() const {
 void MetalRenderTargetCache::DumpRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, MTL::CommandBuffer* command_buffer,
-    const char* encoder_label) {
+    const char* encoder_label,
+    MTL::ComputeCommandEncoder** keep_open_encoder_out) {
   assert_true(GetPath() == Path::kHostRenderTargets);
+  if (keep_open_encoder_out) {
+    *keep_open_encoder_out = nullptr;
+  }
 
   XELOGGPU(
       "MetalRenderTargetCache::DumpRenderTargets: base={} row_length_used={} "
@@ -3805,6 +3809,10 @@ void MetalRenderTargetCache::DumpRenderTargets(
   }
 
   encoder->popDebugGroup();
+  if (keep_open_encoder_out && !standalone) {
+    *keep_open_encoder_out = encoder;
+    return;
+  }
   EdramHazardUpdate(encoder);
   RenderTargetHazardUpdate(encoder);
   encoder->endEncoding();
@@ -4202,9 +4210,25 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                    written_length)) {
         copy_succeeded = true;
       } else {
+        // Keep the dump encoder open so the resolve copy below encodes into
+        // it (one compute encoder per resolve instead of two); every path
+        // from here must run close_dump_encoder, which performs the dump's
+        // deferred fence updates and ends the encoder if the resolve dispatch
+        // did not adopt it.
+        MTL::ComputeCommandEncoder* dump_encoder = nullptr;
         DumpRenderTargets(dump_base, dump_row_length_used, dump_rows,
                           dump_pitch, command_buffer,
-                          ResolveDumpEncoderLabel(direct_host_rt_candidate));
+                          ResolveDumpEncoderLabel(direct_host_rt_candidate),
+                          command_buffer ? &dump_encoder : nullptr);
+        auto close_dump_encoder = [&]() {
+          if (!dump_encoder) {
+            return;
+          }
+          EdramHazardUpdate(dump_encoder);
+          RenderTargetHazardUpdate(dump_encoder);
+          dump_encoder->endEncoding();
+          dump_encoder = nullptr;
+        };
 
         uint32_t dest_base = resolve_info.copy_dest_base;
         uint32_t dest_local_start =
@@ -4241,6 +4265,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                 "destination for 0x{:08X} len {}",
                 resolve_info.copy_dest_extent_start,
                 resolve_info.copy_dest_extent_length);
+            close_dump_encoder();
             return false;
           }
 
@@ -4258,11 +4283,24 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
               }
               standalone = (cmd != nullptr);
             }
+            bool adopted_dump_encoder = false;
             if (cmd) {
-              EndSharedMemoryUploadBlitEncoderForCommandBuffer(
-                  command_processor_, cmd);
-              MTL::ComputeCommandEncoder* encoder =
-                  cmd->computeCommandEncoder();
+              MTL::ComputeCommandEncoder* encoder = nullptr;
+              if (dump_encoder) {
+                // Same command buffer (the keep-open path only engages when
+                // the caller supplied it): continue in the dump's encoder.
+                // The barrier orders the dump's EDRAM writes before this
+                // dispatch's EDRAM reads, replacing the cross-encoder fence
+                // edge; the dump's fence updates happen at the merged end.
+                encoder = dump_encoder;
+                dump_encoder = nullptr;
+                adopted_dump_encoder = true;
+                encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+              } else {
+                EndSharedMemoryUploadBlitEncoderForCommandBuffer(
+                    command_processor_, cmd);
+                encoder = cmd->computeCommandEncoder();
+              }
               if (!encoder) {
                 XELOGE(
                     "MetalRenderTargetCache::Resolve: failed to get compute "
@@ -4271,9 +4309,11 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                   cmd->release();
                 }
               } else {
-                SetEncoderLabel(
-                    encoder, ResolveCopyEncoderLabel(direct_host_rt_candidate));
-                EdramHazardWait(encoder);
+                if (!adopted_dump_encoder) {
+                  SetEncoderLabel(encoder, ResolveCopyEncoderLabel(
+                                               direct_host_rt_candidate));
+                  EdramHazardWait(encoder);
+                }
                 PushEncoderDebugGroup(
                     encoder,
                     fmt::format(
@@ -4322,6 +4362,11 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
 
                 encoder->popDebugGroup();
                 EdramHazardUpdate(encoder);
+                if (adopted_dump_encoder) {
+                  // The dump's deferred read-side update (it sampled host
+                  // render-target textures).
+                  RenderTargetHazardUpdate(encoder);
+                }
                 encoder->endEncoding();
                 if (standalone) {
                   command_processor_.CommitStandaloneAndWait(cmd);
@@ -4344,6 +4389,10 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
             }
           }
         }
+        // No-op when the resolve dispatch adopted the encoder; otherwise (no
+        // pipeline / zero groups / command-buffer or encoder failure) this
+        // performs the dump's deferred fence updates and ends it.
+        close_dump_encoder();
       }
 
       if (!copy_succeeded) {
