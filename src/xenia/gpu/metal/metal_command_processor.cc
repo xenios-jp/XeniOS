@@ -3798,22 +3798,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
-  if (use_helper_stage_pipeline) {
-    if (!pipeline_cache_->EnsureDxilTranslationReady(
-            vertex_translation,
-            use_tessellation_emulation ? "tessellation helper domain"
-                                       : "geometry helper vertex",
-            /*helper_stage_pipeline=*/true)) {
-      return false;
-    }
-    if (!pipeline_cache_->EnsureMetalTranslationReady(
-            pixel_translation, /*native_guest_allowed=*/false,
-            use_tessellation_emulation ? "tessellation helper pixel"
-                                       : "geometry helper pixel",
-            /*helper_stage_pipeline=*/true)) {
-      return false;
-    }
-  }
+  // Helper-stage (geometry/tessellation emulation) shader translation and
+  // MSC compilation run inside Create*PipelineContents on the pipeline
+  // creation threads (or inline in synchronous mode) - never on the draw
+  // thread, where a cold shader used to stall the frame for the full
+  // translate+compile time.
   if (use_native_msl_tessellation) {
     if (!pipeline_cache_->EnsureNativeMslTranslationReady(
             vertex_translation, "native tessellation domain")) {
@@ -3928,7 +3917,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             vertex_translation, pixel_translation, primitive_processing_result,
             attachment_formats, rendering_key);
     pipeline = tessellation_pipeline_state
-                   ? tessellation_pipeline_state->pipeline
+                   ? tessellation_pipeline_state->pipeline.load(
+                         std::memory_order_acquire)
                    : nullptr;
     if (!pipeline) {
       static bool native_tessellation_pipeline_failure_logged = false;
@@ -3947,16 +3937,23 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             vertex_translation, pixel_translation, primitive_processing_result,
             attachment_formats, rendering_key);
     pipeline = tessellation_pipeline_state
-                   ? tessellation_pipeline_state->pipeline
+                   ? tessellation_pipeline_state->pipeline.load(
+                         std::memory_order_acquire)
                    : nullptr;
     if (!pipeline) {
-      static bool tessellation_pipeline_failure_logged = false;
-      if (!tessellation_pipeline_failure_logged) {
-        tessellation_pipeline_failure_logged = true;
-        XELOGW(
-            "Metal: tessellation emulation pipeline creation failed; skipping "
-            "tessellation-emulated draws instead of submitting a null "
-            "pipeline");
+      // Still compiling in the background - skip the draw silently; only log
+      // genuine creation failures.
+      if (tessellation_pipeline_state &&
+          tessellation_pipeline_state->creation_failed.load(
+              std::memory_order_acquire)) {
+        static bool tessellation_pipeline_failure_logged = false;
+        if (!tessellation_pipeline_failure_logged) {
+          tessellation_pipeline_failure_logged = true;
+          XELOGW(
+              "Metal: tessellation emulation pipeline creation failed; "
+              "skipping tessellation-emulated draws instead of submitting a "
+              "null pipeline");
+        }
       }
       return pending_draw_pass_transfer_guard.Flush();
     }
@@ -3964,18 +3961,27 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     geometry_pipeline_state = pipeline_cache_->GetOrCreateGeometryPipelineState(
         vertex_translation, pixel_translation, geometry_shader_key,
         attachment_formats, rendering_key);
-    if (!geometry_pipeline_state || !geometry_pipeline_state->pipeline) {
-      static bool geometry_pipeline_failure_logged = false;
-      if (!geometry_pipeline_failure_logged) {
-        geometry_pipeline_failure_logged = true;
-        XELOGW(
-            "Metal: geometry emulation pipeline creation failed; skipping "
-            "geometry-emulated draws instead of aborting the backend draw "
-            "packet");
+    pipeline = geometry_pipeline_state
+                   ? geometry_pipeline_state->pipeline.load(
+                         std::memory_order_acquire)
+                   : nullptr;
+    if (!pipeline) {
+      // Still compiling in the background - skip the draw silently; only log
+      // genuine creation failures.
+      if (!geometry_pipeline_state ||
+          geometry_pipeline_state->creation_failed.load(
+              std::memory_order_acquire)) {
+        static bool geometry_pipeline_failure_logged = false;
+        if (!geometry_pipeline_failure_logged) {
+          geometry_pipeline_failure_logged = true;
+          XELOGW(
+              "Metal: geometry emulation pipeline creation failed; skipping "
+              "geometry-emulated draws instead of aborting the backend draw "
+              "packet");
+        }
       }
       return pending_draw_pass_transfer_guard.Flush();
     }
-    pipeline = geometry_pipeline_state->pipeline;
   } else {
     auto* pipeline_handle = pipeline_cache_->GetOrCreatePipelineState(
         vertex_translation, pixel_translation, attachment_formats,
@@ -6432,20 +6438,20 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
     scratch_offset = 0;
   }
 
-  MTL::BlitCommandEncoder* blit_encoder = command_buffer->blitCommandEncoder();
+  // Encode the copy into the shared upload blit encoder instead of creating
+  // a dedicated blit encoder per memexport draw; BeginRenderEncoderForDraw
+  // ends the shared encoder before the draw consumes the scratch buffer.
+  MTL::BlitCommandEncoder* blit_encoder = GetSharedMemoryUploadBlitEncoder();
   if (!blit_encoder) {
     if (direct_scratch_buffer) {
       direct_scratch_buffer->release();
     }
-    XELOGE("IssueDraw: failed to create blit encoder for index copy");
+    XELOGE("IssueDraw: failed to get blit encoder for index copy");
     return false;
   }
-  blit_encoder->setLabel(
-      NS::String::string("XeniaGuestDMAIndexCopy", NS::UTF8StringEncoding));
   if (!EncodeSharedMemoryBlitReadDependency(
           blit_encoder, static_cast<uint32_t>(source_copy_offset),
           static_cast<uint32_t>(copy_size))) {
-    blit_encoder->endEncoding();
     if (direct_scratch_buffer) {
       direct_scratch_buffer->release();
     }
@@ -6455,7 +6461,6 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
       shared_mem_buffer, static_cast<NS::UInteger>(source_copy_offset),
       scratch_buffer, static_cast<NS::UInteger>(scratch_offset),
       static_cast<NS::UInteger>(copy_size));
-  blit_encoder->endEncoding();
 
   if (direct_scratch_buffer) {
     retired_memexport_index_buffers_.push_back(

@@ -1275,12 +1275,23 @@ MetalPipelineCache::~MetalPipelineCache() {
   texture_binding_layout_map_.clear();
   texture_binding_layouts_.clear();
 
-  for (auto& pair : geometry_pipeline_cache_) {
-    if (pair.second.pipeline) {
-      pair.second.pipeline->release();
+  auto release_geometry_state = [](GeometryPipelineState* state) {
+    if (!state) {
+      return;
     }
+    auto* ps = state->pipeline.load(std::memory_order_relaxed);
+    if (ps) {
+      ps->release();
+    }
+  };
+  for (auto& pair : geometry_pipeline_cache_) {
+    release_geometry_state(pair.second.get());
   }
   geometry_pipeline_cache_.clear();
+  for (auto& state : geometry_pipeline_overflow_) {
+    release_geometry_state(state.get());
+  }
+  geometry_pipeline_overflow_.clear();
 
   for (auto& pair : native_mesh_pipeline_cache_) {
     if (pair.second.pipeline) {
@@ -1289,12 +1300,23 @@ MetalPipelineCache::~MetalPipelineCache() {
   }
   native_mesh_pipeline_cache_.clear();
 
-  for (auto& pair : tessellation_pipeline_cache_) {
-    if (pair.second.pipeline) {
-      pair.second.pipeline->release();
+  auto release_tessellation_state = [](TessellationPipelineState* state) {
+    if (!state) {
+      return;
     }
+    auto* ps = state->pipeline.load(std::memory_order_relaxed);
+    if (ps) {
+      ps->release();
+    }
+  };
+  for (auto& pair : tessellation_pipeline_cache_) {
+    release_tessellation_state(pair.second.get());
   }
   tessellation_pipeline_cache_.clear();
+  for (auto& state : tessellation_pipeline_overflow_) {
+    release_tessellation_state(state.get());
+  }
+  tessellation_pipeline_overflow_.clear();
 
   generated_stages_.reset();
 
@@ -1338,6 +1360,14 @@ bool MetalPipelineCache::InitializeShaderTranslation(
       gamma_render_target_as_unorm8, msaa_2x_supported, draw_resolution_scale_x,
       draw_resolution_scale_y,
       false);  // force_emit_source_map
+  // Publish the parameters for per-thread translators; the generation bump
+  // (release) makes threads holding stale translators rebuild them.
+  shader_translator_params_.gamma_render_target_as_unorm8 =
+      gamma_render_target_as_unorm8;
+  shader_translator_params_.msaa_2x_supported = msaa_2x_supported;
+  shader_translator_params_.draw_resolution_scale_x = draw_resolution_scale_x;
+  shader_translator_params_.draw_resolution_scale_y = draw_resolution_scale_y;
+  shader_translator_generation_.fetch_add(1, std::memory_order_release);
 
   dxbc_to_dxil_converter_ = std::make_unique<DxbcToDxilConverter>();
   if (!dxbc_to_dxil_converter_->Initialize()) {
@@ -2133,6 +2163,9 @@ void MetalPipelineCache::SetupShaderBindingLayoutUserUIDs(MetalShader& shader) {
 // ---------------------------------------------------------------------------
 
 bool MetalPipelineCache::EnsureDepthOnlyPixelShader() {
+  // Creation threads (helper pipelines) and the draw thread can request the
+  // fallback shader concurrently.
+  std::lock_guard<std::mutex> lock(depth_only_pixel_mutex_);
   if (depth_only_pixel_library_) {
     return true;
   }
@@ -2144,7 +2177,7 @@ bool MetalPipelineCache::EnsureDepthOnlyPixelShader() {
   }
 
   std::vector<uint8_t> dxbc_data =
-      shader_translator_->CreateDepthOnlyPixelShader();
+      GetThreadShaderTranslator().CreateDepthOnlyPixelShader();
   if (dxbc_data.empty()) {
     XELOGE("Depth-only PS: failed to create DXBC");
     return false;
@@ -2532,7 +2565,7 @@ bool MetalPipelineCache::EnsureDxbcTranslationReadyLocked(
     return true;
   }
 
-  if (!shader_translator_->TranslateAnalyzedShader(*translation)) {
+  if (!GetThreadShaderTranslator().TranslateAnalyzedShader(*translation)) {
     XELOGE("Failed to translate {} shader {:016X} to DXBC",
            stage_name ? stage_name : "unknown",
            translation->shader().ucode_data_hash());
@@ -2540,6 +2573,36 @@ bool MetalPipelineCache::EnsureDxbcTranslationReadyLocked(
   }
   QueueStoredShader(static_cast<MetalShader&>(translation->shader()));
   return true;
+}
+
+DxbcShaderTranslator& MetalPipelineCache::GetThreadShaderTranslator() {
+  struct TlsTranslator {
+    MetalPipelineCache* owner = nullptr;
+    uint64_t generation = 0;
+    std::unique_ptr<DxbcShaderTranslator> translator;
+  };
+  static thread_local TlsTranslator tls;
+  const uint64_t generation =
+      shader_translator_generation_.load(std::memory_order_acquire);
+  if (tls.owner != this || tls.generation != generation || !tls.translator) {
+    tls.translator = std::make_unique<DxbcShaderTranslator>(
+        ui::GraphicsProvider::GpuVendorID::kApple, true,
+        /*edram_rov_used=*/false,
+        shader_translator_params_.gamma_render_target_as_unorm8,
+        shader_translator_params_.msaa_2x_supported,
+        shader_translator_params_.draw_resolution_scale_x,
+        shader_translator_params_.draw_resolution_scale_y,
+        /*force_emit_source_map=*/false);
+    tls.owner = this;
+    tls.generation = generation;
+  }
+  return *tls.translator;
+}
+
+std::mutex& MetalPipelineCache::GetShaderTranslationStripe(
+    const Shader& shader) {
+  const size_t hash = std::hash<const void*>()(&shader);
+  return shader_translation_stripes_[hash % shader_translation_stripes_.size()];
 }
 
 bool MetalPipelineCache::IsDxbcToDxilConverterAvailable() const {
@@ -2578,7 +2641,14 @@ bool MetalPipelineCache::EnsureDxilTranslationReady(
   }
   Shader& shader = translation->shader();
   if (!shader.is_ucode_analyzed()) {
-    shader.AnalyzeUcode(ucode_disasm_buffer());
+    // Analysis mutates the shader; serialize per shader and use a per-thread
+    // disassembly scratch buffer so concurrent creation threads analyzing
+    // different shaders do not race.
+    static thread_local StringBuffer tls_ucode_disasm_buffer;
+    std::lock_guard<std::mutex> analyze_lock(GetShaderTranslationStripe(shader));
+    if (!shader.is_ucode_analyzed()) {
+      shader.AnalyzeUcode(tls_ucode_disasm_buffer);
+    }
   }
   if (helper_stage_pipeline && NativeGuestMslRenderEnabled() &&
       !cvars::metal_native_msl_helper_msc) {
@@ -2623,7 +2693,10 @@ bool MetalPipelineCache::EnsureDxilTranslationReady(
   if (translation->HasDxilData()) {
     return true;
   }
-  std::lock_guard<std::mutex> lock(shader_translation_mutex_);
+  // Striped per-shader lock: the same shader is never translated twice in
+  // parallel, but different shaders translate concurrently across the
+  // creation threads (each with its own translator and dxilconv instance).
+  std::lock_guard<std::mutex> lock(GetShaderTranslationStripe(shader));
   if (translation->HasDxilData()) {
     return true;
   }
@@ -2890,6 +2963,15 @@ bool MetalPipelineCache::EnsureMetalTranslationReady(
   if (!EnsureDxilTranslationReady(translation, stage_name,
                                   helper_stage_pipeline)) {
     return false;
+  }
+
+  // Serialize the MSC compile + install per shader: the same translation can
+  // be requested concurrently from several creation threads (and the draw
+  // thread) through different pipelines.
+  std::lock_guard<std::mutex> install_lock(
+      GetShaderTranslationStripe(translation->shader()));
+  if (translation->is_valid()) {
+    return true;
   }
 
   MetalShaderStage stage;
@@ -3293,6 +3375,16 @@ void MetalPipelineCache::CreationThread(size_t thread_index) {
       --creation_threads_busy_;
       continue;
     }
+    if (request.type == PipelineCreationRequest::Type::kGeometryPipeline) {
+      CreateGeometryPipelineContents(*request.geometry_state);
+      --creation_threads_busy_;
+      continue;
+    }
+    if (request.type == PipelineCreationRequest::Type::kTessellationPipeline) {
+      CreateTessellationPipelineContents(*request.tessellation_state);
+      --creation_threads_busy_;
+      continue;
+    }
 
     // Create the pipeline.
     PipelineHandle* handle = request.handle;
@@ -3334,6 +3426,19 @@ bool MetalPipelineCache::IsCreatingPipelines() {
   }
   std::lock_guard<std::mutex> lock(creation_request_lock_);
   return !creation_queue_.empty() || creation_threads_busy_ != 0;
+}
+
+bool MetalPipelineCache::AsyncHelperPipelineCreationEnabled() const {
+  return cvars::async_shader_compilation && !creation_threads_.empty();
+}
+
+void MetalPipelineCache::EnqueueHelperPipelineCreation(
+    PipelineCreationRequest request) {
+  {
+    std::lock_guard<std::mutex> lock(creation_request_lock_);
+    creation_queue_.push(request);
+  }
+  creation_request_cond_.notify_one();
 }
 
 MetalStageCompileCacheStats MetalPipelineCache::GetAndResetStageCompileStats() {
@@ -3396,23 +3501,10 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
     XELOGE("No valid vertex shader translation for geometry pipeline");
     return nullptr;
   }
-  bool use_fallback_pixel_shader = (pixel_translation == nullptr);
-  MTL::Library* pixel_library =
-      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_library();
-  const char* pixel_function = use_fallback_pixel_shader
-                                   ? nullptr
-                                   : pixel_translation->function_name().c_str();
-  if (use_fallback_pixel_shader) {
-    if (!EnsureDepthOnlyPixelShader()) {
-      XELOGE("Geometry pipeline: failed to create depth-only PS");
-      return nullptr;
-    }
-    pixel_library = depth_only_pixel_library_;
-    pixel_function = depth_only_pixel_function_name_.c_str();
-  } else if (!pixel_library) {
-    XELOGE("No valid pixel shader translation for geometry pipeline");
-    return nullptr;
-  }
+  // Pixel library / fallback shader resolution happens in
+  // CreateGeometryPipelineContents so the (possibly untranslated) shader
+  // never needs to be compiled on the draw thread.
+  const bool use_fallback_pixel_shader = (pixel_translation == nullptr);
 
   uint32_t sample_count = attachment_formats.sample_count;
   MTL::PixelFormat color_formats[4];
@@ -3436,8 +3528,11 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
   } key_data = {};
 
   key_data.vs = vertex_translation;
+  // The fallback depth-only pixel shader is a singleton; nullptr is a
+  // sufficient and stable key for it (a real pixel translation is never
+  // null here).
   key_data.ps = use_fallback_pixel_shader
-                    ? static_cast<const void*>(pixel_library)
+                    ? nullptr
                     : static_cast<const void*>(pixel_translation);
   key_data.geometry_key = geometry_shader_key.key;
   key_data.sample_count = sample_count;
@@ -3460,32 +3555,121 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
                                        geometry_shader_key, attachment_formats,
                                        rendering_key);
 
+  bool hash_collision = false;
   auto it = geometry_pipeline_cache_.find(key);
   if (it != geometry_pipeline_cache_.end()) {
-    if (std::memcmp(&it->second.description, &stored_description_geom,
+    if (std::memcmp(&it->second->description, &stored_description_geom,
                     sizeof(stored_description_geom)) == 0) {
-      return &it->second;
+      return it->second.get();
     }
+    hash_collision = true;
     XELOGW(
         "Geometry pipeline cache: XXH3 hash collision ({:016X}); recreating",
         key);
   }
 
+  auto state_holder = std::make_unique<GeometryPipelineState>();
+  GeometryPipelineState* raw_state = state_holder.get();
+  raw_state->description = stored_description_geom;
+  raw_state->pending_vertex_translation = vertex_translation;
+  raw_state->pending_pixel_translation = pixel_translation;
+  raw_state->pending_geometry_shader_key = geometry_shader_key;
+  raw_state->pending_formats = attachment_formats;
+  raw_state->pending_rendering_key = rendering_key;
+  if (hash_collision) {
+    // The map slot belongs to a different description; keep the colliding
+    // state alive outside the map so returned pointers stay valid.
+    geometry_pipeline_overflow_.push_back(std::move(state_holder));
+  } else {
+    geometry_pipeline_cache_.emplace(key, std::move(state_holder));
+  }
+  if (AsyncHelperPipelineCreationEnabled()) {
+    PipelineCreationRequest request = {};
+    request.type = PipelineCreationRequest::Type::kGeometryPipeline;
+    request.geometry_state = raw_state;
+    // Needed by draws in the current frame - prioritize over prewarm work.
+    request.priority = 255;
+    EnqueueHelperPipelineCreation(request);
+  } else {
+    CreateGeometryPipelineContents(*raw_state);
+  }
+  return raw_state;
+}
+
+bool MetalPipelineCache::CreateGeometryPipelineContents(
+    GeometryPipelineState& state) {
+  MetalShader::MetalTranslation* vertex_translation =
+      state.pending_vertex_translation;
+  MetalShader::MetalTranslation* pixel_translation =
+      state.pending_pixel_translation;
+  const GeometryShaderKey geometry_shader_key =
+      state.pending_geometry_shader_key;
+  const PipelineAttachmentFormats& attachment_formats = state.pending_formats;
+  auto fail = [&state]() {
+    state.creation_failed.store(true, std::memory_order_release);
+    return false;
+  };
+
+  // Serialize helper-stage generation across creation threads;
+  // GeneratedStageCache has no internal locking.
+  std::lock_guard<std::mutex> helper_lock(helper_pipeline_mutex_);
+  if (state.pipeline.load(std::memory_order_acquire)) {
+    return true;
+  }
+
+  if (!EnsureDxilTranslationReady(vertex_translation, "geometry helper vertex",
+                                  /*helper_stage_pipeline=*/true)) {
+    return fail();
+  }
+  if (pixel_translation &&
+      !EnsureMetalTranslationReady(pixel_translation,
+                                   /*native_guest_allowed=*/false,
+                                   "geometry helper pixel",
+                                   /*helper_stage_pipeline=*/true)) {
+    return fail();
+  }
+
+  const bool use_fallback_pixel_shader = (pixel_translation == nullptr);
+  MTL::Library* pixel_library =
+      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_library();
+  const char* pixel_function = use_fallback_pixel_shader
+                                   ? nullptr
+                                   : pixel_translation->function_name().c_str();
+  if (use_fallback_pixel_shader) {
+    if (!EnsureDepthOnlyPixelShader()) {
+      XELOGE("Geometry pipeline: failed to create depth-only PS");
+      return fail();
+    }
+    pixel_library = depth_only_pixel_library_;
+    pixel_function = depth_only_pixel_function_name_.c_str();
+  } else if (!pixel_library) {
+    XELOGE("No valid pixel shader translation for geometry pipeline");
+    return fail();
+  }
+
+  uint32_t sample_count = attachment_formats.sample_count;
+  MTL::PixelFormat color_formats[4];
+  for (uint32_t i = 0; i < 4; ++i) {
+    color_formats[i] = attachment_formats.color_formats[i];
+  }
+  MTL::PixelFormat depth_format = attachment_formats.depth_format;
+  MTL::PixelFormat stencil_format = attachment_formats.stencil_format;
+
   if (!generated_stages_) {
     XELOGE("Geometry pipeline: generated stage cache is not initialized");
-    return nullptr;
+    return fail();
   }
 
   auto* vertex_stage = generated_stages_->GetGeometryVertexStage(
       vertex_translation, geometry_shader_key);
   if (!vertex_stage || !vertex_stage->library ||
       !vertex_stage->stage_in_library) {
-    return nullptr;
+    return fail();
   }
   auto* geometry_stage =
       generated_stages_->GetGeometryShaderStage(geometry_shader_key);
   if (!geometry_stage || !geometry_stage->library) {
-    return nullptr;
+    return fail();
   }
 
   MTL::MeshRenderPipelineDescriptor* desc =
@@ -3500,15 +3684,16 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
   desc->setAlphaToCoverageEnabled(false);
 
   ApplyBlendStateToDescriptor(desc->colorAttachments(),
-                              key_data.normalized_color_mask,
-                              key_data.blendcontrol);
+                              state.pending_rendering_key.normalized_color_mask,
+                              state.pending_rendering_key.blendcontrol);
   if (!vertex_stage->vertex_output_size_in_bytes ||
       !geometry_stage->max_input_primitives_per_mesh_threadgroup) {
     XELOGE(
         "Geometry pipeline: invalid reflection (vs_output={}, gs_max_input={})",
         vertex_stage->vertex_output_size_in_bytes,
         geometry_stage->max_input_primitives_per_mesh_threadgroup);
-    return nullptr;
+    desc->release();
+    return fail();
   }
 
   IRGeometryEmulationPipelineDescriptor ir_desc = {};
@@ -3545,26 +3730,23 @@ MetalPipelineCache::GetOrCreateGeometryPipelineState(
         pixel_function ? pixel_function : "<null>", uint32_t(depth_format),
         uint32_t(stencil_format), sample_count);
     LogMetalErrorDetails("Geometry pipeline error", error);
-    return nullptr;
+    return fail();
   }
 
-  GeometryPipelineState state;
-  state.pipeline = pipeline;
-  state.description = stored_description_geom;
   state.gs_vertex_size_in_bytes = ir_desc.pipelineConfig.gsVertexSizeInBytes;
   state.gs_max_input_primitives_per_mesh_threadgroup =
       ir_desc.pipelineConfig.gsMaxInputPrimitivesPerMeshThreadgroup;
 
-  auto [inserted_it, inserted] =
-      geometry_pipeline_cache_.emplace(key, std::move(state));
   QueueStoredShader(static_cast<MetalShader&>(vertex_translation->shader()));
   if (pixel_translation) {
     QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
   }
-  QueueStoredPipeline(
-      stored_description_geom,
-      XXH3_64bits(&stored_description_geom, sizeof(stored_description_geom)));
-  return &inserted_it->second;
+  QueueStoredPipeline(state.description,
+                      XXH3_64bits(&state.description, sizeof(state.description)));
+  // Publish last: readers acquire-load the pipeline and may then read the
+  // plain result fields above.
+  state.pipeline.store(pipeline, std::memory_order_release);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3764,23 +3946,10 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
     XELOGE("No valid domain shader translation for tessellation pipeline");
     return nullptr;
   }
-  bool use_fallback_pixel_shader = (pixel_translation == nullptr);
-  MTL::Library* pixel_library =
-      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_library();
-  const char* pixel_function = use_fallback_pixel_shader
-                                   ? nullptr
-                                   : pixel_translation->function_name().c_str();
-  if (use_fallback_pixel_shader) {
-    if (!EnsureDepthOnlyPixelShader()) {
-      XELOGE("Tessellation pipeline: failed to create depth-only PS");
-      return nullptr;
-    }
-    pixel_library = depth_only_pixel_library_;
-    pixel_function = depth_only_pixel_function_name_.c_str();
-  } else if (!pixel_library) {
-    XELOGE("No valid pixel shader translation for tessellation pipeline");
-    return nullptr;
-  }
+  // Pixel library / fallback shader resolution happens in
+  // CreateTessellationPipelineContents so the (possibly untranslated) shader
+  // never needs to be compiled on the draw thread.
+  const bool use_fallback_pixel_shader = (pixel_translation == nullptr);
 
   uint32_t sample_count = attachment_formats.sample_count;
   MTL::PixelFormat color_formats[4];
@@ -3806,8 +3975,9 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
   } key_data = {};
 
   key_data.ds = domain_translation;
+  // nullptr keys the singleton fallback depth-only pixel shader.
   key_data.ps = use_fallback_pixel_shader
-                    ? static_cast<const void*>(pixel_library)
+                    ? nullptr
                     : static_cast<const void*>(pixel_translation);
   key_data.host_vs_type =
       uint32_t(primitive_processing_result.host_vertex_shader_type);
@@ -3837,40 +4007,132 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
           domain_translation, pixel_translation, primitive_processing_result,
           tessellation_mode, attachment_formats, rendering_key);
 
+  bool hash_collision = false;
   auto it = tessellation_pipeline_cache_.find(key);
   if (it != tessellation_pipeline_cache_.end()) {
-    if (std::memcmp(&it->second.description, &stored_description_tess,
+    if (std::memcmp(&it->second->description, &stored_description_tess,
                     sizeof(stored_description_tess)) == 0) {
-      return &it->second;
+      return it->second.get();
     }
+    hash_collision = true;
     XELOGW(
         "Tessellation pipeline cache: XXH3 hash collision ({:016X}); "
         "recreating",
         key);
   }
 
+  auto state_holder = std::make_unique<TessellationPipelineState>();
+  TessellationPipelineState* raw_state = state_holder.get();
+  raw_state->description = stored_description_tess;
+  raw_state->pending_domain_translation = domain_translation;
+  raw_state->pending_pixel_translation = pixel_translation;
+  raw_state->pending_processing_result = primitive_processing_result;
+  raw_state->pending_formats = attachment_formats;
+  raw_state->pending_rendering_key = rendering_key;
+  if (hash_collision) {
+    // The map slot belongs to a different description; keep the colliding
+    // state alive outside the map so returned pointers stay valid.
+    tessellation_pipeline_overflow_.push_back(std::move(state_holder));
+  } else {
+    tessellation_pipeline_cache_.emplace(key, std::move(state_holder));
+  }
+  if (AsyncHelperPipelineCreationEnabled()) {
+    PipelineCreationRequest request = {};
+    request.type = PipelineCreationRequest::Type::kTessellationPipeline;
+    request.tessellation_state = raw_state;
+    // Needed by draws in the current frame - prioritize over prewarm work.
+    request.priority = 255;
+    EnqueueHelperPipelineCreation(request);
+  } else {
+    CreateTessellationPipelineContents(*raw_state);
+  }
+  return raw_state;
+}
+
+bool MetalPipelineCache::CreateTessellationPipelineContents(
+    TessellationPipelineState& state) {
+  MetalShader::MetalTranslation* domain_translation =
+      state.pending_domain_translation;
+  MetalShader::MetalTranslation* pixel_translation =
+      state.pending_pixel_translation;
+  const PrimitiveProcessor::ProcessingResult& primitive_processing_result =
+      state.pending_processing_result;
+  const PipelineAttachmentFormats& attachment_formats = state.pending_formats;
+  const xenos::TessellationMode tessellation_mode =
+      primitive_processing_result.tessellation_mode;
+  auto fail = [&state]() {
+    state.creation_failed.store(true, std::memory_order_release);
+    return false;
+  };
+
+  // Serialize helper-stage generation across creation threads;
+  // GeneratedStageCache has no internal locking.
+  std::lock_guard<std::mutex> helper_lock(helper_pipeline_mutex_);
+  if (state.pipeline.load(std::memory_order_acquire)) {
+    return true;
+  }
+
+  if (!EnsureDxilTranslationReady(domain_translation,
+                                  "tessellation helper domain",
+                                  /*helper_stage_pipeline=*/true)) {
+    return fail();
+  }
+  if (pixel_translation &&
+      !EnsureMetalTranslationReady(pixel_translation,
+                                   /*native_guest_allowed=*/false,
+                                   "tessellation helper pixel",
+                                   /*helper_stage_pipeline=*/true)) {
+    return fail();
+  }
+
+  const bool use_fallback_pixel_shader = (pixel_translation == nullptr);
+  MTL::Library* pixel_library =
+      use_fallback_pixel_shader ? nullptr : pixel_translation->metal_library();
+  const char* pixel_function = use_fallback_pixel_shader
+                                   ? nullptr
+                                   : pixel_translation->function_name().c_str();
+  if (use_fallback_pixel_shader) {
+    if (!EnsureDepthOnlyPixelShader()) {
+      XELOGE("Tessellation pipeline: failed to create depth-only PS");
+      return fail();
+    }
+    pixel_library = depth_only_pixel_library_;
+    pixel_function = depth_only_pixel_function_name_.c_str();
+  } else if (!pixel_library) {
+    XELOGE("No valid pixel shader translation for tessellation pipeline");
+    return fail();
+  }
+
+  uint32_t sample_count = attachment_formats.sample_count;
+  MTL::PixelFormat color_formats[4];
+  for (uint32_t i = 0; i < 4; ++i) {
+    color_formats[i] = attachment_formats.color_formats[i];
+  }
+  MTL::PixelFormat depth_format = attachment_formats.depth_format;
+  MTL::PixelFormat stencil_format = attachment_formats.stencil_format;
+
   if (!generated_stages_) {
     XELOGE("Tessellation pipeline: generated stage cache is not initialized");
-    return nullptr;
+    return fail();
   }
 
   auto* vertex_stage = generated_stages_->GetTessellationVertexStage(
       domain_translation, tessellation_mode);
   if (!vertex_stage || !vertex_stage->library ||
       !vertex_stage->stage_in_library) {
-    return nullptr;
+    return fail();
   }
 
   auto* hull_stage = generated_stages_->GetTessellationHullStage(
       primitive_processing_result, tessellation_mode);
   if (!hull_stage || !hull_stage->library) {
-    return nullptr;
+    return fail();
   }
 
   auto* domain_stage =
       generated_stages_->GetTessellationDomainStage(domain_translation);
   if (!domain_stage || !domain_stage->library) {
-    return nullptr;
+    return fail();
   }
 
   IRRuntimeTessellatorOutputPrimitive output_primitive =
@@ -3891,7 +4153,7 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
     default:
       XELOGE("Tessellation pipeline: unsupported tessellator output {}",
              hull_stage->reflection.hs_tessellator_output_primitive);
-      return nullptr;
+      return fail();
   }
 
   IRRuntimePrimitiveType geometry_primitive = IRRuntimePrimitiveTypeTriangle;
@@ -3923,7 +4185,7 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
           hull_stage->reflection.hs_output_control_point_count,
           domain_stage->reflection.ds_input_control_point_count)) {
     XELOGE("Tessellation pipeline: validation failed for HS/DS pairing");
-    return nullptr;
+    return fail();
   }
 
   MTL::MeshRenderPipelineDescriptor* desc =
@@ -3937,8 +4199,8 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
   desc->setAlphaToCoverageEnabled(false);
 
   ApplyBlendStateToDescriptor(desc->colorAttachments(),
-                              key_data.normalized_color_mask,
-                              key_data.blendcontrol);
+                              state.pending_rendering_key.normalized_color_mask,
+                              state.pending_rendering_key.blendcontrol);
   IRGeometryTessellationEmulationPipelineDescriptor ir_desc = {};
   ir_desc.stageInLibrary = vertex_stage->stage_in_library;
   ir_desc.vertexLibrary = vertex_stage->library;
@@ -3981,7 +4243,7 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
         ir_desc.pipelineConfig.hsInputControlPointCount,
         ir_desc.pipelineConfig.hsMaxObjectThreadsPerThreadgroup);
     desc->release();
-    return nullptr;
+    return fail();
   }
 
   NS::Error* error = nullptr;
@@ -3997,26 +4259,24 @@ MetalPipelineCache::GetOrCreateTessellationPipelineState(
     XELOGE(
         "Failed to create tessellation pipeline state: {}",
         error ? error->localizedDescription()->utf8String() : "unknown error");
-    return nullptr;
+    return fail();
   }
 
-  TessellationPipelineState state;
-  state.pipeline = pipeline;
-  state.description = stored_description_tess;
   state.config = ir_desc.pipelineConfig;
   state.primitive = geometry_primitive;
   state.control_point_count = ir_desc.pipelineConfig.hsInputControlPointCount;
+  state.native_msl = false;
 
-  auto [inserted_it, inserted] =
-      tessellation_pipeline_cache_.emplace(key, std::move(state));
   QueueStoredShader(static_cast<MetalShader&>(domain_translation->shader()));
   if (pixel_translation) {
     QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
   }
-  QueueStoredPipeline(
-      stored_description_tess,
-      XXH3_64bits(&stored_description_tess, sizeof(stored_description_tess)));
-  return &inserted_it->second;
+  QueueStoredPipeline(state.description,
+                      XXH3_64bits(&state.description, sizeof(state.description)));
+  // Publish last: readers acquire-load the pipeline and may then read the
+  // plain result fields above.
+  state.pipeline.store(pipeline, std::memory_order_release);
+  return true;
 }
 
 MetalPipelineCache::TessellationPipelineState*
@@ -4048,12 +4308,14 @@ MetalPipelineCache::GetOrCreateNativeMslTessellationPipelineState(
   description.auxiliary2 =
       uint32_t(primitive_processing_result.host_primitive_type);
   uint64_t key = XXH3_64bits(&description, sizeof(description));
+  bool hash_collision = false;
   auto it = tessellation_pipeline_cache_.find(key);
   if (it != tessellation_pipeline_cache_.end()) {
-    if (std::memcmp(&it->second.description, &description,
+    if (std::memcmp(&it->second->description, &description,
                     sizeof(description)) == 0) {
-      return &it->second;
+      return it->second.get();
     }
+    hash_collision = true;
     XELOGW(
         "Native tessellation pipeline cache: XXH3 hash collision ({:016X}); "
         "recreating",
@@ -4182,20 +4444,23 @@ MetalPipelineCache::GetOrCreateNativeMslTessellationPipelineState(
     return nullptr;
   }
 
-  TessellationPipelineState state;
-  state.pipeline = pipeline;
-  state.description = description;
-  state.native_msl = true;
-  state.control_point_count = control_point_count;
-
-  auto [inserted_it, inserted] =
-      tessellation_pipeline_cache_.emplace(key, std::move(state));
+  auto state_holder = std::make_unique<TessellationPipelineState>();
+  TessellationPipelineState* raw_state = state_holder.get();
+  raw_state->description = description;
+  raw_state->native_msl = true;
+  raw_state->control_point_count = control_point_count;
+  raw_state->pipeline.store(pipeline, std::memory_order_release);
+  if (hash_collision) {
+    tessellation_pipeline_overflow_.push_back(std::move(state_holder));
+  } else {
+    tessellation_pipeline_cache_.emplace(key, std::move(state_holder));
+  }
   QueueStoredShader(static_cast<MetalShader&>(domain_translation->shader()));
   if (pixel_translation) {
     QueueStoredShader(static_cast<MetalShader&>(pixel_translation->shader()));
   }
   QueueStoredPipeline(description, key);
-  return &inserted_it->second;
+  return raw_state;
 }
 
 }  // namespace metal

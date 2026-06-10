@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_METAL_METAL_PIPELINE_CACHE_H_
 #define XENIA_GPU_METAL_METAL_PIPELINE_CACHE_H_
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -216,11 +217,24 @@ class MetalPipelineCache {
   MetalStageCompileCacheStats GetAndResetStageCompileStats();
   MetalPipelineRuntimeStats GetAndResetRuntimeStats();
 
+  // Helper-pipeline states are created asynchronously on the creation
+  // threads: the draw thread inserts a placeholder with the inputs captured
+  // in the pending_* fields and skips draws until the creation thread
+  // publishes the pipeline. All non-atomic result fields are written before
+  // the release store to pipeline and must only be read after an acquire
+  // load observes it non-null.
   struct GeometryPipelineState {
-    MTL::RenderPipelineState* pipeline = nullptr;
+    std::atomic<MTL::RenderPipelineState*> pipeline{nullptr};
+    std::atomic<bool> creation_failed{false};
     MetalPipelineDescription description = {};
     uint32_t gs_vertex_size_in_bytes = 0;
     uint32_t gs_max_input_primitives_per_mesh_threadgroup = 0;
+    // Inputs captured for deferred creation.
+    MetalShader::MetalTranslation* pending_vertex_translation = nullptr;
+    MetalShader::MetalTranslation* pending_pixel_translation = nullptr;
+    GeometryShaderKey pending_geometry_shader_key = {};
+    PipelineAttachmentFormats pending_formats = {};
+    PipelineRenderingKey pending_rendering_key = {};
   };
 
   enum class NativeMeshPipelineType : uint32_t {
@@ -236,12 +250,20 @@ class MetalPipelineCache {
   };
 
   struct TessellationPipelineState {
-    MTL::RenderPipelineState* pipeline = nullptr;
+    std::atomic<MTL::RenderPipelineState*> pipeline{nullptr};
+    std::atomic<bool> creation_failed{false};
     MetalPipelineDescription description = {};
     IRRuntimeTessellationPipelineConfig config = {};
     IRRuntimePrimitiveType primitive = IRRuntimePrimitiveTypeTriangle;
     bool native_msl = false;
     uint32_t control_point_count = 0;
+    // Inputs captured for deferred creation (MSC emulation path only; the
+    // native MSL path creates synchronously).
+    MetalShader::MetalTranslation* pending_domain_translation = nullptr;
+    MetalShader::MetalTranslation* pending_pixel_translation = nullptr;
+    PrimitiveProcessor::ProcessingResult pending_processing_result = {};
+    PipelineAttachmentFormats pending_formats = {};
+    PipelineRenderingKey pending_rendering_key = {};
   };
 
   GeometryPipelineState* GetOrCreateGeometryPipelineState(
@@ -370,12 +392,35 @@ class MetalPipelineCache {
   MTL::Device* device_;
   const RegisterFile& register_file_;
 
-  // MSC shader translation components.
+  // MSC shader translation components. shader_translator_ remains for
+  // draw-thread-only const modification queries; actual translation work
+  // uses per-thread translators via GetThreadShaderTranslator().
   std::unique_ptr<DxbcShaderTranslator> shader_translator_;
   std::unique_ptr<DxbcToDxilConverter> dxbc_to_dxil_converter_;
   std::unique_ptr<MetalShaderConverter> metal_shader_converter_;
   std::unique_ptr<MslShaderTranslator> native_msl_translator_;
+  // Serializes native MSL translation (single shared native translator).
   std::mutex shader_translation_mutex_;
+  // Per-shader striped locks for the MSC DXBC/DXIL translation path so
+  // different shaders can translate concurrently on the creation threads
+  // while the same shader is never translated or analyzed twice in parallel.
+  std::array<std::mutex, 16> shader_translation_stripes_;
+  // Construction parameters for per-thread translators; written by
+  // InitializeShaderTranslation before the generation counter is bumped.
+  struct ShaderTranslatorParams {
+    bool gamma_render_target_as_unorm8 = false;
+    bool msaa_2x_supported = false;
+    uint32_t draw_resolution_scale_x = 1;
+    uint32_t draw_resolution_scale_y = 1;
+  };
+  ShaderTranslatorParams shader_translator_params_;
+  std::atomic<uint64_t> shader_translator_generation_{0};
+  // Serializes helper-stage generation (GeneratedStageCache has no internal
+  // locking) and helper pipeline creation across creation threads.
+  std::mutex helper_pipeline_mutex_;
+  // Guards lazy creation of the depth-only fallback pixel shader, which can
+  // be requested concurrently from creation threads and the draw thread.
+  std::mutex depth_only_pixel_mutex_;
   std::mutex helper_dxil_unavailable_log_mutex_;
   std::unordered_set<uint64_t> helper_dxil_unavailable_log_keys_;
 
@@ -436,11 +481,18 @@ class MetalPipelineCache {
   // description already in pipeline_cache_; owned here because the map can
   // only hold one entry per key.
   std::vector<std::unique_ptr<PipelineHandle>> pipeline_collision_overflow_;
-  std::unordered_map<uint64_t, GeometryPipelineState> geometry_pipeline_cache_;
+  // unique_ptr values: creation threads write through raw pointers into
+  // these states, so their addresses must be stable across rehashes.
+  std::unordered_map<uint64_t, std::unique_ptr<GeometryPipelineState>>
+      geometry_pipeline_cache_;
+  std::vector<std::unique_ptr<GeometryPipelineState>>
+      geometry_pipeline_overflow_;
   std::unordered_map<uint64_t, NativeMeshPipelineState>
       native_mesh_pipeline_cache_;
-  std::unordered_map<uint64_t, TessellationPipelineState>
+  std::unordered_map<uint64_t, std::unique_ptr<TessellationPipelineState>>
       tessellation_pipeline_cache_;
+  std::vector<std::unique_ptr<TessellationPipelineState>>
+      tessellation_pipeline_overflow_;
   std::unique_ptr<GeneratedStageCache> generated_stages_;
 
   MTL::Library* depth_only_pixel_library_ = nullptr;
@@ -467,17 +519,34 @@ class MetalPipelineCache {
   void CreationThread(size_t thread_index);
   MTL::RenderPipelineState* CreatePipelineFromHandle(
       const PipelineHandle* handle);
+  // Runs the expensive part of geometry/tessellation pipeline creation
+  // (helper stage translation + MSC compiles + PSO build) from the captured
+  // pending_* inputs; called either inline (synchronous mode) or on a
+  // creation thread. Publishes the result through the atomic pipeline field.
+  bool CreateGeometryPipelineContents(GeometryPipelineState& state);
+  bool CreateTessellationPipelineContents(TessellationPipelineState& state);
+  bool AsyncHelperPipelineCreationEnabled() const;
+  void EnqueueHelperPipelineCreation(PipelineCreationRequest request);
+  // Per-thread DXBC shader translator so background creation threads do not
+  // serialize on a single shared translator instance (matches the D3D12
+  // pipeline cache's thread-local translators).
+  DxbcShaderTranslator& GetThreadShaderTranslator();
+  std::mutex& GetShaderTranslationStripe(const Shader& shader);
 
   std::vector<std::thread> creation_threads_;
   struct PipelineCreationRequest {
     enum class Type : uint8_t {
       kPipeline,
       kNativeMslDiagnostics,
+      kGeometryPipeline,
+      kTessellationPipeline,
     };
     Type type{Type::kPipeline};
     PipelineHandle* handle{nullptr};
     MetalShader::MetalTranslation* native_msl_translation{nullptr};
     const char* native_msl_stage_name{nullptr};
+    GeometryPipelineState* geometry_state{nullptr};
+    TessellationPipelineState* tessellation_state{nullptr};
     uint8_t priority{0};
   };
   struct PipelineCreationPriorityCompare {
