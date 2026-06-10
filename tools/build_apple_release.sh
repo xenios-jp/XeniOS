@@ -1066,7 +1066,11 @@ if [ "$build_ios" -eq 1 ]; then
     CODE_SIGNING_ALLOWED=NO \
     build
 
-  ios_dir="build-ios-xcode/bin/iOS/$buildcfg"
+  # CMake's Xcode generator appends $(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
+  # to the runtime output directory, so device builds land in
+  # "$buildcfg-iphoneos" rather than the Ninja-style bare "$buildcfg".
+  ios_dir="build-ios-xcode/bin/iOS/${buildcfg}-iphoneos"
+  [ -d "$ios_dir" ] || ios_dir="build-ios-xcode/bin/iOS/$buildcfg"
   app_bundle="$(find_first_app "$ios_dir")" || die "iOS app not found in $ios_dir"
 
   stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
