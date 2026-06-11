@@ -101,8 +101,11 @@ void MetalCommandProcessor::ResetPreparedDrawPayloadArena() {
 }
 
 void MetalCommandProcessor::TryResetPreparedDrawPayloadArena() {
+  // A batch in flight at the encode worker holds spans into the arena (and
+  // owns its PreparedDraw objects); the drain's recycle pass retries this.
   if (!prepared_draw_queue_.empty() || !prepared_draw_flush_draws_.empty() ||
-      flushing_prepared_draw_queue_) {
+      flushing_prepared_draw_queue_ ||
+      encode_worker_busy_.load(std::memory_order_acquire)) {
     return;
   }
   ResetPreparedDrawPayloadArena();
@@ -110,7 +113,8 @@ void MetalCommandProcessor::TryResetPreparedDrawPayloadArena() {
 
 void MetalCommandProcessor::TryTrimPreparedDrawRetainedStorage() {
   if (!prepared_draw_queue_.empty() || !prepared_draw_flush_draws_.empty() ||
-      flushing_prepared_draw_queue_) {
+      flushing_prepared_draw_queue_ ||
+      encode_worker_busy_.load(std::memory_order_acquire)) {
     return;
   }
 
@@ -265,6 +269,11 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
 
 bool MetalCommandProcessor::FlushPreparedDrawQueue(
     PreparedDrawFlushReason reason) {
+  // Every flush is a drain point: the callers that flush (transfers, swaps,
+  // copies, queries, command-buffer end) are about to touch the command
+  // buffer or encoder state the worker may own. Draining before the empty
+  // early-out makes the flush call itself the synchronization chokepoint.
+  DrainEncodeWorker();
   if (prepared_draw_queue_.empty()) {
     return true;
   }
@@ -413,6 +422,15 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
     if (!texture_materialization_succeeded) {
       return fail_flush();
     }
+  }
+
+  if (TryHandOffPreparedDrawBatch(draws, reason)) {
+    // The worker owns the draws now; they are recycled (and the payload
+    // arena reset) at the next drain. finish_flush still clears the flush
+    // scratch vectors, which the handoff left empty.
+    flushing_prepared_draw_queue_ = previous_flushing;
+    finish_flush();
+    return true;
   }
 
   if (!EncodePreparedDrawBatch(draws)) {

@@ -106,10 +106,13 @@ class MetalCommandProcessor final : public CommandProcessor {
   }
   // Returns true when upload/transfer work can join the current submission's
   // command buffer. This is the case when a command buffer exists but no render
-  // encoder is open.
+  // encoder is open. Conservative while the parallel encode worker owns the
+  // encoder state: callers then fall back to paths that drain the worker
+  // (RequestTransferCommandBuffer) or use standalone command buffers.
   bool CanJoinActiveSubmissionForTransfer() const {
     return current_command_buffer_ != nullptr &&
-           current_render_encoder_ == nullptr;
+           current_render_encoder_ == nullptr &&
+           !encode_worker_busy_.load(std::memory_order_acquire);
   }
   enum class TransferRequestSource : uint32_t {
     kUnknown,
@@ -876,6 +879,41 @@ class MetalCommandProcessor final : public CommandProcessor {
   // flush (uploads, texture materialization) and pure encoding; the parallel
   // encode worker runs this loop for eligible batches.
   bool EncodePreparedDrawBatch(const std::vector<PreparedDraw*>& draws);
+  // Parallel encode (metal_parallel_encode): a flushed batch handed to the
+  // worker thread. Owns the draws until the next drain recycles them, plus a
+  // private copy of the render pass descriptor when the batch must create its
+  // encoder (null when the plan is to reuse the encoder left open at handoff).
+  struct PreparedDrawBatch {
+    std::vector<PreparedDraw*> draws;
+    // Private descriptor copy for the worker's encoder creation; null when
+    // the plan is to reuse the encoder left open at handoff. A copy, not the
+    // cache's object: the CP thread keeps prepping while the worker encodes,
+    // and render-target updates may mutate the cache's descriptor in place.
+    MTL::RenderPassDescriptor* create_descriptor = nullptr;  // owned
+    // Initial viewport/scissor extent, resolved at handoff (the worker must
+    // not consult the render target cache).
+    uint32_t rt_width = 1;
+    uint32_t rt_height = 1;
+    bool has_zpd_visibility = false;
+  };
+  // Hands the just-flushed draws to the encode worker when the batch is
+  // eligible (see the implementation for the eligibility list); returns false
+  // when the caller must encode inline instead. On success the draws vector
+  // is moved out and the worker owns encoding until the next drain.
+  bool TryHandOffPreparedDrawBatch(std::vector<PreparedDraw*>& draws,
+                                   PreparedDrawFlushReason reason);
+  // Blocks until the encode worker is idle and recycles the completed batch's
+  // draws. Returns false if the worker reported an encode failure since the
+  // last drain (the failure also permanently disables further handoffs).
+  // No-op when parallel encode is off or when called from the worker itself.
+  bool DrainEncodeWorker();
+  void StartEncodeWorker();
+  void StopEncodeWorker();
+  void EncodeWorkerLoop();
+  // Worker-side render-encoder begin: reuses the encoder left open at handoff
+  // or creates one from the batch's private descriptor copy. Never consults
+  // the render target cache, texture cache, or ZPD state.
+  bool BeginRenderEncoderForWorkerBatch();
   bool FlushPreparedDrawQueue(PreparedDrawFlushReason reason);
   bool CanQueuePreparedDraw(const PreparedDraw& draw,
                             PreparedDrawQueueRejectReason& reject_reason) const;
@@ -2023,6 +2061,31 @@ class MetalCommandProcessor final : public CommandProcessor {
   // Track which heap buffer binds have been set on the current encoder.
   bool heap_binds_set_on_encoder_ = false;
 
+  // Parallel encode worker (metal_parallel_encode). Ownership protocol: while
+  // a batch is in flight the worker owns current_render_encoder_, the render
+  // pass descriptor member, the binding/resource-usage trackers, and the
+  // fixed-function state caches; the command-processor thread must call
+  // DrainEncodeWorker() before touching any of them (the drain points are the
+  // existing chokepoints: flush entry, transfer requests, command-buffer end,
+  // render-encoder end, ZPD lifetime changes, swap/copy/wait/shutdown).
+  // current_command_buffer_ stays CP-created and is stable (non-null) while a
+  // batch is in flight; the worker never commits. One batch in flight max.
+  std::thread encode_worker_thread_;
+  std::mutex encode_worker_mutex_;
+  std::condition_variable encode_worker_cond_;
+  PreparedDrawBatch encode_worker_batch_;
+  bool encode_worker_has_batch_ = false;   // guarded by encode_worker_mutex_
+  bool encode_worker_shutdown_ = false;    // guarded by encode_worker_mutex_
+  bool encode_worker_batch_failed_ = false;  // guarded by encode_worker_mutex_
+  // Completed batch awaiting recycle on the CP thread (guarded by mutex).
+  std::vector<PreparedDraw*> encode_worker_retired_draws_;
+  // Lock-free "worker may be touching encoder state" flag for cheap checks on
+  // paths that must stay conservative while a batch is in flight
+  // (CanJoinActiveSubmissionForTransfer, payload-arena trimming).
+  std::atomic<bool> encode_worker_busy_{false};
+  // Sticky failure: disables further handoffs for the session.
+  bool encode_worker_poisoned_ = false;
+  bool parallel_encode_enabled_ = false;
   std::atomic<uint64_t> completed_command_buffers_{0};
   std::atomic<uint32_t> pending_completion_handlers_{0};
   std::mutex completion_mutex_;
