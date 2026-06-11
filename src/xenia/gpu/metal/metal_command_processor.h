@@ -789,6 +789,12 @@ class MetalCommandProcessor final : public CommandProcessor {
     native_msl::NativeMslStageBindings native_pixel_bindings = {};
     bool native_pixel_metadata_valid = false;
     std::array<uint32_t, 4> native_primitive_index_constants = {};
+    // Prep-time upload results (PrepareNativeMslDrawResources, queue time).
+    // Encode consumes these without touching the pool or the reuse caches.
+    // The primitive-index table is referenced by GPU address from the
+    // XeNativeDrawConstants pointer table and by buffer for useResources.
+    MTL::Buffer* native_primitive_index_buffer = nullptr;
+    uint64_t native_primitive_index_gpu_address = 0;
 
     bool use_tessellation_emulation = false;
     bool use_geometry_emulation = false;
@@ -853,6 +859,12 @@ class MetalCommandProcessor final : public CommandProcessor {
                               bool use_geometry_emulation,
                               bool use_tessellation_emulation,
                               const UniformBufferInfo& uniforms);
+  // Queue-time half of the native-MSL draw binding: uploads the per-draw
+  // payloads (pool suballocation + memcpy + reuse-cache updates) into the
+  // frame-lifetime constant pool and stores the results on the draw. Runs in
+  // IssueDraw before SubmitPreparedDraw so the reuse caches advance in prep
+  // order; BindNativeMslDrawResources then only issues encoder binds.
+  bool PrepareNativeMslDrawResources(PreparedDraw& draw);
   bool BindNativeMslDrawResources(const PreparedDraw& draw);
 
   // Host draw path — bind vertex buffers and dispatch the actual draw call
