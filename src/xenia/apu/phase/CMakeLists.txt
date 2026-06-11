@@ -14,4 +14,8 @@ target_link_libraries(xenia-apu-phase PUBLIC
   "-framework PHASE"
   "-framework CoreMotion"
 )
+target_compile_options(xenia-apu-phase PRIVATE
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc-exceptions>
+)
 xe_target_defaults(xenia-apu-phase)

@@ -16,6 +16,9 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
+
+#include "xenia/ui/ios/launcher/ios_game_library.h"
 
 @protocol XeniaIOSDocumentImportCoordinatorHost <NSObject>
 
@@ -28,8 +31,13 @@
 - (BOOL)documentImportCoordinatorLinkExternalLibraryAtURL:(NSURL*)folderURL error:(NSError**)error;
 - (void)documentImportCoordinatorRefreshImportedGames;
 - (void)documentImportCoordinatorRefreshImportedGamesWithCompletion:(void (^)(void))completion;
+- (void)documentImportCoordinatorRefreshImportedGamesWithScannedGamesCompletion:
+    (void (^)(const std::vector<xe::ui::IOSDiscoveredGame>& games))completion;
 - (void)documentImportCoordinatorPromptForZarConversionAfterAddingPath:
             (const std::filesystem::path&)path
+                                                          scannedGames:
+                                                              (const std::vector<
+                                                                  xe::ui::IOSDiscoveredGame>&)games
                                                        externalLibrary:(BOOL)externalLibrary
                                                             completion:
                                                                 (void (^)(BOOL conversionChosen))

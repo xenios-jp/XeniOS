@@ -1445,6 +1445,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
     return;
   }
   if (edit_history_.FinishChange(runtime_model_->layout(), [self selectedControlIdentifier])) {
+    runtime_model_->PublishControlsSnapshot();
     [self refreshEditChromeSelection];
   }
 }

@@ -50,6 +50,7 @@
 #endif
 
 // Audio systems.
+#include "xenia/apu/nop/nop_audio_system.h"
 #include "xenia/apu/phase/phase_audio_system.h"
 #include "xenia/apu/sdl/sdl_audio_system.h"
 
@@ -1542,13 +1543,20 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 }
 
 std::unique_ptr<apu::AudioSystem> EmulatorAppIOS::CreateAudioSystem(cpu::Processor* processor) {
-  // Opt-in PHASE backend renders the native 5.1 bed as spatial audio; default
-  // SDL uses CoreAudio on iOS for audio output.
-  if (cvars::apu == "phase") {
+  const std::string apu_name = cvars::apu;
+  if (apu_name == "phase") {
     XELOGI("Audio backend: PHASE (spatial) selected via --apu/apu cvar");
     return std::make_unique<apu::phase::PHASEAudioSystem>(processor);
   }
-  XELOGI("Audio backend: SDL (apu cvar = '{}')", std::string(cvars::apu));
+  if (apu_name == "nop") {
+    XELOGI("Audio backend: NOP selected via --apu/apu cvar");
+    return std::make_unique<apu::nop::NopAudioSystem>(processor);
+  }
+  if (apu_name != "sdl") {
+    XELOGW("Unknown iOS audio backend '{}'; falling back to SDL", apu_name);
+  } else {
+    XELOGI("Audio backend: SDL selected via --apu/apu cvar");
+  }
   return std::make_unique<apu::sdl::SDLAudioSystem>(processor);
 }
 

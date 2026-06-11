@@ -290,6 +290,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)refreshLauncherGameSnapshots;
 - (void)refreshImportedGamesAsync;
 - (void)refreshImportedGamesAsyncWithCompletion:(void (^)(void))completion;
+- (void)refreshImportedGamesAsyncWithScannedGamesCompletion:
+    (void (^)(const std::vector<IOSDiscoveredGame>& games))completion;
 - (void)finishImportedGamesRefresh;
 - (void)presentJITRequiredAlertForLaunchPath:(const std::filesystem::path&)gamePath
                                  displayName:(NSString*)displayName;
@@ -1946,12 +1948,25 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)refreshImportedGamesAsyncWithCompletion:(void (^)(void))completion {
+  void (^completion_copy)(void) = [completion copy];
+  [self refreshImportedGamesAsyncWithScannedGamesCompletion:^(
+            const std::vector<IOSDiscoveredGame>& games) {
+    (void)games;
+    if (completion_copy) {
+      completion_copy();
+      [completion_copy release];
+    }
+  }];
+}
+
+- (void)refreshImportedGamesAsyncWithScannedGamesCompletion:
+    (void (^)(const std::vector<IOSDiscoveredGame>& games))completion {
   const uint64_t refresh_generation = ++library_refresh_generation_;
   NSString* caches_dir =
       NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
   NSString* names_path = [caches_dir stringByAppendingPathComponent:@"title-names.plist"];
   NSDictionary* title_name_cache = [[NSDictionary dictionaryWithContentsOfFile:names_path] retain];
-  void (^completion_copy)(void) = [completion copy];
+  void (^completion_copy)(const std::vector<IOSDiscoveredGame>&) = [completion copy];
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -1962,13 +1977,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       if (refresh_generation == unsafe_self->library_refresh_generation_) {
         unsafe_self->discovered_games_ = std::move(*scanned_games_owner);
         [unsafe_self finishImportedGamesRefresh];
+        if (completion_copy) {
+          completion_copy(unsafe_self->discovered_games_);
+        }
+      } else if (completion_copy) {
+        completion_copy(*scanned_games_owner);
       }
       // Run the completion even when a newer refresh superseded this scan:
       // callers (e.g. the ZAR conversion flow presenting its results sheet)
       // rely on it for flow continuation, not for library consistency.
-      if (completion_copy) {
-        completion_copy();
-      }
       [completion_copy release];
     });
   });
@@ -3387,13 +3404,21 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self refreshImportedGamesAsyncWithCompletion:completion];
 }
 
+- (void)documentImportCoordinatorRefreshImportedGamesWithScannedGamesCompletion:
+    (void (^)(const std::vector<IOSDiscoveredGame>& games))completion {
+  [self refreshImportedGamesAsyncWithScannedGamesCompletion:completion];
+}
+
 - (void)documentImportCoordinatorPromptForZarConversionAfterAddingPath:
             (const std::filesystem::path&)path
+                                                          scannedGames:
+                                                              (const std::vector<
+                                                                  IOSDiscoveredGame>&)games
                                                        externalLibrary:(BOOL)externalLibrary
                                                             completion:
                                                                 (void (^)(BOOL conversionChosen))
                                                                     completion {
-  [self.zarConversionCoordinator presentPostImportConversionPromptForGames:discovered_games_
+  [self.zarConversionCoordinator presentPostImportConversionPromptForGames:games
                                                                  addedPath:path
                                                            externalLibrary:externalLibrary
                                                                 completion:completion];
