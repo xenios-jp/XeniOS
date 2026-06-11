@@ -6,6 +6,7 @@ add_library(xenia-gpu-metal STATIC
   metal_backend_telemetry.h
   metal_command_processor.cc
   metal_command_processor.h
+  metal_command_processor_telemetry.cc
   metal_draw_batch.cc
   metal_direct_host_resolve.cc
   metal_geometry_shader.cc
