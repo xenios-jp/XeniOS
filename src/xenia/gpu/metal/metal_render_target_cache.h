@@ -309,9 +309,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   void RenderTargetHazardUpdate(MTL::ComputeCommandEncoder* encoder);
   void RenderTargetHazardWait(MTL::BlitCommandEncoder* encoder);
   void RenderTargetHazardUpdate(MTL::BlitCommandEncoder* encoder);
-  MTL::Library* GetOrCreateEdramLoadLibrary(bool msaa);
-  MTL::RenderPipelineState* GetOrCreateEdramLoadPipeline(
-      MTL::PixelFormat dest_format, uint32_t sample_count);
   bool InitializeEdramBufferViews();
   void ReleaseEdramBufferViews();
   MTL::Texture* GetEdramUintPow2BufferView(
@@ -333,11 +330,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::Texture* edram_r32_uint_buffer_view_ = nullptr;
   MTL::Texture* edram_r32g32_uint_buffer_view_ = nullptr;
   MTL::Texture* edram_r32g32b32a32_uint_buffer_view_ = nullptr;
-
-  // EDRAM render pipelines for drawing cached render-target contents.
-  std::unordered_map<uint64_t, MTL::RenderPipelineState*> edram_load_pipelines_;
-  MTL::Library* edram_load_library_ = nullptr;
-  MTL::Library* edram_load_library_msaa_ = nullptr;
 
   // EDRAM dump compute shaders for host render target → EDRAM copies.
   static constexpr size_t kEdramDumpBppCount = 2;     // 32, 64
