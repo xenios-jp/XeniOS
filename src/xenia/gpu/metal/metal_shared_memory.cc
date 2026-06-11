@@ -28,14 +28,14 @@ DEFINE_bool(
     "Metal");
 
 DEFINE_bool(
-    metal_shared_memory_zero_copy, false,
-    "UMA spike: wrap the guest physical memory region itself as the "
-    "shared-memory buffer (newBuffer bytesNoCopy) so the GPU reads "
-    "vertex/index data and writes memexport/resolve results directly in "
-    "guest RAM, eliminating mirror uploads entirely. Faithful to the real "
-    "360's unified memory; titles that rewrite in-flight buffers without "
-    "fencing may flicker. Falls back to the mirror if creation fails. "
-    "Validate per title.",
+    metal_shared_memory_zero_copy, true,
+    "Wrap the guest physical memory region itself as the shared-memory "
+    "buffer (newBuffer bytesNoCopy) so the GPU reads vertex/index data and "
+    "writes memexport/resolve results directly in guest RAM, eliminating "
+    "mirror uploads entirely. Faithful to the real 360's unified memory. "
+    "Falls back to the mirror buffer if the wrap fails (the mirror path is "
+    "retained as the fallback). Disable per title if a game that rewrites "
+    "in-flight buffers without fencing shows flicker.",
     "Metal");
 DECLARE_bool(metal_backend_hazard_model);
 
