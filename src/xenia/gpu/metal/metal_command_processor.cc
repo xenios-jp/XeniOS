@@ -110,6 +110,9 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
+thread_local MetalCommandProcessor::MetalEncodeContext*
+    MetalCommandProcessor::tls_encode_context_ = nullptr;
+
 namespace {
 constexpr size_t kMaxPendingSharedMemoryWrites = 16;
 constexpr size_t kMaxPendingSharedMemoryWriteCapacity = 64;
@@ -748,17 +751,17 @@ MetalCommandProcessor::~MetalCommandProcessor() {
   // End any active render encoder before releasing
   // Note: Only call endEncoding if the encoder is still active
   // (not already ended by a committed command buffer)
-  if (current_render_encoder_) {
+  if (encode_ctx().render_encoder) {
     // The encoder may already be ended if the command buffer was committed
     // In that case, just release it
-    current_render_encoder_->release();
-    current_render_encoder_ = nullptr;
-    current_render_encoder_has_zpd_visibility_ = false;
+    encode_ctx().render_encoder->release();
+    encode_ctx().render_encoder = nullptr;
+    encode_ctx().render_encoder_has_zpd_visibility = false;
     ResetRenderEncoderBufferBindings();
   }
-  if (current_render_pass_descriptor_) {
-    current_render_pass_descriptor_->release();
-    current_render_pass_descriptor_ = nullptr;
+  if (encode_ctx().render_pass_descriptor) {
+    encode_ctx().render_pass_descriptor->release();
+    encode_ctx().render_pass_descriptor = nullptr;
   }
   if (current_command_buffer_) {
     current_command_buffer_->release();
@@ -809,12 +812,12 @@ MetalCommandProcessor::~MetalCommandProcessor() {
   current_bindless_texture_resource_input_serial_ = 0;
   current_bindless_texture_resource_source_serial_ = 0;
   current_bindless_root_resource_source_serial_ = 0;
-  render_encoder_bindless_fixed_resources_serial_ = 0;
-  render_encoder_bindless_texture_resources_serial_ = 0;
-  render_encoder_bindless_root_resources_serial_ = 0;
-  render_encoder_bindless_stage_root_bind_serials_.fill(0);
-  render_encoder_bindless_table_bind_mesh_path_ = false;
-  render_encoder_bindless_table_bind_tessellation_ = false;
+  encode_ctx().bindless_fixed_resources_serial = 0;
+  encode_ctx().bindless_texture_resources_serial = 0;
+  encode_ctx().bindless_root_resources_serial = 0;
+  encode_ctx().bindless_stage_root_bind_serials.fill(0);
+  encode_ctx().bindless_table_bind_mesh_path = false;
+  encode_ctx().bindless_table_bind_tessellation = false;
 }
 
 void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
@@ -1425,8 +1428,8 @@ bool MetalCommandProcessor::SetupContext() {
   zpd_visibility_pool_ = std::make_unique<MetalZPDVisibilityPool>();
   EnsureZPDQueryResources();
 
-  render_encoder_resource_usage_table_.reserve(256);
-  render_encoder_heap_usage_.reserve(32);
+  encode_ctx().resource_usage_table.reserve(256);
+  encode_ctx().heap_usage.reserve(32);
 
   // Create a null buffer for unused descriptor entries
   // This prevents shader validation errors when accessing unpopulated
@@ -1656,9 +1659,9 @@ void MetalCommandProcessor::ShutdownContext() {
 
   // End the render encoder directly (not via EndRenderEncoder — we release
   // the encoder object below after the command buffer completes).
-  if (current_render_encoder_) {
+  if (encode_ctx().render_encoder) {
     UpdateSharedMemoryFenceForActiveRenderEncoder();
-    current_render_encoder_->endEncoding();
+    encode_ctx().render_encoder->endEncoding();
   }
   EndSharedMemoryUploadBlitEncoder(
       SharedMemoryUploadEncoderEndReason::kShutdown);
@@ -1668,15 +1671,15 @@ void MetalCommandProcessor::ShutdownContext() {
   WaitForPendingCompletionHandlers();
 
   // Now safe to release encoder and command buffer
-  if (current_render_encoder_) {
-    current_render_encoder_->release();
-    current_render_encoder_ = nullptr;
-    current_render_encoder_has_zpd_visibility_ = false;
+  if (encode_ctx().render_encoder) {
+    encode_ctx().render_encoder->release();
+    encode_ctx().render_encoder = nullptr;
+    encode_ctx().render_encoder_has_zpd_visibility = false;
     ResetRenderEncoderBufferBindings();
   }
-  if (current_render_pass_descriptor_) {
-    current_render_pass_descriptor_->release();
-    current_render_pass_descriptor_ = nullptr;
+  if (encode_ctx().render_pass_descriptor) {
+    encode_ctx().render_pass_descriptor->release();
+    encode_ctx().render_pass_descriptor = nullptr;
   }
   if (current_command_buffer_) {
     current_command_buffer_->release();
@@ -2289,8 +2292,8 @@ bool MetalCommandProcessor::CanOpenZPDQuery() const {
   // Metal visibility queries can only be enabled on a render encoder whose
   // descriptor had visibilityResultBuffer set before the encoder was created.
   return current_command_buffer_ != nullptr &&
-         current_render_encoder_ != nullptr &&
-         current_render_encoder_has_zpd_visibility_;
+         encode_ctx().render_encoder != nullptr &&
+         encode_ctx().render_encoder_has_zpd_visibility;
 }
 
 bool MetalCommandProcessor::BeginZPDReport(uint32_t report_address) {
@@ -2388,7 +2391,7 @@ CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenZPDQuery(
     return QueryOpenResult::kFailed;
   }
 
-  current_render_encoder_->setVisibilityResultMode(
+  encode_ctx().render_encoder->setVisibilityResultMode(
       MTL::VisibilityResultModeCounting, active_query.offset);
   zpd_active_query_ = active_query;
   return QueryOpenResult::kOpened;
@@ -2399,13 +2402,13 @@ bool MetalCommandProcessor::CloseZPDQuery(ReportHandle report_handle,
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
     return false;
   }
-  if (!current_render_encoder_ || !current_render_encoder_has_zpd_visibility_ ||
+  if (!encode_ctx().render_encoder || !encode_ctx().render_encoder_has_zpd_visibility ||
       !zpd_active_query_.is_open()) {
     return false;
   }
 
   // Disable visibility counting.
-  current_render_encoder_->setVisibilityResultMode(
+  encode_ctx().render_encoder->setVisibilityResultMode(
       MTL::VisibilityResultModeDisabled, 0);
 
   MetalZPDResolve resolve;
@@ -2429,8 +2432,8 @@ bool MetalCommandProcessor::DiscardZPDQuery() {
     return false;
   }
 
-  if (current_render_encoder_ && current_render_encoder_has_zpd_visibility_) {
-    current_render_encoder_->setVisibilityResultMode(
+  if (encode_ctx().render_encoder && encode_ctx().render_encoder_has_zpd_visibility) {
+    encode_ctx().render_encoder->setVisibilityResultMode(
         MTL::VisibilityResultModeDisabled, 0);
   }
 
@@ -2561,9 +2564,9 @@ void MetalCommandProcessor::MarkSharedMemoryRenderWritePending(
   if (!length) {
     return;
   }
-  if (current_render_encoder_ && NS::UInteger(stages)) {
-    active_render_encoder_shared_memory_write_stages_ = MTL::RenderStages(
-        NS::UInteger(active_render_encoder_shared_memory_write_stages_) |
+  if (encode_ctx().render_encoder && NS::UInteger(stages)) {
+    encode_ctx().shared_memory_write_stages = MTL::RenderStages(
+        NS::UInteger(encode_ctx().shared_memory_write_stages) |
         NS::UInteger(stages));
     MarkSharedMemoryWritePending(address, length, stages, true, false);
     return;
@@ -2585,7 +2588,7 @@ bool MetalCommandProcessor::PrepareSharedMemoryComputeReadDependency(
     return true;
   }
 
-  if (current_render_encoder_) {
+  if (encode_ctx().render_encoder) {
     EndRenderEncoder(RenderEncoderEndReason::kSharedMemoryReadDependency);
   }
 
@@ -2743,15 +2746,15 @@ bool MetalCommandProcessor::PendingSharedMemoryWritesOverlapRanges(
 }
 
 void MetalCommandProcessor::UpdateSharedMemoryFenceForActiveRenderEncoder() {
-  if (!current_render_encoder_ ||
-      !NS::UInteger(active_render_encoder_shared_memory_write_stages_)) {
+  if (!encode_ctx().render_encoder ||
+      !NS::UInteger(encode_ctx().shared_memory_write_stages)) {
     return;
   }
 
   if (shared_memory_fence_) {
-    current_render_encoder_->updateFence(
+    encode_ctx().render_encoder->updateFence(
         shared_memory_fence_,
-        active_render_encoder_shared_memory_write_stages_);
+        encode_ctx().shared_memory_write_stages);
   }
 
   for (PendingSharedMemoryWrite& pending : pending_shared_memory_writes_) {
@@ -2761,7 +2764,7 @@ void MetalCommandProcessor::UpdateSharedMemoryFenceForActiveRenderEncoder() {
     pending.active_render_encoder = false;
     pending.fence_updated = shared_memory_fence_ != nullptr;
   }
-  active_render_encoder_shared_memory_write_stages_ = MTL::RenderStages(0);
+  encode_ctx().shared_memory_write_stages = MTL::RenderStages(0);
 }
 
 void MetalCommandProcessor::PruneCompletedSharedMemoryWrites(
@@ -2919,7 +2922,7 @@ void MetalCommandProcessor::RetireFenceWaitedSharedMemoryWrites(
 bool MetalCommandProcessor::EncodeSharedMemoryRenderReadDependencies(
     const SharedMemoryRange* ranges, uint32_t range_count,
     MTL::RenderStages consumer_stages) {
-  if (!current_render_encoder_ || !ranges || !range_count ||
+  if (!encode_ctx().render_encoder || !ranges || !range_count ||
       !NS::UInteger(consumer_stages) || pending_shared_memory_writes_.empty()) {
     return true;
   }
@@ -2947,11 +2950,11 @@ bool MetalCommandProcessor::EncodeSharedMemoryRenderReadDependencies(
   }
 
   if (NS::UInteger(active_producer_stages)) {
-    current_render_encoder_->memoryBarrier(
+    encode_ctx().render_encoder->memoryBarrier(
         MTL::BarrierScopeBuffers, active_producer_stages, consumer_stages);
   }
   if (needs_fence_wait && shared_memory_fence_) {
-    current_render_encoder_->waitForFence(shared_memory_fence_,
+    encode_ctx().render_encoder->waitForFence(shared_memory_fence_,
                                           consumer_stages);
     RetireFenceWaitedSharedMemoryWrites(ranges, range_count);
   }
@@ -3147,10 +3150,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       return false;
     }
     pending_draw_pass_transfer_guard.cache = render_target_cache_.get();
-    if (current_render_encoder_ &&
+    if (encode_ctx().render_encoder &&
         render_target_cache_->IsRenderPassDescriptorDirty() &&
         !render_target_cache_->IsRenderPassDescriptorCompatible(
-            current_render_pass_descriptor_, 1)) {
+            encode_ctx().render_pass_descriptor, 1)) {
       EndRenderEncoder(
           RenderEncoderEndReason::kRenderTargetUpdateDescriptorDirty);
     }
@@ -3568,14 +3571,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // render_target_key was already built from the same registers and
   // normalized state before the render target cache Update() above; none of
   // its inputs change within IssueDraw, so it does not need recomputing here.
-  if (current_render_encoder_ && render_target_cache_ &&
+  if (encode_ctx().render_encoder && render_target_cache_ &&
       !render_target_cache_->IsRenderPassDescriptorCompatible(
-          current_render_pass_descriptor_, 1,
+          encode_ctx().render_pass_descriptor, 1,
           fallback_depth_attachment_required)) {
     EndRenderEncoder(RenderEncoderEndReason::kPipelineDescriptorIncompatible);
   }
   MTL::RenderPassDescriptor* pass_desc_for_fmts =
-      current_render_pass_descriptor_;
+      encode_ctx().render_pass_descriptor;
   if (render_target_cache_) {
     if (MTL::RenderPassDescriptor* cache_desc =
             render_target_cache_->GetRenderPassDescriptor(
@@ -3988,7 +3991,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   if (has_texture_request_work && !textures_requested_for_draw) {
     const bool texture_request_started_with_active_encoder =
-        current_render_encoder_ != nullptr;
+        encode_ctx().render_encoder != nullptr;
     if (!request_textures_for_draw(
             texture_request_started_with_active_encoder)) {
       return fail_prepared_draw();
@@ -5166,18 +5169,18 @@ bool MetalCommandProcessor::PrepareDrawConstants(
 
 void MetalCommandProcessor::ApplyDrawDynamicState(const PreparedDraw& draw) {
   const DrawDynamicState& dynamic_state = draw.dynamic_state;
-  if (viewport_dirty_ || std::memcmp(&dynamic_state.viewport, &cached_viewport_,
+  if (encode_ctx().viewport_dirty || std::memcmp(&dynamic_state.viewport, &encode_ctx().cached_viewport,
                                      sizeof(MTL::Viewport)) != 0) {
-    current_render_encoder_->setViewport(dynamic_state.viewport);
-    cached_viewport_ = dynamic_state.viewport;
-    viewport_dirty_ = false;
+    encode_ctx().render_encoder->setViewport(dynamic_state.viewport);
+    encode_ctx().cached_viewport = dynamic_state.viewport;
+    encode_ctx().viewport_dirty = false;
   }
 
-  if (scissor_dirty_ || std::memcmp(&dynamic_state.scissor, &cached_scissor_,
+  if (encode_ctx().scissor_dirty || std::memcmp(&dynamic_state.scissor, &encode_ctx().cached_scissor,
                                     sizeof(MTL::ScissorRect)) != 0) {
-    current_render_encoder_->setScissorRect(dynamic_state.scissor);
-    cached_scissor_ = dynamic_state.scissor;
-    scissor_dirty_ = false;
+    encode_ctx().render_encoder->setScissorRect(dynamic_state.scissor);
+    encode_ctx().cached_scissor = dynamic_state.scissor;
+    encode_ctx().scissor_dirty = false;
   }
 
   if (dynamic_state.rasterization_enabled) {
@@ -5191,14 +5194,14 @@ void MetalCommandProcessor::ApplyDrawDynamicState(const PreparedDraw& draw) {
                          draw.depth_stencil_effective_stencil_enable);
 
   bool blend_factor_update_needed =
-      !ff_blend_factor_valid_ ||
-      std::memcmp(ff_blend_factor_, dynamic_state.blend_constants,
+      !encode_ctx().blend_factor_valid ||
+      std::memcmp(encode_ctx().blend_factor, dynamic_state.blend_constants,
                   sizeof(float) * 4) != 0;
   if (blend_factor_update_needed) {
-    std::memcpy(ff_blend_factor_, dynamic_state.blend_constants,
+    std::memcpy(encode_ctx().blend_factor, dynamic_state.blend_constants,
                 sizeof(float) * 4);
-    ff_blend_factor_valid_ = true;
-    current_render_encoder_->setBlendColor(
+    encode_ctx().blend_factor_valid = true;
+    encode_ctx().render_encoder->setBlendColor(
         dynamic_state.blend_constants[0], dynamic_state.blend_constants[1],
         dynamic_state.blend_constants[2], dynamic_state.blend_constants[3]);
   }
@@ -5726,7 +5729,7 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
 
 bool MetalCommandProcessor::BindNativeMslDrawResources(
     const PreparedDraw& draw) {
-  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
+  if (!encode_ctx().render_encoder || !constant_buffer_pool_ || !shared_memory_ ||
       !texture_cache_ || !null_buffer_) {
     XELOGE("Native MSL draw binding requested before Metal resources exist");
     return false;
@@ -6254,8 +6257,8 @@ bool MetalCommandProcessor::PopulateBindlessTables(
   const bool use_mesh_path =
       use_geometry_emulation || use_tessellation_emulation;
   const bool root_argument_path_needs_update =
-      render_encoder_bindless_table_bind_mesh_path_ != use_mesh_path ||
-      render_encoder_bindless_table_bind_tessellation_ !=
+      encode_ctx().bindless_table_bind_mesh_path != use_mesh_path ||
+      encode_ctx().bindless_table_bind_tessellation !=
           use_tessellation_emulation;
   {
     const StageRootArgumentAllocation& graphics_root_arguments =
@@ -6264,11 +6267,11 @@ bool MetalCommandProcessor::PopulateBindlessTables(
     assert_true(graphics_root_arguments.valid);
     assert_true(graphics_root_arguments.upload_frame == frame_current_);
     const bool vertex_root_argument_binding_needs_update =
-        render_encoder_bindless_stage_root_bind_serials_[kStageVertex] !=
+        encode_ctx().bindless_stage_root_bind_serials[kStageVertex] !=
             graphics_root_serial ||
         root_argument_path_needs_update;
     const bool pixel_root_argument_binding_needs_update =
-        render_encoder_bindless_stage_root_bind_serials_[kStagePixel] !=
+        encode_ctx().bindless_stage_root_bind_serials[kStagePixel] !=
         graphics_root_serial;
     const bool root_argument_bindings_need_update =
         vertex_root_argument_binding_needs_update ||
@@ -6297,7 +6300,7 @@ bool MetalCommandProcessor::PopulateBindlessTables(
                                        kIRArgumentBufferBindPoint);
       }
 
-      if (!heap_binds_set_on_encoder_) {
+      if (!encode_ctx().heap_binds_set_on_encoder) {
         SetRenderEncoderObjectBuffer(view_bindless_heap_, 0,
                                      kIRDescriptorHeapBindPoint);
         SetRenderEncoderMeshBuffer(view_bindless_heap_, 0,
@@ -6310,7 +6313,7 @@ bool MetalCommandProcessor::PopulateBindlessTables(
                                    kIRSamplerHeapBindPoint);
         SetRenderEncoderFragmentBuffer(sampler_bindless_heap_, 0,
                                        kIRSamplerHeapBindPoint);
-        heap_binds_set_on_encoder_ = true;
+        encode_ctx().heap_binds_set_on_encoder = true;
       }
     } else {
       if (vertex_root_argument_binding_needs_update) {
@@ -6324,7 +6327,7 @@ bool MetalCommandProcessor::PopulateBindlessTables(
                                        kIRArgumentBufferBindPoint);
       }
 
-      if (!heap_binds_set_on_encoder_) {
+      if (!encode_ctx().heap_binds_set_on_encoder) {
         SetRenderEncoderVertexBuffer(view_bindless_heap_, 0,
                                      kIRDescriptorHeapBindPoint);
         SetRenderEncoderFragmentBuffer(view_bindless_heap_, 0,
@@ -6333,20 +6336,20 @@ bool MetalCommandProcessor::PopulateBindlessTables(
                                      kIRSamplerHeapBindPoint);
         SetRenderEncoderFragmentBuffer(sampler_bindless_heap_, 0,
                                        kIRSamplerHeapBindPoint);
-        heap_binds_set_on_encoder_ = true;
+        encode_ctx().heap_binds_set_on_encoder = true;
       }
     }
     if (vertex_root_argument_binding_needs_update) {
-      render_encoder_bindless_stage_root_bind_serials_[kStageVertex] =
+      encode_ctx().bindless_stage_root_bind_serials[kStageVertex] =
           graphics_root_serial;
     }
     if (pixel_root_argument_binding_needs_update) {
-      render_encoder_bindless_stage_root_bind_serials_[kStagePixel] =
+      encode_ctx().bindless_stage_root_bind_serials[kStagePixel] =
           graphics_root_serial;
     }
     if (root_argument_bindings_need_update) {
-      render_encoder_bindless_table_bind_mesh_path_ = use_mesh_path;
-      render_encoder_bindless_table_bind_tessellation_ =
+      encode_ctx().bindless_table_bind_mesh_path = use_mesh_path;
+      encode_ctx().bindless_table_bind_tessellation =
           use_tessellation_emulation;
     }
   }
@@ -6536,7 +6539,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
         transfer_mutations =
             MetalRenderTargetCache::kDrawPassTransferEncoderMutationNone;
     if (!render_target_cache_->EncodePendingDrawPassTransfers(
-            current_render_encoder_, current_render_pass_descriptor_,
+            encode_ctx().render_encoder, encode_ctx().render_pass_descriptor,
             &transfer_mutations)) {
       if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
         return false;
@@ -6568,7 +6571,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
             draw.shared_memory_consumer_stages)) {
       return false;
     }
-    if (!current_render_encoder_) {
+    if (!encode_ctx().render_encoder) {
       return false;
     }
   }
@@ -6583,9 +6586,9 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     }
   }
 
-  if (current_render_pipeline_state_ != draw.pipeline) {
-    current_render_encoder_->setRenderPipelineState(draw.pipeline);
-    current_render_pipeline_state_ = draw.pipeline;
+  if (encode_ctx().render_pipeline_state != draw.pipeline) {
+    encode_ctx().render_encoder->setRenderPipelineState(draw.pipeline);
+    encode_ctx().render_pipeline_state = draw.pipeline;
     ++backend_telemetry_.pipeline_sets;
   } else {
     ++backend_telemetry_.pipeline_set_skips;
@@ -6621,7 +6624,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
         // draw-specific.
         ApplyRenderEncoderResourceSet(
             RenderResourceSetKind::kTexture, draw.texture_resource_set,
-            render_encoder_bindless_texture_resources_serial_);
+            encode_ctx().bindless_texture_resources_serial);
       } else {
         RestoreBindlessTextureResourceSet(draw.texture_resource_set);
         ApplyRenderEncoderResourceSets();
@@ -6717,7 +6720,7 @@ bool MetalCommandProcessor::DispatchDraw(
     }
     // MSC manual: bind IRRuntimeVertexBuffers at kIRVertexBufferBindPoint (6)
     // for the object stage when using geometry emulation.
-    current_render_encoder_->setObjectBytes(
+    encode_ctx().render_encoder->setObjectBytes(
         vertex_buffers, sizeof(vertex_buffers), kIRVertexBufferBindPoint);
     InvalidateRenderEncoderBufferBinding(RenderEncoderBufferStage::kObject,
                                          kIRVertexBufferBindPoint);
@@ -6882,7 +6885,7 @@ bool MetalCommandProcessor::DispatchDraw(
     if (!mesh_threadgroup_count) {
       return true;
     }
-    current_render_encoder_->drawMeshThreadgroups(
+    encode_ctx().render_encoder->drawMeshThreadgroups(
         MTL::Size::Make(mesh_threadgroup_count, 1, 1), MTL::Size::Make(1, 1, 1),
         MTL::Size::Make(1, 1, 1));
   } else if (use_tessellation_emulation) {
@@ -6908,7 +6911,7 @@ bool MetalCommandProcessor::DispatchDraw(
       if (!patch_count) {
         return true;
       }
-      current_render_encoder_->drawMeshThreadgroups(
+      encode_ctx().render_encoder->drawMeshThreadgroups(
           MTL::Size::Make(patch_count, 1, 1), MTL::Size::Make(1, 1, 1),
           MTL::Size::Make(1, 1, 1));
       return true;
@@ -6948,7 +6951,7 @@ bool MetalCommandProcessor::DispatchDraw(
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
       IRRuntimeDrawPatchesTessellationEmulation(
-          current_render_encoder_, tess_primitive, tess_config, 1,
+          encode_ctx().render_encoder, tess_primitive, tess_config, 1,
           primitive_processing_result.host_draw_vertex_count, 0, 0);
     } else {
       MTL::IndexType index_type =
@@ -6967,7 +6970,7 @@ bool MetalCommandProcessor::DispatchDraw(
       uint32_t start_index =
           index_stride ? uint32_t(index_offset / index_stride) : 0;
       IRRuntimeDrawIndexedPatchesTessellationEmulation(
-          current_render_encoder_, tess_primitive, index_type, index_buffer,
+          encode_ctx().render_encoder, tess_primitive, index_type, index_buffer,
           tess_config, 1, primitive_processing_result.host_draw_vertex_count, 0,
           0, start_index);
     }
@@ -7000,7 +7003,7 @@ bool MetalCommandProcessor::DispatchDraw(
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
       IRRuntimeDrawPrimitivesGeometryEmulation(
-          current_render_encoder_, geometry_primitive, geometry_config, 1,
+          encode_ctx().render_encoder, geometry_primitive, geometry_config, 1,
           primitive_processing_result.host_draw_vertex_count, 0, 0);
     } else {
       MTL::IndexType index_type =
@@ -7019,7 +7022,7 @@ bool MetalCommandProcessor::DispatchDraw(
       uint32_t start_index =
           index_stride ? uint32_t(index_offset / index_stride) : 0;
       IRRuntimeDrawIndexedPrimitivesGeometryEmulation(
-          current_render_encoder_, geometry_primitive, index_type, index_buffer,
+          encode_ctx().render_encoder, geometry_primitive, index_type, index_buffer,
           geometry_config, 1,
           primitive_processing_result.host_draw_vertex_count, start_index, 0,
           0);
@@ -7068,13 +7071,13 @@ bool MetalCommandProcessor::DispatchDraw(
         // [[instance_id]] is unused by the guest vertex path so it is harmless
         // that it now equals the slot index (instance_id == baseInstance when
         // instanceCount == 1).
-        current_render_encoder_->drawPrimitives(
+        encode_ctx().render_encoder->drawPrimitives(
             mtl_primitive, NS::UInteger(0),
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
             NS::UInteger(1), NS::UInteger(native_msl_draw_constants_slot));
       } else {
         IRRuntimeDrawPrimitives(
-            current_render_encoder_, mtl_primitive, NS::UInteger(0),
+            encode_ctx().render_encoder, mtl_primitive, NS::UInteger(0),
             NS::UInteger(primitive_processing_result.host_draw_vertex_count));
       }
     } else {
@@ -7095,14 +7098,14 @@ bool MetalCommandProcessor::DispatchDraw(
         // PrepareNativeMslDrawResources / BindNativeMslDrawResources).
         // instanceCount is 1, so [[instance_id]] == baseInstance, which the
         // guest vertex path ignores.
-        current_render_encoder_->drawIndexedPrimitives(
+        encode_ctx().render_encoder->drawIndexedPrimitives(
             mtl_primitive,
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
             index_type, index_buffer, index_offset, NS::UInteger(1),
             NS::Integer(0), NS::UInteger(native_msl_draw_constants_slot));
       } else {
         IRRuntimeDrawIndexedPrimitives(
-            current_render_encoder_, mtl_primitive,
+            encode_ctx().render_encoder, mtl_primitive,
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
             index_type, index_buffer, index_offset, NS::UInteger(1), 0, 0);
       }
@@ -7114,8 +7117,8 @@ bool MetalCommandProcessor::DispatchDraw(
       shared_memory_->RangeWrittenByGpu(
           memexport_range.base_address_dwords << 2, memexport_range.size_bytes);
       if (NS::UInteger(memexport_write_stages)) {
-        active_render_encoder_shared_memory_write_stages_ = MTL::RenderStages(
-            NS::UInteger(active_render_encoder_shared_memory_write_stages_) |
+        encode_ctx().shared_memory_write_stages = MTL::RenderStages(
+            NS::UInteger(encode_ctx().shared_memory_write_stages) |
             NS::UInteger(memexport_write_stages));
         MarkSharedMemoryWritePending(memexport_range.base_address_dwords << 2,
                                      memexport_range.size_bytes,
@@ -7635,7 +7638,7 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
   current_bindless_active_cbv_masks_.fill(0);
   current_bindless_root_resource_set_ = {};
   current_bindless_root_resource_source_serial_ = 0;
-  render_encoder_bindless_root_resources_serial_ = 0;
+  encode_ctx().bindless_root_resources_serial = 0;
   current_bindless_shared_memory_is_uav_ = false;
 }
 
@@ -7690,12 +7693,12 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
   if (reason_index < backend_telemetry_.end_reasons.size()) {
     ++backend_telemetry_.end_reasons[reason_index];
   }
-  if (!current_render_encoder_) {
+  if (!encode_ctx().render_encoder) {
     ++backend_telemetry_.end_encoder_no_active;
-    current_render_encoder_has_zpd_visibility_ = false;
-    if (current_render_pass_descriptor_) {
-      current_render_pass_descriptor_->release();
-      current_render_pass_descriptor_ = nullptr;
+    encode_ctx().render_encoder_has_zpd_visibility = false;
+    if (encode_ctx().render_pass_descriptor) {
+      encode_ctx().render_pass_descriptor->release();
+      encode_ctx().render_pass_descriptor = nullptr;
     }
     ResetRenderEncoderBufferBindings();
     ResetRenderEncoderResourceUsage();
@@ -7713,25 +7716,25 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
   // fragment-stage output; later passes wait before Fragment and RT-reading
   // compute/blit consumers wait at encoder creation.
   if (render_target_hazard_fence_edges_ && render_target_fence_) {
-    current_render_encoder_->updateFence(render_target_fence_,
+    encode_ctx().render_encoder->updateFence(render_target_fence_,
                                          MTL::RenderStageFragment);
     RecordHazardFenceUpdate(/*compute_encoder=*/false);
   }
-  current_render_encoder_->endEncoding();
-  current_render_encoder_->release();
-  current_render_encoder_ = nullptr;
-  current_render_encoder_has_zpd_visibility_ = false;
+  encode_ctx().render_encoder->endEncoding();
+  encode_ctx().render_encoder->release();
+  encode_ctx().render_encoder = nullptr;
+  encode_ctx().render_encoder_has_zpd_visibility = false;
   ResetRenderEncoderBufferBindings();
   ResetRenderEncoderResourceUsage();
-  if (current_render_pass_descriptor_) {
-    current_render_pass_descriptor_->release();
-    current_render_pass_descriptor_ = nullptr;
+  if (encode_ctx().render_pass_descriptor) {
+    encode_ctx().render_pass_descriptor->release();
+    encode_ctx().render_pass_descriptor = nullptr;
   }
-  current_render_pipeline_state_ = nullptr;
-  rasterizer_state_valid_ = false;
-  current_depth_stencil_state_ = nullptr;
-  stencil_reference_valid_ = false;
-  heap_binds_set_on_encoder_ = false;
+  encode_ctx().render_pipeline_state = nullptr;
+  encode_ctx().rasterizer_state_valid = false;
+  encode_ctx().depth_stencil_state = nullptr;
+  encode_ctx().stencil_reference_valid = false;
+  encode_ctx().heap_binds_set_on_encoder = false;
   ResetRenderEncoderBufferBindings();
 }
 
@@ -7742,19 +7745,19 @@ void MetalCommandProcessor::InvalidateRenderEncoderStateAfterDrawPassTransfers(
   }
   using RTC = MetalRenderTargetCache;
   if (mutations & RTC::kDrawPassTransferEncoderMutationPipeline) {
-    current_render_pipeline_state_ = nullptr;
+    encode_ctx().render_pipeline_state = nullptr;
   }
   if (mutations & RTC::kDrawPassTransferEncoderMutationDepthStencil) {
-    current_depth_stencil_state_ = nullptr;
+    encode_ctx().depth_stencil_state = nullptr;
   }
   if (mutations & RTC::kDrawPassTransferEncoderMutationStencilReference) {
-    stencil_reference_valid_ = false;
+    encode_ctx().stencil_reference_valid = false;
   }
   if (mutations & RTC::kDrawPassTransferEncoderMutationViewport) {
-    viewport_dirty_ = true;
+    encode_ctx().viewport_dirty = true;
   }
   if (mutations & RTC::kDrawPassTransferEncoderMutationScissor) {
-    scissor_dirty_ = true;
+    encode_ctx().scissor_dirty = true;
   }
 
   constexpr RTC::DrawPassTransferEncoderMutationMask kTransferBufferMutations =
@@ -7777,7 +7780,7 @@ void MetalCommandProcessor::InvalidateRenderEncoderStateAfterDrawPassTransfers(
                                          1);
   }
   if (mutations & kTransferBufferMutations) {
-    heap_binds_set_on_encoder_ = false;
+    encode_ctx().heap_binds_set_on_encoder = false;
   }
 }
 
@@ -7858,7 +7861,7 @@ bool MetalCommandProcessor::RequestSharedMemoryRanges(
 bool MetalCommandProcessor::RequestSharedMemoryRangesInPlace(
     SharedMemoryRequestReason reason,
     std::vector<SharedMemory::Range>& ranges) {
-  const bool was_active = current_render_encoder_ != nullptr;
+  const bool was_active = encode_ctx().render_encoder != nullptr;
   const size_t reason_index = static_cast<size_t>(reason);
   const bool reason_valid = reason_index < kSharedMemoryRequestReasonCount;
   if (!shared_memory_) {
@@ -7933,7 +7936,7 @@ void MetalCommandProcessor::PrepareSharedMemoryUploadBeforeDrawPass(
   if (!shared_memory_ || !ranges || !range_count) {
     return;
   }
-  const bool render_encoder_active = current_render_encoder_ != nullptr;
+  const bool render_encoder_active = encode_ctx().render_encoder != nullptr;
   // Resident-draw fast path: if every range is already valid there is nothing
   // to upload, and GetUploadRouteInfo would scan every page (one IsRangeValid
   // call per page) only to return an empty route. AnySharedMemoryRangeInvalid
@@ -7956,7 +7959,7 @@ void MetalCommandProcessor::PrepareSharedMemoryUploadBeforeDrawPass(
 }
 
 bool MetalCommandProcessor::HasActiveSharedMemoryWritePending() const {
-  if (NS::UInteger(active_render_encoder_shared_memory_write_stages_)) {
+  if (NS::UInteger(encode_ctx().shared_memory_write_stages)) {
     return true;
   }
   for (const PendingSharedMemoryWrite& pending :
@@ -7977,7 +7980,7 @@ MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
     }
   }
   const size_t source_index = static_cast<size_t>(source);
-  const bool ends_render_encoder = current_render_encoder_ != nullptr;
+  const bool ends_render_encoder = encode_ctx().render_encoder != nullptr;
   if (source_index < kTransferRequestSourceCount) {
     ++backend_telemetry_.transfer_request_sources_total[source_index];
     if (ends_render_encoder) {
@@ -7989,7 +7992,7 @@ MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
   }
   EndSharedMemoryUploadBlitEncoder(
       SharedMemoryUploadEncoderEndReason::kTransferRequest);
-  if (current_render_encoder_) {
+  if (encode_ctx().render_encoder) {
     EndRenderEncoder(RenderEncoderEndReason::kRequestTransferCommandBuffer);
   }
   if (texture_cache_ &&
@@ -8094,14 +8097,14 @@ void MetalCommandProcessor::CommitStandaloneAndWait(MTL::CommandBuffer* cmd) {
 
 void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {
   for (EncoderResourceUsageTableEntry& entry :
-       render_encoder_resource_usage_table_) {
+       encode_ctx().resource_usage_table) {
     entry = {};
   }
-  render_encoder_resource_usage_count_ = 0;
-  render_encoder_heap_usage_.clear();
-  render_encoder_bindless_fixed_resources_serial_ = 0;
-  render_encoder_bindless_texture_resources_serial_ = 0;
-  render_encoder_bindless_root_resources_serial_ = 0;
+  encode_ctx().resource_usage_count = 0;
+  encode_ctx().heap_usage.clear();
+  encode_ctx().bindless_fixed_resources_serial = 0;
+  encode_ctx().bindless_texture_resources_serial = 0;
+  encode_ctx().bindless_root_resources_serial = 0;
 }
 
 void MetalCommandProcessor::AddRenderHeapRef(RenderResourceSet& set,
@@ -8477,20 +8480,20 @@ void MetalCommandProcessor::PublishBindlessRootResourceSet(
 void MetalCommandProcessor::ApplyRenderEncoderResourceSets() {
   ApplyRenderEncoderResourceSet(
       RenderResourceSetKind::kFixed, current_bindless_fixed_resource_set_,
-      render_encoder_bindless_fixed_resources_serial_);
+      encode_ctx().bindless_fixed_resources_serial);
   ApplyRenderEncoderResourceSet(
       RenderResourceSetKind::kTexture, current_bindless_texture_resource_set_,
-      render_encoder_bindless_texture_resources_serial_);
+      encode_ctx().bindless_texture_resources_serial);
   ApplyRenderEncoderResourceSet(RenderResourceSetKind::kRoot,
                                 current_bindless_root_resource_set_,
-                                render_encoder_bindless_root_resources_serial_);
+                                encode_ctx().bindless_root_resources_serial);
 }
 
 void MetalCommandProcessor::ApplyRenderEncoderResourceSet(
     RenderResourceSetKind kind, const RenderResourceSet& set,
     uint64_t& applied_serial) {
   const size_t kind_index = static_cast<size_t>(kind);
-  if (!current_render_encoder_) {
+  if (!encode_ctx().render_encoder) {
     return;
   }
   if (applied_serial == set.serial) {
@@ -8547,7 +8550,7 @@ void MetalCommandProcessor::ApplyRenderEncoderResourceSet(
 
 void MetalCommandProcessor::GrowRenderEncoderResourceUsageTable(
     size_t min_capacity) {
-  size_t capacity = render_encoder_resource_usage_table_.size();
+  size_t capacity = encode_ctx().resource_usage_table.size();
   if (!capacity) {
     capacity = 256;
   }
@@ -8556,9 +8559,9 @@ void MetalCommandProcessor::GrowRenderEncoderResourceUsageTable(
   }
 
   std::vector<EncoderResourceUsageTableEntry> old_entries =
-      std::move(render_encoder_resource_usage_table_);
-  render_encoder_resource_usage_table_.assign(capacity, {});
-  render_encoder_resource_usage_count_ = 0;
+      std::move(encode_ctx().resource_usage_table);
+  encode_ctx().resource_usage_table.assign(capacity, {});
+  encode_ctx().resource_usage_count = 0;
   for (const EncoderResourceUsageTableEntry& old_entry : old_entries) {
     if (!old_entry.resource) {
       continue;
@@ -8579,24 +8582,24 @@ MetalCommandProcessor::FindOrInsertRenderEncoderResourceUsage(
   if (!resource) {
     return nullptr;
   }
-  if (render_encoder_resource_usage_table_.empty() ||
-      (render_encoder_resource_usage_count_ + 1) * 4 >=
-          render_encoder_resource_usage_table_.size() * 3) {
+  if (encode_ctx().resource_usage_table.empty() ||
+      (encode_ctx().resource_usage_count + 1) * 4 >=
+          encode_ctx().resource_usage_table.size() * 3) {
     GrowRenderEncoderResourceUsageTable(
-        std::max<size_t>(render_encoder_resource_usage_table_.size() * 2, 256));
+        std::max<size_t>(encode_ctx().resource_usage_table.size() * 2, 256));
   }
 
-  const size_t mask = render_encoder_resource_usage_table_.size() - 1;
+  const size_t mask = encode_ctx().resource_usage_table.size() - 1;
   size_t index =
       ((reinterpret_cast<uintptr_t>(resource) >> 4) * 11400714819323198485ull) &
       mask;
   for (;;) {
     EncoderResourceUsageTableEntry& entry =
-        render_encoder_resource_usage_table_[index];
+        encode_ctx().resource_usage_table[index];
     if (!entry.resource) {
       entry.resource = resource;
       entry.state = {};
-      ++render_encoder_resource_usage_count_;
+      ++encode_ctx().resource_usage_count;
       inserted = true;
       return &entry.state;
     }
@@ -8608,32 +8611,32 @@ MetalCommandProcessor::FindOrInsertRenderEncoderResourceUsage(
 }
 
 void MetalCommandProcessor::ResetRenderEncoderBufferBindings() {
-  for (auto& stage_bindings : render_encoder_buffer_bindings_) {
+  for (auto& stage_bindings : encode_ctx().buffer_bindings) {
     for (auto& binding : stage_bindings) {
       binding = {};
     }
   }
-  render_encoder_bindless_stage_root_bind_serials_.fill(0);
-  render_encoder_bindless_table_bind_mesh_path_ = false;
-  render_encoder_bindless_table_bind_tessellation_ = false;
+  encode_ctx().bindless_stage_root_bind_serials.fill(0);
+  encode_ctx().bindless_table_bind_mesh_path = false;
+  encode_ctx().bindless_table_bind_tessellation = false;
 }
 
 void MetalCommandProcessor::InvalidateRenderEncoderBufferBinding(
     RenderEncoderBufferStage stage, NS::UInteger index) {
   const size_t stage_index = size_t(stage);
-  if (stage_index >= render_encoder_buffer_bindings_.size() ||
+  if (stage_index >= encode_ctx().buffer_bindings.size() ||
       index >= kTrackedRenderEncoderBufferBindingCount) {
     return;
   }
-  render_encoder_buffer_bindings_[stage_index][index] = {};
+  encode_ctx().buffer_bindings[stage_index][index] = {};
   if (index == kIRArgumentBufferBindPoint ||
       index == kIRArgumentBufferHullDomainBindPoint) {
     if (stage == RenderEncoderBufferStage::kFragment) {
-      render_encoder_bindless_stage_root_bind_serials_[kStagePixel] = 0;
+      encode_ctx().bindless_stage_root_bind_serials[kStagePixel] = 0;
     } else {
-      render_encoder_bindless_stage_root_bind_serials_[kStageVertex] = 0;
-      render_encoder_bindless_table_bind_mesh_path_ = false;
-      render_encoder_bindless_table_bind_tessellation_ = false;
+      encode_ctx().bindless_stage_root_bind_serials[kStageVertex] = 0;
+      encode_ctx().bindless_table_bind_mesh_path = false;
+      encode_ctx().bindless_table_bind_tessellation = false;
     }
   }
 }
@@ -8642,19 +8645,19 @@ bool MetalCommandProcessor::RenderEncoderBufferBindingMatches(
     RenderEncoderBufferStage stage, MTL::Buffer* buffer, NS::UInteger offset,
     NS::UInteger index) const {
   const size_t stage_index = size_t(stage);
-  if (stage_index >= render_encoder_buffer_bindings_.size() ||
+  if (stage_index >= encode_ctx().buffer_bindings.size() ||
       index >= kTrackedRenderEncoderBufferBindingCount) {
     return false;
   }
   const RenderEncoderBufferBinding& binding =
-      render_encoder_buffer_bindings_[stage_index][index];
+      encode_ctx().buffer_bindings[stage_index][index];
   return binding.valid && binding.buffer == buffer && binding.offset == offset;
 }
 
 void MetalCommandProcessor::SetRenderEncoderBuffer(
     RenderEncoderBufferStage stage, MTL::Buffer* buffer, NS::UInteger offset,
     NS::UInteger index) {
-  if (!current_render_encoder_ || stage == RenderEncoderBufferStage::kCount) {
+  if (!encode_ctx().render_encoder || stage == RenderEncoderBufferStage::kCount) {
     return;
   }
   size_t stage_index = static_cast<size_t>(stage);
@@ -8662,19 +8665,19 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
                         NS::UInteger offset_to_set) {
     switch (stage) {
       case RenderEncoderBufferStage::kVertex:
-        current_render_encoder_->setVertexBuffer(buffer_to_set, offset_to_set,
+        encode_ctx().render_encoder->setVertexBuffer(buffer_to_set, offset_to_set,
                                                  index);
         break;
       case RenderEncoderBufferStage::kFragment:
-        current_render_encoder_->setFragmentBuffer(buffer_to_set, offset_to_set,
+        encode_ctx().render_encoder->setFragmentBuffer(buffer_to_set, offset_to_set,
                                                    index);
         break;
       case RenderEncoderBufferStage::kObject:
-        current_render_encoder_->setObjectBuffer(buffer_to_set, offset_to_set,
+        encode_ctx().render_encoder->setObjectBuffer(buffer_to_set, offset_to_set,
                                                  index);
         break;
       case RenderEncoderBufferStage::kMesh:
-        current_render_encoder_->setMeshBuffer(buffer_to_set, offset_to_set,
+        encode_ctx().render_encoder->setMeshBuffer(buffer_to_set, offset_to_set,
                                                index);
         break;
       case RenderEncoderBufferStage::kCount:
@@ -8684,16 +8687,16 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
   auto set_buffer_offset = [&]() {
     switch (stage) {
       case RenderEncoderBufferStage::kVertex:
-        current_render_encoder_->setVertexBufferOffset(offset, index);
+        encode_ctx().render_encoder->setVertexBufferOffset(offset, index);
         break;
       case RenderEncoderBufferStage::kFragment:
-        current_render_encoder_->setFragmentBufferOffset(offset, index);
+        encode_ctx().render_encoder->setFragmentBufferOffset(offset, index);
         break;
       case RenderEncoderBufferStage::kObject:
-        current_render_encoder_->setObjectBufferOffset(offset, index);
+        encode_ctx().render_encoder->setObjectBufferOffset(offset, index);
         break;
       case RenderEncoderBufferStage::kMesh:
-        current_render_encoder_->setMeshBufferOffset(offset, index);
+        encode_ctx().render_encoder->setMeshBufferOffset(offset, index);
         break;
       case RenderEncoderBufferStage::kCount:
         break;
@@ -8723,7 +8726,7 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
       ++counts[stage_slot_index];
     }
   };
-  auto& binding = render_encoder_buffer_bindings_[stage_index][index];
+  auto& binding = encode_ctx().buffer_bindings[stage_index][index];
   if (binding.valid && binding.buffer == buffer) {
     if (binding.offset != offset) {
       if (stage_index <
@@ -8788,7 +8791,7 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
 void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
                                                      MTL::ResourceUsage usage,
                                                      MTL::RenderStages stages) {
-  if (!current_render_encoder_ || !resource) {
+  if (!encode_ctx().render_encoder || !resource) {
     return;
   }
   if (IsResidencySetResourceCovered(resource)) {
@@ -8848,7 +8851,7 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
   }
 
   add_usage_to_state(*state);
-  current_render_encoder_->useResource(resource, usage, stages);
+  encode_ctx().render_encoder->useResource(resource, usage, stages);
 }
 
 void MetalCommandProcessor::UseRenderEncoderResources(
@@ -8861,7 +8864,7 @@ void MetalCommandProcessor::UseRenderEncoderResources(
 void MetalCommandProcessor::UseRenderEncoderResources(
     const MTL::Resource* const resources[], uint32_t count,
     MTL::ResourceUsage usage, MTL::RenderStages stages) {
-  if (!current_render_encoder_ || !resources || !count) {
+  if (!encode_ctx().render_encoder || !resources || !count) {
     return;
   }
   const uint32_t usage_bits = MetalResourceUsageBits(usage);
@@ -8905,7 +8908,7 @@ void MetalCommandProcessor::UseRenderEncoderResources(
     if (!resource_batch_count) {
       return;
     }
-    current_render_encoder_->useResources(resource_batch.data(),
+    encode_ctx().render_encoder->useResources(resource_batch.data(),
                                           resource_batch_count, usage, stages);
     ++backend_telemetry_.render_encoder_use_resources_batches;
     resource_batch_count = 0;
@@ -8946,7 +8949,7 @@ void MetalCommandProcessor::UseRenderEncoderResources(
 }
 
 void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
-  if (!current_render_encoder_ || !heap) {
+  if (!encode_ctx().render_encoder || !heap) {
     return;
   }
   // See IsResidencySetResourceCovered: for a TRACKED heap this usage
@@ -8959,19 +8962,19 @@ void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
     ++backend_telemetry_.residency_set_use_heaps_covered;
     return;
   }
-  for (MTL::Heap* used_heap : render_encoder_heap_usage_) {
+  for (MTL::Heap* used_heap : encode_ctx().heap_usage) {
     if (used_heap == heap) {
       return;
     }
   }
   ++backend_telemetry_.residency_set_use_heaps_fallback;
-  render_encoder_heap_usage_.push_back(heap);
-  current_render_encoder_->useHeap(heap);
+  encode_ctx().heap_usage.push_back(heap);
+  encode_ctx().render_encoder->useHeap(heap);
 }
 
 void MetalCommandProcessor::UseRenderEncoderAttachmentHeaps(
     MTL::RenderPassDescriptor* descriptor) {
-  if (!current_render_encoder_ || !descriptor) {
+  if (!encode_ctx().render_encoder || !descriptor) {
     return;
   }
   auto* color_attachments = descriptor->colorAttachments();
@@ -9111,7 +9114,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     return false;
   }
   if (!pending_shared_memory_writes_.empty() ||
-      NS::UInteger(active_render_encoder_shared_memory_write_stages_)) {
+      NS::UInteger(encode_ctx().shared_memory_write_stages)) {
     return false;
   }
   // No ZPD query window may be open: the worker's OpenQuerySegment must stay
@@ -9169,11 +9172,11 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
   // consumed clear is already a dropped-draws situation.
   PreparedDrawBatch batch;
   const bool reuse_encoder =
-      current_render_encoder_ && render_target_cache_ &&
+      encode_ctx().render_encoder && render_target_cache_ &&
       render_target_cache_->IsRenderPassDescriptorCompatible(
-          current_render_pass_descriptor_, 1, fallback_depth);
+          encode_ctx().render_pass_descriptor, 1, fallback_depth);
   if (reuse_encoder) {
-    batch.has_zpd_visibility = current_render_encoder_has_zpd_visibility_;
+    batch.has_zpd_visibility = encode_ctx().render_encoder_has_zpd_visibility;
   } else {
     MTL::RenderPassDescriptor* live_descriptor =
         GetDrawRenderPassDescriptor(fallback_depth);
@@ -9192,7 +9195,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     if (!batch.create_descriptor) {
       return false;
     }
-    if (current_render_encoder_) {
+    if (encode_ctx().render_encoder) {
       ++backend_telemetry_.begin_encoder_descriptor_restarts;
       EndRenderEncoder(
           RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
@@ -9233,7 +9236,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
 
 bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   ++backend_telemetry_.begin_encoder_calls;
-  if (current_render_encoder_) {
+  if (encode_ctx().render_encoder) {
     // Batch invariant: a single render-target configuration, and nothing on
     // the worker path ends the encoder mid-batch.
     ++backend_telemetry_.begin_encoder_reused_compatible;
@@ -9246,58 +9249,58 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
     XELOGE("Metal parallel encode: batch has no encoder and no descriptor");
     return false;
   }
-  if (render_encoder_resource_usage_count_ ||
-      !render_encoder_heap_usage_.empty()) {
+  if (encode_ctx().resource_usage_count ||
+      !encode_ctx().heap_usage.empty()) {
     ++backend_telemetry_.begin_encoder_resource_usage_resets;
     ResetRenderEncoderResourceUsage();
   }
-  current_render_encoder_ =
+  encode_ctx().render_encoder =
       current_command_buffer_->renderCommandEncoder(pass_descriptor);
-  if (!current_render_encoder_) {
+  if (!encode_ctx().render_encoder) {
     ++backend_telemetry_.begin_encoder_creation_failures;
     XELOGE("Metal parallel encode: failed to create render command encoder");
     return false;
   }
   ++backend_telemetry_.begin_encoder_created;
-  current_render_encoder_->retain();
-  current_render_encoder_has_zpd_visibility_ =
+  encode_ctx().render_encoder->retain();
+  encode_ctx().render_encoder_has_zpd_visibility =
       encode_worker_batch_.has_zpd_visibility;
   ResetRenderEncoderBufferBindings();
-  current_render_encoder_->setLabel(
+  encode_ctx().render_encoder->setLabel(
       NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
   // Hazard consumer edges, identical to the inline begin path.
   if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
-    current_render_encoder_->waitForFence(
+    encode_ctx().render_encoder->waitForFence(
         shared_memory_fence_, MTL::RenderStageVertex | MTL::RenderStageObject |
                                   MTL::RenderStageMesh);
     RecordHazardFenceWait(0);
   }
   if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
-    current_render_encoder_->waitForFence(
+    encode_ctx().render_encoder->waitForFence(
         texture_upload_fence_,
         MTL::RenderStageVertex | MTL::RenderStageObject |
             MTL::RenderStageMesh | MTL::RenderStageFragment);
     RecordHazardFenceWait(0);
   }
   if (render_target_hazard_fence_edges_ && render_target_fence_) {
-    current_render_encoder_->waitForFence(render_target_fence_,
+    encode_ctx().render_encoder->waitForFence(render_target_fence_,
                                           MTL::RenderStageFragment);
     RecordHazardFenceWait(0);
   }
-  current_render_pipeline_state_ = nullptr;
-  ff_blend_factor_valid_ = false;
-  rasterizer_state_valid_ = false;
-  viewport_dirty_ = true;
-  scissor_dirty_ = true;
-  current_depth_stencil_state_ = nullptr;
-  stencil_reference_valid_ = false;
-  heap_binds_set_on_encoder_ = false;
-  if (current_render_pass_descriptor_ != pass_descriptor) {
-    if (current_render_pass_descriptor_) {
-      current_render_pass_descriptor_->release();
+  encode_ctx().render_pipeline_state = nullptr;
+  encode_ctx().blend_factor_valid = false;
+  encode_ctx().rasterizer_state_valid = false;
+  encode_ctx().viewport_dirty = true;
+  encode_ctx().scissor_dirty = true;
+  encode_ctx().depth_stencil_state = nullptr;
+  encode_ctx().stencil_reference_valid = false;
+  encode_ctx().heap_binds_set_on_encoder = false;
+  if (encode_ctx().render_pass_descriptor != pass_descriptor) {
+    if (encode_ctx().render_pass_descriptor) {
+      encode_ctx().render_pass_descriptor->release();
     }
-    current_render_pass_descriptor_ = pass_descriptor;
-    current_render_pass_descriptor_->retain();
+    encode_ctx().render_pass_descriptor = pass_descriptor;
+    encode_ctx().render_pass_descriptor->retain();
   }
   UseRenderEncoderAttachmentHeaps(pass_descriptor);
   // Initial viewport/scissor from the extent resolved at handoff; IssueDraw's
@@ -9308,12 +9311,12 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
                             static_cast<double>(encode_worker_batch_.rt_height),
                             0.0,
                             1.0};
-  current_render_encoder_->setViewport(viewport);
+  encode_ctx().render_encoder->setViewport(viewport);
   MTL::ScissorRect scissor = {0, 0, encode_worker_batch_.rt_width,
                               encode_worker_batch_.rt_height};
-  current_render_encoder_->setScissorRect(scissor);
-  viewport_dirty_ = true;
-  scissor_dirty_ = true;
+  encode_ctx().render_encoder->setScissorRect(scissor);
+  encode_ctx().viewport_dirty = true;
+  encode_ctx().scissor_dirty = true;
   return true;
 }
 
@@ -9363,14 +9366,14 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     return false;
   }
 
-  if (!current_render_encoder_ && (render_encoder_resource_usage_count_ ||
-                                   !render_encoder_heap_usage_.empty())) {
+  if (!encode_ctx().render_encoder && (encode_ctx().resource_usage_count ||
+                                   !encode_ctx().heap_usage.empty())) {
     ++backend_telemetry_.begin_encoder_resource_usage_resets;
     ResetRenderEncoderResourceUsage();
   }
 
-  if (current_render_encoder_ && zpd_segment_pending && IsZPDQueryPoolReady() &&
-      !current_render_encoder_has_zpd_visibility_) {
+  if (encode_ctx().render_encoder && zpd_segment_pending && IsZPDQueryPoolReady() &&
+      !encode_ctx().render_encoder_has_zpd_visibility) {
     EndRenderEncoder(RenderEncoderEndReason::kUnknown);
   }
 
@@ -9379,9 +9382,9 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
   // descriptor while the attachment textures still match the current binding.
   // The cache may be dirty only because a clear load action was consumed and
   // the next new pass needs a refreshed descriptor.
-  if (current_render_encoder_ && render_target_cache_ &&
+  if (encode_ctx().render_encoder && render_target_cache_ &&
       render_target_cache_->IsRenderPassDescriptorCompatible(
-          current_render_pass_descriptor_, 1,
+          encode_ctx().render_pass_descriptor, 1,
           fallback_depth_attachment_required)) {
     ++backend_telemetry_.begin_encoder_reused_compatible;
     return true;
@@ -9406,40 +9409,40 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
   // If the render pass configuration has changed since the current render
   // encoder was created (e.g. dummy RT0 -> real RTs, depth/stencil binding),
   // restart the render encoder with the updated descriptor.
-  if (current_render_encoder_ &&
-      current_render_pass_descriptor_ != pass_descriptor) {
+  if (encode_ctx().render_encoder &&
+      encode_ctx().render_pass_descriptor != pass_descriptor) {
     ++backend_telemetry_.begin_encoder_descriptor_restarts;
     EndRenderEncoder(
         RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
   }
 
-  if (!current_render_encoder_) {
+  if (!encode_ctx().render_encoder) {
     EndSharedMemoryUploadBlitEncoder(
         SharedMemoryUploadEncoderEndReason::kRenderBegin);
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
     // Note: renderCommandEncoder() returns an autoreleased object, we must
     // retain it.
-    current_render_encoder_ =
+    encode_ctx().render_encoder =
         current_command_buffer_->renderCommandEncoder(pass_descriptor);
-    if (!current_render_encoder_) {
+    if (!encode_ctx().render_encoder) {
       ++backend_telemetry_.begin_encoder_creation_failures;
       XELOGE("Failed to create render command encoder");
       return false;
     }
     ++backend_telemetry_.begin_encoder_created;
-    current_render_encoder_->retain();
+    encode_ctx().render_encoder->retain();
     // This encoder performs the descriptor's baked first-use clears; tell the
     // cache so the next pass loads the cleared contents instead.
     if (render_target_cache_) {
       render_target_cache_->ConsumeRenderPassDescriptorClears(pass_descriptor);
     }
-    current_render_encoder_has_zpd_visibility_ =
+    encode_ctx().render_encoder_has_zpd_visibility =
         zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
         pass_descriptor->visibilityResultBuffer() ==
             zpd_visibility_pool_->visibility_buffer();
     ResetRenderEncoderBufferBindings();
-    current_render_encoder_->setLabel(
+    encode_ctx().render_encoder->setLabel(
         NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
     // Hazard model consumer edge: order all prior shared-memory writers
     // (upload blits, compute resolves, earlier memexport encoders) before
@@ -9447,7 +9450,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // (D3D12 VERTEX_AND_CONSTANT_BUFFER / INDEX_BUFFER -> Vertex); object and
     // mesh cover the mesh-shader draw paths.
     if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
-      current_render_encoder_->waitForFence(shared_memory_fence_,
+      encode_ctx().render_encoder->waitForFence(shared_memory_fence_,
                                             MTL::RenderStageVertex |
                                                 MTL::RenderStageObject |
                                                 MTL::RenderStageMesh);
@@ -9458,7 +9461,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // buffer) before this encoder samples their textures. Guest texture
     // fetches happen in every programmable stage this backend uses.
     if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
-      current_render_encoder_->waitForFence(
+      encode_ctx().render_encoder->waitForFence(
           texture_upload_fence_,
           MTL::RenderStageVertex | MTL::RenderStageObject |
               MTL::RenderStageMesh | MTL::RenderStageFragment);
@@ -9469,24 +9472,24 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // sample other render targets (both fragment-stage reads). Vertex work
     // of this pass may still overlap prior fragment work.
     if (render_target_hazard_fence_edges_ && render_target_fence_) {
-      current_render_encoder_->waitForFence(render_target_fence_,
+      encode_ctx().render_encoder->waitForFence(render_target_fence_,
                                             MTL::RenderStageFragment);
       RecordHazardFenceWait(0);
     }
-    current_render_pipeline_state_ = nullptr;
-    ff_blend_factor_valid_ = false;
-    rasterizer_state_valid_ = false;
-    viewport_dirty_ = true;
-    scissor_dirty_ = true;
-    current_depth_stencil_state_ = nullptr;
-    stencil_reference_valid_ = false;
-    heap_binds_set_on_encoder_ = false;
-    if (current_render_pass_descriptor_ != pass_descriptor) {
-      if (current_render_pass_descriptor_) {
-        current_render_pass_descriptor_->release();
+    encode_ctx().render_pipeline_state = nullptr;
+    encode_ctx().blend_factor_valid = false;
+    encode_ctx().rasterizer_state_valid = false;
+    encode_ctx().viewport_dirty = true;
+    encode_ctx().scissor_dirty = true;
+    encode_ctx().depth_stencil_state = nullptr;
+    encode_ctx().stencil_reference_valid = false;
+    encode_ctx().heap_binds_set_on_encoder = false;
+    if (encode_ctx().render_pass_descriptor != pass_descriptor) {
+      if (encode_ctx().render_pass_descriptor) {
+        encode_ctx().render_pass_descriptor->release();
       }
-      current_render_pass_descriptor_ = pass_descriptor;
-      current_render_pass_descriptor_->retain();
+      encode_ctx().render_pass_descriptor = pass_descriptor;
+      encode_ctx().render_pass_descriptor->retain();
     }
     UseRenderEncoderAttachmentHeaps(pass_descriptor);
 
@@ -9501,14 +9504,14 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     MTL::Viewport viewport = {
         0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
         0.0, 1.0};
-    current_render_encoder_->setViewport(viewport);
+    encode_ctx().render_encoder->setViewport(viewport);
 
     MTL::ScissorRect scissor = {0, 0, rt_width, rt_height};
-    current_render_encoder_->setScissorRect(scissor);
+    encode_ctx().render_encoder->setScissorRect(scissor);
 
     // IssueDraw applies the guest viewport/scissor before dispatch.
-    viewport_dirty_ = true;
-    scissor_dirty_ = true;
+    encode_ctx().viewport_dirty = true;
+    encode_ctx().scissor_dirty = true;
   }
   return true;
 }
@@ -9664,13 +9667,13 @@ void MetalCommandProcessor::PrepareDrawDepthStencilState(
 void MetalCommandProcessor::ApplyDepthStencilState(
     const DrawDynamicState& dynamic_state, MTL::DepthStencilState* state,
     bool effective_stencil_enable) {
-  if (!current_render_encoder_ || !state) {
+  if (!encode_ctx().render_encoder || !state) {
     return;
   }
 
-  if (current_depth_stencil_state_ != state) {
-    current_render_encoder_->setDepthStencilState(state);
-    current_depth_stencil_state_ = state;
+  if (encode_ctx().depth_stencil_state != state) {
+    encode_ctx().render_encoder->setDepthStencilState(state);
+    encode_ctx().depth_stencil_state = state;
   }
 
   if (effective_stencil_enable) {
@@ -9697,57 +9700,57 @@ void MetalCommandProcessor::ApplyDepthStencilState(
             ref_front, ref_back);
       }
     }
-    if (!stencil_reference_valid_ || current_stencil_reference_ != ref) {
-      current_render_encoder_->setStencilReferenceValue(ref);
-      current_stencil_reference_ = ref;
-      stencil_reference_valid_ = true;
+    if (!encode_ctx().stencil_reference_valid || encode_ctx().stencil_reference != ref) {
+      encode_ctx().render_encoder->setStencilReferenceValue(ref);
+      encode_ctx().stencil_reference = ref;
+      encode_ctx().stencil_reference_valid = true;
     }
   }
 }
 
 void MetalCommandProcessor::ApplyRasterizerState(
     const DrawDynamicState& dynamic_state) {
-  if (!current_render_encoder_ || !render_target_cache_) {
+  if (!encode_ctx().render_encoder || !render_target_cache_) {
     return;
   }
 
-  if (!rasterizer_state_valid_ ||
-      current_cull_mode_ != dynamic_state.cull_mode) {
-    current_render_encoder_->setCullMode(dynamic_state.cull_mode);
-    current_cull_mode_ = dynamic_state.cull_mode;
+  if (!encode_ctx().rasterizer_state_valid ||
+      encode_ctx().cull_mode != dynamic_state.cull_mode) {
+    encode_ctx().render_encoder->setCullMode(dynamic_state.cull_mode);
+    encode_ctx().cull_mode = dynamic_state.cull_mode;
   }
 
-  if (!rasterizer_state_valid_ ||
-      current_front_facing_winding_ != dynamic_state.front_facing_winding) {
-    current_render_encoder_->setFrontFacingWinding(
+  if (!encode_ctx().rasterizer_state_valid ||
+      encode_ctx().front_facing_winding != dynamic_state.front_facing_winding) {
+    encode_ctx().render_encoder->setFrontFacingWinding(
         dynamic_state.front_facing_winding);
-    current_front_facing_winding_ = dynamic_state.front_facing_winding;
+    encode_ctx().front_facing_winding = dynamic_state.front_facing_winding;
   }
 
-  if (!rasterizer_state_valid_ ||
-      current_triangle_fill_mode_ != dynamic_state.triangle_fill_mode) {
-    current_render_encoder_->setTriangleFillMode(
+  if (!encode_ctx().rasterizer_state_valid ||
+      encode_ctx().triangle_fill_mode != dynamic_state.triangle_fill_mode) {
+    encode_ctx().render_encoder->setTriangleFillMode(
         dynamic_state.triangle_fill_mode);
-    current_triangle_fill_mode_ = dynamic_state.triangle_fill_mode;
+    encode_ctx().triangle_fill_mode = dynamic_state.triangle_fill_mode;
   }
 
   float depth_bias_values[] = {dynamic_state.depth_bias_constant,
                                dynamic_state.depth_bias_slope, 0.0f};
-  if (!rasterizer_state_valid_ ||
-      std::memcmp(current_depth_bias_values_, depth_bias_values,
+  if (!encode_ctx().rasterizer_state_valid ||
+      std::memcmp(encode_ctx().depth_bias_values, depth_bias_values,
                   sizeof(depth_bias_values)) != 0) {
-    current_render_encoder_->setDepthBias(dynamic_state.depth_bias_constant,
+    encode_ctx().render_encoder->setDepthBias(dynamic_state.depth_bias_constant,
                                           dynamic_state.depth_bias_slope, 0.0f);
-    std::memcpy(current_depth_bias_values_, depth_bias_values,
+    std::memcpy(encode_ctx().depth_bias_values, depth_bias_values,
                 sizeof(depth_bias_values));
   }
 
-  if (!rasterizer_state_valid_ ||
-      current_depth_clip_mode_ != dynamic_state.depth_clip_mode) {
-    current_render_encoder_->setDepthClipMode(dynamic_state.depth_clip_mode);
-    current_depth_clip_mode_ = dynamic_state.depth_clip_mode;
+  if (!encode_ctx().rasterizer_state_valid ||
+      encode_ctx().depth_clip_mode != dynamic_state.depth_clip_mode) {
+    encode_ctx().render_encoder->setDepthClipMode(dynamic_state.depth_clip_mode);
+    encode_ctx().depth_clip_mode = dynamic_state.depth_clip_mode;
   }
-  rasterizer_state_valid_ = true;
+  encode_ctx().rasterizer_state_valid = true;
 }
 
 void MetalCommandProcessor::UpdateSystemConstantValues(
