@@ -772,7 +772,20 @@ class MetalCommandProcessor final : public CommandProcessor {
     PrimitiveProcessor::ProcessingResult primitive_processing_result = {};
     UniformBufferInfo uniforms = {};
     DrawDynamicState dynamic_state = {};
+    // Prep-resolved fixed-function depth/stencil state object plus the
+    // post-fallback stencil enable (stencil is forced off when the pass has
+    // no stencil attachment). Resolved at IssueDraw time so the
+    // depth-stencil cache lookup and MTLDepthStencilState creation never run
+    // inside the encode loop (the cache is prep-side-only state; the encode
+    // worker must not mutate it).
+    MTL::DepthStencilState* depth_stencil_state = nullptr;
+    bool depth_stencil_effective_stencil_enable = false;
     PreparedIndexBuffer prepared_guest_dma_index_buffer = {};
+    // Prep-resolved host-converted/builtin index buffer location. The
+    // primitive_processor_ lookups happen at IssueDraw time so the encode
+    // path - which may run on the encode worker concurrently with the next
+    // draw's index conversion - never reads the conversion pools.
+    PreparedIndexBuffer prepared_host_index_buffer = {};
     IndexBufferInfo index_buffer_info = {};
     bool has_index_buffer_info = false;
 
@@ -858,7 +871,16 @@ class MetalCommandProcessor final : public CommandProcessor {
       MTL::RenderPassDescriptor* render_pass_descriptor,
       UniformBufferInfo& uniforms_out, DrawDynamicState& dynamic_state_out);
 
-  void ApplyDrawDynamicState(const DrawDynamicState& dynamic_state);
+  void ApplyDrawDynamicState(const PreparedDraw& draw);
+
+  // Queue-time half of the fixed-function depth/stencil state: builds the
+  // cache key (including the no-stencil-attachment fallback, resolved from
+  // the draw's render pass descriptor), creates the MTLDepthStencilState on
+  // a miss, and stores the result on the draw. Keeps
+  // depth_stencil_state_cache_ prep-side-only so the encode worker never
+  // touches it.
+  void PrepareDrawDepthStencilState(
+      const MTL::RenderPassDescriptor* pass_descriptor, PreparedDraw& draw);
 
   PreparedDrawRenderTargetKey BuildPreparedDrawRenderTargetKey(
       const RegisterFile& regs, bool is_rasterization_done,
@@ -952,6 +974,7 @@ class MetalCommandProcessor final : public CommandProcessor {
       bool memexport_used, MTL::RenderStages memexport_write_stages,
       bool uses_vertex_fetch, bool shared_memory_resource_registered,
       const PreparedIndexBuffer* prepared_guest_dma_index_buffer,
+      const PreparedIndexBuffer* prepared_host_index_buffer,
       PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
       const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
       const IndexBufferInfo* index_buffer_info,
@@ -1472,7 +1495,11 @@ class MetalCommandProcessor final : public CommandProcessor {
                                             uint32_t start, uint32_t length);
 
   // Fixed-function depth/stencil state (mirrors Vulkan/D3D12 dynamic state).
-  void ApplyDepthStencilState(const DrawDynamicState& dynamic_state);
+  // Applies the prep-resolved state object; the cache lookup/creation lives
+  // in PrepareDrawDepthStencilState.
+  void ApplyDepthStencilState(const DrawDynamicState& dynamic_state,
+                              MTL::DepthStencilState* state,
+                              bool effective_stencil_enable);
   void ApplyRasterizerState(const DrawDynamicState& dynamic_state);
 
   // Constants for the MSC path.
@@ -2099,8 +2126,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   uint64_t frame_current_ = 1;
   uint64_t frame_completed_ = 0;
   uint64_t closed_frame_submissions_[kMaxFramesInFlight] = {};
-
-  bool submission_has_draws_ = false;
 
   // ZPD visibility query state. Metal has no query pool object; each physical
   // query segment gets one fresh 8-byte offset in the visibility buffer.

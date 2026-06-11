@@ -994,6 +994,13 @@ bool MetalCommandProcessor::AddResidencySetResource(MTL::Resource* resource) {
 
 bool MetalCommandProcessor::IsResidencySetResourceCovered(
     MTL::Resource* resource) const {
+  // Mirrors IsResidencySetHeapCovered: the resource set can gain entries on
+  // the CP thread while the encode worker encodes; the worker answers
+  // conservatively (a stale "not covered" only costs a redundant
+  // useResource; entries are never removed mid-session).
+  if (tls_on_encode_worker) {
+    return false;
+  }
   if (!residency_set_enabled_ || !resource) {
     return false;
   }
@@ -1574,7 +1581,6 @@ void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
     }
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
-    submission_has_draws_ = false;
   }
   DrainCommandBufferAutoreleasePool();
 
@@ -2099,7 +2105,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
-    submission_has_draws_ = false;
   }
   DrainCommandBufferAutoreleasePool();
 
@@ -4028,6 +4033,42 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
+  // Resolve host-converted / builtin index buffers now: the converted-index
+  // pool is mutated by later draws' prep, so the encode path (which may run
+  // on the encode worker concurrently with that prep) must not look indices
+  // up through primitive_processor_. The buffers are frame-lifetime, so a
+  // prep-time resolution stays valid through encode.
+  PreparedIndexBuffer prepared_host_index_buffer;
+  switch (primitive_processing_result.index_buffer_type) {
+    case PrimitiveProcessor::ProcessedIndexBufferType::kHostConverted:
+      if (primitive_processor_) {
+        prepared_host_index_buffer.buffer =
+            primitive_processor_->GetConvertedIndexBuffer(
+                primitive_processing_result.host_index_buffer_handle,
+                prepared_host_index_buffer.offset);
+      }
+      if (!prepared_host_index_buffer.buffer) {
+        XELOGE("IssueDraw: converted index buffer unavailable at prep time");
+        return fail_prepared_draw();
+      }
+      break;
+    case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForAuto:
+    case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA:
+      if (primitive_processor_) {
+        prepared_host_index_buffer.buffer =
+            primitive_processor_->GetBuiltinIndexBuffer();
+        prepared_host_index_buffer.offset =
+            primitive_processing_result.host_index_buffer_handle;
+      }
+      if (!prepared_host_index_buffer.buffer) {
+        XELOGE("IssueDraw: builtin index buffer unavailable at prep time");
+        return fail_prepared_draw();
+      }
+      break;
+    default:
+      break;
+  }
+
   std::array<SharedMemoryRange, 96> shared_memory_hazard_ranges = {};
   uint32_t shared_memory_hazard_range_count = 0;
   auto add_shared_memory_hazard_range = [&](uint32_t start, uint32_t length) {
@@ -4102,7 +4143,15 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.primitive_processing_result = primitive_processing_result;
   draw.uniforms = uniforms;
   draw.dynamic_state = draw_dynamic_state;
+  draw.depth_stencil_state = nullptr;
+  draw.depth_stencil_effective_stencil_enable = false;
+  if (prepare_uniforms) {
+    // Resolve the fixed-function depth/stencil state object now (cache
+    // lookup + creation are prep-side; encode only applies the result).
+    PrepareDrawDepthStencilState(draw_pass_descriptor, draw);
+  }
   draw.prepared_guest_dma_index_buffer = prepared_guest_dma_index_buffer;
+  draw.prepared_host_index_buffer = prepared_host_index_buffer;
   if (index_buffer_info) {
     draw.index_buffer_info = *index_buffer_info;
     draw.has_index_buffer_info = true;
@@ -5115,8 +5164,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   return true;
 }
 
-void MetalCommandProcessor::ApplyDrawDynamicState(
-    const DrawDynamicState& dynamic_state) {
+void MetalCommandProcessor::ApplyDrawDynamicState(const PreparedDraw& draw) {
+  const DrawDynamicState& dynamic_state = draw.dynamic_state;
   if (viewport_dirty_ || std::memcmp(&dynamic_state.viewport, &cached_viewport_,
                                      sizeof(MTL::Viewport)) != 0) {
     current_render_encoder_->setViewport(dynamic_state.viewport);
@@ -5136,8 +5185,10 @@ void MetalCommandProcessor::ApplyDrawDynamicState(
   }
 
   // Fixed-function depth/stencil state is not part of the pipeline state in
-  // Metal, so update it per draw.
-  ApplyDepthStencilState(dynamic_state);
+  // Metal, so update it per draw (the state object itself was resolved at
+  // prep time by PrepareDrawDepthStencilState).
+  ApplyDepthStencilState(dynamic_state, draw.depth_stencil_state,
+                         draw.depth_stencil_effective_stencil_enable);
 
   bool blend_factor_update_needed =
       !ff_blend_factor_valid_ ||
@@ -6505,7 +6556,12 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   // was a redundant second full scan of the pending-write list on every hazard
   // draw. Call it directly; the behavior is identical (the error path inside is
   // still only reachable on a real overlap).
-  if (draw.shared_memory_hazard_range_count) {
+  // Worker batches skip the call entirely: eligibility required the pending
+  // write list to be EMPTY at handoff, and any write the CP thread queues
+  // afterwards executes after the batch in queue order (so it cannot be a
+  // dependency of these reads). Reading the list from the worker would race
+  // the CP thread's concurrent push_back.
+  if (!tls_on_encode_worker && draw.shared_memory_hazard_range_count) {
     if (!EncodeSharedMemoryRenderReadDependencies(
             draw.shared_memory_hazard_ranges.data(),
             draw.shared_memory_hazard_range_count,
@@ -6550,11 +6606,26 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   }
 
   if (draw.prepare_uniforms) {
-    ApplyDrawDynamicState(draw.dynamic_state);
+    ApplyDrawDynamicState(draw);
 
     if (draw.use_native_msl) {
-      RestoreBindlessTextureResourceSet(draw.texture_resource_set);
-      ApplyRenderEncoderResourceSets();
+      if (tls_on_encode_worker) {
+        // The worker applies the draw-carried texture set directly against
+        // the encoder-applied serial: restoring it into the CP-shared
+        // current_bindless_* members would race the CP thread's concurrent
+        // prep (PublishBindlessTextureResourceSet). The fixed/root sets are
+        // not applied on the worker: handoff eligibility requires the queue
+        // residency set to be attached (covering the setup-registered global
+        // resources), batches are native-MSL-only (no root-argument tables),
+        // and the per-draw useResource calls below cover everything
+        // draw-specific.
+        ApplyRenderEncoderResourceSet(
+            RenderResourceSetKind::kTexture, draw.texture_resource_set,
+            render_encoder_bindless_texture_resources_serial_);
+      } else {
+        RestoreBindlessTextureResourceSet(draw.texture_resource_set);
+        ApplyRenderEncoderResourceSets();
+      }
       if (!BindNativeMslDrawResources(draw)) {
         return false;
       }
@@ -6583,6 +6654,8 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
       draw.prepared_guest_dma_index_buffer.buffer
           ? &draw.prepared_guest_dma_index_buffer
           : nullptr,
+      draw.prepared_host_index_buffer.buffer ? &draw.prepared_host_index_buffer
+                                             : nullptr,
       draw.vertex_bindings, draw.vertex_ranges.data(), draw.vertex_range_count,
       draw.has_index_buffer_info ? &draw.index_buffer_info : nullptr,
       draw.memexport_ranges,
@@ -6601,6 +6674,7 @@ bool MetalCommandProcessor::DispatchDraw(
     bool memexport_used, MTL::RenderStages memexport_write_stages,
     bool uses_vertex_fetch, bool shared_memory_resource_registered,
     const PreparedIndexBuffer* prepared_guest_dma_index_buffer,
+    const PreparedIndexBuffer* prepared_host_index_buffer,
     PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
     const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
     const IndexBufferInfo* index_buffer_info,
@@ -6752,18 +6826,14 @@ bool MetalCommandProcessor::DispatchDraw(
         }
         break;
       case PrimitiveProcessor::ProcessedIndexBufferType::kHostConverted:
-        if (primitive_processor_) {
-          index_buffer_out = primitive_processor_->GetConvertedIndexBuffer(
-              primitive_processing_result.host_index_buffer_handle,
-              index_offset_out);
-        }
-        break;
       case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForAuto:
       case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA:
-        if (primitive_processor_) {
-          index_buffer_out = primitive_processor_->GetBuiltinIndexBuffer();
-          index_offset_out =
-              primitive_processing_result.host_index_buffer_handle;
+        // Resolved at prep time (IssueDraw): the conversion pools are
+        // mutated by later draws' prep, which may run concurrently with
+        // this encode on the worker.
+        if (prepared_host_index_buffer) {
+          index_buffer_out = prepared_host_index_buffer->buffer;
+          index_offset_out = prepared_host_index_buffer->offset;
         }
         break;
       default:
@@ -7053,8 +7123,6 @@ bool MetalCommandProcessor::DispatchDraw(
       }
     }
   }
-
-  submission_has_draws_ = true;
 
   return true;
 }
@@ -7433,7 +7501,6 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   if (texture_cache_) {
     texture_cache_->BeginSubmission(submission_current_);
   }
-  submission_has_draws_ = false;
   if (is_opening_frame) {
     if (primitive_processor_) {
       primitive_processor_->BeginFrame();
@@ -9053,11 +9120,30 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
   if (GetZPDMode() != ZPDMode::kFake && zpd_active_segment_.logical_active) {
     return false;
   }
+  // The worker skips the fixed/root resource-set fallback application;
+  // setup-registered global resources (shared memory, null resources,
+  // bindless heap buffers) must be covered by the queue residency set.
+  if (!residency_set_attached_) {
+    return false;
+  }
   // One descriptor per batch: mixed fallback-depth draws would need an
   // encoder restart mid-batch through the live render target cache.
   const bool fallback_depth = draws[0]->fallback_depth_attachment_required;
   for (const PreparedDraw* draw : draws) {
     if (draw->fallback_depth_attachment_required != fallback_depth) {
+      return false;
+    }
+    // Native-MSL draws only: the MSC paths (PopulateBindlessTables /
+    // MaterializeGraphicsRootArguments, IRRuntime geometry/tessellation
+    // wrappers) allocate from the prep-side constant pool and mutate the
+    // graphics root-argument state at encode time, which would race the CP
+    // thread's concurrent draw preparation.
+    if (draw->prepare_uniforms && !draw->use_native_msl) {
+      return false;
+    }
+    if (draw->use_geometry_emulation ||
+        (draw->use_tessellation_emulation &&
+         !draw->use_native_msl_tessellation)) {
       return false;
     }
   }
@@ -9450,16 +9536,18 @@ void MetalCommandProcessor::EndCommandBuffer() {
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
-    submission_has_draws_ = false;
   }
   DrainCommandBufferAutoreleasePool();
 }
 
-void MetalCommandProcessor::ApplyDepthStencilState(
-    const DrawDynamicState& dynamic_state) {
-  if (!current_render_encoder_ || !device_) {
+void MetalCommandProcessor::PrepareDrawDepthStencilState(
+    const MTL::RenderPassDescriptor* pass_descriptor, PreparedDraw& draw) {
+  draw.depth_stencil_state = nullptr;
+  draw.depth_stencil_effective_stencil_enable = false;
+  if (!device_) {
     return;
   }
+  const DrawDynamicState& dynamic_state = draw.dynamic_state;
 
   bool primitive_polygonal =
       dynamic_state.rasterization_enabled && dynamic_state.primitive_polygonal;
@@ -9467,10 +9555,12 @@ void MetalCommandProcessor::ApplyDepthStencilState(
   auto stencil_ref_mask_back = dynamic_state.stencil_ref_mask_back;
   auto depth_control = dynamic_state.depth_control;
 
+  // Attachment presence comes from the descriptor the draw was prepared
+  // against. The prepared-draw queue flushes on render-target key changes,
+  // so the descriptor the batch encodes with has the same stencil presence.
   bool has_stencil_attachment = false;
-  if (current_render_pass_descriptor_) {
-    if (auto* stencil_attachment =
-            current_render_pass_descriptor_->stencilAttachment()) {
+  if (pass_descriptor) {
+    if (auto* stencil_attachment = pass_descriptor->stencilAttachment()) {
       has_stencil_attachment = stencil_attachment->texture() != nullptr;
     }
   }
@@ -9566,12 +9656,29 @@ void MetalCommandProcessor::ApplyDepthStencilState(
     depth_stencil_state_cache_.emplace(key, state);
   }
 
+  draw.depth_stencil_state = state;
+  draw.depth_stencil_effective_stencil_enable =
+      depth_control.stencil_enable != 0;
+}
+
+void MetalCommandProcessor::ApplyDepthStencilState(
+    const DrawDynamicState& dynamic_state, MTL::DepthStencilState* state,
+    bool effective_stencil_enable) {
+  if (!current_render_encoder_ || !state) {
+    return;
+  }
+
   if (current_depth_stencil_state_ != state) {
     current_render_encoder_->setDepthStencilState(state);
     current_depth_stencil_state_ = state;
   }
 
-  if (depth_control.stencil_enable) {
+  if (effective_stencil_enable) {
+    const bool primitive_polygonal = dynamic_state.rasterization_enabled &&
+                                     dynamic_state.primitive_polygonal;
+    const auto stencil_ref_mask_front = dynamic_state.stencil_ref_mask_front;
+    const auto stencil_ref_mask_back = dynamic_state.stencil_ref_mask_back;
+    const auto depth_control = dynamic_state.depth_control;
     uint32_t ref_front = stencil_ref_mask_front.stencilref;
     uint32_t ref_back = stencil_ref_mask_back.stencilref;
     uint32_t ref = ref_front;
