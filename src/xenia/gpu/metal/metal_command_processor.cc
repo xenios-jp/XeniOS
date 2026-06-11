@@ -5156,6 +5156,68 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
     draw.native_primitive_index_gpu_address =
         primitive_index_cache.gpu_address;
   }
+
+  // Texture runtime-info table per stage. Mirrors the encode-side bind_stage
+  // invocation pattern: vertex always, pixel only when its metadata is valid.
+  auto prepare_stage_runtime_info =
+      [&](const DxbcShader::TranslationMetadata& metadata,
+          const native_msl::NativeMslStageBindings& native_bindings,
+          size_t stage) -> bool {
+    if (!native_msl::UsesTextureRuntimeInfo(metadata)) {
+      return true;
+    }
+    const uint32_t runtime_row_count =
+        std::max<uint32_t>(uint32_t(metadata.texture_bindings.size()), 1);
+    if (native_bindings.runtime_info.size() < runtime_row_count) {
+      XELOGE("Native MSL draw missing captured texture runtime info");
+      return false;
+    }
+    const size_t runtime_info_size =
+        runtime_row_count * sizeof(native_msl::NativeMslTextureRuntimeInfo);
+    NativeMslRuntimeInfoUploadCache& runtime_cache =
+        native_msl_runtime_info_upload_cache_[stage];
+    const bool can_reuse_runtime_info =
+        runtime_cache.buffer && runtime_cache.upload_frame == frame_current_ &&
+        runtime_cache.size == runtime_info_size &&
+        runtime_cache.payload.size() == runtime_row_count &&
+        std::memcmp(runtime_cache.payload.data(),
+                    native_bindings.runtime_info.data(),
+                    runtime_info_size) == 0;
+    if (!can_reuse_runtime_info) {
+      MTL::Buffer* runtime_info_buffer = nullptr;
+      size_t runtime_info_offset = 0;
+      uint64_t runtime_info_gpu_address = 0;
+      uint8_t* runtime_info_data = constant_buffer_pool_->Request(
+          frame_current_, runtime_info_size, kNativeRuntimeInfoAlignment,
+          &runtime_info_buffer, runtime_info_offset, runtime_info_gpu_address);
+      (void)runtime_info_gpu_address;
+      if (!runtime_info_data || !runtime_info_buffer) {
+        XELOGE("Native MSL texture runtime-info allocation failed");
+        return false;
+      }
+      std::memcpy(runtime_info_data, native_bindings.runtime_info.data(),
+                  runtime_info_size);
+      runtime_cache.payload.resize(runtime_row_count);
+      std::memcpy(runtime_cache.payload.data(),
+                  native_bindings.runtime_info.data(), runtime_info_size);
+      runtime_cache.buffer = runtime_info_buffer;
+      runtime_cache.offset = static_cast<NS::UInteger>(runtime_info_offset);
+      runtime_cache.size = runtime_info_size;
+      runtime_cache.upload_frame = frame_current_;
+    }
+    draw.native_runtime_info_buffers[stage] = runtime_cache.buffer;
+    draw.native_runtime_info_offsets[stage] = runtime_cache.offset;
+    return true;
+  };
+  if (!prepare_stage_runtime_info(draw.native_vertex_metadata,
+                                  draw.native_vertex_bindings, kStageVertex)) {
+    return false;
+  }
+  if (draw.native_pixel_metadata_valid &&
+      !prepare_stage_runtime_info(draw.native_pixel_metadata,
+                                  draw.native_pixel_bindings, kStagePixel)) {
+    return false;
+  }
   return true;
 }
 
@@ -5291,18 +5353,6 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
 
     const bool needs_runtime_info =
         native_msl::UsesTextureRuntimeInfo(metadata);
-    const uint32_t runtime_row_count =
-        needs_runtime_info
-            ? std::max<uint32_t>(uint32_t(metadata.texture_bindings.size()), 1)
-            : 0;
-    const native_msl::NativeMslStageBindings& native_bindings =
-        stage == kStagePixel ? draw.native_pixel_bindings
-                             : draw.native_vertex_bindings;
-    if (needs_runtime_info &&
-        native_bindings.runtime_info.size() < runtime_row_count) {
-      XELOGE("Native MSL draw missing captured texture runtime info");
-      return false;
-    }
     bool needs_texture_2d_array_heap = false;
     bool needs_texture_3d_heap = false;
     bool needs_texture_cube_heap = false;
@@ -5335,43 +5385,13 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     }
 
     MTL::Buffer* runtime_info_buffer = nullptr;
-    size_t runtime_info_offset = 0;
+    NS::UInteger runtime_info_offset = 0;
     if (needs_runtime_info) {
-      const size_t runtime_info_size =
-          runtime_row_count * sizeof(native_msl::NativeMslTextureRuntimeInfo);
-      NativeMslRuntimeInfoUploadCache& runtime_cache =
-          native_msl_runtime_info_upload_cache_[stage];
-      const bool can_reuse_runtime_info =
-          runtime_cache.buffer &&
-          runtime_cache.upload_frame == frame_current_ &&
-          runtime_cache.size == runtime_info_size &&
-          runtime_cache.payload.size() == runtime_row_count &&
-          std::memcmp(runtime_cache.payload.data(),
-                      native_bindings.runtime_info.data(),
-                      runtime_info_size) == 0;
-      if (can_reuse_runtime_info) {
-        runtime_info_buffer = runtime_cache.buffer;
-        runtime_info_offset = runtime_cache.offset;
-      } else {
-        uint64_t runtime_info_gpu_address = 0;
-        uint8_t* runtime_info_data = constant_buffer_pool_->Request(
-            frame_current_, runtime_info_size, kNativeRuntimeInfoAlignment,
-            &runtime_info_buffer, runtime_info_offset,
-            runtime_info_gpu_address);
-        (void)runtime_info_gpu_address;
-        if (!runtime_info_data || !runtime_info_buffer) {
-          XELOGE("Native MSL texture runtime-info allocation failed");
-          return false;
-        }
-        std::memcpy(runtime_info_data, native_bindings.runtime_info.data(),
-                    runtime_info_size);
-        runtime_cache.payload.resize(runtime_row_count);
-        std::memcpy(runtime_cache.payload.data(),
-                    native_bindings.runtime_info.data(), runtime_info_size);
-        runtime_cache.buffer = runtime_info_buffer;
-        runtime_cache.offset = static_cast<NS::UInteger>(runtime_info_offset);
-        runtime_cache.size = runtime_info_size;
-        runtime_cache.upload_frame = frame_current_;
+      runtime_info_buffer = draw.native_runtime_info_buffers[stage];
+      runtime_info_offset = draw.native_runtime_info_offsets[stage];
+      if (!runtime_info_buffer) {
+        XELOGE("Native MSL draw missing prepared texture runtime info");
+        return false;
       }
     }
 

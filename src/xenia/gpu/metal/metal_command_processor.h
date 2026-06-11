@@ -795,6 +795,10 @@ class MetalCommandProcessor final : public CommandProcessor {
     // XeNativeDrawConstants pointer table and by buffer for useResources.
     MTL::Buffer* native_primitive_index_buffer = nullptr;
     uint64_t native_primitive_index_gpu_address = 0;
+    // Texture runtime-info upload result per stage; null when the stage's
+    // shader doesn't read xe_texture_runtime_info.
+    std::array<MTL::Buffer*, kStageCount> native_runtime_info_buffers = {};
+    std::array<NS::UInteger, kStageCount> native_runtime_info_offsets = {};
 
     bool use_tessellation_emulation = false;
     bool use_geometry_emulation = false;
