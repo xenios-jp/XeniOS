@@ -102,15 +102,6 @@ DEFINE_bool(
     "useResource path and log when they disagree (a missed hazard). Verify on "
     "each game before enabling metal_backend_hazard_model.",
     "Metal");
-DEFINE_bool(
-    metal_prepare_for_wait_flush, false,
-    "Flush the pending draw queue, end the render encoder and block until "
-    "the GPU queue fully drains every time the command ring runs dry "
-    "(legacy behavior). Off matches D3D12/Vulkan, which keep the submission "
-    "open across ring-dry stalls; a pending strict ZPD retire still submits "
-    "the open command buffer asynchronously.",
-    "Metal");
-
 namespace xe {
 namespace gpu {
 namespace metal {
@@ -1580,17 +1571,8 @@ void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
 }
 
 void MetalCommandProcessor::PrepareForWait() {
-  if (cvars::metal_prepare_for_wait_flush) {
-    // Legacy drain: ends the render pass and blocks until the whole queue
-    // completes on every ring-dry stall, defeating frames-in-flight
-    // pipelining. Kept for debugging stalls.
-    if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kPrepareForWait)) {
-      XELOGE("Metal PrepareForWait: failed to flush prepared draw queue");
-    }
-    EndRenderEncoder(RenderEncoderEndReason::kPrepareForWait);
-    FlushCommandBufferAndWait(/*timeout_ns=*/5000000000ULL, "PrepareForWait");
-  } else if (current_command_buffer_ &&
-             zpd_pending_retire_handle_ != kInvalidReportHandle) {
+  if (current_command_buffer_ &&
+      zpd_pending_retire_handle_ != kInvalidReportHandle) {
     // A strict ZPD retire is waiting on results from the open submission;
     // submit it asynchronously (no CPU wait) so PumpPendingRetire can make
     // progress instead of hitting its stall limit and abandoning the report.
