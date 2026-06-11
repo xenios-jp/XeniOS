@@ -872,6 +872,10 @@ class MetalCommandProcessor final : public CommandProcessor {
   void TryTrimPreparedDrawRetainedStorage();
   bool SubmitPreparedDraw(PreparedDraw* draw);
   bool EncodePreparedDraw(const PreparedDraw& draw);
+  // Encodes a flushed batch of prepared draws in order. The seam between the
+  // flush (uploads, texture materialization) and pure encoding; the parallel
+  // encode worker runs this loop for eligible batches.
+  bool EncodePreparedDrawBatch(const std::vector<PreparedDraw*>& draws);
   bool FlushPreparedDrawQueue(PreparedDrawFlushReason reason);
   bool CanQueuePreparedDraw(const PreparedDraw& draw,
                             PreparedDrawQueueRejectReason& reject_reason) const;

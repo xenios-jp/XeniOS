@@ -415,14 +415,22 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
     }
   }
 
-  for (const PreparedDraw* draw : draws) {
-    if (!EncodePreparedDraw(*draw)) {
-      return fail_flush();
-    }
+  if (!EncodePreparedDrawBatch(draws)) {
+    return fail_flush();
   }
 
   flushing_prepared_draw_queue_ = previous_flushing;
   finish_flush();
+  return true;
+}
+
+bool MetalCommandProcessor::EncodePreparedDrawBatch(
+    const std::vector<PreparedDraw*>& draws) {
+  for (const PreparedDraw* draw : draws) {
+    if (!EncodePreparedDraw(*draw)) {
+      return false;
+    }
+  }
   return true;
 }
 
