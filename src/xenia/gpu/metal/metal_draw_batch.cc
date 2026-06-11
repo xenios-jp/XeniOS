@@ -246,7 +246,7 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
     return false;
   }
   if (!draw.has_invalid_shared_memory && prepared_draw_queue_.empty() &&
-      current_render_encoder_ && !draw.texture_upload_needed) {
+      encode_ctx().render_encoder && !draw.texture_upload_needed) {
     reject_reason = PreparedDrawQueueRejectReason::kResidentWithoutActiveQueue;
     return false;
   }
@@ -397,7 +397,7 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
   }
 
   if (has_texture_materialization && texture_cache_) {
-    if (current_render_encoder_) {
+    if (encode_ctx().render_encoder) {
       EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
     }
     if (!EnsureCommandBuffer()) {
@@ -526,7 +526,7 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
 
   if (draw->texture_materialization_plan.NeedsTextureUpload() &&
       texture_cache_) {
-    if (current_render_encoder_) {
+    if (encode_ctx().render_encoder) {
       EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
     }
     if (!EnsureCommandBuffer()) {

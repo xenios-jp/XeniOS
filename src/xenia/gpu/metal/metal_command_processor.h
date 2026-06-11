@@ -111,7 +111,7 @@ class MetalCommandProcessor final : public CommandProcessor {
   // (RequestTransferCommandBuffer) or use standalone command buffers.
   bool CanJoinActiveSubmissionForTransfer() const {
     return current_command_buffer_ != nullptr &&
-           current_render_encoder_ == nullptr &&
+           encode_ctx().render_encoder == nullptr &&
            !encode_worker_busy_.load(std::memory_order_acquire);
   }
   enum class TransferRequestSource : uint32_t {
@@ -1604,10 +1604,7 @@ class MetalCommandProcessor final : public CommandProcessor {
       SharedMemoryRequestReason::kUnknown;
   // Current command buffer and encoder
   MTL::CommandBuffer* current_command_buffer_ = nullptr;
-  MTL::RenderCommandEncoder* current_render_encoder_ = nullptr;
   MTL::BlitCommandEncoder* shared_memory_upload_blit_encoder_ = nullptr;
-  MTL::RenderPassDescriptor* current_render_pass_descriptor_ = nullptr;
-  bool current_render_encoder_has_zpd_visibility_ = false;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;
 
   // Per-draw cache of the pipeline attachment formats resolved from the
@@ -1626,10 +1623,6 @@ class MetalCommandProcessor final : public CommandProcessor {
     MTL::Resource* resource = nullptr;
     EncoderResourceUsageState state = {};
   };
-  std::vector<EncoderResourceUsageTableEntry>
-      render_encoder_resource_usage_table_;
-  size_t render_encoder_resource_usage_count_ = 0;
-  std::vector<MTL::Heap*> render_encoder_heap_usage_;
   BackendTelemetryStats backend_telemetry_;
   uint64_t backend_telemetry_last_dump_swap_ = 0;
 
@@ -1789,24 +1782,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   // System constants - matches DxbcShaderTranslator::SystemConstants layout
   DxbcShaderTranslator::SystemConstants system_constants_;
 
-  // Fixed-function dynamic state cached per render encoder.
-  MTL::RenderPipelineState* current_render_pipeline_state_ = nullptr;
-  float ff_blend_factor_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-  bool ff_blend_factor_valid_ = false;
-  bool rasterizer_state_valid_ = false;
-  MTL::CullMode current_cull_mode_ = MTL::CullModeNone;
-  MTL::Winding current_front_facing_winding_ = MTL::WindingCounterClockwise;
-  MTL::TriangleFillMode current_triangle_fill_mode_ = MTL::TriangleFillModeFill;
-  float current_depth_bias_values_[3] = {0.0f, 0.0f, 0.0f};
-  MTL::DepthClipMode current_depth_clip_mode_ = MTL::DepthClipModeClip;
-  MTL::DepthStencilState* current_depth_stencil_state_ = nullptr;
-  bool stencil_reference_valid_ = false;
-  uint32_t current_stencil_reference_ = 0;
-  bool viewport_dirty_ = true;
-  MTL::Viewport cached_viewport_ = {};
-  bool scissor_dirty_ = true;
-  MTL::ScissorRect cached_scissor_ = {};
-
   // Constant buffer dirty tracking (D3D12 pattern).
   // Each binding records the pool-allocated buffer, offset, and GPU address
   // for the most recent constant upload.  When up_to_date is true, the draw
@@ -1941,13 +1916,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   uint64_t current_bindless_texture_resource_input_serial_ = 0;
   uint64_t current_bindless_texture_resource_source_serial_ = 0;
   uint64_t current_bindless_root_resource_source_serial_ = 0;
-  uint64_t render_encoder_bindless_fixed_resources_serial_ = 0;
-  uint64_t render_encoder_bindless_texture_resources_serial_ = 0;
-  uint64_t render_encoder_bindless_root_resources_serial_ = 0;
-  std::array<uint64_t, kStageCount>
-      render_encoder_bindless_stage_root_bind_serials_ = {};
-  bool render_encoder_bindless_table_bind_mesh_path_ = false;
-  bool render_encoder_bindless_table_bind_tessellation_ = false;
   struct NativeMslTextureSignVariantCache {
     const Shader* shader = nullptr;
     uint64_t input_key = 0;
@@ -2063,10 +2031,70 @@ class MetalCommandProcessor final : public CommandProcessor {
     NS::UInteger offset = 0;
     bool valid = false;
   };
-  std::array<std::array<RenderEncoderBufferBinding,
-                        kTrackedRenderEncoderBufferBindingCount>,
-             size_t(RenderEncoderBufferStage::kCount)>
-      render_encoder_buffer_bindings_ = {};
+
+  // All state scoped to one open render command encoder: the encoder and its
+  // descriptor, the binding/resource-usage dedupe trackers, and the
+  // fixed-function shadow state. The command-processor thread encodes
+  // through cp_encode_context_; the parallel encode worker encodes a batch
+  // through the batch's own context (selected via tls_encode_context_), so
+  // the two can hold encoders on different command buffers concurrently in
+  // multi-CB mode. This is the Metal 3 shape of a per-thread encode context;
+  // a Metal 4 backing would put its argument tables here.
+  struct MetalEncodeContext {
+    MTL::RenderCommandEncoder* render_encoder = nullptr;
+    MTL::RenderPassDescriptor* render_pass_descriptor = nullptr;
+    bool render_encoder_has_zpd_visibility = false;
+    // useResource/useHeap dedupe for the open encoder.
+    std::vector<EncoderResourceUsageTableEntry> resource_usage_table;
+    size_t resource_usage_count = 0;
+    std::vector<MTL::Heap*> heap_usage;
+    // Buffer binding dedupe (SetRenderEncoderBuffer).
+    std::array<std::array<RenderEncoderBufferBinding,
+                          kTrackedRenderEncoderBufferBindingCount>,
+               size_t(RenderEncoderBufferStage::kCount)>
+        buffer_bindings = {};
+    bool heap_binds_set_on_encoder = false;
+    // Fixed-function dynamic state shadows.
+    MTL::RenderPipelineState* render_pipeline_state = nullptr;
+    float blend_factor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    bool blend_factor_valid = false;
+    bool rasterizer_state_valid = false;
+    MTL::CullMode cull_mode = MTL::CullModeNone;
+    MTL::Winding front_facing_winding = MTL::WindingCounterClockwise;
+    MTL::TriangleFillMode triangle_fill_mode = MTL::TriangleFillModeFill;
+    float depth_bias_values[3] = {0.0f, 0.0f, 0.0f};
+    MTL::DepthClipMode depth_clip_mode = MTL::DepthClipModeClip;
+    MTL::DepthStencilState* depth_stencil_state = nullptr;
+    bool stencil_reference_valid = false;
+    uint32_t stencil_reference = 0;
+    bool viewport_dirty = true;
+    MTL::Viewport cached_viewport = {};
+    bool scissor_dirty = true;
+    MTL::ScissorRect cached_scissor = {};
+    // Bindless resource-set serials applied to the open encoder.
+    uint64_t bindless_fixed_resources_serial = 0;
+    uint64_t bindless_texture_resources_serial = 0;
+    uint64_t bindless_root_resources_serial = 0;
+    std::array<uint64_t, kStageCount> bindless_stage_root_bind_serials = {};
+    bool bindless_table_bind_mesh_path = false;
+    bool bindless_table_bind_tessellation = false;
+    // Shared-memory write stages of memexport draws encoded into the open
+    // encoder (always zero on worker contexts: memexport draws never queue).
+    MTL::RenderStages shared_memory_write_stages = MTL::RenderStages(0);
+  };
+  // Routes encode-path state access to the executing thread's context: the
+  // worker thread points tls_encode_context_ at its batch's context for the
+  // duration of the batch; every other thread (the CP thread) uses
+  // cp_encode_context_.
+  static thread_local MetalEncodeContext* tls_encode_context_;
+  MetalEncodeContext& encode_ctx() {
+    return tls_encode_context_ ? *tls_encode_context_ : cp_encode_context_;
+  }
+  const MetalEncodeContext& encode_ctx() const {
+    return tls_encode_context_ ? *tls_encode_context_ : cp_encode_context_;
+  }
+  MetalEncodeContext cp_encode_context_;
+
   void ResetRenderEncoderBufferBindings();
   void InvalidateRenderEncoderBufferBinding(RenderEncoderBufferStage stage,
                                             NS::UInteger index);
@@ -2085,18 +2113,16 @@ class MetalCommandProcessor final : public CommandProcessor {
                                     NS::UInteger index);
   void SetRenderEncoderMeshBuffer(MTL::Buffer* buffer, NS::UInteger offset,
                                   NS::UInteger index);
-  // Track which heap buffer binds have been set on the current encoder.
-  bool heap_binds_set_on_encoder_ = false;
 
   // Parallel encode worker (metal_parallel_encode). Ownership protocol: while
-  // a batch is in flight the worker owns current_render_encoder_, the render
-  // pass descriptor member, the binding/resource-usage trackers, and the
-  // fixed-function state caches; the command-processor thread must call
-  // DrainEncodeWorker() before touching any of them (the drain points are the
-  // existing chokepoints: flush entry, transfer requests, command-buffer end,
-  // render-encoder end, ZPD lifetime changes, swap/copy/wait/shutdown).
-  // current_command_buffer_ stays CP-created and is stable (non-null) while a
-  // batch is in flight; the worker never commits. One batch in flight max.
+  // a batch is in flight the worker owns the encode context it encodes
+  // through (cp_encode_context_ in single-CB mode); the command-processor
+  // thread must call DrainEncodeWorker() before touching it (the drain
+  // points are the existing chokepoints: flush entry, transfer requests,
+  // command-buffer end, render-encoder end, ZPD lifetime changes,
+  // swap/copy/wait/shutdown). current_command_buffer_ stays CP-created and
+  // is stable (non-null) while a batch is in flight; the worker never
+  // commits in single-CB mode. One batch in flight max.
   std::thread encode_worker_thread_;
   std::mutex encode_worker_mutex_;
   std::condition_variable encode_worker_cond_;
@@ -2148,8 +2174,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   std::deque<MetalZPDResolve> zpd_resolves_in_flight_;
 
   std::vector<PendingSharedMemoryWrite> pending_shared_memory_writes_;
-  MTL::RenderStages active_render_encoder_shared_memory_write_stages_ =
-      MTL::RenderStages(0);
 
   // Memexport tracking for shared memory invalidation.
   std::vector<draw_util::MemExportRange> memexport_ranges_;
