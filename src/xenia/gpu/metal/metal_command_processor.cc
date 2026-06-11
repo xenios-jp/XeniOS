@@ -80,13 +80,6 @@ DEFINE_bool(
     "Metal");
 
 DEFINE_bool(
-    metal_float_constants_dirty_on_change, true,
-    "Only invalidate Metal float constant CBVs when a register write changes a "
-    "currently live float constant value. Disable to restore conservative "
-    "dirty-on-write behavior.",
-    "Metal");
-
-DEFINE_bool(
     metal_backend_hazard_model, false,
     "Experimental: let the Metal backend own GPU read/write hazard tracking "
     "(explicit fences/events) for heap-backed textures, render targets, and "
@@ -7162,7 +7155,6 @@ bool MetalCommandProcessor::FloatConstantRangeNeedsDirty(
       (stage_first_constant + kStageFloatConstantCount) * 4;
   uint32_t dword = std::max(written_dword_start, stage_dword_start);
   const uint32_t dword_end = std::min(written_dword_end, stage_dword_end);
-  const bool dirty_on_change = ::cvars::metal_float_constants_dirty_on_change;
 
   while (dword < dword_end) {
     const uint32_t relative_constant = (dword - stage_dword_start) >> 2;
@@ -7173,9 +7165,6 @@ bool MetalCommandProcessor::FloatConstantRangeNeedsDirty(
     if (!live_constant) {
       dword = constant_dword_end;
       continue;
-    }
-    if (!dirty_on_change) {
-      return true;
     }
     for (; dword < constant_dword_end; ++dword) {
       const uint32_t value =
@@ -7209,7 +7198,7 @@ void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
 
   if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
       index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
-    if (::cvars::metal_float_constants_dirty_on_change && !value_changed) {
+    if (!value_changed) {
       return;
     }
     uint32_t float_constant_index =
