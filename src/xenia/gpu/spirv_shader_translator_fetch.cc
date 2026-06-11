@@ -1705,8 +1705,9 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
               builder_->makeFloatConstant(instr.attributes.lod_bias));
         }
 
-        // Cube auto-LOD without register gradients uses implicit LOD plus bias.
-        // Explicit gradients of the reconstructed direction pick the wrong mip.
+        // Cube auto-LOD without register gradients uses implicit LOD + bias to
+        // work around wrong-mip explicit cube gradients on Vulkan. Other dims
+        // keep explicit gradients, matching the DXBC ground-truth path.
         bool use_lod_bias = use_computed_lod &&
                             !instr.attributes.use_register_gradients &&
                             instr.dimension == xenos::FetchOpDimension::kCube;
@@ -1716,7 +1717,7 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         // k2D.
         // 3D vectors for k3DOrStacked, kCube.
         spv::Id gradients_h = spv::NoResult, gradients_v = spv::NoResult;
-        if (use_computed_lod) {
+        if (use_computed_lod && !use_lod_bias) {
           // TODO(Triang3l): Gradient exponent adjustment is currently not done
           // in getCompTexLOD, so not doing it here too for now. Apply the
           // gradient exponent biases from the word 4 of the fetch constant in
@@ -1867,12 +1868,9 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                   lod_gradient_scale);
             } break;
             case xenos::FetchOpDimension::kCube: {
-              // Auto-LOD without register gradients samples with implicit LOD +
-              // bias instead, so only register gradients reach here.
-              if (use_lod_bias) {
-                break;
-              }
-              // Register gradients are already in the cube space for cube maps.
+              // Only register gradients reach here (auto-LOD uses implicit LOD
+              // + bias, handled at the gradient block guard above). Register
+              // gradients are already in the cube space for cube maps.
               // TODO(Triang3l): Are cube map register gradients unnormalized
               // if the coordinates themselves are unnormalized?
               gradients_h = builder_->createLoad(var_main_tfetch_gradients_h_,
