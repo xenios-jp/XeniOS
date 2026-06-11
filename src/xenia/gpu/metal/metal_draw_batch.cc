@@ -186,6 +186,7 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.native_primitive_index_gpu_address = 0;
   draw.native_runtime_info_buffers = {};
   draw.native_runtime_info_offsets = {};
+  draw.native_draw_constants = {};
 
   draw.use_tessellation_emulation = false;
   draw.use_geometry_emulation = false;

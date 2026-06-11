@@ -738,6 +738,25 @@ class MetalCommandProcessor final : public CommandProcessor {
     const T& operator[](size_t index) const { return data_ptr[index]; }
   };
 
+  // Prep-time result of the per-stage XeNativeDrawConstants table upload
+  // (PrepareNativeMslDrawResources). Exactly one of the two locations is set
+  // per prepared stage: the slot-ring page (plain-vertex stage; the page
+  // identity must travel with the draw because pages persist across flushes
+  // within a frame, so one flush can straddle a page rollover) or a single
+  // table (fragment/mesh/object offset-bind).
+  struct NativeMslPreparedDrawConstants {
+    MTL::Buffer* page_buffer = nullptr;
+    NS::UInteger page_base_offset = 0;
+    uint32_t slot = 0;
+    MTL::Buffer* table_buffer = nullptr;
+    NS::UInteger table_offset = 0;
+    // CBV payload buffers referenced indirectly (by GPU address) from the
+    // pointer table; these need useResource at encode, unlike the directly
+    // bound table/page/runtime-info buffers.
+    std::array<const MTL::Resource*, 8> indirect_resources = {};
+    uint32_t indirect_resource_count = 0;
+  };
+
   struct PreparedDraw {
     MTL::RenderPipelineState* pipeline = nullptr;
     MetalPipelineCache::TessellationPipelineState* tessellation_pipeline_state =
@@ -799,6 +818,10 @@ class MetalCommandProcessor final : public CommandProcessor {
     // shader doesn't read xe_texture_runtime_info.
     std::array<MTL::Buffer*, kStageCount> native_runtime_info_buffers = {};
     std::array<NS::UInteger, kStageCount> native_runtime_info_offsets = {};
+    // XeNativeDrawConstants table location + indirect CBV resources per
+    // stage; the vertex entry's slot is the draw call's baseInstance.
+    std::array<NativeMslPreparedDrawConstants, kStageCount>
+        native_draw_constants = {};
 
     bool use_tessellation_emulation = false;
     bool use_geometry_emulation = false;
@@ -890,7 +913,8 @@ class MetalCommandProcessor final : public CommandProcessor {
       PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
       const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
       const IndexBufferInfo* index_buffer_info,
-      PreparedDrawSpan<draw_util::MemExportRange> memexport_ranges);
+      PreparedDrawSpan<draw_util::MemExportRange> memexport_ranges,
+      uint32_t native_msl_draw_constants_slot);
 
  private:
   // Command buffer management
@@ -1944,10 +1968,6 @@ class MetalCommandProcessor final : public CommandProcessor {
     bool valid = false;
   };
   NativeMslDrawConstantsSlotPage native_msl_draw_constants_slot_page_;
-  // Slot index of the table the current plain-vertex draw must select via
-  // baseInstance, set in BindNativeMslDrawResources and consumed by
-  // DispatchDraw within the same EncodePreparedDraw call.
-  uint32_t current_native_msl_draw_constants_slot_ = 0;
   NativeMslPrimitiveIndexUploadCache native_msl_primitive_index_upload_cache_;
   GraphicsRootArgumentState graphics_root_argument_state_;
   std::array<std::array<uint64_t, kCbvSlotCount>, kStageCount>

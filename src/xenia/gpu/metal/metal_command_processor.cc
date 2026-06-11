@@ -5112,8 +5112,8 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
   // suballocations are frame-lifetime and the reuse caches advance strictly
   // in prep order, which equals encode order for every queue path, so encode
   // consumes the stored results without re-deriving them.
-  if (!constant_buffer_pool_) {
-    XELOGE("Native MSL draw prepared before the constant buffer pool exists");
+  if (!constant_buffer_pool_ || !null_buffer_) {
+    XELOGE("Native MSL draw prepared before Metal resources exist");
     return false;
   }
 
@@ -5218,30 +5218,10 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
                                   draw.native_pixel_bindings, kStagePixel)) {
     return false;
   }
-  return true;
-}
 
-bool MetalCommandProcessor::BindNativeMslDrawResources(
-    const PreparedDraw& draw) {
-  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
-      !texture_cache_ || !null_buffer_) {
-    XELOGE("Native MSL draw binding requested before Metal resources exist");
-    return false;
-  }
-
-  constexpr size_t kNativeRuntimeInfoAlignment = 256;
-  const bool draw_needs_primitive_index_constants =
-      draw.native_vertex_metadata.uses_primitive_index_constants ||
-      (draw.native_pixel_metadata_valid &&
-       draw.native_pixel_metadata.uses_primitive_index_constants);
-  MTL::Buffer* primitive_index_buffer = draw.native_primitive_index_buffer;
-  uint64_t primitive_index_gpu_address =
-      draw.native_primitive_index_gpu_address;
-  if (draw_needs_primitive_index_constants && !primitive_index_buffer) {
-    XELOGE("Native MSL draw missing prepared primitive-index constants");
-    return false;
-  }
-
+  // Per-stage XeNativeDrawConstants pointer-table upload and the indirect CBV
+  // resource list. The reuse cache and the slot-ring cursor advance here in
+  // prep order; encode binds the carried page/table without re-deriving them.
   auto cbv_for_stage = [&](size_t stage,
                            CbvSlot slot) -> const UniformBufferInfo::Cbv& {
     return draw.uniforms.cbvs[stage][slot];
@@ -5257,12 +5237,12 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
   };
 
   // Reserve the next free 48-byte XeNativeDrawConstants table slot in the
-  // plain-vertex-stage draw-constants slot page, (re)binding the page buffer to
-  // the vertex stage once when a new page is needed (frame open, page rollover,
-  // or render-encoder reset clearing render_encoder_buffer_bindings_). Returns
-  // a CPU pointer to write the 48-byte table; *slot_out receives the slot index
-  // to pass as the draw call's baseInstance. Returns nullptr on allocation
-  // failure.
+  // plain-vertex-stage draw-constants slot page (fresh page on frame open or
+  // page rollover). Returns a CPU pointer to write the 48-byte table;
+  // *slot_out receives the slot index the draw passes as baseInstance. Does
+  // NOT advance the cursor (the write branch below does), so a cached slot
+  // stays valid as long as the page identity is unchanged. The page bind to
+  // the encoder happens at encode time from the identity carried on the draw.
   auto reserve_native_msl_draw_constants_slot =
       [&](uint32_t& slot_out) -> uint8_t* {
     NativeMslDrawConstantsSlotPage& page = native_msl_draw_constants_slot_page_;
@@ -5290,25 +5270,16 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       page.upload_frame = frame_current_;
       page.valid = true;
     }
-    // Bind (or rebind after an encoder reset) the page through the tracking
-    // layer so the next draw re-binds on demand; matching binds are no-ops. The
-    // page base is bound at offset 0 of its slot region; the per-draw selection
-    // is the baseInstance index, never a setVertexBufferOffset.
-    if (!RenderEncoderBufferBindingMatches(RenderEncoderBufferStage::kVertex,
-                                           page.buffer, page.base_offset,
-                                           kNativeBufferDrawConstants)) {
-      SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex, page.buffer,
-                             page.base_offset, kNativeBufferDrawConstants);
-      ++backend_telemetry_.native_msl_draw_constants_slot_page_binds;
-    }
     slot_out = page.next_slot;
     return page.mapping +
            size_t(page.next_slot) * kNativeMslDrawConstantsSlotStride;
   };
 
-  auto bind_stage = [&](const DxbcShader::TranslationMetadata& metadata,
-                        size_t stage, bool vertex_stage, bool fragment_stage,
-                        bool mesh_stage, bool object_stage) -> bool {
+  const uint64_t null_gpu_address = null_buffer_->gpuAddress();
+  auto prepare_stage_draw_constants =
+      [&](const DxbcShader::TranslationMetadata& metadata, size_t stage,
+          bool vertex_stage, bool fragment_stage, bool mesh_stage,
+          bool object_stage) -> bool {
     const auto& system_cbv = cbv_for_stage(stage, kCbvSlotSystem);
     const auto& float_cbv = cbv_for_stage(stage, kCbvSlotFloat);
     const auto& bool_loop_cbv = cbv_for_stage(stage, kCbvSlotBoolLoop);
@@ -5333,78 +5304,6 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       return false;
     }
 
-    MTL::RenderStages stage_render_stages = MTL::RenderStages(0);
-    auto add_render_stage = [&](MTL::RenderStages stage_bits) {
-      stage_render_stages = MTL::RenderStages(
-          NS::UInteger(stage_render_stages) | NS::UInteger(stage_bits));
-    };
-    if (vertex_stage) {
-      add_render_stage(MTL::RenderStageVertex);
-    }
-    if (fragment_stage) {
-      add_render_stage(MTL::RenderStageFragment);
-    }
-    if (mesh_stage) {
-      add_render_stage(MTL::RenderStageMesh);
-    }
-    if (object_stage) {
-      add_render_stage(MTL::RenderStageObject);
-    }
-
-    const bool needs_runtime_info =
-        native_msl::UsesTextureRuntimeInfo(metadata);
-    bool needs_texture_2d_array_heap = false;
-    bool needs_texture_3d_heap = false;
-    bool needs_texture_cube_heap = false;
-    for (const DxbcShader::TextureBinding& binding :
-         metadata.texture_bindings) {
-      switch (binding.dimension) {
-        case xenos::FetchOpDimension::kCube:
-          needs_texture_cube_heap = true;
-          break;
-        case xenos::FetchOpDimension::k3DOrStacked:
-          needs_texture_2d_array_heap = true;
-          needs_texture_3d_heap = true;
-          break;
-        case xenos::FetchOpDimension::k1D:
-        case xenos::FetchOpDimension::k2D:
-        default:
-          needs_texture_2d_array_heap = true;
-          break;
-      }
-    }
-    if ((needs_texture_2d_array_heap && !native_msl_texture_2d_array_heap_) ||
-        (needs_texture_3d_heap && !native_msl_texture_3d_heap_) ||
-        (needs_texture_cube_heap && !native_msl_texture_cube_heap_)) {
-      XELOGE("Native MSL draw missing required texture argument heap buffer");
-      return false;
-    }
-    if (!metadata.sampler_bindings.empty() && !native_msl_sampler_heap_) {
-      XELOGE("Native MSL draw missing sampler argument heap buffer");
-      return false;
-    }
-
-    MTL::Buffer* runtime_info_buffer = nullptr;
-    NS::UInteger runtime_info_offset = 0;
-    if (needs_runtime_info) {
-      runtime_info_buffer = draw.native_runtime_info_buffers[stage];
-      runtime_info_offset = draw.native_runtime_info_offsets[stage];
-      if (!runtime_info_buffer) {
-        XELOGE("Native MSL draw missing prepared texture runtime info");
-        return false;
-      }
-    }
-
-    MTL::Buffer* shared_memory_buffer = nullptr;
-    if (metadata.uses_shared_memory) {
-      shared_memory_buffer = shared_memory_->GetBuffer();
-      if (!shared_memory_buffer) {
-        XELOGE("Native MSL draw missing shared-memory buffer");
-        return false;
-      }
-    }
-
-    const uint64_t null_gpu_address = null_buffer_->gpuAddress();
     auto cbv_gpu_address_or_null = [&](const UniformBufferInfo::Cbv& cbv,
                                        bool needed) -> uint64_t {
       if (!needed) {
@@ -5423,17 +5322,18 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     draw_constants.descriptor_indices = cbv_gpu_address_or_null(
         descriptor_indices_cbv, needs_descriptor_indices);
     draw_constants.primitive_index =
-        metadata.uses_primitive_index_constants && primitive_index_gpu_address
-            ? primitive_index_gpu_address
+        metadata.uses_primitive_index_constants &&
+                draw.native_primitive_index_gpu_address
+            ? draw.native_primitive_index_gpu_address
             : null_gpu_address;
 
-    MTL::Buffer* draw_constants_buffer = nullptr;
-    size_t draw_constants_offset = 0;
+    NativeMslPreparedDrawConstants& prepared =
+        draw.native_draw_constants[stage];
     // Plain-vertex draws (non-mesh, non-object) select their
-    // XeNativeDrawConstants table via baseInstance indexing into the bound-once
-    // slot page instead of a per-draw setVertexBufferOffset. Mesh/object draws
-    // (drawMeshThreadgroups, no baseInstance) and the fragment stage keep the
-    // per-draw offset-bind.
+    // XeNativeDrawConstants table via baseInstance indexing into the
+    // bound-once slot page instead of a per-draw setVertexBufferOffset.
+    // Mesh/object draws (drawMeshThreadgroups, no baseInstance) and the
+    // fragment stage keep the per-draw offset-bind.
     const bool use_vertex_slot_ring =
         vertex_stage && !mesh_stage && !object_stage;
     NativeMslDrawConstantsUploadCache& draw_constants_cache =
@@ -5586,19 +5486,17 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     record_draw_constants_reason_for_bound_stages(
         classify_draw_constants_reason());
     if (use_vertex_slot_ring) {
-      // (Re)bind the slot page for this draw. The reserve helper handles a
-      // fresh page on frame open / rollover and re-binds after a render-encoder
-      // reset; it returns a pointer to the next free slot but does NOT advance
-      // the cursor (the write branch below does), so a cached slot stays valid
-      // as long as the page identity is unchanged.
+      // Reserve this draw's slot (fresh page on frame open / rollover). The
+      // reserve helper returns a pointer to the next free slot but does NOT
+      // advance the cursor (the write branch below does), so a cached slot
+      // stays valid as long as the page identity is unchanged.
       uint32_t slot_index = 0;
       uint8_t* slot_data = reserve_native_msl_draw_constants_slot(slot_index);
       if (!slot_data) {
         return false;
       }
       // Reuse the previously written slot only when the payload is unchanged
-      // AND it lives in the page that is now bound (a fresh page invalidates
-      // it).
+      // AND it lives in the current page (a fresh page invalidates it).
       const bool reuse_slot =
           can_reuse_draw_constants &&
           draw_constants_cache.slot_buffer ==
@@ -5606,12 +5504,12 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
           draw_constants_cache.slot <
               native_msl_draw_constants_slot_page_.next_slot;
       if (reuse_slot) {
-        current_native_msl_draw_constants_slot_ = draw_constants_cache.slot;
+        prepared.slot = draw_constants_cache.slot;
       } else {
         std::memcpy(slot_data, &draw_constants, sizeof(draw_constants));
         ++native_msl_draw_constants_slot_page_.next_slot;
         ++backend_telemetry_.native_msl_draw_constants_slot_writes;
-        current_native_msl_draw_constants_slot_ = slot_index;
+        prepared.slot = slot_index;
         draw_constants_cache.payload = draw_constants;
         draw_constants_cache.slot_buffer =
             native_msl_draw_constants_slot_page_.buffer;
@@ -5630,13 +5528,18 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
         draw_constants_cache.payload_valid = true;
         draw_constants_cache.upload_frame = frame_current_;
       }
-      // draw_constants_buffer stays null: the page was bound by the reserve
-      // helper, so the per-draw bind_native_buffer below must skip the vertex
-      // stage's draw-constants slot.
+      // Page identity travels with the draw: pages persist across flushes
+      // within a frame, so one flush can straddle a rollover and each draw
+      // must bind the page that actually contains its table.
+      prepared.page_buffer = native_msl_draw_constants_slot_page_.buffer;
+      prepared.page_base_offset =
+          native_msl_draw_constants_slot_page_.base_offset;
     } else if (can_reuse_draw_constants) {
-      draw_constants_buffer = draw_constants_cache.buffer;
-      draw_constants_offset = draw_constants_cache.offset;
+      prepared.table_buffer = draw_constants_cache.buffer;
+      prepared.table_offset = draw_constants_cache.offset;
     } else {
+      MTL::Buffer* draw_constants_buffer = nullptr;
+      size_t draw_constants_offset = 0;
       uint64_t draw_constants_gpu_address = 0;
       uint8_t* draw_constants_data = constant_buffer_pool_->Request(
           frame_current_, sizeof(draw_constants), kNativeRuntimeInfoAlignment,
@@ -5652,14 +5555,164 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       draw_constants_cache.buffer = draw_constants_buffer;
       draw_constants_cache.offset =
           static_cast<NS::UInteger>(draw_constants_offset);
-      // This is a single-table allocation (fragment/mesh/object), not a slot in
-      // the vertex page: invalidate any cached slot so a later plain-vertex
-      // draw that memcmp-matches this payload cannot falsely reuse a stale slot
-      // whose page content differs. (The kStageVertex cache entry is shared
-      // between the slot-ring path and the mesh/object single-table path.)
+      // This is a single-table allocation (fragment/mesh/object), not a slot
+      // in the vertex page: invalidate any cached slot so a later plain-vertex
+      // draw that memcmp-matches this payload cannot falsely reuse a stale
+      // slot whose page content differs. (The kStageVertex cache entry is
+      // shared between the slot-ring path and the mesh/object single-table
+      // path.)
       draw_constants_cache.slot_buffer = nullptr;
       draw_constants_cache.payload_valid = true;
       draw_constants_cache.upload_frame = frame_current_;
+      prepared.table_buffer = draw_constants_buffer;
+      prepared.table_offset =
+          static_cast<NS::UInteger>(draw_constants_offset);
+    }
+
+    // CBV payloads referenced indirectly (by GPU address) from the pointer
+    // table need useResource at encode; collect the deduped list now.
+    auto add_indirect_resource = [&](MTL::Resource* resource) {
+      if (!resource) {
+        return;
+      }
+      for (uint32_t i = 0; i < prepared.indirect_resource_count; ++i) {
+        if (prepared.indirect_resources[i] == resource) {
+          return;
+        }
+      }
+      assert_true(prepared.indirect_resource_count <
+                  prepared.indirect_resources.size());
+      if (prepared.indirect_resource_count <
+          prepared.indirect_resources.size()) {
+        prepared.indirect_resources[prepared.indirect_resource_count++] =
+            resource;
+      }
+    };
+    if (needs_system) {
+      add_indirect_resource(system_cbv.buffer);
+    }
+    if (needs_float) {
+      add_indirect_resource(float_cbv.buffer);
+    }
+    if (needs_bool_loop) {
+      add_indirect_resource(bool_loop_cbv.buffer);
+    }
+    if (needs_fetch) {
+      add_indirect_resource(fetch_cbv.buffer);
+    }
+    if (needs_descriptor_indices) {
+      add_indirect_resource(descriptor_indices_cbv.buffer);
+    }
+    if (metadata.uses_primitive_index_constants) {
+      add_indirect_resource(draw.native_primitive_index_buffer);
+    }
+    return true;
+  };
+  const bool native_vertex_stage =
+      !draw.use_native_msl_primitive_mesh && !draw.use_native_msl_tessellation;
+  const bool native_mesh_stage =
+      draw.use_native_msl_primitive_mesh || draw.use_native_msl_tessellation;
+  const bool native_object_stage = draw.use_native_msl_tessellation;
+  if (!prepare_stage_draw_constants(draw.native_vertex_metadata, kStageVertex,
+                                    native_vertex_stage, false,
+                                    native_mesh_stage, native_object_stage)) {
+    return false;
+  }
+  if (draw.native_pixel_metadata_valid &&
+      !prepare_stage_draw_constants(draw.native_pixel_metadata, kStagePixel,
+                                    false, true, false, false)) {
+    return false;
+  }
+  return true;
+}
+
+bool MetalCommandProcessor::BindNativeMslDrawResources(
+    const PreparedDraw& draw) {
+  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
+      !texture_cache_ || !null_buffer_) {
+    XELOGE("Native MSL draw binding requested before Metal resources exist");
+    return false;
+  }
+
+  auto bind_stage = [&](const DxbcShader::TranslationMetadata& metadata,
+                        size_t stage, bool vertex_stage, bool fragment_stage,
+                        bool mesh_stage, bool object_stage) -> bool {
+    MTL::RenderStages stage_render_stages = MTL::RenderStages(0);
+    auto add_render_stage = [&](MTL::RenderStages stage_bits) {
+      stage_render_stages = MTL::RenderStages(
+          NS::UInteger(stage_render_stages) | NS::UInteger(stage_bits));
+    };
+    if (vertex_stage) {
+      add_render_stage(MTL::RenderStageVertex);
+    }
+    if (fragment_stage) {
+      add_render_stage(MTL::RenderStageFragment);
+    }
+    if (mesh_stage) {
+      add_render_stage(MTL::RenderStageMesh);
+    }
+    if (object_stage) {
+      add_render_stage(MTL::RenderStageObject);
+    }
+
+    const bool needs_runtime_info =
+        native_msl::UsesTextureRuntimeInfo(metadata);
+    bool needs_texture_2d_array_heap = false;
+    bool needs_texture_3d_heap = false;
+    bool needs_texture_cube_heap = false;
+    for (const DxbcShader::TextureBinding& binding :
+         metadata.texture_bindings) {
+      switch (binding.dimension) {
+        case xenos::FetchOpDimension::kCube:
+          needs_texture_cube_heap = true;
+          break;
+        case xenos::FetchOpDimension::k3DOrStacked:
+          needs_texture_2d_array_heap = true;
+          needs_texture_3d_heap = true;
+          break;
+        case xenos::FetchOpDimension::k1D:
+        case xenos::FetchOpDimension::k2D:
+        default:
+          needs_texture_2d_array_heap = true;
+          break;
+      }
+    }
+    if ((needs_texture_2d_array_heap && !native_msl_texture_2d_array_heap_) ||
+        (needs_texture_3d_heap && !native_msl_texture_3d_heap_) ||
+        (needs_texture_cube_heap && !native_msl_texture_cube_heap_)) {
+      XELOGE("Native MSL draw missing required texture argument heap buffer");
+      return false;
+    }
+    if (!metadata.sampler_bindings.empty() && !native_msl_sampler_heap_) {
+      XELOGE("Native MSL draw missing sampler argument heap buffer");
+      return false;
+    }
+
+    MTL::Buffer* runtime_info_buffer = nullptr;
+    NS::UInteger runtime_info_offset = 0;
+    if (needs_runtime_info) {
+      runtime_info_buffer = draw.native_runtime_info_buffers[stage];
+      runtime_info_offset = draw.native_runtime_info_offsets[stage];
+      if (!runtime_info_buffer) {
+        XELOGE("Native MSL draw missing prepared texture runtime info");
+        return false;
+      }
+    }
+
+    MTL::Buffer* shared_memory_buffer = nullptr;
+    if (metadata.uses_shared_memory) {
+      shared_memory_buffer = shared_memory_->GetBuffer();
+      if (!shared_memory_buffer) {
+        XELOGE("Native MSL draw missing shared-memory buffer");
+        return false;
+      }
+    }
+
+    const NativeMslPreparedDrawConstants& prepared_constants =
+        draw.native_draw_constants[stage];
+    if (!prepared_constants.page_buffer && !prepared_constants.table_buffer) {
+      XELOGE("Native MSL draw missing prepared draw constants");
+      return false;
     }
 
     auto bind_native_buffer_for_stage =
@@ -5692,8 +5745,28 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
                                      offset, slot);
       }
     };
-    bind_native_buffer(draw_constants_buffer, draw_constants_offset,
-                       kNativeBufferDrawConstants);
+    if (prepared_constants.page_buffer) {
+      // Slot-ring path: bind the page containing this draw's table (the page
+      // identity travels with the draw because one flush can straddle a page
+      // rollover). The tracking layer collapses consecutive same-page binds
+      // and re-binds after encoder resets; the per-draw selection is the
+      // baseInstance index, never a setVertexBufferOffset.
+      if (!RenderEncoderBufferBindingMatches(
+              RenderEncoderBufferStage::kVertex,
+              prepared_constants.page_buffer,
+              prepared_constants.page_base_offset,
+              kNativeBufferDrawConstants)) {
+        SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex,
+                               prepared_constants.page_buffer,
+                               prepared_constants.page_base_offset,
+                               kNativeBufferDrawConstants);
+        ++backend_telemetry_.native_msl_draw_constants_slot_page_binds;
+      }
+    } else {
+      bind_native_buffer(prepared_constants.table_buffer,
+                         prepared_constants.table_offset,
+                         kNativeBufferDrawConstants);
+    }
     if (needs_runtime_info) {
       bind_native_buffer(runtime_info_buffer, runtime_info_offset,
                          kNativeBufferTextureRuntimeInfo);
@@ -5717,44 +5790,9 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       bind_native_buffer(shared_memory_buffer, 0, kNativeBufferSharedMemory);
     }
 
-    std::array<const MTL::Resource*, 8> draw_constant_resources;
-    uint32_t draw_constant_resource_count = 0;
-    auto add_draw_constant_resource = [&](MTL::Resource* resource) {
-      if (!resource) {
-        return;
-      }
-      for (uint32_t i = 0; i < draw_constant_resource_count; ++i) {
-        if (draw_constant_resources[i] == resource) {
-          return;
-        }
-      }
-      assert_true(draw_constant_resource_count <
-                  draw_constant_resources.size());
-      if (draw_constant_resource_count < draw_constant_resources.size()) {
-        draw_constant_resources[draw_constant_resource_count++] = resource;
-      }
-    };
-    if (needs_system) {
-      add_draw_constant_resource(system_cbv.buffer);
-    }
-    if (needs_float) {
-      add_draw_constant_resource(float_cbv.buffer);
-    }
-    if (needs_bool_loop) {
-      add_draw_constant_resource(bool_loop_cbv.buffer);
-    }
-    if (needs_fetch) {
-      add_draw_constant_resource(fetch_cbv.buffer);
-    }
-    if (needs_descriptor_indices) {
-      add_draw_constant_resource(descriptor_indices_cbv.buffer);
-    }
-    if (metadata.uses_primitive_index_constants) {
-      add_draw_constant_resource(primitive_index_buffer);
-    }
-    if (draw_constant_resource_count) {
-      UseRenderEncoderResources(draw_constant_resources.data(),
-                                draw_constant_resource_count,
+    if (prepared_constants.indirect_resource_count) {
+      UseRenderEncoderResources(prepared_constants.indirect_resources.data(),
+                                prepared_constants.indirect_resource_count,
                                 MTL::ResourceUsageRead, stage_render_stages);
     }
 
@@ -6491,7 +6529,8 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
           : nullptr,
       draw.vertex_bindings, draw.vertex_ranges.data(), draw.vertex_range_count,
       draw.has_index_buffer_info ? &draw.index_buffer_info : nullptr,
-      draw.memexport_ranges);
+      draw.memexport_ranges,
+      draw.native_draw_constants[kStageVertex].slot);
 }
 
 bool MetalCommandProcessor::DispatchDraw(
@@ -6509,7 +6548,8 @@ bool MetalCommandProcessor::DispatchDraw(
     PreparedDrawSpan<Shader::VertexBinding> vb_bindings,
     const VertexBindingRange* vertex_ranges, uint32_t vertex_range_count,
     const IndexBufferInfo* index_buffer_info,
-    PreparedDrawSpan<draw_util::MemExportRange> memexport_ranges) {
+    PreparedDrawSpan<draw_util::MemExportRange> memexport_ranges,
+    uint32_t native_msl_draw_constants_slot) {
   const bool use_native_msl_primitive_mesh =
       native_mesh_pipeline_state != nullptr;
   auto use_resource_if_not_residency_covered = [&](MTL::Resource* resource,
@@ -6894,8 +6934,9 @@ bool MetalCommandProcessor::DispatchDraw(
     if (primitive_processing_result.index_buffer_type ==
         PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
       if (use_native_msl) {
-        // baseInstance carries the plain-vertex draw-constants slot index. The
-        // generated vertex function reads it via [[base_instance]] to index the
+        // baseInstance carries the plain-vertex draw-constants slot index
+        // assigned at prep time (PrepareNativeMslDrawResources). The generated
+        // vertex function reads it via [[base_instance]] to index the
         // bound-once slot page (see BindNativeMslDrawResources).
         // instanceCount=1 keeps the single Xbox 360 invocation per vertex;
         // [[instance_id]] is unused by the guest vertex path so it is harmless
@@ -6904,8 +6945,7 @@ bool MetalCommandProcessor::DispatchDraw(
         current_render_encoder_->drawPrimitives(
             mtl_primitive, NS::UInteger(0),
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
-            NS::UInteger(1),
-            NS::UInteger(current_native_msl_draw_constants_slot_));
+            NS::UInteger(1), NS::UInteger(native_msl_draw_constants_slot));
       } else {
         IRRuntimeDrawPrimitives(
             current_render_encoder_, mtl_primitive, NS::UInteger(0),
@@ -6924,16 +6964,16 @@ bool MetalCommandProcessor::DispatchDraw(
       }
       if (use_native_msl) {
         // baseVertex stays 0 (so [[vertex_id]] is unchanged: it ranges 0..N-1);
-        // baseInstance carries the plain-vertex draw-constants slot index read
-        // via [[base_instance]] (see BindNativeMslDrawResources). instanceCount
-        // is 1, so [[instance_id]] == baseInstance, which the guest vertex path
-        // ignores.
+        // baseInstance carries the plain-vertex draw-constants slot index
+        // assigned at prep time and read via [[base_instance]] (see
+        // PrepareNativeMslDrawResources / BindNativeMslDrawResources).
+        // instanceCount is 1, so [[instance_id]] == baseInstance, which the
+        // guest vertex path ignores.
         current_render_encoder_->drawIndexedPrimitives(
             mtl_primitive,
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
             index_type, index_buffer, index_offset, NS::UInteger(1),
-            NS::Integer(0),
-            NS::UInteger(current_native_msl_draw_constants_slot_));
+            NS::Integer(0), NS::UInteger(native_msl_draw_constants_slot));
       } else {
         IRRuntimeDrawIndexedPrimitives(
             current_render_encoder_, mtl_primitive,
@@ -7463,7 +7503,6 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
   // also guarded by upload_frame == frame_current_, but clearing it avoids
   // retaining a stale buffer pointer across the frame boundary.
   native_msl_draw_constants_slot_page_ = {};
-  current_native_msl_draw_constants_slot_ = 0;
   native_msl_primitive_index_upload_cache_ = {};
 
   graphics_root_argument_state_ = {};
