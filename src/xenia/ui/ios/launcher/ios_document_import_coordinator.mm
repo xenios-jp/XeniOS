@@ -67,13 +67,32 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   }
 }
 
+- (void)refreshImportedGamesWithScannedGamesCompletion:
+    (void (^)(const std::vector<xe::ui::IOSDiscoveredGame>& games))completion {
+  if ([_host respondsToSelector:@selector(
+                                    documentImportCoordinatorRefreshImportedGamesWithScannedGamesCompletion:)]) {
+    [_host documentImportCoordinatorRefreshImportedGamesWithScannedGamesCompletion:completion];
+    return;
+  }
+
+  [self refreshImportedGamesWithCompletion:^{
+    if (completion) {
+      const std::vector<xe::ui::IOSDiscoveredGame> empty_games;
+      completion(empty_games);
+    }
+  }];
+}
+
 - (void)promptForZarConversionAfterAddingPath:(const std::filesystem::path&)path
+                                        games:
+                                            (const std::vector<xe::ui::IOSDiscoveredGame>&)games
                               externalLibrary:(BOOL)externalLibrary
                                    completion:(void (^)(BOOL conversionChosen))completion {
   if ([_host respondsToSelector:@selector(
                                     documentImportCoordinatorPromptForZarConversionAfterAddingPath:
-                                    externalLibrary:completion:)]) {
+                                    scannedGames:externalLibrary:completion:)]) {
     [_host documentImportCoordinatorPromptForZarConversionAfterAddingPath:path
+                                                             scannedGames:games
                                                           externalLibrary:externalLibrary
                                                                completion:completion];
     return;
@@ -168,9 +187,11 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
     }
 
     NSString* imported_name = ToNSString(imported_path.filename().string());
-    [self refreshImportedGamesWithCompletion:^{
+    [self refreshImportedGamesWithScannedGamesCompletion:^(
+              const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {
       [self
           promptForZarConversionAfterAddingPath:imported_path
+                                          games:scanned_games
                                 externalLibrary:NO
                                      completion:^(BOOL conversionChosen) {
                                        if (conversionChosen) {
@@ -266,8 +287,12 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
                                                     stringWithFormat:@"Linked external library: %@",
                                                                      folder_name]];
   const std::filesystem::path linked_path(url.path ? [url.path UTF8String] : "");
-  [self refreshImportedGamesWithCompletion:^{
-    [self promptForZarConversionAfterAddingPath:linked_path externalLibrary:YES completion:nil];
+  [self refreshImportedGamesWithScannedGamesCompletion:^(
+            const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {
+    [self promptForZarConversionAfterAddingPath:linked_path
+                                          games:scanned_games
+                                externalLibrary:YES
+                                     completion:nil];
   }];
 }
 

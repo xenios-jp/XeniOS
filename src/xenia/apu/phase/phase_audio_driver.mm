@@ -91,8 +91,9 @@ struct PHASEAudioDriver::Impl {
   AVAudioFormat* format = nil;
 
   void ReleaseSemaphore() {
-    if (shared->semaphore) {
-      shared->semaphore->Release(1, nullptr);
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    if (xe::threading::Semaphore* semaphore = shared->semaphore) {
+      semaphore->Release(1, nullptr);
     }
   }
 };
@@ -309,6 +310,7 @@ void PHASEAudioDriver::Shutdown() {
 
     {
       std::lock_guard<std::mutex> lock(s->mutex);
+      s->semaphore = nullptr;
       s->free_pool.clear();
     }
 
@@ -388,6 +390,9 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                {
                  std::lock_guard<std::mutex> lock(shared->mutex);
                  shared->free_pool.push_back(buf);
+                 if (shared->semaphore) {
+                   shared->semaphore->Release(1, nullptr);
+                 }
                }
                shared->outstanding.fetch_sub(1, std::memory_order_relaxed);
                shared->frames_completed.fetch_add(1, std::memory_order_relaxed);
@@ -395,9 +400,6 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                        true, std::memory_order_relaxed)) {
                  XELOGI("PHASEAudioDriver: first buffer rendered by PHASE "
                         "(audio path confirmed live)");
-               }
-               if (shared->semaphore) {
-                 shared->semaphore->Release(1, nullptr);
                }
              }];
 }
