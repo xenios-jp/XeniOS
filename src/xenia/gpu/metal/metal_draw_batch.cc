@@ -162,6 +162,10 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.native_mesh_pipeline_state = nullptr;
 
   draw.has_index_buffer_info = false;
+  draw.depth_stencil_state = nullptr;
+  draw.depth_stencil_effective_stencil_enable = false;
+  draw.prepared_guest_dma_index_buffer = {};
+  draw.prepared_host_index_buffer = {};
 
   draw.vertex_bindings = {};
   draw.vertex_range_count = 0;
