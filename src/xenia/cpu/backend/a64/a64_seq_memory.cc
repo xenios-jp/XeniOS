@@ -1221,7 +1221,9 @@ struct RESERVED_STORE_I32
       e.mov(e.w1, WReg(i.src1.reg().getIdx()));
     }
     e.CallReservationHelper(e.backend()->reserved_store_32_helper);
-    e.mov(i.dest, e.w0);
+    // The non-LSE path returns a C `bool`; AAPCS64 leaves bits [31:8] of a
+    // narrow return value unspecified, so mask to keep the I8 zero-extended.
+    e.uxtb(i.dest, e.w0);
   }
 };
 struct RESERVED_STORE_I64
@@ -1241,7 +1243,9 @@ struct RESERVED_STORE_I64
       e.mov(e.w1, WReg(i.src1.reg().getIdx()));
     }
     e.CallReservationHelper(e.backend()->reserved_store_64_helper);
-    e.mov(i.dest, e.w0);
+    // The non-LSE path returns a C `bool`; AAPCS64 leaves bits [31:8] of a
+    // narrow return value unspecified, so mask to keep the I8 zero-extended.
+    e.uxtb(i.dest, e.w0);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_RESERVED_STORE, RESERVED_STORE_I32,

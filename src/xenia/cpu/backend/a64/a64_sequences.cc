@@ -476,17 +476,31 @@ static void EmitCmpConstant(A64Emitter& e, const XReg& src, uint64_t imm) {
 // ============================================================================
 // OPCODE_ADD (Integer)
 // ============================================================================
+// I8/I16 value convention: this backend keeps narrow integer values
+// ZERO-EXTENDED in their W registers. Consumers rely on it — branches use
+// full-width cbz/cbnz, unsigned compares use full-width cmp, SELECT compares
+// the condition register against zero. Every sequence producing an I8/I16
+// result must therefore mask the destination back to the type width when the
+// computation can carry, borrow, or sign-fill into the upper bits (add, sub,
+// neg, not, shifts, min/max via sign-extended scratch, ...). The x64 backend
+// instead leaves upper bits stale and reads sub-width registers; mixing the
+// two conventions here caused real divergences (e.g. ADD_I8(0x80,0x80)
+// followed by BRANCH_TRUE_I8 branched on a64 but not on x64).
 struct ADD_I8 : Sequence<ADD_I8, I<OPCODE_ADD, I8Op, I8Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src1.is_constant && i.src2.is_constant) {
       e.mov(i.dest, static_cast<uint64_t>(
                         (i.src1.constant() + i.src2.constant()) & 0xFF));
-    } else if (i.src2.is_constant) {
-      e.add(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0xFF));
-    } else if (i.src1.is_constant) {
-      e.add(i.dest, i.src2, static_cast<uint32_t>(i.src1.constant() & 0xFF));
     } else {
-      e.add(i.dest, i.src1, i.src2);
+      if (i.src2.is_constant) {
+        e.add(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0xFF));
+      } else if (i.src1.is_constant) {
+        e.add(i.dest, i.src2, static_cast<uint32_t>(i.src1.constant() & 0xFF));
+      } else {
+        e.add(i.dest, i.src1, i.src2);
+      }
+      // The add can carry into bit 8; keep the I8 value zero-extended.
+      e.uxtb(i.dest, i.dest);
     }
   }
 };
@@ -495,24 +509,28 @@ struct ADD_I16 : Sequence<ADD_I16, I<OPCODE_ADD, I16Op, I16Op, I16Op>> {
     if (i.src1.is_constant && i.src2.is_constant) {
       e.mov(i.dest, static_cast<uint64_t>(
                         (i.src1.constant() + i.src2.constant()) & 0xFFFF));
-    } else if (i.src2.is_constant) {
-      uint32_t imm = static_cast<uint32_t>(i.src2.constant() & 0xFFFF);
-      if (imm <= 4095) {
-        e.add(i.dest, i.src1, imm);
-      } else {
-        e.mov(e.w0, static_cast<uint64_t>(imm));
-        e.add(i.dest, i.src1, e.w0);
-      }
-    } else if (i.src1.is_constant) {
-      uint32_t imm = static_cast<uint32_t>(i.src1.constant() & 0xFFFF);
-      if (imm <= 4095) {
-        e.add(i.dest, i.src2, imm);
-      } else {
-        e.mov(e.w0, static_cast<uint64_t>(imm));
-        e.add(i.dest, i.src2, e.w0);
-      }
     } else {
-      e.add(i.dest, i.src1, i.src2);
+      if (i.src2.is_constant) {
+        uint32_t imm = static_cast<uint32_t>(i.src2.constant() & 0xFFFF);
+        if (imm <= 4095) {
+          e.add(i.dest, i.src1, imm);
+        } else {
+          e.mov(e.w0, static_cast<uint64_t>(imm));
+          e.add(i.dest, i.src1, e.w0);
+        }
+      } else if (i.src1.is_constant) {
+        uint32_t imm = static_cast<uint32_t>(i.src1.constant() & 0xFFFF);
+        if (imm <= 4095) {
+          e.add(i.dest, i.src2, imm);
+        } else {
+          e.mov(e.w0, static_cast<uint64_t>(imm));
+          e.add(i.dest, i.src2, e.w0);
+        }
+      } else {
+        e.add(i.dest, i.src1, i.src2);
+      }
+      // The add can carry into bit 16; keep the I16 value zero-extended.
+      e.uxth(i.dest, i.dest);
     }
   }
 };
@@ -878,7 +896,10 @@ EMITTER_OPCODE_TABLE(OPCODE_ZERO_EXTEND, ZERO_EXTEND_I16_I8, ZERO_EXTEND_I32_I8,
 struct SIGN_EXTEND_I16_I8
     : Sequence<SIGN_EXTEND_I16_I8, I<OPCODE_SIGN_EXTEND, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // Sign-extend into the low 16 bits only; bits [31:16] of an I16 value
+    // must stay zero.
     e.sxtb(i.dest, i.src1);
+    e.uxth(i.dest, i.dest);
   }
 };
 struct SIGN_EXTEND_I32_I8
@@ -998,11 +1019,21 @@ static void EmitSubInt(A64Emitter& e, const T& i) {
 struct SUB_I8 : Sequence<SUB_I8, I<OPCODE_SUB, I8Op, I8Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     EmitSubInt<EmitArgType, WReg>(e, i);
+    if (!(i.src1.is_constant && i.src2.is_constant)) {
+      // The borrow propagates into the upper bits; keep the I8 value
+      // zero-extended.
+      e.uxtb(i.dest, i.dest);
+    }
   }
 };
 struct SUB_I16 : Sequence<SUB_I16, I<OPCODE_SUB, I16Op, I16Op, I16Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     EmitSubInt<EmitArgType, WReg>(e, i);
+    if (!(i.src1.is_constant && i.src2.is_constant)) {
+      // The borrow propagates into the upper bits; keep the I16 value
+      // zero-extended.
+      e.uxth(i.dest, i.dest);
+    }
   }
 };
 struct SUB_I32 : Sequence<SUB_I32, I<OPCODE_SUB, I32Op, I32Op, I32Op>> {
@@ -1119,7 +1150,8 @@ struct ADD_CARRY_I8
       } else {
         e.add(e.w0, e.w0, i.src3);
       }
-      e.mov(i.dest, e.w0);
+      // The adds can carry into bit 8; keep the I8 value zero-extended.
+      e.uxtb(i.dest, e.w0);
     }
   }
 };
@@ -1144,7 +1176,8 @@ struct ADD_CARRY_I16
     } else {
       e.add(e.w0, e.w0, i.src3);
     }
-    e.mov(i.dest, e.w0);
+    // The adds can carry into bit 16; keep the I16 value zero-extended.
+    e.uxth(i.dest, e.w0);
   }
 };
 struct ADD_CARRY_I32
@@ -1458,7 +1491,9 @@ struct NEG_I8 : Sequence<NEG_I8, I<OPCODE_NEG, I8Op, I8Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(static_cast<uint8_t>(-i.src1.constant())));
     } else {
+      // Negation sign-fills the upper bits; keep the I8 value zero-extended.
       e.neg(i.dest, i.src1);
+      e.uxtb(i.dest, i.dest);
     }
   }
 };
@@ -1468,7 +1503,9 @@ struct NEG_I16 : Sequence<NEG_I16, I<OPCODE_NEG, I16Op, I16Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(static_cast<uint16_t>(-i.src1.constant())));
     } else {
+      // Negation sign-fills the upper bits; keep the I16 value zero-extended.
       e.neg(i.dest, i.src1);
+      e.uxth(i.dest, i.dest);
     }
   }
 };
@@ -1917,7 +1954,9 @@ struct NOT_I8 : Sequence<NOT_I8, I<OPCODE_NOT, I8Op, I8Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(static_cast<uint8_t>(~i.src1.constant())));
     } else {
-      e.mvn(i.dest, i.src1);
+      // mvn would set bits [31:8]; invert within the type width instead to
+      // keep the I8 value zero-extended.
+      e.eor(i.dest, i.src1, static_cast<uint64_t>(0xFF));
     }
   }
 };
@@ -1927,7 +1966,9 @@ struct NOT_I16 : Sequence<NOT_I16, I<OPCODE_NOT, I16Op, I16Op>> {
       e.mov(i.dest,
             static_cast<uint64_t>(static_cast<uint16_t>(~i.src1.constant())));
     } else {
-      e.mvn(i.dest, i.src1);
+      // mvn would set bits [31:16]; invert within the type width instead to
+      // keep the I16 value zero-extended.
+      e.eor(i.dest, i.src1, static_cast<uint64_t>(0xFFFF));
     }
   }
 };
@@ -1964,11 +2005,19 @@ EMITTER_OPCODE_TABLE(OPCODE_NOT, NOT_I8, NOT_I16, NOT_I32, NOT_I64, NOT_V128);
 struct SHL_I8 : Sequence<SHL_I8, I<OPCODE_SHL, I8Op, I8Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src2.is_constant) {
+      // Shift counts follow the x64 reference backend: count mod 32, result
+      // truncated to the type width (counts 8..31 give 0).
+      const uint32_t amt = static_cast<uint32_t>(i.src2.constant()) & 0x1F;
       if (i.src1.is_constant) {
-        e.mov(i.dest, static_cast<uint64_t>(static_cast<uint8_t>(
-                          i.src1.constant() << (i.src2.constant() & 0x7))));
+        const uint8_t folded =
+            amt >= 8 ? 0
+                     : static_cast<uint8_t>(
+                           static_cast<uint32_t>(i.src1.constant() & 0xFF)
+                           << amt);
+        e.mov(i.dest, static_cast<uint64_t>(folded));
       } else {
-        e.lsl(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0x1F));
+        e.lsl(i.dest, i.src1, amt);
+        e.uxtb(i.dest, i.dest);
       }
     } else {
       // Read shift amount first — dest may alias src2.
@@ -1979,17 +2028,27 @@ struct SHL_I8 : Sequence<SHL_I8, I<OPCODE_SHL, I8Op, I8Op, I8Op>> {
         e.mov(i.dest, i.src1);
       }
       e.lsl(i.dest, i.dest, e.w0);
+      // Bits can shift past the type width; keep the I8 value zero-extended.
+      e.uxtb(i.dest, i.dest);
     }
   }
 };
 struct SHL_I16 : Sequence<SHL_I16, I<OPCODE_SHL, I16Op, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src2.is_constant) {
+      // Shift counts follow the x64 reference backend: count mod 32, result
+      // truncated to the type width (counts 16..31 give 0).
+      const uint32_t amt = static_cast<uint32_t>(i.src2.constant()) & 0x1F;
       if (i.src1.is_constant) {
-        e.mov(i.dest, static_cast<uint64_t>(static_cast<uint16_t>(
-                          i.src1.constant() << (i.src2.constant() & 0xF))));
+        const uint16_t folded =
+            amt >= 16 ? 0
+                      : static_cast<uint16_t>(
+                            static_cast<uint32_t>(i.src1.constant() & 0xFFFF)
+                            << amt);
+        e.mov(i.dest, static_cast<uint64_t>(folded));
       } else {
-        e.lsl(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0x1F));
+        e.lsl(i.dest, i.src1, amt);
+        e.uxth(i.dest, i.dest);
       }
     } else {
       // Read shift amount first — dest may alias src2.
@@ -2000,6 +2059,8 @@ struct SHL_I16 : Sequence<SHL_I16, I<OPCODE_SHL, I16Op, I16Op, I8Op>> {
         e.mov(i.dest, i.src1);
       }
       e.lsl(i.dest, i.dest, e.w0);
+      // Bits can shift past the type width; keep the I16 value zero-extended.
+      e.uxth(i.dest, i.dest);
     }
   }
 };
@@ -2088,10 +2149,15 @@ EMITTER_OPCODE_TABLE(OPCODE_SHL, SHL_I8, SHL_I16, SHL_I32, SHL_I64, SHL_V128);
 struct SHR_I8 : Sequence<SHR_I8, I<OPCODE_SHR, I8Op, I8Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src2.is_constant) {
+      // Shift counts follow the x64 reference backend: count mod 32
+      // (counts 8..31 give 0).
       if (i.src1.is_constant) {
-        e.mov(i.dest, static_cast<uint64_t>(static_cast<uint8_t>(
-                          static_cast<uint8_t>(i.src1.constant()) >>
-                          (i.src2.constant() & 0x7))));
+        const uint32_t amt = static_cast<uint32_t>(i.src2.constant()) & 0x1F;
+        const uint8_t folded =
+            amt >= 8 ? 0
+                     : static_cast<uint8_t>(
+                           static_cast<uint8_t>(i.src1.constant()) >> amt);
+        e.mov(i.dest, static_cast<uint64_t>(folded));
       } else {
         e.lsr(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0x1F));
       }
@@ -2110,10 +2176,15 @@ struct SHR_I8 : Sequence<SHR_I8, I<OPCODE_SHR, I8Op, I8Op, I8Op>> {
 struct SHR_I16 : Sequence<SHR_I16, I<OPCODE_SHR, I16Op, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src2.is_constant) {
+      // Shift counts follow the x64 reference backend: count mod 32
+      // (counts 16..31 give 0).
       if (i.src1.is_constant) {
-        e.mov(i.dest, static_cast<uint64_t>(static_cast<uint16_t>(
-                          static_cast<uint16_t>(i.src1.constant()) >>
-                          (i.src2.constant() & 0xF))));
+        const uint32_t amt = static_cast<uint32_t>(i.src2.constant()) & 0x1F;
+        const uint16_t folded =
+            amt >= 16 ? 0
+                      : static_cast<uint16_t>(
+                            static_cast<uint16_t>(i.src1.constant()) >> amt);
+        e.mov(i.dest, static_cast<uint64_t>(folded));
       } else {
         e.lsr(i.dest, i.src1, static_cast<uint32_t>(i.src2.constant() & 0x1F));
       }
@@ -2226,6 +2297,9 @@ struct SHA_I8 : Sequence<SHA_I8, I<OPCODE_SHA, I8Op, I8Op, I8Op>> {
     } else {
       e.asr(i.dest, e.w0, i.src2);
     }
+    // The arithmetic shift sign-fills bits [31:8]; keep the I8 value
+    // zero-extended.
+    e.uxtb(i.dest, i.dest);
   }
 };
 struct SHA_I16 : Sequence<SHA_I16, I<OPCODE_SHA, I16Op, I16Op, I8Op>> {
@@ -2241,6 +2315,9 @@ struct SHA_I16 : Sequence<SHA_I16, I<OPCODE_SHA, I16Op, I16Op, I8Op>> {
     } else {
       e.asr(i.dest, e.w0, i.src2);
     }
+    // The arithmetic shift sign-fills bits [31:16]; keep the I16 value
+    // zero-extended.
+    e.uxth(i.dest, i.dest);
   }
 };
 struct SHA_I32 : Sequence<SHA_I32, I<OPCODE_SHA, I32Op, I32Op, I8Op>> {
@@ -3275,6 +3352,9 @@ struct MIN_I8 : Sequence<MIN_I8, I<OPCODE_MIN, I8Op, I8Op, I8Op>> {
     }
     e.cmp(e.w0, e.w17);
     e.csel(i.dest, e.w0, e.w17, LT);
+    // The selected value is sign-extended scratch; keep the I8 value
+    // zero-extended.
+    e.uxtb(i.dest, i.dest);
   }
 };
 struct MIN_I16 : Sequence<MIN_I16, I<OPCODE_MIN, I16Op, I16Op, I16Op>> {
@@ -3293,6 +3373,9 @@ struct MIN_I16 : Sequence<MIN_I16, I<OPCODE_MIN, I16Op, I16Op, I16Op>> {
     }
     e.cmp(e.w0, e.w17);
     e.csel(i.dest, e.w0, e.w17, LT);
+    // The selected value is sign-extended scratch; keep the I16 value
+    // zero-extended.
+    e.uxth(i.dest, i.dest);
   }
 };
 struct MIN_I32 : Sequence<MIN_I32, I<OPCODE_MIN, I32Op, I32Op, I32Op>> {
