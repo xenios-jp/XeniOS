@@ -80,6 +80,18 @@ DEFINE_bool(
     "Metal");
 
 DEFINE_bool(
+    metal_multi_cb, false,
+    "With metal_parallel_encode: give each handed-off draw batch its own "
+    "command buffer, enqueued at handoff so its queue position is fixed "
+    "before encoding starts (the Metal 3 multi-command-buffer parallel "
+    "encoding model). The command-processor thread then keeps preparing - "
+    "and encoding uploads and inline draws through its own encoder - without "
+    "draining the worker; drains remain only at true dependencies (swap, "
+    "waits, ZPD lifetime changes, trace playback, shutdown). Requires the "
+    "GPU order event; falls back to single-CB handoff when unavailable.",
+    "Metal");
+
+DEFINE_bool(
     metal_command_buffer_unretained, false,
     "Create the main draw command buffer with unretained references "
     "(commandBufferWithUnretainedReferences), removing per-bind retain/"
@@ -881,7 +893,19 @@ uint64_t MetalCommandProcessor::GetCurrentSubmission() const {
 }
 
 uint64_t MetalCommandProcessor::GetCompletedSubmission() const {
-  return completed_command_buffers_.load(std::memory_order_relaxed);
+  uint64_t completed = completed_command_buffers_.load(std::memory_order_relaxed);
+  // Multi-CB: an in-flight worker batch's command buffer rides between
+  // spine submissions without an id of its own. Prep-time GPU-use stamps
+  // (texture last-use, shared-memory access ranges) were made under the
+  // spine that was current at handoff, so completed-submission consumers
+  // (pool reclamation, texture trim, pending-write pruning, frame slots)
+  // must not advance past it while that batch's GPU work is outstanding.
+  const uint64_t gate =
+      worker_batch_gpu_gate_min_.load(std::memory_order_acquire);
+  if (gate != UINT64_MAX && completed >= gate) {
+    completed = gate - 1;
+  }
+  return completed;
 }
 
 void MetalCommandProcessor::ForceIssueSwap() {
@@ -1267,6 +1291,19 @@ bool MetalCommandProcessor::SetupContext() {
     XELOGW(
         "MetalCommandProcessor: SharedEvent unavailable; falling back to "
         "waitUntilCompleted");
+  }
+
+  multi_cb_enabled_ = cvars::metal_multi_cb && parallel_encode_enabled_ &&
+                      wait_shared_event_ != nullptr;
+  if (cvars::metal_multi_cb && !multi_cb_enabled_) {
+    XELOGW(
+        "MetalCommandProcessor: metal_multi_cb requested but unavailable "
+        "(requires metal_parallel_encode and the GPU order event); using "
+        "single-CB handoff");
+  } else if (multi_cb_enabled_) {
+    XELOGI(
+        "MetalCommandProcessor: multi-CB parallel encode enabled "
+        "(metal_multi_cb)");
   }
 
   shared_memory_fence_ = device_->newFence();
@@ -2075,6 +2112,11 @@ void MetalCommandProcessor::InitializeShaderStorage(
 void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_width,
                                       uint32_t frontbuffer_height) {
+  // Frame-boundary drain: in multi-CB mode the flush below no longer
+  // synchronizes with the worker, but the swap is the once-per-frame point
+  // where the payload arena resets, retained storage trims, and the
+  // telemetry dump expects a quiesced backend.
+  DrainEncodeWorker();
   ProcessCompletedSubmissions();
   saw_swap_ = true;
   ++backend_telemetry_.swaps;
@@ -2102,13 +2144,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     pipeline_cache_->EndSubmission();
   }
 
-  // Submit and wait for command buffer
-  if (current_command_buffer_) {
-    EncodeGpuOrderSignal(current_command_buffer_);
-    current_command_buffer_->commit();
-    current_command_buffer_->release();
-    current_command_buffer_ = nullptr;
-  }
+  // Submit the frame's spine command buffer.
+  SealAndCommitCurrentCommandBuffer();
   DrainCommandBufferAutoreleasePool();
 
   CloseFrameLifetime();
@@ -7478,28 +7515,7 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   current_command_buffer_->setLabel(
       NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
 
-  pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
-  current_command_buffer_->addCompletedHandler(
-      [this](MTL::CommandBuffer* completed_cmd) {
-        if (completed_cmd->status() == MTL::CommandBufferStatusError) {
-          NS::Error* error = completed_cmd->error();
-          if (error) {
-            XELOGE("Metal command buffer error: {}",
-                   error->localizedDescription()->utf8String());
-          }
-        }
-        {
-          std::lock_guard<std::mutex> lock(completion_mutex_);
-          completed_command_buffers_.fetch_add(1, std::memory_order_release);
-          pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
-          // Notify under the lock so the object cannot be destroyed before
-          // notify_all() runs.  WaitForPendingCompletionHandlers spins on
-          // pending_completion_handlers_ and could see 0 after the lock is
-          // released but before notify_all() fires, leaving notify_all()
-          // running on a destroyed condition_variable.
-          completion_cond_.notify_all();
-        }
-      });
+  AddCountedCompletionHandler(current_command_buffer_);
 
   if (texture_cache_) {
     texture_cache_->BeginSubmission(submission_current_);
@@ -7521,8 +7537,8 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
 }
 
 void MetalCommandProcessor::ProcessCompletedSubmissions() {
-  const uint64_t completed =
-      completed_command_buffers_.load(std::memory_order_relaxed);
+  // GetCompletedSubmission applies the multi-CB worker-batch GPU gate.
+  const uint64_t completed = GetCompletedSubmission();
   if (completed <= submission_completed_processed_) {
     return;
   }
@@ -7556,8 +7572,10 @@ void MetalCommandProcessor::WaitForFrameSlotSubmission(
   if (!awaited_submission) {
     return;
   }
-  if (completed_command_buffers_.load(std::memory_order_acquire) >=
-      awaited_submission) {
+  // GetCompletedSubmission applies the multi-CB worker-batch GPU gate; gate
+  // release (the batch command buffer's completion handler) notifies
+  // completion_cond_ like the counted handlers do.
+  if (GetCompletedSubmission() >= awaited_submission) {
     return;
   }
   ++backend_telemetry_.frame_slot_waits;
@@ -7565,8 +7583,7 @@ void MetalCommandProcessor::WaitForFrameSlotSubmission(
   backend_telemetry_.frame_slot_wait_submission_last = awaited_submission;
   std::unique_lock<std::mutex> lock(completion_mutex_);
   completion_cond_.wait(lock, [&]() {
-    return completed_command_buffers_.load(std::memory_order_acquire) >=
-           awaited_submission;
+    return GetCompletedSubmission() >= awaited_submission;
   });
 }
 
@@ -7576,8 +7593,7 @@ void MetalCommandProcessor::OpenFrameLifetime() {
   WaitForFrameSlotSubmission(awaited_submission);
   ProcessCompletedSubmissions();
 
-  const uint64_t completed_submission =
-      completed_command_buffers_.load(std::memory_order_acquire);
+  const uint64_t completed_submission = GetCompletedSubmission();
   frame_completed_ = std::max(frame_current_, uint64_t(kMaxFramesInFlight)) -
                      kMaxFramesInFlight;
   for (uint64_t frame = frame_completed_ + 1; frame < frame_current_; ++frame) {
@@ -7681,9 +7697,13 @@ void MetalCommandProcessor::EndRenderEncoder() {
 }
 
 void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
-  // CP-thread-only entry point (the worker never ends the encoder); take
-  // ownership of the encoder state back before touching it.
-  DrainEncodeWorker();
+  // CP-thread-only entry point. In single-CB mode the worker encodes through
+  // the CP context, so ownership must be taken back before touching it; in
+  // multi-CB mode the worker has its own context and this only ever touches
+  // the CP thread's encoder.
+  if (!multi_cb_enabled_) {
+    DrainEncodeWorker();
+  }
   if (!flushing_prepared_draw_queue_ && !prepared_draw_queue_.empty()) {
     if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kRenderEncoderEnd)) {
       XELOGE("Metal EndRenderEncoder: failed to flush prepared draw queue");
@@ -7973,7 +7993,14 @@ bool MetalCommandProcessor::HasActiveSharedMemoryWritePending() const {
 
 MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
     TransferRequestSource source) {
-  DrainEncodeWorker();
+  // Multi-CB: transfers join the CP thread's own spine command buffer; the
+  // worker encodes into its private command buffer, so there is no encoder
+  // contention to drain for. A transfer encoded here executes after any
+  // in-flight batch in queue order, which is correct - it serves draws that
+  // come after the batch.
+  if (!multi_cb_enabled_) {
+    DrainEncodeWorker();
+  }
   if (!flushing_prepared_draw_queue_ && !prepared_draw_queue_.empty()) {
     if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kTransferRequest)) {
       return nullptr;
@@ -8072,6 +8099,92 @@ void MetalCommandProcessor::EncodeGpuOrderSignal(MTL::CommandBuffer* cmd) {
     return;
   }
   cmd->encodeSignalEvent(wait_shared_event_, ++wait_shared_event_value_);
+}
+
+void MetalCommandProcessor::EncodeGpuOrderSignalValue(MTL::CommandBuffer* cmd,
+                                                      uint64_t value) {
+  if (!cmd || !wait_shared_event_ || !value) {
+    return;
+  }
+  cmd->encodeSignalEvent(wait_shared_event_, value);
+}
+
+void MetalCommandProcessor::AddCountedCompletionHandler(
+    MTL::CommandBuffer* cmd) {
+  pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
+  cmd->addCompletedHandler([this](MTL::CommandBuffer* completed_cmd) {
+    if (completed_cmd->status() == MTL::CommandBufferStatusError) {
+      NS::Error* error = completed_cmd->error();
+      if (error) {
+        XELOGE("Metal command buffer error: {}",
+               error->localizedDescription()->utf8String());
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(completion_mutex_);
+      completed_command_buffers_.fetch_add(1, std::memory_order_release);
+      pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
+      // Notify under the lock so the object cannot be destroyed before
+      // notify_all() runs.  WaitForPendingCompletionHandlers spins on
+      // pending_completion_handlers_ and could see 0 after the lock is
+      // released but before notify_all() fires, leaving notify_all()
+      // running on a destroyed condition_variable.
+      completion_cond_.notify_all();
+    }
+  });
+}
+
+void MetalCommandProcessor::SealAndCommitCurrentCommandBuffer() {
+  if (!current_command_buffer_) {
+    return;
+  }
+  EncodeGpuOrderSignal(current_command_buffer_);
+  current_command_buffer_->commit();
+  current_command_buffer_->release();
+  current_command_buffer_ = nullptr;
+}
+
+MTL::CommandBuffer* MetalCommandProcessor::CreateWorkerBatchCommandBuffer() {
+  if (!command_queue_) {
+    return nullptr;
+  }
+  // Always retained: handoff eligibility rejects
+  // metal_command_buffer_unretained.
+  MTL::CommandBuffer* cmd = command_queue_->commandBuffer();
+  if (!cmd) {
+    return nullptr;
+  }
+  cmd->retain();
+  cmd->setLabel(
+      NS::String::string("XeniaWorkerCommandBuffer", NS::UTF8StringEncoding));
+  // The batch's GPU work rides between spine submissions without an id of
+  // its own; completion releases the oldest GPU gate (gates are pushed in
+  // handoff order and the queue completes in enqueue order). The handler
+  // does not touch completed_command_buffers_.
+  pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
+  cmd->addCompletedHandler([this](MTL::CommandBuffer* completed_cmd) {
+    if (completed_cmd->status() == MTL::CommandBufferStatusError) {
+      NS::Error* error = completed_cmd->error();
+      if (error) {
+        XELOGE("Metal worker command buffer error: {}",
+               error->localizedDescription()->utf8String());
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(completion_mutex_);
+      if (!worker_batch_gpu_gates_.empty()) {
+        worker_batch_gpu_gates_.pop_front();
+      }
+      worker_batch_gpu_gate_min_.store(worker_batch_gpu_gates_.empty()
+                                           ? UINT64_MAX
+                                           : worker_batch_gpu_gates_.front(),
+                                       std::memory_order_release);
+      pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
+      // Same destruction-safety rationale as AddCountedCompletionHandler.
+      completion_cond_.notify_all();
+    }
+  });
+  return cmd;
 }
 
 void MetalCommandProcessor::CommitStandaloneAsync(MTL::CommandBuffer* cmd) {
@@ -9035,10 +9148,34 @@ void MetalCommandProcessor::EncodeWorkerLoop() {
         return;
       }
     }
-    // Encode outside the lock: the CP thread cannot touch the encoder state
-    // or the batch until DrainEncodeWorker observes completion.
+    // Encode outside the lock: the CP thread cannot touch the batch until a
+    // drain/collect observes completion (and, in single-CB mode, cannot
+    // touch the CP encode context the batch encodes through).
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    const bool multi_cb_batch = encode_worker_batch_.command_buffer != nullptr;
+    if (multi_cb_batch) {
+      // Fresh per-batch context; encode-path state access (encode_ctx())
+      // resolves to it for the rest of the batch.
+      encode_worker_batch_.encode_context = {};
+      tls_encode_context_ = &encode_worker_batch_.encode_context;
+    }
     const bool encoded = EncodePreparedDrawBatch(encode_worker_batch_.draws);
+    if (multi_cb_batch) {
+      // The command buffer was enqueue()d at handoff and MUST be committed
+      // no matter what - an enqueued, never-committed command buffer stalls
+      // the whole queue. On encode failure the encoder is still ended and
+      // the (possibly partial) buffer committed; the draws are dropped and
+      // handoffs poisoned at the next collect.
+      EndWorkerBatchEncoder();
+      EncodeGpuOrderSignalValue(encode_worker_batch_.command_buffer,
+                                encode_worker_batch_.order_value);
+      encode_worker_batch_.command_buffer->commit();
+      encode_worker_batch_.command_buffer->release();
+      encode_worker_batch_.command_buffer = nullptr;
+      encode_worker_batch_.order_value = 0;
+      encode_worker_batch_.origin_submission = 0;
+      tls_encode_context_ = nullptr;
+    }
     if (encode_worker_batch_.create_descriptor) {
       encode_worker_batch_.create_descriptor->release();
       encode_worker_batch_.create_descriptor = nullptr;
@@ -9089,16 +9226,93 @@ bool MetalCommandProcessor::DrainEncodeWorker() {
   return !failed;
 }
 
+void MetalCommandProcessor::CollectRetiredWorkerDraws() {
+  if (!parallel_encode_enabled_ || tls_on_encode_worker) {
+    return;
+  }
+  bool failed = false;
+  std::vector<PreparedDraw*> retired;
+  {
+    std::lock_guard<std::mutex> lock(encode_worker_mutex_);
+    if (encode_worker_retired_draws_.empty() && !encode_worker_batch_failed_) {
+      return;
+    }
+    failed = encode_worker_batch_failed_;
+    encode_worker_batch_failed_ = false;
+    retired.swap(encode_worker_retired_draws_);
+  }
+  if (!retired.empty()) {
+    for (PreparedDraw* draw : retired) {
+      RecyclePreparedDraw(draw);
+    }
+    TryResetPreparedDrawPayloadArena();
+  }
+  if (failed) {
+    encode_worker_poisoned_ = true;
+    XELOGE(
+        "Metal parallel encode: batch encode failed; draws dropped and "
+        "handoffs disabled for this session");
+  }
+}
+
+void MetalCommandProcessor::EndWorkerBatchEncoder() {
+  MetalEncodeContext& ctx = encode_ctx();
+  if (!ctx.render_encoder) {
+    return;
+  }
+  // No ZPD query segment can be open (handoff eligibility) and worker
+  // batches never write shared memory (memexport draws don't queue), so the
+  // inline EndRenderEncoder's CloseQuerySegment and shared-memory fence
+  // update have nothing to do here. The render-target producer edge is the
+  // same as the inline path's: this pass's attachment writes must be ordered
+  // before later passes' loads and RT-reading compute/blit consumers.
+  if (render_target_hazard_fence_edges_ && render_target_fence_) {
+    ctx.render_encoder->updateFence(render_target_fence_,
+                                    MTL::RenderStageFragment);
+    RecordHazardFenceUpdate(/*compute_encoder=*/false);
+  }
+  ctx.render_encoder->endEncoding();
+  ctx.render_encoder->release();
+  ctx.render_encoder = nullptr;
+  ctx.render_encoder_has_zpd_visibility = false;
+  if (ctx.render_pass_descriptor) {
+    ctx.render_pass_descriptor->release();
+    ctx.render_pass_descriptor = nullptr;
+  }
+  ResetRenderEncoderBufferBindings();
+  ResetRenderEncoderResourceUsage();
+}
+
 bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     std::vector<PreparedDraw*>& draws, PreparedDrawFlushReason reason) {
   if (!parallel_encode_enabled_ || encode_worker_poisoned_ ||
       !encode_worker_thread_.joinable() || draws.empty()) {
     return false;
   }
-  // Only the queue-budget flush returns straight to draw preparation; every
-  // other flush reason is immediately followed by CP-side command-buffer or
-  // encoder work, which would drain right back into lockstep.
-  if (reason != PreparedDrawFlushReason::kQueueBudget) {
+  if (multi_cb_enabled_) {
+    // Multi-CB: the CP thread never drains back into lockstep, so any flush
+    // whose follow-up work is plain draw preparation or inline encoding may
+    // hand off: the queue-budget flush and the queue-reject flush (the
+    // rejected draw then encodes inline through the CP context, concurrently
+    // with the worker). Lifecycle flushes (swap, command-buffer/encoder end,
+    // transfers, queries, waits) stay inline - they are rare and entangled
+    // with CP-side state the batch must not outlive.
+    if (reason != PreparedDrawFlushReason::kQueueBudget &&
+        reason != PreparedDrawFlushReason::kQueueReject) {
+      return false;
+    }
+    // One batch slot: if the worker is still encoding the previous batch
+    // (nothing drains at the flush entry in multi-CB mode), encode inline
+    // through the CP context instead - that is exactly the concurrency this
+    // mode exists for.
+    if (encode_worker_busy_.load(std::memory_order_acquire)) {
+      return false;
+    }
+  } else if (reason != PreparedDrawFlushReason::kQueueBudget) {
+    // Single-CB: only the queue-budget flush returns straight to draw
+    // preparation; every other flush reason is immediately followed by
+    // CP-side command-buffer or encoder work, which would drain right back
+    // into lockstep.
     return false;
   }
   // Retained command buffers keep the snapshot descriptor's attachments
@@ -9164,20 +9378,14 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     return false;
   }
-  // Encoder plan. Reuse the open encoder when it is still compatible with
-  // the batch's render-target state; otherwise end it here (producer fence
-  // edges and all) and give the worker a private descriptor copy to create
-  // from. ConsumeRenderPassDescriptorClears pairs with the snapshot here,
-  // not with the worker's create: an encoder-creation failure after a
-  // consumed clear is already a dropped-draws situation.
   PreparedDrawBatch batch;
-  const bool reuse_encoder =
-      encode_ctx().render_encoder && render_target_cache_ &&
-      render_target_cache_->IsRenderPassDescriptorCompatible(
-          encode_ctx().render_pass_descriptor, 1, fallback_depth);
-  if (reuse_encoder) {
-    batch.has_zpd_visibility = encode_ctx().render_encoder_has_zpd_visibility;
-  } else {
+  if (multi_cb_enabled_) {
+    // Multi-CB plan: the batch always encodes into its own command buffer,
+    // so the encoder plan is always a private-descriptor create (a render
+    // pass cannot span command buffers). Fallible steps (descriptor copy,
+    // command-buffer creation) come first; the irreversible steps (ending
+    // the CP encoder, sealing the spine, enqueueing, consuming the clears)
+    // follow once nothing can fail back to the inline path.
     MTL::RenderPassDescriptor* live_descriptor =
         GetDrawRenderPassDescriptor(fallback_depth);
     if (!live_descriptor) {
@@ -9188,18 +9396,33 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
         da->setClearDepth(render_target_cache_->GetDepthTargetClearDepth());
       }
     }
-    // All fallible steps precede the irreversible ones: after the clears are
-    // consumed (or the encoder ended), falling back to the inline path would
-    // encode from a refreshed descriptor that has lost its first-use clears.
     batch.create_descriptor = live_descriptor->copy();
     if (!batch.create_descriptor) {
       return false;
     }
+    batch.command_buffer = CreateWorkerBatchCommandBuffer();
+    if (!batch.command_buffer) {
+      batch.create_descriptor->release();
+      batch.create_descriptor = nullptr;
+      return false;
+    }
+    // Irreversible from here. End the CP encoder (producer fence edges and
+    // all) and seal the spine: the batch's uploads live in it and must
+    // execute before the batch, and nothing may be encoded into a committed
+    // command buffer.
     if (encode_ctx().render_encoder) {
       ++backend_telemetry_.begin_encoder_descriptor_restarts;
       EndRenderEncoder(
           RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
     }
+    batch.origin_submission = submission_current_;
+    SealAndCommitCurrentCommandBuffer();
+    // Reserve the batch's queue position - right after the sealed spine -
+    // and its order-event value. Values must be monotone in queue order for
+    // the order-event protocol (presenter waits, CPU waitUntilSignaledValue);
+    // the continuation spine commits later and takes a higher value then.
+    batch.command_buffer->enqueue();
+    batch.order_value = ++wait_shared_event_value_;
     if (render_target_cache_) {
       render_target_cache_->ConsumeRenderPassDescriptorClears(live_descriptor);
     }
@@ -9209,6 +9432,74 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
         zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
         live_descriptor->visibilityResultBuffer() ==
             zpd_visibility_pool_->visibility_buffer();
+    // Hold completed-submission consumers below the origin spine until the
+    // batch's GPU work completes (prep-time texture/shared-memory stamps
+    // were made under it). The batch command buffer's completion handler
+    // pops the gate.
+    {
+      std::lock_guard<std::mutex> lock(completion_mutex_);
+      worker_batch_gpu_gates_.push_back(batch.origin_submission);
+      worker_batch_gpu_gate_min_.store(worker_batch_gpu_gates_.front(),
+                                       std::memory_order_release);
+    }
+    // Open the continuation spine eagerly so submission_current_ (and with
+    // it texture-cache stamping for the draws the CP thread preps next) is
+    // already past the sealed spine. A failure here is tolerable: the batch
+    // is fully handed off, and the next EnsureCommandBuffer retries.
+    if (!EnsureCommandBuffer()) {
+      XELOGW(
+          "Metal multi-CB handoff: failed to open the continuation command "
+          "buffer; retrying on next use");
+    }
+  } else {
+    // Single-CB encoder plan. Reuse the open encoder when it is still
+    // compatible with the batch's render-target state; otherwise end it here
+    // (producer fence edges and all) and give the worker a private
+    // descriptor copy to create from. ConsumeRenderPassDescriptorClears
+    // pairs with the snapshot here, not with the worker's create: an
+    // encoder-creation failure after a consumed clear is already a
+    // dropped-draws situation.
+    const bool reuse_encoder =
+        encode_ctx().render_encoder && render_target_cache_ &&
+        render_target_cache_->IsRenderPassDescriptorCompatible(
+            encode_ctx().render_pass_descriptor, 1, fallback_depth);
+    if (reuse_encoder) {
+      batch.has_zpd_visibility = encode_ctx().render_encoder_has_zpd_visibility;
+    } else {
+      MTL::RenderPassDescriptor* live_descriptor =
+          GetDrawRenderPassDescriptor(fallback_depth);
+      if (!live_descriptor) {
+        return false;
+      }
+      if (render_target_cache_) {
+        if (auto* da = live_descriptor->depthAttachment()) {
+          da->setClearDepth(render_target_cache_->GetDepthTargetClearDepth());
+        }
+      }
+      // All fallible steps precede the irreversible ones: after the clears
+      // are consumed (or the encoder ended), falling back to the inline path
+      // would encode from a refreshed descriptor that has lost its first-use
+      // clears.
+      batch.create_descriptor = live_descriptor->copy();
+      if (!batch.create_descriptor) {
+        return false;
+      }
+      if (encode_ctx().render_encoder) {
+        ++backend_telemetry_.begin_encoder_descriptor_restarts;
+        EndRenderEncoder(
+            RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
+      }
+      if (render_target_cache_) {
+        render_target_cache_->ConsumeRenderPassDescriptorClears(
+            live_descriptor);
+      }
+      GetActiveRenderTargetSize(live_descriptor, render_target_cache_.get(),
+                                1280, 720, batch.rt_width, batch.rt_height);
+      batch.has_zpd_visibility =
+          zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
+          live_descriptor->visibilityResultBuffer() ==
+              zpd_visibility_pool_->visibility_buffer();
+    }
   }
   // Hazard-range GPU-access stamping moves to the handoff: stamping from the
   // worker would race the direct-write eligibility readers, and over-marking
@@ -9244,7 +9535,13 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   }
   MTL::RenderPassDescriptor* pass_descriptor =
       encode_worker_batch_.create_descriptor;
-  if (!pass_descriptor || !current_command_buffer_) {
+  // Multi-CB batches encode into their own command buffer; single-CB batches
+  // encode into the CP thread's (stable while the batch is in flight - the
+  // drains guarantee it).
+  MTL::CommandBuffer* target_command_buffer =
+      encode_worker_batch_.command_buffer ? encode_worker_batch_.command_buffer
+                                          : current_command_buffer_;
+  if (!pass_descriptor || !target_command_buffer) {
     ++backend_telemetry_.begin_encoder_descriptor_failures;
     XELOGE("Metal parallel encode: batch has no encoder and no descriptor");
     return false;
@@ -9255,7 +9552,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
     ResetRenderEncoderResourceUsage();
   }
   encode_ctx().render_encoder =
-      current_command_buffer_->renderCommandEncoder(pass_descriptor);
+      target_command_buffer->renderCommandEncoder(pass_descriptor);
   if (!encode_ctx().render_encoder) {
     ++backend_telemetry_.begin_encoder_creation_failures;
     XELOGE("Metal parallel encode: failed to create render command encoder");
@@ -9534,12 +9831,7 @@ void MetalCommandProcessor::EndCommandBuffer() {
     pipeline_cache_->EndSubmission();
   }
 
-  if (current_command_buffer_) {
-    EncodeGpuOrderSignal(current_command_buffer_);
-    current_command_buffer_->commit();
-    current_command_buffer_->release();
-    current_command_buffer_ = nullptr;
-  }
+  SealAndCommitCurrentCommandBuffer();
   DrainCommandBufferAutoreleasePool();
 }
 
