@@ -79,6 +79,15 @@ DEFINE_bool(
     "with guest threads on iOS).",
     "Metal");
 
+DEFINE_int32(
+    metal_parallel_encode_threads, 1,
+    "Number of encode worker threads (1-4). Values above 1 require "
+    "metal_multi_cb: each in-flight batch encodes into its own enqueued "
+    "command buffer through its own context, and queue order was fixed at "
+    "handoff, so batches may encode and commit in any order. On iOS the "
+    "workers compete with guest threads for cores; validate per device.",
+    "Metal");
+
 DEFINE_bool(
     metal_multi_cb, false,
     "With metal_parallel_encode: give each handed-off draw batch its own "
@@ -124,6 +133,8 @@ namespace metal {
 
 thread_local MetalCommandProcessor::MetalEncodeContext*
     MetalCommandProcessor::tls_encode_context_ = nullptr;
+thread_local MetalCommandProcessor::PreparedDrawBatch*
+    MetalCommandProcessor::tls_worker_batch_ = nullptr;
 
 namespace {
 constexpr size_t kMaxPendingSharedMemoryWrites = 16;
@@ -1275,12 +1286,6 @@ bool MetalCommandProcessor::SetupContext() {
   InitializeResidencySet();
 
   parallel_encode_enabled_ = cvars::metal_parallel_encode;
-  if (parallel_encode_enabled_) {
-    StartEncodeWorker();
-    XELOGI(
-        "MetalCommandProcessor: parallel encode worker enabled "
-        "(metal_parallel_encode)");
-  }
 
   wait_shared_event_ = device_->newSharedEvent();
   if (wait_shared_event_) {
@@ -1304,6 +1309,13 @@ bool MetalCommandProcessor::SetupContext() {
     XELOGI(
         "MetalCommandProcessor: multi-CB parallel encode enabled "
         "(metal_multi_cb)");
+  }
+  if (parallel_encode_enabled_) {
+    StartEncodeWorker();
+    XELOGI(
+        "MetalCommandProcessor: parallel encode enabled "
+        "(metal_parallel_encode, {} worker thread(s))",
+        encode_worker_threads_.size());
   }
 
   shared_memory_fence_ = device_->newFence();
@@ -9112,19 +9124,35 @@ void MetalCommandProcessor::UseRenderEncoderAttachmentHeaps(
 }
 
 void MetalCommandProcessor::StartEncodeWorker() {
-  if (encode_worker_thread_.joinable()) {
+  if (!encode_worker_threads_.empty()) {
     return;
   }
   encode_worker_shutdown_ = false;
   encode_worker_poisoned_ = false;
-  encode_worker_thread_ = std::thread([this]() {
-    xe::threading::set_name("Metal Encode");
-    EncodeWorkerLoop();
-  });
+  uint32_t thread_count = 1;
+  if (cvars::metal_parallel_encode_threads > 1) {
+    if (multi_cb_enabled_) {
+      thread_count = uint32_t(std::min(cvars::metal_parallel_encode_threads,
+                                       int32_t(4)));
+    } else {
+      XELOGW(
+          "MetalCommandProcessor: metal_parallel_encode_threads > 1 requires "
+          "metal_multi_cb (single-CB batches share the CP encode context); "
+          "using 1 worker");
+    }
+  }
+  encode_worker_max_in_flight_ = 2 * thread_count;
+  encode_worker_threads_.reserve(thread_count);
+  for (uint32_t i = 0; i < thread_count; ++i) {
+    encode_worker_threads_.emplace_back([this]() {
+      xe::threading::set_name("Metal Encode");
+      EncodeWorkerLoop();
+    });
+  }
 }
 
 void MetalCommandProcessor::StopEncodeWorker() {
-  if (!encode_worker_thread_.joinable()) {
+  if (encode_worker_threads_.empty()) {
     return;
   }
   {
@@ -9132,34 +9160,42 @@ void MetalCommandProcessor::StopEncodeWorker() {
     encode_worker_shutdown_ = true;
   }
   encode_worker_cond_.notify_all();
-  encode_worker_thread_.join();
+  for (std::thread& thread : encode_worker_threads_) {
+    thread.join();
+  }
+  encode_worker_threads_.clear();
 }
 
 void MetalCommandProcessor::EncodeWorkerLoop() {
   tls_on_encode_worker = true;
   for (;;) {
+    std::unique_ptr<PreparedDrawBatch> batch;
     {
       std::unique_lock<std::mutex> lock(encode_worker_mutex_);
       encode_worker_cond_.wait(lock, [this]() {
-        return encode_worker_shutdown_ || encode_worker_has_batch_;
+        return encode_worker_shutdown_ || !encode_worker_pending_.empty();
       });
-      if (encode_worker_shutdown_) {
-        // ShutdownContext drains before stopping, so no batch can be pending.
+      if (encode_worker_pending_.empty()) {
+        // Shutdown with nothing pending. (Pending batches are processed
+        // even during shutdown: multi-CB batches hold enqueue()d command
+        // buffers that must be committed; ShutdownContext drains first
+        // anyway.)
         return;
       }
+      batch = std::move(encode_worker_pending_.front());
+      encode_worker_pending_.pop_front();
+      ++encode_worker_inflight_;
     }
-    // Encode outside the lock: the CP thread cannot touch the batch until a
-    // drain/collect observes completion (and, in single-CB mode, cannot
-    // touch the CP encode context the batch encodes through).
+    // Encode outside the lock: the batch is owned by this worker until the
+    // retire section below (and, in single-CB mode, the CP thread cannot
+    // touch the CP encode context the batch encodes through until a drain).
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    const bool multi_cb_batch = encode_worker_batch_.command_buffer != nullptr;
+    const bool multi_cb_batch = batch->command_buffer != nullptr;
+    tls_worker_batch_ = batch.get();
     if (multi_cb_batch) {
-      // Fresh per-batch context; encode-path state access (encode_ctx())
-      // resolves to it for the rest of the batch.
-      encode_worker_batch_.encode_context = {};
-      tls_encode_context_ = &encode_worker_batch_.encode_context;
+      tls_encode_context_ = &batch->encode_context;
     }
-    const bool encoded = EncodePreparedDrawBatch(encode_worker_batch_.draws);
+    const bool encoded = EncodePreparedDrawBatch(batch->draws);
     if (multi_cb_batch) {
       // The command buffer was enqueue()d at handoff and MUST be committed
       // no matter what - an enqueued, never-committed command buffer stalls
@@ -9167,18 +9203,16 @@ void MetalCommandProcessor::EncodeWorkerLoop() {
       // the (possibly partial) buffer committed; the draws are dropped and
       // handoffs poisoned at the next collect.
       EndWorkerBatchEncoder();
-      EncodeGpuOrderSignalValue(encode_worker_batch_.command_buffer,
-                                encode_worker_batch_.order_value);
-      encode_worker_batch_.command_buffer->commit();
-      encode_worker_batch_.command_buffer->release();
-      encode_worker_batch_.command_buffer = nullptr;
-      encode_worker_batch_.order_value = 0;
-      encode_worker_batch_.origin_submission = 0;
+      EncodeGpuOrderSignalValue(batch->command_buffer, batch->order_value);
+      batch->command_buffer->commit();
+      batch->command_buffer->release();
+      batch->command_buffer = nullptr;
       tls_encode_context_ = nullptr;
     }
-    if (encode_worker_batch_.create_descriptor) {
-      encode_worker_batch_.create_descriptor->release();
-      encode_worker_batch_.create_descriptor = nullptr;
+    tls_worker_batch_ = nullptr;
+    if (batch->create_descriptor) {
+      batch->create_descriptor->release();
+      batch->create_descriptor = nullptr;
     }
     pool->release();
     {
@@ -9187,11 +9221,13 @@ void MetalCommandProcessor::EncodeWorkerLoop() {
         encode_worker_batch_failed_ = true;
       }
       encode_worker_retired_draws_.insert(encode_worker_retired_draws_.end(),
-                                          encode_worker_batch_.draws.begin(),
-                                          encode_worker_batch_.draws.end());
-      encode_worker_batch_.draws.clear();
-      encode_worker_has_batch_ = false;
-      encode_worker_busy_.store(false, std::memory_order_release);
+                                          batch->draws.begin(),
+                                          batch->draws.end());
+      batch->draws.clear();
+      --encode_worker_inflight_;
+      if (encode_worker_pending_.empty() && !encode_worker_inflight_) {
+        encode_worker_busy_.store(false, std::memory_order_release);
+      }
     }
     encode_worker_cond_.notify_all();
   }
@@ -9205,8 +9241,9 @@ bool MetalCommandProcessor::DrainEncodeWorker() {
   std::vector<PreparedDraw*> retired;
   {
     std::unique_lock<std::mutex> lock(encode_worker_mutex_);
-    encode_worker_cond_.wait(lock,
-                             [this]() { return !encode_worker_has_batch_; });
+    encode_worker_cond_.wait(lock, [this]() {
+      return encode_worker_pending_.empty() && !encode_worker_inflight_;
+    });
     failed = encode_worker_batch_failed_;
     encode_worker_batch_failed_ = false;
     retired.swap(encode_worker_retired_draws_);
@@ -9286,7 +9323,7 @@ void MetalCommandProcessor::EndWorkerBatchEncoder() {
 bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     std::vector<PreparedDraw*>& draws, PreparedDrawFlushReason reason) {
   if (!parallel_encode_enabled_ || encode_worker_poisoned_ ||
-      !encode_worker_thread_.joinable() || draws.empty()) {
+      encode_worker_threads_.empty() || draws.empty()) {
     return false;
   }
   if (multi_cb_enabled_) {
@@ -9301,12 +9338,17 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
         reason != PreparedDrawFlushReason::kQueueReject) {
       return false;
     }
-    // One batch slot: if the worker is still encoding the previous batch
-    // (nothing drains at the flush entry in multi-CB mode), encode inline
-    // through the CP context instead - that is exactly the concurrency this
-    // mode exists for.
-    if (encode_worker_busy_.load(std::memory_order_acquire)) {
-      return false;
+    // Backpressure: beyond the pending + in-flight cap (2x worker count),
+    // encode inline through the CP context instead - that is exactly the
+    // concurrency this mode exists for, and it bounds how far the CP thread
+    // can run ahead of the pool (draws and payload-arena spans stay pinned
+    // until a batch retires).
+    {
+      std::lock_guard<std::mutex> lock(encode_worker_mutex_);
+      if (encode_worker_pending_.size() + encode_worker_inflight_ >=
+          encode_worker_max_in_flight_) {
+        return false;
+      }
     }
   } else if (reason != PreparedDrawFlushReason::kQueueBudget) {
     // Single-CB: only the queue-budget flush returns straight to draw
@@ -9517,8 +9559,8 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
   draws.clear();
   {
     std::lock_guard<std::mutex> lock(encode_worker_mutex_);
-    encode_worker_batch_ = std::move(batch);
-    encode_worker_has_batch_ = true;
+    encode_worker_pending_.push_back(
+        std::make_unique<PreparedDrawBatch>(std::move(batch)));
     encode_worker_busy_.store(true, std::memory_order_release);
   }
   encode_worker_cond_.notify_all();
@@ -9527,6 +9569,10 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
 
 bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   ++backend_telemetry_.begin_encoder_calls;
+  if (!tls_worker_batch_) {
+    XELOGE("Metal parallel encode: worker begin without a current batch");
+    return false;
+  }
   if (encode_ctx().render_encoder) {
     // Batch invariant: a single render-target configuration, and nothing on
     // the worker path ends the encoder mid-batch.
@@ -9534,12 +9580,12 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
     return true;
   }
   MTL::RenderPassDescriptor* pass_descriptor =
-      encode_worker_batch_.create_descriptor;
+      tls_worker_batch_->create_descriptor;
   // Multi-CB batches encode into their own command buffer; single-CB batches
   // encode into the CP thread's (stable while the batch is in flight - the
   // drains guarantee it).
   MTL::CommandBuffer* target_command_buffer =
-      encode_worker_batch_.command_buffer ? encode_worker_batch_.command_buffer
+      tls_worker_batch_->command_buffer ? tls_worker_batch_->command_buffer
                                           : current_command_buffer_;
   if (!pass_descriptor || !target_command_buffer) {
     ++backend_telemetry_.begin_encoder_descriptor_failures;
@@ -9561,7 +9607,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   ++backend_telemetry_.begin_encoder_created;
   encode_ctx().render_encoder->retain();
   encode_ctx().render_encoder_has_zpd_visibility =
-      encode_worker_batch_.has_zpd_visibility;
+      tls_worker_batch_->has_zpd_visibility;
   ResetRenderEncoderBufferBindings();
   encode_ctx().render_encoder->setLabel(
       NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
@@ -9604,13 +9650,13 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   // prepared dynamic state applies the guest values per draw.
   MTL::Viewport viewport = {0.0,
                             0.0,
-                            static_cast<double>(encode_worker_batch_.rt_width),
-                            static_cast<double>(encode_worker_batch_.rt_height),
+                            static_cast<double>(tls_worker_batch_->rt_width),
+                            static_cast<double>(tls_worker_batch_->rt_height),
                             0.0,
                             1.0};
   encode_ctx().render_encoder->setViewport(viewport);
-  MTL::ScissorRect scissor = {0, 0, encode_worker_batch_.rt_width,
-                              encode_worker_batch_.rt_height};
+  MTL::ScissorRect scissor = {0, 0, tls_worker_batch_->rt_width,
+                              tls_worker_batch_->rt_height};
   encode_ctx().render_encoder->setScissorRect(scissor);
   encode_ctx().viewport_dirty = true;
   encode_ctx().scissor_dirty = true;

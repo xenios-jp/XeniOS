@@ -2167,20 +2167,31 @@ class MetalCommandProcessor final : public CommandProcessor {
   void SetRenderEncoderMeshBuffer(MTL::Buffer* buffer, NS::UInteger offset,
                                   NS::UInteger index);
 
-  // Parallel encode worker (metal_parallel_encode). Ownership protocol: while
-  // a batch is in flight the worker owns the encode context it encodes
-  // through (cp_encode_context_ in single-CB mode); the command-processor
-  // thread must call DrainEncodeWorker() before touching it (the drain
-  // points are the existing chokepoints: flush entry, transfer requests,
-  // command-buffer end, render-encoder end, ZPD lifetime changes,
-  // swap/copy/wait/shutdown). current_command_buffer_ stays CP-created and
-  // is stable (non-null) while a batch is in flight; the worker never
-  // commits in single-CB mode. One batch in flight max.
-  std::thread encode_worker_thread_;
+  // Parallel encode workers (metal_parallel_encode /
+  // metal_parallel_encode_threads). Ownership protocol: a popped batch is
+  // owned by the worker encoding it. In single-CB mode the batch encodes
+  // through cp_encode_context_, so there is exactly one worker, at most one
+  // batch in flight, and the command-processor thread must call
+  // DrainEncodeWorker() before touching the context (the drain points are
+  // the chokepoints: flush entry, transfer requests, command-buffer end,
+  // render-encoder end, ZPD lifetime changes, swap/copy/wait/shutdown). In
+  // multi-CB mode each batch owns its command buffer and context, queue
+  // order was fixed at handoff, and batches may encode (and commit) in any
+  // order across the pool.
+  std::vector<std::thread> encode_worker_threads_;
   std::mutex encode_worker_mutex_;
   std::condition_variable encode_worker_cond_;
-  PreparedDrawBatch encode_worker_batch_;
-  bool encode_worker_has_batch_ = false;   // guarded by encode_worker_mutex_
+  // Handed-off batches awaiting a worker, in handoff order; guarded by
+  // encode_worker_mutex_.
+  std::deque<std::unique_ptr<PreparedDrawBatch>> encode_worker_pending_;
+  // Batches popped and currently encoding; guarded by encode_worker_mutex_.
+  uint32_t encode_worker_inflight_ = 0;
+  // Handoff backpressure: pending + in-flight cap (2x thread count); beyond
+  // it the flush encodes inline.
+  uint32_t encode_worker_max_in_flight_ = 1;
+  // The batch the calling worker thread is currently encoding (descriptor,
+  // command buffer, extent for BeginRenderEncoderForWorkerBatch).
+  static thread_local PreparedDrawBatch* tls_worker_batch_;
   bool encode_worker_shutdown_ = false;    // guarded by encode_worker_mutex_
   bool encode_worker_batch_failed_ = false;  // guarded by encode_worker_mutex_
   // Completed batch awaiting recycle on the CP thread (guarded by mutex).
