@@ -273,11 +273,21 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
 
 bool MetalCommandProcessor::FlushPreparedDrawQueue(
     PreparedDrawFlushReason reason) {
-  // Every flush is a drain point: the callers that flush (transfers, swaps,
-  // copies, queries, command-buffer end) are about to touch the command
-  // buffer or encoder state the worker may own. Draining before the empty
-  // early-out makes the flush call itself the synchronization chokepoint.
-  DrainEncodeWorker();
+  if (multi_cb_enabled_) {
+    // Multi-CB: the worker encodes into its own command buffer through its
+    // own context, so the flush does not synchronize with it - it only
+    // recycles batches the worker has already finished. (Lifecycle paths
+    // that genuinely need the worker idle - swap, waits, ZPD lifetime, trace
+    // playback, shutdown - drain explicitly.)
+    CollectRetiredWorkerDraws();
+  } else {
+    // Single-CB: every flush is a drain point - the callers that flush
+    // (transfers, swaps, copies, queries, command-buffer end) are about to
+    // touch the command buffer or encoder state the worker may own. Draining
+    // before the empty early-out makes the flush call itself the
+    // synchronization chokepoint.
+    DrainEncodeWorker();
+  }
   if (prepared_draw_queue_.empty()) {
     return true;
   }
