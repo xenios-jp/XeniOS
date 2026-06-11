@@ -4137,6 +4137,9 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         primitive_index_flags, primitive_processing_result.guest_index_base,
         primitive_processing_result.guest_draw_vertex_count,
         primitive_metadata};
+    if (!PrepareNativeMslDrawResources(draw)) {
+      return fail_prepared_draw();
+    }
   }
   draw.has_pending_draw_pass_transfers =
       render_target_cache_ &&
@@ -5103,11 +5106,14 @@ void MetalCommandProcessor::ApplyDrawDynamicState(
   }
 }
 
-bool MetalCommandProcessor::BindNativeMslDrawResources(
-    const PreparedDraw& draw) {
-  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
-      !texture_cache_ || !null_buffer_) {
-    XELOGE("Native MSL draw binding requested before Metal resources exist");
+bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
+  // Queue-time half of the native-MSL binding work (called from IssueDraw
+  // before SubmitPreparedDraw, no render encoder required). Pool
+  // suballocations are frame-lifetime and the reuse caches advance strictly
+  // in prep order, which equals encode order for every queue path, so encode
+  // consumes the stored results without re-deriving them.
+  if (!constant_buffer_pool_) {
+    XELOGE("Native MSL draw prepared before the constant buffer pool exists");
     return false;
   }
 
@@ -5116,9 +5122,6 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       draw.native_vertex_metadata.uses_primitive_index_constants ||
       (draw.native_pixel_metadata_valid &&
        draw.native_pixel_metadata.uses_primitive_index_constants);
-  MTL::Buffer* primitive_index_buffer = nullptr;
-  size_t primitive_index_offset = 0;
-  uint64_t primitive_index_gpu_address = 0;
   if (draw_needs_primitive_index_constants) {
     NativeMslPrimitiveIndexUploadCache& primitive_index_cache =
         native_msl_primitive_index_upload_cache_;
@@ -5126,11 +5129,10 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
         primitive_index_cache.payload_valid && primitive_index_cache.buffer &&
         primitive_index_cache.upload_frame == frame_current_ &&
         primitive_index_cache.payload == draw.native_primitive_index_constants;
-    if (can_reuse_primitive_index) {
-      primitive_index_buffer = primitive_index_cache.buffer;
-      primitive_index_offset = primitive_index_cache.offset;
-      primitive_index_gpu_address = primitive_index_cache.gpu_address;
-    } else {
+    if (!can_reuse_primitive_index) {
+      MTL::Buffer* primitive_index_buffer = nullptr;
+      size_t primitive_index_offset = 0;
+      uint64_t primitive_index_gpu_address = 0;
       uint8_t* primitive_index_data = constant_buffer_pool_->Request(
           frame_current_, sizeof(draw.native_primitive_index_constants),
           kNativeRuntimeInfoAlignment, &primitive_index_buffer,
@@ -5150,6 +5152,32 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       primitive_index_cache.payload_valid = true;
       primitive_index_cache.upload_frame = frame_current_;
     }
+    draw.native_primitive_index_buffer = primitive_index_cache.buffer;
+    draw.native_primitive_index_gpu_address =
+        primitive_index_cache.gpu_address;
+  }
+  return true;
+}
+
+bool MetalCommandProcessor::BindNativeMslDrawResources(
+    const PreparedDraw& draw) {
+  if (!current_render_encoder_ || !constant_buffer_pool_ || !shared_memory_ ||
+      !texture_cache_ || !null_buffer_) {
+    XELOGE("Native MSL draw binding requested before Metal resources exist");
+    return false;
+  }
+
+  constexpr size_t kNativeRuntimeInfoAlignment = 256;
+  const bool draw_needs_primitive_index_constants =
+      draw.native_vertex_metadata.uses_primitive_index_constants ||
+      (draw.native_pixel_metadata_valid &&
+       draw.native_pixel_metadata.uses_primitive_index_constants);
+  MTL::Buffer* primitive_index_buffer = draw.native_primitive_index_buffer;
+  uint64_t primitive_index_gpu_address =
+      draw.native_primitive_index_gpu_address;
+  if (draw_needs_primitive_index_constants && !primitive_index_buffer) {
+    XELOGE("Native MSL draw missing prepared primitive-index constants");
+    return false;
   }
 
   auto cbv_for_stage = [&](size_t stage,

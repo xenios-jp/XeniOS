@@ -182,6 +182,8 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.native_pixel_bindings.Clear();
   draw.native_pixel_metadata_valid = false;
   draw.native_primitive_index_constants = {};
+  draw.native_primitive_index_buffer = nullptr;
+  draw.native_primitive_index_gpu_address = 0;
 
   draw.use_tessellation_emulation = false;
   draw.use_geometry_emulation = false;
