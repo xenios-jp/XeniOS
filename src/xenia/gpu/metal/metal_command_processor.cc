@@ -37,6 +37,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/threading.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
@@ -67,6 +68,16 @@ DECLARE_bool(metal_backend_hazard_model_texture_heaps);
 DECLARE_bool(metal_native_msl_helper_msc);
 DECLARE_bool(metal_native_msl_render);
 DECLARE_bool(submit_on_primary_buffer_end);
+
+DEFINE_bool(
+    metal_parallel_encode, false,
+    "Encode flushed prepared-draw batches on a dedicated worker thread, "
+    "overlapping guest-facing draw preparation with Metal render-command "
+    "encoding. The command-processor thread drains the worker before any "
+    "other command-buffer or encoder access. Off by default pending "
+    "per-title and per-device validation (the worker competes for cores "
+    "with guest threads on iOS).",
+    "Metal");
 
 DEFINE_bool(
     metal_command_buffer_unretained, false,
@@ -115,6 +126,12 @@ constexpr uint32_t kNativeMslDrawConstantsChangePrimitiveIndex = 1u << 5;
 // VS/PS translations. The bit is outside the semantic DxbcShaderTranslator
 // modification fields and only changes the Translation cache key.
 constexpr uint64_t kMetalHelperStageMscTranslationKeyBit = 1ull << 63;
+// Set for the duration of the encode worker's batch processing. Routes
+// BeginRenderEncoderForDraw to the worker-batch begin and gates the blocks
+// of EncodePreparedDraw that consult or mutate CP-thread-owned caches
+// (draw-pass transfers, hazard-range GPU-access stamping, residency heap
+// coverage).
+thread_local bool tls_on_encode_worker = false;
 MTL::RenderStages MetalAllGraphicsRenderStages() {
   return MTL::RenderStages(MTL::RenderStageVertex | MTL::RenderStageFragment |
                            MTL::RenderStageObject | MTL::RenderStageMesh);
@@ -722,6 +739,10 @@ MetalCommandProcessor::MetalCommandProcessor(
 }
 
 MetalCommandProcessor::~MetalCommandProcessor() {
+  // Normally stopped by ShutdownContext; a joinable thread at destruction
+  // would terminate the process.
+  DrainEncodeWorker();
+  StopEncodeWorker();
   EndSharedMemoryUploadBlitEncoder(
       SharedMemoryUploadEncoderEndReason::kShutdown);
   // End any active render encoder before releasing
@@ -798,6 +819,7 @@ MetalCommandProcessor::~MetalCommandProcessor() {
 
 void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
                                                      uint32_t length) {
+  DrainEncodeWorker();
   if (shared_memory_) {
     shared_memory_->MemoryInvalidationCallback(base_ptr, length, true);
   }
@@ -824,16 +846,19 @@ void MetalCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
         "cache initialization");
     return;
   }
+  DrainEncodeWorker();
   render_target_cache_->RestoreEdramSnapshot(snapshot);
 }
 
 void MetalCommandProcessor::ClearCaches() {
+  DrainEncodeWorker();
   CommandProcessor::ClearCaches();
   // TODO(wmarti): Add cache_clear_requested_ flag like D3D12 for deferred
   // clearing of pipeline caches, texture caches, etc.
 }
 
 void MetalCommandProcessor::InvalidateGpuMemory() {
+  DrainEncodeWorker();
   if (shared_memory_) {
     shared_memory_->InvalidateAllPages();
   }
@@ -1012,6 +1037,14 @@ bool MetalCommandProcessor::AddResidencySetHeap(MTL::Heap* heap) {
 }
 
 bool MetalCommandProcessor::IsResidencySetHeapCovered(MTL::Heap* heap) const {
+  // The heap set gains entries from texture/render-target heap creation on
+  // the CP thread, which can run while the encode worker holds the encoder;
+  // a concurrent find would be a data race. The worker answers conservatively
+  // instead (a stale "not covered" only costs a redundant useHeap; entries
+  // are never removed mid-session, so a false positive cannot happen).
+  if (tls_on_encode_worker) {
+    return false;
+  }
   return residency_set_enabled_ && heap &&
          residency_set_heaps_.find(heap) != residency_set_heaps_.end();
 }
@@ -1206,6 +1239,14 @@ bool MetalCommandProcessor::SetupContext() {
   }
 
   InitializeResidencySet();
+
+  parallel_encode_enabled_ = cvars::metal_parallel_encode;
+  if (parallel_encode_enabled_) {
+    StartEncodeWorker();
+    XELOGI(
+        "MetalCommandProcessor: parallel encode worker enabled "
+        "(metal_parallel_encode)");
+  }
 
   wait_shared_event_ = device_->newSharedEvent();
   if (wait_shared_event_) {
@@ -1564,6 +1605,7 @@ void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
 }
 
 void MetalCommandProcessor::PrepareForWait() {
+  DrainEncodeWorker();
   if (current_command_buffer_ &&
       zpd_pending_retire_handle_ != kInvalidReportHandle) {
     // A strict ZPD retire is waiting on results from the open submission;
@@ -1602,6 +1644,8 @@ void MetalCommandProcessor::ShutdownContext() {
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kManual)) {
     XELOGE("Metal ShutdownContext: failed to flush prepared draw queue");
   }
+  DrainEncodeWorker();
+  StopEncodeWorker();
   MaybeDumpBackendTelemetry("shutdown", true);
 
   // End the render encoder directly (not via EndRenderEncoder — we release
@@ -2247,10 +2291,12 @@ bool MetalCommandProcessor::CanOpenZPDQuery() const {
 bool MetalCommandProcessor::BeginZPDReport(uint32_t report_address) {
   // Draws deferred in the prepared-draw queue logically precede this report
   // transition; encode them now so they are counted toward the correct
-  // (previous, if any) logical query.
+  // (previous, if any) logical query. The drain keeps the logical-query state
+  // stable while the encode worker reads it (its OpenQuerySegment early-out).
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
     XELOGE("Metal BeginZPDReport: failed to flush prepared draw queue");
   }
+  DrainEncodeWorker();
   return CommandProcessor::BeginZPDReport(report_address);
 }
 
@@ -2262,6 +2308,7 @@ bool MetalCommandProcessor::EndZPDReport(uint32_t report_address,
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
     XELOGE("Metal EndZPDReport: failed to flush prepared draw queue");
   }
+  DrainEncodeWorker();
   return CommandProcessor::EndZPDReport(report_address, guest_forced_end);
 }
 
@@ -6416,7 +6463,10 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     }
     return true;
   }
-  if (!BeginRenderEncoderForDraw(draw.fallback_depth_attachment_required)) {
+  if (tls_on_encode_worker
+          ? !BeginRenderEncoderForWorkerBatch()
+          : !BeginRenderEncoderForDraw(
+                draw.fallback_depth_attachment_required)) {
     static bool no_command_buffer_logged = false;
     if (!no_command_buffer_logged) {
       no_command_buffer_logged = true;
@@ -6426,7 +6476,10 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     }
     return false;
   }
-  if (render_target_cache_ &&
+  // Worker batches were verified transfer-free at handoff; transfers queued
+  // by the CP thread's concurrent preparation belong to later draws and are
+  // encoded by the next inline begin after a drain.
+  if (!tls_on_encode_worker && render_target_cache_ &&
       render_target_cache_->HasPendingDrawPassTransfers()) {
     MetalRenderTargetCache::DrawPassTransferEncoderMutationMask
         transfer_mutations =
@@ -6463,7 +6516,10 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
       return false;
     }
   }
-  if (shared_memory_ && draw.shared_memory_hazard_range_count) {
+  // Worker batches are stamped at handoff on the CP thread: stamping here
+  // would race the direct-write eligibility readers of the page table.
+  if (!tls_on_encode_worker && shared_memory_ &&
+      draw.shared_memory_hazard_range_count) {
     uint64_t submission = GetCurrentSubmission();
     for (uint32_t i = 0; i < draw.shared_memory_hazard_range_count; ++i) {
       const SharedMemoryRange& range = draw.shared_memory_hazard_ranges[i];
@@ -7555,6 +7611,9 @@ void MetalCommandProcessor::EndRenderEncoder() {
 }
 
 void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
+  // CP-thread-only entry point (the worker never ends the encoder); take
+  // ownership of the encoder state back before touching it.
+  DrainEncodeWorker();
   if (!flushing_prepared_draw_queue_ && !prepared_draw_queue_.empty()) {
     if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kRenderEncoderEnd)) {
       XELOGE("Metal EndRenderEncoder: failed to flush prepared draw queue");
@@ -7844,6 +7903,7 @@ bool MetalCommandProcessor::HasActiveSharedMemoryWritePending() const {
 
 MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
     TransferRequestSource source) {
+  DrainEncodeWorker();
   if (!flushing_prepared_draw_queue_ && !prepared_draw_queue_.empty()) {
     if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kTransferRequest)) {
       return nullptr;
@@ -8866,6 +8926,309 @@ void MetalCommandProcessor::UseRenderEncoderAttachmentHeaps(
   if (stencil_attachment && stencil_attachment->texture()) {
     UseRenderEncoderHeap(stencil_attachment->texture()->heap());
   }
+}
+
+void MetalCommandProcessor::StartEncodeWorker() {
+  if (encode_worker_thread_.joinable()) {
+    return;
+  }
+  encode_worker_shutdown_ = false;
+  encode_worker_poisoned_ = false;
+  encode_worker_thread_ = std::thread([this]() {
+    xe::threading::set_name("Metal Encode");
+    EncodeWorkerLoop();
+  });
+}
+
+void MetalCommandProcessor::StopEncodeWorker() {
+  if (!encode_worker_thread_.joinable()) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(encode_worker_mutex_);
+    encode_worker_shutdown_ = true;
+  }
+  encode_worker_cond_.notify_all();
+  encode_worker_thread_.join();
+}
+
+void MetalCommandProcessor::EncodeWorkerLoop() {
+  tls_on_encode_worker = true;
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lock(encode_worker_mutex_);
+      encode_worker_cond_.wait(lock, [this]() {
+        return encode_worker_shutdown_ || encode_worker_has_batch_;
+      });
+      if (encode_worker_shutdown_) {
+        // ShutdownContext drains before stopping, so no batch can be pending.
+        return;
+      }
+    }
+    // Encode outside the lock: the CP thread cannot touch the encoder state
+    // or the batch until DrainEncodeWorker observes completion.
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    const bool encoded = EncodePreparedDrawBatch(encode_worker_batch_.draws);
+    if (encode_worker_batch_.create_descriptor) {
+      encode_worker_batch_.create_descriptor->release();
+      encode_worker_batch_.create_descriptor = nullptr;
+    }
+    pool->release();
+    {
+      std::lock_guard<std::mutex> lock(encode_worker_mutex_);
+      if (!encoded) {
+        encode_worker_batch_failed_ = true;
+      }
+      encode_worker_retired_draws_.insert(encode_worker_retired_draws_.end(),
+                                          encode_worker_batch_.draws.begin(),
+                                          encode_worker_batch_.draws.end());
+      encode_worker_batch_.draws.clear();
+      encode_worker_has_batch_ = false;
+      encode_worker_busy_.store(false, std::memory_order_release);
+    }
+    encode_worker_cond_.notify_all();
+  }
+}
+
+bool MetalCommandProcessor::DrainEncodeWorker() {
+  if (!parallel_encode_enabled_ || tls_on_encode_worker) {
+    return true;
+  }
+  bool failed = false;
+  std::vector<PreparedDraw*> retired;
+  {
+    std::unique_lock<std::mutex> lock(encode_worker_mutex_);
+    encode_worker_cond_.wait(lock,
+                             [this]() { return !encode_worker_has_batch_; });
+    failed = encode_worker_batch_failed_;
+    encode_worker_batch_failed_ = false;
+    retired.swap(encode_worker_retired_draws_);
+  }
+  if (!retired.empty()) {
+    for (PreparedDraw* draw : retired) {
+      RecyclePreparedDraw(draw);
+    }
+    TryResetPreparedDrawPayloadArena();
+  }
+  if (failed) {
+    encode_worker_poisoned_ = true;
+    XELOGE(
+        "Metal parallel encode: batch encode failed; draws dropped and "
+        "handoffs disabled for this session");
+  }
+  return !failed;
+}
+
+bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
+    std::vector<PreparedDraw*>& draws, PreparedDrawFlushReason reason) {
+  if (!parallel_encode_enabled_ || encode_worker_poisoned_ ||
+      !encode_worker_thread_.joinable() || draws.empty()) {
+    return false;
+  }
+  // Only the queue-budget flush returns straight to draw preparation; every
+  // other flush reason is immediately followed by CP-side command-buffer or
+  // encoder work, which would drain right back into lockstep.
+  if (reason != PreparedDrawFlushReason::kQueueBudget) {
+    return false;
+  }
+  // Retained command buffers keep the snapshot descriptor's attachments
+  // alive through GPU execution; with unretained command buffers that
+  // guarantee is gone.
+  if (cvars::metal_command_buffer_unretained) {
+    return false;
+  }
+  // The worker encodes with a frozen view of the world: anything that would
+  // make EncodePreparedDraw consult or mutate live caches stays inline.
+  if (render_target_cache_ &&
+      render_target_cache_->HasPendingDrawPassTransfers()) {
+    return false;
+  }
+  if (!pending_shared_memory_writes_.empty() ||
+      NS::UInteger(active_render_encoder_shared_memory_write_stages_)) {
+    return false;
+  }
+  // No ZPD query window may be open: the worker's OpenQuerySegment must stay
+  // on its (stable-state) early-out and never touch the visibility pool. The
+  // ZPD lifetime overrides drain before mutating this state.
+  if (GetZPDMode() != ZPDMode::kFake && zpd_active_segment_.logical_active) {
+    return false;
+  }
+  // One descriptor per batch: mixed fallback-depth draws would need an
+  // encoder restart mid-batch through the live render target cache.
+  const bool fallback_depth = draws[0]->fallback_depth_attachment_required;
+  for (const PreparedDraw* draw : draws) {
+    if (draw->fallback_depth_attachment_required != fallback_depth) {
+      return false;
+    }
+  }
+  if (!EnsureCommandBuffer()) {
+    return false;
+  }
+  // The worker may only ever have the render encoder open on this command
+  // buffer: close the upload blit encoder and any pending texture-cache
+  // encoders now. Between the handoff and the next drain the CP thread never
+  // opens another encoder on it (CanJoinActiveSubmissionForTransfer is
+  // conservative while the worker is busy).
+  EndSharedMemoryUploadBlitEncoder(
+      SharedMemoryUploadEncoderEndReason::kRenderBegin);
+  if (texture_cache_ &&
+      !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
+    return false;
+  }
+  // Encoder plan. Reuse the open encoder when it is still compatible with
+  // the batch's render-target state; otherwise end it here (producer fence
+  // edges and all) and give the worker a private descriptor copy to create
+  // from. ConsumeRenderPassDescriptorClears pairs with the snapshot here,
+  // not with the worker's create: an encoder-creation failure after a
+  // consumed clear is already a dropped-draws situation.
+  PreparedDrawBatch batch;
+  const bool reuse_encoder =
+      current_render_encoder_ && render_target_cache_ &&
+      render_target_cache_->IsRenderPassDescriptorCompatible(
+          current_render_pass_descriptor_, 1, fallback_depth);
+  if (reuse_encoder) {
+    batch.has_zpd_visibility = current_render_encoder_has_zpd_visibility_;
+  } else {
+    MTL::RenderPassDescriptor* live_descriptor =
+        GetDrawRenderPassDescriptor(fallback_depth);
+    if (!live_descriptor) {
+      return false;
+    }
+    if (render_target_cache_) {
+      if (auto* da = live_descriptor->depthAttachment()) {
+        da->setClearDepth(render_target_cache_->GetDepthTargetClearDepth());
+      }
+    }
+    // All fallible steps precede the irreversible ones: after the clears are
+    // consumed (or the encoder ended), falling back to the inline path would
+    // encode from a refreshed descriptor that has lost its first-use clears.
+    batch.create_descriptor = live_descriptor->copy();
+    if (!batch.create_descriptor) {
+      return false;
+    }
+    if (current_render_encoder_) {
+      ++backend_telemetry_.begin_encoder_descriptor_restarts;
+      EndRenderEncoder(
+          RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
+    }
+    if (render_target_cache_) {
+      render_target_cache_->ConsumeRenderPassDescriptorClears(live_descriptor);
+    }
+    GetActiveRenderTargetSize(live_descriptor, render_target_cache_.get(),
+                              1280, 720, batch.rt_width, batch.rt_height);
+    batch.has_zpd_visibility =
+        zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
+        live_descriptor->visibilityResultBuffer() ==
+            zpd_visibility_pool_->visibility_buffer();
+  }
+  // Hazard-range GPU-access stamping moves to the handoff: stamping from the
+  // worker would race the direct-write eligibility readers, and over-marking
+  // on a failed batch only routes CPU writes through the staged path.
+  if (shared_memory_) {
+    const uint64_t submission = GetCurrentSubmission();
+    for (const PreparedDraw* draw : draws) {
+      for (uint32_t i = 0; i < draw->shared_memory_hazard_range_count; ++i) {
+        const SharedMemoryRange& range = draw->shared_memory_hazard_ranges[i];
+        shared_memory_->MarkGpuAccess(range.start, range.length, submission);
+      }
+    }
+  }
+  batch.draws = std::move(draws);
+  draws.clear();
+  {
+    std::lock_guard<std::mutex> lock(encode_worker_mutex_);
+    encode_worker_batch_ = std::move(batch);
+    encode_worker_has_batch_ = true;
+    encode_worker_busy_.store(true, std::memory_order_release);
+  }
+  encode_worker_cond_.notify_all();
+  return true;
+}
+
+bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
+  ++backend_telemetry_.begin_encoder_calls;
+  if (current_render_encoder_) {
+    // Batch invariant: a single render-target configuration, and nothing on
+    // the worker path ends the encoder mid-batch.
+    ++backend_telemetry_.begin_encoder_reused_compatible;
+    return true;
+  }
+  MTL::RenderPassDescriptor* pass_descriptor =
+      encode_worker_batch_.create_descriptor;
+  if (!pass_descriptor || !current_command_buffer_) {
+    ++backend_telemetry_.begin_encoder_descriptor_failures;
+    XELOGE("Metal parallel encode: batch has no encoder and no descriptor");
+    return false;
+  }
+  if (render_encoder_resource_usage_count_ ||
+      !render_encoder_heap_usage_.empty()) {
+    ++backend_telemetry_.begin_encoder_resource_usage_resets;
+    ResetRenderEncoderResourceUsage();
+  }
+  current_render_encoder_ =
+      current_command_buffer_->renderCommandEncoder(pass_descriptor);
+  if (!current_render_encoder_) {
+    ++backend_telemetry_.begin_encoder_creation_failures;
+    XELOGE("Metal parallel encode: failed to create render command encoder");
+    return false;
+  }
+  ++backend_telemetry_.begin_encoder_created;
+  current_render_encoder_->retain();
+  current_render_encoder_has_zpd_visibility_ =
+      encode_worker_batch_.has_zpd_visibility;
+  ResetRenderEncoderBufferBindings();
+  current_render_encoder_->setLabel(
+      NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
+  // Hazard consumer edges, identical to the inline begin path.
+  if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
+    current_render_encoder_->waitForFence(
+        shared_memory_fence_, MTL::RenderStageVertex | MTL::RenderStageObject |
+                                  MTL::RenderStageMesh);
+    RecordHazardFenceWait(0);
+  }
+  if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
+    current_render_encoder_->waitForFence(
+        texture_upload_fence_,
+        MTL::RenderStageVertex | MTL::RenderStageObject |
+            MTL::RenderStageMesh | MTL::RenderStageFragment);
+    RecordHazardFenceWait(0);
+  }
+  if (render_target_hazard_fence_edges_ && render_target_fence_) {
+    current_render_encoder_->waitForFence(render_target_fence_,
+                                          MTL::RenderStageFragment);
+    RecordHazardFenceWait(0);
+  }
+  current_render_pipeline_state_ = nullptr;
+  ff_blend_factor_valid_ = false;
+  rasterizer_state_valid_ = false;
+  viewport_dirty_ = true;
+  scissor_dirty_ = true;
+  current_depth_stencil_state_ = nullptr;
+  stencil_reference_valid_ = false;
+  heap_binds_set_on_encoder_ = false;
+  if (current_render_pass_descriptor_ != pass_descriptor) {
+    if (current_render_pass_descriptor_) {
+      current_render_pass_descriptor_->release();
+    }
+    current_render_pass_descriptor_ = pass_descriptor;
+    current_render_pass_descriptor_->retain();
+  }
+  UseRenderEncoderAttachmentHeaps(pass_descriptor);
+  // Initial viewport/scissor from the extent resolved at handoff; IssueDraw's
+  // prepared dynamic state applies the guest values per draw.
+  MTL::Viewport viewport = {0.0,
+                            0.0,
+                            static_cast<double>(encode_worker_batch_.rt_width),
+                            static_cast<double>(encode_worker_batch_.rt_height),
+                            0.0,
+                            1.0};
+  current_render_encoder_->setViewport(viewport);
+  MTL::ScissorRect scissor = {0, 0, encode_worker_batch_.rt_width,
+                              encode_worker_batch_.rt_height};
+  current_render_encoder_->setScissorRect(scissor);
+  viewport_dirty_ = true;
+  scissor_dirty_ = true;
+  return true;
 }
 
 MTL::RenderPassDescriptor* MetalCommandProcessor::GetDrawRenderPassDescriptor(
