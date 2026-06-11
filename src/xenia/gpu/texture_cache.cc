@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/texture_cache.h"
 
+#include <algorithm>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -837,6 +839,16 @@ void TextureCache::Texture::MakeLoadedDataUpToDateAndWatch(
   }
 }
 
+// The load paths request validity and read guest data for the 16-byte-aligned
+// extent (the load shaders access whole 128-bit chunks), so the content hash
+// must cover those same bytes - hashing only the unaligned extent could
+// revalidate a texture whose trailing chunk bytes changed.
+static uint32_t GetHashedGuestRangeLength(uint32_t guest_address,
+                                          uint32_t guest_size) {
+  return std::min(xe::align(guest_size, UINT32_C(16)),
+                  SharedMemory::kBufferSize - guest_address);
+}
+
 void TextureCache::Texture::StoreCpuContentHashes(
     const global_unique_lock_type& global_lock, bool loaded_base,
     bool loaded_mips) {
@@ -851,17 +863,20 @@ void TextureCache::Texture::StoreCpuContentHashes(
     uint32_t base_size = GetGuestBaseSize();
     base_content_hash_valid_ = base_size != 0 && base_size <= size_limit;
     if (base_content_hash_valid_) {
+      uint32_t base_address = key().base_page << 12;
       base_content_hash_ =
-          XXH3_64bits(memory.TranslatePhysical(key().base_page << 12),
-                      base_size);
+          XXH3_64bits(memory.TranslatePhysical(base_address),
+                      GetHashedGuestRangeLength(base_address, base_size));
     }
   }
   if (loaded_mips) {
     uint32_t mips_size = GetGuestMipsSize();
     mips_content_hash_valid_ = mips_size != 0 && mips_size <= size_limit;
     if (mips_content_hash_valid_) {
-      mips_content_hash_ = XXH3_64bits(
-          memory.TranslatePhysical(key().mip_page << 12), mips_size);
+      uint32_t mips_address = key().mip_page << 12;
+      mips_content_hash_ =
+          XXH3_64bits(memory.TranslatePhysical(mips_address),
+                      GetHashedGuestRangeLength(mips_address, mips_size));
     }
   }
 }
@@ -874,8 +889,11 @@ bool TextureCache::Texture::TryRevalidateCpuInvalidation(
   Memory& memory = texture_cache().shared_memory().memory();
   bool base_match = false;
   if (base_outdated_ && base_content_hash_valid_) {
-    if (XXH3_64bits(memory.TranslatePhysical(key().base_page << 12),
-                    GetGuestBaseSize()) == base_content_hash_) {
+    uint32_t base_address = key().base_page << 12;
+    if (XXH3_64bits(memory.TranslatePhysical(base_address),
+                    GetHashedGuestRangeLength(base_address,
+                                              GetGuestBaseSize())) ==
+        base_content_hash_) {
       base_match = true;
     } else {
       // Genuinely modified - don't rehash on later attempts; the next
@@ -885,8 +903,11 @@ bool TextureCache::Texture::TryRevalidateCpuInvalidation(
   }
   bool mips_match = false;
   if (mips_outdated_ && mips_content_hash_valid_) {
-    if (XXH3_64bits(memory.TranslatePhysical(key().mip_page << 12),
-                    GetGuestMipsSize()) == mips_content_hash_) {
+    uint32_t mips_address = key().mip_page << 12;
+    if (XXH3_64bits(memory.TranslatePhysical(mips_address),
+                    GetHashedGuestRangeLength(mips_address,
+                                              GetGuestMipsSize())) ==
+        mips_content_hash_) {
       mips_match = true;
     } else {
       mips_content_hash_valid_ = false;
