@@ -2473,68 +2473,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   }
 
-  if (command_processor_) {
-    using TextureUploadClass =
-        MetalCommandProcessor::TextureUploadCompatibilityClass;
-    using TextureUploadBlocker =
-        MetalCommandProcessor::TextureUploadComputeBlocker;
-    const uint64_t upload_bytes =
-        (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
-                                        UINT32_C(16)))
-                   : 0) +
-        (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
-                                        UINT32_C(16)))
-                   : 0);
-    auto is_raw_copy_load_shader = [](TextureCache::LoadShaderIndex shader) {
-      switch (shader) {
-        case TextureCache::kLoadShaderIndex8bpb:
-        case TextureCache::kLoadShaderIndex16bpb:
-        case TextureCache::kLoadShaderIndex32bpb:
-        case TextureCache::kLoadShaderIndex64bpb:
-        case TextureCache::kLoadShaderIndex128bpb:
-          return true;
-        default:
-          return false;
-      }
-    };
-    bool has_compute_blocker = false;
-    auto record_blocker = [&](TextureUploadBlocker blocker) {
-      has_compute_blocker = true;
-      command_processor_->RecordTextureUploadComputeBlocker(blocker,
-                                                            upload_bytes);
-    };
-    if (key.tiled) {
-      record_blocker(TextureUploadBlocker::kTiled);
-    }
-    if (is_3d_tiling) {
-      record_blocker(TextureUploadBlocker::kThreeDimensionalTiling);
-    }
-    if (key.endianness != xenos::Endian::kNone) {
-      record_blocker(TextureUploadBlocker::kEndianSwap);
-    }
-    if (decompress) {
-      record_blocker(TextureUploadBlocker::kBcDecompress);
-    } else if (!is_raw_copy_load_shader(load_shader)) {
-      record_blocker(TextureUploadBlocker::kFormatConversion);
-    }
-    if (texture_resolution_scaled) {
-      record_blocker(TextureUploadBlocker::kScaledResolve);
-    }
-    if (key.packed_mips && load_mips) {
-      record_blocker(TextureUploadBlocker::kPackedMips);
-    }
-    if (!repack_uploads.empty()) {
-      record_blocker(TextureUploadBlocker::kRepackAlignment);
-    }
-    if (!has_compute_blocker && !is_raw_copy_load_shader(load_shader)) {
-      record_blocker(TextureUploadBlocker::kUnknown);
-    }
-    command_processor_->RecordTextureUploadCompatibility(
-        has_compute_blocker ? TextureUploadClass::kComputeRequired
-                            : TextureUploadClass::kDirectCopyCandidate,
-        upload_bytes);
-  }
-
   const bool can_defer_upload_blits =
       use_blit_upload && (is_upload_batch() || is_current_submission()) &&
       deferred_upload_batch_depth_ != 0;

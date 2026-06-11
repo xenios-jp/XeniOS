@@ -19,8 +19,8 @@ cvars (`metal_command_processor.cc`).
   after an in-flight reader (WAR). The init fill updates without waiting and
   commits before any other EDRAM work, so every later wait has a committed
   prior update. Caveat: the `edram_load_vs/ps` draw path (fragment-stage
-  EDRAM reads) is currently dead code; if revived it needs a render-stage
-  wait/update pair.
+  EDRAM reads) has been removed as dead code; if reintroduced it would need a
+  render-stage wait/update pair.
 - **Phase 3 (render targets) is implemented** behind
   `metal_backend_hazard_model_render_targets`: the RT heap pool is untracked
   and `XeniaRenderTargetFence` linearizes RT access with fragment-stage
