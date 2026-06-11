@@ -504,6 +504,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
                                uint32_t f24_shift, bool remap_to_0_to_0_5,
                                bool result_as_uint,
                                spv::Id ext_inst_glsl_std_450);
+  // Piecewise-linear gamma conversions for k_8_8_8_8_GAMMA render targets
+  // stored as linear in a higher-precision host format. value may be a float
+  // scalar or a vector of up to 3 components. If not pre_saturated, the input
+  // is clamped to [0, 1] (flushing NaN to 0).
+  static spv::Id PWLGammaToLinear(SpirvBuilder& builder, spv::Id value,
+                                  bool pre_saturated,
+                                  spv::Id ext_inst_glsl_std_450);
+  static spv::Id LinearToPWLGamma(SpirvBuilder& builder, spv::Id value,
+                                  bool pre_saturated,
+                                  spv::Id ext_inst_glsl_std_450);
 
  protected:
   void Reset() override;

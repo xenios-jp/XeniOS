@@ -6222,9 +6222,11 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
                                         : xenos::CompareFunction::kAlways;
   flags |= uint32_t(alpha_test_function)
            << SpirvShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
-  // Gamma writing.
-  // TODO(Triang3l): Gamma as unorm8 check.
-  if (!edram_fragment_shader_interlock) {
+  // Gamma writing. When gamma is stored as unorm16, the host render target
+  // holds linear values (blended in linear space) and the linear -> gamma
+  // encode happens on the EDRAM store, so the pixel shader must not pre-encode.
+  if (!edram_fragment_shader_interlock &&
+      !render_target_cache_->gamma_render_target_as_unorm16()) {
     for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
       if (color_infos[i].color_format ==
           xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
