@@ -317,8 +317,9 @@ class EmulatorWindow {
   void ApplyContentVisibility();
   // Tear down the running title on a non-guest thread and refresh the UI to
   // show the game list. Skips the user prompt — caller is responsible for
-  // confirmation.
-  void StopTitleAndReturnToList();
+  // confirmation. Returns true if the title is being reset in-process, false
+  // if a process swap was scheduled (or no title is open).
+  bool StopTitleAndReturnToList();
 };
 
 }  // namespace app

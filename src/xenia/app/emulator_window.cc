@@ -864,6 +864,9 @@ void EmulatorWindow::OnEmulatorInitialized() {
     app_context_.RequestDeferredQuit();
   });
 
+  emulator_->set_on_exit_to_dashboard(
+      [this]() { return StopTitleAndReturnToList(); });
+
   // Register callback for disc swap to update title bar
   emulator_->set_on_disc_swap([this](uint8_t new_disc_number) {
     swapped_disc_number_ = new_disc_number;
@@ -1865,9 +1868,9 @@ void EmulatorWindow::FileClose() {
       emulator_->input_system());
 }
 
-void EmulatorWindow::StopTitleAndReturnToList() {
+bool EmulatorWindow::StopTitleAndReturnToList() {
   if (!emulator_->is_title_open()) {
-    return;
+    return false;
   }
   target_pending_launch_ = false;
   // Match xam_info.cc: in-process relaunch only on Windows (Linux's
@@ -1883,7 +1886,7 @@ void EmulatorWindow::StopTitleAndReturnToList() {
       cb(/*host_path=*/{}, /*launch_module=*/{}, /*launch_flags=*/0,
          /*launch_data=*/{});
     }
-    return;
+    return false;
   }
   // ResetTitle terminates guest threads, so it must run off the UI thread.
   std::thread([this]() {
@@ -1911,6 +1914,7 @@ void EmulatorWindow::StopTitleAndReturnToList() {
       ApplyContentVisibility();
     });
   }).detach();
+  return true;
 }
 
 void EmulatorWindow::ApplyContentVisibility() {

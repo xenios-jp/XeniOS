@@ -272,6 +272,11 @@ class KernelState {
   void TerminateTitleThreadsIOS();
 #endif  // XE_PLATFORM_IOS
 
+  // Handles a game-requested exit to the dashboard: hands off to the host UI
+  // when it registered a handler, otherwise terminates the title.
+  // This DOES NOT RETURN.
+  void ExitToDashboard();
+
   // Gracefully stops the dispatch thread. Call before force-terminating
   // threads to avoid corrupting the CV it's blocked on.
   void ShutdownDispatchThread();

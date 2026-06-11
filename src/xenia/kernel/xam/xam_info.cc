@@ -304,108 +304,92 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
   auto& loader_data = xam->loader_data();
   loader_data.launch_flags = flags;
 
-  // Translate the launch path to a full path.
-  if (raw_name_ptr) {
-    auto path = raw_name_ptr.value();
-    if (path.empty()) {
-      // Empty path means exit to dashboard
-      loader_data.launch_path = "game:\\default.xex";
-    } else {
-      // Non-empty path means launching another title
-      loader_data.launch_data_present = true;
+  // A null or empty path means exit to dashboard.
+  const std::string path = raw_name_ptr ? raw_name_ptr.value() : std::string();
+  if (!path.empty()) {
+    loader_data.launch_data_present = true;
 
-      // Normalize the paths
-      std::filesystem::path host_path = loader_data.host_path;
-      std::string launch_path = xe::path_to_utf8(path);
+    std::filesystem::path host_path = loader_data.host_path;
+    std::string launch_path = xe::path_to_utf8(path);
 
-      XELOGI("XamLoaderLaunchTitle: original host_path={}, launch_path={}",
-             loader_data.host_path, launch_path);
+    XELOGI("XamLoaderLaunchTitle: original host_path={}, launch_path={}",
+           loader_data.host_path, launch_path);
 
-      // Remove common guest path prefixes (case-insensitive since Xbox
-      // paths are case-insensitive, games may pass e.g. "GAME:\")
-      auto remove_prefix = [&launch_path](std::string_view prefix) {
-        if (xe::utf8::starts_with_case(launch_path, prefix)) {
-          launch_path = launch_path.substr(prefix.length());
-        }
-      };
-      remove_prefix("game:\\");
-      remove_prefix("d:\\");
-
-      // If host_path points to a .xex, combine with launch_path
-      if (host_path.extension() == ".xex") {
-        host_path.remove_filename();
-        host_path = host_path / launch_path;
-        launch_path = "";
+    // Remove common guest path prefixes (case-insensitive since Xbox
+    // paths are case-insensitive, games may pass e.g. "GAME:\")
+    auto remove_prefix = [&launch_path](std::string_view prefix) {
+      if (xe::utf8::starts_with_case(launch_path, prefix)) {
+        launch_path = launch_path.substr(prefix.length());
       }
+    };
+    remove_prefix("game:\\");
+    remove_prefix("d:\\");
 
-      XELOGI("XamLoaderLaunchTitle: normalized host_path={}, launch_path={}",
-             xe::path_to_utf8(host_path), launch_path);
+    if (host_path.extension() == ".xex") {
+      host_path.remove_filename();
+      host_path = host_path / launch_path;
+      launch_path = "";
+    }
 
-      // Handle title launch in-process via full Shutdown/Setup cycle.
-      // Disabled on Linux — pthread_cancel corrupts global mutex state and
-      // cooperative shutdown is not yet reliable. Windows uses TerminateThread.
+    XELOGI("XamLoaderLaunchTitle: normalized host_path={}, launch_path={}",
+           xe::path_to_utf8(host_path), launch_path);
+
+    // Handle title launch in-process via full Shutdown/Setup cycle.
+    // Disabled on Linux — pthread_cancel corrupts global mutex state and
+    // cooperative shutdown is not yet reliable. Windows uses TerminateThread.
 #if XE_PLATFORM_WIN32
-      if (cvars::in_process_title_relaunch) {
-        auto emulator = kernel_state()->emulator();
+    if (cvars::in_process_title_relaunch) {
+      auto emulator = kernel_state()->emulator();
 
-        XELOGI("XamLoaderLaunchTitle: in-process relaunch to '{}'",
-               xe::path_to_utf8(host_path));
+      XELOGI("XamLoaderLaunchTitle: in-process relaunch to '{}'",
+             xe::path_to_utf8(host_path));
 
-        auto new_host_path = xe::path_to_utf8(host_path);
-        auto new_launch_module = launch_path;
-        auto new_flags = loader_data.launch_flags;
-        auto new_data = loader_data.launch_data;
-        auto current_thread = XThread::GetCurrentThread();
+      auto new_host_path = xe::path_to_utf8(host_path);
+      auto new_launch_module = launch_path;
+      auto new_flags = loader_data.launch_flags;
+      auto new_data = loader_data.launch_data;
+      auto current_thread = XThread::GetCurrentThread();
 
-        // Must dispatch from a non-guest thread — RelaunchTitle terminates
-        // all guest threads including the caller.
-        std::thread([emulator, new_host_path = std::move(new_host_path),
-                     new_launch_module = std::move(new_launch_module),
-                     new_flags, new_data = std::move(new_data)]() mutable {
-          emulator->RelaunchTitle(new_host_path, new_launch_module, new_flags,
-                                  std::move(new_data));
-        }).detach();
+      // Must dispatch from a non-guest thread — RelaunchTitle terminates
+      // all guest threads including the caller.
+      std::thread([emulator, new_host_path = std::move(new_host_path),
+                   new_launch_module = std::move(new_launch_module), new_flags,
+                   new_data = std::move(new_data)]() mutable {
+        emulator->RelaunchTitle(new_host_path, new_launch_module, new_flags,
+                                std::move(new_data));
+      }).detach();
 
-        current_thread->Suspend(nullptr);
+      current_thread->Suspend(nullptr);
 
-        // Unreachable — thread is terminated during relaunch.
-        assert_always();
-      }
+      // Unreachable — thread is terminated during relaunch.
+      assert_always();
+    }
 #endif  // XE_PLATFORM_WIN32
 
-      // Convert launch_data to hex string
-      std::string launch_data_hex;
-      for (uint8_t byte : loader_data.launch_data) {
-        launch_data_hex += fmt::format("{:02X}", byte);
-      }
-
-      // Call the callback to spawn the new process directly
-      auto on_launch_new_title =
-          kernel_state()->emulator()->on_launch_new_title();
-      if (on_launch_new_title) {
-        XELOGI("XamLoaderLaunchTitle: requesting new title launch");
-        on_launch_new_title(xe::path_to_utf8(host_path), launch_path,
-                            loader_data.launch_flags, launch_data_hex);
-      }
-
-      // Stop the current title after the callback queues or handles launch.
-      XELOGI("XamLoaderLaunchTitle: terminating to launch new title");
-      kernel_state()->TerminateTitle();
-      // This function does not return
+    std::string launch_data_hex;
+    for (uint8_t byte : loader_data.launch_data) {
+      launch_data_hex += fmt::format("{:02X}", byte);
     }
-  } else {
-    assert_always("Game requested exit to dashboard via XamLoaderLaunchTitle");
+
+    auto on_launch_new_title =
+        kernel_state()->emulator()->on_launch_new_title();
+    if (on_launch_new_title) {
+      XELOGI("XamLoaderLaunchTitle: requesting new title launch");
+      on_launch_new_title(xe::path_to_utf8(host_path), launch_path,
+                          loader_data.launch_flags, launch_data_hex);
+    }
+
+    XELOGI("XamLoaderLaunchTitle: terminating to launch new title");
+    kernel_state()->TerminateTitle();
+    // This function does not return.
   }
 
-  // Exit to dashboard - this function does not return.
-  kernel_state()->TerminateTitle();
+  XELOGI("XamLoaderLaunchTitle: game requested exit to dashboard");
+  kernel_state()->ExitToDashboard();
 }
 DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kSketchy);
 
-void XamLoaderTerminateTitle_entry() {
-  // This function does not return.
-  kernel_state()->TerminateTitle();
-}
+void XamLoaderTerminateTitle_entry() { kernel_state()->ExitToDashboard(); }
 DECLARE_XAM_EXPORT1(XamLoaderTerminateTitle, kNone, kSketchy);
 
 uint32_t XamAllocImpl(uint32_t flags, uint32_t size,

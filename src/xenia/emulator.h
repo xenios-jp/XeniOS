@@ -403,6 +403,17 @@ class Emulator {
     on_launch_new_title_ = std::move(callback);
   }
 
+  // Called when the game requests an exit to the dashboard. Returns true if
+  // the title is being reset in-process (the calling guest thread is about to
+  // be terminated), false if process exit was scheduled instead.
+  using ExitToDashboardCallback = std::function<bool()>;
+  ExitToDashboardCallback on_exit_to_dashboard() const {
+    return on_exit_to_dashboard_;
+  }
+  void set_on_exit_to_dashboard(ExitToDashboardCallback callback) {
+    on_exit_to_dashboard_ = std::move(callback);
+  }
+
   // Called when XamSwapDisc successfully swaps to a new disc.
   // Parameters: new_disc_number
   using DiscSwapCallback = std::function<void(uint8_t)>;
@@ -476,6 +487,7 @@ class Emulator {
   std::string active_apu_backend_;
 
   LaunchNewTitleCallback on_launch_new_title_;
+  ExitToDashboardCallback on_exit_to_dashboard_;
   DiscSwapCallback on_disc_swap_;
 };
 

@@ -1116,6 +1116,18 @@ void KernelState::TerminateTitleThreadsIOS() {
 }
 #endif  // XE_PLATFORM_IOS
 
+void KernelState::ExitToDashboard() {
+  XELOGI("KernelState::ExitToDashboard");
+  if (auto on_exit_to_dashboard = emulator_->on_exit_to_dashboard()) {
+    if (on_exit_to_dashboard()) {
+      // The in-process reset is about to terminate this thread.
+      XThread::GetCurrentThread()->Suspend(nullptr);
+      assert_always();
+    }
+  }
+  TerminateTitle();
+}
+
 void KernelState::RegisterThread(XThread* thread) {
   auto global_lock = global_critical_region_.Acquire();
   threads_by_id_[thread->thread_id()] = thread;
