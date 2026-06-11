@@ -196,42 +196,6 @@ const char* MetalTextureUploadSourceFallbackReasonName(size_t reason) {
   }
 }
 
-const char* MetalTextureUploadCompatibilityClassName(size_t type) {
-  switch (type) {
-    case 0:
-      return "direct_copy_candidate";
-    case 1:
-      return "compute_required";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTextureUploadComputeBlockerName(size_t blocker) {
-  switch (blocker) {
-    case 0:
-      return "tiled";
-    case 1:
-      return "tiled_3d";
-    case 2:
-      return "endian_swap";
-    case 3:
-      return "format_conversion";
-    case 4:
-      return "bc_decompress";
-    case 5:
-      return "scaled_resolve";
-    case 6:
-      return "packed_mips";
-    case 7:
-      return "repack_alignment";
-    case 8:
-      return "unknown";
-    default:
-      return "invalid";
-  }
-}
-
 const char* MetalTextureUploadExecutionDetailName(size_t detail) {
   switch (detail) {
     case 0:

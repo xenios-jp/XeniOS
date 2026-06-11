@@ -40,7 +40,6 @@
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
-#include "xenia/gpu/metal/metal_backend_telemetry.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
 #include "xenia/gpu/metal/native_msl_bindings.h"
 #include "xenia/gpu/packet_disassembler.h"
@@ -90,8 +89,10 @@ DEFINE_bool(
 DEFINE_bool(
     metal_backend_hazard_model, false,
     "Experimental: let the Metal backend own GPU read/write hazard tracking "
-    "(explicit fences/events) for heap-backed textures, render targets, and the "
-    "shared-memory/EDRAM buffers so they can be MTLResidencySet-covered and the "
+    "(explicit fences/events) for heap-backed textures, render targets, and "
+    "the "
+    "shared-memory/EDRAM buffers so they can be MTLResidencySet-covered and "
+    "the "
     "per-encoder useResource/useHeap re-apply can be dropped. Off = current "
     "useResource path. See docs/metal_hazard_model_design.md.",
     "Metal");
@@ -130,58 +131,6 @@ constexpr uint32_t kNativeMslDrawConstantsChangePrimitiveIndex = 1u << 5;
 // VS/PS translations. The bit is outside the semantic DxbcShaderTranslator
 // modification fields and only changes the Translation cache key.
 constexpr uint64_t kMetalHelperStageMscTranslationKeyBit = 1ull << 63;
-const char* MetalTelemetryCbvSlotName(size_t slot) {
-  switch (slot) {
-    case 0:
-      return "system";
-    case 1:
-      return "float";
-    case 2:
-      return "bool_loop";
-    case 3:
-      return "fetch";
-    case 4:
-      return "descriptor_indices";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryShaderStageName(size_t stage) {
-  switch (stage) {
-    case 0:
-      return "vertex";
-    case 1:
-      return "pixel";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryRootScopeName(size_t stage) {
-  switch (stage) {
-    case 0:
-      return "graphics";
-    case 1:
-      return "unused";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryRenderResourceSetName(size_t set) {
-  switch (set) {
-    case 0:
-      return "fixed";
-    case 1:
-      return "texture";
-    case 2:
-      return "root";
-    default:
-      return "invalid";
-  }
-}
-
 MTL::RenderStages MetalAllGraphicsRenderStages() {
   return MTL::RenderStages(MTL::RenderStageVertex | MTL::RenderStageFragment |
                            MTL::RenderStageObject | MTL::RenderStageMesh);
@@ -362,359 +311,6 @@ MTL::Texture* CreateNativeNullTexture(MTL::Device* device,
     texture->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
   }
   return texture;
-}
-
-const char* MetalTelemetryRootRebuildReasonName(size_t reason) {
-  switch (reason) {
-    case 0:
-      return "frame_open";
-    case 1:
-      return "descriptor_indices_pointer_tuple";
-    case 2:
-      return "other_cbv_pointer_tuple";
-    case 3:
-      return "shared_memory_uav_mode";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryRootSlotsChangedName(size_t bin) {
-  switch (bin) {
-    case 0:
-      return "0";
-    case 1:
-      return "1";
-    case 2:
-      return "2";
-    case 3:
-      return "3";
-    case 4:
-      return "4";
-    case 5:
-      return "5_plus";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryRootRebuildDetailName(size_t detail) {
-  switch (detail) {
-    case 0:
-      return "same_buffer_offset_changed";
-    case 1:
-      return "different_buffer";
-    case 2:
-      return "descriptor_indices_only";
-    case 3:
-      return "other_cbv_only";
-    case 4:
-      return "mixed_descriptor_and_other";
-    case 5:
-      return "resource_identity_changed";
-    case 6:
-      return "resource_identity_same";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryDrawMaterializationSourceName(size_t source) {
-  switch (source) {
-    case 0:
-      return "vertex_fetch";
-    case 1:
-      return "guest_index";
-    case 2:
-      return "memexport";
-    case 3:
-      return "texture_source";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalPreparedDrawFlushReasonName(size_t reason) {
-  switch (reason) {
-    case 0:
-      return "manual";
-    case 1:
-      return "rt_update";
-    case 2:
-      return "rt_key_mismatch";
-    case 3:
-      return "queue_budget";
-    case 4:
-      return "queue_reject";
-    case 5:
-      return "prepare_wait";
-    case 6:
-      return "swap";
-    case 7:
-      return "copy";
-    case 8:
-      return "transfer_request";
-    case 9:
-      return "render_encoder_end";
-    case 10:
-      return "command_buffer_end";
-    case 11:
-      return "query";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalPreparedDrawQueueRejectReasonName(size_t reason) {
-  switch (reason) {
-    case 0:
-      return "none";
-    case 1:
-      return "resident_no_active_queue";
-    case 2:
-      return "no_shared_memory_ranges";
-    case 3:
-      return "memexport";
-    case 4:
-      return "texture_upload";
-    case 5:
-      return "texture_request_load_data";
-    case 6:
-      return "pending_draw_pass_transfers";
-    case 7:
-      return "zpd_active";
-    case 8:
-      return "rt_key_mismatch";
-    case 9:
-      return "native_msl_direct_resources";
-    case 10:
-      return "queue_budget";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryRootArgSlotName(size_t slot) {
-  switch (slot) {
-    case 0:
-      return "srv0";
-    case 1:
-      return "srv1";
-    case 2:
-      return "srv2";
-    case 3:
-      return "srv3";
-    case 4:
-      return "srv10";
-    case 5:
-      return "uav0";
-    case 6:
-      return "uav1";
-    case 7:
-      return "uav2";
-    case 8:
-      return "uav3";
-    case 9:
-      return "sampler0";
-    case 10:
-      return "cbv_system";
-    case 11:
-      return "cbv_float";
-    case 12:
-      return "cbv_bool_loop";
-    case 13:
-      return "cbv_fetch";
-    case 14:
-      return "cbv_descriptor_indices";
-    case 15:
-      return "cbv_hull_float";
-    case 16:
-      return "cbv_hull_fetch";
-    case 17:
-      return "cbv_hull_descriptor_indices";
-    case 18:
-      return "cbv_domain_float";
-    case 19:
-      return "cbv_domain_fetch";
-    case 20:
-      return "cbv_domain_descriptor_indices";
-    case 21:
-      return "cbv_pixel_float";
-    case 22:
-      return "cbv_pixel_fetch";
-    case 23:
-      return "cbv_pixel_descriptor_indices";
-    default:
-      return "unused";
-  }
-}
-
-const char* MetalTelemetryRenderEncoderBufferStageName(size_t stage) {
-  switch (stage) {
-    case 0:
-      return "vertex";
-    case 1:
-      return "fragment";
-    case 2:
-      return "object";
-    case 3:
-      return "mesh";
-    default:
-      return "invalid";
-  }
-}
-
-const char* MetalTelemetryNativeMslDrawConstantsRebuildReasonName(
-    size_t stage_reason) {
-  constexpr size_t kReasonCount = 10;
-  const size_t stage = stage_reason / kReasonCount;
-  const size_t reason = stage_reason % kReasonCount;
-  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
-  const char* reason_name = nullptr;
-  switch (reason) {
-    case 0:
-      reason_name = "reuse";
-      break;
-    case 1:
-      reason_name = "initial";
-      break;
-    case 2:
-      reason_name = "frame_open";
-      break;
-    case 3:
-      reason_name = "system";
-      break;
-    case 4:
-      reason_name = "float";
-      break;
-    case 5:
-      reason_name = "bool_loop";
-      break;
-    case 6:
-      reason_name = "fetch";
-      break;
-    case 7:
-      reason_name = "descriptor_indices";
-      break;
-    case 8:
-      reason_name = "primitive_index";
-      break;
-    case 9:
-      reason_name = "mixed";
-      break;
-    default:
-      reason_name = "invalid";
-      break;
-  }
-  static thread_local std::string formatted;
-  formatted = fmt::format("{}.{}", stage_name, reason_name);
-  return formatted.c_str();
-}
-
-const char* MetalTelemetryNativeMslDrawConstantsChangeMaskName(
-    size_t stage_mask) {
-  constexpr size_t kMaskCount = 64;
-  const size_t stage = stage_mask / kMaskCount;
-  const uint32_t mask = uint32_t(stage_mask % kMaskCount);
-  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
-  static thread_local std::string formatted;
-  std::string mask_name;
-  auto append_field = [&](const char* name) {
-    if (!mask_name.empty()) {
-      mask_name += "+";
-    }
-    mask_name += name;
-  };
-  if (mask & kNativeMslDrawConstantsChangeSystem) {
-    append_field("system");
-  }
-  if (mask & kNativeMslDrawConstantsChangeFloat) {
-    append_field("float");
-  }
-  if (mask & kNativeMslDrawConstantsChangeBoolLoop) {
-    append_field("bool_loop");
-  }
-  if (mask & kNativeMslDrawConstantsChangeFetch) {
-    append_field("fetch");
-  }
-  if (mask & kNativeMslDrawConstantsChangeDescriptorIndices) {
-    append_field("descriptor_indices");
-  }
-  if (mask & kNativeMslDrawConstantsChangePrimitiveIndex) {
-    append_field("primitive_index");
-  }
-  if (mask_name.empty()) {
-    mask_name = "none";
-  }
-  formatted = fmt::format("{}.{}", stage_name, mask_name);
-  return formatted.c_str();
-}
-
-const char* MetalTelemetryRenderEncoderBufferSlotName(size_t stage_slot) {
-  constexpr size_t kSlotCount = 32;
-  const size_t stage = stage_slot / kSlotCount;
-  const size_t slot = stage_slot % kSlotCount;
-  const char* stage_name = MetalTelemetryRenderEncoderBufferStageName(stage);
-  const char* slot_name = nullptr;
-  switch (slot) {
-    case kNativeBufferTexture2DArrayHeap:
-      slot_name = "texture_2d_array_heap";
-      break;
-    case kNativeBufferTexture3DHeap:
-      slot_name = "texture_3d_heap";
-      break;
-    case kNativeBufferTextureCubeHeap:
-      slot_name = "texture_cube_heap";
-      break;
-    case kNativeBufferSamplerHeap:
-      slot_name = "sampler_heap";
-      break;
-    case kNativeBufferSystemConstants:
-      slot_name = "system";
-      break;
-    case kNativeBufferFloatConstants:
-      slot_name = "float";
-      break;
-    case kNativeBufferBoolLoopConstants:
-      slot_name = "bool_loop";
-      break;
-    case kNativeBufferFetchConstants:
-      slot_name = "fetch";
-      break;
-    case kNativeBufferDescriptorIndices:
-      slot_name = "descriptor_indices";
-      break;
-    case kNativeBufferSharedMemory:
-      slot_name = "shared_memory";
-      break;
-    case kNativeBufferTextureRuntimeInfo:
-      slot_name = "texture_runtime_info";
-      break;
-    case kNativeBufferMemExportDebug:
-      slot_name = "memexport_debug";
-      break;
-    case kNativeBufferPrimitiveIndexConstants:
-      slot_name = "primitive_index";
-      break;
-    case kNativeBufferDrawConstants:
-      slot_name = "draw_constants";
-      break;
-    default:
-      break;
-  }
-  static thread_local std::string formatted;
-  formatted = slot_name ? fmt::format("{}.{}", stage_name, slot_name)
-                        : fmt::format("{}.slot{}", stage_name, slot);
-  return formatted.c_str();
-}
-
-template <size_t Count>
-uint64_t MetalTelemetrySumCounts(const std::array<uint64_t, Count>& values) {
-  uint64_t sum = 0;
-  for (uint64_t value : values) {
-    sum += value;
-  }
-  return sum;
 }
 
 struct SharedMemoryRangeSegment {
@@ -1647,8 +1243,9 @@ bool MetalCommandProcessor::SetupContext() {
   }
   shared_memory_fence_->setLabel(
       NS::String::string("XeniaSharedMemoryFence", NS::UTF8StringEncoding));
-  shared_memory_hazard_fence_edges_ = cvars::metal_backend_hazard_model ||
-                                      cvars::metal_backend_hazard_model_validate;
+  shared_memory_hazard_fence_edges_ =
+      cvars::metal_backend_hazard_model ||
+      cvars::metal_backend_hazard_model_validate;
   texture_heap_hazard_fence_edges_ =
       cvars::metal_backend_hazard_model_texture_heaps ||
       cvars::metal_backend_hazard_model_validate;
@@ -3779,7 +3376,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
            shader.texture_bindings()) {
         const ParsedTextureFetchInstruction& fetch = shader_binding.fetch_instr;
         if (fetch.opcode != ucode::FetchOpcode::kTextureFetch ||
-            shader_binding.fetch_constant >= xenos::kTextureFetchConstantCount) {
+            shader_binding.fetch_constant >=
+                xenos::kTextureFetchConstantCount) {
           continue;
         }
         uint8_t component_mask =
@@ -3845,8 +3443,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     const uint64_t pixel_shader_hash =
         pixel_shader ? pixel_shader->ucode_data_hash() : 0;
     NativeMslSignChurnTracker& churn = native_msl_sign_churn_tracker_;
-    if (churn.valid &&
-        churn.vertex_shader_hash == vertex_shader_hash &&
+    if (churn.valid && churn.vertex_shader_hash == vertex_shader_hash &&
         churn.pixel_shader_hash == pixel_shader_hash &&
         churn.vertex_modification == vertex_translation_modification.value &&
         churn.pixel_modification == pixel_translation_modification.value &&
@@ -3880,7 +3477,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     bool pixel_translation_is_new = false;
     pixel_translation = static_cast<MetalShader::MetalTranslation*>(
         pixel_shader->GetOrCreateTranslation(pixel_translation_key,
-                                              &pixel_translation_is_new));
+                                             &pixel_translation_is_new));
     if (use_native_msl_guest_translation && pixel_translation_is_new) {
       ++backend_telemetry_.native_msl_sign_variants_live;
     }
@@ -4070,10 +3667,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     geometry_pipeline_state = pipeline_cache_->GetOrCreateGeometryPipelineState(
         vertex_translation, pixel_translation, geometry_shader_key,
         attachment_formats, rendering_key);
-    pipeline = geometry_pipeline_state
-                   ? geometry_pipeline_state->pipeline.load(
-                         std::memory_order_acquire)
-                   : nullptr;
+    pipeline =
+        geometry_pipeline_state
+            ? geometry_pipeline_state->pipeline.load(std::memory_order_acquire)
+            : nullptr;
     if (!pipeline) {
       // Still compiling in the background - skip the draw silently; only log
       // genuine creation failures.
@@ -4166,7 +3763,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       draw.texture_materialization_plan;
   texture_materialization_plan.Reset();
   bool textures_requested_for_draw = false;
-  auto request_textures_for_draw = [&](uint64_t& telemetry_counter) -> bool {
+  auto request_textures_for_draw =
+      [&](bool started_with_active_encoder) -> bool {
     if (!EnsureCommandBuffer()) {
       return false;
     }
@@ -4176,7 +3774,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       texture_cache_->RequestTextures(used_texture_mask);
     }
     textures_requested_for_draw = true;
-    ++telemetry_counter;
+    if (started_with_active_encoder) {
+      ++backend_telemetry_.texture_requests_after_encoder_begin;
+    } else {
+      ++backend_telemetry_.texture_requests_before_encoder;
+    }
     return true;
   };
   std::array<VertexBindingRange, kMaxCurrentDrawVertexFetchRanges>
@@ -4360,11 +3962,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (has_texture_request_work && !textures_requested_for_draw) {
     const bool texture_request_started_with_active_encoder =
         current_render_encoder_ != nullptr;
-    uint64_t& texture_request_counter =
-        texture_request_started_with_active_encoder
-            ? backend_telemetry_.texture_requests_after_encoder_begin
-            : backend_telemetry_.texture_requests_before_encoder;
-    if (!request_textures_for_draw(texture_request_counter)) {
+    if (!request_textures_for_draw(
+            texture_request_started_with_active_encoder)) {
       return fail_prepared_draw();
     }
   }
@@ -5144,7 +4743,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
             }
           }
         }
-        // Defensive: zero any tail if float_count ever lags the bitmap popcount.
+        // Defensive: zero any tail if float_count ever lags the bitmap
+        // popcount.
         if (out < end) {
           std::memset(out, 0, static_cast<size_t>(end - out));
         }
@@ -5232,8 +4832,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         for (const FetchPayloadCacheEntry& entry : fetch_payload_cache_) {
           if (entry.binding.buffer &&
               entry.binding.upload_frame == frame_current_ &&
-              std::memcmp(entry.payload.data(), fetch_constants,
-                          fetch_size) == 0) {
+              std::memcmp(entry.payload.data(), fetch_constants, fetch_size) ==
+                  0) {
             cache_hit = &entry;
             break;
           }
@@ -5242,8 +4842,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
           cbuffer_binding_fetch_ = cache_hit->binding;
           ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
         } else {
-          if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch,
-                              fetch_size, "fetch", [&](uint8_t* data, size_t) {
+          if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch, fetch_size,
+                              "fetch", [&](uint8_t* data, size_t) {
                                 std::memcpy(data, fetch_constants, fetch_size);
                               })) {
             return false;
@@ -5329,19 +4929,18 @@ bool MetalCommandProcessor::PrepareDrawConstants(
       };
 
   auto upload_descriptor_indices = [&](ConstantBufferBinding& binding,
-                                       uint32_t word_count,
-                                       auto&& writer,
+                                       uint32_t word_count, auto&& writer,
                                        size_t stage, const char* name) -> bool {
     const size_t descriptor_indices_bytes =
         std::max(word_count, uint32_t(1)) * sizeof(uint32_t);
     if (stage < backend_telemetry_.descriptor_index_uploads.size()) {
       ++backend_telemetry_.descriptor_index_uploads[stage];
     }
-    if (!upload_binding(
-            binding, kCbvSlotDescriptorIndices, descriptor_indices_bytes, name,
-            [&](uint8_t* data, size_t size) {
-              writer(reinterpret_cast<uint32_t*>(data), word_count);
-            })) {
+    if (!upload_binding(binding, kCbvSlotDescriptorIndices,
+                        descriptor_indices_bytes, name,
+                        [&](uint8_t* data, size_t size) {
+                          writer(reinterpret_cast<uint32_t*>(data), word_count);
+                        })) {
       return false;
     }
     return true;
@@ -5357,10 +4956,10 @@ bool MetalCommandProcessor::PrepareDrawConstants(
             cbuffer_binding_descriptor_indices_vertex_,
             descriptor_indices_word_count,
             [&](uint32_t* words, uint32_t word_count) {
-              write_descriptor_indices(words, word_count, texture_bindings_vertex,
-                                       sampler_bindings_vertex,
-                                       next_texture_bindless_indices_vertex,
-                                       next_sampler_bindless_indices_vertex);
+              write_descriptor_indices(
+                  words, word_count, texture_bindings_vertex,
+                  sampler_bindings_vertex, next_texture_bindless_indices_vertex,
+                  next_sampler_bindless_indices_vertex);
             },
             kStageVertex, "vertex descriptor indices")) {
       return false;
@@ -5595,24 +5194,22 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
   // Reserve the next free 48-byte XeNativeDrawConstants table slot in the
   // plain-vertex-stage draw-constants slot page, (re)binding the page buffer to
   // the vertex stage once when a new page is needed (frame open, page rollover,
-  // or render-encoder reset clearing render_encoder_buffer_bindings_). Returns a
-  // CPU pointer to write the 48-byte table; *slot_out receives the slot index to
-  // pass as the draw call's baseInstance. Returns nullptr on allocation
+  // or render-encoder reset clearing render_encoder_buffer_bindings_). Returns
+  // a CPU pointer to write the 48-byte table; *slot_out receives the slot index
+  // to pass as the draw call's baseInstance. Returns nullptr on allocation
   // failure.
   auto reserve_native_msl_draw_constants_slot =
       [&](uint32_t& slot_out) -> uint8_t* {
     NativeMslDrawConstantsSlotPage& page = native_msl_draw_constants_slot_page_;
-    const bool page_usable =
-        page.valid && page.buffer && page.mapping &&
-        page.upload_frame == frame_current_ &&
-        page.next_slot < kNativeMslDrawConstantsSlotCount;
+    const bool page_usable = page.valid && page.buffer && page.mapping &&
+                             page.upload_frame == frame_current_ &&
+                             page.next_slot < kNativeMslDrawConstantsSlotCount;
     if (!page_usable) {
       MTL::Buffer* page_buffer = nullptr;
       size_t page_offset = 0;
       uint64_t page_gpu_address = 0;
-      const size_t page_bytes =
-          size_t(kNativeMslDrawConstantsSlotCount) *
-          kNativeMslDrawConstantsSlotStride;
+      const size_t page_bytes = size_t(kNativeMslDrawConstantsSlotCount) *
+                                kNativeMslDrawConstantsSlotStride;
       uint8_t* page_data = constant_buffer_pool_->Request(
           frame_current_, page_bytes, kNativeRuntimeInfoAlignment, &page_buffer,
           page_offset, page_gpu_address);
@@ -5673,9 +5270,8 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
 
     MTL::RenderStages stage_render_stages = MTL::RenderStages(0);
     auto add_render_stage = [&](MTL::RenderStages stage_bits) {
-      stage_render_stages =
-          MTL::RenderStages(NS::UInteger(stage_render_stages) |
-                            NS::UInteger(stage_bits));
+      stage_render_stages = MTL::RenderStages(
+          NS::UInteger(stage_render_stages) | NS::UInteger(stage_bits));
     };
     if (vertex_stage) {
       add_render_stage(MTL::RenderStageVertex);
@@ -5794,17 +5390,15 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       return cbv.gpu_address ? cbv.gpu_address : null_gpu_address;
     };
     native_msl::NativeMslDrawConstantPointers draw_constants = {};
-    draw_constants.system =
-        cbv_gpu_address_or_null(system_cbv, needs_system);
+    draw_constants.system = cbv_gpu_address_or_null(system_cbv, needs_system);
     draw_constants.float_constants_data =
         cbv_gpu_address_or_null(float_cbv, needs_float);
     draw_constants.bool_loop_constants_data =
         cbv_gpu_address_or_null(bool_loop_cbv, needs_bool_loop);
     draw_constants.fetch_constants_data =
         cbv_gpu_address_or_null(fetch_cbv, needs_fetch);
-    draw_constants.descriptor_indices =
-        cbv_gpu_address_or_null(descriptor_indices_cbv,
-                                needs_descriptor_indices);
+    draw_constants.descriptor_indices = cbv_gpu_address_or_null(
+        descriptor_indices_cbv, needs_descriptor_indices);
     draw_constants.primitive_index =
         metadata.uses_primitive_index_constants && primitive_index_gpu_address
             ? primitive_index_gpu_address
@@ -5812,10 +5406,11 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
 
     MTL::Buffer* draw_constants_buffer = nullptr;
     size_t draw_constants_offset = 0;
-    // Plain-vertex draws (non-mesh, non-object) select their XeNativeDrawConstants
-    // table via baseInstance indexing into the bound-once slot page instead of a
-    // per-draw setVertexBufferOffset. Mesh/object draws (drawMeshThreadgroups,
-    // no baseInstance) and the fragment stage keep the per-draw offset-bind.
+    // Plain-vertex draws (non-mesh, non-object) select their
+    // XeNativeDrawConstants table via baseInstance indexing into the bound-once
+    // slot page instead of a per-draw setVertexBufferOffset. Mesh/object draws
+    // (drawMeshThreadgroups, no baseInstance) and the fragment stage keep the
+    // per-draw offset-bind.
     const bool use_vertex_slot_ring =
         vertex_stage && !mesh_stage && !object_stage;
     NativeMslDrawConstantsUploadCache& draw_constants_cache =
@@ -5832,8 +5427,7 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
           changed_mask |= bit;
         }
       };
-      mark_changed(draw_constants_cache.payload.system !=
-                       draw_constants.system,
+      mark_changed(draw_constants_cache.payload.system != draw_constants.system,
                    kNativeMslDrawConstantsChangeSystem);
       mark_changed(draw_constants_cache.payload.float_constants_data !=
                        draw_constants.float_constants_data,
@@ -5863,29 +5457,27 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
               stage_index * kNativeMslDrawConstantsRebuildReasonCount +
               size_t(reason);
           if (reason_index <
-              backend_telemetry_
-                  .native_msl_draw_constants_rebuild_reasons.size()) {
+              backend_telemetry_.native_msl_draw_constants_rebuild_reasons
+                  .size()) {
             ++backend_telemetry_
                   .native_msl_draw_constants_rebuild_reasons[reason_index];
           }
         };
-    auto record_draw_constants_change_mask =
-        [&](RenderEncoderBufferStage encoder_stage, uint32_t changed_mask) {
-          const size_t stage_index = size_t(encoder_stage);
-          if (stage_index >= kRenderEncoderBufferStageTelemetryCount ||
-              changed_mask >= kNativeMslDrawConstantsChangeMaskCount) {
-            return;
-          }
-          const size_t mask_index =
-              stage_index * kNativeMslDrawConstantsChangeMaskCount +
-              changed_mask;
-          if (mask_index <
-              backend_telemetry_.native_msl_draw_constants_change_masks
-                  .size()) {
-            ++backend_telemetry_.native_msl_draw_constants_change_masks
-                  [mask_index];
-          }
-        };
+    auto record_draw_constants_change_mask = [&](RenderEncoderBufferStage
+                                                     encoder_stage,
+                                                 uint32_t changed_mask) {
+      const size_t stage_index = size_t(encoder_stage);
+      if (stage_index >= kRenderEncoderBufferStageTelemetryCount ||
+          changed_mask >= kNativeMslDrawConstantsChangeMaskCount) {
+        return;
+      }
+      const size_t mask_index =
+          stage_index * kNativeMslDrawConstantsChangeMaskCount + changed_mask;
+      if (mask_index <
+          backend_telemetry_.native_msl_draw_constants_change_masks.size()) {
+        ++backend_telemetry_.native_msl_draw_constants_change_masks[mask_index];
+      }
+    };
     auto record_draw_constants_reason_for_bound_stages =
         [&](NativeMslDrawConstantsRebuildReason reason) {
           if (vertex_stage) {
@@ -5971,18 +5563,19 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
     record_draw_constants_reason_for_bound_stages(
         classify_draw_constants_reason());
     if (use_vertex_slot_ring) {
-      // (Re)bind the slot page for this draw. The reserve helper handles a fresh
-      // page on frame open / rollover and re-binds after a render-encoder reset;
-      // it returns a pointer to the next free slot but does NOT advance the
-      // cursor (the write branch below does), so a cached slot stays valid as
-      // long as the page identity is unchanged.
+      // (Re)bind the slot page for this draw. The reserve helper handles a
+      // fresh page on frame open / rollover and re-binds after a render-encoder
+      // reset; it returns a pointer to the next free slot but does NOT advance
+      // the cursor (the write branch below does), so a cached slot stays valid
+      // as long as the page identity is unchanged.
       uint32_t slot_index = 0;
       uint8_t* slot_data = reserve_native_msl_draw_constants_slot(slot_index);
       if (!slot_data) {
         return false;
       }
-      // Reuse the previously written slot only when the payload is unchanged AND
-      // it lives in the page that is now bound (a fresh page invalidates it).
+      // Reuse the previously written slot only when the payload is unchanged
+      // AND it lives in the page that is now bound (a fresh page invalidates
+      // it).
       const bool reuse_slot =
           can_reuse_draw_constants &&
           draw_constants_cache.slot_buffer ==
@@ -6031,17 +5624,16 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
         XELOGE("Native MSL draw-constant pointer allocation failed");
         return false;
       }
-      std::memcpy(draw_constants_data, &draw_constants,
-                  sizeof(draw_constants));
+      std::memcpy(draw_constants_data, &draw_constants, sizeof(draw_constants));
       draw_constants_cache.payload = draw_constants;
       draw_constants_cache.buffer = draw_constants_buffer;
       draw_constants_cache.offset =
           static_cast<NS::UInteger>(draw_constants_offset);
       // This is a single-table allocation (fragment/mesh/object), not a slot in
-      // the vertex page: invalidate any cached slot so a later plain-vertex draw
-      // that memcmp-matches this payload cannot falsely reuse a stale slot whose
-      // page content differs. (The kStageVertex cache entry is shared between the
-      // slot-ring path and the mesh/object single-table path.)
+      // the vertex page: invalidate any cached slot so a later plain-vertex
+      // draw that memcmp-matches this payload cannot falsely reuse a stale slot
+      // whose page content differs. (The kStageVertex cache entry is shared
+      // between the slot-ring path and the mesh/object single-table path.)
       draw_constants_cache.slot_buffer = nullptr;
       draw_constants_cache.payload_valid = true;
       draw_constants_cache.upload_frame = frame_current_;
@@ -6145,8 +5737,7 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
 
     if (metadata.uses_shared_memory) {
       if (!IsResidencySetResourceCovered(shared_memory_buffer)) {
-        UseRenderEncoderResource(shared_memory_buffer,
-                                 draw.shared_memory_usage,
+        UseRenderEncoderResource(shared_memory_buffer, draw.shared_memory_usage,
                                  stage_render_stages);
       }
     }
@@ -6794,12 +6385,12 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     InvalidateRenderEncoderStateAfterDrawPassTransfers(transfer_mutations);
   }
 
-  // EncodeSharedMemoryRenderReadDependencies already early-outs when the pending
-  // write list is empty and when no pending write overlaps these ranges, so the
-  // previous PendingSharedMemoryWritesOverlapRanges gate here was a redundant
-  // second full scan of the pending-write list on every hazard draw. Call it
-  // directly; the behavior is identical (the error path inside is still only
-  // reachable on a real overlap).
+  // EncodeSharedMemoryRenderReadDependencies already early-outs when the
+  // pending write list is empty and when no pending write overlaps these
+  // ranges, so the previous PendingSharedMemoryWritesOverlapRanges gate here
+  // was a redundant second full scan of the pending-write list on every hazard
+  // draw. Call it directly; the behavior is identical (the error path inside is
+  // still only reachable on a real overlap).
   if (draw.shared_memory_hazard_range_count) {
     if (!EncodeSharedMemoryRenderReadDependencies(
             draw.shared_memory_hazard_ranges.data(),
@@ -6869,9 +6460,9 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
       draw.tessellation_pipeline_state, draw.use_geometry_emulation,
       draw.geometry_pipeline_state, draw.native_mesh_pipeline_state,
       draw.use_native_msl_tessellation, draw.use_native_msl,
-      draw.shared_memory_is_uav, draw.shared_memory_usage,
-      draw.memexport_used, draw.memexport_write_stages,
-      draw.uses_vertex_fetch, draw.prepare_uniforms,
+      draw.shared_memory_is_uav, draw.shared_memory_usage, draw.memexport_used,
+      draw.memexport_write_stages, draw.uses_vertex_fetch,
+      draw.prepare_uniforms,
       draw.prepared_guest_dma_index_buffer.buffer
           ? &draw.prepared_guest_dma_index_buffer
           : nullptr,
@@ -7282,10 +6873,11 @@ bool MetalCommandProcessor::DispatchDraw(
       if (use_native_msl) {
         // baseInstance carries the plain-vertex draw-constants slot index. The
         // generated vertex function reads it via [[base_instance]] to index the
-        // bound-once slot page (see BindNativeMslDrawResources). instanceCount=1
-        // keeps the single Xbox 360 invocation per vertex; [[instance_id]] is
-        // unused by the guest vertex path so it is harmless that it now equals
-        // the slot index (instance_id == baseInstance when instanceCount == 1).
+        // bound-once slot page (see BindNativeMslDrawResources).
+        // instanceCount=1 keeps the single Xbox 360 invocation per vertex;
+        // [[instance_id]] is unused by the guest vertex path so it is harmless
+        // that it now equals the slot index (instance_id == baseInstance when
+        // instanceCount == 1).
         current_render_encoder_->drawPrimitives(
             mtl_primitive, NS::UInteger(0),
             NS::UInteger(primitive_processing_result.host_draw_vertex_count),
@@ -7838,7 +7430,7 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
     cache.upload_frame = 0;
   }
   for (NativeMslDrawConstantsUploadCache& cache :
-      native_msl_draw_constants_upload_cache_) {
+       native_msl_draw_constants_upload_cache_) {
     cache.payload = {};
     cache.buffer = nullptr;
     cache.offset = 0;
@@ -7847,10 +7439,10 @@ void MetalCommandProcessor::InvalidateFrameTransientBindings() {
     cache.payload_valid = false;
     cache.upload_frame = 0;
   }
-  // Drop the plain-vertex draw-constants slot page so the next frame allocates a
-  // fresh page from the (now reclaimed) constant buffer pool. The page is also
-  // guarded by upload_frame == frame_current_, but clearing it avoids retaining
-  // a stale buffer pointer across the frame boundary.
+  // Drop the plain-vertex draw-constants slot page so the next frame allocates
+  // a fresh page from the (now reclaimed) constant buffer pool. The page is
+  // also guarded by upload_frame == frame_current_, but clearing it avoids
+  // retaining a stale buffer pointer across the frame boundary.
   native_msl_draw_constants_slot_page_ = {};
   current_native_msl_draw_constants_slot_ = 0;
   native_msl_primitive_index_upload_cache_ = {};
@@ -7883,515 +7475,6 @@ void MetalCommandProcessor::CloseFrameLifetime() {
                   completed_command_buffers_.load(std::memory_order_acquire));
   closed_frame_submissions_[frame_slot] = submission_current_;
   ++frame_current_;
-}
-
-void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
-                                                      bool force) {
-  if (!::cvars::metal_backend_telemetry) {
-    return;
-  }
-  int32_t interval_config = ::cvars::metal_backend_telemetry_interval;
-  uint64_t interval = interval_config > 0 ? uint64_t(interval_config) : 0;
-  if (!force &&
-      (!interval || backend_telemetry_.swaps <
-                        backend_telemetry_last_dump_swap_ + interval)) {
-    return;
-  }
-
-  MetalRenderTargetCache::TelemetryStats rt_stats = {};
-  if (render_target_cache_) {
-    rt_stats = render_target_cache_->GetAndResetTelemetryStats();
-  }
-
-  const std::string end_reasons = MetalFormatNamedCounts(
-      backend_telemetry_.end_reasons, MetalRenderEncoderEndReasonName);
-  const std::string transfer_request_sources = MetalFormatNamedTriplets(
-      backend_telemetry_.transfer_request_sources_total,
-      backend_telemetry_.transfer_request_sources_active,
-      backend_telemetry_.transfer_request_sources_no_active,
-      MetalTransferRequestSourceName);
-  const std::string transfer_request_render_end_sources =
-      MetalFormatNamedCounts(
-          backend_telemetry_.transfer_request_render_encoder_ends,
-          MetalTransferRequestSourceName);
-  const std::string shared_memory_request_upload_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.shared_memory_request_upload_bytes,
-      MetalSharedMemoryRequestReasonName);
-  const std::string shared_memory_request_failures =
-      MetalFormatNamedCounts(backend_telemetry_.shared_memory_request_failures,
-                             MetalSharedMemoryRequestReasonName);
-  const std::string shared_memory_request_outcomes =
-      MetalFormatNamedCounts(backend_telemetry_.shared_memory_request_outcomes,
-                             MetalSharedMemoryRequestOutcomeName);
-  const std::string shared_memory_upload_route_counts = MetalFormatNamedCounts(
-      backend_telemetry_.shared_memory_upload_route_counts,
-      MetalSharedMemoryUploadRouteName);
-  const std::string shared_memory_upload_route_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.shared_memory_upload_route_bytes,
-      MetalSharedMemoryUploadRouteName);
-  const std::string shared_memory_direct_write_rejects = MetalFormatNamedCounts(
-      backend_telemetry_.shared_memory_direct_write_reject_counts,
-      MetalSharedMemoryDirectWriteRejectReasonName);
-  const std::string shared_memory_direct_write_reject_bytes =
-      MetalFormatNamedCounts(
-          backend_telemetry_.shared_memory_direct_write_reject_bytes,
-          MetalSharedMemoryDirectWriteRejectReasonName);
-  const std::string texture_upload_source_route_counts = MetalFormatNamedCounts(
-      backend_telemetry_.texture_upload_source_route_counts,
-      MetalTextureUploadSourceRouteName);
-  const std::string texture_upload_source_route_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.texture_upload_source_route_bytes,
-      MetalTextureUploadSourceRouteName);
-  const std::string texture_upload_source_fallback_reasons =
-      MetalFormatNamedCounts(
-          backend_telemetry_.texture_upload_source_fallback_reasons,
-          MetalTextureUploadSourceFallbackReasonName);
-  const std::string texture_upload_compatibility_counts =
-      MetalFormatNamedCounts(
-          backend_telemetry_.texture_upload_compatibility_counts,
-          MetalTextureUploadCompatibilityClassName);
-  const std::string texture_upload_compatibility_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.texture_upload_compatibility_bytes,
-      MetalTextureUploadCompatibilityClassName);
-  const std::string texture_upload_compute_blockers = MetalFormatNamedCounts(
-      backend_telemetry_.texture_upload_compute_blocker_counts,
-      MetalTextureUploadComputeBlockerName);
-  const std::string texture_upload_compute_blocker_bytes =
-      MetalFormatNamedCounts(
-          backend_telemetry_.texture_upload_compute_blocker_bytes,
-          MetalTextureUploadComputeBlockerName);
-  const std::string texture_upload_execution_details = MetalFormatNamedCounts(
-      backend_telemetry_.texture_upload_execution_details,
-      MetalTextureUploadExecutionDetailName);
-  const std::string texture_reload_reason_counts =
-      MetalFormatNamedCounts(backend_telemetry_.texture_reload_reason_counts,
-                             MetalTextureReloadReasonName);
-  const std::string texture_reload_reason_bytes =
-      MetalFormatNamedCounts(backend_telemetry_.texture_reload_reason_bytes,
-                             MetalTextureReloadReasonName);
-  const std::string texture_watch_invalidation_counts = MetalFormatNamedCounts(
-      backend_telemetry_.texture_watch_invalidation_counts,
-      MetalTextureWatchInvalidationReasonName);
-  const std::string texture_watch_invalidation_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.texture_watch_invalidation_bytes,
-      MetalTextureWatchInvalidationReasonName);
-  const std::string texture_resolve_reload_counts =
-      MetalFormatNamedCounts(backend_telemetry_.texture_resolve_reload_counts,
-                             MetalTextureResolveReloadReasonName);
-  const std::string texture_resolve_reload_bytes =
-      MetalFormatNamedCounts(backend_telemetry_.texture_resolve_reload_bytes,
-                             MetalTextureResolveReloadReasonName);
-  const std::string shared_memory_upload_encoder_end_reasons =
-      MetalFormatNamedCounts(
-          backend_telemetry_.shared_memory_upload_encoder_end_reasons,
-          MetalSharedMemoryUploadEncoderEndReasonName);
-  const std::string draw_materialization_source_ranges = MetalFormatNamedCounts(
-      backend_telemetry_.draw_materialization_source_ranges,
-      MetalTelemetryDrawMaterializationSourceName);
-  const std::string draw_materialization_source_bytes = MetalFormatNamedCounts(
-      backend_telemetry_.draw_materialization_source_bytes,
-      MetalTelemetryDrawMaterializationSourceName);
-  const std::string draw_materialization_source_invalid_ranges =
-      MetalFormatNamedCounts(
-          backend_telemetry_.draw_materialization_source_invalid_ranges,
-          MetalTelemetryDrawMaterializationSourceName);
-  const std::string draw_materialization_source_invalid_bytes =
-      MetalFormatNamedCounts(
-          backend_telemetry_.draw_materialization_source_invalid_bytes,
-          MetalTelemetryDrawMaterializationSourceName);
-  const std::string prepared_draw_queue_flush_reasons = MetalFormatNamedCounts(
-      backend_telemetry_.prepared_draw_queue_flush_reasons,
-      MetalPreparedDrawFlushReasonName);
-  const std::string prepared_draw_queue_reject_reasons = MetalFormatNamedCounts(
-      backend_telemetry_.prepared_draw_queue_reject_reasons,
-      MetalPreparedDrawQueueRejectReasonName);
-  const std::string cbv_uploads = MetalFormatNamedCounts(
-      backend_telemetry_.cbv_uploads, MetalTelemetryCbvSlotName);
-  const std::string cbv_reuse_hits = MetalFormatNamedCounts(
-      backend_telemetry_.cbv_reuse_hits, MetalTelemetryCbvSlotName);
-  const std::string descriptor_index_uploads =
-      MetalFormatNamedCounts(backend_telemetry_.descriptor_index_uploads,
-                             MetalTelemetryShaderStageName);
-  const std::string bindless_root_allocations =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_allocations,
-                             MetalTelemetryRootScopeName);
-  const std::string bindless_root_reuse_hits = MetalFormatNamedCounts(
-      backend_telemetry_.bindless_root_reuse_hits, MetalTelemetryRootScopeName);
-  const std::string bindless_root_arg_noop_updates =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_arg_noop_updates,
-                             MetalTelemetryRootScopeName);
-  const std::string bindless_root_arg_slots_patched =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_arg_slots_patched,
-                             MetalTelemetryRootScopeName);
-  const std::string bindless_root_arg_bytes_copied =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_arg_bytes_copied,
-                             MetalTelemetryRootScopeName);
-  const std::string bindless_root_arg_slot_patches =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_arg_slot_patches,
-                             MetalTelemetryRootArgSlotName);
-  const std::string bindless_root_rebuild_reasons =
-      MetalFormatNamedCounts(backend_telemetry_.bindless_root_rebuild_reasons,
-                             MetalTelemetryRootRebuildReasonName);
-  const std::string native_msl_draw_constants_rebuild_reasons =
-      MetalFormatNamedCounts(
-          backend_telemetry_.native_msl_draw_constants_rebuild_reasons,
-          MetalTelemetryNativeMslDrawConstantsRebuildReasonName);
-  const std::string native_msl_draw_constants_change_masks =
-      MetalFormatNamedCounts(
-          backend_telemetry_.native_msl_draw_constants_change_masks,
-          MetalTelemetryNativeMslDrawConstantsChangeMaskName);
-  const std::string encoder_buffer_full_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_full_binds,
-      MetalTelemetryRenderEncoderBufferStageName);
-  const std::string encoder_buffer_offset_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_offset_binds,
-      MetalTelemetryRenderEncoderBufferStageName);
-  const std::string encoder_buffer_noop_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_noop_binds,
-      MetalTelemetryRenderEncoderBufferStageName);
-  const std::string encoder_buffer_null_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_null_binds,
-      MetalTelemetryRenderEncoderBufferStageName);
-  const std::string encoder_buffer_untracked_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_untracked_binds,
-      MetalTelemetryRenderEncoderBufferStageName);
-  const std::string encoder_buffer_slot_full_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_slot_full_binds,
-      MetalTelemetryRenderEncoderBufferSlotName);
-  const std::string encoder_buffer_slot_offset_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_slot_offset_binds,
-      MetalTelemetryRenderEncoderBufferSlotName);
-  const std::string encoder_buffer_slot_noop_binds = MetalFormatNamedCounts(
-      backend_telemetry_.render_encoder_buffer_slot_noop_binds,
-      MetalTelemetryRenderEncoderBufferSlotName);
-  const uint64_t encoder_buffer_full_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_full_binds);
-  const uint64_t encoder_buffer_offset_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_offset_binds);
-  const uint64_t encoder_buffer_noop_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_noop_binds);
-  const uint64_t encoder_buffer_slot_full_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_slot_full_binds);
-  const uint64_t encoder_buffer_slot_offset_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_slot_offset_binds);
-  const uint64_t encoder_buffer_slot_noop_bind_total = MetalTelemetrySumCounts(
-      backend_telemetry_.render_encoder_buffer_slot_noop_binds);
-  const std::string render_resource_set_applies =
-      MetalFormatNamedCounts(backend_telemetry_.render_resource_set_applies,
-                             MetalTelemetryRenderResourceSetName);
-  const std::string render_resource_set_skips =
-      MetalFormatNamedCounts(backend_telemetry_.render_resource_set_skips,
-                             MetalTelemetryRenderResourceSetName);
-  const std::string render_resource_set_resources =
-      MetalFormatNamedCounts(backend_telemetry_.render_resource_set_resources,
-                             MetalTelemetryRenderResourceSetName);
-  const std::string render_resource_registry_serial_skips =
-      MetalFormatNamedCounts(
-          backend_telemetry_.render_resource_registry_serial_skips,
-          MetalTelemetryRenderResourceSetName);
-  const std::string render_resource_registry_builds =
-      MetalFormatNamedCounts(backend_telemetry_.render_resource_registry_builds,
-                             MetalTelemetryRenderResourceSetName);
-  const std::string render_resource_registry_registers = MetalFormatNamedCounts(
-      backend_telemetry_.render_resource_registry_registers,
-      MetalTelemetryRenderResourceSetName);
-  const auto& direct_host_stats = rt_stats.resolve_direct_host;
-  MetalStageCompileCacheStats stage_compile_stats = {};
-  MetalPipelineRuntimeStats pipeline_runtime_stats = {};
-  if (pipeline_cache_) {
-    stage_compile_stats = pipeline_cache_->GetAndResetStageCompileStats();
-    pipeline_runtime_stats = pipeline_cache_->GetAndResetRuntimeStats();
-  }
-
-  XELOGI(
-      "MetalTelemetry[{}]: work swaps={} draws={} submitted={} pipelines "
-      "set/skip={}/{} texture_requests before/after_encoder={}/{}",
-      reason, backend_telemetry_.swaps - backend_telemetry_last_dump_swap_,
-      backend_telemetry_.draw_calls, backend_telemetry_.draws_submitted,
-      backend_telemetry_.pipeline_sets, backend_telemetry_.pipeline_set_skips,
-      backend_telemetry_.texture_requests_before_encoder,
-      backend_telemetry_.texture_requests_after_encoder_begin);
-  XELOGI(
-      "MetalTelemetry[{}]: render_encoder begin_calls={} reused={} created={} "
-      "descriptor_restarts={} resource_resets={} desc_fail={} create_fail={} "
-      "end active/no_active={}/{} reasons={{ {} }}",
-      reason, backend_telemetry_.begin_encoder_calls,
-      backend_telemetry_.begin_encoder_reused_compatible,
-      backend_telemetry_.begin_encoder_created,
-      backend_telemetry_.begin_encoder_descriptor_restarts,
-      backend_telemetry_.begin_encoder_resource_usage_resets,
-      backend_telemetry_.begin_encoder_descriptor_failures,
-      backend_telemetry_.begin_encoder_creation_failures,
-      backend_telemetry_.end_encoder_active,
-      backend_telemetry_.end_encoder_no_active, end_reasons);
-  XELOGI(
-      "MetalTelemetry[{}]: transfer_request sources "
-      "total/active/no_active={{ {} }} render_end={{ {} }}",
-      reason, transfer_request_sources, transfer_request_render_end_sources);
-  XELOGI("MetalTelemetry[{}]: shared_memory request failures={{ {} }}", reason,
-         shared_memory_request_failures);
-  XELOGI(
-      "MetalTelemetry[{}]: shared_memory upload bytes={{ {} }} "
-      "outcomes={{ {} }}",
-      reason, shared_memory_request_upload_bytes,
-      shared_memory_request_outcomes);
-  XELOGI(
-      "MetalTelemetry[{}]: shared_memory upload_batches requests={} "
-      "ranges input/coalesced={}/{} bytes={} upload_encoder "
-      "acquire/reuse/copies={}/{}/{} closes={{ {} }} routes counts={{ {} }} "
-      "bytes={{ {} }}",
-      reason, backend_telemetry_.shared_memory_upload_batches,
-      backend_telemetry_.shared_memory_upload_batch_input_ranges,
-      backend_telemetry_.shared_memory_upload_batch_coalesced_ranges,
-      backend_telemetry_.shared_memory_upload_batch_bytes,
-      backend_telemetry_.shared_memory_upload_encoder_acquisitions,
-      backend_telemetry_.shared_memory_upload_encoder_reuses,
-      backend_telemetry_.shared_memory_upload_encoder_copies,
-      shared_memory_upload_encoder_end_reasons,
-      shared_memory_upload_route_counts, shared_memory_upload_route_bytes);
-  XELOGI(
-      "MetalTelemetry[{}]: shared_memory direct_write "
-      "eligible/staged_bytes={}/{} rejects={{ {} }} reject_bytes={{ {} }}",
-      reason, backend_telemetry_.shared_memory_direct_write_eligible_bytes,
-      backend_telemetry_.shared_memory_direct_write_staged_required_bytes,
-      shared_memory_direct_write_rejects,
-      shared_memory_direct_write_reject_bytes);
-  XELOGI(
-      "MetalTelemetry[{}]: shared_memory lazy_upload batches "
-      "no_upload/direct_only/mixed/staged_only={}/{}/{}/{} "
-      "render_active direct_only/mixed/staged_only={}/{}/{}",
-      reason, backend_telemetry_.shared_memory_lazy_upload_no_upload_batches,
-      backend_telemetry_.shared_memory_lazy_upload_direct_only_batches,
-      backend_telemetry_.shared_memory_lazy_upload_mixed_batches,
-      backend_telemetry_.shared_memory_lazy_upload_staged_only_batches,
-      backend_telemetry_.shared_memory_lazy_upload_direct_only_active,
-      backend_telemetry_.shared_memory_lazy_upload_mixed_active,
-      backend_telemetry_.shared_memory_lazy_upload_staged_only_active);
-  XELOGI(
-      "MetalTelemetry[{}]: texture_upload_source routes counts={{ {} }} "
-      "bytes={{ {} }} fallback_reasons={{ {} }}",
-      reason, texture_upload_source_route_counts,
-      texture_upload_source_route_bytes,
-      texture_upload_source_fallback_reasons);
-  XELOGI(
-      "MetalTelemetry[{}]: texture_upload_classification "
-      "classes counts={{ {} }} bytes={{ {} }} blockers={{ {} }} "
-      "blocker_bytes={{ {} }} execution={{ {} }}",
-      reason, texture_upload_compatibility_counts,
-      texture_upload_compatibility_bytes, texture_upload_compute_blockers,
-      texture_upload_compute_blocker_bytes, texture_upload_execution_details);
-  XELOGI(
-      "MetalTelemetry[{}]: texture_reload reasons counts={{ {} }} "
-      "bytes={{ {} }}",
-      reason, texture_reload_reason_counts, texture_reload_reason_bytes);
-  XELOGI(
-      "MetalTelemetry[{}]: texture_watch_invalidations counts={{ {} }} "
-      "bytes={{ {} }}",
-      reason, texture_watch_invalidation_counts,
-      texture_watch_invalidation_bytes);
-  XELOGI(
-      "MetalTelemetry[{}]: texture_resolve_reload counts={{ {} }} "
-      "bytes={{ {} }}",
-      reason, texture_resolve_reload_counts, texture_resolve_reload_bytes);
-  XELOGI(
-      "MetalTelemetry[{}]: draw_materialization ranges={{ {} }} bytes={{ {} }} "
-      "invalid_ranges={{ {} }} invalid_bytes={{ {} }} "
-      "per_draw requests/invalid/resident_skip={}/{}/{}",
-      reason, draw_materialization_source_ranges,
-      draw_materialization_source_bytes,
-      draw_materialization_source_invalid_ranges,
-      draw_materialization_source_invalid_bytes,
-      backend_telemetry_.draw_materialization_per_draw_requests,
-      backend_telemetry_.draw_materialization_per_draw_invalid_requests,
-      backend_telemetry_.draw_materialization_per_draw_resident_skips);
-  XELOGI(
-      "MetalTelemetry[{}]: prepared_draw_queue appends={} flushes={} "
-      "single_draw_flushes={} draws_flushed={} ranges_flushed={} "
-      "bytes_flushed={} invalid_flushes={} texture_plans={} "
-      "texture_loads planned/executed={}/{} flush_reasons={{ {} }} "
-      "rejects={{ {} }}",
-      reason, backend_telemetry_.prepared_draw_queue_appends,
-      backend_telemetry_.prepared_draw_queue_flushes,
-      backend_telemetry_.prepared_draw_queue_single_draw_flushes,
-      backend_telemetry_.prepared_draw_queue_draws_flushed,
-      backend_telemetry_.prepared_draw_queue_ranges_flushed,
-      backend_telemetry_.prepared_draw_queue_bytes_flushed,
-      backend_telemetry_.prepared_draw_queue_invalid_flushes,
-      backend_telemetry_.prepared_draw_queue_texture_plans_flushed,
-      backend_telemetry_.prepared_draw_queue_texture_loads_planned,
-      backend_telemetry_.prepared_draw_queue_texture_loads_executed,
-      prepared_draw_queue_flush_reasons, prepared_draw_queue_reject_reasons);
-  XELOGI(
-      "MetalTelemetry[{}]: constants cbv_uploads={{ {} }} "
-      "cbv_reuse={{ {} }} descriptor_index_uploads={{ {} }} "
-      "root_allocations={{ {} }} root_reuse={{ {} }} "
-      "root_rebuild_reasons={{ {} }} frame_slot_waits={} "
-      "waited_submissions={} last_wait_submission={}",
-      reason, cbv_uploads, cbv_reuse_hits, descriptor_index_uploads,
-      bindless_root_allocations, bindless_root_reuse_hits,
-      bindless_root_rebuild_reasons, backend_telemetry_.frame_slot_waits,
-      backend_telemetry_.frame_slot_wait_submission_count,
-      backend_telemetry_.frame_slot_wait_submission_last);
-  XELOGI(
-      "MetalTelemetry[{}]: root_args allocs={{ {} }} reuse={{ {} }} "
-      "noop={{ {} }} slots_patched={{ {} }} bytes_copied={{ {} }} "
-      "slot_patches={{ {} }} rebuild_reasons={{ {} }}",
-      reason, bindless_root_allocations, bindless_root_reuse_hits,
-      bindless_root_arg_noop_updates, bindless_root_arg_slots_patched,
-      bindless_root_arg_bytes_copied, bindless_root_arg_slot_patches,
-      bindless_root_rebuild_reasons);
-  if (cvars::metal_root_rebuild_detail_telemetry) {
-    const std::string bindless_root_slots_changed =
-        MetalFormatNamedCounts(backend_telemetry_.bindless_root_slots_changed,
-                               MetalTelemetryRootSlotsChangedName);
-    const std::string bindless_root_rebuild_details =
-        MetalFormatNamedCounts(backend_telemetry_.bindless_root_rebuild_details,
-                               MetalTelemetryRootRebuildDetailName);
-    XELOGI(
-        "MetalTelemetry[{}]: root_rebuild_detail slots_changed={{ {} }} "
-        "details={{ {} }}",
-        reason, bindless_root_slots_changed, bindless_root_rebuild_details);
-  }
-  XELOGI(
-      "MetalTelemetry[{}]: encoder_bindings full={{ {} }} offset={{ {} }} "
-      "noop={{ {} }} null={{ {} }} untracked={{ {} }} resource_use "
-      "calls/skips/upgrades={}/{}/{} batches/resources/skips={}/{}/{} "
-      "resource_sets apply={{ {} }} skip={{ {} }} resources={{ {} }}",
-      reason, encoder_buffer_full_binds, encoder_buffer_offset_binds,
-      encoder_buffer_noop_binds, encoder_buffer_null_binds,
-      encoder_buffer_untracked_binds,
-      backend_telemetry_.render_encoder_use_resource_calls,
-      backend_telemetry_.render_encoder_use_resource_skips,
-      backend_telemetry_.render_encoder_use_resource_upgrades,
-      backend_telemetry_.render_encoder_use_resources_batches,
-      backend_telemetry_.render_encoder_use_resources_requested,
-      backend_telemetry_.render_encoder_use_resources_skips,
-      render_resource_set_applies, render_resource_set_skips,
-      render_resource_set_resources);
-  XELOGI(
-      "MetalTelemetry[{}]: encoder_binding_slots full={{ {} }} offset={{ {} }} "
-      "noop={{ {} }}",
-      reason, encoder_buffer_slot_full_binds, encoder_buffer_slot_offset_binds,
-      encoder_buffer_slot_noop_binds);
-  XELOGI(
-      "MetalTelemetry[{}]: native_msl_draw_constants reasons={{ {} }}",
-      reason, native_msl_draw_constants_rebuild_reasons);
-  XELOGI(
-      "MetalTelemetry[{}]: native_msl_draw_constants change_masks={{ {} }}",
-      reason, native_msl_draw_constants_change_masks);
-  XELOGI(
-      "MetalTelemetry[{}]: native_msl_texture_sign sign_only_switches={} "
-      "live_variants={} (of pipeline_sets={})",
-      reason, backend_telemetry_.pipeline_sets_sign_key_change,
-      backend_telemetry_.native_msl_sign_variants_live,
-      backend_telemetry_.pipeline_sets);
-  XELOGI(
-      "MetalTelemetry[{}]: encoder_binding_slot_totals "
-      "stage_full/slot_full={} / {} stage_offset/slot_offset={} / {} "
-      "stage_noop/slot_noop={} / {}",
-      reason, encoder_buffer_full_bind_total,
-      encoder_buffer_slot_full_bind_total, encoder_buffer_offset_bind_total,
-      encoder_buffer_slot_offset_bind_total, encoder_buffer_noop_bind_total,
-      encoder_buffer_slot_noop_bind_total);
-  XELOGI(
-      "MetalTelemetry[{}]: resource_registry serial_skip={{ {} }} "
-      "build={{ {} }} register={{ {} }}",
-      reason, render_resource_registry_serial_skips,
-      render_resource_registry_builds, render_resource_registry_registers);
-  XELOGI(
-      "MetalTelemetry[{}]: residency_set supported/enabled/attached={}/{}/{} "
-      "allocations added/duplicates/commits={}/{}/{} "
-      "resource_refs covered/fallback={}/{} "
-      "use_resource covered/fallback={}/{} "
-      "use_heap covered/fallback={}/{} live_allocations={}",
-      reason, residency_set_supported_ ? 1 : 0, residency_set_enabled_ ? 1 : 0,
-      residency_set_attached_ ? 1 : 0,
-      backend_telemetry_.residency_set_allocations_added,
-      backend_telemetry_.residency_set_allocation_duplicates,
-      backend_telemetry_.residency_set_commits,
-      backend_telemetry_.residency_set_resource_refs_covered,
-      backend_telemetry_.residency_set_resource_refs_fallback,
-      backend_telemetry_.residency_set_use_resources_covered,
-      backend_telemetry_.residency_set_use_resources_fallback,
-      backend_telemetry_.residency_set_use_heaps_covered,
-      backend_telemetry_.residency_set_use_heaps_fallback,
-      residency_set_ ? uint64_t(residency_set_->allocationCount()) : 0);
-  if (shared_memory_hazard_fence_edges_) {
-    XELOGI(
-        "MetalTelemetry[{}]: hazard_model mode={} fence updates "
-        "blit/compute={}/{} waits render/blit/compute={}/{}/{}",
-        reason, cvars::metal_backend_hazard_model ? "untracked" : "validate",
-        backend_telemetry_.hazard_fence_updates_blit,
-        backend_telemetry_.hazard_fence_updates_compute,
-        backend_telemetry_.hazard_fence_waits[0],
-        backend_telemetry_.hazard_fence_waits[1],
-        backend_telemetry_.hazard_fence_waits[2]);
-  }
-  XELOGI(
-      "MetalTelemetry[{}]: resolve_direct_host attempt/success={}/{} "
-      "reject gamma/exp_bias/format/sample/depth_no_fast={}/{}/{}/{}/{}",
-      reason, direct_host_stats.direct_host_attempt,
-      direct_host_stats.direct_host_success,
-      direct_host_stats.direct_host_reject_gamma,
-      direct_host_stats.direct_host_reject_exp_bias,
-      direct_host_stats.direct_host_reject_format_mismatch,
-      direct_host_stats.direct_host_reject_sample_select,
-      direct_host_stats.direct_host_reject_depth_no_fast);
-  XELOGI(
-      "MetalTelemetry[{}]: resolve_clear load_action merged_pass/single={}/{} "
-      "draw={}",
-      reason, rt_stats.resolve_clear.load_action_merged_passes,
-      rt_stats.resolve_clear.load_action_single_target,
-      rt_stats.resolve_clear.draw_clears);
-  XELOGI(
-      "MetalTelemetry[{}]: stage_compile requests={} hits/misses={}/{} "
-      "waits={} failures={} persistent hits/misses={}/{} "
-      "bytes dxil/metallib={}/{} owner_ms total/max={}/{} "
-      "wait_ms total/max={}/{}",
-      reason, stage_compile_stats.requests, stage_compile_stats.memory_hits,
-      stage_compile_stats.memory_misses, stage_compile_stats.waits,
-      stage_compile_stats.failures, stage_compile_stats.persistent_hits,
-      stage_compile_stats.persistent_misses, stage_compile_stats.dxil_bytes,
-      stage_compile_stats.metallib_bytes,
-      stage_compile_stats.owner_compile_ms_total,
-      stage_compile_stats.owner_compile_ms_max,
-      stage_compile_stats.wait_ms_total, stage_compile_stats.wait_ms_max);
-  XELOGI(
-      "MetalTelemetry[{}]: shader_prep dxil requests/hits/misses/failures="
-      "{}/{}/{}/{} "
-      "bytes dxbc/dxil={}/{} ms total/max={}/{} libraries "
-      "requests/failures={}/{} bytes={} ms total/max={}/{} render_pso "
-      "requests/failures={}/{} ms total/max={}/{}",
-      reason, pipeline_runtime_stats.dxil_convert_requests,
-      pipeline_runtime_stats.dxil_cache_hits,
-      pipeline_runtime_stats.dxil_cache_misses,
-      pipeline_runtime_stats.dxil_convert_failures,
-      pipeline_runtime_stats.dxil_convert_dxbc_bytes,
-      pipeline_runtime_stats.dxil_convert_dxil_bytes,
-      pipeline_runtime_stats.dxil_convert_ms_total,
-      pipeline_runtime_stats.dxil_convert_ms_max,
-      pipeline_runtime_stats.library_requests,
-      pipeline_runtime_stats.library_failures,
-      pipeline_runtime_stats.library_bytes,
-      pipeline_runtime_stats.library_ms_total,
-      pipeline_runtime_stats.library_ms_max,
-      pipeline_runtime_stats.render_pipeline_requests,
-      pipeline_runtime_stats.render_pipeline_failures,
-      pipeline_runtime_stats.render_pipeline_ms_total,
-      pipeline_runtime_stats.render_pipeline_ms_max);
-  ResetBackendTelemetry();
-}
-
-void MetalCommandProcessor::ResetBackendTelemetry() {
-  backend_telemetry_last_dump_swap_ = backend_telemetry_.swaps;
-  // native_msl_sign_variants_live is a monotonic gauge (translations are never
-  // freed per window), so carry it across resets like swaps.
-  uint64_t native_msl_sign_variants_live =
-      backend_telemetry_.native_msl_sign_variants_live;
-  backend_telemetry_ = BackendTelemetryStats();
-  backend_telemetry_.swaps = backend_telemetry_last_dump_swap_;
-  backend_telemetry_.native_msl_sign_variants_live =
-      native_msl_sign_variants_live;
 }
 
 void MetalCommandProcessor::EnsureCommandBufferAutoreleasePool() {
@@ -8648,14 +7731,6 @@ bool MetalCommandProcessor::RequestSharedMemoryRangesInPlace(
   return success;
 }
 
-void MetalCommandProcessor::RecordSharedMemoryRequestOutcome(
-    SharedMemoryRequestOutcome outcome) {
-  const size_t outcome_index = static_cast<size_t>(outcome);
-  if (outcome_index < kSharedMemoryRequestOutcomeCount) {
-    ++backend_telemetry_.shared_memory_request_outcomes[outcome_index];
-  }
-}
-
 bool MetalCommandProcessor::AnySharedMemoryRangeInvalid(
     const SharedMemory::Range* ranges, uint32_t range_count) const {
   if (!shared_memory_ || !ranges || !range_count) {
@@ -8669,46 +7744,20 @@ bool MetalCommandProcessor::AnySharedMemoryRangeInvalid(
   return false;
 }
 
-void MetalCommandProcessor::RecordSharedMemoryLazyUploadRoute(
-    const MetalSharedMemory::UploadRouteInfo& route_info,
-    bool render_encoder_active) {
-  if (!route_info.upload_bytes) {
-    ++backend_telemetry_.shared_memory_lazy_upload_no_upload_batches;
-    return;
-  }
-  if (route_info.direct_bytes && !route_info.staged_bytes) {
-    ++backend_telemetry_.shared_memory_lazy_upload_direct_only_batches;
-    if (render_encoder_active) {
-      ++backend_telemetry_.shared_memory_lazy_upload_direct_only_active;
-    }
-    return;
-  }
-  if (route_info.direct_bytes && route_info.staged_bytes) {
-    ++backend_telemetry_.shared_memory_lazy_upload_mixed_batches;
-    if (render_encoder_active) {
-      ++backend_telemetry_.shared_memory_lazy_upload_mixed_active;
-    }
-    return;
-  }
-  ++backend_telemetry_.shared_memory_lazy_upload_staged_only_batches;
-  if (render_encoder_active) {
-    ++backend_telemetry_.shared_memory_lazy_upload_staged_only_active;
-  }
-}
-
 void MetalCommandProcessor::PrepareSharedMemoryUploadBeforeDrawPass(
     const SharedMemory::Range* ranges, uint32_t range_count) {
   if (!shared_memory_ || !ranges || !range_count) {
     return;
   }
   const bool render_encoder_active = current_render_encoder_ != nullptr;
-  // Resident-draw fast path: if every range is already valid there is nothing to
-  // upload, and GetUploadRouteInfo would scan every page (one IsRangeValid call
-  // per page) only to return an empty route. AnySharedMemoryRangeInvalid checks
-  // each whole range with a single coarse validity scan that early-exits, so
-  // skip the per-page scan when nothing is invalid. When all ranges are valid,
-  // GetUploadRouteInfo can only yield upload_bytes == 0, so this is behavior-
-  // identical: same no-upload telemetry, no staged bytes, no encoder teardown.
+  // Resident-draw fast path: if every range is already valid there is nothing
+  // to upload, and GetUploadRouteInfo would scan every page (one IsRangeValid
+  // call per page) only to return an empty route. AnySharedMemoryRangeInvalid
+  // checks each whole range with a single coarse validity scan that
+  // early-exits, so skip the per-page scan when nothing is invalid. When all
+  // ranges are valid, GetUploadRouteInfo can only yield upload_bytes == 0, so
+  // this is behavior- identical: same no-upload telemetry, no staged bytes, no
+  // encoder teardown.
   if (!AnySharedMemoryRangeInvalid(ranges, range_count)) {
     RecordSharedMemoryLazyUploadRoute(MetalSharedMemory::UploadRouteInfo(),
                                       render_encoder_active);
@@ -8763,130 +7812,6 @@ MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
     return nullptr;
   }
   return EnsureCommandBuffer();
-}
-
-void MetalCommandProcessor::RecordSharedMemoryUploadRoute(
-    SharedMemoryUploadRoute route, uint64_t bytes) {
-  const size_t route_index = static_cast<size_t>(route);
-  if (route_index >= kSharedMemoryUploadRouteCount) {
-    return;
-  }
-  ++backend_telemetry_.shared_memory_upload_route_counts[route_index];
-  backend_telemetry_.shared_memory_upload_route_bytes[route_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordSharedMemoryDirectWriteEligibility(
-    uint64_t direct_bytes, uint64_t staged_bytes) {
-  backend_telemetry_.shared_memory_direct_write_eligible_bytes += direct_bytes;
-  backend_telemetry_.shared_memory_direct_write_staged_required_bytes +=
-      staged_bytes;
-}
-
-void MetalCommandProcessor::RecordSharedMemoryDirectWriteReject(
-    SharedMemoryDirectWriteRejectReason reason, uint64_t bytes) {
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index >= kSharedMemoryDirectWriteRejectReasonCount) {
-    return;
-  }
-  ++backend_telemetry_.shared_memory_direct_write_reject_counts[reason_index];
-  backend_telemetry_.shared_memory_direct_write_reject_bytes[reason_index] +=
-      bytes;
-}
-
-void MetalCommandProcessor::RecordTextureUploadSourceRoute(
-    TextureUploadSourceRoute route, uint64_t bytes) {
-  const size_t route_index = static_cast<size_t>(route);
-  if (route_index >= kTextureUploadSourceRouteCount) {
-    return;
-  }
-  ++backend_telemetry_.texture_upload_source_route_counts[route_index];
-  backend_telemetry_.texture_upload_source_route_bytes[route_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordTextureUploadSourceFallback(
-    TextureUploadSourceFallbackReason reason) {
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index < kTextureUploadSourceFallbackReasonCount) {
-    ++backend_telemetry_.texture_upload_source_fallback_reasons[reason_index];
-  }
-}
-
-void MetalCommandProcessor::RecordTextureUploadCompatibility(
-    TextureUploadCompatibilityClass type, uint64_t bytes) {
-  const size_t type_index = static_cast<size_t>(type);
-  if (type_index >= kTextureUploadCompatibilityClassCount) {
-    return;
-  }
-  ++backend_telemetry_.texture_upload_compatibility_counts[type_index];
-  backend_telemetry_.texture_upload_compatibility_bytes[type_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordTextureUploadComputeBlocker(
-    TextureUploadComputeBlocker blocker, uint64_t bytes) {
-  const size_t blocker_index = static_cast<size_t>(blocker);
-  if (blocker_index >= kTextureUploadComputeBlockerCount) {
-    return;
-  }
-  ++backend_telemetry_.texture_upload_compute_blocker_counts[blocker_index];
-  backend_telemetry_.texture_upload_compute_blocker_bytes[blocker_index] +=
-      bytes;
-}
-
-void MetalCommandProcessor::RecordTextureUploadExecutionDetail(
-    TextureUploadExecutionDetail detail, uint64_t count) {
-  const size_t detail_index = static_cast<size_t>(detail);
-  if (detail_index < kTextureUploadExecutionDetailCount) {
-    backend_telemetry_.texture_upload_execution_details[detail_index] += count;
-  }
-}
-
-void MetalCommandProcessor::RecordTextureReloadReason(
-    TextureReloadReason reason, uint64_t bytes, uint64_t count) {
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index >= kTextureReloadReasonCount) {
-    return;
-  }
-  backend_telemetry_.texture_reload_reason_counts[reason_index] += count;
-  backend_telemetry_.texture_reload_reason_bytes[reason_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordTextureWatchInvalidation(
-    TextureWatchInvalidationReason reason, uint64_t bytes, uint64_t count) {
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index >= kTextureWatchInvalidationReasonCount) {
-    return;
-  }
-  backend_telemetry_.texture_watch_invalidation_counts[reason_index] += count;
-  backend_telemetry_.texture_watch_invalidation_bytes[reason_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordTextureResolveReload(
-    TextureResolveReloadReason reason, uint64_t bytes, uint64_t count) {
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index >= kTextureResolveReloadReasonCount) {
-    return;
-  }
-  backend_telemetry_.texture_resolve_reload_counts[reason_index] += count;
-  backend_telemetry_.texture_resolve_reload_bytes[reason_index] += bytes;
-}
-
-void MetalCommandProcessor::RecordSharedMemoryUploadEncoderCopy() {
-  ++backend_telemetry_.shared_memory_upload_encoder_copies;
-  shared_memory_upload_encoder_has_writes_ = true;
-}
-
-void MetalCommandProcessor::RecordHazardFenceUpdate(bool compute_encoder) {
-  if (compute_encoder) {
-    ++backend_telemetry_.hazard_fence_updates_compute;
-  } else {
-    ++backend_telemetry_.hazard_fence_updates_blit;
-  }
-}
-
-void MetalCommandProcessor::RecordHazardFenceWait(uint32_t encoder_kind) {
-  if (encoder_kind < 3) {
-    ++backend_telemetry_.hazard_fence_waits[encoder_kind];
-  }
 }
 
 MTL::BlitCommandEncoder*
@@ -9212,28 +8137,24 @@ void MetalCommandProcessor::BuildBindlessTextureResourceSet(
   for (MTL::Texture* texture : current_texture_bindless_resources_pixel_) {
     add_texture_residency_ref(texture);
   }
-  std::sort(set.heaps.begin(), set.heaps.end(),
-            [](MTL::Heap* a, MTL::Heap* b) {
-              return reinterpret_cast<uintptr_t>(a) <
-                     reinterpret_cast<uintptr_t>(b);
-            });
-  std::sort(set.resources.begin(), set.resources.end(),
-            [](const RenderResourceRef& a, const RenderResourceRef& b) {
-              const uintptr_t a_resource =
-                  reinterpret_cast<uintptr_t>(a.resource);
-              const uintptr_t b_resource =
-                  reinterpret_cast<uintptr_t>(b.resource);
-              if (a_resource != b_resource) {
-                return a_resource < b_resource;
-              }
-              const uint32_t a_usage = MetalResourceUsageBits(a.usage);
-              const uint32_t b_usage = MetalResourceUsageBits(b.usage);
-              if (a_usage != b_usage) {
-                return a_usage < b_usage;
-              }
-              return MetalRenderStageBits(a.stages) <
-                     MetalRenderStageBits(b.stages);
-            });
+  std::sort(set.heaps.begin(), set.heaps.end(), [](MTL::Heap* a, MTL::Heap* b) {
+    return reinterpret_cast<uintptr_t>(a) < reinterpret_cast<uintptr_t>(b);
+  });
+  std::sort(
+      set.resources.begin(), set.resources.end(),
+      [](const RenderResourceRef& a, const RenderResourceRef& b) {
+        const uintptr_t a_resource = reinterpret_cast<uintptr_t>(a.resource);
+        const uintptr_t b_resource = reinterpret_cast<uintptr_t>(b.resource);
+        if (a_resource != b_resource) {
+          return a_resource < b_resource;
+        }
+        const uint32_t a_usage = MetalResourceUsageBits(a.usage);
+        const uint32_t b_usage = MetalResourceUsageBits(b.usage);
+        if (a_usage != b_usage) {
+          return a_usage < b_usage;
+        }
+        return MetalRenderStageBits(a.stages) < MetalRenderStageBits(b.stages);
+      });
 }
 
 uint64_t MetalCommandProcessor::GetBindlessRootResourceSourceSerial(
@@ -9612,10 +8533,7 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
   }
   const size_t stage_slot_index =
       stage_index * kTrackedRenderEncoderBufferBindingCount + size_t(index);
-  auto increment_slot_count =
-      [stage_slot_index](std::array<uint64_t,
-                                    kRenderEncoderBufferSlotTelemetryCount>&
-                             counts) {
+  auto increment_slot_count = [stage_slot_index](auto& counts) {
     if (stage_slot_index < counts.size()) {
       ++counts[stage_slot_index];
     }
@@ -10022,10 +8940,10 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // (D3D12 VERTEX_AND_CONSTANT_BUFFER / INDEX_BUFFER -> Vertex); object and
     // mesh cover the mesh-shader draw paths.
     if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
-      current_render_encoder_->waitForFence(
-          shared_memory_fence_, MTL::RenderStageVertex |
-                                    MTL::RenderStageObject |
-                                    MTL::RenderStageMesh);
+      current_render_encoder_->waitForFence(shared_memory_fence_,
+                                            MTL::RenderStageVertex |
+                                                MTL::RenderStageObject |
+                                                MTL::RenderStageMesh);
       RecordHazardFenceWait(0);
     }
     // Texture-heap phase consumer edge: order texture-cache upload encoders
