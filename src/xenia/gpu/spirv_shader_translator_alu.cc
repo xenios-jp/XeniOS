@@ -851,17 +851,21 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
     case ucode::AluVectorOpcode::kKillGt:
     case ucode::AluVectorOpcode::kKillGe:
     case ucode::AluVectorOpcode::kKillNe: {
-      KillPixel(
-          builder_->createUnaryOp(
-              spv::OpAny, type_bool_,
-              builder_->createBinOp(
-                  spv::Op(kOps[size_t(instr.vector_opcode)]), type_bool4_,
-                  GetOperandComponents(operand_storage[0],
-                                       instr.vector_operands[0], 0b1111),
-                  GetOperandComponents(operand_storage[1],
-                                       instr.vector_operands[1], 0b1111))),
-          memexport_eM_potentially_written_before);
-      return const_float_0_;
+      spv::Id condition = builder_->createUnaryOp(
+          spv::OpAny, type_bool_,
+          builder_->createBinOp(
+              spv::Op(kOps[size_t(instr.vector_opcode)]), type_bool4_,
+              GetOperandComponents(operand_storage[0],
+                                   instr.vector_operands[0], 0b1111),
+              GetOperandComponents(operand_storage[1],
+                                   instr.vector_operands[1], 0b1111)));
+      KillPixel(condition, memexport_eM_potentially_written_before);
+      // The destination is written even by kill instructions: 1.0 if the
+      // pixel was killed, 0.0 otherwise (see ucode.h; the DXBC translator
+      // does the same). Execution continues after the kill (demotion or
+      // kill-pixel flag), so the value is observable.
+      return builder_->createTriOp(spv::OpSelect, type_float_, condition,
+                                   const_float_1_, const_float_0_);
     }
 
     case ucode::AluVectorOpcode::kDst: {
@@ -1370,15 +1374,20 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
     case ucode::AluScalarOpcode::kKillsGe:
     case ucode::AluScalarOpcode::kKillsNe:
     case ucode::AluScalarOpcode::kKillsOne: {
-      KillPixel(builder_->createBinOp(
-                    spv::Op(kOps[size_t(instr.scalar_opcode)]), type_bool_,
-                    GetOperandComponents(operand_storage[0],
-                                         instr.scalar_operands[0], 0b0001),
-                    instr.scalar_opcode == ucode::AluScalarOpcode::kKillsOne
-                        ? const_float_1_
-                        : const_float_0_),
-                memexport_eM_potentially_written_before);
-      return const_float_0_;
+      spv::Id condition = builder_->createBinOp(
+          spv::Op(kOps[size_t(instr.scalar_opcode)]), type_bool_,
+          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
+                               0b0001),
+          instr.scalar_opcode == ucode::AluScalarOpcode::kKillsOne
+              ? const_float_1_
+              : const_float_0_);
+      KillPixel(condition, memexport_eM_potentially_written_before);
+      // ps is written even by kill instructions: 1.0 if the pixel was
+      // killed, 0.0 otherwise (see ucode.h; the DXBC translator does the
+      // same). Execution continues after the kill (demotion or kill-pixel
+      // flag), so the value is observable.
+      return builder_->createTriOp(spv::OpSelect, type_float_, condition,
+                                   const_float_1_, const_float_0_);
     }
 
     case ucode::AluScalarOpcode::kMulsc0:
