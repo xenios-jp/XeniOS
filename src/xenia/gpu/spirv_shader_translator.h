@@ -750,6 +750,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // (RCP, RSQ, EXP, LOG, SQRT) that provide ~2^-21 relative error tolerance
   // instead of full IEEE-754 precision (equivalent to 21 vs 23 mantissa bits).
   spv::Id ReduceFloatPrecision(spv::Id value, uint32_t mantissa_bits);
+  // Pack/unpack two floats as Xbox 360 extended-range float16, where exponent
+  // 31 is a large finite value (up to +-131008), not Inf/NaN.
+  spv::Id PackFloat16x2ExtendedRange(spv::Id float2_value);
+  spv::Id UnpackFloat16x2ExtendedRange(spv::Id packed_uint);
   // Conditionally discard the current fragment. Changes the build point.
   void KillPixel(spv::Id condition,
                  uint8_t memexport_eM_potentially_written_before);
