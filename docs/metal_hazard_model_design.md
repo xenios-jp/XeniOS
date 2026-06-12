@@ -1,15 +1,19 @@
 # Metal backend-owned hazard model — design and rollout plan
 
-Referenced by the `metal_backend_hazard_model` / `metal_backend_hazard_model_validate`
-cvars (`metal_command_processor.cc`).
+Referenced by the `metal_backend_hazard_model`,
+`metal_backend_hazard_model_shared_memory`, and
+`metal_backend_hazard_model_validate` cvars (`metal_command_processor.cc`).
 
 ## Status
 
-- **Phase 1 (shared-memory buffer) is implemented.** `metal_backend_hazard_model`
-  creates the buffer `HazardTrackingModeUntracked` with ordering through the
-  fence edges below; `metal_backend_hazard_model_validate` emits the same
-  edges while driver tracking stays on (soak mode, no behavior change).
-  Edge accounting is reported in the telemetry dump (`hazard_model` line).
+- **Phase 1 (shared-memory buffer) fence edges are implemented.**
+  `metal_backend_hazard_model` emits the shared-memory fence edges while driver
+  tracking stays on for soak testing; `metal_backend_hazard_model_shared_memory`
+  is the separate untracked-buffer phase switch. Keep the shared-memory phase
+  off by default until the remaining missed edge is identified per title.
+  `metal_backend_hazard_model_validate` emits the same edges while driver
+  tracking stays on (soak mode, no behavior change). Edge accounting is
+  reported in the telemetry dump (`hazard_model` line).
 - **Phase 2 (EDRAM buffer) is implemented** behind
   `metal_backend_hazard_model_edram`: the buffer is created untracked and
   every EDRAM-touching encoder (RT dump, host depth store, resolve copy,
@@ -61,7 +65,7 @@ cvars (`metal_command_processor.cc`).
   first (all phases' edges emitted, tracking kept, zero behavior change),
   soak ~60s of gameplay, confirm no visual diffs and read the `hazard_model`
   telemetry line; then enable the per-phase cvars one at a time
-  (`metal_backend_hazard_model`, `_edram`, `_texture_heaps`,
+  (`metal_backend_hazard_model_shared_memory`, `_edram`, `_texture_heaps`,
   `_render_targets`) with a visual A/B each. A missed edge manifests as
   flicker/corruption, not a crash.
 
@@ -123,7 +127,8 @@ redundant with tracking:
 ## Phase 1: untracked shared-memory buffer (behind the cvar)
 
 Goal: create the shared-memory buffer untracked when
-`metal_backend_hazard_model` is set; all ordering through explicit fences.
+`metal_backend_hazard_model_shared_memory` is set; all ordering through
+explicit fences.
 
 Complete consumer inventory of `MetalSharedMemory::GetBuffer()` (every edge
 must be fenced before flipping the default):
