@@ -84,7 +84,7 @@ class ImGuiDebugDialog : public ImGuiGamepadDialog {
   bool submit_on_primary_buffer_end_;
   int32_t occlusion_query_fake_lower_threshold_;
   int32_t occlusion_query_fake_upper_threshold_;
-  double occlusion_query_saturation_;
+  double occlusion_query_sample_count_saturation_;
   // Presentation / Display
   bool present_letterbox_;
   // Resolution Scaling / Resolve
