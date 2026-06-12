@@ -334,21 +334,18 @@ void MetalImmediateDrawer::BeginDrawBatch(const ImmediateDrawBatch& batch) {
   // XeSL MSL backend places push constants at buffer(0), so vertex attributes
   // bind at buffer(1) (matches the VertexDescriptor's bufferIndex=1).
   [encoder setVertexBuffer:vertex_buffer offset:0 atIndex:1];
-  // newBufferWithBytes returns +1 owned by the ARC local. __bridge_retained
-  // takes a matching +1 for the non-ARC void*, so the buffer outlives the ARC
-  // local's scope-exit release and stays alive until all draws using the
-  // encoder state are encoded. EndDrawBatch() performs the matching CFRelease.
-  current_vertex_buffer_ = (__bridge_retained void*)vertex_buffer;
+  // This file is non-ARC. newBufferWithBytes returns an owned +1 object, and
+  // EndDrawBatch() performs the matching CFRelease after encoding the batch.
+  current_vertex_buffer_ = (__bridge void*)vertex_buffer;
 
   if (batch.indices && batch.index_count > 0) {
     size_t index_buffer_size = batch.index_count * sizeof(uint16_t);
     id<MTLBuffer> index_buffer = [mtl_device newBufferWithBytes:batch.indices
                                                          length:index_buffer_size
                                                         options:MTLResourceStorageModeShared];
-    // newBufferWithBytes returns +1 owned by the ARC local. __bridge_retained
-    // takes a matching +1 for the non-ARC void*, so the buffer outlives the ARC
-    // local's scope-exit release. EndDrawBatch() performs the matching CFRelease.
-    current_index_buffer_ = (__bridge_retained void*)index_buffer;
+    // This file is non-ARC. newBufferWithBytes returns an owned +1 object, and
+    // EndDrawBatch() performs the matching CFRelease after encoding the batch.
+    current_index_buffer_ = (__bridge void*)index_buffer;
   } else {
     current_index_buffer_ = nullptr;
   }
