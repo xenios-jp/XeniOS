@@ -41,9 +41,9 @@ using WaitItem = TimerQueueWaitItem;
 
 #if XE_PLATFORM_APPLE
 // On Apple platforms, block on a condition variable instead of busy-spinning.
-// In iOS CPU traces the spin strategy showed up as a recurring busy-yield plus a
-// hardware_concurrency() sysctl per reset; busy-yield wastes energy/thermal on
-// mobile. blocking_wait_strategy supports the timed (time_point) overload of
+// In iOS CPU traces the spin strategy showed up as a recurring busy-yield plus
+// a hardware_concurrency() sysctl per reset; busy-yield wastes energy/thermal
+// on mobile. blocking_wait_strategy supports the timed (time_point) overload of
 // wait_until_published that the dispatch loop uses, and the claim/sequence-
 // barrier publish path calls signal_all_when_blocking(), so QueueTimer still
 // wakes the dispatch thread immediately. The Windows/proton concern below does
@@ -88,13 +88,6 @@ class TimerQueue {
   }
 
   void TimerThreadMain() {
-#if XE_PLATFORM_IOS
-    // This thread spin-waits (see WaitStrat above). As a raw std::thread it
-    // inherits the creating thread's QoS — typically user-interactive from
-    // the main thread — which would let the spin preempt guest JIT threads
-    // on the performance cores. Pin it to default QoS instead.
-    xe::threading::set_current_thread_qos(ThreadQoS::kDefault);
-#endif  // XE_PLATFORM_IOS
     dp::sequence_t next_sequence = 0;
     const auto comp = [](const std::shared_ptr<WaitItem>& left,
                          const std::shared_ptr<WaitItem>& right) {
