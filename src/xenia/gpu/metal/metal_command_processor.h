@@ -311,11 +311,11 @@ class MetalCommandProcessor final : public CommandProcessor {
   }
 #endif
 
-  // Backend-owned hazard model (docs/metal_hazard_model_design.md). When the
-  // metal_backend_hazard_model cvar is set, the shared-memory buffer is
-  // created untracked and ordering comes exclusively from these fence edges;
-  // in validate mode the edges are emitted while driver tracking stays on so
-  // the model can be soak-tested without changing behavior.
+  // Backend-owned hazard model (docs/metal_hazard_model_design.md). The
+  // shared-memory fence edges are emitted when metal_backend_hazard_model,
+  // metal_backend_hazard_model_shared_memory, or validate mode is enabled.
+  // The buffer is created untracked only by the dedicated shared-memory phase
+  // cvar so the edges can be soaked while driver tracking stays on.
   bool HazardModelFenceEdgesEnabled() const {
     return shared_memory_hazard_fence_edges_;
   }
@@ -1605,8 +1605,9 @@ class MetalCommandProcessor final : public CommandProcessor {
   MTL::Fence* shared_memory_fence_ = nullptr;
   MTL::Fence* texture_upload_fence_ = nullptr;
   MTL::Fence* render_target_fence_ = nullptr;
-  // True when metal_backend_hazard_model or its validate mode is on; cached
-  // at setup so the per-encoder checks are branch-on-bool.
+  // True when shared-memory hazard fence edges are enabled by the soak toggle,
+  // the shared-memory phase toggle, or validate mode; cached at setup so the
+  // per-encoder checks are branch-on-bool.
   bool shared_memory_hazard_fence_edges_ = false;
   // Per-phase equivalents (metal_backend_hazard_model_texture_heaps /
   // _render_targets, or validate mode).

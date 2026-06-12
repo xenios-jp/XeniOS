@@ -22,6 +22,7 @@
 #include "xenia/gpu/metal/metal_backend_telemetry.h"
 
 DECLARE_bool(metal_backend_hazard_model);
+DECLARE_bool(metal_backend_hazard_model_shared_memory);
 
 #if XE_METAL_TELEMETRY
 
@@ -860,7 +861,10 @@ void MetalCommandProcessor::MaybeDumpBackendTelemetry(const char* reason,
     XELOGI(
         "MetalTelemetry[{}]: hazard_model mode={} fence updates "
         "blit/compute={}/{} waits render/blit/compute={}/{}/{}",
-        reason, cvars::metal_backend_hazard_model ? "untracked" : "validate",
+        reason,
+        cvars::metal_backend_hazard_model_shared_memory
+            ? "untracked"
+            : (cvars::metal_backend_hazard_model ? "tracked" : "validate"),
         backend_telemetry_.hazard_fence_updates_blit,
         backend_telemetry_.hazard_fence_updates_compute,
         backend_telemetry_.hazard_fence_waits[0],

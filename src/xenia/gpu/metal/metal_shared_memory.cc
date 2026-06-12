@@ -37,7 +37,7 @@ DEFINE_bool(
     "retained as the fallback). Disable per title if a game that rewrites "
     "in-flight buffers without fencing shows flicker.",
     "Metal");
-DECLARE_bool(metal_backend_hazard_model);
+DECLARE_bool(metal_backend_hazard_model_shared_memory);
 
 namespace xe {
 namespace gpu {
@@ -72,7 +72,7 @@ bool MetalSharedMemory::Initialize() {
   }
 
   MTL::ResourceOptions buffer_options = MTL::ResourceStorageModeShared;
-  if (cvars::metal_backend_hazard_model) {
+  if (cvars::metal_backend_hazard_model_shared_memory) {
     // The backend owns shared-memory hazards through explicit fences (see
     // docs/metal_hazard_model_design.md); dropping driver tracking removes
     // per-encoder dependency analysis for the hottest buffer in the backend.

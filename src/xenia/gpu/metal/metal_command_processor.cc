@@ -113,19 +113,24 @@ DEFINE_bool(
 
 DEFINE_bool(
     metal_backend_hazard_model, false,
-    "Experimental: let the Metal backend own GPU read/write hazard tracking "
-    "(explicit fences/events) for heap-backed textures, render targets, and "
-    "the "
-    "shared-memory/EDRAM buffers so they can be MTLResidencySet-covered and "
-    "the "
-    "per-encoder useResource/useHeap re-apply can be dropped. Off = current "
-    "useResource path. See docs/metal_hazard_model_design.md.",
+    "Experimental: emit the shared-memory hazard-model fence edges for "
+    "soak testing while keeping Metal driver hazard tracking enabled. Enable "
+    "metal_backend_hazard_model_shared_memory to actually create shared memory "
+    "untracked. Off = current useResource path. See "
+    "docs/metal_hazard_model_design.md.",
     "Metal");
 DEFINE_bool(
     metal_backend_hazard_model_validate, false,
     "Shadow-validate the hazard model: run the tracker alongside the existing "
     "useResource path and log when they disagree (a missed hazard). Verify on "
     "each game before enabling metal_backend_hazard_model.",
+    "Metal");
+DEFINE_bool(
+    metal_backend_hazard_model_shared_memory, false,
+    "Hazard model shared-memory phase: create the shared-memory buffer "
+    "untracked and rely on explicit fences instead of driver hazard tracking. "
+    "The bisected preview regression shows this phase is still unsafe; leave "
+    "off unless testing the shared-memory hazard model directly.",
     "Metal");
 namespace xe {
 namespace gpu {
@@ -1329,6 +1334,7 @@ bool MetalCommandProcessor::SetupContext() {
       NS::String::string("XeniaSharedMemoryFence", NS::UTF8StringEncoding));
   shared_memory_hazard_fence_edges_ =
       cvars::metal_backend_hazard_model ||
+      cvars::metal_backend_hazard_model_shared_memory ||
       cvars::metal_backend_hazard_model_validate;
   texture_heap_hazard_fence_edges_ =
       cvars::metal_backend_hazard_model_texture_heaps ||
@@ -1355,6 +1361,12 @@ bool MetalCommandProcessor::SetupContext() {
         NS::String::string("XeniaRenderTargetFence", NS::UTF8StringEncoding));
   }
   if (cvars::metal_backend_hazard_model) {
+    XELOGI(
+        "Metal hazard model: shared-memory fence edges enabled; driver "
+        "tracking {}",
+        cvars::metal_backend_hazard_model_shared_memory ? "disabled"
+                                                        : "preserved");
+  } else if (cvars::metal_backend_hazard_model_shared_memory) {
     XELOGI(
         "Metal hazard model: shared-memory buffer untracked; ordering through "
         "explicit fence edges");
