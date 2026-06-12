@@ -611,6 +611,13 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
         [this]() {
           // As we run guest callbacks the debugger must be able to suspend us.
           dispatch_thread_->set_can_debugger_suspend(true);
+#if XE_PLATFORM_IOS
+          // Dispatch delivers APCs/callbacks that guest threads block on;
+          // running it below their QoS would invert priorities and delay
+          // wakeups.
+          xe::threading::set_current_thread_qos(
+              xe::threading::ThreadQoS::kUserInitiated);
+#endif  // XE_PLATFORM_IOS
 
           auto global_lock = global_critical_region_.AcquireDeferred();
           while (dispatch_thread_running_) {

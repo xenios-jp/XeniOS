@@ -88,6 +88,13 @@ class TimerQueue {
   }
 
   void TimerThreadMain() {
+#if XE_PLATFORM_IOS
+    // This thread spin-waits (see WaitStrat above). As a raw std::thread it
+    // inherits the creating thread's QoS — typically user-interactive from
+    // the main thread — which would let the spin preempt guest JIT threads
+    // on the performance cores. Pin it to default QoS instead.
+    xe::threading::set_current_thread_qos(ThreadQoS::kDefault);
+#endif  // XE_PLATFORM_IOS
     dp::sequence_t next_sequence = 0;
     const auto comp = [](const std::shared_ptr<WaitItem>& left,
                          const std::shared_ptr<WaitItem>& right) {
