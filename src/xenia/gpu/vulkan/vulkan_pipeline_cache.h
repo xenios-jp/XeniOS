@@ -401,8 +401,12 @@ class VulkanPipelineCache {
   VulkanRenderTargetCache& render_target_cache_;
   VkShaderStageFlags guest_shader_vertex_stages_;
 
-  // Cached SPIR-V version based on device capabilities.
+  // Cached device features for geometry shader creation.
   unsigned int spirv_version_;
+  bool signed_zero_inf_nan_preserve_float32_;
+  bool denorm_flush_to_zero_float32_;
+  // Already combined with the spirv_disable_rounding_mode_rte cvar.
+  bool rounding_mode_rte_float32_;
 
   // Temporary storage for AnalyzeUcode calls on the processor thread.
   StringBuffer ucode_disasm_buffer_;
