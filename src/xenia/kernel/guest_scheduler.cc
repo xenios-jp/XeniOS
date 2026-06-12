@@ -14,6 +14,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/kernel_flags.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xthread.h"
@@ -269,6 +270,13 @@ void GuestScheduler::RereadyBlocked(int cpu_index) {
 }
 
 void GuestScheduler::RunLoop(int cpu_index) {
+#if XE_PLATFORM_IOS
+  // Every guest fiber executes on this host thread — it is the guest CPU.
+  // Without an explicit QoS class Darwin schedules it as default-tier work,
+  // eligible for efficiency cores and frequent preemption.
+  xe::threading::set_current_thread_qos(
+      xe::threading::ThreadQoS::kUserInteractive);
+#endif  // XE_PLATFORM_IOS
   t_current_cpu = cpu_index;
   Cpu& cpu = cpus_[cpu_index];
   // Adopt this host thread's stack as this CPU's idle fiber.

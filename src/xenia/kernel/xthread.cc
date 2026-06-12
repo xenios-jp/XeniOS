@@ -491,6 +491,18 @@ X_STATUS XThread::Create() {
       // Set thread ID override. This is used by logging.
       xe::threading::set_current_thread_id(handle());
 
+#if XE_PLATFORM_IOS
+      // Guest threads execute the title's JIT code — the actual workload.
+      // The default QoS class assigned at thread start leaves them eligible
+      // for efficiency cores and frequent preemption by same-tier worker
+      // threads; SCHED_FIFO requests are rejected by Darwin once a QoS class
+      // is set, so the guest priority mapping alone has no effect here.
+      if (is_guest_thread()) {
+        xe::threading::set_current_thread_qos(
+            xe::threading::ThreadQoS::kUserInteractive);
+      }
+#endif  // XE_PLATFORM_IOS
+
       // Set name immediately, if we have one.
       thread_->set_name(thread_name_);
 
@@ -1234,7 +1246,9 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
     if ((guest_thread_ || can_debugger_suspend()) && timeout_ms > 0) {
       uint32_t remaining_ms = timeout_ms;
       while (remaining_ms > 0) {
-        const uint32_t slice_ms = std::min<uint32_t>(remaining_ms, 10);
+        // 50ms matches the title-stop poll budget used elsewhere on iOS while
+        // cutting sleep wakeups (and the scheduler churn they cause) 5x.
+        const uint32_t slice_ms = std::min<uint32_t>(remaining_ms, 50);
         auto result =
             xe::threading::AlertableSleep(std::chrono::milliseconds(slice_ms));
         if (result == xe::threading::SleepResult::kAlerted) {
@@ -1270,7 +1284,9 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
       if (guest_thread_ || can_debugger_suspend()) {
         uint32_t remaining_ms = timeout_ms;
         while (remaining_ms > 0) {
-          const uint32_t slice_ms = std::min<uint32_t>(remaining_ms, 10);
+          // 50ms matches the title-stop poll budget used elsewhere on iOS while
+          // cutting sleep wakeups (and the scheduler churn they cause) 5x.
+          const uint32_t slice_ms = std::min<uint32_t>(remaining_ms, 50);
           xe::threading::Sleep(std::chrono::milliseconds(slice_ms));
           exit_if_title_stop_requested();
           remaining_ms -= slice_ms;

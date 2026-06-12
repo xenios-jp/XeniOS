@@ -354,8 +354,8 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
                      "them off unless you are testing CPU or audio scheduling behavior "
                      "after a full relaunch.";
   AddBoolSetting(scheduler.items, "ios_gpu_commands_user_initiated_qos",
-                 "GPU Commands User-Initiated QoS",
-                 "Runs the Metal command processor host thread at user-initiated QoS. "
+                 "GPU Commands User-Interactive QoS",
+                 "Runs the Metal command processor host thread at user-interactive QoS. "
                  "Try this first if frames appear to miss submission deadlines.",
                  true);
   AddBoolSetting(scheduler.items, "ios_guest_threads_user_initiated_qos",

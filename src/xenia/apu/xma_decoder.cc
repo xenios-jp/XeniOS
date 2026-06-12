@@ -197,6 +197,13 @@ X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
 }
 
 void XmaDecoder::WorkerThreadMain() {
+#if XE_PLATFORM_IOS
+  // XMA decode is buffered ahead of the latency-critical audio submit (which
+  // runs on the user-interactive AudioSystem worker); run it at utility QoS
+  // so decode bursts never preempt guest JIT or GPU threads on the
+  // performance cores.
+  xe::threading::set_current_thread_qos(xe::threading::ThreadQoS::kUtility);
+#endif  // XE_PLATFORM_IOS
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
