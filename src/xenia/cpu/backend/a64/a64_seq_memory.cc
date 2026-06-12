@@ -26,6 +26,11 @@
 DECLARE_bool(emit_mmio_aware_stores_for_recorded_exception_addresses);
 DECLARE_bool(emit_inline_mmio_checks);
 
+DEFINE_bool(inline_loadclock, false,
+            "Directly read cached guest clock without calling the LoadClock "
+            "method (it gets repeatedly updated by calls from other threads)",
+            "CPU");
+
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -600,6 +605,43 @@ EMITTER_OPCODE_TABLE(OPCODE_STORE, STORE_I8, STORE_I16, STORE_I32, STORE_I64,
 // ============================================================================
 struct LOAD_CLOCK : Sequence<LOAD_CLOCK, I<OPCODE_LOAD_CLOCK, I64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (cvars::inline_loadclock) {
+      // Read the cached guest tick count maintained by the other subsystems
+      // that call Clock::QueryGuestTickCount (same tradeoff as the x64
+      // backend's inline_loadclock: consecutive mftb reads may observe the
+      // same value between updates).
+      e.ldr(e.x0,
+            ptr(e.GetBackendCtxReg(),
+                static_cast<uint32_t>(
+                    offsetof(A64BackendContext, guest_tick_count))));
+      e.ldr(i.dest, ptr(e.x0));
+      return;
+    }
+    if (cvars::clock_no_scaling && cvars::clock_source_raw) {
+      // Mirror of the x64 backend's inline rdtsc path: with no scaling and
+      // the raw source, Clock::QueryGuestTickCount is exactly
+      // host_ticks * num / den. CNTVCT_EL0 is EL0-readable on the supported
+      // hosts. The multiply is done in 64 bits, which is exact as long as
+      // host_ticks * num cannot overflow; with the bound below that holds
+      // for centuries of typical (tens-of-MHz) counter uptime, and the
+      // reduced ratio numerator is tiny on real hosts (e.g. 133/64 for a
+      // 49.875 MHz guest clock over Apple's 24 MHz counter). Hosts with an
+      // oversized numerator fall back to the helper call.
+      const auto ratio = Clock::guest_tick_ratio();
+      if (ratio.first <= (uint64_t(1) << 20)) {
+        e.mrs(e.x0, 3, 3, 14, 0, 2);  // mrs x0, CNTVCT_EL0
+        if (ratio.first != 1) {
+          e.mov(e.x1, ratio.first);
+          e.mul(e.x0, e.x0, e.x1);
+        }
+        if (ratio.second != 1) {
+          e.mov(e.x1, ratio.second);
+          e.udiv(e.x0, e.x0, e.x1);
+        }
+        e.mov(i.dest, e.x0);
+        return;
+      }
+    }
     // Call QueryGuestTickCount which updates the clock from host ticks.
     // Reading the cached pointer directly would return stale values for
     // consecutive mftb instructions.

@@ -10,6 +10,8 @@
 #include "xenia/cpu/backend/a64/a64_emitter.h"
 
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
@@ -206,6 +208,45 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   label_cache_.push_back(epilog_label_ptr);
   epilog_label_ = epilog_label_ptr;
 
+#if XE_PLATFORM_IOS && XE_ARCH_ARM64
+  // Title-stop polls only need to bound the time between checks, which is
+  // guaranteed by polling at function entry plus every backward-branch
+  // target (loop header): any cycle in the control-flow graph contains a
+  // backward branch, and call chains re-enter through function entries.
+  // Polling every block (the previous behavior) cost several instructions
+  // per block across all guest code.
+  std::unordered_map<const hir::Block*, int> ios_block_positions;
+  std::unordered_set<const hir::Block*> ios_poll_blocks;
+  {
+    int position = 0;
+    for (auto b = builder->first_block(); b; b = b->next) {
+      ios_block_positions[b] = position++;
+    }
+    for (auto b = builder->first_block(); b; b = b->next) {
+      for (auto instr = b->instr_head; instr; instr = instr->next) {
+        const hir::Label* target = nullptr;
+        switch (instr->GetOpcodeNum()) {
+          case hir::OPCODE_BRANCH:
+            target = instr->src1.label;
+            break;
+          case hir::OPCODE_BRANCH_TRUE:
+          case hir::OPCODE_BRANCH_FALSE:
+            target = instr->src2.label;
+            break;
+          default:
+            break;
+        }
+        if (target &&
+            ios_block_positions[target->block] <= ios_block_positions[b]) {
+          ios_poll_blocks.insert(target->block);
+        }
+      }
+    }
+  }
+  // Function entry poll.
+  EmitTitleStopPollIOS();
+#endif  // XE_PLATFORM_IOS && XE_ARCH_ARM64
+
   // Walk HIR blocks and emit ARM64 instructions.
   auto block = builder->first_block();
   synchronize_stack_on_next_instruction_ = false;
@@ -222,7 +263,9 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
     }
 
 #if XE_PLATFORM_IOS && XE_ARCH_ARM64
-    EmitTitleStopPollIOS();
+    if (ios_poll_blocks.count(block)) {
+      EmitTitleStopPollIOS();
+    }
 #endif  // XE_PLATFORM_IOS && XE_ARCH_ARM64
 
     // Process each instruction in the block.
@@ -308,7 +351,10 @@ void A64Emitter::EmitTitleStopPollIOS() {
     return;
   }
 
-  mov(x15, static_cast<uint64_t>(stop_word));
+  // Two dependent loads off the backend context instead of materializing the
+  // flag's 64-bit address at every poll site (movz+movk×3 previously).
+  ldr(x15, ptr(GetBackendCtxReg(), static_cast<uint32_t>(offsetof(
+                                       A64BackendContext, title_stop_ios))));
   ldr(w15, ptr(x15));
   Label continue_execution;
   // Bound forward target (a handful of instructions) — short form is safe.

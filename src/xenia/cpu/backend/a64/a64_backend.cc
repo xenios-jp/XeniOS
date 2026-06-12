@@ -1148,6 +1148,10 @@ void A64Backend::InitializeBackendContext(void* ctx) {
   a64_ctx->fpcr_vmx = DEFAULT_VMX_FPCR;
   a64_ctx->flags = (1U << kA64BackendNJMOn);  // NJM on by default
   a64_ctx->guest_tick_count = Clock::GetGuestTickCountPointer();
+#if XE_PLATFORM_IOS
+  a64_ctx->title_stop_ios = reinterpret_cast<const uint32_t*>(
+      processor()->title_stop_requested_address_ios());
+#endif  // XE_PLATFORM_IOS
 
   // Allocate stackpoints for longjmp detection.
   if (cvars::a64_enable_host_guest_stack_synchronization) {

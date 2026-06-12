@@ -89,6 +89,10 @@ struct A64BackendContext {
   // bit 1 = got reserve
   unsigned int flags;
   unsigned int Ox1000;  // constant 0x1000
+  // iOS: pointer to Processor::ios_title_stop_requested_ so the per-loop
+  // title-stop poll is two dependent loads off x19 instead of materializing
+  // a 64-bit literal at every poll site. Null/unused on other platforms.
+  const uint32_t* title_stop_ios;
 };
 
 // Default FPCR for FPU mode (round to nearest, no flush to zero).
