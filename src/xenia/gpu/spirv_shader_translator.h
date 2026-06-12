@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
     // prototyping stage (easier to do small granular updates with an
     // incremental counter).
-    static constexpr uint32_t kVersion = 12;
+    static constexpr uint32_t kVersion = 13;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -89,6 +89,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // If user_clip_plane_count is non-zero, whether they should be cull
       // distances instead of clip distances.
       uint32_t user_clip_plane_cull : 1;
+      // Vertex kill (oPts.z) with the "and" operator - the primitive is culled
+      // only when all of its vertices request the kill, emulated with an extra
+      // cull distance written after the user clip plane cull distances. The
+      // "or" operator sets the position to NaN instead and needs no bit here.
+      uint32_t vertex_kill_and : 1;
       // For domain shaders - the tessellation mode, selecting the tessellation
       // evaluation shader spacing (Direct3D 12 sets it in the hull shaders, but
       // in SPIR-V the spacing lives in the domain shader). Discrete uses equal
