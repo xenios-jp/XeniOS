@@ -630,8 +630,8 @@ std::vector<IOSConfigSection> BuildDebugSettingsSections() {
   AddIntegerSetting(common.items, "occlusion_query_fake_upper_threshold",
                     "occlusion_query_fake_upper_threshold",
                     "Upper fake occlusion query threshold.");
-  AddDoubleSetting(common.items, "occlusion_query_saturation",
-                   "occlusion_query_saturation",
+  AddDoubleSetting(common.items, "occlusion_query_sample_count_saturation",
+                   "occlusion_query_sample_count_saturation",
                    "Compress occlusion query sample counts before guest writeback.");
   PushIfNotEmpty(sections, std::move(common));
 
