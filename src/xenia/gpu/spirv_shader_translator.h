@@ -1030,8 +1030,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
 
   // VS as VS only - int.
   spv::Id input_vertex_index_;
-  // VS as TES only - int.
-  spv::Id input_primitive_id_;
+  // VS as TES only - per-control-point float array carrying the patch/control
+  // point index computed by the host vertex and hull shaders.
+  spv::Id input_control_point_index_;
   // VS as TES only - float3 (barycentric coordinates).
   spv::Id input_tess_coord_;
   // PS, only when needed - float2.

@@ -1640,6 +1640,17 @@ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
       texture_cache_->TextureFetchConstantWritten(
           (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
     }
+  } else if (index == XE_GPU_REG_VGT_MAX_VTX_INDX ||
+             index == XE_GPU_REG_VGT_MIN_VTX_INDX ||
+             index == XE_GPU_REG_VGT_INDX_OFFSET ||
+             index == XE_GPU_REG_VGT_DMA_SIZE ||
+             index == XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL ||
+             index == XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) {
+    // Source registers for the tessellation constant buffer. Invalidate it so
+    // the factor range and index parameters are refreshed per draw instead of
+    // staying stale from the first draw of the submission.
+    current_constant_buffers_up_to_date_ &=
+        ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferTessellation);
   }
 }
 void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index,
