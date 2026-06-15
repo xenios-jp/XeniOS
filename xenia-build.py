@@ -430,9 +430,9 @@ def git_submodule_update():
         "--depth=1",
         "-j", f"{os.cpu_count()}",
         ])
-    # wxWidgets has its own nested submodules (pcre, libpng, etc.) needed when
-    # building from vendored source on Windows/macOS. The main `submodule update`
-    # above is non-recursive, so kick off a recursive update for wxWidgets only.
+    # Some vendored dependencies have their own nested submodules. The main
+    # update above is non-recursive, so initialize the known nested trees needed
+    # by the generated build.
     if sys.platform in ("win32", "darwin"):
         shell_call([
             "git",
@@ -442,6 +442,7 @@ def git_submodule_update():
             "--recursive",
             "--depth=1",
             "-j", f"{os.cpu_count()}",
+            "third_party/DirectXShaderCompiler",
             "third_party/wxWidgets",
             ])
 
