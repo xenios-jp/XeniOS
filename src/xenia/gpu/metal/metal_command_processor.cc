@@ -132,6 +132,14 @@ DEFINE_bool(
     "The bisected preview regression shows this phase is still unsafe; leave "
     "off unless testing the shared-memory hazard model directly.",
     "Metal");
+
+DEFINE_bool(
+    metal_log_bindless_stale_stage_clear, false,
+    "Log when a draw clears stale bindless texture pointers from a stage that "
+    "binds no bindless textures this draw (e.g. a pixel-less / vertex-only "
+    "pass). Diagnostic for the freed-view residency crash; off by default.",
+    "Metal");
+
 namespace xe {
 namespace gpu {
 namespace metal {
@@ -4553,6 +4561,24 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     }
   }
 
+  // Texture-cache eviction (~MetalTexture) frees a texture and its swizzled
+  // views and bumps the destroy epoch. The descriptor-indices reuse fast paths
+  // below keep raw view pointers in current_texture_bindless_resources_* across
+  // draws; if an eviction happened since they were cached, those pointers
+  // dangle (BuildBindlessTextureResourceSet would residency-reference a freed
+  // AGXTexture). Force both stages to rebuild from live cache entries. The
+  // per-stage SRV-key check only covers a stage that is active with textures
+  // this draw, so a reused or absent stage would otherwise miss this.
+  {
+    const uint64_t texture_destroy_epoch =
+        texture_cache_->texture_destroy_epoch();
+    if (texture_destroy_epoch != last_bindless_texture_destroy_epoch_) {
+      last_bindless_texture_destroy_epoch_ = texture_destroy_epoch;
+      cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
+      cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+    }
+  }
+
   const auto& texture_bindings_vertex =
       vertex_translation_metadata
           ? vertex_translation_metadata->texture_bindings
@@ -5163,6 +5189,41 @@ bool MetalCommandProcessor::PrepareDrawConstants(
           texture_bindings_pixel_ptr->data(),
           texture_bindings_pixel_ptr->size());
     }
+  }
+  // A stage that binds no bindless textures this draw must not leave stale
+  // pointers in its resource vector: BuildBindlessTextureResourceSet residency-
+  // references every entry, and the underlying swizzled views can be freed by
+  // ~MetalTexture (texture-cache eviction) while a pixel-less / vertex-only
+  // pass leaves the vector unrefreshed -> objc_msgSend on a deallocated
+  // AGXTexture. Clearing also invalidates up_to_date so a later reactivation of
+  // the stage rebuilds the vector instead of reusing the now-empty one, and
+  // forces a republish so the previously published residency set (which may
+  // still reference the freed view) is regenerated.
+  if (!descriptor_indices_vertex_active &&
+      !current_texture_bindless_resources_vertex_.empty()) {
+    if (cvars::metal_log_bindless_stale_stage_clear) {
+      XELOGW(
+          "MetalCommandProcessor: cleared {} stale bindless texture(s) from "
+          "inactive vertex stage before residency publish",
+          current_texture_bindless_resources_vertex_.size());
+    }
+    current_texture_bindless_resources_vertex_.clear();
+    cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
+    current_texture_layout_uid_vertex_ = 0;
+    descriptor_indices_vertex_written = true;
+  }
+  if (!(metal_pixel_shader && descriptor_indices_pixel_active) &&
+      !current_texture_bindless_resources_pixel_.empty()) {
+    if (cvars::metal_log_bindless_stale_stage_clear) {
+      XELOGW(
+          "MetalCommandProcessor: cleared {} stale bindless texture(s) from "
+          "inactive pixel stage before residency publish",
+          current_texture_bindless_resources_pixel_.size());
+    }
+    current_texture_bindless_resources_pixel_.clear();
+    cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+    current_texture_layout_uid_pixel_ = 0;
+    descriptor_indices_pixel_written = true;
   }
   if (descriptor_indices_vertex_written || descriptor_indices_pixel_written) {
     PublishBindlessTextureResourceSet();
