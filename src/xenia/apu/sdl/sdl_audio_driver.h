@@ -10,7 +10,6 @@
 #ifndef XENIA_APU_SDL_SDL_AUDIO_DRIVER_H_
 #define XENIA_APU_SDL_SDL_AUDIO_DRIVER_H_
 
-#include <atomic>
 #include <mutex>
 #include <queue>
 #include <stack>
@@ -59,14 +58,6 @@ class SDLAudioDriver : public AudioDriver {
   std::queue<float*> frames_queued_ = {};
   std::stack<float*> frames_unused_ = {};
   std::mutex frames_mutex_ = {};
-
-  std::atomic<uint64_t> frames_submitted_{0};
-  std::atomic<uint64_t> frames_played_{0};
-  std::atomic<uint64_t> underrun_count_{0};
-  std::atomic<uint64_t> low_queue_count_{0};
-  std::atomic<uint64_t> last_reported_underrun_count_{0};
-  std::atomic<uint64_t> last_reported_low_queue_count_{0};
-  std::atomic<size_t> max_queue_depth_{0};
 };
 
 }  // namespace sdl

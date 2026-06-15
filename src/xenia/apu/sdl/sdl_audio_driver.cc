@@ -22,20 +22,6 @@ namespace xe {
 namespace apu {
 namespace sdl {
 
-namespace {
-
-bool ShouldReportUnderrun(uint64_t count, uint64_t last_reported_count) {
-  const uint64_t next_report =
-      last_reported_count == 0 ? 1 : last_reported_count * 2;
-  return count >= next_report;
-}
-
-bool ShouldReportAudioStats(uint64_t submitted_count) {
-  return (submitted_count & 1023) == 0;
-}
-
-}  // namespace
-
 SDLAudioDriver::SDLAudioDriver(xe::threading::Semaphore* semaphore,
                                uint32_t frequency, uint32_t channels,
                                bool need_format_conversion)
@@ -129,57 +115,7 @@ void SDLAudioDriver::SubmitFrame(float* frame) {
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
     frames_queued_.push(output_frame);
-    const size_t queue_depth = frames_queued_.size();
-    size_t previous_max = max_queue_depth_.load(std::memory_order_relaxed);
-    while (queue_depth > previous_max &&
-           !max_queue_depth_.compare_exchange_weak(previous_max, queue_depth,
-                                                   std::memory_order_relaxed,
-                                                   std::memory_order_relaxed)) {
-    }
-    if (queue_depth <= 2) {
-      low_queue_count_.fetch_add(1, std::memory_order_relaxed);
-    }
   }
-  const uint64_t submitted =
-      frames_submitted_.fetch_add(1, std::memory_order_relaxed) + 1;
-
-  const uint64_t underruns = underrun_count_.load(std::memory_order_relaxed);
-  uint64_t last_reported =
-      last_reported_underrun_count_.load(std::memory_order_relaxed);
-  if (underruns != 0 && ShouldReportUnderrun(underruns, last_reported) &&
-      last_reported_underrun_count_.compare_exchange_strong(
-          last_reported, underruns, std::memory_order_relaxed,
-          std::memory_order_relaxed)) {
-    XELOGW(
-        "SDL audio underrun: count={}, submitted={}, played={}, "
-        "max_queue_depth={}",
-        underruns, frames_submitted_.load(std::memory_order_relaxed),
-        frames_played_.load(std::memory_order_relaxed),
-        max_queue_depth_.load(std::memory_order_relaxed));
-  }
-
-#if XE_PLATFORM_IOS
-  const uint64_t low_queue = low_queue_count_.load(std::memory_order_relaxed);
-  uint64_t last_low_queue =
-      last_reported_low_queue_count_.load(std::memory_order_relaxed);
-  if (low_queue != 0 && ShouldReportUnderrun(low_queue, last_low_queue) &&
-      last_reported_low_queue_count_.compare_exchange_strong(
-          last_low_queue, low_queue, std::memory_order_relaxed,
-          std::memory_order_relaxed)) {
-    XELOGW(
-        "SDL audio queue running low: count={}, submitted={}, played={}, "
-        "underruns={}, max_queue_depth={}",
-        low_queue, submitted, frames_played_.load(std::memory_order_relaxed),
-        underruns, max_queue_depth_.load(std::memory_order_relaxed));
-  }
-  if (ShouldReportAudioStats(submitted)) {
-    XELOGI(
-        "SDL audio stats: submitted={}, played={}, underruns={}, low_queue={}, "
-        "max_queue_depth={}",
-        submitted, frames_played_.load(std::memory_order_relaxed), underruns,
-        low_queue, max_queue_depth_.load(std::memory_order_relaxed));
-  }
-#endif  // XE_PLATFORM_IOS
 }
 
 void SDLAudioDriver::Pause() {
@@ -233,10 +169,6 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream,
     {
       std::unique_lock<std::mutex> guard(driver->frames_mutex_);
       if (driver->frames_queued_.empty()) {
-        driver->underrun_count_.fetch_add(1, std::memory_order_relaxed);
-        if (driver->semaphore_) {
-          driver->semaphore_->Release(1, nullptr);
-        }
         return;
       }
       buffer = driver->frames_queued_.front();
@@ -281,19 +213,15 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream,
       driver->frames_unused_.push(buffer);
     }
 
-    driver->frames_played_.fetch_add(1, std::memory_order_relaxed);
-    if (driver->semaphore_) {
-      auto ret = driver->semaphore_->Release(1, nullptr);
+    auto ret = driver->semaphore_->Release(1, nullptr);
 #if XE_PLATFORM_IOS
-      // Releasing can fail on iOS; log rather than abort so audio keeps
-      // flowing.
-      if (!ret) {
-        XELOGW("SDLAudioDriver: failed to release audio frame semaphore");
-      }
-#else
-      assert_true(ret);
-#endif  // XE_PLATFORM_IOS
+    // Releasing can fail on iOS; log rather than abort so audio keeps flowing.
+    if (!ret) {
+      XELOGW("SDLAudioDriver: failed to release audio frame semaphore");
     }
+#else
+    assert_true(ret);
+#endif  // XE_PLATFORM_IOS
   }
 }
 }  // namespace sdl
