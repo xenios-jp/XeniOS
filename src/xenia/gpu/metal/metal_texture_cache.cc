@@ -193,6 +193,62 @@ void SetEncoderLabel(MTL::CommandEncoder* encoder, const char* label) {
   encoder->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
 }
 
+uint32_t GetMaxMipmapLevelCount(const MTL::TextureDescriptor* descriptor) {
+  if (!descriptor) {
+    return 0;
+  }
+  uint32_t width = static_cast<uint32_t>(descriptor->width());
+  uint32_t height = static_cast<uint32_t>(descriptor->height());
+  uint32_t depth = static_cast<uint32_t>(descriptor->depth());
+  if (!width || !height || !depth) {
+    return 0;
+  }
+
+  MTL::TextureType texture_type = descriptor->textureType();
+  if (descriptor->sampleCount() > 1 ||
+      texture_type == MTL::TextureTypeTextureBuffer) {
+    return 1;
+  }
+
+  uint32_t max_extent = width;
+  switch (texture_type) {
+    case MTL::TextureType1D:
+    case MTL::TextureType1DArray:
+      break;
+    case MTL::TextureType3D:
+      max_extent = std::max(max_extent, depth);
+      [[fallthrough]];
+    default:
+      max_extent = std::max(max_extent, height);
+      break;
+  }
+  return xe::log2_floor(max_extent) + 1;
+}
+
+bool ValidateTextureDescriptorBeforeCreation(
+    const MTL::TextureDescriptor* descriptor) {
+  if (!descriptor) {
+    return false;
+  }
+  uint32_t requested_mip_levels =
+      static_cast<uint32_t>(descriptor->mipmapLevelCount());
+  uint32_t max_mip_levels = GetMaxMipmapLevelCount(descriptor);
+  if (!requested_mip_levels || !max_mip_levels ||
+      requested_mip_levels > max_mip_levels) {
+    XELOGE(
+        "Metal texture cache: refusing invalid texture descriptor "
+        "{}x{}x{} type={} format={} mips={} max_mips={} samples={}",
+        static_cast<uint32_t>(descriptor->width()),
+        static_cast<uint32_t>(descriptor->height()),
+        static_cast<uint32_t>(descriptor->depth()),
+        static_cast<uint32_t>(descriptor->textureType()),
+        static_cast<uint32_t>(descriptor->pixelFormat()), requested_mip_levels,
+        max_mip_levels, static_cast<uint32_t>(descriptor->sampleCount()));
+    return false;
+  }
+  return true;
+}
+
 bool SupportsPixelFormat(MTL::Device* device, MTL::PixelFormat format) {
   if (!device || format == MTL::PixelFormatInvalid) {
     return false;
@@ -3520,6 +3576,10 @@ MTL::Texture* MetalTextureCache::CreateTexture(
     XELOGE(
         "Metal texture cache: Failed to get Metal device from command "
         "processor");
+    descriptor->release();
+    return nullptr;
+  }
+  if (!ValidateTextureDescriptorBeforeCreation(descriptor)) {
     descriptor->release();
     return nullptr;
   }
