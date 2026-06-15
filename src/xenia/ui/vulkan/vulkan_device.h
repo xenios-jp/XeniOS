@@ -111,6 +111,7 @@ class VulkanDevice {
     bool fragmentStoresAndAtomics = false;
     bool shaderClipDistance = false;
     bool shaderCullDistance = false;
+    bool shaderInt16 = false;
     bool sparseBinding = false;
     bool sparseResidencyBuffer = false;
 
@@ -129,6 +130,10 @@ class VulkanDevice {
     // VK_EXT_host_query_reset (promoted to 1.2)
 
     bool hostQueryReset = false;
+
+    // VK_KHR_shader_float16_int8 (#83, promoted to 1.2)
+
+    bool shaderFloat16 = false;
 
     // VK_KHR_portability_subset (#164)
 

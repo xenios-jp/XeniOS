@@ -864,6 +864,9 @@ void EmulatorWindow::OnEmulatorInitialized() {
     app_context_.RequestDeferredQuit();
   });
 
+  emulator_->set_on_exit_to_dashboard(
+      [this]() { return StopTitleAndReturnToList(); });
+
   // Register callback for disc swap to update title bar
   emulator_->set_on_disc_swap([this](uint8_t new_disc_number) {
     swapped_disc_number_ = new_disc_number;
@@ -1143,7 +1146,10 @@ bool EmulatorWindow::Initialize() {
       auto* audio_sizer = new wxBoxSizer(wxHORIZONTAL);
       wx_toolbar_state_->audio_icon = new wxStaticBitmap(
           audio_group, wxID_ANY, wx_toolbar_state_->audio_no_bundle);
-      wx_toolbar_state_->audio_icon->SetToolTip(_("Volume"));
+      wx_toolbar_state_->audio_icon->SetToolTip(_("Mute"));
+      wx_toolbar_state_->audio_icon->SetCursor(wxCursor(wxCURSOR_HAND));
+      wx_toolbar_state_->audio_icon->Bind(
+          wxEVT_LEFT_DOWN, [this](wxMouseEvent&) { ToggleMute(); });
       audio_sizer->Add(wx_toolbar_state_->audio_icon, 0,
                        wxALIGN_CENTER_VERTICAL);
       wx_toolbar_state_->audio_slider = new wxSlider(
@@ -1862,9 +1868,9 @@ void EmulatorWindow::FileClose() {
       emulator_->input_system());
 }
 
-void EmulatorWindow::StopTitleAndReturnToList() {
+bool EmulatorWindow::StopTitleAndReturnToList() {
   if (!emulator_->is_title_open()) {
-    return;
+    return false;
   }
   target_pending_launch_ = false;
   // Match xam_info.cc: in-process relaunch only on Windows (Linux's
@@ -1880,7 +1886,7 @@ void EmulatorWindow::StopTitleAndReturnToList() {
       cb(/*host_path=*/{}, /*launch_module=*/{}, /*launch_flags=*/0,
          /*launch_data=*/{});
     }
-    return;
+    return false;
   }
   // ResetTitle terminates guest threads, so it must run off the UI thread.
   std::thread([this]() {
@@ -1908,6 +1914,7 @@ void EmulatorWindow::StopTitleAndReturnToList() {
       ApplyContentVisibility();
     });
   }).detach();
+  return true;
 }
 
 void EmulatorWindow::ApplyContentVisibility() {
@@ -2775,6 +2782,17 @@ void EmulatorWindow::ToggleAudioDialog() {
   audio_dialog_->SetOnChangeCallback([this]() { RefreshAudioIcon(); });
 }
 
+void EmulatorWindow::ToggleMute() {
+  uint32_t current = cvars::volume > 100 ? 100 : cvars::volume;
+  if (current > 0) {
+    pre_mute_volume_ = current;
+    apu::SetVolume(0);
+  } else {
+    apu::SetVolume(pre_mute_volume_ > 0 ? pre_mute_volume_ : 100);
+  }
+  RefreshAudioIcon();
+}
+
 void EmulatorWindow::RefreshAudioIcon() {
   if (!wx_toolbar_state_ || !wx_toolbar_state_->toolbar) {
     return;
@@ -2805,6 +2823,8 @@ void EmulatorWindow::RefreshAudioIcon() {
         break;
     }
     wx_toolbar_state_->audio_icon->SetBitmap(*bundle);
+    wx_toolbar_state_->audio_icon->SetToolTip(bucket == 0 ? _("Unmute")
+                                                          : _("Mute"));
   }
 
   // HasFocus filters out the user-drag case: the slider already shows the

@@ -846,6 +846,10 @@ msgstr "Licenc:"
 msgid "Liechtenstein"
 msgstr "Liechtenstein"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "Litvánia"
@@ -925,6 +929,11 @@ msgstr "Mongólia"
 #: src/xenia/ui/profile_editor_dialog_wx.cc:130
 msgid "Morocco"
 msgstr "Marokkó"
+
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "Némítás"
 
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
@@ -1007,6 +1016,10 @@ msgstr "Cím megnyitása"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "Tartalmazó mappa megnyitása"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "Megnyitás Rosettával"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1419,6 +1432,10 @@ msgstr "Egyesült Államok"
 msgid "Unknown"
 msgstr "Ismeretlen"
 
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "Némítás feloldása"
+
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"
 msgstr "Játszhatatlan"
@@ -1431,6 +1448,18 @@ msgstr "Mentetlen módosítások"
 #: src/xenia/ui/profile_editor_dialog_wx.cc:169
 msgid "Uruguay"
 msgstr "Uruguay"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "GameMode használata"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "MTL HUD használata"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "MangoHud használata"
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
@@ -1499,6 +1528,10 @@ msgstr "Zimbabwe"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "készítette: %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"

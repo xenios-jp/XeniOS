@@ -170,8 +170,6 @@ enum XmmConst {
   XMMXOPDwordShiftMask,
   XMMLVLShuffle,
   XMMLVRCmp16,
-  XMMSTVLShuffle,
-  XMMSTVRSwapMask,  // swapwordmask with bit 7 set
   XMMVSRShlByteshuf,
   XMMVSRMask,
   XMMVRsqrteTableStart,

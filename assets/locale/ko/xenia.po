@@ -846,6 +846,10 @@ msgstr "라이선스:"
 msgid "Liechtenstein"
 msgstr "리히텐슈타인"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "리투아니아"
@@ -926,6 +930,11 @@ msgstr "몽골"
 msgid "Morocco"
 msgstr "모로코"
 
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "음소거"
+
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
 msgstr "이름: %s"
@@ -1005,6 +1014,10 @@ msgstr "게임 열기"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "포함된 폴더 열기"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "Rosetta를 사용하여 열기"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1416,6 +1429,10 @@ msgstr "미국"
 msgid "Unknown"
 msgstr "알 수 없음"
 
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "음소거 해제"
+
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"
 msgstr "플레이 불가"
@@ -1428,6 +1445,18 @@ msgstr "저장되지 않은 변경 사항"
 #: src/xenia/ui/profile_editor_dialog_wx.cc:169
 msgid "Uruguay"
 msgstr "우루과이"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "GameMode 사용"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "MTL HUD 사용"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "MangoHud 사용"
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
@@ -1495,6 +1524,10 @@ msgstr "짐바브웨"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "작성자: %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"

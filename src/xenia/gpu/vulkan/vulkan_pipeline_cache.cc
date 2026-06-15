@@ -62,6 +62,7 @@ DEFINE_int32(
     "Vulkan");
 
 DECLARE_bool(vulkan_dynamic_rendering);
+DECLARE_bool(spirv_disable_rounding_mode_rte);
 
 namespace xe {
 namespace gpu {
@@ -83,8 +84,14 @@ bool VulkanPipelineCache::Initialize() {
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
 
-  // Cache the SPIR-V version for geometry shader creation.
-  spirv_version_ = SpirvShaderTranslator::Features(vulkan_device).spirv_version;
+  // Cache device features for geometry shader creation.
+  const SpirvShaderTranslator::Features features(vulkan_device);
+  spirv_version_ = features.spirv_version;
+  signed_zero_inf_nan_preserve_float32_ =
+      features.signed_zero_inf_nan_preserve_float32;
+  denorm_flush_to_zero_float32_ = features.denorm_flush_to_zero_float32;
+  rounding_mode_rte_float32_ = features.rounding_mode_rte_float32 &&
+                               !cvars::spirv_disable_rounding_mode_rte;
 
   bool edram_fragment_shader_interlock =
       render_target_cache_.GetPath() ==
@@ -404,6 +411,12 @@ VulkanPipelineCache::GetCurrentVertexShaderModification(
 
   modification.vertex.interpolator_mask = interpolator_mask;
 
+  // Tessellation mode selects the domain shader spacing.
+  if (Shader::IsHostVertexShaderTypeDomain(host_vertex_shader_type)) {
+    modification.vertex.tessellation_mode =
+        regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
+  }
+
   // User clip planes.
   auto pa_cl_clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
   uint32_t user_clip_planes =
@@ -411,6 +424,13 @@ VulkanPipelineCache::GetCurrentVertexShaderModification(
   modification.vertex.user_clip_plane_count = xe::bit_count(user_clip_planes);
   modification.vertex.user_clip_plane_cull =
       uint32_t(user_clip_planes && pa_cl_clip_cntl.ucp_cull_only_ena);
+
+  // Vertex kill via the kill flag (oPts.z). The "and" operator (kill only when
+  // all vertices of the primitive request it) is emulated with a cull distance;
+  // the "or" operator sets the position to NaN in the translator.
+  modification.vertex.vertex_kill_and =
+      uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b100) &&
+               !pa_cl_clip_cntl.vtx_kill_or);
 
   if (host_vertex_shader_type ==
       Shader::HostVertexShaderType::kPointListAsTriangleStrip) {
@@ -1477,12 +1497,9 @@ bool VulkanPipelineCache::GetGeometryShaderKey(
   }
   GeometryShaderKey key;
   key.type = geometry_shader_type;
-  // TODO(Triang3l): Once all needed inputs and outputs are added, uncomment the
-  // real counts here.
   key.interpolator_count =
       xe::bit_count(vertex_shader_modification.vertex.interpolator_mask);
-  key.has_vertex_kill_and =
-      /* vertex_shader_modification.vertex.vertex_kill_and */ 0;
+  key.has_vertex_kill_and = vertex_shader_modification.vertex.vertex_kill_and;
   key.has_point_size =
       vertex_shader_modification.vertex.output_point_parameters;
   key.has_point_coordinates = pixel_shader_modification.pixel.param_gen_point;
@@ -1562,7 +1579,24 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   builder.setMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
   builder.setSource(spv::SourceLanguageUnknown, 0);
 
-  // TODO(Triang3l): Shader float controls (NaN preservation most importantly).
+  // Match the vertex and pixel shaders' float controls. NaN preservation most
+  // importantly keeps the NaN-position primitive discard below (used for the
+  // vertex kill "or" operator and degenerate rectangles) from being folded
+  // away. The execution modes are added once the entry point exists.
+  if (spirv_version_ < spv::Spv_1_4 &&
+      (denorm_flush_to_zero_float32_ || signed_zero_inf_nan_preserve_float32_ ||
+       rounding_mode_rte_float32_)) {
+    builder.addExtension("SPV_KHR_float_controls");
+  }
+  if (denorm_flush_to_zero_float32_) {
+    builder.addCapability(spv::CapabilityDenormFlushToZero);
+  }
+  if (signed_zero_inf_nan_preserve_float32_) {
+    builder.addCapability(spv::CapabilitySignedZeroInfNanPreserve);
+  }
+  if (rounding_mode_rte_float32_) {
+    builder.addCapability(spv::CapabilityRoundingModeRTE);
+  }
 
   std::vector<spv::Id> main_interface;
 
@@ -1809,6 +1843,18 @@ VkShaderModule VulkanPipelineCache::GetGeometryShader(GeometryShaderKey key) {
   builder.addExecutionMode(main_function, output_primitive_execution_mode);
   builder.addExecutionMode(main_function, spv::ExecutionModeOutputVertices,
                            int(output_max_vertices));
+  if (denorm_flush_to_zero_float32_) {
+    builder.addExecutionMode(main_function, spv::ExecutionModeDenormFlushToZero,
+                             32);
+  }
+  if (signed_zero_inf_nan_preserve_float32_) {
+    builder.addExecutionMode(main_function,
+                             spv::ExecutionModeSignedZeroInfNanPreserve, 32);
+  }
+  if (rounding_mode_rte_float32_) {
+    builder.addExecutionMode(main_function, spv::ExecutionModeRoundingModeRTE,
+                             32);
+  }
 
   // Note that after every OpEmitVertex, all output variables are undefined.
 

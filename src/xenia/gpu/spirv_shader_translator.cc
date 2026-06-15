@@ -253,7 +253,7 @@ void SpirvShaderTranslator::Reset() {
   // Vertex shader inputs.
   input_vertex_index_ = spv::NoResult;
   // Tessellation evaluation shader inputs.
-  input_primitive_id_ = spv::NoResult;
+  input_control_point_index_ = spv::NoResult;
   input_tess_coord_ = spv::NoResult;
   // Pixel shader inputs.
   input_point_coordinates_ = spv::NoResult;
@@ -1069,16 +1069,22 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
           assert_unhandled_case(host_type);
           break;
       }
-      // Tessellation spacing - fractional_even for continuous mode, equal
-      // (integer) for discrete mode. The actual mode is determined by the TCS
-      // (hull shader), but we use fractional_even here as the default since it
-      // provides smooth results. The TCS sets the actual tessellation levels.
-      // For now, use fractional_even as it's more compatible.
+      // Tessellation spacing. In SPIR-V the spacing is part of the domain
+      // shader rather than the hull shader. Match the Direct3D 12 hull shader
+      // partitioning - integer (equal) for discrete, fractional even for
+      // continuous and adaptive.
       builder_->addExecutionMode(function_main_,
-                                 spv::ExecutionModeSpacingFractionalEven);
-      // Vertex ordering - counter-clockwise (Vulkan default for front face).
+                                 shader_modification.vertex.tessellation_mode ==
+                                         xenos::TessellationMode::kDiscrete
+                                     ? spv::ExecutionModeSpacingEqual
+                                     : spv::ExecutionModeSpacingFractionalEven);
+      // Vertex ordering. Xenia does not flip the clip space Y on Vulkan
+      // (origin_bottom_left is false, so ndc_scale.y keeps the guest sign), so
+      // the tessellator must wind the same way as the Direct3D 12 hull shaders,
+      // which use triangle_cw. Counter-clockwise here inverts the facing and
+      // the guest backface culling removes the whole surface.
       builder_->addExecutionMode(function_main_,
-                                 spv::ExecutionModeVertexOrderCcw);
+                                 spv::ExecutionModeVertexOrderCw);
     } else {
       execution_model = spv::ExecutionModelVertex;
     }
@@ -1627,11 +1633,33 @@ void SpirvShaderTranslator::WriteVertexIndexToRegister0(spv::Id vertex_index) {
 void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
   // Create the inputs.
   if (IsSpirvTessEvalShader()) {
-    input_primitive_id_ = builder_->createVariable(
-        spv::NoPrecision, spv::StorageClassInput, type_int_, "gl_PrimitiveID");
-    builder_->addDecoration(input_primitive_id_, spv::DecorationBuiltIn,
-                            static_cast<int>(spv::BuiltIn::PrimitiveId));
-    main_interface_.push_back(input_primitive_id_);
+    // Per-control-point index input from the hull shader, mirroring the control
+    // point input read by the Direct3D 12 domain shader. The hull shader has
+    // already applied the endian swap, the vertex index offset, the low 24-bit
+    // wrap and the min/max clamp, so this is the index the guest expects rather
+    // than the raw gl_PrimitiveID. The array size matches the hull shader's
+    // output control point count for the domain type.
+    uint32_t control_point_count = 1;
+    switch (GetSpirvShaderModification().vertex.host_vertex_shader_type) {
+      case Shader::HostVertexShaderType::kTriangleDomainCPIndexed:
+        control_point_count = 3;
+        break;
+      case Shader::HostVertexShaderType::kQuadDomainCPIndexed:
+        control_point_count = 4;
+        break;
+      default:
+        // Patch-indexed (and line) domains output a single control point.
+        control_point_count = 1;
+        break;
+    }
+    input_control_point_index_ = builder_->createVariable(
+        spv::NoPrecision, spv::StorageClassInput,
+        builder_->makeArrayType(
+            type_float_, builder_->makeUintConstant(control_point_count), 0),
+        "xe_in_control_point_index");
+    builder_->addDecoration(input_control_point_index_, spv::DecorationLocation,
+                            0);
+    main_interface_.push_back(input_control_point_index_);
 
     // Tessellation coordinates (barycentric coordinates for the tessellated
     // vertex within the patch).
@@ -1714,6 +1742,11 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderBeforeMain() {
     cull_distance_count = user_clip_plane_count;
   } else {
     clip_distance_count = user_clip_plane_count;
+  }
+  // Vertex kill with the "and" operator writes a dedicated cull distance after
+  // the user clip plane cull distances.
+  if (shader_modification.vertex.vertex_kill_and) {
+    ++cull_distance_count;
   }
   output_per_vertex_clip_distance_member_index_ = 0;
   output_per_vertex_cull_distance_member_index_ = 0;
@@ -2057,32 +2090,56 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderInMain() {
           break;
         }
         case Shader::HostVertexShaderType::kQuadDomainCPIndexed: {
-          // Quad domain requires at least 2 registers (r0 for domain location,
-          // r1 for control point indices).
+          // Quad domain requires at least 2 registers (r0 for the domain
+          // location and the first control point index, r1 for the other
+          // three).
           assert_true(register_count() >= 2);
-          // Quad domain CP-indexed: gl_TessCoord.xy -> r0.yz, r0.x = 0, r0.w =
-          // 1 XY swizzle according to the ground shader in 4D5307F2.
-          uint_vector_temp_.clear();
-          uint_vector_temp_.push_back(0);  // x -> r0.y
-          uint_vector_temp_.push_back(1);  // y -> r0.z
-          spv::Id tess_coord_xy = builder_->createRvalueSwizzle(
-              spv::NoPrecision, type_float2_, tess_coord, uint_vector_temp_);
-          // Store to r0
+          // Quad domain CP-indexed, matching the Direct3D 12 domain shader:
+          // r0.xy = domain location, r0.z = control point index 0,
+          // r1.xyz = control point indices 1, 2, 3 (already endian swapped and
+          // converted to float by the host vertex and hull shaders).
+          spv::Id tess_coord_x =
+              builder_->createCompositeExtract(tess_coord, type_float_, 0);
+          spv::Id tess_coord_y =
+              builder_->createCompositeExtract(tess_coord, type_float_, 1);
+          // Load control point index 0.
+          id_vector_temp_.clear();
+          id_vector_temp_.push_back(const_int_0_);
+          spv::Id control_point_index_0 = builder_->createLoad(
+              builder_->createAccessChain(spv::StorageClassInput,
+                                          input_control_point_index_,
+                                          id_vector_temp_),
+              spv::NoPrecision);
+          // Store r0 = (domain.x, domain.y, control point index 0, 0).
           id_vector_temp_.clear();
           id_vector_temp_.push_back(const_int_0_);
           spv::Id r0_ptr = builder_->createAccessChain(
               spv::StorageClassFunction, var_main_registers_, id_vector_temp_);
-          // Build float4 with x=0, yz from tess coord, w=1
           id_vector_temp_.clear();
+          id_vector_temp_.push_back(tess_coord_x);
+          id_vector_temp_.push_back(tess_coord_y);
+          id_vector_temp_.push_back(control_point_index_0);
           id_vector_temp_.push_back(const_float_0_);
-          id_vector_temp_.push_back(
-              builder_->createCompositeExtract(tess_coord_xy, type_float_, 0));
-          id_vector_temp_.push_back(
-              builder_->createCompositeExtract(tess_coord_xy, type_float_, 1));
-          id_vector_temp_.push_back(const_float_1_);
           builder_->createStore(
               builder_->createCompositeConstruct(type_float4_, id_vector_temp_),
               r0_ptr);
+          // Store r1.xyz = control point indices 1, 2, 3.
+          for (uint32_t i = 1; i <= 3; ++i) {
+            id_vector_temp_.clear();
+            id_vector_temp_.push_back(builder_->makeIntConstant(int(i)));
+            spv::Id control_point_index = builder_->createLoad(
+                builder_->createAccessChain(spv::StorageClassInput,
+                                            input_control_point_index_,
+                                            id_vector_temp_),
+                spv::NoPrecision);
+            id_vector_temp_.clear();
+            id_vector_temp_.push_back(builder_->makeIntConstant(1));
+            id_vector_temp_.push_back(builder_->makeIntConstant(int(i - 1)));
+            builder_->createStore(control_point_index,
+                                  builder_->createAccessChain(
+                                      spv::StorageClassFunction,
+                                      var_main_registers_, id_vector_temp_));
+          }
           break;
         }
         case Shader::HostVertexShaderType::kQuadDomainPatchIndexed: {
@@ -2097,11 +2154,17 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderInMain() {
           uint_vector_temp_.push_back(1);  // y -> r0.z
           spv::Id tess_coord_xy = builder_->createRvalueSwizzle(
               spv::NoPrecision, type_float2_, tess_coord, uint_vector_temp_);
-          // Load primitive ID (patch index) and convert to float.
-          spv::Id primitive_id =
-              builder_->createLoad(input_primitive_id_, spv::NoPrecision);
-          spv::Id patch_index_float = builder_->createUnaryOp(
-              spv::OpConvertSToF, type_float_, primitive_id);
+          // Read the patch index from control point 0 (already endian swapped,
+          // offset, wrapped and clamped by the host vertex and hull shaders),
+          // matching the Direct3D 12 domain shader, rather than using the raw
+          // gl_PrimitiveID.
+          id_vector_temp_.clear();
+          id_vector_temp_.push_back(const_int_0_);
+          spv::Id patch_index_float = builder_->createLoad(
+              builder_->createAccessChain(spv::StorageClassInput,
+                                          input_control_point_index_,
+                                          id_vector_temp_),
+              spv::NoPrecision);
           // Store to r0: x = patch index, yz = tess coord, w = 1
           id_vector_temp_.clear();
           id_vector_temp_.push_back(const_int_0_);
@@ -2147,11 +2210,17 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderInMain() {
       if (register_count() >= 2) {
         if (host_type ==
             Shader::HostVertexShaderType::kTriangleDomainPatchIndexed) {
-          // Load primitive ID (patch index) and convert to float.
-          spv::Id primitive_id =
-              builder_->createLoad(input_primitive_id_, spv::NoPrecision);
-          spv::Id patch_index_float = builder_->createUnaryOp(
-              spv::OpConvertSToF, type_float_, primitive_id);
+          // Read the patch index from control point 0 (already endian swapped,
+          // offset, wrapped and clamped by the host vertex and hull shaders),
+          // matching the Direct3D 12 domain shader, rather than using the raw
+          // gl_PrimitiveID.
+          id_vector_temp_.clear();
+          id_vector_temp_.push_back(const_int_0_);
+          spv::Id patch_index_float = builder_->createLoad(
+              builder_->createAccessChain(spv::StorageClassInput,
+                                          input_control_point_index_,
+                                          id_vector_temp_),
+              spv::NoPrecision);
           // Store patch index to r1.x
           id_vector_temp_.clear();
           id_vector_temp_.push_back(builder_->makeIntConstant(1));
@@ -2170,6 +2239,27 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderInMain() {
                                 builder_->createAccessChain(
                                     spv::StorageClassFunction,
                                     var_main_registers_, id_vector_temp_));
+        } else if (host_type ==
+                   Shader::HostVertexShaderType::kTriangleDomainCPIndexed) {
+          // Store the three control point indices (already endian swapped and
+          // converted to float by the host vertex and hull shaders) to r1.xyz,
+          // matching the Direct3D 12 domain shader.
+          for (uint32_t i = 0; i < 3; ++i) {
+            id_vector_temp_.clear();
+            id_vector_temp_.push_back(builder_->makeIntConstant(int(i)));
+            spv::Id control_point_index = builder_->createLoad(
+                builder_->createAccessChain(spv::StorageClassInput,
+                                            input_control_point_index_,
+                                            id_vector_temp_),
+                spv::NoPrecision);
+            id_vector_temp_.clear();
+            id_vector_temp_.push_back(builder_->makeIntConstant(1));
+            id_vector_temp_.push_back(builder_->makeIntConstant(int(i)));
+            builder_->createStore(control_point_index,
+                                  builder_->createAccessChain(
+                                      spv::StorageClassFunction,
+                                      var_main_registers_, id_vector_temp_));
+          }
         }
       }
     } else if (IsSpirvVertexShader()) {
@@ -2752,6 +2842,58 @@ void SpirvShaderTranslator::CompleteVertexOrTessEvalShaderInMain() {
       spv::OpVectorTimesScalar, type_float3_, ndc_offset, position_w);
   position_xyz = builder_->createNoContractionBinOp(
       spv::OpFAdd, type_float3_, position_xyz, ndc_offset_mul_w);
+
+  // Apply vertex killing requested via the kill flag (oPts.z) - bits 0:30 of
+  // the value being non-zero kills. Done after the NDC transform since the kill
+  // cull distance is just a flag and the position is about to be written.
+  if (current_shader().writes_point_size_edge_flag_kill_vertex() & 0b100) {
+    assert_true(var_main_point_size_edge_flag_kill_vertex_ != spv::NoResult);
+    id_vector_temp_.clear();
+    // Z vector component.
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    spv::Id kill_value = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassFunction,
+                                    var_main_point_size_edge_flag_kill_vertex_,
+                                    id_vector_temp_),
+        spv::NoPrecision);
+    // Test the integer bits 0:30 rather than comparing the float to avoid
+    // denormal flushing affecting the result (matching the Direct3D 12 path).
+    spv::Id vertex_killed = builder_->createBinOp(
+        spv::OpINotEqual, type_bool_,
+        builder_->createBinOp(
+            spv::OpBitwiseAnd, type_uint_,
+            builder_->createUnaryOp(spv::OpBitcast, type_uint_, kill_value),
+            builder_->makeUintConstant(UINT32_C(0x7FFFFFFF))),
+        const_uint_0_);
+    if (shader_modification.vertex.vertex_kill_and) {
+      // "and" operator - write -1 to the dedicated cull distance when killed
+      // (the primitive is culled only if it's negative for all the vertices).
+      uint32_t vertex_kill_cull_distance_index =
+          shader_modification.vertex.user_clip_plane_cull
+              ? user_clip_plane_count
+              : 0;
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(builder_->makeIntConstant(
+          int(output_per_vertex_cull_distance_member_index_)));
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(int(vertex_kill_cull_distance_index)));
+      builder_->createStore(
+          builder_->createTriOp(spv::OpSelect, type_float_, vertex_killed,
+                                builder_->makeFloatConstant(-1.0f),
+                                const_float_0_),
+          builder_->createAccessChain(spv::StorageClassOutput,
+                                      output_per_vertex_, id_vector_temp_));
+    } else {
+      // "or" operator - setting the position W to NaN kills the whole primitive
+      // if any of its vertices requests the kill.
+      position_w = builder_->createTriOp(
+          spv::OpSelect, type_float_, vertex_killed,
+          builder_->createUnaryOp(
+              spv::OpBitcast, type_float_,
+              builder_->makeUintConstant(UINT32_C(0x7FC00000))),
+          position_w);
+    }
+  }
 
   // Write the point size.
   if (output_point_size_ != spv::NoResult) {
@@ -4549,170 +4691,188 @@ void SpirvShaderTranslator::StoreUint32ToSharedMemory(
 
 spv::Id SpirvShaderTranslator::PWLGammaToLinear(spv::Id gamma,
                                                 bool gamma_pre_saturated) {
-  spv::Id value_type = builder_->getTypeId(gamma);
-  assert_true(builder_->isFloatType(builder_->getScalarTypeId(value_type)));
-  bool is_vector = builder_->isVectorType(value_type);
-  assert_true(is_vector || builder_->isFloatType(value_type));
-  int num_components = builder_->getNumTypeComponents(value_type);
+  return PWLGammaToLinear(*builder_, gamma, gamma_pre_saturated,
+                          ext_inst_glsl_std_450_);
+}
+
+spv::Id SpirvShaderTranslator::PWLGammaToLinear(SpirvBuilder& builder,
+                                                spv::Id gamma,
+                                                bool pre_saturated,
+                                                spv::Id ext_inst_glsl_std_450) {
+  spv::Id value_type = builder.getTypeId(gamma);
+  assert_true(builder.isFloatType(builder.getScalarTypeId(value_type)));
+  bool is_vector = builder.isVectorType(value_type);
+  assert_true(is_vector || builder.isFloatType(value_type));
+  int num_components = builder.getNumTypeComponents(value_type);
   assert_true(num_components < 4);
-  spv::Id bool_type = type_bool_vectors_[num_components - 1];
+  spv::Id bool_type =
+      is_vector ? builder.makeVectorType(builder.makeBoolType(), num_components)
+                : builder.makeBoolType();
 
-  spv::Id const_vector_0 = const_float_vectors_0_[num_components - 1];
-  spv::Id const_vector_1 = SpirvSmearScalarResultOrConstant(
-      builder_->makeFloatConstant(1.0f), value_type);
+  // Smears a scalar constant to value_type (constant if the input is one).
+  auto smear = [&](spv::Id scalar) -> spv::Id {
+    if (!is_vector) {
+      return scalar;
+    }
+    std::vector<spv::Id> components(size_t(num_components), scalar);
+    return builder.isConstant(scalar)
+               ? builder.makeCompositeConstant(value_type, components,
+                                               builder.isSpecConstant(scalar))
+               : builder.smearScalar(spv::NoPrecision, scalar, value_type);
+  };
 
-  if (!gamma_pre_saturated) {
+  spv::Id const_vector_0 = smear(builder.makeFloatConstant(0.0f));
+
+  if (!pre_saturated) {
     // Saturate, flushing NaN to 0.
-    gamma = builder_->createTriBuiltinCall(value_type, ext_inst_glsl_std_450_,
-                                           GLSLstd450NClamp, gamma,
-                                           const_vector_0, const_vector_1);
+    gamma = builder.createTriBuiltinCall(
+        value_type, ext_inst_glsl_std_450, GLSLstd450NClamp, gamma,
+        const_vector_0, smear(builder.makeFloatConstant(1.0f)));
   }
 
-  spv::Id is_piece_at_least_3 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, gamma,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(192.0f / 255.0f), value_type));
-  spv::Id scale_3_or_2 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_3,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(8.0f / 1024.0f), value_type),
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(4.0f / 1024.0f), value_type));
-  spv::Id offset_3_or_2 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_3,
-      SpirvSmearScalarResultOrConstant(builder_->makeFloatConstant(-1024.0f),
-                                       value_type),
-      SpirvSmearScalarResultOrConstant(builder_->makeFloatConstant(-256.0f),
-                                       value_type));
+  spv::Id is_piece_at_least_3 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, gamma,
+                          smear(builder.makeFloatConstant(192.0f / 255.0f)));
+  spv::Id scale_3_or_2 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_3,
+                          smear(builder.makeFloatConstant(8.0f / 1024.0f)),
+                          smear(builder.makeFloatConstant(4.0f / 1024.0f)));
+  spv::Id offset_3_or_2 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_3,
+                          smear(builder.makeFloatConstant(-1024.0f)),
+                          smear(builder.makeFloatConstant(-256.0f)));
 
-  spv::Id is_piece_at_least_1 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, gamma,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(64.0f / 255.0f), value_type));
-  spv::Id scale_1_or_0 = builder_->createTriOp(
+  spv::Id is_piece_at_least_1 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, gamma,
+                          smear(builder.makeFloatConstant(64.0f / 255.0f)));
+  spv::Id scale_1_or_0 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_1,
+                          smear(builder.makeFloatConstant(2.0f / 1024.0f)),
+                          smear(builder.makeFloatConstant(1.0f / 1024.0f)));
+  spv::Id offset_1_or_0 = builder.createTriOp(
       spv::OpSelect, value_type, is_piece_at_least_1,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(2.0f / 1024.0f), value_type),
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(1.0f / 1024.0f), value_type));
-  spv::Id offset_1_or_0 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_1,
-      SpirvSmearScalarResultOrConstant(builder_->makeFloatConstant(-64.0f),
-                                       value_type),
-      const_vector_0);
+      smear(builder.makeFloatConstant(-64.0f)), const_vector_0);
 
-  spv::Id is_piece_at_least_2 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, gamma,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(96.0f / 255.0f), value_type));
+  spv::Id is_piece_at_least_2 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, gamma,
+                          smear(builder.makeFloatConstant(96.0f / 255.0f)));
   spv::Id scale =
-      builder_->createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
-                            scale_3_or_2, scale_1_or_0);
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
+                          scale_3_or_2, scale_1_or_0);
   spv::Id offset =
-      builder_->createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
-                            offset_3_or_2, offset_1_or_0);
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
+                          offset_3_or_2, offset_1_or_0);
 
   spv::Op value_times_scalar_opcode =
       is_vector ? spv::OpVectorTimesScalar : spv::OpFMul;
   // linear = gamma * (255.0f * 1024.0f) * scale + offset
-  spv::Id linear = builder_->createNoContractionBinOp(
+  spv::Id linear = builder.createNoContractionBinOp(
       spv::OpFAdd, value_type,
-      builder_->createNoContractionBinOp(
+      builder.createNoContractionBinOp(
           spv::OpFMul, value_type,
-          builder_->createNoContractionBinOp(
+          builder.createNoContractionBinOp(
               value_times_scalar_opcode, value_type, gamma,
-              builder_->makeFloatConstant(255.0f * 1024.0f)),
+              builder.makeFloatConstant(255.0f * 1024.0f)),
           scale),
       offset);
   // linear += trunc(linear * scale)
-  linear = builder_->createNoContractionBinOp(
+  linear = builder.createNoContractionBinOp(
       spv::OpFAdd, value_type, linear,
-      builder_->createUnaryBuiltinCall(
-          value_type, ext_inst_glsl_std_450_, GLSLstd450Trunc,
-          builder_->createNoContractionBinOp(spv::OpFMul, value_type, linear,
-                                             scale)));
+      builder.createUnaryBuiltinCall(
+          value_type, ext_inst_glsl_std_450, GLSLstd450Trunc,
+          builder.createNoContractionBinOp(spv::OpFMul, value_type, linear,
+                                           scale)));
   // linear *= 1.0f / 1023.0f
-  linear = builder_->createNoContractionBinOp(
+  linear = builder.createNoContractionBinOp(
       value_times_scalar_opcode, value_type, linear,
-      builder_->makeFloatConstant(1.0f / 1023.0f));
+      builder.makeFloatConstant(1.0f / 1023.0f));
   return linear;
 }
 
 spv::Id SpirvShaderTranslator::LinearToPWLGamma(spv::Id linear,
                                                 bool linear_pre_saturated) {
-  spv::Id value_type = builder_->getTypeId(linear);
-  assert_true(builder_->isFloatType(builder_->getScalarTypeId(value_type)));
-  bool is_vector = builder_->isVectorType(value_type);
-  assert_true(is_vector || builder_->isFloatType(value_type));
-  int num_components = builder_->getNumTypeComponents(value_type);
+  return LinearToPWLGamma(*builder_, linear, linear_pre_saturated,
+                          ext_inst_glsl_std_450_);
+}
+
+spv::Id SpirvShaderTranslator::LinearToPWLGamma(SpirvBuilder& builder,
+                                                spv::Id linear,
+                                                bool pre_saturated,
+                                                spv::Id ext_inst_glsl_std_450) {
+  spv::Id value_type = builder.getTypeId(linear);
+  assert_true(builder.isFloatType(builder.getScalarTypeId(value_type)));
+  bool is_vector = builder.isVectorType(value_type);
+  assert_true(is_vector || builder.isFloatType(value_type));
+  int num_components = builder.getNumTypeComponents(value_type);
   assert_true(num_components < 4);
-  spv::Id bool_type = type_bool_vectors_[num_components - 1];
+  spv::Id bool_type =
+      is_vector ? builder.makeVectorType(builder.makeBoolType(), num_components)
+                : builder.makeBoolType();
 
-  spv::Id const_vector_0 = const_float_vectors_0_[num_components - 1];
-  spv::Id const_vector_1 = SpirvSmearScalarResultOrConstant(
-      builder_->makeFloatConstant(1.0f), value_type);
+  // Smears a scalar constant to value_type (constant if the input is one).
+  auto smear = [&](spv::Id scalar) -> spv::Id {
+    if (!is_vector) {
+      return scalar;
+    }
+    std::vector<spv::Id> components(size_t(num_components), scalar);
+    return builder.isConstant(scalar)
+               ? builder.makeCompositeConstant(value_type, components,
+                                               builder.isSpecConstant(scalar))
+               : builder.smearScalar(spv::NoPrecision, scalar, value_type);
+  };
 
-  if (!linear_pre_saturated) {
+  spv::Id const_vector_0 = smear(builder.makeFloatConstant(0.0f));
+
+  if (!pre_saturated) {
     // Saturate, flushing NaN to 0.
-    linear = builder_->createTriBuiltinCall(value_type, ext_inst_glsl_std_450_,
-                                            GLSLstd450NClamp, linear,
-                                            const_vector_0, const_vector_1);
+    linear = builder.createTriBuiltinCall(
+        value_type, ext_inst_glsl_std_450, GLSLstd450NClamp, linear,
+        const_vector_0, smear(builder.makeFloatConstant(1.0f)));
   }
 
-  spv::Id is_piece_at_least_3 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, linear,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(512.0f / 1023.0f), value_type));
-  spv::Id scale_3_or_2 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_3,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(1023.0f / 8.0f), value_type),
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(1023.0f / 4.0f), value_type));
-  spv::Id offset_3_or_2 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_3,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(128.0f / 255.0f), value_type),
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(64.0f / 255.0f), value_type));
+  spv::Id is_piece_at_least_3 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, linear,
+                          smear(builder.makeFloatConstant(512.0f / 1023.0f)));
+  spv::Id scale_3_or_2 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_3,
+                          smear(builder.makeFloatConstant(1023.0f / 8.0f)),
+                          smear(builder.makeFloatConstant(1023.0f / 4.0f)));
+  spv::Id offset_3_or_2 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_3,
+                          smear(builder.makeFloatConstant(128.0f / 255.0f)),
+                          smear(builder.makeFloatConstant(64.0f / 255.0f)));
 
-  spv::Id is_piece_at_least_1 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, linear,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(64.0f / 1023.0f), value_type));
-  spv::Id scale_1_or_0 = builder_->createTriOp(
+  spv::Id is_piece_at_least_1 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, linear,
+                          smear(builder.makeFloatConstant(64.0f / 1023.0f)));
+  spv::Id scale_1_or_0 =
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_1,
+                          smear(builder.makeFloatConstant(1023.0f / 2.0f)),
+                          smear(builder.makeFloatConstant(1023.0f)));
+  spv::Id offset_1_or_0 = builder.createTriOp(
       spv::OpSelect, value_type, is_piece_at_least_1,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(1023.0f / 2.0f), value_type),
-      SpirvSmearScalarResultOrConstant(builder_->makeFloatConstant(1023.0f),
-                                       value_type));
-  spv::Id offset_1_or_0 = builder_->createTriOp(
-      spv::OpSelect, value_type, is_piece_at_least_1,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(32.0f / 255.0f), value_type),
-      const_vector_0);
+      smear(builder.makeFloatConstant(32.0f / 255.0f)), const_vector_0);
 
-  spv::Id is_piece_at_least_2 = builder_->createBinOp(
-      spv::OpFOrdGreaterThanEqual, bool_type, linear,
-      SpirvSmearScalarResultOrConstant(
-          builder_->makeFloatConstant(128.0f / 1023.0f), value_type));
+  spv::Id is_piece_at_least_2 =
+      builder.createBinOp(spv::OpFOrdGreaterThanEqual, bool_type, linear,
+                          smear(builder.makeFloatConstant(128.0f / 1023.0f)));
   spv::Id scale =
-      builder_->createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
-                            scale_3_or_2, scale_1_or_0);
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
+                          scale_3_or_2, scale_1_or_0);
   spv::Id offset =
-      builder_->createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
-                            offset_3_or_2, offset_1_or_0);
+      builder.createTriOp(spv::OpSelect, value_type, is_piece_at_least_2,
+                          offset_3_or_2, offset_1_or_0);
 
   // gamma = trunc(linear * scale) * (1.0f / 255.0f) + offset
-  return builder_->createNoContractionBinOp(
+  return builder.createNoContractionBinOp(
       spv::OpFAdd, value_type,
-      builder_->createNoContractionBinOp(
+      builder.createNoContractionBinOp(
           is_vector ? spv::OpVectorTimesScalar : spv::OpFMul, value_type,
-          builder_->createUnaryBuiltinCall(
-              value_type, ext_inst_glsl_std_450_, GLSLstd450Trunc,
-              builder_->createNoContractionBinOp(spv::OpFMul, value_type,
-                                                 linear, scale)),
-          builder_->makeFloatConstant(1.0f / 255.0f)),
+          builder.createUnaryBuiltinCall(
+              value_type, ext_inst_glsl_std_450, GLSLstd450Trunc,
+              builder.createNoContractionBinOp(spv::OpFMul, value_type, linear,
+                                               scale)),
+          builder.makeFloatConstant(1.0f / 255.0f)),
       offset);
 }
 

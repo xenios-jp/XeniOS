@@ -846,6 +846,10 @@ msgstr "ใบอนุญาต:"
 msgid "Liechtenstein"
 msgstr "ลิกเตนสไตน์"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "ลิทัวเนีย"
@@ -926,6 +930,11 @@ msgstr "มองโกเลีย"
 msgid "Morocco"
 msgstr "โมร็อกโก"
 
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "ปิดเสียง"
+
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
 msgstr "ชื่อ: %s"
@@ -1005,6 +1014,10 @@ msgstr "เปิดเกม"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "เปิดโฟลเดอร์ที่มีไฟล์"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "เปิดด้วย Rosetta"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1415,6 +1428,10 @@ msgstr "สหรัฐอเมริกา"
 msgid "Unknown"
 msgstr "ไม่ทราบ"
 
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "เปิดเสียง"
+
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"
 msgstr "เล่นไม่ได้"
@@ -1427,6 +1444,18 @@ msgstr "การเปลี่ยนแปลงที่ยังไม่ไ
 #: src/xenia/ui/profile_editor_dialog_wx.cc:169
 msgid "Uruguay"
 msgstr "อุรุกวัย"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "ใช้ GameMode"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "ใช้ MTL HUD"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "ใช้ MangoHud"
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
@@ -1491,6 +1520,10 @@ msgstr "ซิมบับเว"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "โดย %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"

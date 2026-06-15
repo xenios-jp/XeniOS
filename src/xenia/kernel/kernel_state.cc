@@ -203,6 +203,8 @@ uint32_t KernelState::title_id() const {
   return 0;
 }
 
+bool KernelState::is_title_open() const { return emulator_->is_title_open(); }
+
 const std::unique_ptr<xam::SpaInfo> KernelState::title_xdbf() const {
   return module_xdbf(executable_module_);
 }
@@ -1113,6 +1115,18 @@ void KernelState::TerminateTitleThreadsIOS() {
   }
 }
 #endif  // XE_PLATFORM_IOS
+
+void KernelState::ExitToDashboard() {
+  XELOGI("KernelState::ExitToDashboard");
+  if (auto on_exit_to_dashboard = emulator_->on_exit_to_dashboard()) {
+    if (on_exit_to_dashboard()) {
+      // The in-process reset is about to terminate this thread.
+      XThread::GetCurrentThread()->Suspend(nullptr);
+      assert_always();
+    }
+  }
+  TerminateTitle();
+}
 
 void KernelState::RegisterThread(XThread* thread) {
   auto global_lock = global_critical_region_.Acquire();

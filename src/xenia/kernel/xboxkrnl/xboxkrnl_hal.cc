@@ -30,15 +30,13 @@ constexpr std::array<std::string_view, 9> FirmwareReentryMessage = {
 };
 
 void HalReturnToFirmware_entry(dword_t routine) {
-  // TODO(benvank): diediedie much more gracefully
-  // Not sure how to blast back up the stack in LLVM without exceptions, though.
   const std::string exitMessage = fmt::format(
       "Game requested a {} via HalReturnToFirmware",
       static_cast<size_t>(routine) < FirmwareReentryMessage.size()
           ? FirmwareReentryMessage[routine]
           : fmt::format("Reboot (Routine Code: {})", routine.value()));
   XELOGE(exitMessage);
-  exit(0);
+  kernel_state()->ExitToDashboard();
 }
 DECLARE_XBOXKRNL_EXPORT2(HalReturnToFirmware, kNone, kStub, kImportant);
 

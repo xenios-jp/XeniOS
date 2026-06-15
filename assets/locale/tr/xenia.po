@@ -846,6 +846,10 @@ msgstr "Lisans:"
 msgid "Liechtenstein"
 msgstr "Lihtenştayn"
 
+#: src/xenia/ui/quick_settings_dialog_wx.cc:253
+msgid "Linux"
+msgstr "Linux"
+
 #: src/xenia/ui/profile_editor_dialog_wx.cc:126
 msgid "Lithuania"
 msgstr "Litvanya"
@@ -925,6 +929,11 @@ msgstr "Moğolistan"
 #: src/xenia/ui/profile_editor_dialog_wx.cc:130
 msgid "Morocco"
 msgstr "Fas"
+
+#: src/xenia/app/emulator_window.cc:1146
+#: src/xenia/app/emulator_window.cc:2823
+msgid "Mute"
+msgstr "Sesi kapat"
 
 #: src/xenia/ui/install_progress_dialog_wx.cc:172
 msgid "Name: %s"
@@ -1007,6 +1016,10 @@ msgstr "Bir oyun aç"
 #: src/xenia/ui/game_list_panel_wx.cc:949
 msgid "Open containing folder"
 msgstr "Bulunduğu klasörü aç"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:285
+msgid "Open using Rosetta"
+msgstr "Rosetta ile aç"
 
 #: src/xenia/ui/quick_settings_dialog_wx.cc:273
 msgid "Other"
@@ -1418,6 +1431,10 @@ msgstr "Amerika Birleşik Devletleri"
 msgid "Unknown"
 msgstr "Bilinmiyor"
 
+#: src/xenia/app/emulator_window.cc:2822
+msgid "Unmute"
+msgstr "Sesi aç"
+
 #: src/xenia/ui/game_list_panel_wx.cc:100
 msgid "Unplayable"
 msgstr "Oynanamaz"
@@ -1430,6 +1447,18 @@ msgstr "Kaydedilmemiş Değişiklikler"
 #: src/xenia/ui/profile_editor_dialog_wx.cc:169
 msgid "Uruguay"
 msgstr "Uruguay"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:264
+msgid "Use GameMode"
+msgstr "GameMode kullan"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:280
+msgid "Use MTL HUD"
+msgstr "MTL HUD kullan"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:259
+msgid "Use MangoHud"
+msgstr "MangoHud kullan"
 
 #: src/xenia/ui/profile_editor_dialog_wx.cc:170
 msgid "Uzbekistan"
@@ -1498,6 +1527,10 @@ msgstr "Zimbabve"
 #: src/xenia/ui/patches_dialog_wx.cc:137
 msgid "by %s"
 msgstr "tarafından %s"
+
+#: src/xenia/ui/quick_settings_dialog_wx.cc:274
+msgid "macOS"
+msgstr "macOS"
 
 #: src/xenia/ui/game_list_panel_wx.cc:1072
 msgid "title %08X"
