@@ -3750,6 +3750,9 @@ bool MetalTextureCache::AreActiveTextureSRVKeysUpToDate(
     size_t host_shader_binding_count) const {
   for (size_t i = 0; i < host_shader_binding_count; ++i) {
     const TextureSRVKey& key = keys[i];
+    if (key.destroy_epoch != texture_destroy_epoch_) {
+      return false;
+    }
     const TextureBinding* binding =
         GetValidTextureBinding(host_shader_bindings[i].fetch_constant);
     if (!binding) {
@@ -3772,6 +3775,7 @@ void MetalTextureCache::WriteActiveTextureSRVKeys(
     size_t host_shader_binding_count) const {
   for (size_t i = 0; i < host_shader_binding_count; ++i) {
     TextureSRVKey& key = keys[i];
+    key.destroy_epoch = texture_destroy_epoch_;
     const TextureBinding* binding =
         GetValidTextureBinding(host_shader_bindings[i].fetch_constant);
     if (!binding) {

@@ -75,6 +75,7 @@ class MetalTextureCache : public TextureCache {
     TextureKey key;
     uint32_t host_swizzle;
     uint8_t swizzled_signs;
+    uint64_t destroy_epoch = 0;
   };
 
   bool AreActiveTextureSRVKeysUpToDate(
@@ -85,6 +86,12 @@ class MetalTextureCache : public TextureCache {
       TextureSRVKey* keys,
       const DxbcShader::TextureBinding* host_shader_bindings,
       size_t host_shader_binding_count) const;
+
+  // Monotonic counter bumped in ~MetalTexture whenever a texture (and its
+  // swizzled views) is destroyed. Callers that cache raw MTL::Texture*/view
+  // pointers across draws compare this to detect when those pointers may have
+  // been freed by an eviction.
+  uint64_t texture_destroy_epoch() const { return texture_destroy_epoch_; }
 
   MTL::Texture* RequestSwapTexture(uint32_t& width_scaled_out,
                                    uint32_t& height_scaled_out,

@@ -1920,6 +1920,12 @@ class MetalCommandProcessor final : public CommandProcessor {
       current_sampler_parameter_inputs_pixel_;
   std::vector<MTL::Texture*> current_texture_bindless_resources_vertex_;
   std::vector<MTL::Texture*> current_texture_bindless_resources_pixel_;
+  // Texture-cache destroy epoch observed when the bindless texture vectors
+  // above were last (re)built. A mismatch means a MetalTexture (and its
+  // swizzled views) was freed since those raw pointers were cached, so the
+  // vectors are rebuilt before they are residency-referenced. See
+  // PrepareDrawConstants / BuildBindlessTextureResourceSet.
+  uint64_t last_bindless_texture_destroy_epoch_ = 0;
   std::vector<uint32_t> scratch_texture_bindless_indices_vertex_;
   std::vector<MTL::Texture*> scratch_texture_bindless_resources_vertex_;
   std::vector<uint32_t> scratch_sampler_bindless_indices_vertex_;
