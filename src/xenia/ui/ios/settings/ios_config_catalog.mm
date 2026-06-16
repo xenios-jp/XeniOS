@@ -349,20 +349,26 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
 
   IOSConfigSection scheduler;
   scheduler.title = "Thread QoS";
-  scheduler.footer = "Xenia's regular iOS threads use Default QoS. The GPU Commands "
-                     "promotion is on by default; the others are experimental — leave "
-                     "them off unless you are testing CPU or audio scheduling behavior "
-                     "after a full relaunch.";
-  AddBoolSetting(scheduler.items, "ios_gpu_commands_user_initiated_qos",
-                 "GPU Commands User-Initiated QoS",
-                 "Runs the Metal command processor host thread at user-initiated QoS. "
-                 "Try this first if frames appear to miss submission deadlines.",
+  scheduler.footer = "Xenia's regular iOS threads use Default QoS unless promoted "
+                     "here. GPU Commands runs at User-Interactive QoS by default; "
+                     "guest CPU work runs at User-Initiated QoS by default; audio "
+                     "runs at User-Interactive QoS by default. Changes require a full "
+                     "relaunch.";
+  AddBoolSetting(scheduler.items, "ios_gpu_commands_user_interactive_qos",
+                 "GPU Commands User-Interactive QoS",
+                 "Runs the Metal command processor host thread at user-interactive QoS "
+                 "so frame submission and presentation get latency-critical scheduling.",
                  true);
   AddBoolSetting(scheduler.items, "ios_guest_threads_user_initiated_qos",
                  "Guest Threads User-Initiated QoS",
-                 "Runs guest XThreads at user-initiated QoS. This may help CPU-bound "
-                 "titles, but it can also compete with audio and rendering work.",
-                 false);
+                 "Runs guest XThreads and GuestScheduler dispatch threads at "
+                 "user-initiated QoS for CPU-bound game execution.",
+                 true);
+  AddStringChoiceSetting(scheduler.items, "ios_audio_worker_qos", "Audio Worker QoS",
+                         "Sets the audio worker host thread QoS.", "user_interactive",
+                         {{"Default", "default"},
+                          {"User-Initiated", "user_initiated"},
+                          {"User-Interactive", "user_interactive"}});
   AddBoolSetting(scheduler.items, "ios_emulator_thread_user_initiated_qos",
                  "Emulator Thread User-Initiated QoS",
                  "Runs the high-level emulator setup and launch thread at "

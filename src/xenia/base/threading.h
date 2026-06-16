@@ -444,6 +444,9 @@ class Thread : public WaitHandle {
     size_t stack_size = 4_MiB;
     bool create_suspended = false;
     int32_t initial_priority = 0;
+#if XE_PLATFORM_IOS
+    ThreadQoS qos = ThreadQoS::kDefault;
+#endif  // XE_PLATFORM_IOS
   };
 
   // Creates a thread with the given parameters and calls the start routine from
