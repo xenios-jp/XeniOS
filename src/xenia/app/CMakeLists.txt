@@ -4,10 +4,11 @@ if(XE_PLATFORM_IOS)
   # added to the build. actool's AssetCatalogAgent crashes compiling ANY image
   # (even a single plain PNG) under the current Xcode 27 beta / macOS 26.4
   # toolchain ("AVFCore ... missing from an installed root"), which fails the
-  # CompileAssetCatalogVariant build phase. Compiling the catalog is disabled to
-  # keep the build green; the app falls back to SF Symbols for the SettingsLink
-  # icons and uses the default app icon. Re-add the catalog and the app-icon
-  # settings below once the toolchain is fixed (released Xcode / newer macOS).
+  # CompileAssetCatalogVariant build phase. Compiling the catalog in Xcode is
+  # disabled to keep the build green; release packaging compiles the Icon
+  # Composer app icon from assets/apple/AppIcon.icon after the app build.
+  # Re-add the catalog and the app-icon settings below once the toolchain is
+  # fixed (released Xcode / newer macOS).
   add_executable(xenia-app MACOSX_BUNDLE
     ${CMAKE_CURRENT_SOURCE_DIR}/xenia_main_ios.mm
     ${PROJECT_SOURCE_DIR}/src/xenia/ui/ios/app/windowed_app_main_ios.mm

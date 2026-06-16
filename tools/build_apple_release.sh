@@ -14,7 +14,7 @@ Builds and packages Apple release artifacts:
 Options:
   --out DIR            Output directory (default: scratch/artifacts)
   --config NAME        checked|debug|release|valgrind (default: release)
-  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.0.1)
+  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.1)
   --build-number NUM   Build number override (defaults to git commit count)
   --channel NAME       release|preview (default: release)
   --stage NAME         alpha|beta|rc|stable (default: stable)
@@ -48,7 +48,7 @@ Notes:
 - iOS packaging creates an ad-hoc-signed .ipa suitable for re-signing.
 - This script expects Xcode command line tools (xcodebuild, codesign, hdiutil).
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
-- If no matching tag is available, the marketing version falls back to 2.0.1.
+- If no matching tag is available, the marketing version falls back to 2.1.
 - Public release stage defaults to stable.
 - Official build numbers default to git rev-list --count HEAD.
 EOF
@@ -117,7 +117,7 @@ trim_string() {
 }
 
 default_marketing_version() {
-  printf '%s' "2.0.1"
+  printf '%s' "2.1"
 }
 
 validate_marketing_version() {
@@ -152,8 +152,6 @@ read_latest_marketing_version_from_git() {
 
   local tag=""
   local patterns=(
-    "v[0-9]*.[0-9]*.[0-9]*"
-    "[0-9]*.[0-9]*.[0-9]*"
     "v[0-9]*.[0-9]*"
     "[0-9]*.[0-9]*"
   )
@@ -290,6 +288,12 @@ plist_delete_key() {
   /usr/libexec/PlistBuddy -c "Delete :$key" "$plist" >/dev/null 2>&1 || true
 }
 
+plist_has_key() {
+  local plist="$1"
+  local key="$2"
+  /usr/libexec/PlistBuddy -c "Print :$key" "$plist" >/dev/null 2>&1
+}
+
 plist_set_string() {
   local plist="$1"
   local key="$2"
@@ -367,6 +371,15 @@ compile_bundle_icon_assets() {
 
   actool_cmd+=("$icon_source")
   "${actool_cmd[@]}" >/dev/null
+  if plist_has_key "$partial_plist" "com.apple.actool.errors"; then
+    /usr/libexec/PlistBuddy -c "Print :com.apple.actool.errors" "$partial_plist" >&2 || true
+    rm -f "$partial_plist"
+    die "actool failed compiling app icon for $platform"
+  fi
+  if [ "$platform" = "iphoneos" ] && [ ! -f "$resources_dir/Assets.car" ]; then
+    rm -f "$partial_plist"
+    die "actool did not produce iOS Assets.car"
+  fi
   plist_merge "$plist" "$partial_plist"
   rm -f "$partial_plist"
 }
@@ -1075,6 +1088,7 @@ if [ "$build_ios" -eq 1 ]; then
 
   stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
   stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
+  compile_bundle_icon_assets "$app_bundle" "iphoneos" "$ios_min"
   stamp_bundle_attestation "$app_bundle" "ios" "$build_channel" "$release_version" \
     "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
   # Ad-hoc sign to embed entitlements (increased-memory-limit).

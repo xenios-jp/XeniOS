@@ -15,3 +15,7 @@ IncludeBlocks: Preserve
 Language: Java
 DisableFormat: true
 SortIncludes: false
+
+---
+Language: Json
+DisableFormat: true
