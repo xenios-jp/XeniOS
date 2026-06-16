@@ -334,9 +334,9 @@ compile_bundle_icon_assets() {
   local app_bundle="$1"
   local platform="$2"
   local min_version="$3"
-  local icon_catalog="$root/assets/apple/AppIcon.xcassets"
+  local icon_source="$root/assets/apple/AppIcon.icon"
 
-  [ -d "$icon_catalog" ] || die "missing icon catalog: $icon_catalog"
+  [ -d "$icon_source" ] || die "missing Icon Composer source: $icon_source"
 
   local resources_dir plist partial_plist
   resources_dir="$(bundle_resources_path "$app_bundle")"
@@ -365,7 +365,7 @@ compile_bundle_icon_assets() {
     plist_delete_key "$plist" "CFBundleIconName"
   fi
 
-  actool_cmd+=("$icon_catalog")
+  actool_cmd+=("$icon_source")
   "${actool_cmd[@]}" >/dev/null
   plist_merge "$plist" "$partial_plist"
   rm -f "$partial_plist"
