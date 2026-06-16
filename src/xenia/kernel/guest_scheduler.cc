@@ -14,11 +14,15 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/kernel_flags.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xthread.h"
 
 DECLARE_bool(ignore_thread_affinities);
+#if XE_PLATFORM_IOS
+DECLARE_bool(ios_guest_threads_user_initiated_qos);
+#endif  // XE_PLATFORM_IOS
 
 namespace xe {
 namespace kernel {
@@ -64,6 +68,11 @@ void GuestScheduler::EnsureStarted() {
                  static_cast<uint32_t>(host_cpu_count_);
   for (int i = 0; i < host_cpu_count_; ++i) {
     xe::threading::Thread::CreationParameters params;
+#if XE_PLATFORM_IOS
+    if (cvars::ios_guest_threads_user_initiated_qos) {
+      params.qos = xe::threading::ThreadQoS::kUserInitiated;
+    }
+#endif  // XE_PLATFORM_IOS
     cpus_[i].host_thread =
         xe::threading::Thread::Create(params, [this, i]() { RunLoop(i); });
     cpus_[i].host_thread->set_name(std::string("Guest CPU ") +

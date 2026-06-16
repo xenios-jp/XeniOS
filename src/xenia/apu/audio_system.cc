@@ -57,6 +57,12 @@ DEFINE_uint32(apu_max_queued_frames, kApuQueuedFramesDefault,
               "Value range: [4-64]",
               "APU");
 UPDATE_from_uint32(apu_max_queued_frames, 2024, 8, 31, 20, 64);
+#if XE_PLATFORM_IOS
+DEFINE_string(ios_audio_worker_qos, "user_interactive",
+              "iOS audio worker QoS. Use: [default, user_initiated, "
+              "user_interactive]",
+              "iOS");
+#endif  // XE_PLATFORM_IOS
 
 namespace xe {
 namespace apu {
@@ -114,11 +120,21 @@ X_STATUS AudioSystem::Setup(kernel::KernelState* kernel_state) {
 
 void AudioSystem::WorkerThreadMain() {
 #if XE_PLATFORM_IOS
-  if (xe::threading::set_current_thread_qos(
-          xe::threading::ThreadQoS::kUserInteractive)) {
-    XELOGI("iOS: Audio Worker QoS set to user-interactive");
-  } else {
-    XELOGW("iOS: Audio Worker QoS request failed");
+  const auto& audio_qos = cvars::ios_audio_worker_qos;
+  if (audio_qos == "user_initiated" || audio_qos == "user_interactive") {
+    const bool user_interactive = audio_qos == "user_interactive";
+    const auto qos = user_interactive
+                         ? xe::threading::ThreadQoS::kUserInteractive
+                         : xe::threading::ThreadQoS::kUserInitiated;
+    const char* qos_name =
+        user_interactive ? "user-interactive" : "user-initiated";
+    if (xe::threading::set_current_thread_qos(qos)) {
+      XELOGI("iOS: Audio Worker QoS set to {}", qos_name);
+    } else {
+      XELOGW("iOS: Audio Worker QoS request failed");
+    }
+  } else if (audio_qos != "default") {
+    XELOGW("iOS: unknown Audio Worker QoS '{}', using default", audio_qos);
   }
 #endif  // XE_PLATFORM_IOS
 

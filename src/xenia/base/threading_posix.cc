@@ -719,10 +719,9 @@ class PosixCondition<Thread> final : public PosixConditionBase {
 
 #if XE_PLATFORM_IOS
       // Xenia uses raw pthreads, which Xcode reports as QoS Unavailable unless
-      // a Darwin QoS class is attached. Use Default here so ordinary Xenia
-      // threads get normal scheduler treatment and higher-priority iOS paths
-      // can opt in explicitly from their own entrypoints.
-      (void)pthread_attr_set_qos_class_np(&attr, QOS_CLASS_DEFAULT, 0);
+      // a Darwin QoS class is attached. Use the requested class here so
+      // latency-sensitive iOS paths can opt in before the thread starts.
+      (void)pthread_attr_set_qos_class_np(&attr, ToDarwinQos(params.qos), 0);
 #endif
 
       if (params.initial_priority != 0) {
@@ -1546,9 +1545,6 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   }
 #endif
   threading::set_name("");
-#if XE_PLATFORM_IOS
-  threading::set_current_thread_qos(ThreadQoS::kDefault);
-#endif
 
   auto start_data = static_cast<ThreadStartData*>(parameter);
   assert_not_null(start_data);

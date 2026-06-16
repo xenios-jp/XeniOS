@@ -30,15 +30,14 @@ namespace phase {
 // is hidden behind an opaque Impl so this header stays free of Objective-C and
 // can be included from plain C++ translation units (e.g. the audio system).
 //
-// NOTE: This is currently the Phase 1 scaffold — it compiles and links the
-// PHASE framework and honors the worker backpressure contract, but produces
-// silence until the Phase 2 playback path is implemented.
+// The driver submits the guest 5.1 bed as deinterleaved float PCM into a PHASE
+// ambient mixer. PHASE then spatializes the bed for the active output route,
+// such as binaural rendering over supported headphones.
 class PHASEAudioDriver final : public AudioDriver {
  public:
-  explicit PHASEAudioDriver(
-      xe::threading::Semaphore* semaphore,
-      uint32_t frequency = kFrameFrequencyDefault,
-      uint32_t channels = kFrameChannelsDefault);
+  explicit PHASEAudioDriver(xe::threading::Semaphore* semaphore,
+                            uint32_t frequency = kFrameFrequencyDefault,
+                            uint32_t channels = kFrameChannelsDefault);
   ~PHASEAudioDriver() override;
 
   bool Initialize() override;

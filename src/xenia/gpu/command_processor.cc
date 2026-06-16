@@ -39,12 +39,13 @@ DEFINE_bool(
     "GPU");
 
 #if XE_PLATFORM_IOS
-DEFINE_bool(ios_gpu_commands_user_initiated_qos, true,
-            "Run the GPU command processor (\"GPU Commands\") host thread at "
-            "user-initiated QoS on iOS so frame submission and presentation are "
-            "not descheduled under load. On by default; turn off to A/B against "
-            "default QoS.",
-            "iOS");
+DEFINE_bool(
+    ios_gpu_commands_user_interactive_qos, true,
+    "Run the GPU command processor (\"GPU Commands\") host thread at "
+    "user-interactive QoS on iOS so frame submission and presentation are "
+    "not descheduled under load. On by default; turn off to A/B against "
+    "default QoS.",
+    "iOS");
 #endif  // XE_PLATFORM_IOS
 
 DEFINE_bool(disassemble_pm4, false,
@@ -506,14 +507,12 @@ void CommandProcessor::ThrottlePresentation() {
 void CommandProcessor::WorkerThreadMain() {
 #if XE_PLATFORM_IOS
   // Lift the GPU command/submit/present thread out of default QoS so iOS does
-  // not deschedule it across vsync under load. Toggle:
-  // ios_gpu_commands_user_initiated_qos (on by default). Mirrors the
-  // Emulator Thread QoS promotion in xenia_main_ios.
+  // not deschedule it across vsync under load.
   xe::threading::set_current_thread_qos(xe::threading::ThreadQoS::kDefault);
-  if (cvars::ios_gpu_commands_user_initiated_qos) {
+  if (cvars::ios_gpu_commands_user_interactive_qos) {
     if (xe::threading::set_current_thread_qos(
-            xe::threading::ThreadQoS::kUserInitiated)) {
-      XELOGI("iOS: GPU Commands thread QoS set to user-initiated");
+            xe::threading::ThreadQoS::kUserInteractive)) {
+      XELOGI("iOS: GPU Commands thread QoS set to user-interactive");
     } else {
       XELOGW("iOS: GPU Commands thread QoS request failed");
     }

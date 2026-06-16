@@ -73,10 +73,10 @@ unsigned XEZarRecommendedCompressionThreads() {
 }
 
 // Runs at the top of every ZAR compression pool thread. Match the conversion's
-// user-initiated QoS so the foreground progress UI stays responsive, and give
+// user-interactive QoS so the foreground progress UI stays responsive, and give
 // the threads a stable name for Instruments traces.
 void XEZarInitCompressionThread() {
-  pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
   pthread_setname_np("xe-zar-compress");
 }
 
@@ -2456,7 +2456,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                  completed:0
                                      total:requests_holder->size()
                                    actions:preflight_actions];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
     for (size_t request_index = 0; request_index < requests_holder->size(); ++request_index) {
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
@@ -2533,7 +2533,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                  completed:0
                                      total:requests_holder->size()
                                    actions:preflight_actions];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
     for (size_t request_index = 0; request_index < requests_holder->size(); ++request_index) {
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
@@ -2593,7 +2593,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                  completed:0
                                      total:requests_holder->size()
                                    actions:preflight_actions];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
     for (size_t request_index = 0; request_index < requests_holder->size(); ++request_index) {
       XEZarRefreshConversionRequestEstimate(&(*requests_holder)[request_index]);
       const size_t completed = request_index + 1;
@@ -2685,7 +2685,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
   auto requests_holder =
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
     std::vector<XeniaIOSZarConversionItemResult> results;
     results.reserve(requests_holder->size());
 

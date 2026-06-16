@@ -39,7 +39,7 @@ DEFINE_bool(ignore_thread_affinities, true,
             "Ignores game-specified thread affinities.", "Kernel");
 #if XE_PLATFORM_IOS
 DEFINE_bool(
-    ios_guest_threads_user_initiated_qos, false,
+    ios_guest_threads_user_initiated_qos, true,
     "Run guest XThreads at user-initiated QoS on iOS. This is an iOS "
     "scheduler experiment for devices where guest CPU execution falls behind.",
     "iOS");
@@ -487,6 +487,11 @@ X_STATUS XThread::Create() {
     params.create_suspended = true;
 
     params.stack_size = 16_MiB;  // Allocate a big host stack.
+#if XE_PLATFORM_IOS
+    if (!is_host_thread() && cvars::ios_guest_threads_user_initiated_qos) {
+      params.qos = xe::threading::ThreadQoS::kUserInitiated;
+    }
+#endif  // XE_PLATFORM_IOS
     thread_ = xe::threading::Thread::Create(params, [this]() {
       // Set thread ID override. This is used by logging.
       xe::threading::set_current_thread_id(handle());
@@ -1459,6 +1464,11 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
     xe::threading::Thread::CreationParameters params;
     params.create_suspended = true;  // Not done restoring yet.
     params.stack_size = 16_MiB;
+#if XE_PLATFORM_IOS
+    if (cvars::ios_guest_threads_user_initiated_qos) {
+      params.qos = xe::threading::ThreadQoS::kUserInitiated;
+    }
+#endif  // XE_PLATFORM_IOS
     thread->thread_ = xe::threading::Thread::Create(
         params, [thread, state
 #if XE_PLATFORM_IOS
