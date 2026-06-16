@@ -28,7 +28,7 @@ DEFINE_bool(
     "Metal");
 
 DEFINE_bool(
-    metal_shared_memory_zero_copy, true,
+    metal_shared_memory_zero_copy, false,
     "Wrap the guest physical memory region itself as the shared-memory "
     "buffer (newBuffer bytesNoCopy) so the GPU reads vertex/index data and "
     "writes memexport/resolve results directly in guest RAM, eliminating "

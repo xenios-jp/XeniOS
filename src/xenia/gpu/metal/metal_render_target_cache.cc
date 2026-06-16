@@ -54,7 +54,7 @@
 #include "xenia/gpu/xenos.h"
 
 DEFINE_bool(
-    metal_allow_gamma_unorm16, false,
+    metal_allow_gamma_unorm16, true,
     "Allow gamma_render_target_as_unorm16 on Metal despite known issues",
     "Metal");
 DEFINE_bool(metal_transfer_fast_divmod, true,
