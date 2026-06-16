@@ -231,7 +231,7 @@ DEFINE_bool(
     "Metal");
 
 DEFINE_bool(
-    metal_native_msl_debug_validation, true,
+    metal_native_msl_debug_validation, false,
     "Compile generated native MSL with Metal shader logging, safe math, "
     "invariance preservation, and diagnostic logging while developing the "
     "native MSL translator.",

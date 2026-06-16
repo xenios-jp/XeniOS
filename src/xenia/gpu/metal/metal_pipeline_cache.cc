@@ -72,7 +72,7 @@ DECLARE_bool(async_shader_compilation);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
 DECLARE_bool(depth_float24_round);
 
-DEFINE_int32(metal_pipeline_creation_threads, -1,
+DEFINE_int32(metal_pipeline_creation_threads, 1,
              "Number of threads for background pipeline compilation. "
              "-1 = auto (75% of cores), 0 = disabled (synchronous).",
              "Metal");
@@ -82,7 +82,7 @@ DEFINE_bool(metal_native_msl_guest_shaders, false,
             "Shading Language. This is compile/dump-only by default.",
             "Metal");
 
-DEFINE_bool(metal_native_msl_compile_only, true,
+DEFINE_bool(metal_native_msl_compile_only, false,
             "When native guest MSL is enabled, compile native MSL for "
             "diagnostics but keep rendering on the DXIL/MSC path.",
             "Metal");
