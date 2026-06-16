@@ -294,6 +294,21 @@ plist_has_key() {
   /usr/libexec/PlistBuddy -c "Print :$key" "$plist" >/dev/null 2>&1
 }
 
+plist_is_readable() {
+  local plist="$1"
+  [ -f "$plist" ] || return 1
+  /usr/libexec/PlistBuddy -c "Print" "$plist" >/dev/null 2>&1
+}
+
+print_actool_errors() {
+  local plist="$1"
+  if plist_is_readable "$plist"; then
+    /usr/libexec/PlistBuddy -c "Print :com.apple.actool.errors" "$plist" >&2 || true
+  elif [ -s "$plist" ]; then
+    cat "$plist" >&2
+  fi
+}
+
 plist_set_string() {
   local plist="$1"
   local key="$2"
@@ -339,6 +354,7 @@ compile_bundle_icon_assets() {
   local platform="$2"
   local min_version="$3"
   local icon_source="$root/assets/apple/AppIcon.icon"
+  local png_icon_source="$root/assets/apple/XeniOSAssets.xcassets"
 
   [ -d "$icon_source" ] || die "missing Icon Composer source: $icon_source"
 
@@ -348,20 +364,7 @@ compile_bundle_icon_assets() {
   mkdir -p "$resources_dir"
   clean_compiled_icon_assets "$resources_dir"
 
-  partial_plist="$(mktemp "${TMPDIR:-/tmp}/xenios_icon_plist.XXXXXX")"
-  rm -f "$partial_plist"
-
-  local -a actool_cmd=(
-    xcrun actool
-    --compile "$resources_dir"
-    --app-icon AppIcon
-    --platform "$platform"
-    --minimum-deployment-target "$min_version"
-    --output-partial-info-plist "$partial_plist"
-  )
-
   if [ "$platform" = "iphoneos" ]; then
-    actool_cmd+=(--target-device iphone --target-device ipad)
     plist_delete_key "$plist" "CFBundleIcons"
     plist_delete_key "$plist" "CFBundleIcons~ipad"
   else
@@ -369,17 +372,66 @@ compile_bundle_icon_assets() {
     plist_delete_key "$plist" "CFBundleIconName"
   fi
 
-  actool_cmd+=("$icon_source")
-  "${actool_cmd[@]}" >/dev/null
-  if plist_has_key "$partial_plist" "com.apple.actool.errors"; then
-    /usr/libexec/PlistBuddy -c "Print :com.apple.actool.errors" "$partial_plist" >&2 || true
+  run_actool_icon_compile() {
+    local source="$1"
+    local app_icon_name="$2"
+    partial_plist="$(mktemp "${TMPDIR:-/tmp}/xenios_icon_plist.XXXXXX")"
     rm -f "$partial_plist"
-    die "actool failed compiling app icon for $platform"
+
+    local -a actool_cmd=(
+      xcrun actool
+      --compile "$resources_dir"
+      --app-icon "$app_icon_name"
+      --platform "$platform"
+      --minimum-deployment-target "$min_version"
+      --output-partial-info-plist "$partial_plist"
+    )
+
+    if [ "$platform" = "iphoneos" ]; then
+      actool_cmd+=(--target-device iphone --target-device ipad)
+    fi
+
+    actool_cmd+=("$source")
+    "${actool_cmd[@]}" >/dev/null
+  }
+
+  local icon_compile_ok=1
+  if ! run_actool_icon_compile "$icon_source" "AppIcon"; then
+    icon_compile_ok=0
+  elif ! plist_is_readable "$partial_plist"; then
+    icon_compile_ok=0
+  elif plist_has_key "$partial_plist" "com.apple.actool.errors"; then
+    icon_compile_ok=0
+  elif [ "$platform" = "iphoneos" ] && [ ! -f "$resources_dir/Assets.car" ]; then
+    icon_compile_ok=0
   fi
-  if [ "$platform" = "iphoneos" ] && [ ! -f "$resources_dir/Assets.car" ]; then
+
+  if [ "$icon_compile_ok" -eq 0 ]; then
+    if [ "$platform" != "iphoneos" ]; then
+      print_actool_errors "$partial_plist"
+      rm -f "$partial_plist"
+      die "actool failed compiling app icon for $platform"
+    fi
+
+    echo "Icon Composer app icon did not produce iOS Assets.car; falling back to PNG app icon catalog." >&2
     rm -f "$partial_plist"
-    die "actool did not produce iOS Assets.car"
+    clean_compiled_icon_assets "$resources_dir"
+    [ -d "$png_icon_source" ] || die "missing PNG app icon catalog: $png_icon_source"
+
+    if ! run_actool_icon_compile "$png_icon_source" "AppIcon"; then
+      print_actool_errors "$partial_plist"
+      rm -f "$partial_plist"
+      die "actool failed compiling fallback iOS app icon catalog"
+    fi
+    if ! plist_is_readable "$partial_plist" ||
+        plist_has_key "$partial_plist" "com.apple.actool.errors" ||
+        [ ! -f "$resources_dir/Assets.car" ]; then
+      print_actool_errors "$partial_plist"
+      rm -f "$partial_plist"
+      die "fallback iOS app icon catalog did not produce Assets.car"
+    fi
   fi
+
   plist_merge "$plist" "$partial_plist"
   rm -f "$partial_plist"
 }

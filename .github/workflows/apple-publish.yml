@@ -60,6 +60,8 @@ jobs:
       macos_build_id: "${{ steps.metadata.outputs.macos_build_id }}"
       release_tag: "${{ steps.release.outputs.tag }}"
       prerelease: "${{ steps.release.outputs.prerelease }}"
+      build_matrix: "${{ steps.build_matrix.outputs.matrix }}"
+      publish_macos: "${{ steps.build_matrix.outputs.publish_macos }}"
 
     steps:
       - uses: actions/checkout@v4
@@ -183,6 +185,25 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+      - name: Resolve Apple build matrix
+        id: build_matrix
+        shell: bash
+        env:
+          CHANNEL: "${{ steps.metadata.outputs.channel }}"
+        run: |
+          set -euo pipefail
+
+          if [ "${CHANNEL}" = "preview" ]; then
+            matrix='{"include":[{"label":"iOS arm64","runner":"macos-15","artifact_name":"xenios_ios_iphone_ipad","artifact_path":"scratch/artifacts/xenios_ios_iphone_ipad.ipa","script_args":"--skip-macos-arm64 --skip-macos-x86_64","archive_app":false}]}'
+            publish_macos="false"
+          else
+            matrix='{"include":[{"label":"iOS arm64","runner":"macos-15","artifact_name":"xenios_ios_iphone_ipad","artifact_path":"scratch/artifacts/xenios_ios_iphone_ipad.ipa","script_args":"--skip-macos-arm64 --skip-macos-x86_64","archive_app":false},{"label":"macOS Apple Silicon","runner":"macos-15","artifact_name":"xenios_macos_apple_silicon","artifact_path":"scratch/artifacts/xenios_macos_apple_silicon.dmg","script_args":"--skip-ios --skip-macos-x86_64","archive_app":true},{"label":"macOS Intel","runner":"macos-15-intel","artifact_name":"xenios_macos_intel","artifact_path":"scratch/artifacts/xenios_macos_intel.dmg","script_args":"--skip-ios --skip-macos-arm64","archive_app":true}]}'
+            publish_macos="true"
+          fi
+
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "publish_macos=${publish_macos}" >> "$GITHUB_OUTPUT"
+
   build-apple:
     name: "Build ${{ matrix.label }}"
     needs:
@@ -190,26 +211,7 @@ jobs:
     runs-on: "${{ matrix.runner }}"
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: "iOS arm64"
-            runner: "macos-15"
-            artifact_name: "xenios_ios_iphone_ipad"
-            artifact_path: "scratch/artifacts/xenios_ios_iphone_ipad.ipa"
-            script_args: "--skip-macos-arm64 --skip-macos-x86_64"
-            archive_app: false
-          - label: "macOS Apple Silicon"
-            runner: "macos-15"
-            artifact_name: "xenios_macos_apple_silicon"
-            artifact_path: "scratch/artifacts/xenios_macos_apple_silicon.dmg"
-            script_args: "--skip-ios --skip-macos-x86_64"
-            archive_app: true
-          - label: "macOS Intel"
-            runner: "macos-15-intel"
-            artifact_name: "xenios_macos_intel"
-            artifact_path: "scratch/artifacts/xenios_macos_intel.dmg"
-            script_args: "--skip-ios --skip-macos-arm64"
-            archive_app: true
+      matrix: ${{ fromJson(needs.resolve-metadata.outputs.build_matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -316,6 +318,7 @@ jobs:
     needs:
       - resolve-metadata
       - build-apple
+    if: "${{ needs.resolve-metadata.outputs.publish_macos == 'true' }}"
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -382,6 +385,7 @@ jobs:
       - resolve-metadata
       - build-apple
       - package-macos-universal
+    if: "${{ always() && needs.resolve-metadata.result == 'success' && needs.build-apple.result == 'success' && (needs.resolve-metadata.outputs.publish_macos != 'true' || needs.package-macos-universal.result == 'success') }}"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -404,18 +408,21 @@ jobs:
           path: "artifacts/ios"
 
       - name: Download macOS Apple Silicon artifact
+        if: "${{ needs.resolve-metadata.outputs.publish_macos == 'true' }}"
         uses: actions/download-artifact@v4
         with:
           name: "xenios_macos_apple_silicon"
           path: "artifacts/macos-arm64"
 
       - name: Download macOS Intel artifact
+        if: "${{ needs.resolve-metadata.outputs.publish_macos == 'true' }}"
         uses: actions/download-artifact@v4
         with:
           name: "xenios_macos_intel"
           path: "artifacts/macos-x86_64"
 
       - name: Download macOS Universal artifact
+        if: "${{ needs.resolve-metadata.outputs.publish_macos == 'true' }}"
         uses: actions/download-artifact@v4
         with:
           name: "xenios_macos_universal"
@@ -435,6 +442,7 @@ jobs:
           PUBLISHED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
           RELEASE_TAG: "${{ needs.resolve-metadata.outputs.release_tag }}"
           PRERELEASE: "${{ needs.resolve-metadata.outputs.prerelease }}"
+          PUBLISH_MACOS: "${{ needs.resolve-metadata.outputs.publish_macos }}"
         run: |
           set -euo pipefail
 
@@ -486,27 +494,38 @@ jobs:
               >/dev/null
           fi
 
-          gh release upload "${RELEASE_TAG}" \
-            artifacts/ios/xenios_ios_iphone_ipad.ipa \
-            artifacts/macos-universal/xenios_macos_universal.dmg \
-            artifacts/macos-arm64/xenios_macos_apple_silicon.dmg \
-            artifacts/macos-x86_64/xenios_macos_intel.dmg \
-            --clobber
+          release_assets=(artifacts/ios/xenios_ios_iphone_ipad.ipa)
+          if [ "${PUBLISH_MACOS}" = "true" ]; then
+            release_assets+=(
+              artifacts/macos-universal/xenios_macos_universal.dmg
+              artifacts/macos-arm64/xenios_macos_apple_silicon.dmg
+              artifacts/macos-x86_64/xenios_macos_intel.dmg
+            )
+          fi
+          gh release upload "${RELEASE_TAG}" "${release_assets[@]}" --clobber
 
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
 
           html_url="$(jq -r '.html_url' release.json)"
           ios_download_url="$(jq -r '.assets[] | select(.name == "xenios_ios_iphone_ipad.ipa") | .browser_download_url' release.json)"
-          macos_universal_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_universal.dmg") | .browser_download_url' release.json)"
-          macos_arm64_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_apple_silicon.dmg") | .browser_download_url' release.json)"
-          macos_x86_64_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_intel.dmg") | .browser_download_url' release.json)"
+          macos_universal_download_url=""
+          macos_arm64_download_url=""
+          macos_x86_64_download_url=""
+          if [ "${PUBLISH_MACOS}" = "true" ]; then
+            macos_universal_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_universal.dmg") | .browser_download_url' release.json)"
+            macos_arm64_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_apple_silicon.dmg") | .browser_download_url' release.json)"
+            macos_x86_64_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_intel.dmg") | .browser_download_url' release.json)"
+          fi
 
-          for output_name in \
-            html_url \
-            ios_download_url \
-            macos_universal_download_url \
-            macos_arm64_download_url \
-            macos_x86_64_download_url; do
+          required_outputs=(html_url ios_download_url)
+          if [ "${PUBLISH_MACOS}" = "true" ]; then
+            required_outputs+=(
+              macos_universal_download_url
+              macos_arm64_download_url
+              macos_x86_64_download_url
+            )
+          fi
+          for output_name in "${required_outputs[@]}"; do
             output_value="${!output_name}"
             if [ -z "${output_value}" ] || [ "${output_value}" = "null" ]; then
               echo "::error::Missing GitHub release output: ${output_name}"
@@ -547,6 +566,7 @@ jobs:
         shell: bash
         env:
           CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          PUBLISH_MACOS: "${{ needs.resolve-metadata.outputs.publish_macos }}"
           RELEASE_URL: "${{ steps.github_release.outputs.html_url }}"
           IOS_DOWNLOAD_URL: "${{ steps.github_release.outputs.ios_download_url }}"
           MACOS_UNIVERSAL_DOWNLOAD_URL: "${{ steps.github_release.outputs.macos_universal_download_url }}"
@@ -554,19 +574,25 @@ jobs:
           MACOS_X86_64_DOWNLOAD_URL: "${{ steps.github_release.outputs.macos_x86_64_download_url }}"
         run: |
           set -euo pipefail
-          python3 tools/update_website_build_manifests.py \
-            --website-repo "${GITHUB_WORKSPACE}/xenios-website" \
-            --metadata-file build-metadata.env \
-            --channel "${CHANNEL}" \
-            --release-url "${RELEASE_URL}" \
-            --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa" \
-            --ios-download-url "${IOS_DOWNLOAD_URL}" \
-            --macos-universal-dmg "${GITHUB_WORKSPACE}/artifacts/macos-universal/xenios_macos_universal.dmg" \
-            --macos-universal-download-url "${MACOS_UNIVERSAL_DOWNLOAD_URL}" \
-            --macos-arm64-dmg "${GITHUB_WORKSPACE}/artifacts/macos-arm64/xenios_macos_apple_silicon.dmg" \
-            --macos-arm64-download-url "${MACOS_ARM64_DOWNLOAD_URL}" \
-            --macos-x86_64-dmg "${GITHUB_WORKSPACE}/artifacts/macos-x86_64/xenios_macos_intel.dmg" \
-            --macos-x86_64-download-url "${MACOS_X86_64_DOWNLOAD_URL}"
+          args=(
+            --website-repo "${GITHUB_WORKSPACE}/xenios-website"
+            --metadata-file build-metadata.env
+            --channel "${CHANNEL}"
+            --release-url "${RELEASE_URL}"
+            --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa"
+            --ios-download-url "${IOS_DOWNLOAD_URL}"
+          )
+          if [ "${PUBLISH_MACOS}" = "true" ]; then
+            args+=(
+              --macos-universal-dmg "${GITHUB_WORKSPACE}/artifacts/macos-universal/xenios_macos_universal.dmg"
+              --macos-universal-download-url "${MACOS_UNIVERSAL_DOWNLOAD_URL}"
+              --macos-arm64-dmg "${GITHUB_WORKSPACE}/artifacts/macos-arm64/xenios_macos_apple_silicon.dmg"
+              --macos-arm64-download-url "${MACOS_ARM64_DOWNLOAD_URL}"
+              --macos-x86_64-dmg "${GITHUB_WORKSPACE}/artifacts/macos-x86_64/xenios_macos_intel.dmg"
+              --macos-x86_64-download-url "${MACOS_X86_64_DOWNLOAD_URL}"
+            )
+          fi
+          python3 tools/update_website_build_manifests.py "${args[@]}"
 
       - name: Commit xenios.jp build manifests
         shell: bash

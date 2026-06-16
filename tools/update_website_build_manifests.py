@@ -302,13 +302,17 @@ def main() -> int:
     )
 
     release_manifest["generatedAt"] = now_iso()
-    release_manifest["platforms"]["ios"][args.channel] = ios_entry
-    release_manifest["platforms"]["macos"][args.channel] = macos_entry
+    if ios_artifacts:
+        release_manifest["platforms"]["ios"][args.channel] = ios_entry
+    if macos_artifacts:
+        release_manifest["platforms"]["macos"][args.channel] = macos_entry
 
     history_manifest["generatedAt"] = release_manifest["generatedAt"]
     history = [entry for entry in history_manifest.get("builds", []) if isinstance(entry, dict)]
-    upsert_history_entry(history, ios_entry, args.channel)
-    upsert_history_entry(history, macos_entry, args.channel)
+    if ios_artifacts:
+        upsert_history_entry(history, ios_entry, args.channel)
+    if macos_artifacts:
+        upsert_history_entry(history, macos_entry, args.channel)
     history.sort(key=lambda entry: entry.get("publishedAt", ""), reverse=True)
     history_manifest["builds"] = history
 
