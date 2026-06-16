@@ -169,7 +169,7 @@ endif()
 
 if(APPLE)
   # Drives the .app bundle directory name and the binary in Contents/MacOS/.
-  set_target_properties(xenia-app PROPERTIES OUTPUT_NAME "Xenia-edge")
+  set_target_properties(xenia-app PROPERTIES OUTPUT_NAME "XeniOS")
 else()
   set_target_properties(xenia-app PROPERTIES OUTPUT_NAME "xenia_edge")
 endif()
@@ -336,8 +336,8 @@ elseif(APPLE)
 
   set_target_properties(xenia-app PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
-    MACOSX_BUNDLE_BUNDLE_NAME "Xenia-edge"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "com.xenia.edge"
+    MACOSX_BUNDLE_BUNDLE_NAME "XeniOS"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.xenios"
     MACOSX_BUNDLE_BUNDLE_VERSION "1"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
     MACOSX_BUNDLE_ICON_FILE "AppIcon.icns")

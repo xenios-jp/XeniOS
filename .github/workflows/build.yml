@@ -199,13 +199,13 @@ jobs:
       - name: Prepare artifacts
         id: prepare_artifacts
         run: |
-          app_bundle="build/bin/macOS/Release/Xenia-edge.app"
+          app_bundle="build/bin/macOS/Release/XeniOS.app"
           if [ ! -d "$app_bundle" ]; then
             echo "::error::App bundle not found at $app_bundle"
             ls -la build/bin/macOS/Release/ 2>&1 || true
             exit 1
           fi
-          main_exe="$app_bundle/Contents/MacOS/Xenia-edge"
+          main_exe="$app_bundle/Contents/MacOS/XeniOS"
           if [ "$(stat -f%z "$main_exe")" -le 100000 ]; then
             echo "::error::$main_exe is too small."
             exit 1
@@ -220,14 +220,14 @@ jobs:
           # Tar the bundle so upload-artifact preserves the executable bit and
           # any symlinks; the universal-merge job untars and lipos.
           mkdir -p artifacts
-          tar -cf artifacts/Xenia-edge.app.tar -C "$(dirname "$app_bundle")" "$(basename "$app_bundle")"
+          tar -cf artifacts/XeniOS.app.tar -C "$(dirname "$app_bundle")" "$(basename "$app_bundle")"
 
-      - name: Upload xenia edge macOS arm64 app bundle
+      - name: Upload XeniOS macOS arm64 app bundle
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@main
         with:
-          name: xenia_edge_macos_arm64_app
-          path: artifacts/Xenia-edge.app.tar
+          name: xenios_macos_arm64_app
+          path: artifacts/XeniOS.app.tar
           if-no-files-found: error
 
   build-macos-x86_64:
@@ -283,13 +283,13 @@ jobs:
       - name: Prepare artifacts
         id: prepare_artifacts
         run: |
-          app_bundle="build-x64/bin/macOS/Release/Xenia-edge.app"
+          app_bundle="build-x64/bin/macOS/Release/XeniOS.app"
           if [ ! -d "$app_bundle" ]; then
             echo "::error::App bundle not found at $app_bundle"
             ls -la build-x64/bin/macOS/Release/ 2>&1 || true
             exit 1
           fi
-          main_exe="$app_bundle/Contents/MacOS/Xenia-edge"
+          main_exe="$app_bundle/Contents/MacOS/XeniOS"
           if [ "$(stat -f%z "$main_exe")" -le 100000 ]; then
             echo "::error::$main_exe is too small."
             exit 1
@@ -302,14 +302,14 @@ jobs:
           fi
 
           mkdir -p artifacts
-          tar -cf artifacts/Xenia-edge.app.tar -C "$(dirname "$app_bundle")" "$(basename "$app_bundle")"
+          tar -cf artifacts/XeniOS.app.tar -C "$(dirname "$app_bundle")" "$(basename "$app_bundle")"
 
-      - name: Upload xenia edge macOS x86_64 app bundle
+      - name: Upload XeniOS macOS x86_64 app bundle
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@main
         with:
-          name: xenia_edge_macos_x86_64_app
-          path: artifacts/Xenia-edge.app.tar
+          name: xenios_macos_x86_64_app
+          path: artifacts/XeniOS.app.tar
           if-no-files-found: error
 
   build-windows:

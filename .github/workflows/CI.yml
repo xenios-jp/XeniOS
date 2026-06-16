@@ -71,31 +71,31 @@ jobs:
       - name: Download macOS arm64 app bundle
         uses: actions/download-artifact@main
         with:
-          name: xenia_edge_macos_arm64_app
+          name: xenios_macos_arm64_app
           path: macos_arm64_app
 
       - name: Download macOS x86_64 app bundle
         uses: actions/download-artifact@main
         with:
-          name: xenia_edge_macos_x86_64_app
+          name: xenios_macos_x86_64_app
           path: macos_x86_64_app
 
       - name: Build universal macOS DMG
         run: |
           mkdir -p macos_arm64_extracted macos_x86_64_extracted
-          tar -xf macos_arm64_app/Xenia-edge.app.tar -C macos_arm64_extracted
-          tar -xf macos_x86_64_app/Xenia-edge.app.tar -C macos_x86_64_extracted
+          tar -xf macos_arm64_app/XeniOS.app.tar -C macos_arm64_extracted
+          tar -xf macos_x86_64_app/XeniOS.app.tar -C macos_x86_64_extracted
 
-          arm64_bundle="macos_arm64_extracted/Xenia-edge.app"
-          x86_64_bundle="macos_x86_64_extracted/Xenia-edge.app"
-          arm64_exe="$arm64_bundle/Contents/MacOS/Xenia-edge"
-          x86_64_exe="$x86_64_bundle/Contents/MacOS/Xenia-edge"
+          arm64_bundle="macos_arm64_extracted/XeniOS.app"
+          x86_64_bundle="macos_x86_64_extracted/XeniOS.app"
+          arm64_exe="$arm64_bundle/Contents/MacOS/XeniOS"
+          x86_64_exe="$x86_64_bundle/Contents/MacOS/XeniOS"
 
           # Only the main executable gets merged; any non-Mach-O drift between
           # the two Contents/ trees would be silently dropped here, so fail
-          # loudly if the bundles diverge anywhere outside MacOS/Xenia-edge.
+          # loudly if the bundles diverge anywhere outside MacOS/XeniOS.
           if ! diff -r --brief \
-              --exclude=Xenia-edge \
+              --exclude=XeniOS \
               "$arm64_bundle/Contents" "$x86_64_bundle/Contents"; then
             echo "::error::arm64 and x86_64 app bundles differ outside the main executable"
             exit 1
@@ -105,8 +105,8 @@ jobs:
           # Mach-O with the fat one. Write to a separate path then mv — lipo
           # reads inputs before writing, but overlapping input/output is
           # fragile.
-          lipo -create "$arm64_exe" "$x86_64_exe" -output Xenia-edge.universal
-          mv Xenia-edge.universal "$arm64_exe"
+          lipo -create "$arm64_exe" "$x86_64_exe" -output XeniOS.universal
+          mv XeniOS.universal "$arm64_exe"
 
           info=$(lipo -info "$arm64_exe")
           echo "$info"
@@ -124,9 +124,9 @@ jobs:
           cp LICENSE dmg_contents/
           ln -s /Applications dmg_contents/Applications
 
-          hdiutil create -volname "Xenia-edge" \
+          hdiutil create -volname "XeniOS" \
             -srcfolder dmg_contents -ov -format UDZO \
-            xenia_edge_macos.dmg
+            xenios_macos.dmg
           rm -rf dmg_contents
 
       - name: Create Release
@@ -166,5 +166,5 @@ jobs:
           # Create release
           gh release create $tag \
             xenia_edge_linux.AppImage xenia_edge_windows.zip \
-            xenia_edge_macos.dmg \
+            xenios_macos.dmg \
             --target $GITHUB_SHA -t "xenia_edge" --notes-file release_notes.md
