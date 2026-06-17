@@ -449,6 +449,7 @@ class MetalCommandProcessor final : public CommandProcessor {
     }
   };
 
+ public:
   struct RenderResourceRef {
     MTL::Resource* resource = nullptr;
     MTL::ResourceUsage usage = MTL::ResourceUsageRead;
@@ -467,6 +468,7 @@ class MetalCommandProcessor final : public CommandProcessor {
     uint32_t sample_stage_bits = 0;
   };
 
+ protected:
   template <typename T>
   struct PreparedDrawSpan {
     const T* data_ptr = nullptr;
@@ -557,8 +559,8 @@ class MetalCommandProcessor final : public CommandProcessor {
     MetalTextureCache::TextureMaterializationPlan texture_materialization_plan =
         {};
 
-    std::array<DxbcShader::TranslationMetadata, kStageCount>
-        native_metadata = {};
+    std::array<DxbcShader::TranslationMetadata, kStageCount> native_metadata =
+        {};
     std::array<native_msl::NativeMslStageBindings, kStageCount>
         native_bindings = {};
     std::array<bool, kStageCount> native_metadata_valid = {};

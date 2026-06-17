@@ -12,6 +12,8 @@ add_library(xenia-gpu-metal STATIC
   metal_graphics_system.h
   metal_heap_pool.cc
   metal_heap_pool.h
+  metal_pipeline_compiler.cc
+  metal_pipeline_compiler.h
   metal_pipeline_cache.cc
   metal_pipeline_cache.h
   metal_primitive_processor.cc

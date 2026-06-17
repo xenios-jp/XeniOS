@@ -33,6 +33,7 @@
 #include "xenia/gpu/dxbc_shader.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/metal/dxbc_to_dxil_converter.h"
+#include "xenia/gpu/metal/metal_pipeline_compiler.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/ui/metal/metal_api.h"
 
@@ -54,11 +55,13 @@ struct NativeMslSourceLibraryCacheKey {
   uint64_t source_hash = 0;
   size_t source_size = 0;
   uint32_t compile_options = 0;
+  uint32_t pipeline_compiler = 0;
 
   bool operator==(const NativeMslSourceLibraryCacheKey& other) const {
     return device == other.device && source_hash == other.source_hash &&
            source_size == other.source_size &&
-           compile_options == other.compile_options;
+           compile_options == other.compile_options &&
+           pipeline_compiler == other.pipeline_compiler;
   }
 };
 
@@ -69,6 +72,7 @@ struct NativeMslSourceLibraryCacheKeyHasher {
         key.source_hash,
         uint64_t(key.source_size),
         key.compile_options,
+        key.pipeline_compiler,
     };
     return size_t(XXH3_64bits(words, sizeof(words)));
   }
@@ -96,6 +100,7 @@ class NativeMslSourceLibraryCache {
   MTL::Library* GetOrCompile(MTL::Device* device, const std::string& source,
                              uint32_t compile_options_key,
                              MTL::CompileOptions* compile_options,
+                             MetalPipelineCompiler* pipeline_compiler,
                              uint64_t* out_new_library_ms,
                              bool* out_new_library_created, bool* out_cache_hit,
                              std::string* out_error_message,
@@ -121,6 +126,9 @@ class NativeMslSourceLibraryCache {
     key.source_hash = XXH3_64bits(source.data(), source.size());
     key.source_size = source.size();
     key.compile_options = compile_options_key;
+    key.pipeline_compiler =
+        pipeline_compiler ? pipeline_compiler->native_msl_library_cache_key()
+                          : 0;
 
     std::shared_ptr<NativeMslSourceLibraryCacheEntry> entry;
     bool compile_this_entry = false;
@@ -159,7 +167,10 @@ class NativeMslSourceLibraryCache {
         NS::String::string(source.c_str(), NS::UTF8StringEncoding);
     const auto library_start = std::chrono::steady_clock::now();
     MTL::Library* library =
-        device->newLibrary(source_string, compile_options, &error);
+        pipeline_compiler
+            ? pipeline_compiler->NewLibraryWithSource(source_string,
+                                                      compile_options, &error)
+            : device->newLibrary(source_string, compile_options, &error);
     const auto library_end = std::chrono::steady_clock::now();
     if (out_new_library_ms) {
       *out_new_library_ms =
@@ -285,8 +296,8 @@ MetalShader::MetalShader(xenos::ShaderType shader_type,
     : DxbcShader(shader_type, ucode_data_hash, ucode_dwords, ucode_dword_count,
                  ucode_source_endian) {}
 
-const MetalShader::DrawConstantMetadata&
-MetalShader::GetDrawConstantMetadata() const {
+const MetalShader::DrawConstantMetadata& MetalShader::GetDrawConstantMetadata()
+    const {
   std::call_once(draw_constant_metadata_once_, [this]() {
     DrawConstantMetadata metadata = {};
 
@@ -334,9 +345,9 @@ MetalShader::GetDrawConstantMetadata() const {
     }
 
     const uint32_t used_cbuffer_mask = GetUsedCbufferMaskAfterTranslation();
-    metadata.active_cbv_mask =
-        used_cbuffer_mask ? (used_cbuffer_mask & kAllTranslatedCbvMask)
-                          : kAllTranslatedCbvMask;
+    metadata.active_cbv_mask = used_cbuffer_mask
+                                   ? (used_cbuffer_mask & kAllTranslatedCbvMask)
+                                   : kAllTranslatedCbvMask;
 
     draw_constant_metadata_ = metadata;
   });
@@ -484,14 +495,13 @@ bool MetalShader::MetalTranslation::InstallMetal(
     return false;
   }
 
-  NS::String* function_name = NS::String::string(
-      result.function_name.c_str(), NS::UTF8StringEncoding);
+  NS::String* function_name =
+      NS::String::string(result.function_name.c_str(), NS::UTF8StringEncoding);
 
   metal_function_ = metal_library_->newFunction(function_name);
 
   if (!metal_function_) {
-    XELOGE("MetalShader: Function '{}' not found in metallib",
-           function_name_);
+    XELOGE("MetalShader: Function '{}' not found in metallib", function_name_);
     return false;
   }
 
@@ -502,8 +512,8 @@ bool MetalShader::MetalTranslation::InstallNativeMslSource(
     MTL::Device* device, const std::string& msl_source,
     const std::string& function_name,
     const DxbcShader::TranslationMetadata& native_metadata,
-    uint64_t* out_new_library_ms, bool* out_new_library_created,
-    bool* out_library_cache_hit) {
+    MetalPipelineCompiler* pipeline_compiler, uint64_t* out_new_library_ms,
+    bool* out_new_library_created, bool* out_library_cache_hit) {
   if (out_new_library_ms) {
     *out_new_library_ms = 0;
   }
@@ -544,8 +554,8 @@ bool MetalShader::MetalTranslation::InstallNativeMslSource(
   std::string diagnostics_message;
   metal_library_ = GetNativeMslSourceLibraryCache().GetOrCompile(
       device, msl_source, GetNativeMslCompileOptionsKey(), compile_options,
-      out_new_library_ms, out_new_library_created, out_library_cache_hit,
-      &error_message, &diagnostics_message);
+      pipeline_compiler, out_new_library_ms, out_new_library_created,
+      out_library_cache_hit, &error_message, &diagnostics_message);
   if (compile_options) {
     compile_options->release();
   }

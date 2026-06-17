@@ -29,6 +29,7 @@
 #include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/gpu/metal/dxbc_to_dxil_converter.h"
 #include "xenia/gpu/metal/metal_geometry_shader.h"
+#include "xenia/gpu/metal/metal_pipeline_compiler.h"
 #include "xenia/gpu/metal/metal_shader.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/metal/metal_stage_compile_cache.h"
@@ -171,9 +172,10 @@ class MetalPipelineCache {
         [kNativeMslTextureSignCount];
     uint8_t pixel_shader_native_msl_texture_sign_component_masks
         [kNativeMslTextureSignCount];
-    uint8_t pixel_shader_native_msl_texture_sign_values
-        [kNativeMslTextureSignCount];
+    uint8_t
+        pixel_shader_native_msl_texture_sign_values[kNativeMslTextureSignCount];
     uint32_t shader_backend;
+    uint32_t pipeline_compiler_backend;
 
     // 0x20260611: native-MSL plain-vertex draw constants moved to a
     // baseInstance-indexed slot page; main_vs gained a [[base_instance]] input
@@ -183,7 +185,11 @@ class MetalPipelineCache {
     // XeTriangleMeshVertexOutput, XePixelInput) are now pruned to the live
     // interpolator_mask, changing generated MSL; cached translations must
     // regenerate.
-    static constexpr uint32_t kVersion = 0x20260612;
+    // 0x20260617: Metal pipeline state creation can route through either the
+    // Metal 3 compiler path, the Metal 4 compiler path, or explicit Metal 3
+    // helper bridges while Metal 4 is selected. Cached PSOs must separate
+    // those products.
+    static constexpr uint32_t kVersion = 0x20260617;
   });
 
   XEPACKEDSTRUCT(MetalPipelineStoredDescription, {
@@ -415,6 +421,7 @@ class MetalPipelineCache {
   std::unique_ptr<DxbcShaderTranslator> shader_translator_;
   std::unique_ptr<DxbcToDxilConverter> dxbc_to_dxil_converter_;
   std::unique_ptr<MetalShaderConverter> metal_shader_converter_;
+  std::unique_ptr<MetalPipelineCompiler> pipeline_compiler_;
   std::unique_ptr<MslShaderTranslator> native_msl_translator_;
   // Per-shader striped locks for translation (both the MSC DXBC/DXIL path
   // and native MSL) so different shaders can translate concurrently on the
@@ -529,9 +536,6 @@ class MetalPipelineCache {
   std::filesystem::path shader_storage_title_root_;
   std::filesystem::path artifact_store_path_;
   std::filesystem::path pipeline_binary_archive_path_;
-  MTL::BinaryArchive* pipeline_binary_archive_ = nullptr;
-  bool pipeline_binary_archive_dirty_ = false;
-  std::mutex pipeline_binary_archive_mutex_;
 
   // Async pipeline compilation thread pool.
   // Forward-declared so EnqueueHelperPipelineCreation() below can name it; the
