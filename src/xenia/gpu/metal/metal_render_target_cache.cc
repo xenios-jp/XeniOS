@@ -126,6 +126,42 @@ class ScopedAutoreleasePool {
   NS::AutoreleasePool* pool_;
 };
 
+enum class MetalFenceEdge {
+  kWait,
+  kUpdate,
+};
+
+template <typename Encoder>
+void ApplyWholeEncoderFenceEdge(bool enabled, Encoder* encoder,
+                                MTL::Fence* fence, MetalFenceEdge edge) {
+  if (!enabled || !encoder || !fence) {
+    return;
+  }
+  switch (edge) {
+    case MetalFenceEdge::kWait:
+      encoder->waitForFence(fence);
+      break;
+    case MetalFenceEdge::kUpdate:
+      encoder->updateFence(fence);
+      break;
+  }
+}
+
+void ApplyRenderFragmentFenceEdge(MTL::RenderCommandEncoder* encoder,
+                                  MTL::Fence* fence, MetalFenceEdge edge) {
+  if (!encoder || !fence) {
+    return;
+  }
+  switch (edge) {
+    case MetalFenceEdge::kWait:
+      encoder->waitForFence(fence, MTL::RenderStageFragment);
+      break;
+    case MetalFenceEdge::kUpdate:
+      encoder->updateFence(fence, MTL::RenderStageFragment);
+      break;
+  }
+}
+
 uint32_t EstimateRenderTargetBytesPerPixel(bool is_64bpp) {
   return is_64bpp ? 8u : 4u;
 }
@@ -603,87 +639,67 @@ RenderTargetCache::Path MetalRenderTargetCache::GetPath() const {
 
 void MetalRenderTargetCache::EdramHazardWait(
     MTL::ComputeCommandEncoder* encoder) {
-  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
-    return;
-  }
-  encoder->waitForFence(edram_fence_);
+  ApplyWholeEncoderFenceEdge(edram_hazard_fence_edges_, encoder, edram_fence_,
+                             MetalFenceEdge::kWait);
 }
 
 void MetalRenderTargetCache::EdramHazardUpdate(
     MTL::ComputeCommandEncoder* encoder) {
-  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
-    return;
-  }
-  encoder->updateFence(edram_fence_);
+  ApplyWholeEncoderFenceEdge(edram_hazard_fence_edges_, encoder, edram_fence_,
+                             MetalFenceEdge::kUpdate);
 }
 
 void MetalRenderTargetCache::EdramHazardWait(MTL::BlitCommandEncoder* encoder) {
-  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
-    return;
-  }
-  encoder->waitForFence(edram_fence_);
+  ApplyWholeEncoderFenceEdge(edram_hazard_fence_edges_, encoder, edram_fence_,
+                             MetalFenceEdge::kWait);
 }
 
 void MetalRenderTargetCache::EdramHazardUpdate(
     MTL::BlitCommandEncoder* encoder) {
-  if (!edram_hazard_fence_edges_ || !edram_fence_ || !encoder) {
-    return;
-  }
-  encoder->updateFence(edram_fence_);
+  ApplyWholeEncoderFenceEdge(edram_hazard_fence_edges_, encoder, edram_fence_,
+                             MetalFenceEdge::kUpdate);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
     MTL::RenderCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->waitForFence(fence, MTL::RenderStageFragment);
+  ApplyRenderFragmentFenceEdge(encoder,
+                               command_processor_.GetRenderTargetHazardFence(),
+                               MetalFenceEdge::kWait);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
     MTL::RenderCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->updateFence(fence, MTL::RenderStageFragment);
+  ApplyRenderFragmentFenceEdge(encoder,
+                               command_processor_.GetRenderTargetHazardFence(),
+                               MetalFenceEdge::kUpdate);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
     MTL::ComputeCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->waitForFence(fence);
+  ApplyWholeEncoderFenceEdge(true, encoder,
+                             command_processor_.GetRenderTargetHazardFence(),
+                             MetalFenceEdge::kWait);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
     MTL::ComputeCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->updateFence(fence);
+  ApplyWholeEncoderFenceEdge(true, encoder,
+                             command_processor_.GetRenderTargetHazardFence(),
+                             MetalFenceEdge::kUpdate);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
     MTL::BlitCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->waitForFence(fence);
+  ApplyWholeEncoderFenceEdge(true, encoder,
+                             command_processor_.GetRenderTargetHazardFence(),
+                             MetalFenceEdge::kWait);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
     MTL::BlitCommandEncoder* encoder) {
-  MTL::Fence* fence = command_processor_.GetRenderTargetHazardFence();
-  if (!fence || !encoder) {
-    return;
-  }
-  encoder->updateFence(fence);
+  ApplyWholeEncoderFenceEdge(true, encoder,
+                             command_processor_.GetRenderTargetHazardFence(),
+                             MetalFenceEdge::kUpdate);
 }
 
 bool MetalRenderTargetCache::InitializeEdramBufferViews() {
@@ -845,10 +861,9 @@ bool MetalRenderTargetCache::Initialize() {
         ::cvars::metal_backend_hazard_model_render_targets
             ? MTL::HazardTrackingModeUntracked
             : MTL::HazardTrackingModeTracked);
-    render_target_heap_pool_->SetHeapCreatedCallback(
-        [this](MTL::Heap* heap) {
-          command_processor_.AddResidencySetHeap(heap);
-        });
+    render_target_heap_pool_->SetHeapCreatedCallback([this](MTL::Heap* heap) {
+      command_processor_.AddResidencySetHeap(heap);
+    });
   }
 
   // Create the EDRAM buffer.
@@ -1835,8 +1850,7 @@ MTL::ComputePipelineState* MetalRenderTargetCache::GetResolvePipeline(
 }
 
 bool MetalRenderTargetCache::Update(
-    bool is_rasterization_done,
-    reg::RB_DEPTHCONTROL normalized_depth_control,
+    bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, const Shader& vertex_shader) {
   // Pending draw-pass transfers are ownership-visible already. If control
   // reaches another RT update before the command processor encoded them,
@@ -3335,7 +3349,6 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     SetAttachmentLoadStoreActions(depth_attachment,
                                   GetTransientAttachmentLoadStoreActions());
     fallback_depth_texture->release();
-
   }
 
   return cached_render_pass_descriptor_;
@@ -3374,7 +3387,8 @@ bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
     return true;
   }
   return IsRenderPassDescriptorCompatibleSlow(
-      pass_descriptor, expected_sample_count, fallback_depth_attachment_required);
+      pass_descriptor, expected_sample_count,
+      fallback_depth_attachment_required);
 }
 
 bool MetalRenderTargetCache::IsRenderPassDescriptorCompatibleSlow(
@@ -4542,8 +4556,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             merged_clear_color_texture->sampleCount()) {
       MTL::RenderPassDescriptor* merged_clear_pass =
           MTL::RenderPassDescriptor::renderPassDescriptor();
-      auto* color_attachment =
-          merged_clear_pass->colorAttachments()->object(0);
+      auto* color_attachment = merged_clear_pass->colorAttachments()->object(0);
       color_attachment->setTexture(merged_clear_color_texture);
       color_attachment->setLoadAction(MTL::LoadActionClear);
       color_attachment->setStoreAction(MTL::StoreActionStore);
@@ -8319,8 +8332,7 @@ MTL::Buffer* MetalRenderTargetCache::GetTransferDummyBuffer() {
   return transfer_dummy_buffer_;
 }
 
-MTL::DepthStencilState*
-MetalRenderTargetCache::BuildTransferDepthStencilState(
+MTL::DepthStencilState* MetalRenderTargetCache::BuildTransferDepthStencilState(
     MTL::CompareFunction depth_compare, bool depth_write, bool stencil_enable,
     uint32_t stencil_write_mask) {
   MTL::DepthStencilDescriptor* desc =

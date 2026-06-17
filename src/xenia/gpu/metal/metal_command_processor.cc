@@ -298,6 +298,99 @@ uint32_t MetalResourceUsageBits(MTL::ResourceUsage usage) {
   return uint32_t(NS::UInteger(usage));
 }
 
+struct RenderResourceUse {
+  MTL::RenderStages stages;
+  uint32_t usage_bits;
+  uint32_t stage_bits;
+};
+
+RenderResourceUse NormalizeRenderResourceUse(MTL::ResourceUsage usage,
+                                             MTL::RenderStages stages) {
+  uint32_t stage_bits = MetalRenderStageBits(stages);
+  if (!stage_bits) {
+    stages = MetalAllGraphicsRenderStages();
+    stage_bits = MetalRenderStageBits(stages);
+  }
+  return {stages, MetalResourceUsageBits(usage), stage_bits};
+}
+
+struct Fnv1a64 {
+  uint64_t value = 1469598103934665603ull;
+
+  void Add(uint64_t next) {
+    value ^= next;
+    value *= 1099511628211ull;
+  }
+
+  uint64_t Finish() const { return value ? value : 1; }
+};
+
+bool RenderResourceRefMatches(
+    const MetalCommandProcessor::RenderResourceRef& a,
+    const MetalCommandProcessor::RenderResourceRef& b) {
+  return a.resource == b.resource &&
+         MetalResourceUsageBits(a.usage) == MetalResourceUsageBits(b.usage) &&
+         MetalRenderStageBits(a.stages) == MetalRenderStageBits(b.stages);
+}
+
+bool RenderResourceSetMatches(
+    const MetalCommandProcessor::RenderResourceSet& a,
+    const MetalCommandProcessor::RenderResourceSet& b) {
+  if (a.heaps.size() != b.heaps.size() ||
+      a.resources.size() != b.resources.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.heaps.size(); ++i) {
+    if (a.heaps[i] != b.heaps[i]) {
+      return false;
+    }
+  }
+  for (size_t i = 0; i < a.resources.size(); ++i) {
+    if (!RenderResourceRefMatches(a.resources[i], b.resources[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+uint64_t NextRenderResourceSetSerial(uint64_t serial) {
+  uint64_t next_serial = serial + 1;
+  return next_serial ? next_serial : 1;
+}
+
+bool EncoderResourceUsageStateCovers(
+    const MetalCommandProcessor::EncoderResourceUsageState& state,
+    const RenderResourceUse& use) {
+  if ((use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) &&
+      ((state.read_stage_bits & use.stage_bits) != use.stage_bits)) {
+    return false;
+  }
+  if ((use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) &&
+      ((state.write_stage_bits & use.stage_bits) != use.stage_bits)) {
+    return false;
+  }
+  if ((use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) &&
+      ((state.sample_stage_bits & use.stage_bits) != use.stage_bits)) {
+    return false;
+  }
+  return (state.usage_bits & use.usage_bits) == use.usage_bits;
+}
+
+void AddEncoderResourceUsageState(
+    MetalCommandProcessor::EncoderResourceUsageState& state,
+    const RenderResourceUse& use) {
+  state.usage_bits |= use.usage_bits;
+  if (use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) {
+    state.read_stage_bits |= use.stage_bits;
+  }
+  if (use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) {
+    state.write_stage_bits |= use.stage_bits;
+  }
+  if (use.usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) {
+    state.sample_stage_bits |= use.stage_bits;
+  }
+}
+
 bool MetalObjectRespondsToSelector(const void* object,
                                    const char* selector_name) {
   if (!object || !selector_name) {
@@ -3804,8 +3897,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       draw.texture_materialization_plan;
   texture_materialization_plan.Reset();
   bool textures_requested_for_draw = false;
-  auto request_textures_for_draw =
-      [&]() -> bool {
+  auto request_textures_for_draw = [&]() -> bool {
     if (!EnsureCommandBuffer()) {
       return false;
     }
@@ -3869,16 +3961,16 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   current_draw_shared_memory_ranges.reserve(kMaxCurrentDrawVertexFetchRanges +
                                             memexport_ranges_.size() + 2);
   uint64_t current_draw_invalid_shared_memory_bytes = 0;
-  auto add_current_draw_shared_memory_range =
-      [&](uint32_t start, uint32_t length) {
-        if (!length) {
-          return;
-        }
-        if (shared_memory_ && !shared_memory_->IsRangeValid(start, length)) {
-          current_draw_invalid_shared_memory_bytes += length;
-        }
-        current_draw_shared_memory_ranges.push_back({start, length});
-      };
+  auto add_current_draw_shared_memory_range = [&](uint32_t start,
+                                                  uint32_t length) {
+    if (!length) {
+      return;
+    }
+    if (shared_memory_ && !shared_memory_->IsRangeValid(start, length)) {
+      current_draw_invalid_shared_memory_bytes += length;
+    }
+    current_draw_shared_memory_ranges.push_back({start, length});
+  };
   if (texture_cache_ && may_texture_request_load_data) {
     if (!texture_cache_->PrepareTextureMaterialization(
             regs, used_texture_mask, texture_materialization_plan)) {
@@ -4168,8 +4260,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.use_native_msl_tessellation = use_native_msl_tessellation;
   if (use_native_msl) {
     const std::array<const DxbcShader::TranslationMetadata*, kStageCount>
-        native_metadata = {{vertex_translation_metadata,
-                            pixel_translation_metadata}};
+        native_metadata = {
+            {vertex_translation_metadata, pixel_translation_metadata}};
     for (size_t stage = 0; stage < kStageCount; ++stage) {
       const DxbcShader::TranslationMetadata* metadata = native_metadata[stage];
       if (!metadata) {
@@ -4177,8 +4269,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       }
       draw.native_metadata[stage] = *metadata;
       draw.native_metadata_valid[stage] = true;
-      if (!native_msl::CaptureTextureRuntimeInfo(
-              *texture_cache_, *metadata, draw.native_bindings[stage])) {
+      if (!native_msl::CaptureTextureRuntimeInfo(*texture_cache_, *metadata,
+                                                 draw.native_bindings[stage])) {
         return fail_prepared_draw();
       }
     }
@@ -4748,10 +4840,9 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         }
       };
 
-  const std::array<const Shader::ConstantRegisterMap*, kStageCount>
-      float_maps = {{&vertex_shader->constant_register_map(),
-                     pixel_shader ? &pixel_shader->constant_register_map()
-                                  : nullptr}};
+  const std::array<const Shader::ConstantRegisterMap*, kStageCount> float_maps =
+      {{&vertex_shader->constant_register_map(),
+        pixel_shader ? &pixel_shader->constant_register_map() : nullptr}};
   constexpr std::array<uint32_t, kStageCount> kFloatRegisterBases = {
       {XE_GPU_REG_SHADER_CONSTANT_000_X, XE_GPU_REG_SHADER_CONSTANT_256_X}};
   constexpr std::array<const char*, kStageCount> kFloatUploadNames = {
@@ -4933,12 +5024,12 @@ bool MetalCommandProcessor::PrepareDrawConstants(
           : vertex_draw_metadata.descriptor_indices_word_count,
       pixel_translation_metadata
           ? MetalNativeDescriptorIndicesWordCount(*pixel_translation_metadata)
-          : (pixel_draw_metadata ? pixel_draw_metadata->descriptor_indices_word_count
-                                 : 1),
+          : (pixel_draw_metadata
+                 ? pixel_draw_metadata->descriptor_indices_word_count
+                 : 1),
   }};
-  constexpr std::array<const char*, kStageCount>
-      kDescriptorIndicesUploadNames = {
-          {"vertex descriptor indices", "pixel descriptor indices"}};
+  constexpr std::array<const char*, kStageCount> kDescriptorIndicesUploadNames =
+      {{"vertex descriptor indices", "pixel descriptor indices"}};
   for (size_t stage = 0; stage < kStageCount; ++stage) {
     const BindlessStageInput& input = bindless_stage_inputs[stage];
     const bool upload_when_inactive = stage == kStageVertex;
@@ -5477,10 +5568,9 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
   }};
   for (const NativePreparedStage& stage : native_stages) {
     if (stage.active &&
-        !prepare_stage_draw_constants(draw.native_metadata[stage.stage],
-                                      stage.stage, stage.vertex_stage,
-                                      stage.fragment_stage, stage.mesh_stage,
-                                      stage.object_stage)) {
+        !prepare_stage_draw_constants(
+            draw.native_metadata[stage.stage], stage.stage, stage.vertex_stage,
+            stage.fragment_stage, stage.mesh_stage, stage.object_stage)) {
       return false;
     }
   }
@@ -5679,8 +5769,8 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
   const std::array<NativePreparedStage, kStageCount> native_stages = {{
       {kStageVertex, true, native_vertex_stage, false, native_mesh_stage,
        native_object_stage},
-      {kStagePixel, draw.native_metadata_valid[kStagePixel], false, true,
-       false, false},
+      {kStagePixel, draw.native_metadata_valid[kStagePixel], false, true, false,
+       false},
   }};
   for (const NativePreparedStage& stage : native_stages) {
     if (stage.active &&
@@ -5968,7 +6058,8 @@ bool MetalCommandProcessor::PopulateBindlessTables(
       }};
       if (root_argument_binding_needs_update[kStageVertex]) {
         for (RenderEncoderBufferStage stage : kMeshVertexStages) {
-          bind_root_argument_to_encoder_stage(stage, kIRArgumentBufferBindPoint);
+          bind_root_argument_to_encoder_stage(stage,
+                                              kIRArgumentBufferBindPoint);
         }
         if (use_tessellation_emulation) {
           for (RenderEncoderBufferStage stage : kMeshVertexStages) {
@@ -6083,8 +6174,7 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
     return false;
   }
 
-  MTL::CommandBuffer* command_buffer =
-      RequestTransferCommandBuffer();
+  MTL::CommandBuffer* command_buffer = RequestTransferCommandBuffer();
   if (!command_buffer) {
     XELOGE("IssueDraw: failed to get command buffer for index copy");
     return false;
@@ -6289,7 +6379,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
         // and the per-draw useResource calls below cover everything
         // draw-specific.
         ApplyRenderEncoderResourceSet(
-            RenderResourceSetKind::kTexture, draw.texture_resource_set,
+            draw.texture_resource_set,
             encode_ctx().bindless_texture_resources_serial);
       } else {
         RestoreBindlessTextureResourceSet(draw.texture_resource_set);
@@ -6414,8 +6504,7 @@ bool MetalCommandProcessor::DispatchDraw(
           uint64_t buffer_index =
               kIRVertexBufferBindPoint + uint64_t(range.binding_index);
           SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex,
-                                 shared_mem_buffer, range.offset,
-                                 buffer_index);
+                                 shared_mem_buffer, range.offset, buffer_index);
         }
       }
     } else if (shared_memory_) {
@@ -7351,13 +7440,7 @@ void MetalCommandProcessor::EndRenderEncoder() {
     CloseQuerySegment();
   }
   UpdateSharedMemoryFenceForActiveRenderEncoder();
-  // Render-target phase producer edge: this pass's attachment writes are
-  // fragment-stage output; later passes wait before Fragment and RT-reading
-  // compute/blit consumers wait at encoder creation.
-  if (render_target_hazard_fence_edges_ && render_target_fence_) {
-    encode_ctx().render_encoder->updateFence(render_target_fence_,
-                                             MTL::RenderStageFragment);
-  }
+  UpdateRenderTargetFenceForActiveRenderEncoder();
   encode_ctx().render_encoder->endEncoding();
   encode_ctx().render_encoder->release();
   encode_ctx().render_encoder = nullptr;
@@ -7373,7 +7456,6 @@ void MetalCommandProcessor::EndRenderEncoder() {
   encode_ctx().depth_stencil_state = nullptr;
   encode_ctx().stencil_reference_valid = false;
   encode_ctx().heap_binds_set_on_encoder = false;
-  ResetRenderEncoderBufferBindings();
 }
 
 void MetalCommandProcessor::InvalidateRenderEncoderStateAfterDrawPassTransfers(
@@ -7550,6 +7632,36 @@ bool MetalCommandProcessor::HasActiveSharedMemoryWritePending() const {
   return false;
 }
 
+void MetalCommandProcessor::EncodeRenderEncoderHazardConsumerEdges() {
+  MTL::RenderCommandEncoder* encoder = encode_ctx().render_encoder;
+  if (!encoder) {
+    return;
+  }
+  // Shared memory covers vertex/index fetch and mesh-shader draw paths.
+  if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
+    encoder->waitForFence(shared_memory_fence_, MTL::RenderStageVertex |
+                                                    MTL::RenderStageObject |
+                                                    MTL::RenderStageMesh);
+  }
+  // Texture fetches can happen in every programmable stage this backend uses.
+  if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
+    encoder->waitForFence(texture_upload_fence_,
+                          MTL::RenderStageVertex | MTL::RenderStageObject |
+                              MTL::RenderStageMesh | MTL::RenderStageFragment);
+  }
+  // Render-target attachments and transfer reads are fragment-stage hazards.
+  if (render_target_hazard_fence_edges_ && render_target_fence_) {
+    encoder->waitForFence(render_target_fence_, MTL::RenderStageFragment);
+  }
+}
+
+void MetalCommandProcessor::UpdateRenderTargetFenceForActiveRenderEncoder() {
+  MTL::RenderCommandEncoder* encoder = encode_ctx().render_encoder;
+  if (render_target_hazard_fence_edges_ && render_target_fence_ && encoder) {
+    encoder->updateFence(render_target_fence_, MTL::RenderStageFragment);
+  }
+}
+
 MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer() {
   // Multi-CB: transfers join the CP thread's own spine command buffer; the
   // worker encodes into its private command buffer, so there is no encoder
@@ -7581,8 +7693,7 @@ MetalCommandProcessor::GetSharedMemoryUploadBlitEncoder() {
     return shared_memory_upload_blit_encoder_;
   }
 
-  MTL::CommandBuffer* command_buffer =
-      RequestTransferCommandBuffer();
+  MTL::CommandBuffer* command_buffer = RequestTransferCommandBuffer();
   if (!command_buffer) {
     return nullptr;
   }
@@ -7747,10 +7858,9 @@ void MetalCommandProcessor::CommitStandaloneAndWait(MTL::CommandBuffer* cmd) {
 }
 
 void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {
-  for (EncoderResourceUsageTableEntry& entry :
-       encode_ctx().resource_usage_table) {
-    entry = {};
-  }
+  std::fill(encode_ctx().resource_usage_table.begin(),
+            encode_ctx().resource_usage_table.end(),
+            EncoderResourceUsageTableEntry{});
   encode_ctx().resource_usage_count = 0;
   encode_ctx().heap_usage.clear();
   encode_ctx().bindless_fixed_resources_serial = 0;
@@ -7763,12 +7873,9 @@ void MetalCommandProcessor::AddRenderHeapRef(RenderResourceSet& set,
   if (!heap) {
     return;
   }
-  for (MTL::Heap* existing : set.heaps) {
-    if (existing == heap) {
-      return;
-    }
+  if (std::find(set.heaps.begin(), set.heaps.end(), heap) == set.heaps.end()) {
+    set.heaps.push_back(heap);
   }
-  set.heaps.push_back(heap);
 }
 
 void MetalCommandProcessor::AddRenderResourceRef(RenderResourceSet& set,
@@ -7781,67 +7888,33 @@ void MetalCommandProcessor::AddRenderResourceRef(RenderResourceSet& set,
   if (IsResidencySetResourceCovered(resource)) {
     return;
   }
-  uint32_t stage_bits = MetalRenderStageBits(stages);
-  if (!stage_bits) {
-    stages = MetalAllGraphicsRenderStages();
-    stage_bits = MetalRenderStageBits(stages);
-  }
-  const uint32_t usage_bits = MetalResourceUsageBits(usage);
+  const RenderResourceUse use = NormalizeRenderResourceUse(usage, stages);
   for (RenderResourceRef& existing : set.resources) {
     if (existing.resource != resource) {
       continue;
     }
-    existing.usage =
-        MTL::ResourceUsage(MetalResourceUsageBits(existing.usage) | usage_bits);
-    existing.stages =
-        MTL::RenderStages(MetalRenderStageBits(existing.stages) | stage_bits);
+    existing.usage = MTL::ResourceUsage(MetalResourceUsageBits(existing.usage) |
+                                        use.usage_bits);
+    existing.stages = MTL::RenderStages(MetalRenderStageBits(existing.stages) |
+                                        use.stage_bits);
     return;
   }
-  set.resources.push_back({resource, usage, stages});
+  set.resources.push_back({resource, usage, use.stages});
 }
 
 void MetalCommandProcessor::RestoreRenderResourceSet(
-    RenderResourceSetKind kind, RenderResourceSet& current,
-    const RenderResourceSet& snapshot) {
-  (void)kind;
+    RenderResourceSet& current, const RenderResourceSet& snapshot) {
   if (snapshot.source_serial &&
       current.source_serial == snapshot.source_serial) {
     return;
   }
 
-  bool same = current.heaps.size() == snapshot.heaps.size() &&
-              current.resources.size() == snapshot.resources.size();
-  if (same) {
-    for (size_t i = 0; i < current.heaps.size(); ++i) {
-      if (current.heaps[i] != snapshot.heaps[i]) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) {
-    for (size_t i = 0; i < current.resources.size(); ++i) {
-      const RenderResourceRef& current_ref = current.resources[i];
-      const RenderResourceRef& snapshot_ref = snapshot.resources[i];
-      if (current_ref.resource != snapshot_ref.resource ||
-          MetalResourceUsageBits(current_ref.usage) !=
-              MetalResourceUsageBits(snapshot_ref.usage) ||
-          MetalRenderStageBits(current_ref.stages) !=
-              MetalRenderStageBits(snapshot_ref.stages)) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) {
+  if (RenderResourceSetMatches(current, snapshot)) {
     current.source_serial = snapshot.source_serial;
     return;
   }
 
-  uint64_t next_serial = current.serial + 1;
-  if (!next_serial) {
-    next_serial = 1;
-  }
+  uint64_t next_serial = NextRenderResourceSetSerial(current.serial);
   current.heaps = snapshot.heaps;
   current.resources = snapshot.resources;
   current.serial = next_serial;
@@ -7853,38 +7926,11 @@ void MetalCommandProcessor::PublishRenderResourceSet(RenderResourceSet& current,
   if (next.source_serial && current.source_serial == next.source_serial) {
     return;
   }
-  bool same = current.heaps.size() == next.heaps.size() &&
-              current.resources.size() == next.resources.size();
-  if (same) {
-    for (size_t i = 0; i < current.heaps.size(); ++i) {
-      if (current.heaps[i] != next.heaps[i]) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) {
-    for (size_t i = 0; i < current.resources.size(); ++i) {
-      const RenderResourceRef& current_ref = current.resources[i];
-      const RenderResourceRef& next_ref = next.resources[i];
-      if (current_ref.resource != next_ref.resource ||
-          MetalResourceUsageBits(current_ref.usage) !=
-              MetalResourceUsageBits(next_ref.usage) ||
-          MetalRenderStageBits(current_ref.stages) !=
-              MetalRenderStageBits(next_ref.stages)) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) {
+  if (RenderResourceSetMatches(current, next)) {
     current.source_serial = next.source_serial;
     return;
   }
-  uint64_t next_serial = current.serial + 1;
-  if (!next_serial) {
-    next_serial = 1;
-  }
+  uint64_t next_serial = NextRenderResourceSetSerial(current.serial);
   current.heaps = std::move(next.heaps);
   current.resources = std::move(next.resources);
   current.serial = next_serial;
@@ -7902,42 +7948,34 @@ uint64_t MetalCommandProcessor::GetBindlessFixedResourceSourceSerial(
 }
 
 uint64_t MetalCommandProcessor::GetBindlessTextureResourceInputSerial() const {
-  uint64_t hash = 1469598103934665603ull;
-  auto hash_value = [&](uint64_t value) {
-    hash ^= value;
-    hash *= 1099511628211ull;
-  };
+  Fnv1a64 hash;
   for (size_t stage = 0; stage < kStageCount; ++stage) {
     if (stage) {
-      hash_value(0x9e3779b97f4a7c15ull);
+      hash.Add(0x9e3779b97f4a7c15ull);
     }
-    hash_value(current_texture_bindless_resources_[stage].size());
+    hash.Add(current_texture_bindless_resources_[stage].size());
     for (MTL::Texture* texture : current_texture_bindless_resources_[stage]) {
-      hash_value(reinterpret_cast<uintptr_t>(texture));
+      hash.Add(reinterpret_cast<uintptr_t>(texture));
     }
   }
-  return hash ? hash : 1;
+  return hash.Finish();
 }
 
 uint64_t MetalCommandProcessor::GetRenderResourceSetSourceSerial(
     const RenderResourceSet& set) const {
-  uint64_t hash = 1469598103934665603ull;
-  auto hash_value = [&](uint64_t value) {
-    hash ^= value;
-    hash *= 1099511628211ull;
-  };
-  hash_value(set.heaps.size());
+  Fnv1a64 hash;
+  hash.Add(set.heaps.size());
   for (MTL::Heap* heap : set.heaps) {
-    hash_value(reinterpret_cast<uintptr_t>(heap));
+    hash.Add(reinterpret_cast<uintptr_t>(heap));
   }
-  hash_value(0x9e3779b97f4a7c15ull);
-  hash_value(set.resources.size());
+  hash.Add(0x9e3779b97f4a7c15ull);
+  hash.Add(set.resources.size());
   for (const RenderResourceRef& ref : set.resources) {
-    hash_value(reinterpret_cast<uintptr_t>(ref.resource));
-    hash_value(MetalResourceUsageBits(ref.usage));
-    hash_value(MetalRenderStageBits(ref.stages));
+    hash.Add(reinterpret_cast<uintptr_t>(ref.resource));
+    hash.Add(MetalResourceUsageBits(ref.usage));
+    hash.Add(MetalRenderStageBits(ref.stages));
   }
-  return hash ? hash : 1;
+  return hash.Finish();
 }
 
 void MetalCommandProcessor::BuildBindlessTextureResourceSet(
@@ -7988,25 +8026,21 @@ void MetalCommandProcessor::BuildBindlessTextureResourceSet(
 
 uint64_t MetalCommandProcessor::GetBindlessRootResourceSourceSerial(
     const UniformBufferInfo& uniforms) const {
-  uint64_t hash = 1469598103934665603ull;
-  auto hash_value = [&](uint64_t value) {
-    hash ^= value;
-    hash *= 1099511628211ull;
-  };
+  Fnv1a64 hash;
   const StageRootArgumentAllocation& allocation =
       graphics_root_argument_state_.allocation;
-  hash_value(reinterpret_cast<uintptr_t>(allocation.valid ? allocation.buffer
-                                                          : nullptr));
+  hash.Add(reinterpret_cast<uintptr_t>(allocation.valid ? allocation.buffer
+                                                        : nullptr));
   for (size_t stage = 0; stage < kStageCount; ++stage) {
-    hash_value(uniforms.active_cbv_masks[stage]);
+    hash.Add(uniforms.active_cbv_masks[stage]);
     for (size_t cbv = 0; cbv < kCbvSlotCount; ++cbv) {
       const bool active =
           uniforms.active_cbv_masks[stage] & (uint32_t(1) << cbv);
-      hash_value(reinterpret_cast<uintptr_t>(
+      hash.Add(reinterpret_cast<uintptr_t>(
           active ? uniforms.cbvs[stage][cbv].buffer : nullptr));
     }
   }
-  return hash ? hash : 1;
+  return hash.Finish();
 }
 
 void MetalCommandProcessor::PublishBindlessFixedResourceSet(
@@ -8047,8 +8081,7 @@ void MetalCommandProcessor::PublishBindlessFixedResourceSet(
 
 void MetalCommandProcessor::RestoreBindlessTextureResourceSet(
     const RenderResourceSet& set) {
-  RestoreRenderResourceSet(RenderResourceSetKind::kTexture,
-                           current_bindless_texture_resource_set_, set);
+  RestoreRenderResourceSet(current_bindless_texture_resource_set_, set);
   current_bindless_texture_resource_input_serial_ = 0;
   current_bindless_texture_resource_source_serial_ =
       current_bindless_texture_resource_set_.source_serial;
@@ -8107,21 +8140,16 @@ void MetalCommandProcessor::PublishBindlessRootResourceSet(
 }
 
 void MetalCommandProcessor::ApplyRenderEncoderResourceSets() {
-  ApplyRenderEncoderResourceSet(RenderResourceSetKind::kFixed,
-                                current_bindless_fixed_resource_set_,
+  ApplyRenderEncoderResourceSet(current_bindless_fixed_resource_set_,
                                 encode_ctx().bindless_fixed_resources_serial);
-  ApplyRenderEncoderResourceSet(RenderResourceSetKind::kTexture,
-                                current_bindless_texture_resource_set_,
+  ApplyRenderEncoderResourceSet(current_bindless_texture_resource_set_,
                                 encode_ctx().bindless_texture_resources_serial);
-  ApplyRenderEncoderResourceSet(RenderResourceSetKind::kRoot,
-                                current_bindless_root_resource_set_,
+  ApplyRenderEncoderResourceSet(current_bindless_root_resource_set_,
                                 encode_ctx().bindless_root_resources_serial);
 }
 
 void MetalCommandProcessor::ApplyRenderEncoderResourceSet(
-    RenderResourceSetKind kind, const RenderResourceSet& set,
-    uint64_t& applied_serial) {
-  (void)kind;
+    const RenderResourceSet& set, uint64_t& applied_serial) {
   if (!encode_ctx().render_encoder) {
     return;
   }
@@ -8359,40 +8387,7 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
     return;
   }
 
-  const uint32_t usage_bits = MetalResourceUsageBits(usage);
-  uint32_t stage_bits = MetalRenderStageBits(stages);
-  if (!stage_bits) {
-    stages = MetalAllGraphicsRenderStages();
-    stage_bits = MetalRenderStageBits(stages);
-  }
-
-  auto usage_state_covers = [&](const EncoderResourceUsageState& state) {
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) &&
-        ((state.read_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) &&
-        ((state.write_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) &&
-        ((state.sample_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    return (state.usage_bits & usage_bits) == usage_bits;
-  };
-  auto add_usage_to_state = [&](EncoderResourceUsageState& state) {
-    state.usage_bits |= usage_bits;
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) {
-      state.read_stage_bits |= stage_bits;
-    }
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) {
-      state.write_stage_bits |= stage_bits;
-    }
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) {
-      state.sample_stage_bits |= stage_bits;
-    }
-  };
+  const RenderResourceUse use = NormalizeRenderResourceUse(usage, stages);
 
   bool inserted = false;
   EncoderResourceUsageState* state =
@@ -8401,13 +8396,13 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
     return;
   }
   if (!inserted) {
-    if (usage_state_covers(*state)) {
+    if (EncoderResourceUsageStateCovers(*state, use)) {
       return;
     }
   }
 
-  add_usage_to_state(*state);
-  encode_ctx().render_encoder->useResource(resource, usage, stages);
+  AddEncoderResourceUsageState(*state, use);
+  encode_ctx().render_encoder->useResource(resource, usage, use.stages);
 }
 
 void MetalCommandProcessor::UseRenderEncoderResources(
@@ -8423,39 +8418,7 @@ void MetalCommandProcessor::UseRenderEncoderResources(
   if (!encode_ctx().render_encoder || !resources || !count) {
     return;
   }
-  const uint32_t usage_bits = MetalResourceUsageBits(usage);
-  uint32_t stage_bits = MetalRenderStageBits(stages);
-  if (!stage_bits) {
-    stages = MetalAllGraphicsRenderStages();
-    stage_bits = MetalRenderStageBits(stages);
-  }
-  auto usage_state_covers = [&](const EncoderResourceUsageState& state) {
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) &&
-        ((state.read_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) &&
-        ((state.write_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    if ((usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) &&
-        ((state.sample_stage_bits & stage_bits) != stage_bits)) {
-      return false;
-    }
-    return (state.usage_bits & usage_bits) == usage_bits;
-  };
-  auto add_usage_to_state = [&](EncoderResourceUsageState& state) {
-    state.usage_bits |= usage_bits;
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageRead)) {
-      state.read_stage_bits |= stage_bits;
-    }
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageWrite)) {
-      state.write_stage_bits |= stage_bits;
-    }
-    if (usage_bits & MetalResourceUsageBits(MTL::ResourceUsageSample)) {
-      state.sample_stage_bits |= stage_bits;
-    }
-  };
+  const RenderResourceUse use = NormalizeRenderResourceUse(usage, stages);
 
   constexpr size_t kResourceBatchSize = 128;
   std::array<const MTL::Resource*, kResourceBatchSize> resource_batch;
@@ -8465,7 +8428,7 @@ void MetalCommandProcessor::UseRenderEncoderResources(
       return;
     }
     encode_ctx().render_encoder->useResources(
-        resource_batch.data(), resource_batch_count, usage, stages);
+        resource_batch.data(), resource_batch_count, usage, use.stages);
     resource_batch_count = 0;
   };
   for (uint32_t i = 0; i < count; ++i) {
@@ -8484,12 +8447,12 @@ void MetalCommandProcessor::UseRenderEncoderResources(
       continue;
     }
     if (!inserted) {
-      if (usage_state_covers(*state)) {
+      if (EncoderResourceUsageStateCovers(*state, use)) {
         continue;
       }
     }
 
-    add_usage_to_state(*state);
+    AddEncoderResourceUsageState(*state, use);
     resource_batch[resource_batch_count++] = const_resource;
     if (resource_batch_count == resource_batch.size()) {
       flush_batch();
@@ -8723,13 +8686,8 @@ void MetalCommandProcessor::EndWorkerBatchEncoder() {
   // No ZPD query segment can be open (handoff eligibility) and worker
   // batches never write shared memory (memexport draws don't queue), so the
   // inline EndRenderEncoder's CloseQuerySegment and shared-memory fence
-  // update have nothing to do here. The render-target producer edge is the
-  // same as the inline path's: this pass's attachment writes must be ordered
-  // before later passes' loads and RT-reading compute/blit consumers.
-  if (render_target_hazard_fence_edges_ && render_target_fence_) {
-    ctx.render_encoder->updateFence(render_target_fence_,
-                                    MTL::RenderStageFragment);
-  }
+  // update have nothing to do here.
+  UpdateRenderTargetFenceForActiveRenderEncoder();
   ctx.render_encoder->endEncoding();
   ctx.render_encoder->release();
   ctx.render_encoder = nullptr;
@@ -9020,22 +8978,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   ResetRenderEncoderBufferBindings();
   encode_ctx().render_encoder->setLabel(
       NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
-  // Hazard consumer edges, identical to the inline begin path.
-  if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
-    encode_ctx().render_encoder->waitForFence(
-        shared_memory_fence_,
-        MTL::RenderStageVertex | MTL::RenderStageObject | MTL::RenderStageMesh);
-  }
-  if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
-    encode_ctx().render_encoder->waitForFence(
-        texture_upload_fence_, MTL::RenderStageVertex | MTL::RenderStageObject |
-                                   MTL::RenderStageMesh |
-                                   MTL::RenderStageFragment);
-  }
-  if (render_target_hazard_fence_edges_ && render_target_fence_) {
-    encode_ctx().render_encoder->waitForFence(render_target_fence_,
-                                              MTL::RenderStageFragment);
-  }
+  EncodeRenderEncoderHazardConsumerEdges();
   encode_ctx().render_pipeline_state = nullptr;
   encode_ctx().blend_factor_valid = false;
   encode_ctx().rasterizer_state_valid = false;
@@ -9184,35 +9127,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     ResetRenderEncoderBufferBindings();
     encode_ctx().render_encoder->setLabel(
         NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
-    // Hazard model consumer edge: order all prior shared-memory writers
-    // (upload blits, compute resolves, earlier memexport encoders) before
-    // this encoder's shared-memory reads. Vertex covers vertex/index fetch
-    // (D3D12 VERTEX_AND_CONSTANT_BUFFER / INDEX_BUFFER -> Vertex); object and
-    // mesh cover the mesh-shader draw paths.
-    if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
-      encode_ctx().render_encoder->waitForFence(shared_memory_fence_,
-                                                MTL::RenderStageVertex |
-                                                    MTL::RenderStageObject |
-                                                    MTL::RenderStageMesh);
-    }
-    // Texture-heap phase consumer edge: order texture-cache upload encoders
-    // (untile compute / upload blits, in this or an earlier-committed command
-    // buffer) before this encoder samples their textures. Guest texture
-    // fetches happen in every programmable stage this backend uses.
-    if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
-      encode_ctx().render_encoder->waitForFence(
-          texture_upload_fence_,
-          MTL::RenderStageVertex | MTL::RenderStageObject |
-              MTL::RenderStageMesh | MTL::RenderStageFragment);
-    }
-    // Render-target phase consumer edge: order prior passes' attachment
-    // writes before this pass's attachment loads and transfer draws that
-    // sample other render targets (both fragment-stage reads). Vertex work
-    // of this pass may still overlap prior fragment work.
-    if (render_target_hazard_fence_edges_ && render_target_fence_) {
-      encode_ctx().render_encoder->waitForFence(render_target_fence_,
-                                                MTL::RenderStageFragment);
-    }
+    EncodeRenderEncoderHazardConsumerEdges();
     encode_ctx().render_pipeline_state = nullptr;
     encode_ctx().blend_factor_valid = false;
     encode_ctx().rasterizer_state_valid = false;
