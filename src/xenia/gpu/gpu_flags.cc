@@ -261,22 +261,6 @@ DEFINE_int32(
     "Higher reduces ring churn but uses more memory.",
     "Metal");
 
-DEFINE_bool(metal_backend_telemetry, true,
-            "Log concise Metal backend decision counters for render encoder "
-            "lifetime, resolve/transfer planning, bindless binding, and "
-            "texture upload/load behavior.",
-            "Metal");
-DEFINE_int32(metal_backend_telemetry_interval, 120,
-             "Number of guest swaps between Metal backend telemetry summaries. "
-             "Set to 0 to log only on shutdown.",
-             "Metal");
-DEFINE_bool(
-    metal_root_rebuild_detail_telemetry, false,
-    "Collect expensive Metal root argument rebuild diagnostics, including slot "
-    "change histograms and CBV resource identity details. Leave disabled for "
-    "normal profiling.",
-    "Metal");
-
 DEFINE_string(
     metal_residency_sets, "auto",
     "Use Metal residency sets for stable Metal allocations where supported.\n"

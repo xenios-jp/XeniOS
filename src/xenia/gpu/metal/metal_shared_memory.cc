@@ -110,13 +110,12 @@ bool MetalSharedMemory::Initialize() {
   upload_buffer_pool_ = std::make_unique<MetalUploadBufferPool>(
       device, xe::align(ui::GraphicsUploadBufferPool::kDefaultPageSize,
                         size_t(1) << page_size_log2()));
-  page_last_main_gpu_access_submission_.assign(
-      kBufferSize >> page_size_log2(), 0);
+  page_last_main_gpu_access_submission_.assign(kBufferSize >> page_size_log2(),
+                                               0);
   last_gpu_access_page_first_ = 1;
   last_gpu_access_page_last_ = 0;
   last_gpu_access_submission_ = 0;
-  page_standalone_gpu_access_counts_.assign(kBufferSize >> page_size_log2(),
-                                            0);
+  page_standalone_gpu_access_counts_.assign(kBufferSize >> page_size_log2(), 0);
 
   return true;
 }
@@ -232,9 +231,8 @@ MetalSharedMemory::UploadRouteInfo MetalSharedMemory::GetUploadRouteInfo(
   const uint32_t page_size = 1u << page_size_log2();
   const uint64_t completed_submission =
       command_processor_.GetCompletedSubmission();
-  const bool direct_write_enabled =
-      ::cvars::metal_shared_memory_direct_write && buffer_ &&
-      buffer_->contents() != nullptr;
+  const bool direct_write_enabled = ::cvars::metal_shared_memory_direct_write &&
+                                    buffer_ && buffer_->contents() != nullptr;
 
   std::lock_guard<std::mutex> standalone_lock(standalone_gpu_access_mutex_);
   for (uint32_t i = 0; i < range_count; ++i) {
@@ -364,18 +362,10 @@ bool MetalSharedMemory::UploadRanges(
     }
   };
 
-  uint64_t direct_eligible_bytes = 0;
-  uint64_t staged_required_bytes = 0;
   uint8_t* shared_buffer_contents = static_cast<uint8_t*>(buffer_->contents());
   const bool has_shared_buffer_contents = shared_buffer_contents != nullptr;
   const uint64_t completed_submission =
       command_processor_.GetCompletedSubmission();
-
-  auto record_direct_write_reject =
-      [&](MetalCommandProcessor::SharedMemoryDirectWriteRejectReason reason,
-          uint64_t bytes) {
-        command_processor_.RecordSharedMemoryDirectWriteReject(reason, bytes);
-      };
 
   struct UploadRun {
     uint32_t start;
@@ -402,17 +392,9 @@ bool MetalSharedMemory::UploadRanges(
       return;
     }
     if (!has_shared_buffer_contents) {
-      uint64_t bytes = uint64_t(end) - start;
-      staged_required_bytes += bytes;
-      record_direct_write_reject(
-          MetalCommandProcessor::SharedMemoryDirectWriteRejectReason::
-              kNoSharedBufferContents,
-          bytes);
       append_upload_run(runs, start, end, false);
       return;
     }
-    bool saw_direct = false;
-    bool saw_staged = false;
     uint32_t page_first = start >> page_size_log2();
     uint32_t page_last = (end - 1) >> page_size_log2();
     std::lock_guard<std::mutex> standalone_lock(standalone_gpu_access_mutex_);
@@ -428,14 +410,8 @@ bool MetalSharedMemory::UploadRanges(
 
       if (page < page_standalone_gpu_access_counts_.size() &&
           page_standalone_gpu_access_counts_[page]) {
-        staged_required_bytes += bytes;
-        saw_staged = true;
         append_upload_run(runs, static_cast<uint32_t>(byte_start),
                           static_cast<uint32_t>(byte_end), false);
-        record_direct_write_reject(
-            MetalCommandProcessor::SharedMemoryDirectWriteRejectReason::
-                kStandaloneAccessInFlight,
-            bytes);
         continue;
       }
 
@@ -444,28 +420,13 @@ bool MetalSharedMemory::UploadRanges(
         page_last_access = page_last_main_gpu_access_submission_[page];
       }
       if (page_last_access > completed_submission) {
-        staged_required_bytes += bytes;
-        saw_staged = true;
         append_upload_run(runs, static_cast<uint32_t>(byte_start),
                           static_cast<uint32_t>(byte_end), false);
-        record_direct_write_reject(
-            MetalCommandProcessor::SharedMemoryDirectWriteRejectReason::
-                kMainGpuAccessInFlight,
-            bytes);
         continue;
       }
 
-      direct_eligible_bytes += bytes;
-      saw_direct = true;
       append_upload_run(runs, static_cast<uint32_t>(byte_start),
                         static_cast<uint32_t>(byte_end), true);
-    }
-
-    if (saw_direct && saw_staged) {
-      record_direct_write_reject(
-          MetalCommandProcessor::SharedMemoryDirectWriteRejectReason::
-              kMixedRangeSplit,
-          uint64_t(end) - start);
     }
   };
 
@@ -473,8 +434,6 @@ bool MetalSharedMemory::UploadRanges(
     uint32_t size = end - start;
     MakeRangeValid(start, size, false);
     copy_guest_bytes(shared_buffer_contents + start, start, size);
-    command_processor_.RecordSharedMemoryUploadRoute(
-        MetalCommandProcessor::SharedMemoryUploadRoute::kDirectWrite, size);
   };
 
   auto stage_upload_run = [&](uint32_t start, uint32_t end) -> bool {
@@ -510,10 +469,7 @@ bool MetalSharedMemory::UploadRanges(
                               static_cast<NS::UInteger>(upload_offset), buffer_,
                               static_cast<NS::UInteger>(offset),
                               static_cast<NS::UInteger>(upload_size));
-      command_processor_.RecordSharedMemoryUploadEncoderCopy();
-      command_processor_.RecordSharedMemoryUploadRoute(
-          MetalCommandProcessor::SharedMemoryUploadRoute::kStagedBlit,
-          upload_size);
+      command_processor_.MarkSharedMemoryUploadEncoderHasWrites();
 
       offset += static_cast<uint32_t>(upload_size);
       remaining -= static_cast<uint32_t>(upload_size);
@@ -562,9 +518,7 @@ bool MetalSharedMemory::UploadRanges(
       }
     } else {
       if (!flush_merged_range(merged_start, merged_end)) {
-        command_processor_.EndSharedMemoryUploadBlitEncoder(
-            MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-                kUploadFailure);
+        command_processor_.EndSharedMemoryUploadBlitEncoder();
         return false;
       }
       merged_start = start;
@@ -574,17 +528,13 @@ bool MetalSharedMemory::UploadRanges(
 
   if (have_merged) {
     if (!flush_merged_range(merged_start, merged_end)) {
-      command_processor_.EndSharedMemoryUploadBlitEncoder(
-          MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-              kUploadFailure);
+      command_processor_.EndSharedMemoryUploadBlitEncoder();
       return false;
     }
   }
 
   XELOGD("MetalSharedMemory::UploadRanges: Staged {} ranges to Metal buffer",
          num_upload_ranges);
-  command_processor_.RecordSharedMemoryDirectWriteEligibility(
-      direct_eligible_bytes, staged_required_bytes);
 
   return true;
 }

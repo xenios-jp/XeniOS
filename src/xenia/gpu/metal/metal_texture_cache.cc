@@ -810,7 +810,6 @@ void MetalTextureCache::TextureUploadHazardUpdate(
   }
   if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
     encoder->updateFence(fence);
-    command_processor_->RecordHazardFenceUpdate(/*compute_encoder=*/true);
   }
 }
 
@@ -821,7 +820,6 @@ void MetalTextureCache::TextureUploadHazardUpdate(
   }
   if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
     encoder->updateFence(fence);
-    command_processor_->RecordHazardFenceUpdate(/*compute_encoder=*/false);
   }
 }
 
@@ -843,9 +841,7 @@ bool MetalTextureCache::FlushDeferredUploadEncoderBatch() {
   if (cmd && !deferred_upload_copies_.empty()) {
     if (command_processor_ &&
         cmd == command_processor_->GetCurrentCommandBuffer()) {
-      command_processor_->EndSharedMemoryUploadBlitEncoder(
-          MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-              kTextureDeferredBlit);
+      command_processor_->EndSharedMemoryUploadBlitEncoder();
     }
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (!blit) {
@@ -930,29 +926,17 @@ bool MetalTextureCache::PrepareTextureDataLoadRanges(
   // texture upload encoder is still open before requesting residency.
   if ((deferred_upload_compute_encoder_ || !deferred_upload_copies_.empty()) &&
       !FlushDeferredUploadEncoderBatch()) {
-    if (command_processor_) {
-      command_processor_->RecordSharedMemoryRequestOutcome(
-          MetalCommandProcessor::SharedMemoryRequestOutcome::
-              kTextureDeferredUploadFlush);
-    }
     return false;
   }
 
   // Request the guest memory needed by this texture upload before loading the
   // texture data for the current draw.
-  const MetalCommandProcessor::SharedMemoryRequestReason reason =
-      base_outdated_mask && mips_outdated_mask
-          ? MetalCommandProcessor::SharedMemoryRequestReason::
-                kTextureBaseAndMips
-      : base_outdated_mask
-          ? MetalCommandProcessor::SharedMemoryRequestReason::kTextureBase
-          : MetalCommandProcessor::SharedMemoryRequestReason::kTextureMips;
   if (!command_processor_) {
     XELOGE("Metal texture data residency requires a command processor");
     return false;
   }
   return command_processor_->RequestSharedMemoryRanges(
-      reason, ranges.data(), static_cast<uint32_t>(ranges.size()));
+      ranges.data(), static_cast<uint32_t>(ranges.size()));
 }
 
 bool MetalTextureCache::RequestTextureDataRange(Texture&,
@@ -974,40 +958,6 @@ bool MetalTextureCache::RequestTextureDataRange(Texture&,
   return false;
 }
 
-void MetalTextureCache::RecordTextureWatchInvalidation(
-    const Texture&, bool is_mip, TextureWatchInvalidationSource source,
-    uint32_t byte_count) {
-  if (!command_processor_) {
-    return;
-  }
-  using Reason = MetalCommandProcessor::TextureWatchInvalidationReason;
-  Reason reason;
-  switch (source) {
-    case TextureWatchInvalidationSource::kCpu:
-      reason = is_mip ? Reason::kCpuMips : Reason::kCpuBase;
-      break;
-    case TextureWatchInvalidationSource::kGpuResolve:
-      reason = is_mip ? Reason::kGpuResolveMips : Reason::kGpuResolveBase;
-      break;
-    case TextureWatchInvalidationSource::kGpuOther:
-    default:
-      reason = is_mip ? Reason::kGpuOtherMips : Reason::kGpuOtherBase;
-      break;
-  }
-  command_processor_->RecordTextureWatchInvalidation(reason, byte_count);
-}
-
-void MetalTextureCache::RecordTextureContentRevalidation(bool is_mip,
-                                                         uint32_t byte_count) {
-  if (!command_processor_) {
-    return;
-  }
-  using Reason = MetalCommandProcessor::TextureWatchInvalidationReason;
-  command_processor_->RecordTextureWatchInvalidation(
-      is_mip ? Reason::kRevalidatedMips : Reason::kRevalidatedBase,
-      byte_count);
-}
-
 MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
     MTL::CommandBuffer* command_buffer) {
   if (!deferred_upload_batch_depth_ || !command_buffer) {
@@ -1022,9 +972,7 @@ MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
   if (!deferred_upload_compute_encoder_) {
     if (command_processor_ &&
         command_buffer == command_processor_->GetCurrentCommandBuffer()) {
-      command_processor_->EndSharedMemoryUploadBlitEncoder(
-          MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-              kTextureCompute);
+      command_processor_->EndSharedMemoryUploadBlitEncoder();
     }
     deferred_upload_compute_encoder_ = command_buffer->computeCommandEncoder();
     if (deferred_upload_compute_encoder_) {
@@ -1038,7 +986,6 @@ MTL::ComputeCommandEncoder* MetalTextureCache::GetDeferredUploadComputeEncoder(
         if (MTL::Fence* hazard_fence =
                 command_processor_->GetSharedMemoryHazardFence()) {
           deferred_upload_compute_encoder_->waitForFence(hazard_fence);
-          command_processor_->RecordHazardFenceWait(2);
         }
       }
     }
@@ -1110,7 +1057,6 @@ bool MetalTextureCache::PrepareTextureMaterialization(
   }
 
   auto append_texture = [&](TextureKey key, Texture* texture) {
-    ++plan.request_count;
     bool base_outdated =
         texture ? texture->base_outdated_lockless() : false;
     bool mips_outdated =
@@ -1121,11 +1067,6 @@ bool MetalTextureCache::PrepareTextureMaterialization(
     for (const TextureMaterializationPlan::TextureLoad& planned_load :
          plan.texture_loads_) {
       if (planned_load.texture == texture) {
-        if (command_processor_) {
-          command_processor_->RecordTextureUploadExecutionDetail(
-              MetalCommandProcessor::TextureUploadExecutionDetail::
-                  kDuplicatePlannedSamePlan);
-        }
         return;
       }
     }
@@ -1183,116 +1124,11 @@ bool MetalTextureCache::PrepareTextureMaterialization(
     }
     use_cpu_source &= has_cpu_source_range;
     if (!use_cpu_source) {
-      if (command_processor_) {
-        MetalCommandProcessor::TextureUploadSourceFallbackReason
-            fallback_reason =
-                MetalCommandProcessor::TextureUploadSourceFallbackReason::
-                    kUnknown;
-        if (texture_key.scaled_resolve) {
-          fallback_reason =
-              MetalCommandProcessor::TextureUploadSourceFallbackReason::
-                  kScaledResolve;
-        } else if (base_state == SourceRangeState::kMixed ||
-                   mips_state == SourceRangeState::kMixed) {
-          fallback_reason =
-              MetalCommandProcessor::TextureUploadSourceFallbackReason::
-                  kMixedValidity;
-        } else if (base_state == SourceRangeState::kValid ||
-                   mips_state == SourceRangeState::kValid) {
-          fallback_reason =
-              MetalCommandProcessor::TextureUploadSourceFallbackReason::
-                  kSourceAlreadyResident;
-        }
-        command_processor_->RecordTextureUploadSourceFallback(fallback_reason);
-      }
       if (base_needs_upload) {
         plan.source_ranges.push_back({base_start, base_length});
       }
       if (mips_needs_upload) {
         plan.source_ranges.push_back({mips_start, mips_length});
-      }
-    }
-
-    if (command_processor_) {
-      const uint64_t upload_bytes =
-          GetTextureLoadBytes(*texture, base_outdated, mips_outdated);
-      if (base_outdated && base_state == SourceRangeState::kValid &&
-          texture->last_base_watch_invalidation_source() ==
-              TextureWatchInvalidationSource::kGpuResolve) {
-        using ResolveReason =
-            MetalCommandProcessor::TextureResolveReloadReason;
-        auto record_resolve_reload = [&](ResolveReason reason) {
-          command_processor_->RecordTextureResolveReload(reason, upload_bytes);
-        };
-        record_resolve_reload(ResolveReason::kCandidate);
-        if (mips_outdated) {
-          record_resolve_reload(ResolveReason::kMipsRequested);
-        }
-        if (texture_key.scaled_resolve) {
-          record_resolve_reload(ResolveReason::kScaledResolve);
-        }
-        switch (texture->last_base_watch_resolve_source()) {
-          case ResolveProvenanceSource::kDirectHost:
-            record_resolve_reload(ResolveReason::kSourceDirectHost);
-            break;
-          case ResolveProvenanceSource::kRenderTarget:
-            record_resolve_reload(ResolveReason::kSourceRenderTarget);
-            break;
-          case ResolveProvenanceSource::kUnknown:
-          default:
-            record_resolve_reload(ResolveReason::kSourceUnknown);
-            break;
-        }
-        const uint32_t resolve_start =
-            texture->last_base_watch_invalidation_range_start();
-        const uint32_t resolve_length =
-            texture->last_base_watch_invalidation_range_length();
-        if (!resolve_length) {
-          record_resolve_reload(ResolveReason::kNoProvenance);
-        } else {
-          const uint64_t texture_start = base_start;
-          const uint64_t texture_end = texture_start + uint64_t(base_length);
-          const uint64_t resolve_range_start = resolve_start;
-          const uint64_t resolve_range_end =
-              resolve_range_start + uint64_t(resolve_length);
-          if (texture_start == resolve_range_start &&
-              texture_end == resolve_range_end) {
-            record_resolve_reload(ResolveReason::kExactRange);
-          } else if (texture_start >= resolve_range_start &&
-                     texture_end <= resolve_range_end) {
-            record_resolve_reload(ResolveReason::kContainedRange);
-          } else if (texture_start < resolve_range_end &&
-                     texture_end > resolve_range_start) {
-            record_resolve_reload(ResolveReason::kPartialOverlap);
-          } else {
-            record_resolve_reload(ResolveReason::kNoOverlap);
-          }
-        }
-      }
-      MetalCommandProcessor::TextureReloadReason range_reason =
-          MetalCommandProcessor::TextureReloadReason::kPlannedBaseAndMips;
-      if (base_outdated && !mips_outdated) {
-        range_reason =
-            MetalCommandProcessor::TextureReloadReason::kPlannedBaseOnly;
-      } else if (!base_outdated && mips_outdated) {
-        range_reason =
-            MetalCommandProcessor::TextureReloadReason::kPlannedMipsOnly;
-      }
-      command_processor_->RecordTextureReloadReason(range_reason,
-                                                    upload_bytes);
-      command_processor_->RecordTextureReloadReason(
-          use_cpu_source
-              ? MetalCommandProcessor::TextureReloadReason::kPlannedCpuSource
-              : MetalCommandProcessor::TextureReloadReason::
-                    kPlannedResidentSource,
-          upload_bytes);
-      MetalTexture* metal_texture = static_cast<MetalTexture*>(texture);
-      if (metal_texture->MarkMaterializationPlanned(
-              command_processor_->GetCurrentTextureTelemetryFrame())) {
-        command_processor_->RecordTextureReloadReason(
-            MetalCommandProcessor::TextureReloadReason::
-                kPlannedAgainSameFrame,
-            upload_bytes);
       }
     }
 
@@ -1302,7 +1138,6 @@ bool MetalTextureCache::PrepareTextureMaterialization(
         mips_outdated,
         use_cpu_source,
     });
-    ++plan.planned_load_count;
   };
 
   // The fetch-constant parse and texture lookup repeat with identical inputs
@@ -1408,7 +1243,6 @@ void MetalTextureCache::RefreshTextureMaterializationPlans(
       continue;
     }
     total_load_count += static_cast<uint32_t>(plan->texture_loads_.size());
-    plan->executed_load_count = 0;
   }
   if (!total_load_count) {
     return;
@@ -1418,8 +1252,6 @@ void MetalTextureCache::RefreshTextureMaterializationPlans(
       live_loads;
   live_loads.reserve(total_load_count);
   std::vector<bool> plan_had_duplicate_prune(plan_count, false);
-  uint64_t pruned_already_current = 0;
-  uint64_t pruned_duplicate_same_flush = 0;
 
   {
     auto global_lock = AcquireGlobalLock();
@@ -1434,25 +1266,11 @@ void MetalTextureCache::RefreshTextureMaterializationPlans(
         if (!texture) {
           continue;
         }
-        const bool planned_base = load.load_base;
-        const bool planned_mips = load.load_mips;
         load.load_base = load.load_base && texture->base_outdated(global_lock);
         load.load_mips = load.load_mips && texture->mips_outdated(global_lock);
         if (!load.load_base && !load.load_mips) {
-          if (command_processor_) {
-            command_processor_->RecordTextureReloadReason(
-                MetalCommandProcessor::TextureReloadReason::
-                    kRefreshBecameCurrent,
-                GetTextureLoadBytes(*texture, planned_base, planned_mips));
-          }
           load.texture = nullptr;
-          ++pruned_already_current;
           continue;
-        }
-        if (command_processor_) {
-          command_processor_->RecordTextureReloadReason(
-              MetalCommandProcessor::TextureReloadReason::kRefreshStillNeeded,
-              GetTextureLoadBytes(*texture, load.load_base, load.load_mips));
         }
 
         auto [it, inserted] = live_loads.emplace(texture, &load);
@@ -1464,7 +1282,6 @@ void MetalTextureCache::RefreshTextureMaterializationPlans(
               existing_load->use_cpu_source && load.use_cpu_source;
           load.texture = nullptr;
           plan_had_duplicate_prune[i] = true;
-          ++pruned_duplicate_same_flush;
         }
       }
     }
@@ -1487,21 +1304,9 @@ void MetalTextureCache::RefreshTextureMaterializationPlans(
       ++write_index;
     }
     loads.resize(write_index);
-    plan->planned_load_count = static_cast<uint32_t>(loads.size());
     if (loads.empty() && !plan_had_duplicate_prune[i]) {
       plan->source_ranges.clear();
     }
-  }
-
-  if (command_processor_) {
-    command_processor_->RecordTextureUploadExecutionDetail(
-        MetalCommandProcessor::TextureUploadExecutionDetail::
-            kPrunedAlreadyCurrent,
-        pruned_already_current);
-    command_processor_->RecordTextureUploadExecutionDetail(
-        MetalCommandProcessor::TextureUploadExecutionDetail::
-            kPrunedDuplicateSameFlush,
-        pruned_duplicate_same_flush);
   }
 }
 
@@ -1510,66 +1315,23 @@ bool MetalTextureCache::ExecuteTextureMaterialization(
   if (plan.texture_loads_.empty()) {
     return true;
   }
-  uint64_t load_calls_before = loaded_texture_data_count_;
   bool success = true;
 
   std::vector<Texture*> fallback_textures;
   fallback_textures.reserve(plan.texture_loads_.size());
   {
     UploadBatchScope upload_batch(*this);
-    auto record_execution = [&](Texture& texture, bool load_base,
-                                bool load_mips,
-                                MetalCommandProcessor::TextureReloadReason
-                                    source_reason) {
-      if (!command_processor_) {
-        return;
-      }
-      const uint64_t upload_bytes =
-          GetTextureLoadBytes(texture, load_base, load_mips);
-      command_processor_->RecordTextureReloadReason(source_reason,
-                                                    upload_bytes);
-      MetalTexture* metal_texture = static_cast<MetalTexture*>(&texture);
-      if (metal_texture->MarkMaterializationExecuted(
-              command_processor_->GetCurrentTextureTelemetryFrame())) {
-        command_processor_->RecordTextureReloadReason(
-            MetalCommandProcessor::TextureReloadReason::
-                kExecuteAgainSameFrame,
-            upload_bytes);
-      }
-    };
     for (const TextureMaterializationPlan::TextureLoad& load :
          plan.texture_loads_) {
       if (!load.texture) {
         continue;
       }
       if (!load.use_cpu_source) {
-        record_execution(
-            *load.texture, load.load_base, load.load_mips,
-            MetalCommandProcessor::TextureReloadReason::kExecuteResidentSource);
-        if (!load.texture->base_outdated_lockless() &&
-            !load.texture->mips_outdated_lockless() && command_processor_) {
-          command_processor_->RecordTextureUploadExecutionDetail(
-              MetalCommandProcessor::TextureUploadExecutionDetail::
-                  kFallbackAlreadyCurrentLockless);
-        }
         fallback_textures.push_back(load.texture);
         continue;
       }
-      record_execution(
-          *load.texture, load.load_base, load.load_mips,
-          MetalCommandProcessor::TextureReloadReason::kExecuteCpuSource);
       if (!LoadTextureDataFromCpuGuestMemory(*load.texture, load.load_base,
                                              load.load_mips)) {
-        if (command_processor_) {
-          command_processor_->RecordTextureUploadSourceFallback(
-              MetalCommandProcessor::TextureUploadSourceFallbackReason::
-                  kCpuSourceLoadFailed);
-          command_processor_->RecordTextureReloadReason(
-              MetalCommandProcessor::TextureReloadReason::
-                  kExecuteResidentSource,
-              GetTextureLoadBytes(*load.texture, load.load_base,
-                                  load.load_mips));
-        }
         fallback_textures.push_back(load.texture);
       }
     }
@@ -1580,8 +1342,6 @@ bool MetalTextureCache::ExecuteTextureMaterialization(
     }
     success = upload_batch.End();
   }
-  plan.executed_load_count =
-      static_cast<uint32_t>(loaded_texture_data_count_ - load_calls_before);
   plan.texture_loads_.clear();
   if (!success) {
     ResetTextureBindings();
@@ -2540,9 +2300,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   if (!encoder) {
     if (command_processor_ &&
         cmd == command_processor_->GetCurrentCommandBuffer()) {
-      command_processor_->EndSharedMemoryUploadBlitEncoder(
-          MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-              kTextureCompute);
+      command_processor_->EndSharedMemoryUploadBlitEncoder();
     }
     encoder = cmd->computeCommandEncoder();
     // Hazard model consumer edge: untile dispatches read the (untracked)
@@ -2551,7 +2309,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       if (MTL::Fence* hazard_fence =
               command_processor_->GetSharedMemoryHazardFence()) {
         encoder->waitForFence(hazard_fence);
-        command_processor_->RecordHazardFenceWait(2);
       }
     }
   }
@@ -2783,9 +2540,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       } else {
         if (command_processor_ &&
             cmd == command_processor_->GetCurrentCommandBuffer()) {
-          command_processor_->EndSharedMemoryUploadBlitEncoder(
-              MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-                  kTextureBlit);
+          command_processor_->EndSharedMemoryUploadBlitEncoder();
         }
         MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
         if (!blit) {
@@ -3778,7 +3533,6 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
   SCOPE_profile_cpu_f("gpu");
   TryRevalidateUsedOutdatedTextures(used_texture_mask);
   const bool may_load_data = MayRequestTexturesLoadData(used_texture_mask);
-  uint64_t load_calls_before = loaded_texture_data_count_;
 
   if (may_load_data) {
     UploadBatchScope upload_batch(*this);
@@ -3786,10 +3540,6 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
     upload_batch.End();
   } else {
     TextureCache::RequestTextures(used_texture_mask);
-  }
-  uint64_t load_calls_delta = loaded_texture_data_count_ - load_calls_before;
-  if (!may_load_data) {
-    assert_zero(load_calls_delta);
   }
 
   // Intentionally no Metal-specific per-fetch logging here - invalid fetch
@@ -3799,9 +3549,7 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
 void MetalTextureCache::RequestTexturesWithoutLoading(
     uint32_t used_texture_mask) {
   SCOPE_profile_cpu_f("gpu");
-  uint64_t load_calls_before = loaded_texture_data_count_;
   TextureCache::RequestTextures(used_texture_mask, false);
-  assert_true(loaded_texture_data_count_ == load_calls_before);
 }
 
 bool MetalTextureCache::AreActiveTextureSRVKeysUpToDate(
@@ -4633,9 +4381,7 @@ bool MetalTextureCache::EnsureScaledResolveBufferRange(uint64_t start_scaled,
 
     if (!standalone && command_processor_ &&
         cmd == command_processor_->GetCurrentCommandBuffer()) {
-      command_processor_->EndSharedMemoryUploadBlitEncoder(
-          MetalCommandProcessor::SharedMemoryUploadEncoderEndReason::
-              kScaledResolveBlit);
+      command_processor_->EndSharedMemoryUploadBlitEncoder();
     }
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (!blit) {
@@ -4825,7 +4571,6 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
                                                               bool load_base,
                                                               bool load_mips) {
   SCOPE_profile_cpu_f("gpu");
-  ++loaded_texture_data_count_;
 
   MetalTexture* metal_texture = static_cast<MetalTexture*>(&texture);
   if (!metal_texture || !metal_texture->metal_texture()) {
@@ -4847,22 +4592,6 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   if (!metal_texture->is_3d_as_2d_wrapper_ &&
       texture.key().dimension == xenos::DataDimension::k3D) {
     metal_texture->texture_3d_as_2d_.reset();
-  }
-  if (command_processor_) {
-    const TextureKey& texture_key = texture.key();
-    const uint64_t upload_bytes =
-        (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
-                                        UINT32_C(16)))
-                   : 0) +
-        (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
-                                        UINT32_C(16)))
-                   : 0);
-    command_processor_->RecordTextureUploadSourceRoute(
-        texture_key.scaled_resolve
-            ? MetalCommandProcessor::TextureUploadSourceRoute::kScaledResolve
-            : MetalCommandProcessor::TextureUploadSourceRoute::
-                  kResidentSharedMemory,
-        upload_bytes);
   }
   return true;
 }
@@ -4887,11 +4616,6 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
     mips_outdated = load_mips && texture.mips_outdated(global_lock);
   }
   if (!base_outdated && !mips_outdated) {
-    if (command_processor_) {
-      command_processor_->RecordTextureUploadExecutionDetail(
-          MetalCommandProcessor::TextureUploadExecutionDetail::
-              kCpuSourceAlreadyCurrent);
-    }
     return true;
   }
 
@@ -4920,7 +4644,6 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
   // Upload work references the destination texture before normal binding does,
   // so keep it protected from LRU eviction like the resident-memory path.
   texture.MarkAsUsed();
-  ++loaded_texture_data_count_;
 
   if (!TryGpuLoadTexture(texture, base_outdated, mips_outdated,
                          TextureLoadSourceMode::kCpuGuestMemory)) {
@@ -4939,12 +4662,6 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
     // The bytes just consumed came straight from CPU guest memory, so their
     // hash can prove a later watch invalidation was page false sharing.
     texture.StoreCpuContentHashes(global_lock, base_outdated, mips_outdated);
-  }
-  if (command_processor_) {
-    command_processor_->RecordTextureUploadSourceRoute(
-        MetalCommandProcessor::TextureUploadSourceRoute::kCpuGuestMemory,
-        (base_outdated ? uint64_t(base_length) : 0) +
-            (mips_outdated ? uint64_t(mips_length) : 0));
   }
   texture.LogAction("Loaded");
   return true;

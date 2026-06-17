@@ -2,11 +2,8 @@ add_library(xenia-gpu-metal STATIC
   dxbc_to_dxil_converter.cc
   dxbc_to_dxil_converter.h
   ir_runtime_impl.mm
-  metal_backend_telemetry.cc
-  metal_backend_telemetry.h
   metal_command_processor.cc
   metal_command_processor.h
-  metal_command_processor_telemetry.cc
   metal_draw_batch.cc
   metal_direct_host_resolve.cc
   metal_geometry_shader.cc

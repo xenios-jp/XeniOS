@@ -155,12 +155,6 @@ constexpr size_t kMaxPendingSharedMemoryWriteCapacity = 64;
 constexpr size_t kMaxSharedMemoryWaitSegmentsPerPending = 64;
 constexpr size_t kMaxCurrentDrawVertexFetchRanges =
     xenos::kVertexFetchConstantCount;
-constexpr uint32_t kNativeMslDrawConstantsChangeSystem = 1u << 0;
-constexpr uint32_t kNativeMslDrawConstantsChangeFloat = 1u << 1;
-constexpr uint32_t kNativeMslDrawConstantsChangeBoolLoop = 1u << 2;
-constexpr uint32_t kNativeMslDrawConstantsChangeFetch = 1u << 3;
-constexpr uint32_t kNativeMslDrawConstantsChangeDescriptorIndices = 1u << 4;
-constexpr uint32_t kNativeMslDrawConstantsChangePrimitiveIndex = 1u << 5;
 // Keep helper-stage MSC translations separate from native-MSL standard
 // VS/PS translations. The bit is outside the semantic DxbcShaderTranslator
 // modification fields and only changes the Translation cache key.
@@ -782,8 +776,7 @@ MetalCommandProcessor::~MetalCommandProcessor() {
   // would terminate the process.
   DrainEncodeWorker();
   StopEncodeWorker();
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kShutdown);
+  EndSharedMemoryUploadBlitEncoder();
   // End any active render encoder before releasing
   // Note: Only call endEncoding if the encoder is still active
   // (not already ended by a committed command buffer)
@@ -917,7 +910,8 @@ uint64_t MetalCommandProcessor::GetCurrentSubmission() const {
 }
 
 uint64_t MetalCommandProcessor::GetCompletedSubmission() const {
-  uint64_t completed = completed_command_buffers_.load(std::memory_order_relaxed);
+  uint64_t completed =
+      completed_command_buffers_.load(std::memory_order_relaxed);
   // Multi-CB: an in-flight worker batch's command buffer rides between
   // spine submissions without an id of its own. Prep-time GPU-use stamps
   // (texture last-use, shared-memory access ranges) were made under the
@@ -1033,13 +1027,10 @@ bool MetalCommandProcessor::AddResidencySetResource(MTL::Resource* resource) {
   }
   auto [it, inserted] = residency_set_resources_.insert(resource);
   if (!inserted) {
-    ++backend_telemetry_.residency_set_allocation_duplicates;
     return true;
   }
   residency_set_->addAllocation(resource);
   residency_set_->commit();
-  ++backend_telemetry_.residency_set_allocations_added;
-  ++backend_telemetry_.residency_set_commits;
   return true;
 }
 
@@ -1084,13 +1075,10 @@ bool MetalCommandProcessor::AddResidencySetHeap(MTL::Heap* heap) {
   }
   auto [it, inserted] = residency_set_heaps_.insert(heap);
   if (!inserted) {
-    ++backend_telemetry_.residency_set_allocation_duplicates;
     return true;
   }
   residency_set_->addAllocation(heap);
   residency_set_->commit();
-  ++backend_telemetry_.residency_set_allocations_added;
-  ++backend_telemetry_.residency_set_commits;
   return true;
 }
 
@@ -1628,8 +1616,7 @@ void MetalCommandProcessor::FlushCommandBufferAndWait(uint64_t timeout_ns,
                                                       const char* context) {
   // Phase 1: commit the active command buffer and wait for it.
   if (current_command_buffer_) {
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kCommandBufferEnd);
+    EndSharedMemoryUploadBlitEncoder();
     if (texture_cache_ &&
         !texture_cache_
              ->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
@@ -1724,7 +1711,6 @@ void MetalCommandProcessor::ShutdownContext() {
   }
   DrainEncodeWorker();
   StopEncodeWorker();
-  MaybeDumpBackendTelemetry("shutdown", true);
 
   // End the render encoder directly (not via EndRenderEncoder — we release
   // the encoder object below after the command buffer completes).
@@ -1732,8 +1718,7 @@ void MetalCommandProcessor::ShutdownContext() {
     UpdateSharedMemoryFenceForActiveRenderEncoder();
     encode_ctx().render_encoder->endEncoding();
   }
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kShutdown);
+  EndSharedMemoryUploadBlitEncoder();
 
   FlushCommandBufferAndWait(std::numeric_limits<uint64_t>::max(),
                             "ShutdownContext");
@@ -2146,12 +2131,10 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                       uint32_t frontbuffer_height) {
   // Frame-boundary drain: in multi-CB mode the flush below no longer
   // synchronizes with the worker, but the swap is the once-per-frame point
-  // where the payload arena resets, retained storage trims, and the
-  // telemetry dump expects a quiesced backend.
+  // where the payload arena resets and retained storage trims.
   DrainEncodeWorker();
   ProcessCompletedSubmissions();
   saw_swap_ = true;
-  ++backend_telemetry_.swaps;
   last_swap_ptr_ = frontbuffer_ptr;
   last_swap_width_ = frontbuffer_width;
   last_swap_height_ = frontbuffer_height;
@@ -2162,8 +2145,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   TryTrimPreparedDrawRetainedStorage();
 
   // End any active render encoder
-  EndRenderEncoder(RenderEncoderEndReason::kSwap);
-  EndSharedMemoryUploadBlitEncoder(SharedMemoryUploadEncoderEndReason::kSwap);
+  EndRenderEncoder();
+  EndSharedMemoryUploadBlitEncoder();
   if (texture_cache_ &&
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     XELOGE("Metal: failed to flush texture upload encoder before swap");
@@ -2260,7 +2243,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           0, 0, 0, 0, [](ui::Presenter::GuestOutputRefreshContext&) -> bool {
             return false;
           });
-      MaybeDumpBackendTelemetry("swap");
       return;
     }
 
@@ -2300,7 +2282,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           });
     }
   }
-  MaybeDumpBackendTelemetry("swap");
 }
 
 void MetalCommandProcessor::OnPrimaryBufferEnd() {
@@ -2424,7 +2405,7 @@ CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenZPDQuery(
     if (wait_for > completed_submission) {
       if (wait_for >= GetCurrentSubmission()) {
         if (can_close_submission) {
-          EndRenderEncoder(RenderEncoderEndReason::kUnknown);
+          EndRenderEncoder();
           EndCommandBuffer();
         }
         return QueryOpenResult::kDeferred;
@@ -2471,7 +2452,8 @@ bool MetalCommandProcessor::CloseZPDQuery(ReportHandle report_handle,
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQuery)) {
     return false;
   }
-  if (!encode_ctx().render_encoder || !encode_ctx().render_encoder_has_zpd_visibility ||
+  if (!encode_ctx().render_encoder ||
+      !encode_ctx().render_encoder_has_zpd_visibility ||
       !zpd_active_query_.is_open()) {
     return false;
   }
@@ -2501,7 +2483,8 @@ bool MetalCommandProcessor::DiscardZPDQuery() {
     return false;
   }
 
-  if (encode_ctx().render_encoder && encode_ctx().render_encoder_has_zpd_visibility) {
+  if (encode_ctx().render_encoder &&
+      encode_ctx().render_encoder_has_zpd_visibility) {
     encode_ctx().render_encoder->setVisibilityResultMode(
         MTL::VisibilityResultModeDisabled, 0);
   }
@@ -2593,7 +2576,7 @@ bool MetalCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
       }
       return false;
     }
-    EndRenderEncoder(RenderEncoderEndReason::kUnknown);
+    EndRenderEncoder();
     EndCommandBuffer();
   }
 
@@ -2658,7 +2641,7 @@ bool MetalCommandProcessor::PrepareSharedMemoryComputeReadDependency(
   }
 
   if (encode_ctx().render_encoder) {
-    EndRenderEncoder(RenderEncoderEndReason::kSharedMemoryReadDependency);
+    EndRenderEncoder();
   }
 
   bool needs_fence_wait = false;
@@ -2822,8 +2805,7 @@ void MetalCommandProcessor::UpdateSharedMemoryFenceForActiveRenderEncoder() {
 
   if (shared_memory_fence_) {
     encode_ctx().render_encoder->updateFence(
-        shared_memory_fence_,
-        encode_ctx().shared_memory_write_stages);
+        shared_memory_fence_, encode_ctx().shared_memory_write_stages);
   }
 
   for (PendingSharedMemoryWrite& pending : pending_shared_memory_writes_) {
@@ -3024,7 +3006,7 @@ bool MetalCommandProcessor::EncodeSharedMemoryRenderReadDependencies(
   }
   if (needs_fence_wait && shared_memory_fence_) {
     encode_ctx().render_encoder->waitForFence(shared_memory_fence_,
-                                          consumer_stages);
+                                              consumer_stages);
     RetireFenceWaitedSharedMemoryWrites(ranges, range_count);
   }
   return true;
@@ -3040,7 +3022,6 @@ bool MetalCommandProcessor::EncodeSharedMemoryBlitReadDependency(
   // render writes), all of which signal the same fence at encoder end.
   if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
     encoder->waitForFence(shared_memory_fence_);
-    RecordHazardFenceWait(1);
     SharedMemoryRange range = {start, length};
     RetireFenceWaitedSharedMemoryWrites(&range, 1);
     return true;
@@ -3070,7 +3051,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                       uint32_t index_count,
                                       IndexBufferInfo* index_buffer_info,
                                       bool major_mode_explicit) {
-  ++backend_telemetry_.draw_calls;
   const RegisterFile& regs = *register_file_;
   uint32_t normalized_color_mask = 0;
 
@@ -3223,8 +3203,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         render_target_cache_->IsRenderPassDescriptorDirty() &&
         !render_target_cache_->IsRenderPassDescriptorCompatible(
             encode_ctx().render_pass_descriptor, 1)) {
-      EndRenderEncoder(
-          RenderEncoderEndReason::kRenderTargetUpdateDescriptorDirty);
+      EndRenderEncoder();
     }
   }
 
@@ -3533,53 +3512,16 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                          pixel_texture_sign_variant.key)
           : pixel_translation_modification.value;
 
-  // Sign-variant churn: count draws whose native-MSL shader pair matches the
-  // previous draw exactly (same shader hashes + modifications) but selects a
-  // different texture-sign key. These are the pipeline switches the
-  // PSO-multiplier hypothesis predicts could be folded into a runtime uniform.
-  if (use_native_msl_guest_translation) {
-    const uint64_t vertex_shader_hash = vertex_shader->ucode_data_hash();
-    const uint64_t pixel_shader_hash =
-        pixel_shader ? pixel_shader->ucode_data_hash() : 0;
-    NativeMslSignChurnTracker& churn = native_msl_sign_churn_tracker_;
-    if (churn.valid && churn.vertex_shader_hash == vertex_shader_hash &&
-        churn.pixel_shader_hash == pixel_shader_hash &&
-        churn.vertex_modification == vertex_translation_modification.value &&
-        churn.pixel_modification == pixel_translation_modification.value &&
-        (churn.vertex_sign_key != vertex_texture_sign_variant.key ||
-         churn.pixel_sign_key != pixel_texture_sign_variant.key)) {
-      ++backend_telemetry_.pipeline_sets_sign_key_change;
-    }
-    churn.valid = true;
-    churn.vertex_shader_hash = vertex_shader_hash;
-    churn.pixel_shader_hash = pixel_shader_hash;
-    churn.vertex_modification = vertex_translation_modification.value;
-    churn.pixel_modification = pixel_translation_modification.value;
-    churn.vertex_sign_key = vertex_texture_sign_variant.key;
-    churn.pixel_sign_key = pixel_texture_sign_variant.key;
-  }
-
   // Get or create shader translations for the selected modifications. When the
-  // native-MSL path bakes texture signs into the translation key, a freshly
-  // created translation is a new distinct (modification, sign-variant) tuple -
-  // count it as a live native-MSL sign variant (PSO-multiplier hypothesis).
-  bool vertex_translation_is_new = false;
+  // native-MSL path bakes texture signs into the translation key, the key also
+  // selects the requested sign variant.
   auto vertex_translation = static_cast<MetalShader::MetalTranslation*>(
-      vertex_shader->GetOrCreateTranslation(vertex_translation_key,
-                                            &vertex_translation_is_new));
-  if (use_native_msl_guest_translation && vertex_translation_is_new) {
-    ++backend_telemetry_.native_msl_sign_variants_live;
-  }
+      vertex_shader->GetOrCreateTranslation(vertex_translation_key));
 
   MetalShader::MetalTranslation* pixel_translation = nullptr;
   if (pixel_shader) {
-    bool pixel_translation_is_new = false;
     pixel_translation = static_cast<MetalShader::MetalTranslation*>(
-        pixel_shader->GetOrCreateTranslation(pixel_translation_key,
-                                             &pixel_translation_is_new));
-    if (use_native_msl_guest_translation && pixel_translation_is_new) {
-      ++backend_telemetry_.native_msl_sign_variants_live;
-    }
+        pixel_shader->GetOrCreateTranslation(pixel_translation_key));
   }
 
   if (use_native_msl_guest_translation) {
@@ -3644,7 +3586,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       !render_target_cache_->IsRenderPassDescriptorCompatible(
           encode_ctx().render_pass_descriptor, 1,
           fallback_depth_attachment_required)) {
-    EndRenderEncoder(RenderEncoderEndReason::kPipelineDescriptorIncompatible);
+    EndRenderEncoder();
   }
   MTL::RenderPassDescriptor* pass_desc_for_fmts =
       encode_ctx().render_pass_descriptor;
@@ -3863,7 +3805,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   texture_materialization_plan.Reset();
   bool textures_requested_for_draw = false;
   auto request_textures_for_draw =
-      [&](bool started_with_active_encoder) -> bool {
+      [&]() -> bool {
     if (!EnsureCommandBuffer()) {
       return false;
     }
@@ -3873,11 +3815,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       texture_cache_->RequestTextures(used_texture_mask);
     }
     textures_requested_for_draw = true;
-    if (started_with_active_encoder) {
-      ++backend_telemetry_.texture_requests_after_encoder_begin;
-    } else {
-      ++backend_telemetry_.texture_requests_before_encoder;
-    }
     return true;
   };
   std::array<VertexBindingRange, kMaxCurrentDrawVertexFetchRanges>
@@ -3933,27 +3870,12 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                             memexport_ranges_.size() + 2);
   uint64_t current_draw_invalid_shared_memory_bytes = 0;
   auto add_current_draw_shared_memory_range =
-      [&](DrawMaterializationSource source, uint32_t start, uint32_t length) {
+      [&](uint32_t start, uint32_t length) {
         if (!length) {
           return;
         }
-        const bool range_invalid =
-            shared_memory_ && !shared_memory_->IsRangeValid(start, length);
-        if (range_invalid) {
+        if (shared_memory_ && !shared_memory_->IsRangeValid(start, length)) {
           current_draw_invalid_shared_memory_bytes += length;
-        }
-        size_t source_index = static_cast<size_t>(source);
-        if (source_index < kDrawMaterializationSourceCount) {
-          ++backend_telemetry_.draw_materialization_source_ranges[source_index];
-          backend_telemetry_.draw_materialization_source_bytes[source_index] +=
-              length;
-          if (range_invalid) {
-            ++backend_telemetry_
-                  .draw_materialization_source_invalid_ranges[source_index];
-            backend_telemetry_
-                .draw_materialization_source_invalid_bytes[source_index] +=
-                length;
-          }
         }
         current_draw_shared_memory_ranges.push_back({start, length});
       };
@@ -3964,8 +3886,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
     for (const SharedMemory::Range& range :
          texture_materialization_plan.source_ranges) {
-      add_current_draw_shared_memory_range(
-          DrawMaterializationSource::kTextureSource, range.start, range.length);
+      add_current_draw_shared_memory_range(range.start, range.length);
     }
   }
 
@@ -3980,15 +3901,13 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       return fail_prepared_draw();
     }
     for (uint32_t i = 0; i < vertex_fetch_range_count; ++i) {
-      add_current_draw_shared_memory_range(
-          DrawMaterializationSource::kVertexFetch, vertex_fetch_ranges[i].start,
-          vertex_fetch_ranges[i].length);
+      add_current_draw_shared_memory_range(vertex_fetch_ranges[i].start,
+                                           vertex_fetch_ranges[i].length);
     }
     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
       uint32_t base_bytes = memexport_range.base_address_dwords << 2;
-      add_current_draw_shared_memory_range(
-          DrawMaterializationSource::kMemexport, base_bytes,
-          memexport_range.size_bytes);
+      add_current_draw_shared_memory_range(base_bytes,
+                                           memexport_range.size_bytes);
     }
 
     auto add_guest_index_range = [&](uint64_t index_base, uint32_t index_count,
@@ -4007,10 +3926,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             index_count);
         return false;
       }
-      add_current_draw_shared_memory_range(
-          DrawMaterializationSource::kGuestIndex,
-          static_cast<uint32_t>(index_base),
-          static_cast<uint32_t>(index_length));
+      add_current_draw_shared_memory_range(static_cast<uint32_t>(index_base),
+                                           static_cast<uint32_t>(index_length));
       return true;
     };
     if (guest_dma_index_buffer_read &&
@@ -4049,20 +3966,9 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       AnySharedMemoryRangeInvalid(
           current_draw_shared_memory_ranges.data(),
           static_cast<uint32_t>(current_draw_shared_memory_ranges.size()));
-  if (shared_memory_ && !current_draw_shared_memory_ranges.empty()) {
-    ++backend_telemetry_.draw_materialization_per_draw_requests;
-    if (current_draw_has_invalid_shared_memory) {
-      ++backend_telemetry_.draw_materialization_per_draw_invalid_requests;
-    } else {
-      ++backend_telemetry_.draw_materialization_per_draw_resident_skips;
-    }
-  }
 
   if (has_texture_request_work && !textures_requested_for_draw) {
-    const bool texture_request_started_with_active_encoder =
-        encode_ctx().render_encoder != nullptr;
-    if (!request_textures_for_draw(
-            texture_request_started_with_active_encoder)) {
+    if (!request_textures_for_draw()) {
       return fail_prepared_draw();
     }
   }
@@ -4260,25 +4166,21 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.use_native_msl = use_native_msl;
   draw.use_native_msl_primitive_mesh = use_native_msl_primitive_mesh;
   draw.use_native_msl_tessellation = use_native_msl_tessellation;
-  if (use_native_msl && vertex_translation_metadata) {
-    draw.native_vertex_metadata = *vertex_translation_metadata;
-  }
-  if (use_native_msl && pixel_translation_metadata) {
-    draw.native_pixel_metadata = *pixel_translation_metadata;
-    draw.native_pixel_metadata_valid = true;
-  }
   if (use_native_msl) {
-    if (vertex_translation_metadata &&
-        !native_msl::CaptureTextureRuntimeInfo(*texture_cache_,
-                                               *vertex_translation_metadata,
-                                               draw.native_vertex_bindings)) {
-      return fail_prepared_draw();
-    }
-    if (pixel_translation_metadata &&
-        !native_msl::CaptureTextureRuntimeInfo(*texture_cache_,
-                                               *pixel_translation_metadata,
-                                               draw.native_pixel_bindings)) {
-      return fail_prepared_draw();
+    const std::array<const DxbcShader::TranslationMetadata*, kStageCount>
+        native_metadata = {{vertex_translation_metadata,
+                            pixel_translation_metadata}};
+    for (size_t stage = 0; stage < kStageCount; ++stage) {
+      const DxbcShader::TranslationMetadata* metadata = native_metadata[stage];
+      if (!metadata) {
+        continue;
+      }
+      draw.native_metadata[stage] = *metadata;
+      draw.native_metadata_valid[stage] = true;
+      if (!native_msl::CaptureTextureRuntimeInfo(
+              *texture_cache_, *metadata, draw.native_bindings[stage])) {
+        return fail_prepared_draw();
+      }
     }
 
     uint32_t primitive_index_flags = 0u;
@@ -4312,7 +4214,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   draw.has_pending_draw_pass_transfers =
       render_target_cache_ &&
       render_target_cache_->HasPendingDrawPassTransfers();
-  ++backend_telemetry_.draws_submitted;
   return SubmitPreparedDraw(prepared_draw);
 }
 
@@ -4532,32 +4433,24 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   // Check if float constant layout changed (different shader bound).
   // Matches D3D12 d3d12_command_processor.cc:4910-4943.
   {
-    const Shader::ConstantRegisterMap& float_map_vs =
-        vertex_shader->constant_register_map();
-    for (uint32_t i = 0; i < 4; ++i) {
-      if (current_float_constant_map_vertex_[i] !=
-          float_map_vs.float_bitmap[i]) {
-        current_float_constant_map_vertex_[i] = float_map_vs.float_bitmap[i];
-        if (float_map_vs.float_count) {
-          cbuffer_binding_float_vertex_.up_to_date = false;
-        }
+    std::array<const Shader::ConstantRegisterMap*, kStageCount> float_maps = {
+        &vertex_shader->constant_register_map(),
+        pixel_shader ? &pixel_shader->constant_register_map() : nullptr};
+    for (size_t stage = 0; stage < kStageCount; ++stage) {
+      const Shader::ConstantRegisterMap* float_map = float_maps[stage];
+      if (!float_map) {
+        current_float_constant_maps_[stage].fill(0);
+        continue;
       }
-    }
-    if (pixel_shader) {
-      const Shader::ConstantRegisterMap& float_map_ps =
-          pixel_shader->constant_register_map();
       for (uint32_t i = 0; i < 4; ++i) {
-        if (current_float_constant_map_pixel_[i] !=
-            float_map_ps.float_bitmap[i]) {
-          current_float_constant_map_pixel_[i] = float_map_ps.float_bitmap[i];
-          if (float_map_ps.float_count) {
-            cbuffer_binding_float_pixel_.up_to_date = false;
+        if (current_float_constant_maps_[stage][i] !=
+            float_map->float_bitmap[i]) {
+          current_float_constant_maps_[stage][i] = float_map->float_bitmap[i];
+          if (float_map->float_count) {
+            cbuffer_binding_float_[stage].up_to_date = false;
           }
         }
       }
-    } else {
-      std::memset(current_float_constant_map_pixel_, 0,
-                  sizeof(current_float_constant_map_pixel_));
     }
   }
 
@@ -4574,8 +4467,8 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         texture_cache_->texture_destroy_epoch();
     if (texture_destroy_epoch != last_bindless_texture_destroy_epoch_) {
       last_bindless_texture_destroy_epoch_ = texture_destroy_epoch;
-      cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-      cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+      cbuffer_binding_descriptor_indices_[kStageVertex].up_to_date = false;
+      cbuffer_binding_descriptor_indices_[kStagePixel].up_to_date = false;
     }
   }
 
@@ -4587,8 +4480,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
       vertex_translation_metadata
           ? vertex_translation_metadata->sampler_bindings
           : metal_vertex_shader->GetSamplerBindingsAfterTranslation();
-  const size_t texture_count_vertex = texture_bindings_vertex.size();
-  const size_t sampler_count_vertex = sampler_bindings_vertex.size();
   auto get_native_texture_layout_uid = [&](size_t stage, const auto& bindings,
                                            uint64_t empty_hash) -> size_t {
     NativeMslBindingLayoutUidCache& cache =
@@ -4653,99 +4544,26 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         cache.valid = true;
         return parameters;
       };
-  size_t texture_layout_uid_vertex =
-      vertex_translation_metadata
-          ? get_native_texture_layout_uid(kStageVertex, texture_bindings_vertex,
-                                          0x564D534C54657830ull)
-          : metal_vertex_shader->GetTextureBindingLayoutUserUID();
-  size_t sampler_layout_uid_vertex =
-      vertex_translation_metadata
-          ? get_native_sampler_layout_uid(kStageVertex, sampler_bindings_vertex,
-                                          0x564D534C536D7030ull)
-          : metal_vertex_shader->GetSamplerBindingLayoutUserUID();
-  auto& next_texture_bindless_indices_vertex =
-      scratch_texture_bindless_indices_vertex_;
-  auto& next_texture_bindless_resources_vertex =
-      scratch_texture_bindless_resources_vertex_;
-  auto& next_sampler_bindless_indices_vertex =
-      scratch_sampler_bindless_indices_vertex_;
-  next_texture_bindless_indices_vertex.clear();
-  next_texture_bindless_resources_vertex.clear();
-  next_sampler_bindless_indices_vertex.clear();
-  if (sampler_count_vertex) {
-    if (current_sampler_layout_uid_vertex_ != sampler_layout_uid_vertex) {
-      current_sampler_layout_uid_vertex_ = sampler_layout_uid_vertex;
-      cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-    }
-    current_samplers_vertex_.resize(
-        std::max(current_samplers_vertex_.size(), sampler_count_vertex));
-    for (size_t i = 0; i < sampler_count_vertex; ++i) {
-      auto parameters = get_sampler_parameters_cached(
-          sampler_bindings_vertex[i], current_sampler_parameter_inputs_vertex_,
-          i);
-      if (current_samplers_vertex_[i] != parameters) {
-        current_samplers_vertex_[i] = parameters;
-        cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-      }
-    }
-  } else if (current_sampler_layout_uid_vertex_ != sampler_layout_uid_vertex) {
-    current_sampler_layout_uid_vertex_ = sampler_layout_uid_vertex;
-    cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-  }
-  bool vertex_texture_layout_changed =
-      current_texture_layout_uid_vertex_ != texture_layout_uid_vertex;
-  if (vertex_texture_layout_changed && !texture_count_vertex) {
-    cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-  } else if (texture_count_vertex &&
-             cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
-    bool vertex_texture_srv_changed =
-        !vertex_texture_layout_changed &&
-        !texture_cache_->AreActiveTextureSRVKeysUpToDate(
-            current_texture_srv_keys_vertex_.data(),
-            texture_bindings_vertex.data(), texture_count_vertex);
-    if (vertex_texture_layout_changed || vertex_texture_srv_changed) {
-      cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-    }
-  }
   const bool descriptor_indices_vertex_active =
       cbv_active(kStageVertex, kCbvSlotDescriptorIndices);
   const bool descriptor_indices_pixel_active =
       cbv_active(kStagePixel, kCbvSlotDescriptorIndices);
-
-  if (descriptor_indices_vertex_active &&
-      !cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
-    next_texture_bindless_indices_vertex.reserve(texture_count_vertex);
-    next_texture_bindless_resources_vertex.reserve(texture_count_vertex);
-    for (const auto& binding : texture_bindings_vertex) {
-      MTL::Texture* texture_for_encoder = nullptr;
-      next_texture_bindless_indices_vertex.push_back(
-          texture_cache_->GetBindlessSRVIndexForBinding(
-              binding.fetch_constant, binding.dimension, binding.is_signed,
-              &texture_for_encoder));
-      next_texture_bindless_resources_vertex.push_back(texture_for_encoder);
-    }
-    next_sampler_bindless_indices_vertex.reserve(sampler_count_vertex);
-    for (const auto& binding : sampler_bindings_vertex) {
-      next_sampler_bindless_indices_vertex.push_back(
-          texture_cache_->GetBindlessSamplerIndexForBinding(binding));
-    }
-  }
-
-  size_t texture_layout_uid_pixel = 0;
-  size_t sampler_layout_uid_pixel = 0;
+  std::array<size_t, kStageCount> texture_layout_uids = {};
+  std::array<size_t, kStageCount> sampler_layout_uids = {};
+  texture_layout_uids[kStageVertex] =
+      vertex_translation_metadata
+          ? get_native_texture_layout_uid(kStageVertex, texture_bindings_vertex,
+                                          0x564D534C54657830ull)
+          : metal_vertex_shader->GetTextureBindingLayoutUserUID();
+  sampler_layout_uids[kStageVertex] =
+      vertex_translation_metadata
+          ? get_native_sampler_layout_uid(kStageVertex, sampler_bindings_vertex,
+                                          0x564D534C536D7030ull)
+          : metal_vertex_shader->GetSamplerBindingLayoutUserUID();
   const std::vector<DxbcShader::TextureBinding>* texture_bindings_pixel_ptr =
       nullptr;
   const std::vector<DxbcShader::SamplerBinding>* sampler_bindings_pixel_ptr =
       nullptr;
-  auto& next_texture_bindless_indices_pixel =
-      scratch_texture_bindless_indices_pixel_;
-  auto& next_texture_bindless_resources_pixel =
-      scratch_texture_bindless_resources_pixel_;
-  auto& next_sampler_bindless_indices_pixel =
-      scratch_sampler_bindless_indices_pixel_;
-  next_texture_bindless_indices_pixel.clear();
-  next_texture_bindless_resources_pixel.clear();
-  next_sampler_bindless_indices_pixel.clear();
   if (metal_pixel_shader) {
     const auto& texture_bindings_pixel =
         pixel_translation_metadata
@@ -4755,80 +4573,101 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         pixel_translation_metadata
             ? pixel_translation_metadata->sampler_bindings
             : metal_pixel_shader->GetSamplerBindingsAfterTranslation();
-    const size_t texture_count_pixel = texture_bindings_pixel.size();
-    const size_t sampler_count_pixel = sampler_bindings_pixel.size();
     texture_bindings_pixel_ptr = &texture_bindings_pixel;
     sampler_bindings_pixel_ptr = &sampler_bindings_pixel;
-    texture_layout_uid_pixel =
+    texture_layout_uids[kStagePixel] =
         pixel_translation_metadata
             ? get_native_texture_layout_uid(kStagePixel, texture_bindings_pixel,
                                             0x504D534C54657830ull)
             : metal_pixel_shader->GetTextureBindingLayoutUserUID();
-    sampler_layout_uid_pixel =
+    sampler_layout_uids[kStagePixel] =
         pixel_translation_metadata
             ? get_native_sampler_layout_uid(kStagePixel, sampler_bindings_pixel,
                                             0x504D534C536D7030ull)
             : metal_pixel_shader->GetSamplerBindingLayoutUserUID();
-    if (sampler_count_pixel) {
-      if (current_sampler_layout_uid_pixel_ != sampler_layout_uid_pixel) {
-        current_sampler_layout_uid_pixel_ = sampler_layout_uid_pixel;
-        cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
-      }
-      current_samplers_pixel_.resize(
-          std::max(current_samplers_pixel_.size(), sampler_count_pixel));
-      for (size_t i = 0; i < sampler_count_pixel; ++i) {
-        auto parameters = get_sampler_parameters_cached(
-            sampler_bindings_pixel[i], current_sampler_parameter_inputs_pixel_,
-            i);
-        if (current_samplers_pixel_[i] != parameters) {
-          current_samplers_pixel_[i] = parameters;
-          cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
-        }
-      }
-    } else if (current_sampler_layout_uid_pixel_ != sampler_layout_uid_pixel) {
-      current_sampler_layout_uid_pixel_ = sampler_layout_uid_pixel;
-      cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+  }
+  struct BindlessStageInput {
+    const std::vector<DxbcShader::TextureBinding>* texture_bindings = nullptr;
+    const std::vector<DxbcShader::SamplerBinding>* sampler_bindings = nullptr;
+    bool descriptor_indices_active = false;
+  };
+  std::array<BindlessStageInput, kStageCount> bindless_stage_inputs = {{
+      {&texture_bindings_vertex, &sampler_bindings_vertex,
+       descriptor_indices_vertex_active},
+      {texture_bindings_pixel_ptr, sampler_bindings_pixel_ptr,
+       metal_pixel_shader && descriptor_indices_pixel_active},
+  }};
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    auto& next_texture_bindless_indices =
+        scratch_texture_bindless_indices_[stage];
+    auto& next_texture_bindless_resources =
+        scratch_texture_bindless_resources_[stage];
+    auto& next_sampler_bindless_indices =
+        scratch_sampler_bindless_indices_[stage];
+    next_texture_bindless_indices.clear();
+    next_texture_bindless_resources.clear();
+    next_sampler_bindless_indices.clear();
+    const BindlessStageInput& input = bindless_stage_inputs[stage];
+    if (!input.texture_bindings || !input.sampler_bindings) {
+      continue;
     }
-    bool pixel_texture_layout_changed =
-        current_texture_layout_uid_pixel_ != texture_layout_uid_pixel;
-    if (pixel_texture_layout_changed && !texture_count_pixel) {
-      cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
-    } else if (texture_count_pixel &&
-               cbuffer_binding_descriptor_indices_pixel_.up_to_date) {
-      bool pixel_texture_srv_changed =
-          !pixel_texture_layout_changed &&
+    const auto& texture_bindings = *input.texture_bindings;
+    const auto& sampler_bindings = *input.sampler_bindings;
+    const size_t texture_count = texture_bindings.size();
+    const size_t sampler_count = sampler_bindings.size();
+    if (current_sampler_layout_uids_[stage] != sampler_layout_uids[stage]) {
+      current_sampler_layout_uids_[stage] = sampler_layout_uids[stage];
+      cbuffer_binding_descriptor_indices_[stage].up_to_date = false;
+    }
+    current_samplers_[stage].resize(
+        std::max(current_samplers_[stage].size(), sampler_count));
+    for (size_t i = 0; i < sampler_count; ++i) {
+      auto parameters = get_sampler_parameters_cached(
+          sampler_bindings[i], current_sampler_parameter_inputs_[stage], i);
+      if (current_samplers_[stage][i] != parameters) {
+        current_samplers_[stage][i] = parameters;
+        cbuffer_binding_descriptor_indices_[stage].up_to_date = false;
+      }
+    }
+    bool texture_layout_changed =
+        current_texture_layout_uids_[stage] != texture_layout_uids[stage];
+    if (texture_layout_changed && !texture_count) {
+      cbuffer_binding_descriptor_indices_[stage].up_to_date = false;
+    } else if (texture_count &&
+               cbuffer_binding_descriptor_indices_[stage].up_to_date) {
+      bool texture_srv_changed =
+          !texture_layout_changed &&
           !texture_cache_->AreActiveTextureSRVKeysUpToDate(
-              current_texture_srv_keys_pixel_.data(),
-              texture_bindings_pixel.data(), texture_count_pixel);
-      if (pixel_texture_layout_changed || pixel_texture_srv_changed) {
-        cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+              current_texture_srv_keys_[stage].data(), texture_bindings.data(),
+              texture_count);
+      if (texture_layout_changed || texture_srv_changed) {
+        cbuffer_binding_descriptor_indices_[stage].up_to_date = false;
       }
     }
-    if (!cbuffer_binding_descriptor_indices_pixel_.up_to_date) {
-      next_texture_bindless_indices_pixel.reserve(texture_count_pixel);
-      next_texture_bindless_resources_pixel.reserve(texture_count_pixel);
-      for (const auto& binding : texture_bindings_pixel) {
+    if (input.descriptor_indices_active &&
+        !cbuffer_binding_descriptor_indices_[stage].up_to_date) {
+      next_texture_bindless_indices.reserve(texture_count);
+      next_texture_bindless_resources.reserve(texture_count);
+      for (const auto& binding : texture_bindings) {
         MTL::Texture* texture_for_encoder = nullptr;
-        next_texture_bindless_indices_pixel.push_back(
+        next_texture_bindless_indices.push_back(
             texture_cache_->GetBindlessSRVIndexForBinding(
                 binding.fetch_constant, binding.dimension, binding.is_signed,
                 &texture_for_encoder));
-        next_texture_bindless_resources_pixel.push_back(texture_for_encoder);
+        next_texture_bindless_resources.push_back(texture_for_encoder);
       }
-      next_sampler_bindless_indices_pixel.reserve(sampler_count_pixel);
-      for (const auto& binding : sampler_bindings_pixel) {
-        next_sampler_bindless_indices_pixel.push_back(
+      next_sampler_bindless_indices.reserve(sampler_count);
+      for (const auto& binding : sampler_bindings) {
+        next_sampler_bindless_indices.push_back(
             texture_cache_->GetBindlessSamplerIndexForBinding(binding));
       }
     }
   }
 
-  bool descriptor_indices_vertex_written = false;
-  bool descriptor_indices_pixel_written = false;
+  std::array<bool, kStageCount> descriptor_indices_written = {};
 
-  auto upload_binding = [&](ConstantBufferBinding& binding, size_t cbv_slot,
-                            size_t size, const char* name,
-                            auto&& writer) -> bool {
+  auto upload_binding = [&](ConstantBufferBinding& binding, size_t size,
+                            const char* name, auto&& writer) -> bool {
     constexpr size_t kConstantBufferAlignment = 256;
     size = std::max(size, size_t(16));
     MTL::Buffer* buffer = nullptr;
@@ -4848,13 +4687,10 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     binding.size = size;
     binding.upload_frame = frame_current_;
     binding.up_to_date = true;
-    if (cbv_slot < backend_telemetry_.cbv_uploads.size()) {
-      ++backend_telemetry_.cbv_uploads[cbv_slot];
-    }
     return true;
   };
   if (!cbuffer_binding_system_.up_to_date) {
-    if (!upload_binding(cbuffer_binding_system_, kCbvSlotSystem,
+    if (!upload_binding(cbuffer_binding_system_,
                         sizeof(DxbcShaderTranslator::SystemConstants), "system",
                         [&](uint8_t* data, size_t) {
                           std::memcpy(
@@ -4863,8 +4699,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                         })) {
       return false;
     }
-  } else {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotSystem];
   }
 
   auto write_packed_float_constants =
@@ -4914,58 +4748,47 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         }
       };
 
-  const Shader::ConstantRegisterMap& float_map_vertex =
-      vertex_shader->constant_register_map();
-  if (cbv_active(kStageVertex, kCbvSlotFloat) &&
-      !cbuffer_binding_float_vertex_.up_to_date) {
-    const size_t float_size =
-        sizeof(float) * 4 * std::max(float_map_vertex.float_count, uint32_t(1));
-    if (!upload_binding(
-            cbuffer_binding_float_vertex_, kCbvSlotFloat, float_size,
-            "vertex float", [&](uint8_t* data, size_t size) {
-              write_packed_float_constants(data, size, &float_map_vertex,
-                                           XE_GPU_REG_SHADER_CONSTANT_000_X);
-            })) {
-      return false;
+  const std::array<const Shader::ConstantRegisterMap*, kStageCount>
+      float_maps = {{&vertex_shader->constant_register_map(),
+                     pixel_shader ? &pixel_shader->constant_register_map()
+                                  : nullptr}};
+  constexpr std::array<uint32_t, kStageCount> kFloatRegisterBases = {
+      {XE_GPU_REG_SHADER_CONSTANT_000_X, XE_GPU_REG_SHADER_CONSTANT_256_X}};
+  constexpr std::array<const char*, kStageCount> kFloatUploadNames = {
+      {"vertex float", "pixel float"}};
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    const Shader::ConstantRegisterMap* float_map = float_maps[stage];
+    if (!cbv_active(stage, kCbvSlotFloat)) {
+      continue;
     }
-  } else if (cbv_active(kStageVertex, kCbvSlotFloat)) {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFloat];
-  }
-
-  if (cbv_active(kStagePixel, kCbvSlotFloat) &&
-      !cbuffer_binding_float_pixel_.up_to_date) {
-    const Shader::ConstantRegisterMap* float_map_pixel =
-        pixel_shader ? &pixel_shader->constant_register_map() : nullptr;
-    const size_t float_size =
-        sizeof(float) * 4 *
-        std::max(float_map_pixel ? float_map_pixel->float_count : uint32_t(0),
-                 uint32_t(1));
-    if (!upload_binding(cbuffer_binding_float_pixel_, kCbvSlotFloat, float_size,
-                        "pixel float", [&](uint8_t* data, size_t size) {
-                          write_packed_float_constants(
-                              data, size, float_map_pixel,
-                              XE_GPU_REG_SHADER_CONSTANT_256_X);
-                        })) {
-      return false;
+    if (!cbuffer_binding_float_[stage].up_to_date) {
+      const size_t float_size =
+          sizeof(float) * 4 *
+          std::max(float_map ? float_map->float_count : uint32_t(0),
+                   uint32_t(1));
+      if (!upload_binding(
+              cbuffer_binding_float_[stage], float_size,
+              kFloatUploadNames[stage], [&](uint8_t* data, size_t size) {
+                write_packed_float_constants(data, size, float_map,
+                                             kFloatRegisterBases[stage]);
+              })) {
+        return false;
+      }
     }
-  } else if (pixel_shader && cbv_active(kStagePixel, kCbvSlotFloat)) {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFloat];
   }
 
   const bool bool_loop_active = cbv_active(kStageVertex, kCbvSlotBoolLoop) ||
                                 cbv_active(kStagePixel, kCbvSlotBoolLoop);
   if (bool_loop_active && !cbuffer_binding_bool_loop_.up_to_date) {
     if (!upload_binding(
-            cbuffer_binding_bool_loop_, kCbvSlotBoolLoop,
-            kBoolLoopConstantsSize, "bool loop", [&](uint8_t* data, size_t) {
+            cbuffer_binding_bool_loop_, kBoolLoopConstantsSize, "bool loop",
+            [&](uint8_t* data, size_t) {
               std::memcpy(data,
                           &regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031],
                           kBoolLoopConstantsSize);
             })) {
       return false;
     }
-  } else if (bool_loop_active) {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotBoolLoop];
   }
 
   bool fetch_binding_active = false;
@@ -4988,7 +4811,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                       fetch_size) == 0;
       if (can_reuse_fetch_payload) {
         cbuffer_binding_fetch_.up_to_date = true;
-        ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
       } else {
         // The binding's own payload differs - check the recent frame-lifetime
         // snapshots for identical contents before uploading a new one.
@@ -5004,10 +4826,9 @@ bool MetalCommandProcessor::PrepareDrawConstants(
         }
         if (cache_hit) {
           cbuffer_binding_fetch_ = cache_hit->binding;
-          ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
         } else {
-          if (!upload_binding(cbuffer_binding_fetch_, kCbvSlotFetch, fetch_size,
-                              "fetch", [&](uint8_t* data, size_t) {
+          if (!upload_binding(cbuffer_binding_fetch_, fetch_size, "fetch",
+                              [&](uint8_t* data, size_t) {
                                 std::memcpy(data, fetch_constants, fetch_size);
                               })) {
             return false;
@@ -5023,8 +4844,6 @@ bool MetalCommandProcessor::PrepareDrawConstants(
                     fetch_size);
         current_fetch_constant_payload_valid_ = true;
       }
-    } else {
-      ++backend_telemetry_.cbv_reuse_hits[kCbvSlotFetch];
     }
   }
 
@@ -5094,14 +4913,10 @@ bool MetalCommandProcessor::PrepareDrawConstants(
 
   auto upload_descriptor_indices = [&](ConstantBufferBinding& binding,
                                        uint32_t word_count, auto&& writer,
-                                       size_t stage, const char* name) -> bool {
+                                       const char* name) -> bool {
     const size_t descriptor_indices_bytes =
         std::max(word_count, uint32_t(1)) * sizeof(uint32_t);
-    if (stage < backend_telemetry_.descriptor_index_uploads.size()) {
-      ++backend_telemetry_.descriptor_index_uploads[stage];
-    }
-    if (!upload_binding(binding, kCbvSlotDescriptorIndices,
-                        descriptor_indices_bytes, name,
+    if (!upload_binding(binding, descriptor_indices_bytes, name,
                         [&](uint8_t* data, size_t size) {
                           writer(reinterpret_cast<uint32_t*>(data), word_count);
                         })) {
@@ -5110,84 +4925,62 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     return true;
   };
 
-  if (!cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
-    uint32_t descriptor_indices_word_count =
-        vertex_translation_metadata
-            ? MetalNativeDescriptorIndicesWordCount(
-                  *vertex_translation_metadata)
-            : vertex_draw_metadata.descriptor_indices_word_count;
-    if (!upload_descriptor_indices(
-            cbuffer_binding_descriptor_indices_vertex_,
-            descriptor_indices_word_count,
-            [&](uint32_t* words, uint32_t word_count) {
-              write_descriptor_indices(
-                  words, word_count, texture_bindings_vertex,
-                  sampler_bindings_vertex, next_texture_bindless_indices_vertex,
-                  next_sampler_bindless_indices_vertex);
-            },
-            kStageVertex, "vertex descriptor indices")) {
-      return false;
+  static const std::vector<DxbcShader::TextureBinding> kNoTextureBindings;
+  static const std::vector<DxbcShader::SamplerBinding> kNoSamplerBindings;
+  const std::array<uint32_t, kStageCount> descriptor_indices_word_counts = {{
+      vertex_translation_metadata
+          ? MetalNativeDescriptorIndicesWordCount(*vertex_translation_metadata)
+          : vertex_draw_metadata.descriptor_indices_word_count,
+      pixel_translation_metadata
+          ? MetalNativeDescriptorIndicesWordCount(*pixel_translation_metadata)
+          : (pixel_draw_metadata ? pixel_draw_metadata->descriptor_indices_word_count
+                                 : 1),
+  }};
+  constexpr std::array<const char*, kStageCount>
+      kDescriptorIndicesUploadNames = {
+          {"vertex descriptor indices", "pixel descriptor indices"}};
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    const BindlessStageInput& input = bindless_stage_inputs[stage];
+    const bool upload_when_inactive = stage == kStageVertex;
+    const bool upload_needed =
+        !cbuffer_binding_descriptor_indices_[stage].up_to_date &&
+        (input.descriptor_indices_active || upload_when_inactive);
+    if (upload_needed) {
+      const auto& texture_bindings =
+          input.texture_bindings ? *input.texture_bindings : kNoTextureBindings;
+      const auto& sampler_bindings =
+          input.sampler_bindings ? *input.sampler_bindings : kNoSamplerBindings;
+      if (!upload_descriptor_indices(
+              cbuffer_binding_descriptor_indices_[stage],
+              descriptor_indices_word_counts[stage],
+              [&](uint32_t* words, uint32_t word_count) {
+                write_descriptor_indices(
+                    words, word_count, texture_bindings, sampler_bindings,
+                    scratch_texture_bindless_indices_[stage],
+                    scratch_sampler_bindless_indices_[stage]);
+              },
+              kDescriptorIndicesUploadNames[stage])) {
+        return false;
+      }
+      descriptor_indices_written[stage] = true;
     }
-    descriptor_indices_vertex_written = true;
-  } else if (descriptor_indices_vertex_active) {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
   }
 
-  if (metal_pixel_shader && descriptor_indices_pixel_active &&
-      !cbuffer_binding_descriptor_indices_pixel_.up_to_date) {
-    uint32_t descriptor_indices_word_count =
-        pixel_translation_metadata
-            ? MetalNativeDescriptorIndicesWordCount(*pixel_translation_metadata)
-            : (pixel_draw_metadata
-                   ? pixel_draw_metadata->descriptor_indices_word_count
-                   : 1);
-    static const std::vector<DxbcShader::TextureBinding> kNoTextureBindings;
-    static const std::vector<DxbcShader::SamplerBinding> kNoSamplerBindings;
-    if (!upload_descriptor_indices(
-            cbuffer_binding_descriptor_indices_pixel_,
-            descriptor_indices_word_count,
-            [&](uint32_t* words, uint32_t word_count) {
-              write_descriptor_indices(
-                  words, word_count,
-                  texture_bindings_pixel_ptr ? *texture_bindings_pixel_ptr
-                                             : kNoTextureBindings,
-                  sampler_bindings_pixel_ptr ? *sampler_bindings_pixel_ptr
-                                             : kNoSamplerBindings,
-                  next_texture_bindless_indices_pixel,
-                  next_sampler_bindless_indices_pixel);
-            },
-            kStagePixel, "pixel descriptor indices")) {
-      return false;
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    if (!descriptor_indices_written[stage]) {
+      continue;
     }
-    descriptor_indices_pixel_written = true;
-  } else if (metal_pixel_shader && descriptor_indices_pixel_active) {
-    ++backend_telemetry_.cbv_reuse_hits[kCbvSlotDescriptorIndices];
-  }
-
-  if (descriptor_indices_vertex_written) {
-    current_texture_layout_uid_vertex_ = texture_layout_uid_vertex;
-    current_texture_bindless_resources_vertex_.swap(
-        next_texture_bindless_resources_vertex);
-    if (texture_count_vertex) {
-      current_texture_srv_keys_vertex_.resize(std::max(
-          current_texture_srv_keys_vertex_.size(), texture_count_vertex));
+    current_texture_layout_uids_[stage] = texture_layout_uids[stage];
+    current_texture_bindless_resources_[stage].swap(
+        scratch_texture_bindless_resources_[stage]);
+    const auto* texture_bindings =
+        bindless_stage_inputs[stage].texture_bindings;
+    if (texture_bindings && !texture_bindings->empty()) {
+      current_texture_srv_keys_[stage].resize(std::max(
+          current_texture_srv_keys_[stage].size(), texture_bindings->size()));
       texture_cache_->WriteActiveTextureSRVKeys(
-          current_texture_srv_keys_vertex_.data(),
-          texture_bindings_vertex.data(), texture_count_vertex);
-    }
-  }
-  if (descriptor_indices_pixel_written) {
-    current_texture_layout_uid_pixel_ = texture_layout_uid_pixel;
-    current_texture_bindless_resources_pixel_.swap(
-        next_texture_bindless_resources_pixel);
-    if (texture_bindings_pixel_ptr && !texture_bindings_pixel_ptr->empty()) {
-      current_texture_srv_keys_pixel_.resize(
-          std::max(current_texture_srv_keys_pixel_.size(),
-                   texture_bindings_pixel_ptr->size()));
-      texture_cache_->WriteActiveTextureSRVKeys(
-          current_texture_srv_keys_pixel_.data(),
-          texture_bindings_pixel_ptr->data(),
-          texture_bindings_pixel_ptr->size());
+          current_texture_srv_keys_[stage].data(), texture_bindings->data(),
+          texture_bindings->size());
     }
   }
   // A stage that binds no bindless textures this draw must not leave stale
@@ -5199,33 +4992,27 @@ bool MetalCommandProcessor::PrepareDrawConstants(
   // the stage rebuilds the vector instead of reusing the now-empty one, and
   // forces a republish so the previously published residency set (which may
   // still reference the freed view) is regenerated.
-  if (!descriptor_indices_vertex_active &&
-      !current_texture_bindless_resources_vertex_.empty()) {
+  constexpr std::array<const char*, kStageCount> kStageNames = {
+      {"vertex", "pixel"}};
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    if (bindless_stage_inputs[stage].descriptor_indices_active ||
+        current_texture_bindless_resources_[stage].empty()) {
+      continue;
+    }
     if (cvars::metal_log_bindless_stale_stage_clear) {
       XELOGW(
           "MetalCommandProcessor: cleared {} stale bindless texture(s) from "
-          "inactive vertex stage before residency publish",
-          current_texture_bindless_resources_vertex_.size());
+          "inactive {} stage before residency publish",
+          current_texture_bindless_resources_[stage].size(),
+          kStageNames[stage]);
     }
-    current_texture_bindless_resources_vertex_.clear();
-    cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-    current_texture_layout_uid_vertex_ = 0;
-    descriptor_indices_vertex_written = true;
+    current_texture_bindless_resources_[stage].clear();
+    cbuffer_binding_descriptor_indices_[stage].up_to_date = false;
+    current_texture_layout_uids_[stage] = 0;
+    descriptor_indices_written[stage] = true;
   }
-  if (!(metal_pixel_shader && descriptor_indices_pixel_active) &&
-      !current_texture_bindless_resources_pixel_.empty()) {
-    if (cvars::metal_log_bindless_stale_stage_clear) {
-      XELOGW(
-          "MetalCommandProcessor: cleared {} stale bindless texture(s) from "
-          "inactive pixel stage before residency publish",
-          current_texture_bindless_resources_pixel_.size());
-    }
-    current_texture_bindless_resources_pixel_.clear();
-    cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
-    current_texture_layout_uid_pixel_ = 0;
-    descriptor_indices_pixel_written = true;
-  }
-  if (descriptor_indices_vertex_written || descriptor_indices_pixel_written) {
+  if (descriptor_indices_written[kStageVertex] ||
+      descriptor_indices_written[kStagePixel]) {
     PublishBindlessTextureResourceSet();
   }
 
@@ -5245,61 +5032,43 @@ bool MetalCommandProcessor::PrepareDrawConstants(
     cbv.size = binding.size;
   };
   uniforms_out.active_cbv_masks = active_cbv_masks;
-  set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotSystem],
-                  cbuffer_binding_system_,
-                  uniforms_out.active_cbv_masks[kStageVertex] &
-                      (uint32_t(1) << kCbvSlotSystem));
-  set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotFloat],
-                  cbuffer_binding_float_vertex_,
-                  uniforms_out.active_cbv_masks[kStageVertex] &
-                      (uint32_t(1) << kCbvSlotFloat));
-  set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotBoolLoop],
-                  cbuffer_binding_bool_loop_,
-                  uniforms_out.active_cbv_masks[kStageVertex] &
-                      (uint32_t(1) << kCbvSlotBoolLoop));
-  set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotFetch],
-                  cbuffer_binding_fetch_,
-                  uniforms_out.active_cbv_masks[kStageVertex] &
-                      (uint32_t(1) << kCbvSlotFetch));
-  set_uniform_cbv(uniforms_out.cbvs[kStageVertex][kCbvSlotDescriptorIndices],
-                  cbuffer_binding_descriptor_indices_vertex_,
-                  uniforms_out.active_cbv_masks[kStageVertex] &
-                      (uint32_t(1) << kCbvSlotDescriptorIndices));
-  set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotSystem],
-                  cbuffer_binding_system_,
-                  uniforms_out.active_cbv_masks[kStagePixel] &
-                      (uint32_t(1) << kCbvSlotSystem));
-  set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotFloat],
-                  cbuffer_binding_float_pixel_,
-                  uniforms_out.active_cbv_masks[kStagePixel] &
-                      (uint32_t(1) << kCbvSlotFloat));
-  set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotBoolLoop],
-                  cbuffer_binding_bool_loop_,
-                  uniforms_out.active_cbv_masks[kStagePixel] &
-                      (uint32_t(1) << kCbvSlotBoolLoop));
-  set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotFetch],
-                  cbuffer_binding_fetch_,
-                  uniforms_out.active_cbv_masks[kStagePixel] &
-                      (uint32_t(1) << kCbvSlotFetch));
-  set_uniform_cbv(uniforms_out.cbvs[kStagePixel][kCbvSlotDescriptorIndices],
-                  cbuffer_binding_descriptor_indices_pixel_,
-                  uniforms_out.active_cbv_masks[kStagePixel] &
-                      (uint32_t(1) << kCbvSlotDescriptorIndices));
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    auto cbv_active_for_slot = [&](CbvSlot slot) {
+      return (uniforms_out.active_cbv_masks[stage] & (uint32_t(1) << slot)) !=
+             0;
+    };
+    set_uniform_cbv(uniforms_out.cbvs[stage][kCbvSlotSystem],
+                    cbuffer_binding_system_,
+                    cbv_active_for_slot(kCbvSlotSystem));
+    set_uniform_cbv(uniforms_out.cbvs[stage][kCbvSlotFloat],
+                    cbuffer_binding_float_[stage],
+                    cbv_active_for_slot(kCbvSlotFloat));
+    set_uniform_cbv(uniforms_out.cbvs[stage][kCbvSlotBoolLoop],
+                    cbuffer_binding_bool_loop_,
+                    cbv_active_for_slot(kCbvSlotBoolLoop));
+    set_uniform_cbv(uniforms_out.cbvs[stage][kCbvSlotFetch],
+                    cbuffer_binding_fetch_, cbv_active_for_slot(kCbvSlotFetch));
+    set_uniform_cbv(uniforms_out.cbvs[stage][kCbvSlotDescriptorIndices],
+                    cbuffer_binding_descriptor_indices_[stage],
+                    cbv_active_for_slot(kCbvSlotDescriptorIndices));
+  }
   uniforms_out.fetch_constant_dword_masks = fetch_constant_dword_masks;
   return true;
 }
 
 void MetalCommandProcessor::ApplyDrawDynamicState(const PreparedDraw& draw) {
   const DrawDynamicState& dynamic_state = draw.dynamic_state;
-  if (encode_ctx().viewport_dirty || std::memcmp(&dynamic_state.viewport, &encode_ctx().cached_viewport,
-                                     sizeof(MTL::Viewport)) != 0) {
+  if (encode_ctx().viewport_dirty ||
+      std::memcmp(&dynamic_state.viewport, &encode_ctx().cached_viewport,
+                  sizeof(MTL::Viewport)) != 0) {
     encode_ctx().render_encoder->setViewport(dynamic_state.viewport);
     encode_ctx().cached_viewport = dynamic_state.viewport;
     encode_ctx().viewport_dirty = false;
   }
 
-  if (encode_ctx().scissor_dirty || std::memcmp(&dynamic_state.scissor, &encode_ctx().cached_scissor,
-                                    sizeof(MTL::ScissorRect)) != 0) {
+  if (encode_ctx().scissor_dirty ||
+      std::memcmp(&dynamic_state.scissor, &encode_ctx().cached_scissor,
+                  sizeof(MTL::ScissorRect)) != 0) {
     encode_ctx().render_encoder->setScissorRect(dynamic_state.scissor);
     encode_ctx().cached_scissor = dynamic_state.scissor;
     encode_ctx().scissor_dirty = false;
@@ -5341,10 +5110,15 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
   }
 
   constexpr size_t kNativeRuntimeInfoAlignment = 256;
-  const bool draw_needs_primitive_index_constants =
-      draw.native_vertex_metadata.uses_primitive_index_constants ||
-      (draw.native_pixel_metadata_valid &&
-       draw.native_pixel_metadata.uses_primitive_index_constants);
+  auto native_stage_active = [&](size_t stage) {
+    return stage == kStageVertex || draw.native_metadata_valid[stage];
+  };
+  bool draw_needs_primitive_index_constants = false;
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    draw_needs_primitive_index_constants |=
+        native_stage_active(stage) &&
+        draw.native_metadata[stage].uses_primitive_index_constants;
+  }
   if (draw_needs_primitive_index_constants) {
     NativeMslPrimitiveIndexUploadCache& primitive_index_cache =
         native_msl_primitive_index_upload_cache_;
@@ -5376,8 +5150,7 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
       primitive_index_cache.upload_frame = frame_current_;
     }
     draw.native_primitive_index_buffer = primitive_index_cache.buffer;
-    draw.native_primitive_index_gpu_address =
-        primitive_index_cache.gpu_address;
+    draw.native_primitive_index_gpu_address = primitive_index_cache.gpu_address;
   }
 
   // Texture runtime-info table per stage. Mirrors the encode-side bind_stage
@@ -5432,14 +5205,12 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
     draw.native_runtime_info_offsets[stage] = runtime_cache.offset;
     return true;
   };
-  if (!prepare_stage_runtime_info(draw.native_vertex_metadata,
-                                  draw.native_vertex_bindings, kStageVertex)) {
-    return false;
-  }
-  if (draw.native_pixel_metadata_valid &&
-      !prepare_stage_runtime_info(draw.native_pixel_metadata,
-                                  draw.native_pixel_bindings, kStagePixel)) {
-    return false;
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    if (native_stage_active(stage) &&
+        !prepare_stage_runtime_info(draw.native_metadata[stage],
+                                    draw.native_bindings[stage], stage)) {
+      return false;
+    }
   }
 
   // Per-stage XeNativeDrawConstants pointer-table upload and the indirect CBV
@@ -5566,148 +5337,6 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
         draw_constants_cache.upload_frame == frame_current_ &&
         std::memcmp(&draw_constants_cache.payload, &draw_constants,
                     sizeof(draw_constants)) == 0;
-    auto compute_draw_constants_change_mask = [&]() {
-      uint32_t changed_mask = 0;
-      auto mark_changed = [&](bool changed, uint32_t bit) {
-        if (changed) {
-          changed_mask |= bit;
-        }
-      };
-      mark_changed(draw_constants_cache.payload.system != draw_constants.system,
-                   kNativeMslDrawConstantsChangeSystem);
-      mark_changed(draw_constants_cache.payload.float_constants_data !=
-                       draw_constants.float_constants_data,
-                   kNativeMslDrawConstantsChangeFloat);
-      mark_changed(draw_constants_cache.payload.bool_loop_constants_data !=
-                       draw_constants.bool_loop_constants_data,
-                   kNativeMslDrawConstantsChangeBoolLoop);
-      mark_changed(draw_constants_cache.payload.fetch_constants_data !=
-                       draw_constants.fetch_constants_data,
-                   kNativeMslDrawConstantsChangeFetch);
-      mark_changed(draw_constants_cache.payload.descriptor_indices !=
-                       draw_constants.descriptor_indices,
-                   kNativeMslDrawConstantsChangeDescriptorIndices);
-      mark_changed(draw_constants_cache.payload.primitive_index !=
-                       draw_constants.primitive_index,
-                   kNativeMslDrawConstantsChangePrimitiveIndex);
-      return changed_mask;
-    };
-    auto record_draw_constants_reason =
-        [&](RenderEncoderBufferStage encoder_stage,
-            NativeMslDrawConstantsRebuildReason reason) {
-          const size_t stage_index = size_t(encoder_stage);
-          if (stage_index >= kRenderEncoderBufferStageTelemetryCount) {
-            return;
-          }
-          const size_t reason_index =
-              stage_index * kNativeMslDrawConstantsRebuildReasonCount +
-              size_t(reason);
-          if (reason_index <
-              backend_telemetry_.native_msl_draw_constants_rebuild_reasons
-                  .size()) {
-            ++backend_telemetry_
-                  .native_msl_draw_constants_rebuild_reasons[reason_index];
-          }
-        };
-    auto record_draw_constants_change_mask = [&](RenderEncoderBufferStage
-                                                     encoder_stage,
-                                                 uint32_t changed_mask) {
-      const size_t stage_index = size_t(encoder_stage);
-      if (stage_index >= kRenderEncoderBufferStageTelemetryCount ||
-          changed_mask >= kNativeMslDrawConstantsChangeMaskCount) {
-        return;
-      }
-      const size_t mask_index =
-          stage_index * kNativeMslDrawConstantsChangeMaskCount + changed_mask;
-      if (mask_index <
-          backend_telemetry_.native_msl_draw_constants_change_masks.size()) {
-        ++backend_telemetry_.native_msl_draw_constants_change_masks[mask_index];
-      }
-    };
-    auto record_draw_constants_reason_for_bound_stages =
-        [&](NativeMslDrawConstantsRebuildReason reason) {
-          if (vertex_stage) {
-            record_draw_constants_reason(RenderEncoderBufferStage::kVertex,
-                                         reason);
-          }
-          if (fragment_stage) {
-            record_draw_constants_reason(RenderEncoderBufferStage::kFragment,
-                                         reason);
-          }
-          if (mesh_stage) {
-            record_draw_constants_reason(RenderEncoderBufferStage::kMesh,
-                                         reason);
-          }
-          if (object_stage) {
-            record_draw_constants_reason(RenderEncoderBufferStage::kObject,
-                                         reason);
-          }
-        };
-    auto record_draw_constants_change_mask_for_bound_stages =
-        [&](uint32_t changed_mask) {
-          if (vertex_stage) {
-            record_draw_constants_change_mask(RenderEncoderBufferStage::kVertex,
-                                              changed_mask);
-          }
-          if (fragment_stage) {
-            record_draw_constants_change_mask(
-                RenderEncoderBufferStage::kFragment, changed_mask);
-          }
-          if (mesh_stage) {
-            record_draw_constants_change_mask(RenderEncoderBufferStage::kMesh,
-                                              changed_mask);
-          }
-          if (object_stage) {
-            record_draw_constants_change_mask(RenderEncoderBufferStage::kObject,
-                                              changed_mask);
-          }
-        };
-    const bool can_record_draw_constants_change_mask =
-        !can_reuse_draw_constants && draw_constants_cache.payload_valid &&
-        draw_constants_cache.buffer &&
-        draw_constants_cache.upload_frame == frame_current_;
-    const uint32_t draw_constants_change_mask =
-        can_record_draw_constants_change_mask
-            ? compute_draw_constants_change_mask()
-            : 0;
-    if (draw_constants_change_mask) {
-      record_draw_constants_change_mask_for_bound_stages(
-          draw_constants_change_mask);
-    }
-    auto classify_draw_constants_reason =
-        [&]() -> NativeMslDrawConstantsRebuildReason {
-      if (can_reuse_draw_constants) {
-        return kNativeMslDrawConstantsReuse;
-      }
-      if (!draw_constants_cache.payload_valid || !draw_constants_cache.buffer) {
-        return kNativeMslDrawConstantsInitial;
-      }
-      if (draw_constants_cache.upload_frame != frame_current_) {
-        return kNativeMslDrawConstantsFrameOpen;
-      }
-      const uint32_t changed_mask = draw_constants_change_mask;
-      if (!changed_mask || (changed_mask & (changed_mask - 1))) {
-        return kNativeMslDrawConstantsMixed;
-      }
-      switch (changed_mask) {
-        case kNativeMslDrawConstantsChangeSystem:
-          return kNativeMslDrawConstantsSystemChanged;
-        case kNativeMslDrawConstantsChangeFloat:
-          return kNativeMslDrawConstantsFloatChanged;
-        case kNativeMslDrawConstantsChangeBoolLoop:
-          return kNativeMslDrawConstantsBoolLoopChanged;
-        case kNativeMslDrawConstantsChangeFetch:
-          return kNativeMslDrawConstantsFetchChanged;
-        case kNativeMslDrawConstantsChangeDescriptorIndices:
-          return kNativeMslDrawConstantsDescriptorIndicesChanged;
-        case kNativeMslDrawConstantsChangePrimitiveIndex:
-          return kNativeMslDrawConstantsPrimitiveIndexChanged;
-        default:
-          return kNativeMslDrawConstantsMixed;
-      }
-    };
-    record_draw_constants_reason_for_bound_stages(
-        classify_draw_constants_reason());
     if (use_vertex_slot_ring) {
       // Reserve this draw's slot (fresh page on frame open / rollover). The
       // reserve helper returns a pointer to the next free slot but does NOT
@@ -5731,7 +5360,6 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
       } else {
         std::memcpy(slot_data, &draw_constants, sizeof(draw_constants));
         ++native_msl_draw_constants_slot_page_.next_slot;
-        ++backend_telemetry_.native_msl_draw_constants_slot_writes;
         prepared.slot = slot_index;
         draw_constants_cache.payload = draw_constants;
         draw_constants_cache.slot_buffer =
@@ -5740,9 +5368,7 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
         // Keep buffer/offset pointing at THIS slot's exact byte range so the
         // shared kStageVertex cache stays self-consistent: a later mesh/object
         // single-table draw that memcmp-reuses this payload binds the page at
-        // the slot's offset (which holds the matching table), and
-        // can_reuse_draw_constants / change-mask telemetry keep operating on
-        // this entry.
+        // the slot's offset, which holds the matching table.
         draw_constants_cache.buffer =
             native_msl_draw_constants_slot_page_.buffer;
         draw_constants_cache.offset = static_cast<NS::UInteger>(
@@ -5788,8 +5414,7 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
       draw_constants_cache.payload_valid = true;
       draw_constants_cache.upload_frame = frame_current_;
       prepared.table_buffer = draw_constants_buffer;
-      prepared.table_offset =
-          static_cast<NS::UInteger>(draw_constants_offset);
+      prepared.table_offset = static_cast<NS::UInteger>(draw_constants_offset);
     }
 
     // CBV payloads referenced indirectly (by GPU address) from the pointer
@@ -5836,23 +5461,36 @@ bool MetalCommandProcessor::PrepareNativeMslDrawResources(PreparedDraw& draw) {
   const bool native_mesh_stage =
       draw.use_native_msl_primitive_mesh || draw.use_native_msl_tessellation;
   const bool native_object_stage = draw.use_native_msl_tessellation;
-  if (!prepare_stage_draw_constants(draw.native_vertex_metadata, kStageVertex,
-                                    native_vertex_stage, false,
-                                    native_mesh_stage, native_object_stage)) {
-    return false;
-  }
-  if (draw.native_pixel_metadata_valid &&
-      !prepare_stage_draw_constants(draw.native_pixel_metadata, kStagePixel,
-                                    false, true, false, false)) {
-    return false;
+  struct NativePreparedStage {
+    size_t stage;
+    bool active;
+    bool vertex_stage;
+    bool fragment_stage;
+    bool mesh_stage;
+    bool object_stage;
+  };
+  const std::array<NativePreparedStage, kStageCount> native_stages = {{
+      {kStageVertex, native_stage_active(kStageVertex), native_vertex_stage,
+       false, native_mesh_stage, native_object_stage},
+      {kStagePixel, native_stage_active(kStagePixel), false, true, false,
+       false},
+  }};
+  for (const NativePreparedStage& stage : native_stages) {
+    if (stage.active &&
+        !prepare_stage_draw_constants(draw.native_metadata[stage.stage],
+                                      stage.stage, stage.vertex_stage,
+                                      stage.fragment_stage, stage.mesh_stage,
+                                      stage.object_stage)) {
+      return false;
+    }
   }
   return true;
 }
 
 bool MetalCommandProcessor::BindNativeMslDrawResources(
     const PreparedDraw& draw) {
-  if (!encode_ctx().render_encoder || !constant_buffer_pool_ || !shared_memory_ ||
-      !texture_cache_ || !null_buffer_) {
+  if (!encode_ctx().render_encoder || !constant_buffer_pool_ ||
+      !shared_memory_ || !texture_cache_ || !null_buffer_) {
     XELOGE("Native MSL draw binding requested before Metal resources exist");
     return false;
   }
@@ -5975,15 +5613,12 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
       // and re-binds after encoder resets; the per-draw selection is the
       // baseInstance index, never a setVertexBufferOffset.
       if (!RenderEncoderBufferBindingMatches(
-              RenderEncoderBufferStage::kVertex,
-              prepared_constants.page_buffer,
+              RenderEncoderBufferStage::kVertex, prepared_constants.page_buffer,
               prepared_constants.page_base_offset,
               kNativeBufferDrawConstants)) {
-        SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex,
-                               prepared_constants.page_buffer,
-                               prepared_constants.page_base_offset,
-                               kNativeBufferDrawConstants);
-        ++backend_telemetry_.native_msl_draw_constants_slot_page_binds;
+        SetRenderEncoderBuffer(
+            RenderEncoderBufferStage::kVertex, prepared_constants.page_buffer,
+            prepared_constants.page_base_offset, kNativeBufferDrawConstants);
       }
     } else {
       bind_native_buffer(prepared_constants.table_buffer,
@@ -6033,15 +5668,27 @@ bool MetalCommandProcessor::BindNativeMslDrawResources(
   const bool native_mesh_stage =
       draw.use_native_msl_primitive_mesh || draw.use_native_msl_tessellation;
   const bool native_object_stage = draw.use_native_msl_tessellation;
-  if (!bind_stage(draw.native_vertex_metadata, kStageVertex,
-                  native_vertex_stage, false, native_mesh_stage,
-                  native_object_stage)) {
-    return false;
-  }
-  if (draw.native_pixel_metadata_valid &&
-      !bind_stage(draw.native_pixel_metadata, kStagePixel, false, true, false,
-                  false)) {
-    return false;
+  struct NativePreparedStage {
+    size_t stage;
+    bool active;
+    bool vertex_stage;
+    bool fragment_stage;
+    bool mesh_stage;
+    bool object_stage;
+  };
+  const std::array<NativePreparedStage, kStageCount> native_stages = {{
+      {kStageVertex, true, native_vertex_stage, false, native_mesh_stage,
+       native_object_stage},
+      {kStagePixel, draw.native_metadata_valid[kStagePixel], false, true,
+       false, false},
+  }};
+  for (const NativePreparedStage& stage : native_stages) {
+    if (stage.active &&
+        !bind_stage(draw.native_metadata[stage.stage], stage.stage,
+                    stage.vertex_stage, stage.fragment_stage, stage.mesh_stage,
+                    stage.object_stage)) {
+      return false;
+    }
   }
   return true;
 }
@@ -6080,52 +5727,15 @@ bool MetalCommandProcessor::PopulateBindlessTables(
     bool shared_memory_is_uav, MTL::ResourceUsage shared_memory_usage,
     bool use_geometry_emulation, bool use_tessellation_emulation,
     const UniformBufferInfo& uniforms) {
-  constexpr size_t kGraphicsRootStage = kStageVertex;
   GraphicsRootArgumentState& root_state = graphics_root_argument_state_;
   if (root_state.valid) {
     assert_true(root_state.allocation.upload_frame == frame_current_);
   }
   const bool entries_were_initialized = root_state.entries_initialized;
-  const bool bindless_shared_memory_uav_mismatch =
-      current_bindless_shared_memory_is_uav_ != shared_memory_is_uav;
-  const bool root_rebuild_detail_telemetry =
-      cvars::metal_root_rebuild_detail_telemetry;
   const uint64_t null_gpu = null_buffer_->gpuAddress();
   struct RootUpdateStats {
     size_t slots_patched = 0;
-    bool descriptor_indices_pointer_mismatch = false;
-    bool other_cbv_pointer_mismatch = false;
-    bool root_resource_identity_changed = false;
-    bool root_resource_identity_same = false;
   } root_update_stats;
-  auto root_slot_is_descriptor_indices_cbv = [](size_t slot) {
-    switch (slot) {
-      case kGraphicsRootABSlotCBVVertexDescriptorIndices:
-      case kGraphicsRootABSlotCBVHullDescriptorIndices:
-      case kGraphicsRootABSlotCBVDomainDescriptorIndices:
-      case kGraphicsRootABSlotCBVPixelDescriptorIndices:
-        return true;
-      default:
-        return false;
-    }
-  };
-  auto root_slot_is_other_cbv = [](size_t slot) {
-    switch (slot) {
-      case kGraphicsRootABSlotCBVSystem:
-      case kGraphicsRootABSlotCBVVertexFloat:
-      case kGraphicsRootABSlotCBVBoolLoop:
-      case kGraphicsRootABSlotCBVVertexFetch:
-      case kGraphicsRootABSlotCBVHullFloat:
-      case kGraphicsRootABSlotCBVHullFetch:
-      case kGraphicsRootABSlotCBVDomainFloat:
-      case kGraphicsRootABSlotCBVDomainFetch:
-      case kGraphicsRootABSlotCBVPixelFloat:
-      case kGraphicsRootABSlotCBVPixelFetch:
-        return true;
-      default:
-        return false;
-    }
-  };
   auto uniform_cbv_identity = [&](size_t stage, size_t cbv) {
     const uint32_t cbv_bit = uint32_t(1) << cbv;
     if (!(uniforms.active_cbv_masks[stage] & cbv_bit)) {
@@ -6163,7 +5773,6 @@ bool MetalCommandProcessor::PopulateBindlessTables(
       return;
     }
     const uint64_t previous_gpu_address = root_state.entries[slot];
-    const RootSlotIdentity previous_identity = root_state.identities[slot];
     const bool slot_changed = entries_were_initialized
                                   ? previous_gpu_address != gpu_address
                                   : gpu_address != 0;
@@ -6177,43 +5786,6 @@ bool MetalCommandProcessor::PopulateBindlessTables(
       root_state.dirty_slot_mask |= uint64_t(1) << slot;
     }
     ++root_update_stats.slots_patched;
-    if (slot < backend_telemetry_.bindless_root_arg_slot_patches.size()) {
-      ++backend_telemetry_.bindless_root_arg_slot_patches[slot];
-    }
-    if (root_rebuild_detail_telemetry) {
-      const bool previous_slot_active =
-          entries_were_initialized && previous_gpu_address != null_gpu;
-      const bool new_slot_active = gpu_address != null_gpu;
-      if (previous_identity.is_cbv || identity.is_cbv) {
-        const bool previous_cbv_active =
-            previous_identity.active && previous_slot_active;
-        const bool new_cbv_active = identity.active && new_slot_active;
-        MTL::Buffer* previous_buffer =
-            previous_cbv_active ? previous_identity.buffer : nullptr;
-        MTL::Buffer* new_buffer = new_cbv_active ? identity.buffer : nullptr;
-        if (previous_buffer == new_buffer && previous_buffer &&
-            previous_identity.offset != identity.offset) {
-          ++backend_telemetry_.bindless_root_rebuild_details
-                [kBindlessRootDetailSameBufferOffsetChanged];
-          root_update_stats.root_resource_identity_same = true;
-        } else if (previous_buffer != new_buffer) {
-          ++backend_telemetry_.bindless_root_rebuild_details
-                [kBindlessRootDetailDifferentBuffer];
-          root_update_stats.root_resource_identity_changed = true;
-        } else if (previous_buffer) {
-          root_update_stats.root_resource_identity_same = true;
-        }
-      } else {
-        root_update_stats.root_resource_identity_changed = true;
-      }
-    }
-    if (entries_were_initialized) {
-      if (root_slot_is_descriptor_indices_cbv(slot)) {
-        root_update_stats.descriptor_indices_pointer_mismatch = true;
-      } else if (root_slot_is_other_cbv(slot)) {
-        root_update_stats.other_cbv_pointer_mismatch = true;
-      }
-    }
   };
   auto set_cbv_slot = [&](size_t root_slot, size_t stage, size_t cbv) {
     set_root_slot(root_slot, cbv_gpu_address(stage, cbv),
@@ -6252,105 +5824,72 @@ bool MetalCommandProcessor::PopulateBindlessTables(
   set_root_slot(kGraphicsRootABSlotSamplerSpace0, sampler_heap_gpu, {});
   set_common_cbv_slot(kGraphicsRootABSlotCBVSystem, kCbvSlotSystem);
   set_common_cbv_slot(kGraphicsRootABSlotCBVBoolLoop, kCbvSlotBoolLoop);
-  set_cbv_slot(kGraphicsRootABSlotCBVVertexFloat, kStageVertex, kCbvSlotFloat);
-  set_cbv_slot(kGraphicsRootABSlotCBVVertexFetch, kStageVertex, kCbvSlotFetch);
-  set_cbv_slot(kGraphicsRootABSlotCBVVertexDescriptorIndices, kStageVertex,
-               kCbvSlotDescriptorIndices);
+  struct StageCbvRootSlot {
+    size_t root_slot;
+    size_t stage;
+    CbvSlot cbv;
+  };
+  constexpr std::array<StageCbvRootSlot, 3> kVertexCbvRootSlots = {{
+      {kGraphicsRootABSlotCBVVertexFloat, kStageVertex, kCbvSlotFloat},
+      {kGraphicsRootABSlotCBVVertexFetch, kStageVertex, kCbvSlotFetch},
+      {kGraphicsRootABSlotCBVVertexDescriptorIndices, kStageVertex,
+       kCbvSlotDescriptorIndices},
+  }};
+  for (const StageCbvRootSlot& slot : kVertexCbvRootSlots) {
+    set_cbv_slot(slot.root_slot, slot.stage, slot.cbv);
+  }
   if (use_tessellation_emulation) {
     // Hull and domain generated stages consume the same guest constant state as
     // the vertex/domain translation they expand. Keep these slots null on
     // ordinary draws so normal vertex root churn doesn't patch inactive stages.
-    set_cbv_slot(kGraphicsRootABSlotCBVHullFloat, kStageVertex, kCbvSlotFloat);
-    set_cbv_slot(kGraphicsRootABSlotCBVHullFetch, kStageVertex, kCbvSlotFetch);
-    set_cbv_slot(kGraphicsRootABSlotCBVHullDescriptorIndices, kStageVertex,
-                 kCbvSlotDescriptorIndices);
-    set_cbv_slot(kGraphicsRootABSlotCBVDomainFloat, kStageVertex,
-                 kCbvSlotFloat);
-    set_cbv_slot(kGraphicsRootABSlotCBVDomainFetch, kStageVertex,
-                 kCbvSlotFetch);
-    set_cbv_slot(kGraphicsRootABSlotCBVDomainDescriptorIndices, kStageVertex,
-                 kCbvSlotDescriptorIndices);
+    constexpr std::array<StageCbvRootSlot, 6> kTessellationCbvRootSlots = {{
+        {kGraphicsRootABSlotCBVHullFloat, kStageVertex, kCbvSlotFloat},
+        {kGraphicsRootABSlotCBVHullFetch, kStageVertex, kCbvSlotFetch},
+        {kGraphicsRootABSlotCBVHullDescriptorIndices, kStageVertex,
+         kCbvSlotDescriptorIndices},
+        {kGraphicsRootABSlotCBVDomainFloat, kStageVertex, kCbvSlotFloat},
+        {kGraphicsRootABSlotCBVDomainFetch, kStageVertex, kCbvSlotFetch},
+        {kGraphicsRootABSlotCBVDomainDescriptorIndices, kStageVertex,
+         kCbvSlotDescriptorIndices},
+    }};
+    for (const StageCbvRootSlot& slot : kTessellationCbvRootSlots) {
+      set_cbv_slot(slot.root_slot, slot.stage, slot.cbv);
+    }
   } else {
     const RootSlotIdentity inactive_cbv{true, false, nullptr, 0};
-    set_root_slot(kGraphicsRootABSlotCBVHullFloat, null_gpu, inactive_cbv);
-    set_root_slot(kGraphicsRootABSlotCBVHullFetch, null_gpu, inactive_cbv);
-    set_root_slot(kGraphicsRootABSlotCBVHullDescriptorIndices, null_gpu,
-                  inactive_cbv);
-    set_root_slot(kGraphicsRootABSlotCBVDomainFloat, null_gpu, inactive_cbv);
-    set_root_slot(kGraphicsRootABSlotCBVDomainFetch, null_gpu, inactive_cbv);
-    set_root_slot(kGraphicsRootABSlotCBVDomainDescriptorIndices, null_gpu,
-                  inactive_cbv);
+    constexpr std::array<size_t, 6> kInactiveTessellationCbvRootSlots = {{
+        kGraphicsRootABSlotCBVHullFloat,
+        kGraphicsRootABSlotCBVHullFetch,
+        kGraphicsRootABSlotCBVHullDescriptorIndices,
+        kGraphicsRootABSlotCBVDomainFloat,
+        kGraphicsRootABSlotCBVDomainFetch,
+        kGraphicsRootABSlotCBVDomainDescriptorIndices,
+    }};
+    for (size_t root_slot : kInactiveTessellationCbvRootSlots) {
+      set_root_slot(root_slot, null_gpu, inactive_cbv);
+    }
   }
-  set_cbv_slot(kGraphicsRootABSlotCBVPixelFloat, kStagePixel, kCbvSlotFloat);
-  set_cbv_slot(kGraphicsRootABSlotCBVPixelFetch, kStagePixel, kCbvSlotFetch);
-  set_cbv_slot(kGraphicsRootABSlotCBVPixelDescriptorIndices, kStagePixel,
-               kCbvSlotDescriptorIndices);
+  constexpr std::array<StageCbvRootSlot, 3> kPixelCbvRootSlots = {{
+      {kGraphicsRootABSlotCBVPixelFloat, kStagePixel, kCbvSlotFloat},
+      {kGraphicsRootABSlotCBVPixelFetch, kStagePixel, kCbvSlotFetch},
+      {kGraphicsRootABSlotCBVPixelDescriptorIndices, kStagePixel,
+       kCbvSlotDescriptorIndices},
+  }};
+  for (const StageCbvRootSlot& slot : kPixelCbvRootSlots) {
+    set_cbv_slot(slot.root_slot, slot.stage, slot.cbv);
+  }
   root_state.entries_initialized = true;
 
   const bool root_valid = root_state.valid && root_state.allocation.valid &&
                           root_state.allocation.upload_frame == frame_current_;
   const bool root_update_needed = !root_valid || root_state.dirty_slot_mask;
   if (root_update_needed) {
-    if (root_rebuild_detail_telemetry) {
-      const size_t slots_changed_bin =
-          std::min(root_update_stats.slots_patched,
-                   backend_telemetry_.bindless_root_slots_changed.size() - 1);
-      ++backend_telemetry_.bindless_root_slots_changed[slots_changed_bin];
-      if (root_update_stats.descriptor_indices_pointer_mismatch &&
-          !root_update_stats.other_cbv_pointer_mismatch) {
-        ++backend_telemetry_.bindless_root_rebuild_details
-              [kBindlessRootDetailDescriptorIndicesOnly];
-      } else if (!root_update_stats.descriptor_indices_pointer_mismatch &&
-                 root_update_stats.other_cbv_pointer_mismatch) {
-        ++backend_telemetry_
-              .bindless_root_rebuild_details[kBindlessRootDetailOtherCbvOnly];
-      } else if (root_update_stats.descriptor_indices_pointer_mismatch &&
-                 root_update_stats.other_cbv_pointer_mismatch) {
-        ++backend_telemetry_.bindless_root_rebuild_details
-              [kBindlessRootDetailMixedDescriptorAndOther];
-      }
-      if (root_update_stats.root_resource_identity_changed) {
-        ++backend_telemetry_.bindless_root_rebuild_details
-              [kBindlessRootDetailResourceIdentityChanged];
-      } else if (root_update_stats.root_resource_identity_same ||
-                 root_update_stats.slots_patched) {
-        ++backend_telemetry_.bindless_root_rebuild_details
-              [kBindlessRootDetailResourceIdentitySame];
-      }
-    }
-    const bool frame_open_rebuild = root_state.frame_open_rebuild_pending;
-    if (frame_open_rebuild) {
-      ++backend_telemetry_
-            .bindless_root_rebuild_reasons[kBindlessRootRebuildFrameOpen];
-    }
-    if (!frame_open_rebuild &&
-        root_update_stats.descriptor_indices_pointer_mismatch) {
-      ++backend_telemetry_.bindless_root_rebuild_reasons
-            [kBindlessRootRebuildDescriptorIndicesPointerChange];
-    }
-    if (!frame_open_rebuild && root_update_stats.other_cbv_pointer_mismatch) {
-      ++backend_telemetry_.bindless_root_rebuild_reasons
-            [kBindlessRootRebuildOtherCbvPointerChange];
-    }
-    if (bindless_shared_memory_uav_mismatch) {
-      ++backend_telemetry_.bindless_root_rebuild_reasons
-            [kBindlessRootRebuildSharedMemoryUavChange];
-    }
-    if (entries_were_initialized && !root_update_stats.slots_patched &&
-        root_valid) {
-      ++backend_telemetry_.bindless_root_arg_noop_updates[kGraphicsRootStage];
-    } else {
+    if (!(entries_were_initialized && !root_update_stats.slots_patched &&
+          root_valid)) {
       if (!MaterializeGraphicsRootArguments(root_state)) {
         return false;
       }
-      ++backend_telemetry_.bindless_root_allocations[kGraphicsRootStage];
-      backend_telemetry_.bindless_root_arg_slots_patched[kGraphicsRootStage] +=
-          root_update_stats.slots_patched;
-      backend_telemetry_.bindless_root_arg_bytes_copied[kGraphicsRootStage] +=
-          kTopLevelABBytesPerTable;
     }
-  } else {
-    ++backend_telemetry_.bindless_root_reuse_hits[kGraphicsRootStage];
   }
 
   for (size_t stage = 0; stage < kStageCount; ++stage) {
@@ -6388,86 +5927,95 @@ bool MetalCommandProcessor::PopulateBindlessTables(
     const uint64_t graphics_root_serial = graphics_root_argument_state_.serial;
     assert_true(graphics_root_arguments.valid);
     assert_true(graphics_root_arguments.upload_frame == frame_current_);
-    const bool vertex_root_argument_binding_needs_update =
+    const std::array<bool, kStageCount> root_argument_binding_needs_update = {{
         encode_ctx().bindless_stage_root_bind_serials[kStageVertex] !=
-            graphics_root_serial ||
-        root_argument_path_needs_update;
-    const bool pixel_root_argument_binding_needs_update =
+                graphics_root_serial ||
+            root_argument_path_needs_update,
         encode_ctx().bindless_stage_root_bind_serials[kStagePixel] !=
-        graphics_root_serial;
-    const bool root_argument_bindings_need_update =
-        vertex_root_argument_binding_needs_update ||
-        pixel_root_argument_binding_needs_update;
+            graphics_root_serial,
+    }};
+    bool root_argument_bindings_need_update = false;
+    for (bool needs_update : root_argument_binding_needs_update) {
+      root_argument_bindings_need_update |= needs_update;
+    }
+    auto bind_root_argument_to_encoder_stage =
+        [&](RenderEncoderBufferStage stage, NS::UInteger slot) {
+          SetRenderEncoderBuffer(stage, graphics_root_arguments.buffer,
+                                 graphics_root_arguments.offset, slot);
+        };
+    auto bind_heaps_to_encoder_stages =
+        [&](const RenderEncoderBufferStage* stages, size_t stage_count) {
+          struct HeapBinding {
+            MTL::Buffer* buffer;
+            NS::UInteger slot;
+          };
+          const std::array<HeapBinding, 2> heap_bindings = {{
+              {view_bindless_heap_, kIRDescriptorHeapBindPoint},
+              {sampler_bindless_heap_, kIRSamplerHeapBindPoint},
+          }};
+          for (const HeapBinding& heap_binding : heap_bindings) {
+            for (size_t i = 0; i < stage_count; ++i) {
+              SetRenderEncoderBuffer(stages[i], heap_binding.buffer, 0,
+                                     heap_binding.slot);
+            }
+          }
+          encode_ctx().heap_binds_set_on_encoder = true;
+        };
     if (use_mesh_path) {
-      if (vertex_root_argument_binding_needs_update) {
-        SetRenderEncoderObjectBuffer(graphics_root_arguments.buffer,
-                                     graphics_root_arguments.offset,
-                                     kIRArgumentBufferBindPoint);
-        SetRenderEncoderMeshBuffer(graphics_root_arguments.buffer,
-                                   graphics_root_arguments.offset,
-                                   kIRArgumentBufferBindPoint);
-
+      constexpr std::array<RenderEncoderBufferStage, 2> kMeshVertexStages = {{
+          RenderEncoderBufferStage::kObject,
+          RenderEncoderBufferStage::kMesh,
+      }};
+      if (root_argument_binding_needs_update[kStageVertex]) {
+        for (RenderEncoderBufferStage stage : kMeshVertexStages) {
+          bind_root_argument_to_encoder_stage(stage, kIRArgumentBufferBindPoint);
+        }
         if (use_tessellation_emulation) {
-          SetRenderEncoderObjectBuffer(graphics_root_arguments.buffer,
-                                       graphics_root_arguments.offset,
-                                       kIRArgumentBufferHullDomainBindPoint);
-          SetRenderEncoderMeshBuffer(graphics_root_arguments.buffer,
-                                     graphics_root_arguments.offset,
-                                     kIRArgumentBufferHullDomainBindPoint);
+          for (RenderEncoderBufferStage stage : kMeshVertexStages) {
+            bind_root_argument_to_encoder_stage(
+                stage, kIRArgumentBufferHullDomainBindPoint);
+          }
         }
       }
-      if (pixel_root_argument_binding_needs_update) {
-        SetRenderEncoderFragmentBuffer(graphics_root_arguments.buffer,
-                                       graphics_root_arguments.offset,
-                                       kIRArgumentBufferBindPoint);
+      if (root_argument_binding_needs_update[kStagePixel]) {
+        bind_root_argument_to_encoder_stage(RenderEncoderBufferStage::kFragment,
+                                            kIRArgumentBufferBindPoint);
       }
 
       if (!encode_ctx().heap_binds_set_on_encoder) {
-        SetRenderEncoderObjectBuffer(view_bindless_heap_, 0,
-                                     kIRDescriptorHeapBindPoint);
-        SetRenderEncoderMeshBuffer(view_bindless_heap_, 0,
-                                   kIRDescriptorHeapBindPoint);
-        SetRenderEncoderFragmentBuffer(view_bindless_heap_, 0,
-                                       kIRDescriptorHeapBindPoint);
-        SetRenderEncoderObjectBuffer(sampler_bindless_heap_, 0,
-                                     kIRSamplerHeapBindPoint);
-        SetRenderEncoderMeshBuffer(sampler_bindless_heap_, 0,
-                                   kIRSamplerHeapBindPoint);
-        SetRenderEncoderFragmentBuffer(sampler_bindless_heap_, 0,
-                                       kIRSamplerHeapBindPoint);
-        encode_ctx().heap_binds_set_on_encoder = true;
+        constexpr std::array<RenderEncoderBufferStage, 3> kMeshHeapStages = {{
+            RenderEncoderBufferStage::kObject,
+            RenderEncoderBufferStage::kMesh,
+            RenderEncoderBufferStage::kFragment,
+        }};
+        bind_heaps_to_encoder_stages(kMeshHeapStages.data(),
+                                     kMeshHeapStages.size());
       }
     } else {
-      if (vertex_root_argument_binding_needs_update) {
-        SetRenderEncoderVertexBuffer(graphics_root_arguments.buffer,
-                                     graphics_root_arguments.offset,
-                                     kIRArgumentBufferBindPoint);
+      if (root_argument_binding_needs_update[kStageVertex]) {
+        bind_root_argument_to_encoder_stage(RenderEncoderBufferStage::kVertex,
+                                            kIRArgumentBufferBindPoint);
       }
-      if (pixel_root_argument_binding_needs_update) {
-        SetRenderEncoderFragmentBuffer(graphics_root_arguments.buffer,
-                                       graphics_root_arguments.offset,
-                                       kIRArgumentBufferBindPoint);
+      if (root_argument_binding_needs_update[kStagePixel]) {
+        bind_root_argument_to_encoder_stage(RenderEncoderBufferStage::kFragment,
+                                            kIRArgumentBufferBindPoint);
       }
 
       if (!encode_ctx().heap_binds_set_on_encoder) {
-        SetRenderEncoderVertexBuffer(view_bindless_heap_, 0,
-                                     kIRDescriptorHeapBindPoint);
-        SetRenderEncoderFragmentBuffer(view_bindless_heap_, 0,
-                                       kIRDescriptorHeapBindPoint);
-        SetRenderEncoderVertexBuffer(sampler_bindless_heap_, 0,
-                                     kIRSamplerHeapBindPoint);
-        SetRenderEncoderFragmentBuffer(sampler_bindless_heap_, 0,
-                                       kIRSamplerHeapBindPoint);
-        encode_ctx().heap_binds_set_on_encoder = true;
+        constexpr std::array<RenderEncoderBufferStage, 2> kGraphicsHeapStages =
+            {{
+                RenderEncoderBufferStage::kVertex,
+                RenderEncoderBufferStage::kFragment,
+            }};
+        bind_heaps_to_encoder_stages(kGraphicsHeapStages.data(),
+                                     kGraphicsHeapStages.size());
       }
     }
-    if (vertex_root_argument_binding_needs_update) {
-      encode_ctx().bindless_stage_root_bind_serials[kStageVertex] =
-          graphics_root_serial;
-    }
-    if (pixel_root_argument_binding_needs_update) {
-      encode_ctx().bindless_stage_root_bind_serials[kStagePixel] =
-          graphics_root_serial;
+    for (size_t stage = 0; stage < kStageCount; ++stage) {
+      if (root_argument_binding_needs_update[stage]) {
+        encode_ctx().bindless_stage_root_bind_serials[stage] =
+            graphics_root_serial;
+      }
     }
     if (root_argument_bindings_need_update) {
       encode_ctx().bindless_table_bind_mesh_path = use_mesh_path;
@@ -6526,8 +6074,7 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
         static_cast<uint32_t>(source_copy_offset), copy_size);
     return false;
   }
-  if (!RequestSharedMemoryRange(SharedMemoryRequestReason::kIndexCopySource,
-                                static_cast<uint32_t>(source_copy_offset),
+  if (!RequestSharedMemoryRange(static_cast<uint32_t>(source_copy_offset),
                                 static_cast<uint32_t>(copy_size))) {
     XELOGE(
         "IssueDraw: failed to request guest DMA index copy range at 0x{:08X} "
@@ -6537,7 +6084,7 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
   }
 
   MTL::CommandBuffer* command_buffer =
-      RequestTransferCommandBuffer(TransferRequestSource::kGuestIndexCopy);
+      RequestTransferCommandBuffer();
   if (!command_buffer) {
     XELOGE("IssueDraw: failed to get command buffer for index copy");
     return false;
@@ -6578,8 +6125,7 @@ bool MetalCommandProcessor::PrepareGuestDMAIndexBufferForMemexport(
   // the fresh encoder's read dependency below waits on it.
   if (shared_memory_hazard_fence_edges_ && shared_memory_upload_blit_encoder_ &&
       shared_memory_upload_encoder_has_writes_) {
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kTransferRequest);
+    EndSharedMemoryUploadBlitEncoder();
   }
   MTL::BlitCommandEncoder* blit_encoder = GetSharedMemoryUploadBlitEncoder();
   if (!blit_encoder) {
@@ -6639,10 +6185,9 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
     }
     return true;
   }
-  if (tls_on_encode_worker
-          ? !BeginRenderEncoderForWorkerBatch()
-          : !BeginRenderEncoderForDraw(
-                draw.fallback_depth_attachment_required)) {
+  if (tls_on_encode_worker ? !BeginRenderEncoderForWorkerBatch()
+                           : !BeginRenderEncoderForDraw(
+                                 draw.fallback_depth_attachment_required)) {
     static bool no_command_buffer_logged = false;
     if (!no_command_buffer_logged) {
       no_command_buffer_logged = true;
@@ -6711,19 +6256,18 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
   if (encode_ctx().render_pipeline_state != draw.pipeline) {
     encode_ctx().render_encoder->setRenderPipelineState(draw.pipeline);
     encode_ctx().render_pipeline_state = draw.pipeline;
-    ++backend_telemetry_.pipeline_sets;
-  } else {
-    ++backend_telemetry_.pipeline_set_skips;
   }
   if (draw.use_tessellation_emulation && !draw.use_native_msl_tessellation) {
     if (!tessellator_tables_buffer_) {
       XELOGE("Tessellation emulation requires tessellator tables buffer");
       return false;
     }
-    SetRenderEncoderObjectBuffer(tessellator_tables_buffer_, 0,
-                                 kIRRuntimeTessellatorTablesBindPoint);
-    SetRenderEncoderMeshBuffer(tessellator_tables_buffer_, 0,
-                               kIRRuntimeTessellatorTablesBindPoint);
+    SetRenderEncoderBuffer(RenderEncoderBufferStage::kObject,
+                           tessellator_tables_buffer_, 0,
+                           kIRRuntimeTessellatorTablesBindPoint);
+    SetRenderEncoderBuffer(RenderEncoderBufferStage::kMesh,
+                           tessellator_tables_buffer_, 0,
+                           kIRRuntimeTessellatorTablesBindPoint);
     if (!IsResidencySetResourceCovered(tessellator_tables_buffer_)) {
       UseRenderEncoderResource(tessellator_tables_buffer_,
                                MTL::ResourceUsageRead);
@@ -6783,8 +6327,7 @@ bool MetalCommandProcessor::EncodePreparedDraw(const PreparedDraw& draw) {
                                              : nullptr,
       draw.vertex_bindings, draw.vertex_ranges.data(), draw.vertex_range_count,
       draw.has_index_buffer_info ? &draw.index_buffer_info : nullptr,
-      draw.memexport_ranges,
-      draw.native_draw_constants[kStageVertex].slot);
+      draw.memexport_ranges, draw.native_draw_constants[kStageVertex].slot);
 }
 
 bool MetalCommandProcessor::DispatchDraw(
@@ -6870,8 +6413,9 @@ bool MetalCommandProcessor::DispatchDraw(
           const auto& range = vertex_ranges[i];
           uint64_t buffer_index =
               kIRVertexBufferBindPoint + uint64_t(range.binding_index);
-          SetRenderEncoderVertexBuffer(shared_mem_buffer, range.offset,
-                                       buffer_index);
+          SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex,
+                                 shared_mem_buffer, range.offset,
+                                 buffer_index);
         }
       }
     } else if (shared_memory_) {
@@ -7144,8 +6688,8 @@ bool MetalCommandProcessor::DispatchDraw(
       uint32_t start_index =
           index_stride ? uint32_t(index_offset / index_stride) : 0;
       IRRuntimeDrawIndexedPrimitivesGeometryEmulation(
-          encode_ctx().render_encoder, geometry_primitive, index_type, index_buffer,
-          geometry_config, 1,
+          encode_ctx().render_encoder, geometry_primitive, index_type,
+          index_buffer, geometry_config, 1,
           primitive_processing_result.host_draw_vertex_count, start_index, 0,
           0);
     }
@@ -7274,7 +6818,7 @@ bool MetalCommandProcessor::IssueCopy() {
   if (resolve_plan.needs_render_encoder_end) {
     // End only the render encoder here. The resolve/transfer work may still
     // reuse the current Metal command buffer and submission ordering.
-    EndRenderEncoder(RenderEncoderEndReason::kResolveNeedsBoundary);
+    EndRenderEncoder();
     copy_command_buffer = EnsureCommandBuffer();
     if (!copy_command_buffer) {
       XELOGE("MetalCommandProcessor::IssueCopy: failed to get command buffer");
@@ -7435,15 +6979,17 @@ void MetalCommandProcessor::WriteShaderConstantsFromMem(
   if (!num_registers) {
     return;
   }
-  if (cbuffer_binding_float_vertex_.up_to_date &&
-      FloatConstantRangeNeedsDirty(start_index, base, num_registers,
-                                   current_float_constant_map_vertex_, 0)) {
-    cbuffer_binding_float_vertex_.up_to_date = false;
+  if (cbuffer_binding_float_[kStageVertex].up_to_date &&
+      FloatConstantRangeNeedsDirty(
+          start_index, base, num_registers,
+          current_float_constant_maps_[kStageVertex].data(), 0)) {
+    cbuffer_binding_float_[kStageVertex].up_to_date = false;
   }
-  if (cbuffer_binding_float_pixel_.up_to_date &&
-      FloatConstantRangeNeedsDirty(start_index, base, num_registers,
-                                   current_float_constant_map_pixel_, 256)) {
-    cbuffer_binding_float_pixel_.up_to_date = false;
+  if (cbuffer_binding_float_[kStagePixel].up_to_date &&
+      FloatConstantRangeNeedsDirty(
+          start_index, base, num_registers,
+          current_float_constant_maps_[kStagePixel].data(), 256)) {
+    cbuffer_binding_float_[kStagePixel].up_to_date = false;
   }
   xe::copy_and_swap_32_unaligned(&register_file_->values[start_index], base,
                                  num_registers);
@@ -7542,14 +7088,15 @@ void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
         (index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
     if (float_constant_index >= 256) {
       uint32_t rel = float_constant_index - 256;
-      if (current_float_constant_map_pixel_[rel >> 6] &
+      if (current_float_constant_maps_[kStagePixel][rel >> 6] &
           (uint64_t(1) << (rel & 63))) {
-        cbuffer_binding_float_pixel_.up_to_date = false;
+        cbuffer_binding_float_[kStagePixel].up_to_date = false;
       }
     } else {
-      if (current_float_constant_map_vertex_[float_constant_index >> 6] &
+      if (current_float_constant_maps_[kStageVertex]
+                                      [float_constant_index >> 6] &
           (uint64_t(1) << (float_constant_index & 63))) {
-        cbuffer_binding_float_vertex_.up_to_date = false;
+        cbuffer_binding_float_[kStageVertex].up_to_date = false;
       }
     }
   } else if (index >= XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 &&
@@ -7663,13 +7210,9 @@ void MetalCommandProcessor::WaitForFrameSlotSubmission(
   if (GetCompletedSubmission() >= awaited_submission) {
     return;
   }
-  ++backend_telemetry_.frame_slot_waits;
-  ++backend_telemetry_.frame_slot_wait_submission_count;
-  backend_telemetry_.frame_slot_wait_submission_last = awaited_submission;
   std::unique_lock<std::mutex> lock(completion_mutex_);
-  completion_cond_.wait(lock, [&]() {
-    return GetCompletedSubmission() >= awaited_submission;
-  });
+  completion_cond_.wait(
+      lock, [&]() { return GetCompletedSubmission() >= awaited_submission; });
 }
 
 void MetalCommandProcessor::OpenFrameLifetime() {
@@ -7697,17 +7240,18 @@ void MetalCommandProcessor::OpenFrameLifetime() {
 
 void MetalCommandProcessor::InvalidateFrameTransientBindings() {
   cbuffer_binding_system_.up_to_date = false;
-  cbuffer_binding_float_vertex_.up_to_date = false;
-  cbuffer_binding_float_pixel_.up_to_date = false;
+  for (ConstantBufferBinding& binding : cbuffer_binding_float_) {
+    binding.up_to_date = false;
+  }
   cbuffer_binding_bool_loop_.up_to_date = false;
   cbuffer_binding_fetch_.up_to_date = false;
   current_fetch_constant_payload_valid_ = false;
-  cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
-  cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
-  std::memset(current_float_constant_map_vertex_, 0,
-              sizeof(current_float_constant_map_vertex_));
-  std::memset(current_float_constant_map_pixel_, 0,
-              sizeof(current_float_constant_map_pixel_));
+  for (ConstantBufferBinding& binding : cbuffer_binding_descriptor_indices_) {
+    binding.up_to_date = false;
+  }
+  for (auto& float_constant_map : current_float_constant_maps_) {
+    float_constant_map.fill(0);
+  }
   for (NativeMslRuntimeInfoUploadCache& cache :
        native_msl_runtime_info_upload_cache_) {
     cache.buffer = nullptr;
@@ -7778,10 +7322,6 @@ void MetalCommandProcessor::DrainCommandBufferAutoreleasePool() {
 }
 
 void MetalCommandProcessor::EndRenderEncoder() {
-  EndRenderEncoder(RenderEncoderEndReason::kUnknown);
-}
-
-void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
   // CP-thread-only entry point. In single-CB mode the worker encodes through
   // the CP context, so ownership must be taken back before touching it; in
   // multi-CB mode the worker has its own context and this only ever touches
@@ -7794,12 +7334,7 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
       XELOGE("Metal EndRenderEncoder: failed to flush prepared draw queue");
     }
   }
-  size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index < backend_telemetry_.end_reasons.size()) {
-    ++backend_telemetry_.end_reasons[reason_index];
-  }
   if (!encode_ctx().render_encoder) {
-    ++backend_telemetry_.end_encoder_no_active;
     encode_ctx().render_encoder_has_zpd_visibility = false;
     if (encode_ctx().render_pass_descriptor) {
       encode_ctx().render_pass_descriptor->release();
@@ -7809,7 +7344,6 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
     ResetRenderEncoderResourceUsage();
     return;
   }
-  ++backend_telemetry_.end_encoder_active;
   // Close any active ZPD query segment before ending the encoder.
   // Metal visibility results are scoped to the render encoder; the offset
   // cannot be reused after the encoder is ended.
@@ -7822,8 +7356,7 @@ void MetalCommandProcessor::EndRenderEncoder(RenderEncoderEndReason reason) {
   // compute/blit consumers wait at encoder creation.
   if (render_target_hazard_fence_edges_ && render_target_fence_) {
     encode_ctx().render_encoder->updateFence(render_target_fence_,
-                                         MTL::RenderStageFragment);
-    RecordHazardFenceUpdate(/*compute_encoder=*/false);
+                                             MTL::RenderStageFragment);
   }
   encode_ctx().render_encoder->endEncoding();
   encode_ctx().render_encoder->release();
@@ -7889,17 +7422,17 @@ void MetalCommandProcessor::InvalidateRenderEncoderStateAfterDrawPassTransfers(
   }
 }
 
-bool MetalCommandProcessor::RequestSharedMemoryRange(
-    SharedMemoryRequestReason reason, uint32_t start, uint32_t length) {
+bool MetalCommandProcessor::RequestSharedMemoryRange(uint32_t start,
+                                                     uint32_t length) {
   SharedMemory::Range range = {start, length};
-  return RequestSharedMemoryRanges(reason, &range, 1);
+  return RequestSharedMemoryRanges(&range, 1);
 }
 
 bool MetalCommandProcessor::RequestSharedMemoryRangeBeforeDrawPass(
-    SharedMemoryRequestReason reason, uint32_t start, uint32_t length) {
+    uint32_t start, uint32_t length) {
   SharedMemory::Range range = {start, length};
   PrepareSharedMemoryUploadBeforeDrawPass(&range, 1);
-  return RequestSharedMemoryRanges(reason, &range, 1);
+  return RequestSharedMemoryRanges(&range, 1);
 }
 
 // Drops zero-length entries, sorts by start and merges overlapping or
@@ -7944,15 +7477,8 @@ static void SortAndCoalesceSharedMemoryRanges(
 }
 
 bool MetalCommandProcessor::RequestSharedMemoryRanges(
-    SharedMemoryRequestReason reason, const SharedMemory::Range* ranges,
-    uint32_t range_count) {
+    const SharedMemory::Range* ranges, uint32_t range_count) {
   if (range_count && !ranges) {
-    const size_t reason_index = static_cast<size_t>(reason);
-    if (reason_index < kSharedMemoryRequestReasonCount) {
-      ++backend_telemetry_.shared_memory_request_failures[reason_index];
-    }
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kRequestFailed);
     return false;
   }
   // The local copy keeps this entry point reentrancy-safe: encoder
@@ -7960,67 +7486,19 @@ bool MetalCommandProcessor::RequestSharedMemoryRanges(
   // encoder, which flushes the prepared-draw queue, which requests ranges
   // again through RequestSharedMemoryRangesInPlace.
   std::vector<SharedMemory::Range> local_ranges(ranges, ranges + range_count);
-  return RequestSharedMemoryRangesInPlace(reason, local_ranges);
+  return RequestSharedMemoryRangesInPlace(local_ranges);
 }
 
 bool MetalCommandProcessor::RequestSharedMemoryRangesInPlace(
-    SharedMemoryRequestReason reason,
     std::vector<SharedMemory::Range>& ranges) {
-  const bool was_active = encode_ctx().render_encoder != nullptr;
-  const size_t reason_index = static_cast<size_t>(reason);
-  const bool reason_valid = reason_index < kSharedMemoryRequestReasonCount;
   if (!shared_memory_) {
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kNoSharedMemory);
-    if (reason_valid) {
-      ++backend_telemetry_.shared_memory_request_failures[reason_index];
-    }
     return false;
   }
 
-  const uint32_t input_range_count = static_cast<uint32_t>(ranges.size());
   SortAndCoalesceSharedMemoryRanges(ranges);
   const SharedMemory::Range* request_ranges = ranges.data();
   const uint32_t request_range_count = static_cast<uint32_t>(ranges.size());
-  if (request_range_count) {
-    ++backend_telemetry_.shared_memory_upload_batches;
-    backend_telemetry_.shared_memory_upload_batch_input_ranges +=
-        input_range_count;
-    backend_telemetry_.shared_memory_upload_batch_coalesced_ranges +=
-        request_range_count;
-  }
-
-  SharedMemory::RequestRangeStats stats;
-  SharedMemoryRequestReason previous_upload_reason =
-      current_shared_memory_upload_reason_;
-  current_shared_memory_upload_reason_ = reason;
-  const bool success = shared_memory_->RequestRanges(
-      request_ranges, request_range_count, &stats);
-  current_shared_memory_upload_reason_ = previous_upload_reason;
-  backend_telemetry_.shared_memory_upload_batch_bytes += stats.upload_bytes;
-  if (reason_valid) {
-    backend_telemetry_.shared_memory_request_upload_bytes[reason_index] +=
-        stats.upload_bytes;
-    if (!success) {
-      ++backend_telemetry_.shared_memory_request_failures[reason_index];
-    }
-  }
-
-  if (!success) {
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kRequestFailed);
-  } else if (!stats.upload_bytes) {
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kAlreadyResident);
-  } else if (was_active) {
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kUploadInsideRenderEncoder);
-  } else {
-    RecordSharedMemoryRequestOutcome(
-        SharedMemoryRequestOutcome::kUploadBeforeRenderEncoder);
-  }
-
-  return success;
+  return shared_memory_->RequestRanges(request_ranges, request_range_count);
 }
 
 bool MetalCommandProcessor::AnySharedMemoryRangeInvalid(
@@ -8048,18 +7526,14 @@ void MetalCommandProcessor::PrepareSharedMemoryUploadBeforeDrawPass(
   // checks each whole range with a single coarse validity scan that
   // early-exits, so skip the per-page scan when nothing is invalid. When all
   // ranges are valid, GetUploadRouteInfo can only yield upload_bytes == 0, so
-  // this is behavior- identical: same no-upload telemetry, no staged bytes, no
-  // encoder teardown.
+  // this is behavior-identical: no staged bytes and no encoder teardown.
   if (!AnySharedMemoryRangeInvalid(ranges, range_count)) {
-    RecordSharedMemoryLazyUploadRoute(MetalSharedMemory::UploadRouteInfo(),
-                                      render_encoder_active);
     return;
   }
   MetalSharedMemory::UploadRouteInfo route_info =
       shared_memory_->GetUploadRouteInfo(ranges, range_count);
-  RecordSharedMemoryLazyUploadRoute(route_info, render_encoder_active);
   if (render_encoder_active && route_info.staged_bytes) {
-    EndRenderEncoder(RenderEncoderEndReason::kSharedMemoryUploadBeforeDrawPass);
+    EndRenderEncoder();
   }
 }
 
@@ -8076,8 +7550,7 @@ bool MetalCommandProcessor::HasActiveSharedMemoryWritePending() const {
   return false;
 }
 
-MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
-    TransferRequestSource source) {
+MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer() {
   // Multi-CB: transfers join the CP thread's own spine command buffer; the
   // worker encodes into its private command buffer, so there is no encoder
   // contention to drain for. A transfer encoded here executes after any
@@ -8091,21 +7564,9 @@ MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
       return nullptr;
     }
   }
-  const size_t source_index = static_cast<size_t>(source);
-  const bool ends_render_encoder = encode_ctx().render_encoder != nullptr;
-  if (source_index < kTransferRequestSourceCount) {
-    ++backend_telemetry_.transfer_request_sources_total[source_index];
-    if (ends_render_encoder) {
-      ++backend_telemetry_.transfer_request_sources_active[source_index];
-      ++backend_telemetry_.transfer_request_render_encoder_ends[source_index];
-    } else {
-      ++backend_telemetry_.transfer_request_sources_no_active[source_index];
-    }
-  }
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kTransferRequest);
+  EndSharedMemoryUploadBlitEncoder();
   if (encode_ctx().render_encoder) {
-    EndRenderEncoder(RenderEncoderEndReason::kRequestTransferCommandBuffer);
+    EndRenderEncoder();
   }
   if (texture_cache_ &&
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
@@ -8117,12 +7578,11 @@ MTL::CommandBuffer* MetalCommandProcessor::RequestTransferCommandBuffer(
 MTL::BlitCommandEncoder*
 MetalCommandProcessor::GetSharedMemoryUploadBlitEncoder() {
   if (shared_memory_upload_blit_encoder_) {
-    ++backend_telemetry_.shared_memory_upload_encoder_reuses;
     return shared_memory_upload_blit_encoder_;
   }
 
   MTL::CommandBuffer* command_buffer =
-      RequestTransferCommandBuffer(TransferRequestSource::kSharedMemoryUpload);
+      RequestTransferCommandBuffer();
   if (!command_buffer) {
     return nullptr;
   }
@@ -8132,21 +7592,15 @@ MetalCommandProcessor::GetSharedMemoryUploadBlitEncoder() {
     XELOGE("Metal: failed to create shared-memory upload blit encoder");
     return nullptr;
   }
-  ++backend_telemetry_.shared_memory_upload_encoder_acquisitions;
   shared_memory_upload_blit_encoder_->retain();
   shared_memory_upload_blit_encoder_->setLabel(
       NS::String::string("XeniaSharedMemoryUpload", NS::UTF8StringEncoding));
   return shared_memory_upload_blit_encoder_;
 }
 
-void MetalCommandProcessor::EndSharedMemoryUploadBlitEncoder(
-    SharedMemoryUploadEncoderEndReason reason) {
+void MetalCommandProcessor::EndSharedMemoryUploadBlitEncoder() {
   if (!shared_memory_upload_blit_encoder_) {
     return;
-  }
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index < kSharedMemoryUploadEncoderEndReasonCount) {
-    ++backend_telemetry_.shared_memory_upload_encoder_end_reasons[reason_index];
   }
   // Hazard model producer edge: copies into the (untracked) shared-memory
   // buffer must signal the ordering fence so subsequent consumer encoders
@@ -8154,7 +7608,6 @@ void MetalCommandProcessor::EndSharedMemoryUploadBlitEncoder(
   if (shared_memory_hazard_fence_edges_ && shared_memory_fence_ &&
       shared_memory_upload_encoder_has_writes_) {
     shared_memory_upload_blit_encoder_->updateFence(shared_memory_fence_);
-    RecordHazardFenceUpdate(/*compute_encoder=*/false);
   }
   shared_memory_upload_encoder_has_writes_ = false;
   shared_memory_upload_blit_encoder_->endEncoding();
@@ -8326,10 +7779,8 @@ void MetalCommandProcessor::AddRenderResourceRef(RenderResourceSet& set,
     return;
   }
   if (IsResidencySetResourceCovered(resource)) {
-    ++backend_telemetry_.residency_set_resource_refs_covered;
     return;
   }
-  ++backend_telemetry_.residency_set_resource_refs_fallback;
   uint32_t stage_bits = MetalRenderStageBits(stages);
   if (!stage_bits) {
     stages = MetalAllGraphicsRenderStages();
@@ -8352,13 +7803,9 @@ void MetalCommandProcessor::AddRenderResourceRef(RenderResourceSet& set,
 void MetalCommandProcessor::RestoreRenderResourceSet(
     RenderResourceSetKind kind, RenderResourceSet& current,
     const RenderResourceSet& snapshot) {
-  const size_t kind_index = static_cast<size_t>(kind);
+  (void)kind;
   if (snapshot.source_serial &&
       current.source_serial == snapshot.source_serial) {
-    if (kind_index <
-        backend_telemetry_.render_resource_registry_serial_skips.size()) {
-      ++backend_telemetry_.render_resource_registry_serial_skips[kind_index];
-    }
     return;
   }
 
@@ -8391,9 +7838,6 @@ void MetalCommandProcessor::RestoreRenderResourceSet(
     return;
   }
 
-  if (kind_index < backend_telemetry_.render_resource_registry_builds.size()) {
-    ++backend_telemetry_.render_resource_registry_builds[kind_index];
-  }
   uint64_t next_serial = current.serial + 1;
   if (!next_serial) {
     next_serial = 1;
@@ -8463,14 +7907,14 @@ uint64_t MetalCommandProcessor::GetBindlessTextureResourceInputSerial() const {
     hash ^= value;
     hash *= 1099511628211ull;
   };
-  hash_value(current_texture_bindless_resources_vertex_.size());
-  for (MTL::Texture* texture : current_texture_bindless_resources_vertex_) {
-    hash_value(reinterpret_cast<uintptr_t>(texture));
-  }
-  hash_value(0x9e3779b97f4a7c15ull);
-  hash_value(current_texture_bindless_resources_pixel_.size());
-  for (MTL::Texture* texture : current_texture_bindless_resources_pixel_) {
-    hash_value(reinterpret_cast<uintptr_t>(texture));
+  for (size_t stage = 0; stage < kStageCount; ++stage) {
+    if (stage) {
+      hash_value(0x9e3779b97f4a7c15ull);
+    }
+    hash_value(current_texture_bindless_resources_[stage].size());
+    for (MTL::Texture* texture : current_texture_bindless_resources_[stage]) {
+      hash_value(reinterpret_cast<uintptr_t>(texture));
+    }
   }
   return hash ? hash : 1;
 }
@@ -8517,11 +7961,10 @@ void MetalCommandProcessor::BuildBindlessTextureResourceSet(
     }
     AddRenderResourceRef(set, texture, MTL::ResourceUsageRead, stages);
   };
-  for (MTL::Texture* texture : current_texture_bindless_resources_vertex_) {
-    add_texture_residency_ref(texture);
-  }
-  for (MTL::Texture* texture : current_texture_bindless_resources_pixel_) {
-    add_texture_residency_ref(texture);
+  for (const auto& stage_textures : current_texture_bindless_resources_) {
+    for (MTL::Texture* texture : stage_textures) {
+      add_texture_residency_ref(texture);
+    }
   }
   std::sort(set.heaps.begin(), set.heaps.end(), [](MTL::Heap* a, MTL::Heap* b) {
     return reinterpret_cast<uintptr_t>(a) < reinterpret_cast<uintptr_t>(b);
@@ -8568,15 +8011,12 @@ uint64_t MetalCommandProcessor::GetBindlessRootResourceSourceSerial(
 
 void MetalCommandProcessor::PublishBindlessFixedResourceSet(
     MTL::ResourceUsage shared_memory_usage) {
-  constexpr size_t kFixedKindIndex = size_t(RenderResourceSetKind::kFixed);
   const uint64_t source_serial =
       GetBindlessFixedResourceSourceSerial(shared_memory_usage);
   if (source_serial &&
       current_bindless_fixed_resource_source_serial_ == source_serial) {
-    ++backend_telemetry_.render_resource_registry_serial_skips[kFixedKindIndex];
     return;
   }
-  ++backend_telemetry_.render_resource_registry_builds[kFixedKindIndex];
   RenderResourceSet next;
   next.source_serial = source_serial;
   const MTL::RenderStages stages = MetalAllGraphicsRenderStages();
@@ -8615,12 +8055,9 @@ void MetalCommandProcessor::RestoreBindlessTextureResourceSet(
 }
 
 void MetalCommandProcessor::PublishBindlessTextureResourceSet() {
-  constexpr size_t kTextureKindIndex = size_t(RenderResourceSetKind::kTexture);
   const uint64_t input_serial = GetBindlessTextureResourceInputSerial();
   if (input_serial &&
       current_bindless_texture_resource_input_serial_ == input_serial) {
-    ++backend_telemetry_
-          .render_resource_registry_serial_skips[kTextureKindIndex];
     return;
   }
   RenderResourceSet next;
@@ -8629,11 +8066,8 @@ void MetalCommandProcessor::PublishBindlessTextureResourceSet() {
   if (next.source_serial &&
       current_bindless_texture_resource_source_serial_ == next.source_serial) {
     current_bindless_texture_resource_input_serial_ = input_serial;
-    ++backend_telemetry_
-          .render_resource_registry_serial_skips[kTextureKindIndex];
     return;
   }
-  ++backend_telemetry_.render_resource_registry_builds[kTextureKindIndex];
   PublishRenderResourceSet(current_bindless_texture_resource_set_,
                            std::move(next));
   current_bindless_texture_resource_input_serial_ = input_serial;
@@ -8643,15 +8077,12 @@ void MetalCommandProcessor::PublishBindlessTextureResourceSet() {
 
 void MetalCommandProcessor::PublishBindlessRootResourceSet(
     const UniformBufferInfo& uniforms) {
-  constexpr size_t kRootKindIndex = size_t(RenderResourceSetKind::kRoot);
   const uint64_t root_source_serial =
       GetBindlessRootResourceSourceSerial(uniforms);
   if (root_source_serial &&
       current_bindless_root_resource_source_serial_ == root_source_serial) {
-    ++backend_telemetry_.render_resource_registry_serial_skips[kRootKindIndex];
     return;
   }
-  ++backend_telemetry_.render_resource_registry_builds[kRootKindIndex];
   RenderResourceSet next;
   next.source_serial = root_source_serial;
   const MTL::RenderStages stages = MetalAllGraphicsRenderStages();
@@ -8676,12 +8107,12 @@ void MetalCommandProcessor::PublishBindlessRootResourceSet(
 }
 
 void MetalCommandProcessor::ApplyRenderEncoderResourceSets() {
-  ApplyRenderEncoderResourceSet(
-      RenderResourceSetKind::kFixed, current_bindless_fixed_resource_set_,
-      encode_ctx().bindless_fixed_resources_serial);
-  ApplyRenderEncoderResourceSet(
-      RenderResourceSetKind::kTexture, current_bindless_texture_resource_set_,
-      encode_ctx().bindless_texture_resources_serial);
+  ApplyRenderEncoderResourceSet(RenderResourceSetKind::kFixed,
+                                current_bindless_fixed_resource_set_,
+                                encode_ctx().bindless_fixed_resources_serial);
+  ApplyRenderEncoderResourceSet(RenderResourceSetKind::kTexture,
+                                current_bindless_texture_resource_set_,
+                                encode_ctx().bindless_texture_resources_serial);
   ApplyRenderEncoderResourceSet(RenderResourceSetKind::kRoot,
                                 current_bindless_root_resource_set_,
                                 encode_ctx().bindless_root_resources_serial);
@@ -8690,21 +8121,12 @@ void MetalCommandProcessor::ApplyRenderEncoderResourceSets() {
 void MetalCommandProcessor::ApplyRenderEncoderResourceSet(
     RenderResourceSetKind kind, const RenderResourceSet& set,
     uint64_t& applied_serial) {
-  const size_t kind_index = static_cast<size_t>(kind);
+  (void)kind;
   if (!encode_ctx().render_encoder) {
     return;
   }
   if (applied_serial == set.serial) {
-    if (kind_index < backend_telemetry_.render_resource_set_skips.size()) {
-      ++backend_telemetry_.render_resource_set_skips[kind_index];
-    }
     return;
-  }
-  if (kind_index < backend_telemetry_.render_resource_set_applies.size()) {
-    ++backend_telemetry_.render_resource_set_applies[kind_index];
-    backend_telemetry_.render_resource_set_resources[kind_index] +=
-        set.heaps.size() + set.resources.size();
-    ++backend_telemetry_.render_resource_registry_registers[kind_index];
   }
   for (MTL::Heap* heap : set.heaps) {
     UseRenderEncoderHeap(heap);
@@ -8855,7 +8277,8 @@ bool MetalCommandProcessor::RenderEncoderBufferBindingMatches(
 void MetalCommandProcessor::SetRenderEncoderBuffer(
     RenderEncoderBufferStage stage, MTL::Buffer* buffer, NS::UInteger offset,
     NS::UInteger index) {
-  if (!encode_ctx().render_encoder || stage == RenderEncoderBufferStage::kCount) {
+  if (!encode_ctx().render_encoder ||
+      stage == RenderEncoderBufferStage::kCount) {
     return;
   }
   size_t stage_index = static_cast<size_t>(stage);
@@ -8863,20 +8286,20 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
                         NS::UInteger offset_to_set) {
     switch (stage) {
       case RenderEncoderBufferStage::kVertex:
-        encode_ctx().render_encoder->setVertexBuffer(buffer_to_set, offset_to_set,
-                                                 index);
+        encode_ctx().render_encoder->setVertexBuffer(buffer_to_set,
+                                                     offset_to_set, index);
         break;
       case RenderEncoderBufferStage::kFragment:
-        encode_ctx().render_encoder->setFragmentBuffer(buffer_to_set, offset_to_set,
-                                                   index);
+        encode_ctx().render_encoder->setFragmentBuffer(buffer_to_set,
+                                                       offset_to_set, index);
         break;
       case RenderEncoderBufferStage::kObject:
-        encode_ctx().render_encoder->setObjectBuffer(buffer_to_set, offset_to_set,
-                                                 index);
+        encode_ctx().render_encoder->setObjectBuffer(buffer_to_set,
+                                                     offset_to_set, index);
         break;
       case RenderEncoderBufferStage::kMesh:
         encode_ctx().render_encoder->setMeshBuffer(buffer_to_set, offset_to_set,
-                                               index);
+                                                   index);
         break;
       case RenderEncoderBufferStage::kCount:
         break;
@@ -8901,84 +8324,24 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(
     }
   };
   if (!buffer) {
-    if (stage_index <
-        backend_telemetry_.render_encoder_buffer_null_binds.size()) {
-      ++backend_telemetry_.render_encoder_buffer_null_binds[stage_index];
-    }
     set_buffer(nullptr, 0);
     InvalidateRenderEncoderBufferBinding(stage, index);
     return;
   }
   if (index >= kTrackedRenderEncoderBufferBindingCount) {
-    if (stage_index <
-        backend_telemetry_.render_encoder_buffer_untracked_binds.size()) {
-      ++backend_telemetry_.render_encoder_buffer_untracked_binds[stage_index];
-    }
     set_buffer(buffer, offset);
     return;
   }
-  const size_t stage_slot_index =
-      stage_index * kTrackedRenderEncoderBufferBindingCount + size_t(index);
-  auto increment_slot_count = [stage_slot_index](auto& counts) {
-    if (stage_slot_index < counts.size()) {
-      ++counts[stage_slot_index];
-    }
-  };
   auto& binding = encode_ctx().buffer_bindings[stage_index][index];
   if (binding.valid && binding.buffer == buffer) {
     if (binding.offset != offset) {
-      if (stage_index <
-          backend_telemetry_.render_encoder_buffer_offset_binds.size()) {
-        ++backend_telemetry_.render_encoder_buffer_offset_binds[stage_index];
-      }
-      increment_slot_count(
-          backend_telemetry_.render_encoder_buffer_slot_offset_binds);
       set_buffer_offset();
       binding.offset = offset;
-    } else if (stage_index <
-               backend_telemetry_.render_encoder_buffer_noop_binds.size()) {
-      ++backend_telemetry_.render_encoder_buffer_noop_binds[stage_index];
-      increment_slot_count(
-          backend_telemetry_.render_encoder_buffer_slot_noop_binds);
     }
     return;
   }
-  if (stage_index <
-      backend_telemetry_.render_encoder_buffer_full_binds.size()) {
-    ++backend_telemetry_.render_encoder_buffer_full_binds[stage_index];
-  }
-  increment_slot_count(
-      backend_telemetry_.render_encoder_buffer_slot_full_binds);
   set_buffer(buffer, offset);
   binding = {buffer, offset, true};
-}
-
-void MetalCommandProcessor::SetRenderEncoderVertexBuffer(MTL::Buffer* buffer,
-                                                         NS::UInteger offset,
-                                                         NS::UInteger index) {
-  SetRenderEncoderBuffer(RenderEncoderBufferStage::kVertex, buffer, offset,
-                         index);
-}
-
-void MetalCommandProcessor::SetRenderEncoderFragmentBuffer(MTL::Buffer* buffer,
-                                                           NS::UInteger offset,
-                                                           NS::UInteger index) {
-  SetRenderEncoderBuffer(RenderEncoderBufferStage::kFragment, buffer, offset,
-                         index);
-}
-
-void MetalCommandProcessor::SetRenderEncoderObjectBuffer(MTL::Buffer* buffer,
-                                                         NS::UInteger offset,
-                                                         NS::UInteger index) {
-  SetRenderEncoderBuffer(RenderEncoderBufferStage::kObject, buffer, offset,
-                         index);
-}
-
-void MetalCommandProcessor::SetRenderEncoderMeshBuffer(MTL::Buffer* buffer,
-                                                       NS::UInteger offset,
-                                                       NS::UInteger index) {
-  SetRenderEncoderBuffer(RenderEncoderBufferStage::kMesh, buffer, offset,
-                         index);
 }
 
 void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
@@ -8993,11 +8356,8 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
     return;
   }
   if (IsResidencySetResourceCovered(resource)) {
-    ++backend_telemetry_.residency_set_use_resources_covered;
     return;
   }
-  ++backend_telemetry_.residency_set_use_resources_fallback;
-  ++backend_telemetry_.render_encoder_use_resource_calls;
 
   const uint32_t usage_bits = MetalResourceUsageBits(usage);
   uint32_t stage_bits = MetalRenderStageBits(stages);
@@ -9042,10 +8402,8 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
   }
   if (!inserted) {
     if (usage_state_covers(*state)) {
-      ++backend_telemetry_.render_encoder_use_resource_skips;
       return;
     }
-    ++backend_telemetry_.render_encoder_use_resource_upgrades;
   }
 
   add_usage_to_state(*state);
@@ -9106,9 +8464,8 @@ void MetalCommandProcessor::UseRenderEncoderResources(
     if (!resource_batch_count) {
       return;
     }
-    encode_ctx().render_encoder->useResources(resource_batch.data(),
-                                          resource_batch_count, usage, stages);
-    ++backend_telemetry_.render_encoder_use_resources_batches;
+    encode_ctx().render_encoder->useResources(
+        resource_batch.data(), resource_batch_count, usage, stages);
     resource_batch_count = 0;
   };
   for (uint32_t i = 0; i < count; ++i) {
@@ -9118,11 +8475,8 @@ void MetalCommandProcessor::UseRenderEncoderResources(
     }
     MTL::Resource* resource = const_cast<MTL::Resource*>(const_resource);
     if (IsResidencySetResourceCovered(resource)) {
-      ++backend_telemetry_.residency_set_use_resources_covered;
       continue;
     }
-    ++backend_telemetry_.residency_set_use_resources_fallback;
-    ++backend_telemetry_.render_encoder_use_resources_requested;
     bool inserted = false;
     EncoderResourceUsageState* state =
         FindOrInsertRenderEncoderResourceUsage(resource, inserted);
@@ -9131,10 +8485,8 @@ void MetalCommandProcessor::UseRenderEncoderResources(
     }
     if (!inserted) {
       if (usage_state_covers(*state)) {
-        ++backend_telemetry_.render_encoder_use_resources_skips;
         continue;
       }
-      ++backend_telemetry_.render_encoder_use_resource_upgrades;
     }
 
     add_usage_to_state(*state);
@@ -9157,7 +8509,6 @@ void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
   // queue-residency-set-covered heap no longer needs the per-encoder call.
   if (heap->hazardTrackingMode() == MTL::HazardTrackingModeUntracked &&
       IsResidencySetHeapCovered(heap)) {
-    ++backend_telemetry_.residency_set_use_heaps_covered;
     return;
   }
   for (MTL::Heap* used_heap : encode_ctx().heap_usage) {
@@ -9165,7 +8516,6 @@ void MetalCommandProcessor::UseRenderEncoderHeap(MTL::Heap* heap) {
       return;
     }
   }
-  ++backend_telemetry_.residency_set_use_heaps_fallback;
   encode_ctx().heap_usage.push_back(heap);
   encode_ctx().render_encoder->useHeap(heap);
 }
@@ -9205,8 +8555,8 @@ void MetalCommandProcessor::StartEncodeWorker() {
   uint32_t thread_count = 1;
   if (cvars::metal_parallel_encode_threads > 1) {
     if (multi_cb_enabled_) {
-      thread_count = uint32_t(std::min(cvars::metal_parallel_encode_threads,
-                                       int32_t(4)));
+      thread_count =
+          uint32_t(std::min(cvars::metal_parallel_encode_threads, int32_t(4)));
     } else {
       XELOGW(
           "MetalCommandProcessor: metal_parallel_encode_threads > 1 requires "
@@ -9379,7 +8729,6 @@ void MetalCommandProcessor::EndWorkerBatchEncoder() {
   if (render_target_hazard_fence_edges_ && render_target_fence_) {
     ctx.render_encoder->updateFence(render_target_fence_,
                                     MTL::RenderStageFragment);
-    RecordHazardFenceUpdate(/*compute_encoder=*/false);
   }
   ctx.render_encoder->endEncoding();
   ctx.render_encoder->release();
@@ -9473,9 +8822,8 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     if (draw->prepare_uniforms && !draw->use_native_msl) {
       return false;
     }
-    if (draw->use_geometry_emulation ||
-        (draw->use_tessellation_emulation &&
-         !draw->use_native_msl_tessellation)) {
+    if (draw->use_geometry_emulation || (draw->use_tessellation_emulation &&
+                                         !draw->use_native_msl_tessellation)) {
       return false;
     }
   }
@@ -9487,8 +8835,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
   // encoders now. Between the handoff and the next drain the CP thread never
   // opens another encoder on it (CanJoinActiveSubmissionForTransfer is
   // conservative while the worker is busy).
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kRenderBegin);
+  EndSharedMemoryUploadBlitEncoder();
   if (texture_cache_ &&
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     return false;
@@ -9526,9 +8873,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     // execute before the batch, and nothing may be encoded into a committed
     // command buffer.
     if (encode_ctx().render_encoder) {
-      ++backend_telemetry_.begin_encoder_descriptor_restarts;
-      EndRenderEncoder(
-          RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
+      EndRenderEncoder();
     }
     batch.origin_submission = submission_current_;
     SealAndCommitCurrentCommandBuffer();
@@ -9541,12 +8886,12 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
     if (render_target_cache_) {
       render_target_cache_->ConsumeRenderPassDescriptorClears(live_descriptor);
     }
-    GetActiveRenderTargetSize(live_descriptor, render_target_cache_.get(),
-                              1280, 720, batch.rt_width, batch.rt_height);
-    batch.has_zpd_visibility =
-        zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
-        live_descriptor->visibilityResultBuffer() ==
-            zpd_visibility_pool_->visibility_buffer();
+    GetActiveRenderTargetSize(live_descriptor, render_target_cache_.get(), 1280,
+                              720, batch.rt_width, batch.rt_height);
+    batch.has_zpd_visibility = zpd_visibility_pool_ &&
+                               zpd_visibility_pool_->is_initialized() &&
+                               live_descriptor->visibilityResultBuffer() ==
+                                   zpd_visibility_pool_->visibility_buffer();
     // Hold completed-submission consumers below the origin spine until the
     // batch's GPU work completes (prep-time texture/shared-memory stamps
     // were made under it). The batch command buffer's completion handler
@@ -9600,9 +8945,7 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
         return false;
       }
       if (encode_ctx().render_encoder) {
-        ++backend_telemetry_.begin_encoder_descriptor_restarts;
-        EndRenderEncoder(
-            RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
+        EndRenderEncoder();
       }
       if (render_target_cache_) {
         render_target_cache_->ConsumeRenderPassDescriptorClears(
@@ -9610,10 +8953,10 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
       }
       GetActiveRenderTargetSize(live_descriptor, render_target_cache_.get(),
                                 1280, 720, batch.rt_width, batch.rt_height);
-      batch.has_zpd_visibility =
-          zpd_visibility_pool_ && zpd_visibility_pool_->is_initialized() &&
-          live_descriptor->visibilityResultBuffer() ==
-              zpd_visibility_pool_->visibility_buffer();
+      batch.has_zpd_visibility = zpd_visibility_pool_ &&
+                                 zpd_visibility_pool_->is_initialized() &&
+                                 live_descriptor->visibilityResultBuffer() ==
+                                     zpd_visibility_pool_->visibility_buffer();
     }
   }
   // Hazard-range GPU-access stamping moves to the handoff: stamping from the
@@ -9641,7 +8984,6 @@ bool MetalCommandProcessor::TryHandOffPreparedDrawBatch(
 }
 
 bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
-  ++backend_telemetry_.begin_encoder_calls;
   if (!tls_worker_batch_) {
     XELOGE("Metal parallel encode: worker begin without a current batch");
     return false;
@@ -9649,7 +8991,6 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   if (encode_ctx().render_encoder) {
     // Batch invariant: a single render-target configuration, and nothing on
     // the worker path ends the encoder mid-batch.
-    ++backend_telemetry_.begin_encoder_reused_compatible;
     return true;
   }
   MTL::RenderPassDescriptor* pass_descriptor =
@@ -9659,25 +9000,20 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   // drains guarantee it).
   MTL::CommandBuffer* target_command_buffer =
       tls_worker_batch_->command_buffer ? tls_worker_batch_->command_buffer
-                                          : current_command_buffer_;
+                                        : current_command_buffer_;
   if (!pass_descriptor || !target_command_buffer) {
-    ++backend_telemetry_.begin_encoder_descriptor_failures;
     XELOGE("Metal parallel encode: batch has no encoder and no descriptor");
     return false;
   }
-  if (encode_ctx().resource_usage_count ||
-      !encode_ctx().heap_usage.empty()) {
-    ++backend_telemetry_.begin_encoder_resource_usage_resets;
+  if (encode_ctx().resource_usage_count || !encode_ctx().heap_usage.empty()) {
     ResetRenderEncoderResourceUsage();
   }
   encode_ctx().render_encoder =
       target_command_buffer->renderCommandEncoder(pass_descriptor);
   if (!encode_ctx().render_encoder) {
-    ++backend_telemetry_.begin_encoder_creation_failures;
     XELOGE("Metal parallel encode: failed to create render command encoder");
     return false;
   }
-  ++backend_telemetry_.begin_encoder_created;
   encode_ctx().render_encoder->retain();
   encode_ctx().render_encoder_has_zpd_visibility =
       tls_worker_batch_->has_zpd_visibility;
@@ -9687,21 +9023,18 @@ bool MetalCommandProcessor::BeginRenderEncoderForWorkerBatch() {
   // Hazard consumer edges, identical to the inline begin path.
   if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
     encode_ctx().render_encoder->waitForFence(
-        shared_memory_fence_, MTL::RenderStageVertex | MTL::RenderStageObject |
-                                  MTL::RenderStageMesh);
-    RecordHazardFenceWait(0);
+        shared_memory_fence_,
+        MTL::RenderStageVertex | MTL::RenderStageObject | MTL::RenderStageMesh);
   }
   if (texture_heap_hazard_fence_edges_ && texture_upload_fence_) {
     encode_ctx().render_encoder->waitForFence(
-        texture_upload_fence_,
-        MTL::RenderStageVertex | MTL::RenderStageObject |
-            MTL::RenderStageMesh | MTL::RenderStageFragment);
-    RecordHazardFenceWait(0);
+        texture_upload_fence_, MTL::RenderStageVertex | MTL::RenderStageObject |
+                                   MTL::RenderStageMesh |
+                                   MTL::RenderStageFragment);
   }
   if (render_target_hazard_fence_edges_ && render_target_fence_) {
     encode_ctx().render_encoder->waitForFence(render_target_fence_,
-                                          MTL::RenderStageFragment);
-    RecordHazardFenceWait(0);
+                                              MTL::RenderStageFragment);
   }
   encode_ctx().render_pipeline_state = nullptr;
   encode_ctx().blend_factor_valid = false;
@@ -9765,7 +9098,6 @@ MTL::RenderPassDescriptor* MetalCommandProcessor::GetDrawRenderPassDescriptor(
 
 bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     bool fallback_depth_attachment_required) {
-  ++backend_telemetry_.begin_encoder_calls;
   if (!EnsureCommandBuffer()) {
     return false;
   }
@@ -9775,22 +9107,21 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
   if (zpd_segment_pending) {
     EnsureZPDQueryResources();
   }
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kRenderBegin);
+  EndSharedMemoryUploadBlitEncoder();
   if (texture_cache_ &&
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     return false;
   }
 
-  if (!encode_ctx().render_encoder && (encode_ctx().resource_usage_count ||
-                                   !encode_ctx().heap_usage.empty())) {
-    ++backend_telemetry_.begin_encoder_resource_usage_resets;
+  if (!encode_ctx().render_encoder &&
+      (encode_ctx().resource_usage_count || !encode_ctx().heap_usage.empty())) {
     ResetRenderEncoderResourceUsage();
   }
 
-  if (encode_ctx().render_encoder && zpd_segment_pending && IsZPDQueryPoolReady() &&
+  if (encode_ctx().render_encoder && zpd_segment_pending &&
+      IsZPDQueryPoolReady() &&
       !encode_ctx().render_encoder_has_zpd_visibility) {
-    EndRenderEncoder(RenderEncoderEndReason::kUnknown);
+    EndRenderEncoder();
   }
 
   // Obtain the render pass descriptor from MetalRenderTargetCache (host
@@ -9802,14 +9133,12 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
       render_target_cache_->IsRenderPassDescriptorCompatible(
           encode_ctx().render_pass_descriptor, 1,
           fallback_depth_attachment_required)) {
-    ++backend_telemetry_.begin_encoder_reused_compatible;
     return true;
   }
 
   MTL::RenderPassDescriptor* pass_descriptor =
       GetDrawRenderPassDescriptor(fallback_depth_attachment_required);
   if (!pass_descriptor) {
-    ++backend_telemetry_.begin_encoder_descriptor_failures;
     XELOGE("BeginRenderEncoderForDraw: No render pass descriptor available");
     return false;
   }
@@ -9827,14 +9156,11 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
   // restart the render encoder with the updated descriptor.
   if (encode_ctx().render_encoder &&
       encode_ctx().render_pass_descriptor != pass_descriptor) {
-    ++backend_telemetry_.begin_encoder_descriptor_restarts;
-    EndRenderEncoder(
-        RenderEncoderEndReason::kBeginRenderEncoderDescriptorChanged);
+    EndRenderEncoder();
   }
 
   if (!encode_ctx().render_encoder) {
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kRenderBegin);
+    EndSharedMemoryUploadBlitEncoder();
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
     // Note: renderCommandEncoder() returns an autoreleased object, we must
@@ -9842,11 +9168,9 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     encode_ctx().render_encoder =
         current_command_buffer_->renderCommandEncoder(pass_descriptor);
     if (!encode_ctx().render_encoder) {
-      ++backend_telemetry_.begin_encoder_creation_failures;
       XELOGE("Failed to create render command encoder");
       return false;
     }
-    ++backend_telemetry_.begin_encoder_created;
     encode_ctx().render_encoder->retain();
     // This encoder performs the descriptor's baked first-use clears; tell the
     // cache so the next pass loads the cleared contents instead.
@@ -9867,10 +9191,9 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // mesh cover the mesh-shader draw paths.
     if (shared_memory_hazard_fence_edges_ && shared_memory_fence_) {
       encode_ctx().render_encoder->waitForFence(shared_memory_fence_,
-                                            MTL::RenderStageVertex |
-                                                MTL::RenderStageObject |
-                                                MTL::RenderStageMesh);
-      RecordHazardFenceWait(0);
+                                                MTL::RenderStageVertex |
+                                                    MTL::RenderStageObject |
+                                                    MTL::RenderStageMesh);
     }
     // Texture-heap phase consumer edge: order texture-cache upload encoders
     // (untile compute / upload blits, in this or an earlier-committed command
@@ -9881,7 +9204,6 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
           texture_upload_fence_,
           MTL::RenderStageVertex | MTL::RenderStageObject |
               MTL::RenderStageMesh | MTL::RenderStageFragment);
-      RecordHazardFenceWait(0);
     }
     // Render-target phase consumer edge: order prior passes' attachment
     // writes before this pass's attachment loads and transfer draws that
@@ -9889,8 +9211,7 @@ bool MetalCommandProcessor::BeginRenderEncoderForDraw(
     // of this pass may still overlap prior fragment work.
     if (render_target_hazard_fence_edges_ && render_target_fence_) {
       encode_ctx().render_encoder->waitForFence(render_target_fence_,
-                                            MTL::RenderStageFragment);
-      RecordHazardFenceWait(0);
+                                                MTL::RenderStageFragment);
     }
     encode_ctx().render_pipeline_state = nullptr;
     encode_ctx().blend_factor_valid = false;
@@ -9937,9 +9258,8 @@ void MetalCommandProcessor::EndCommandBuffer() {
     XELOGE("Metal EndCommandBuffer: failed to flush prepared draw queue");
   }
   TryTrimPreparedDrawRetainedStorage();
-  EndRenderEncoder(RenderEncoderEndReason::kCommandBufferEnd);
-  EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason::kCommandBufferEnd);
+  EndRenderEncoder();
+  EndSharedMemoryUploadBlitEncoder();
   if (texture_cache_ &&
       !texture_cache_->FlushPendingUploadEncodersForCommandEncoderBoundary()) {
     XELOGE(
@@ -10111,7 +9431,8 @@ void MetalCommandProcessor::ApplyDepthStencilState(
             ref_front, ref_back);
       }
     }
-    if (!encode_ctx().stencil_reference_valid || encode_ctx().stencil_reference != ref) {
+    if (!encode_ctx().stencil_reference_valid ||
+        encode_ctx().stencil_reference != ref) {
       encode_ctx().render_encoder->setStencilReferenceValue(ref);
       encode_ctx().stencil_reference = ref;
       encode_ctx().stencil_reference_valid = true;
@@ -10151,14 +9472,16 @@ void MetalCommandProcessor::ApplyRasterizerState(
       std::memcmp(encode_ctx().depth_bias_values, depth_bias_values,
                   sizeof(depth_bias_values)) != 0) {
     encode_ctx().render_encoder->setDepthBias(dynamic_state.depth_bias_constant,
-                                          dynamic_state.depth_bias_slope, 0.0f);
+                                              dynamic_state.depth_bias_slope,
+                                              0.0f);
     std::memcpy(encode_ctx().depth_bias_values, depth_bias_values,
                 sizeof(depth_bias_values));
   }
 
   if (!encode_ctx().rasterizer_state_valid ||
       encode_ctx().depth_clip_mode != dynamic_state.depth_clip_mode) {
-    encode_ctx().render_encoder->setDepthClipMode(dynamic_state.depth_clip_mode);
+    encode_ctx().render_encoder->setDepthClipMode(
+        dynamic_state.depth_clip_mode);
     encode_ctx().depth_clip_mode = dynamic_state.depth_clip_mode;
   }
   encode_ctx().rasterizer_state_valid = true;

@@ -701,8 +701,7 @@ class TextureCache {
     kBase,
     kMips,
   };
-  virtual bool RequestTextureDataRange(Texture&,
-                                       TextureDataRangeSource,
+  virtual bool RequestTextureDataRange(Texture&, TextureDataRangeSource,
                                        uint32_t start, uint32_t length) {
     // TODO(xenios-jp): Backend texture caches with encoder-lifetime ownership
     // must not use this default direct shared-memory request while an encoder
@@ -742,12 +741,6 @@ class TextureCache {
   // Called when something in a texture binding is changed for the
   // implementation to update the internal dependencies of the binding.
   virtual void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {}
-  virtual void RecordTextureWatchInvalidation(
-      [[maybe_unused]] const Texture& texture, [[maybe_unused]] bool is_mip,
-      [[maybe_unused]] TextureWatchInvalidationSource source,
-      [[maybe_unused]] uint32_t byte_count) {}
-  virtual void RecordTextureContentRevalidation(
-      [[maybe_unused]] bool is_mip, [[maybe_unused]] uint32_t byte_count) {}
 
  private:
   void UpdateTexturesTotalHostMemoryUsage(uint64_t add, uint64_t subtract);
