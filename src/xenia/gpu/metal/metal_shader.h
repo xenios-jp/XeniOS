@@ -23,6 +23,7 @@ namespace gpu {
 namespace metal {
 
 class DxbcToDxilConverter;
+class MetalPipelineCompiler;
 class MetalShaderConverter;
 struct MetalStageCompileResult;
 
@@ -49,6 +50,7 @@ class MetalShader : public DxbcShader {
         MTL::Device* device, const std::string& msl_source,
         const std::string& function_name,
         const DxbcShader::TranslationMetadata& native_metadata,
+        MetalPipelineCompiler* pipeline_compiler = nullptr,
         uint64_t* out_new_library_ms = nullptr,
         bool* out_new_library_created = nullptr,
         bool* out_library_cache_hit = nullptr);
