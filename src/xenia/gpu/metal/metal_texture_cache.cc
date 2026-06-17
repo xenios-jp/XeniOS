@@ -142,6 +142,13 @@ constexpr uint64_t kScaledResolveRetiredMaxBytes = 256ull * 1024ull * 1024ull;
 #endif
 constexpr uint32_t kViewBindlessHeapPressureThreshold = 65536;
 
+template <typename Encoder>
+void UpdateWholeEncoderFence(Encoder* encoder, MTL::Fence* fence) {
+  if (encoder && fence) {
+    encoder->updateFence(fence);
+  }
+}
+
 struct MetalLoadConstants {
   uint32_t is_tiled_3d_endian_scale;
   uint32_t guest_offset;
@@ -677,12 +684,12 @@ MetalTextureCache::~MetalTextureCache() { Shutdown(); }
 uint64_t MetalTextureCache::GetTextureLoadBytes(const Texture& texture,
                                                 bool load_base,
                                                 bool load_mips) {
-  return (load_base ? uint64_t(xe::align(texture.GetGuestBaseSize(),
-                                         UINT32_C(16)))
-                    : 0) +
-         (load_mips ? uint64_t(xe::align(texture.GetGuestMipsSize(),
-                                         UINT32_C(16)))
-                    : 0);
+  return (load_base
+              ? uint64_t(xe::align(texture.GetGuestBaseSize(), UINT32_C(16)))
+              : 0) +
+         (load_mips
+              ? uint64_t(xe::align(texture.GetGuestMipsSize(), UINT32_C(16)))
+              : 0);
 }
 
 MTL::StorageMode MetalTextureCache::GetCacheTextureStorageMode() const {
@@ -747,9 +754,10 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
   }
   if (command_processor_) {
     if (!shared_memory_ranges.empty()) {
-      static_cast<MetalSharedMemory&>(shared_memory()).TrackStandaloneGpuAccess(
-          cmd, shared_memory_ranges.data(),
-          static_cast<uint32_t>(shared_memory_ranges.size()));
+      static_cast<MetalSharedMemory&>(shared_memory())
+          .TrackStandaloneGpuAccess(
+              cmd, shared_memory_ranges.data(),
+              static_cast<uint32_t>(shared_memory_ranges.size()));
     }
     command_processor_->CommitStandaloneAsync(cmd);
   } else {
@@ -774,9 +782,10 @@ void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
   }
   if (command_processor_) {
     if (!shared_memory_ranges.empty()) {
-      static_cast<MetalSharedMemory&>(shared_memory()).TrackStandaloneGpuAccess(
-          cmd, shared_memory_ranges.data(),
-          static_cast<uint32_t>(shared_memory_ranges.size()));
+      static_cast<MetalSharedMemory&>(shared_memory())
+          .TrackStandaloneGpuAccess(
+              cmd, shared_memory_ranges.data(),
+              static_cast<uint32_t>(shared_memory_ranges.size()));
     }
     command_processor_->CommitStandaloneAsync(cmd);
   } else {
@@ -808,9 +817,8 @@ void MetalTextureCache::TextureUploadHazardUpdate(
   if (!encoder || !command_processor_) {
     return;
   }
-  if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
-    encoder->updateFence(fence);
-  }
+  UpdateWholeEncoderFence(encoder,
+                          command_processor_->GetTextureUploadHazardFence());
 }
 
 void MetalTextureCache::TextureUploadHazardUpdate(
@@ -818,9 +826,8 @@ void MetalTextureCache::TextureUploadHazardUpdate(
   if (!encoder || !command_processor_) {
     return;
   }
-  if (MTL::Fence* fence = command_processor_->GetTextureUploadHazardFence()) {
-    encoder->updateFence(fence);
-  }
+  UpdateWholeEncoderFence(encoder,
+                          command_processor_->GetTextureUploadHazardFence());
 }
 
 bool MetalTextureCache::FlushDeferredUploadEncoderBatch() {
@@ -1057,10 +1064,8 @@ bool MetalTextureCache::PrepareTextureMaterialization(
   }
 
   auto append_texture = [&](TextureKey key, Texture* texture) {
-    bool base_outdated =
-        texture ? texture->base_outdated_lockless() : false;
-    bool mips_outdated =
-        texture ? texture->mips_outdated_lockless() : false;
+    bool base_outdated = texture ? texture->base_outdated_lockless() : false;
+    bool mips_outdated = texture ? texture->mips_outdated_lockless() : false;
     if (!texture || (!base_outdated && !mips_outdated)) {
       return;
     }
@@ -1101,16 +1106,12 @@ bool MetalTextureCache::PrepareTextureMaterialization(
         source_range_state(base_outdated, base_start, base_length);
     const SourceRangeState mips_state =
         source_range_state(mips_outdated, mips_start, mips_length);
-    const bool base_needs_upload =
-        base_state == SourceRangeState::kInvalid ||
-        base_state == SourceRangeState::kMixed;
-    const bool mips_needs_upload =
-        mips_state == SourceRangeState::kInvalid ||
-        mips_state == SourceRangeState::kMixed;
-    const bool base_cpu_source =
-        base_state == SourceRangeState::kInvalid;
-    const bool mips_cpu_source =
-        mips_state == SourceRangeState::kInvalid;
+    const bool base_needs_upload = base_state == SourceRangeState::kInvalid ||
+                                   base_state == SourceRangeState::kMixed;
+    const bool mips_needs_upload = mips_state == SourceRangeState::kInvalid ||
+                                   mips_state == SourceRangeState::kMixed;
+    const bool base_cpu_source = base_state == SourceRangeState::kInvalid;
+    const bool mips_cpu_source = mips_state == SourceRangeState::kInvalid;
 
     bool use_cpu_source = !texture_key.scaled_resolve;
     bool has_cpu_source_range = false;
@@ -2080,16 +2081,15 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
     uint8_t* source_data =
         static_cast<uint8_t*>(transient_source_buffer->contents());
-    auto copy_transient_source =
-        [&](const TransientTextureSourceRange& range) {
-          if (!range.valid) {
-            return;
-          }
-          std::memcpy(source_data + range.buffer_offset,
-                      xbox_ram + range.copy_start, range.copy_length);
-          std::memset(source_data + range.buffer_offset + range.copy_length, 0,
-                      range.buffer_length - range.copy_length);
-        };
+    auto copy_transient_source = [&](const TransientTextureSourceRange& range) {
+      if (!range.valid) {
+        return;
+      }
+      std::memcpy(source_data + range.buffer_offset,
+                  xbox_ram + range.copy_start, range.copy_length);
+      std::memset(source_data + range.buffer_offset + range.copy_length, 0,
+                  range.buffer_length - range.copy_length);
+    };
     copy_transient_source(transient_base_source);
     copy_transient_source(transient_mips_source);
   }
@@ -3650,10 +3650,12 @@ uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
 
   const TextureBinding* binding = GetValidTextureBinding(fetch_constant);
   if (!binding) {
-    return return_null_index_for_dimension("fetch constant has no valid texture binding");
+    return return_null_index_for_dimension(
+        "fetch constant has no valid texture binding");
   }
   if (!AreDimensionsCompatible(dimension, binding->key.dimension)) {
-    return return_null_index_for_dimension("shader texture dimension is incompatible with bound texture");
+    return return_null_index_for_dimension(
+        "shader texture dimension is incompatible with bound texture");
   }
 
   Texture* texture = nullptr;
@@ -3663,12 +3665,14 @@ uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
                     ? binding->texture_signed
                     : binding->texture;
     } else {
-      return return_null_index_for_dimension("signed view not selected by texture signs");
+      return return_null_index_for_dimension(
+          "signed view not selected by texture signs");
     }
   } else if (texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
     texture = binding->texture;
   } else {
-    return return_null_index_for_dimension("unsigned view not selected by texture signs");
+    return return_null_index_for_dimension(
+        "unsigned view not selected by texture signs");
   }
 
   if (!texture) {
@@ -3678,7 +3682,8 @@ uint32_t MetalTextureCache::GetBindlessSRVIndexForBinding(
   texture->MarkAsUsed();
   auto* metal_texture = static_cast<MetalTexture*>(texture);
   if (!metal_texture) {
-    return return_null_index_for_dimension("resolved texture is not a Metal texture");
+    return return_null_index_for_dimension(
+        "resolved texture is not a Metal texture");
   }
   MTL::Texture* texture_for_encoder = nullptr;
   uint32_t srv_index = metal_texture->GetOrCreateBindlessSRVIndexAndView(
@@ -4631,8 +4636,7 @@ bool MetalTextureCache::LoadTextureDataFromCpuGuestMemory(Texture& texture,
   };
   if (!has_cpu_source(base_outdated, texture_key.base_page << 12,
                       base_length) ||
-      !has_cpu_source(mips_outdated, texture_key.mip_page << 12,
-                      mips_length)) {
+      !has_cpu_source(mips_outdated, texture_key.mip_page << 12, mips_length)) {
     return false;
   }
   MetalTexture* metal_texture = static_cast<MetalTexture*>(&texture);

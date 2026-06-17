@@ -726,13 +726,6 @@ class MetalCommandProcessor final : public CommandProcessor {
       uint32_t native_msl_draw_constants_slot);
 
  private:
-  enum class RenderResourceSetKind : uint32_t {
-    kFixed,
-    kTexture,
-    kRoot,
-    kCount,
-  };
-
   void FlushCommandBufferAndWait(uint64_t timeout_ns, const char* context);
   MTL::RenderPassDescriptor* GetDrawRenderPassDescriptor(
       bool fallback_depth_attachment_required = false);
@@ -768,12 +761,13 @@ class MetalCommandProcessor final : public CommandProcessor {
       const SharedMemory::Range* ranges, uint32_t range_count);
   bool HasActiveSharedMemoryWritePending() const;
 
+  void EncodeRenderEncoderHazardConsumerEdges();
+  void UpdateRenderTargetFenceForActiveRenderEncoder();
   void UseRenderEncoderAttachmentHeaps(MTL::RenderPassDescriptor* descriptor);
   void AddRenderHeapRef(RenderResourceSet& set, MTL::Heap* heap);
   void AddRenderResourceRef(RenderResourceSet& set, MTL::Resource* resource,
                             MTL::ResourceUsage usage, MTL::RenderStages stages);
-  void RestoreRenderResourceSet(RenderResourceSetKind kind,
-                                RenderResourceSet& current,
+  void RestoreRenderResourceSet(RenderResourceSet& current,
                                 const RenderResourceSet& snapshot);
   void PublishRenderResourceSet(RenderResourceSet& current,
                                 RenderResourceSet&& next);
@@ -789,8 +783,7 @@ class MetalCommandProcessor final : public CommandProcessor {
   void PublishBindlessTextureResourceSet();
   void PublishBindlessRootResourceSet(const UniformBufferInfo& uniforms);
   void ApplyRenderEncoderResourceSets();
-  void ApplyRenderEncoderResourceSet(RenderResourceSetKind kind,
-                                     const RenderResourceSet& set,
+  void ApplyRenderEncoderResourceSet(const RenderResourceSet& set,
                                      uint64_t& applied_serial);
   EncoderResourceUsageState* FindOrInsertRenderEncoderResourceUsage(
       MTL::Resource* resource, bool& inserted);
