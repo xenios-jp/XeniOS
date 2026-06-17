@@ -391,7 +391,13 @@ using xe::ui::WxMenuItem;
 using namespace xe::hid;
 using namespace xe::gpu;
 
+#if XE_PLATFORM_MAC
+constexpr std::string_view kBaseTitle = "XeniOS";
+constexpr const char* kAboutName = "XeniOS";
+#else
 constexpr std::string_view kBaseTitle = "Xenia-edge";
+constexpr const char* kAboutName = "Xenia Edge";
+#endif  // XE_PLATFORM_MAC
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -2907,7 +2913,7 @@ void EmulatorWindow::ShowAbout() {
       info.SetIcon(icon);
     }
   }
-  info.SetName("Xenia Edge");
+  info.SetName(kAboutName);
   info.SetVersion(wxString::Format("%s@%s (%s)", XE_BUILD_BRANCH,
                                    XE_BUILD_COMMIT_SHORT, XE_BUILD_DATE));
   info.SetDescription(wxString::Format(
