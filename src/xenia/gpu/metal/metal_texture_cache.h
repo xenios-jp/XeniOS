@@ -130,16 +130,10 @@ class MetalTextureCache : public TextureCache {
   void RequestTexturesWithoutLoading(uint32_t used_texture_mask);
   struct TextureMaterializationPlan {
     std::vector<SharedMemory::Range> source_ranges;
-    uint32_t request_count = 0;
-    uint32_t planned_load_count = 0;
-    uint32_t executed_load_count = 0;
 
     void Reset() {
       source_ranges.clear();
       texture_loads_.clear();
-      request_count = 0;
-      planned_load_count = 0;
-      executed_load_count = 0;
     }
     bool NeedsTextureUpload() const { return !texture_loads_.empty(); }
 
@@ -165,11 +159,6 @@ class MetalTextureCache : public TextureCache {
   bool PrepareTextureDataLoadRanges(Texture** textures, uint32_t texture_count,
                                     uint64_t base_outdated_mask,
                                     uint64_t mips_outdated_mask) override;
-  void RecordTextureWatchInvalidation(const Texture& texture, bool is_mip,
-                                      TextureWatchInvalidationSource source,
-                                      uint32_t byte_count) override;
-  void RecordTextureContentRevalidation(bool is_mip,
-                                        uint32_t byte_count) override;
   bool RequestTextureDataRange(Texture& texture, TextureDataRangeSource source,
                                uint32_t start, uint32_t length) override;
 
@@ -201,9 +190,9 @@ class MetalTextureCache : public TextureCache {
     kCpuGuestMemory,
   };
   // GPU-based texture loading entry point. Returns true on success.
-  bool TryGpuLoadTexture(
-      Texture& texture, bool load_base, bool load_mips,
-      TextureLoadSourceMode source_mode = TextureLoadSourceMode::kResidentMemory);
+  bool TryGpuLoadTexture(Texture& texture, bool load_base, bool load_mips,
+                         TextureLoadSourceMode source_mode =
+                             TextureLoadSourceMode::kResidentMemory);
   static uint64_t GetTextureLoadBytes(const Texture& texture, bool load_base,
                                       bool load_mips);
   bool LoadTextureDataFromCpuGuestMemory(Texture& texture, bool load_base,
@@ -254,10 +243,6 @@ class MetalTextureCache : public TextureCache {
   MTL::ComputePipelineState* load_pipelines_[kLoadShaderCount] = {};
   MTL::ComputePipelineState* load_pipelines_scaled_[kLoadShaderCount] = {};
   MTL::ComputePipelineState* texture_upload_repack_pipeline_ = nullptr;
-  // Number of LoadTextureDataFromResidentMemoryImpl calls. Used only to derive
-  // the per-request load count reported to command-processor telemetry.
-  uint64_t loaded_texture_data_count_ = 0;
-
   // Metal-specific Texture implementation
 
   class MetalTexture : public Texture {
@@ -277,16 +262,6 @@ class MetalTextureCache : public TextureCache {
     uint32_t GetOrCreateBindlessSRVIndexAndView(
         uint32_t host_swizzle, xenos::FetchOpDimension dimension,
         bool is_signed, MTL::Texture** view_out);
-    bool MarkMaterializationPlanned(uint64_t frame) {
-      bool repeated = last_materialization_plan_frame_ == frame;
-      last_materialization_plan_frame_ = frame;
-      return repeated;
-    }
-    bool MarkMaterializationExecuted(uint64_t frame) {
-      bool repeated = last_materialization_execute_frame_ == frame;
-      last_materialization_execute_frame_ = frame;
-      return repeated;
-    }
 
    private:
     // The cache manages 3D-as-2D wrapper invalidation on reload directly.
@@ -302,8 +277,6 @@ class MetalTextureCache : public TextureCache {
 
     MetalTextureCache& texture_cache_;
     MTL::Texture* metal_texture_;
-    uint64_t last_materialization_plan_frame_ = 0;
-    uint64_t last_materialization_execute_frame_ = 0;
     uint32_t bindless_srv_index_ = UINT32_MAX;
     std::unique_ptr<MetalTexture> texture_3d_as_2d_;
     bool is_3d_as_2d_wrapper_ = false;

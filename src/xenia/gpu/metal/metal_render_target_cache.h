@@ -190,37 +190,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       DrawPassTransferEncoderMutationMask* mutations_out = nullptr);
   bool FlushPendingDrawPassTransfers();
 
-  struct TelemetryStats {
-    struct ResolveDirectHostTelemetry {
-      uint64_t direct_host_attempt = 0;
-      uint64_t direct_host_success = 0;
-      uint64_t direct_host_reject_gamma = 0;
-      uint64_t direct_host_reject_exp_bias = 0;
-      uint64_t direct_host_reject_format_mismatch = 0;
-      uint64_t direct_host_reject_sample_select = 0;
-      uint64_t direct_host_reject_depth_no_fast = 0;
-    };
-
-    struct ResolveClearTelemetry {
-      // Render passes clearing both the depth and the color destination of one
-      // resolve in a single pass (counted once per pass) - either through clear
-      // load actions when the clear covers the whole attachment, or through one
-      // merged pass of two scissored clear draws when it covers only a
-      // sub-rectangle. The printed telemetry label calls this "merged_pass".
-      uint64_t load_action_merged_passes = 0;
-      // Per-target clears performed by the clear load action of an
-      // otherwise-empty render pass.
-      uint64_t load_action_single_target = 0;
-      // Per-target clears performed by a single-attachment clear draw - genuine
-      // partial-rectangle fallbacks that could not be merged.
-      uint64_t draw_clears = 0;
-    };
-
-    ResolveDirectHostTelemetry resolve_direct_host = {};
-    ResolveClearTelemetry resolve_clear = {};
-  };
-  TelemetryStats GetAndResetTelemetryStats();
-
   bool IsRenderPassDescriptorDirty() const {
     return render_pass_descriptor_dirty_;
   }
@@ -556,7 +525,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   uint32_t pending_draw_pass_transfer_mask_ = 0;
   uint32_t pending_draw_pass_full_overwrite_mask_ = 0;
   uint32_t pending_draw_pass_load_dontcare_mask_ = 0;
-  mutable TelemetryStats telemetry_;
   MTL::DepthStencilState* transfer_depth_state_ = nullptr;
   MTL::DepthStencilState* transfer_depth_state_none_ = nullptr;
   MTL::DepthStencilState* transfer_depth_clear_state_ = nullptr;
@@ -637,9 +605,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       TransferAttachmentFormats& attachment_formats_out) const;
   bool GetCurrentTransferAttachmentFormats(
       TransferAttachmentFormats& attachment_formats_out) const;
-  bool CanQueueDrawPassTransfers(
-      uint32_t render_target_index, RenderTarget* const* render_targets,
-      const std::vector<Transfer>& transfers) const;
+  bool CanQueueDrawPassTransfers(uint32_t render_target_index,
+                                 RenderTarget* const* render_targets,
+                                 const std::vector<Transfer>& transfers) const;
   bool PendingDrawPassTransfersFullyOverwriteTarget(
       uint32_t render_target_index, RenderTarget* render_target,
       const std::vector<Transfer>& transfers) const;
@@ -733,12 +701,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // then owns the deferred EdramHazardUpdate + RenderTargetHazardUpdate +
   // endEncoding. Every caller path must close it or the command buffer is
   // wedged.
-  void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
-                         uint32_t dump_rows, uint32_t dump_pitch,
-                         MTL::CommandBuffer* command_buffer = nullptr,
-                         const char* encoder_label = nullptr,
-                         MTL::ComputeCommandEncoder** keep_open_encoder_out =
-                             nullptr);
+  void DumpRenderTargets(
+      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+      uint32_t dump_pitch, MTL::CommandBuffer* command_buffer = nullptr,
+      const char* encoder_label = nullptr,
+      MTL::ComputeCommandEncoder** keep_open_encoder_out = nullptr);
 
   bool TryDirectHostResolveCopy(
       const draw_util::ResolveInfo& resolve_info,

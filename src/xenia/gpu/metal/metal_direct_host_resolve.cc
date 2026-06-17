@@ -321,10 +321,8 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     const char* debug_name;
   };
 #define XE_DIRECT_HOST_RESOLVE_CONFIG(id, is_64bpp, msaa, scaled, source_uint) \
-  {                                                                            \
-    id##_metallib, sizeof(id##_metallib), is_64bpp, msaa, scaled, source_uint, \
-        #id                                                                    \
-  }
+  {id##_metallib, sizeof(id##_metallib), is_64bpp, msaa,                       \
+   scaled,        source_uint,           #id}
 #define XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, msaa_token, msaa, \
                                     source_uint)                             \
   XE_DIRECT_HOST_RESOLVE_CONFIG(prefix##_##bpp##bpp_##msaa_token##xmsaa_cs,  \
@@ -332,15 +330,15 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
       XE_DIRECT_HOST_RESOLVE_CONFIG(                                         \
           prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, is_64bpp, msaa, \
           true, source_uint)
-#define XE_DIRECT_HOST_RESOLVE_BPP(prefix, bpp, is_64bpp, source_uint) \
-  XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 1,                   \
+#define XE_DIRECT_HOST_RESOLVE_BPP(prefix, bpp, is_64bpp, source_uint)   \
+  XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 1,                  \
                               xenos::MsaaSamples::k1X, source_uint),     \
       XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 2,              \
                                   xenos::MsaaSamples::k2X, source_uint), \
       XE_DIRECT_HOST_RESOLVE_MSAA(prefix, bpp, is_64bpp, 4,              \
                                   xenos::MsaaSamples::k4X, source_uint)
-#define XE_DIRECT_HOST_RESOLVE_SOURCE(prefix, source_uint)                 \
-  XE_DIRECT_HOST_RESOLVE_BPP(prefix, 32, false, source_uint),              \
+#define XE_DIRECT_HOST_RESOLVE_SOURCE(prefix, source_uint)    \
+  XE_DIRECT_HOST_RESOLVE_BPP(prefix, 32, false, source_uint), \
       XE_DIRECT_HOST_RESOLVE_BPP(prefix, 64, true, source_uint)
   static constexpr DirectHostResolvePipelineConfig
       kDirectHostResolvePipelineConfigs[] = {
@@ -386,26 +384,24 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     bool source_is_uint;
     const char* debug_name;
   };
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(id, shader, msaa, scaled,   \
-                                                 source_uint)                \
-  {                                                                          \
-    id##_metallib, sizeof(id##_metallib), shader, msaa, scaled, source_uint, \
-        #id                                                                  \
-  }
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader,          \
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(id, shader, msaa, scaled, \
+                                                 source_uint)              \
+  {id##_metallib, sizeof(id##_metallib), shader, msaa, scaled, source_uint, #id}
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader,           \
                                                msaa_token, msaa, source_uint) \
-  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                                  \
-      prefix##_##bpp##bpp_##msaa_token##xmsaa_cs, shader, msaa, false,       \
-      source_uint),                                                          \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                              \
-          prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, shader, msaa,   \
+  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                                   \
+      prefix##_##bpp##bpp_##msaa_token##xmsaa_cs, shader, msaa, false,        \
+      source_uint),                                                           \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_CONFIG(                               \
+          prefix##_##bpp##bpp_##msaa_token##xmsaa_scaled_cs, shader, msaa,    \
           true, source_uint)
-#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(prefix, bpp, shader, source_uint) \
-  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(prefix, bpp, shader, 1,                \
-                                         xenos::MsaaSamples::k1X, source_uint), \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                   \
-          prefix, bpp, shader, 2, xenos::MsaaSamples::k2X, source_uint),        \
-      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                   \
+#define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(prefix, bpp, shader,      \
+                                               source_uint)              \
+  XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                                \
+      prefix, bpp, shader, 1, xenos::MsaaSamples::k1X, source_uint),     \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                            \
+          prefix, bpp, shader, 2, xenos::MsaaSamples::k2X, source_uint), \
+      XE_DIRECT_HOST_COLOR_FULL_RESOLVE_MSAA(                            \
           prefix, bpp, shader, 4, xenos::MsaaSamples::k4X, source_uint)
 #define XE_DIRECT_HOST_COLOR_FULL_RESOLVE_SOURCE(prefix, source_uint)        \
   XE_DIRECT_HOST_COLOR_FULL_RESOLVE_DEST(                                    \
@@ -469,15 +465,12 @@ void MetalRenderTargetCache::InitializeDirectHostResolvePipelines(
     const char* debug_name;
   };
 #define XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(id, msaa, scaled) \
-  {                                                           \
-    id##_metallib, sizeof(id##_metallib), msaa, scaled, #id   \
-  }
-#define XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(msaa_token, msaa)                \
-  XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                                     \
-      resolve_host_depth_32bpp_##msaa_token##xmsaa_cs, msaa, false),       \
-      XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                                 \
-          resolve_host_depth_32bpp_##msaa_token##xmsaa_scaled_cs, msaa,    \
-          true)
+  {id##_metallib, sizeof(id##_metallib), msaa, scaled, #id}
+#define XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(msaa_token, msaa)          \
+  XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                               \
+      resolve_host_depth_32bpp_##msaa_token##xmsaa_cs, msaa, false), \
+      XE_DIRECT_HOST_DEPTH_RESOLVE_CONFIG(                           \
+          resolve_host_depth_32bpp_##msaa_token##xmsaa_scaled_cs, msaa, true)
   static constexpr DirectHostDepthResolvePipelineConfig
       kDirectHostDepthResolvePipelineConfigs[] = {
           XE_DIRECT_HOST_DEPTH_RESOLVE_MSAA(1, xenos::MsaaSamples::k1X),
@@ -570,10 +563,7 @@ bool MetalRenderTargetCache::PrepareResolveDestinationBuffer(
   }
   // TODO(xenios-jp): Move resolve/export destination residency into the
   // command-processor materialization path before the render encoder is opened.
-  // Keeping it classified here makes the remaining active shared-memory upload
-  // breaks visible as resolve_copy_dest telemetry.
   return command_processor_.RequestSharedMemoryRange(
-      MetalCommandProcessor::SharedMemoryRequestReason::kResolveCopyDest,
       resolve_info.copy_dest_extent_start,
       resolve_info.copy_dest_extent_length);
 }
@@ -621,34 +611,8 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     uint32_t dump_row_length_used, uint32_t dump_rows, uint32_t dump_pitch,
     MTL::CommandBuffer* command_buffer, uint32_t& written_address,
     uint32_t& written_length) {
-  TelemetryStats::ResolveDirectHostTelemetry& direct_telemetry =
-      telemetry_.resolve_direct_host;
-  ++direct_telemetry.direct_host_attempt;
-
-  auto reject = []() { return false; };
-  auto reject_gamma = [&]() {
-    ++direct_telemetry.direct_host_reject_gamma;
-    return false;
-  };
-  auto reject_exp_bias = [&]() {
-    ++direct_telemetry.direct_host_reject_exp_bias;
-    return false;
-  };
-  auto reject_format_mismatch = [&]() {
-    ++direct_telemetry.direct_host_reject_format_mismatch;
-    return false;
-  };
-  auto reject_sample_select = [&]() {
-    ++direct_telemetry.direct_host_reject_sample_select;
-    return false;
-  };
-  auto reject_depth_no_fast = [&]() {
-    ++direct_telemetry.direct_host_reject_depth_no_fast;
-    return false;
-  };
-
   if (GetPath() != Path::kHostRenderTargets) {
-    return reject();
+    return false;
   }
   const bool resolve_is_depth = resolve_info.IsCopyingDepth();
   const bool copy_shader_is_fast =
@@ -663,10 +627,10 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   if (resolve_is_depth) {
     if (!xenos::IsSingleCopySampleSelected(
             resolve_info.copy_dest_coordinate_info.copy_sample_select)) {
-      return reject_sample_select();
+      return false;
     }
     if (!copy_shader_is_fast) {
-      return reject_depth_no_fast();
+      return false;
     }
     resolve_depth_format =
         xenos::DepthRenderTargetFormat(resolve_info.depth_edram_info.format);
@@ -678,37 +642,37 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
       // TODO(xenios-jp): Support direct host gamma resolves only once the
       // shader can mirror the dump path's linear RGBA16Unorm host storage to
       // guest PWL-gamma RGBA8 conversion.
-      return reject_gamma();
+      return false;
     }
     if (copy_shader_is_fast) {
       if (!xenos::IsSingleCopySampleSelected(
               resolve_info.copy_dest_coordinate_info.copy_sample_select)) {
-        return reject_sample_select();
+        return false;
       }
       if (resolve_info.copy_dest_info.copy_dest_exp_bias) {
-        return reject_exp_bias();
+        return false;
       }
       if (!xenos::IsColorResolveFormatBitwiseEquivalent(
               resolve_color_format,
               xenos::ColorFormat(
                   resolve_info.copy_dest_info.copy_dest_format))) {
-        return reject_format_mismatch();
+        return false;
       }
     } else if (!copy_shader_is_full_color) {
       if (!xenos::IsSingleCopySampleSelected(
               resolve_info.copy_dest_coordinate_info.copy_sample_select)) {
-        return reject_sample_select();
+        return false;
       }
       if (resolve_info.copy_dest_info.copy_dest_exp_bias) {
-        return reject_exp_bias();
+        return false;
       }
       if (!xenos::IsColorResolveFormatBitwiseEquivalent(
               resolve_color_format,
               xenos::ColorFormat(
                   resolve_info.copy_dest_info.copy_dest_format))) {
-        return reject_format_mismatch();
+        return false;
       }
-      return reject();
+      return false;
     }
   }
 
@@ -744,7 +708,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
                                  dump_pitch, rectangles);
   if (rectangles.empty()) {
-    return reject();
+    return false;
   }
 
   uint64_t covered_tiles = 0;
@@ -752,7 +716,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   sources.reserve(rectangles.size());
   for (const ResolveCopyDumpRectangle& rect : rectangles) {
     if (!rect.rows || rect.row_last_end <= rect.row_first_start) {
-      return reject();
+      return false;
     }
     if (rect.rows == 1) {
       covered_tiles += rect.row_last_end - rect.row_first_start;
@@ -764,11 +728,11 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
 
     auto* rt = static_cast<MetalRenderTarget*>(rect.render_target);
     if (!rt) {
-      return reject();
+      return false;
     }
     RenderTargetKey key = rt->key();
     if (key.is_depth != resolve_is_depth) {
-      return reject();
+      return false;
     }
 
     bool source_is_uint = false;
@@ -781,7 +745,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     if (resolve_is_depth) {
       if (key.GetDepthFormat() != resolve_depth_format ||
           key.msaa_samples != resolve_info.depth_edram_info.msaa_samples) {
-        return reject_format_mismatch();
+        return false;
       }
       texture = rt->texture();
       expected_format = GetDepthPixelFormat(key.GetDepthFormat());
@@ -798,11 +762,11 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     } else {
       if (key.GetColorFormat() != resolve_color_format ||
           key.msaa_samples != resolve_info.color_edram_info.msaa_samples) {
-        return reject_format_mismatch();
+        return false;
       }
       if (copy_shader_is_full_color &&
           !IsResolveDirectHostRTFullColorSourcePackable(resolve_color_format)) {
-        return reject_format_mismatch();
+        return false;
       }
 
       MTL::PixelFormat ownership_transfer_format =
@@ -827,13 +791,13 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
                                                     source_is_uint);
     }
     if (!texture) {
-      return reject();
+      return false;
     }
     if (texture->pixelFormat() != expected_format) {
-      return reject_format_mismatch();
+      return false;
     }
     if (!pipeline) {
-      return reject();
+      return false;
     }
 
     DirectHostResolveSource source = {};
@@ -849,7 +813,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     source.is_64bpp = is_64bpp;
     source.is_depth = resolve_is_depth;
     if (!source.dispatch_count) {
-      return reject();
+      return false;
     }
     const uint32_t tile_size_x =
         (source.is_64bpp ? 40u : 80u) * draw_resolution_scale_x();
@@ -860,7 +824,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
       uint32_t dispatch_pixel_width =
           source.dispatches[i].width_tiles * tile_pixel_size_x;
       if (dispatch_pixel_width % source.pixels_per_thread) {
-        return reject();
+        return false;
       }
     }
     sources.push_back(source);
@@ -869,7 +833,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   const uint64_t required_tiles =
       uint64_t(dump_row_length_used) * uint64_t(dump_rows);
   if (covered_tiles != required_tiles) {
-    return reject();
+    return false;
   }
 
   auto* texture_cache = command_processor_.texture_cache();
@@ -877,7 +841,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   ResolveDestinationBuffer destination = {};
   if (!PrepareResolveDestinationBuffer(resolve_info, draw_resolution_scaled,
                                        destination)) {
-    return reject();
+    return false;
   }
 
   command_processor_.SetSwapDestSwap(
@@ -890,7 +854,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     cmd = command_processor_.CreateStandaloneTransferCommandBuffer(
         "XeniaCB reason=direct-host-resolve");
     if (!cmd) {
-      return reject();
+      return false;
     }
     standalone = true;
   }
@@ -901,7 +865,7 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
     if (standalone) {
       cmd->release();
     }
-    return reject();
+    return false;
   }
 
   SetEncoderLabel(encoder, kDirectHostResolveEncoderLabel);
@@ -919,7 +883,6 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
                              : command_processor_.GetSharedMemoryHazardFence();
   if (shared_memory_hazard_fence) {
     encoder->waitForFence(shared_memory_hazard_fence);
-    command_processor_.RecordHazardFenceWait(2);
   }
   // Render-target phase consumer edge: this dispatch samples host
   // render-target textures, so it orders after prior passes' attachment
@@ -929,7 +892,6 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
       command_processor_.GetRenderTargetHazardFence();
   if (render_target_hazard_fence) {
     encoder->waitForFence(render_target_hazard_fence);
-    command_processor_.RecordHazardFenceWait(2);
   }
 
   if (draw_resolution_scaled) {
@@ -1013,11 +975,9 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
   // (D3D12 UNORDERED_ACCESS producer -> Dispatch stage).
   if (shared_memory_hazard_fence) {
     encoder->updateFence(shared_memory_hazard_fence);
-    command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
   }
   if (render_target_hazard_fence) {
     encoder->updateFence(render_target_hazard_fence);
-    command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
   }
   encoder->endEncoding();
   if (standalone) {
@@ -1032,7 +992,6 @@ bool MetalRenderTargetCache::TryDirectHostResolveCopy(
         TextureCache::ResolveProvenanceSource::kDirectHost);
   }
 
-  ++direct_telemetry.direct_host_success;
   return true;
 }
 

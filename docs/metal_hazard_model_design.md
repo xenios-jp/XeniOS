@@ -12,8 +12,9 @@ Referenced by the `metal_backend_hazard_model`,
   is the separate untracked-buffer phase switch. Keep the shared-memory phase
   off by default until the remaining missed edge is identified per title.
   `metal_backend_hazard_model_validate` emits the same edges while driver
-  tracking stays on (soak mode, no behavior change). Edge accounting is
-  reported in the telemetry dump (`hazard_model` line).
+  tracking stays on (soak mode, no behavior change). Backend telemetry dumps
+  have been removed; validate edge coverage with Metal validation, runtime
+  logs, visual A/B, or narrow temporary diagnostics when needed.
 - **Phase 2 (EDRAM buffer) is implemented** behind
   `metal_backend_hazard_model_edram`: the buffer is created untracked and
   every EDRAM-touching encoder (RT dump, host depth store, resolve copy,
@@ -45,11 +46,10 @@ Referenced by the `metal_backend_hazard_model`,
   cannot alias in-flight reads. The CPU (non-blit) upload path writes
   textures after `waitUntilCompleted` and needs no GPU edge.
 - **useHeap suppression**: a heap that is untracked AND covered by the queue
-  residency set skips the per-encoder `useHeap` (counted as
-  `use_heap covered` in telemetry). Per Apple, hazard tracking only covers
-  directly-bound resources within one command queue, so an untracked heap's
-  `useHeap` carried residency only — which `MTLResidencySet` already
-  provides. Tracked heaps (phase off, or validate mode) keep the call.
+  residency set skips the per-encoder `useHeap`. Per Apple, hazard tracking
+  only covers directly-bound resources within one command queue, so an
+  untracked heap's `useHeap` carried residency only — which `MTLResidencySet`
+  already provides. Tracked heaps (phase off, or validate mode) keep the call.
 - **Cross-queue presenter reads** of the swap texture
   (`MetalPresenter::CopyTextureToGuestOutput`, separate `MTLCommandQueue`)
   were never ordered by hazard tracking (tracking is per-queue) and continue
@@ -63,8 +63,8 @@ Referenced by the `metal_backend_hazard_model`,
   are removed in Metal 4 in favor of MTLResidencySet).
 - **Rollout per title**: run with `metal_backend_hazard_model_validate=true`
   first (all phases' edges emitted, tracking kept, zero behavior change),
-  soak ~60s of gameplay, confirm no visual diffs and read the `hazard_model`
-  telemetry line; then enable the per-phase cvars one at a time
+  soak ~60s of gameplay, and confirm no visual diffs, validation errors, or
+  unexpected runtime logs; then enable the per-phase cvars one at a time
   (`metal_backend_hazard_model_shared_memory`, `_edram`, `_texture_heaps`,
   `_render_targets`) with a visual A/B each. A missed edge manifests as
   flicker/corruption, not a crash.

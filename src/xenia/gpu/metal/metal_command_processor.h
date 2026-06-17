@@ -51,10 +51,6 @@
 #include "xenia/ui/metal/metal_api.h"
 #include "xenia/ui/metal/metal_provider.h"
 
-#ifndef XE_METAL_TELEMETRY
-#define XE_METAL_TELEMETRY 1
-#endif
-
 namespace MTL {
 class ArgumentEncoder;
 class BlitCommandEncoder;
@@ -118,198 +114,14 @@ class MetalCommandProcessor final : public CommandProcessor {
            (multi_cb_enabled_ ||
             !encode_worker_busy_.load(std::memory_order_acquire));
   }
-  enum class TransferRequestSource : uint32_t {
-    kUnknown,
-    kSharedMemoryUpload,
-    kGuestIndexCopy,
-    kRenderTargetTransfer,
-    kCount,
-  };
-  static constexpr size_t kTransferRequestSourceCount =
-      static_cast<size_t>(TransferRequestSource::kCount);
-  enum class SharedMemoryRequestReason : uint32_t {
-    kUnknown,
-    kVertexFetch,
-    kMemexportStream,
-    kGuestIndex,
-    kShaderPrimitiveIndex,
-    kIndexCopySource,
-    kTextureBase,
-    kTextureMips,
-    kTextureBaseAndMips,
-    kResolveCopyDest,
-    kDrawMaterialization,
-    kCount,
-  };
-  static constexpr size_t kSharedMemoryRequestReasonCount =
-      static_cast<size_t>(SharedMemoryRequestReason::kCount);
-  enum class SharedMemoryRequestOutcome : uint32_t {
-    kAlreadyResident,
-    kUploadBeforeRenderEncoder,
-    kUploadInsideRenderEncoder,
-    kRequestFailed,
-    kNoSharedMemory,
-    kTextureDeferredUploadFlush,
-    kCount,
-  };
-  static constexpr size_t kSharedMemoryRequestOutcomeCount =
-      static_cast<size_t>(SharedMemoryRequestOutcome::kCount);
-  enum class SharedMemoryUploadRoute : uint32_t {
-    kStagedBlit,
-    kDirectWrite,
-    kCount,
-  };
-  static constexpr size_t kSharedMemoryUploadRouteCount =
-      static_cast<size_t>(SharedMemoryUploadRoute::kCount);
-  enum class SharedMemoryDirectWriteRejectReason : uint32_t {
-    kMainGpuAccessInFlight,
-    kStandaloneAccessInFlight,
-    kNoSharedBufferContents,
-    kMixedRangeSplit,
-    kCount,
-  };
-  static constexpr size_t kSharedMemoryDirectWriteRejectReasonCount =
-      static_cast<size_t>(SharedMemoryDirectWriteRejectReason::kCount);
-  enum class TextureUploadSourceRoute : uint32_t {
-    kCpuGuestMemory,
-    kResidentSharedMemory,
-    kScaledResolve,
-    kCount,
-  };
-  static constexpr size_t kTextureUploadSourceRouteCount =
-      static_cast<size_t>(TextureUploadSourceRoute::kCount);
-  enum class TextureUploadSourceFallbackReason : uint32_t {
-    kMixedValidity,
-    kScaledResolve,
-    kSourceAlreadyResident,
-    kCpuSourceLoadFailed,
-    kUnknown,
-    kCount,
-  };
-  static constexpr size_t kTextureUploadSourceFallbackReasonCount =
-      static_cast<size_t>(TextureUploadSourceFallbackReason::kCount);
-  enum class TextureUploadExecutionDetail : uint32_t {
-    kDuplicatePlannedSamePlan,
-    kFallbackAlreadyCurrentLockless,
-    kCpuSourceAlreadyCurrent,
-    kPrunedAlreadyCurrent,
-    kPrunedDuplicateSameFlush,
-    kCount,
-  };
-  static constexpr size_t kTextureUploadExecutionDetailCount =
-      static_cast<size_t>(TextureUploadExecutionDetail::kCount);
-  enum class TextureReloadReason : uint32_t {
-    kPlannedBaseOnly,
-    kPlannedMipsOnly,
-    kPlannedBaseAndMips,
-    kPlannedCpuSource,
-    kPlannedResidentSource,
-    kPlannedAgainSameFrame,
-    kRefreshStillNeeded,
-    kRefreshBecameCurrent,
-    kExecuteCpuSource,
-    kExecuteResidentSource,
-    kExecuteAgainSameFrame,
-    kCount,
-  };
-  static constexpr size_t kTextureReloadReasonCount =
-      static_cast<size_t>(TextureReloadReason::kCount);
-  enum class TextureWatchInvalidationReason : uint32_t {
-    kCpuBase,
-    kCpuMips,
-    kGpuOtherBase,
-    kGpuOtherMips,
-    kGpuResolveBase,
-    kGpuResolveMips,
-    // CPU-write invalidations proven to be page false sharing by a content
-    // hash match - the reload was skipped.
-    kRevalidatedBase,
-    kRevalidatedMips,
-    kCount,
-  };
-  static constexpr size_t kTextureWatchInvalidationReasonCount =
-      static_cast<size_t>(TextureWatchInvalidationReason::kCount);
-  enum class TextureResolveReloadReason : uint32_t {
-    kCandidate,
-    kExactRange,
-    kContainedRange,
-    kPartialOverlap,
-    kNoOverlap,
-    kNoProvenance,
-    kMipsRequested,
-    kScaledResolve,
-    kSourceUnknown,
-    kSourceDirectHost,
-    kSourceRenderTarget,
-    kCount,
-  };
-  static constexpr size_t kTextureResolveReloadReasonCount =
-      static_cast<size_t>(TextureResolveReloadReason::kCount);
-  enum class SharedMemoryUploadEncoderEndReason : uint32_t {
-    kUnknown,
-    kRenderBegin,
-    kTransferRequest,
-    kTextureCompute,
-    kTextureBlit,
-    kTextureDeferredBlit,
-    kScaledResolveBlit,
-    kCommandBufferEnd,
-    kSwap,
-    kUploadFailure,
-    kShutdown,
-    kMaterializationDrain,
-    kCount,
-  };
-  static constexpr size_t kSharedMemoryUploadEncoderEndReasonCount =
-      static_cast<size_t>(SharedMemoryUploadEncoderEndReason::kCount);
   // Returns a command buffer suitable for transfer (blit/compute) work.
   // If a render encoder is active it is ended first; if no command buffer
   // exists one is created. This is an encoder-lifetime break, not necessarily
   // a command-buffer submission break. Returns nullptr on failure.
-  MTL::CommandBuffer* RequestTransferCommandBuffer(
-      TransferRequestSource source = TransferRequestSource::kUnknown);
-#if XE_METAL_TELEMETRY
-  void RecordSharedMemoryUploadRoute(SharedMemoryUploadRoute route,
-                                     uint64_t bytes);
-  void RecordSharedMemoryDirectWriteEligibility(uint64_t direct_bytes,
-                                                uint64_t staged_bytes);
-  void RecordSharedMemoryDirectWriteReject(
-      SharedMemoryDirectWriteRejectReason reason, uint64_t bytes);
-  void RecordTextureUploadSourceRoute(TextureUploadSourceRoute route,
-                                      uint64_t bytes);
-  void RecordTextureUploadSourceFallback(
-      TextureUploadSourceFallbackReason reason);
-  void RecordTextureUploadExecutionDetail(TextureUploadExecutionDetail detail,
-                                          uint64_t count = 1);
-  void RecordTextureReloadReason(TextureReloadReason reason, uint64_t bytes,
-                                 uint64_t count = 1);
-  void RecordTextureWatchInvalidation(TextureWatchInvalidationReason reason,
-                                      uint64_t bytes, uint64_t count = 1);
-  void RecordTextureResolveReload(TextureResolveReloadReason reason,
-                                  uint64_t bytes, uint64_t count = 1);
-#else
-  void RecordSharedMemoryUploadRoute(SharedMemoryUploadRoute, uint64_t) {}
-  void RecordSharedMemoryDirectWriteEligibility(uint64_t, uint64_t) {}
-  void RecordSharedMemoryDirectWriteReject(SharedMemoryDirectWriteRejectReason,
-                                           uint64_t) {}
-  void RecordTextureUploadSourceRoute(TextureUploadSourceRoute, uint64_t) {}
-  void RecordTextureUploadSourceFallback(TextureUploadSourceFallbackReason) {}
-  void RecordTextureUploadExecutionDetail(TextureUploadExecutionDetail,
-                                          uint64_t = 1) {}
-  void RecordTextureReloadReason(TextureReloadReason, uint64_t, uint64_t = 1) {}
-  void RecordTextureWatchInvalidation(TextureWatchInvalidationReason, uint64_t,
-                                      uint64_t = 1) {}
-  void RecordTextureResolveReload(TextureResolveReloadReason, uint64_t,
-                                  uint64_t = 1) {}
-#endif
-  uint64_t GetCurrentTextureTelemetryFrame() const { return frame_current_; }
-#if XE_METAL_TELEMETRY
-  void RecordSharedMemoryUploadEncoderCopy();
-#else
-  void RecordSharedMemoryUploadEncoderCopy() {
+  MTL::CommandBuffer* RequestTransferCommandBuffer();
+  void MarkSharedMemoryUploadEncoderHasWrites() {
     shared_memory_upload_encoder_has_writes_ = true;
   }
-#endif
 
   // Backend-owned hazard model (docs/metal_hazard_model_design.md). The
   // shared-memory fence edges are emitted when metal_backend_hazard_model,
@@ -339,13 +151,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   MTL::Fence* GetRenderTargetHazardFence() const {
     return render_target_hazard_fence_edges_ ? render_target_fence_ : nullptr;
   }
-#if XE_METAL_TELEMETRY
-  void RecordHazardFenceUpdate(bool compute_encoder);
-  void RecordHazardFenceWait(uint32_t encoder_kind);
-#else
-  void RecordHazardFenceUpdate(bool) {}
-  void RecordHazardFenceWait(uint32_t) {}
-#endif
 
   // GPU-queue order event: every command buffer committed to the main queue
   // signals wait_shared_event_ with the next monotonic value, so other queues
@@ -364,29 +169,18 @@ class MetalCommandProcessor final : public CommandProcessor {
   // queue order even though the spine commits later).
   void EncodeGpuOrderSignalValue(MTL::CommandBuffer* cmd, uint64_t value);
 
-  bool RequestSharedMemoryRange(SharedMemoryRequestReason reason,
-                                uint32_t start, uint32_t length);
-  bool RequestSharedMemoryRangeBeforeDrawPass(SharedMemoryRequestReason reason,
-                                              uint32_t start, uint32_t length);
-  bool RequestSharedMemoryRanges(SharedMemoryRequestReason reason,
-                                 const SharedMemory::Range* ranges,
+  bool RequestSharedMemoryRange(uint32_t start, uint32_t length);
+  bool RequestSharedMemoryRangeBeforeDrawPass(uint32_t start, uint32_t length);
+  bool RequestSharedMemoryRanges(const SharedMemory::Range* ranges,
                                  uint32_t range_count);
   // Coalesces and consumes the caller's vector in place instead of copying
   // it; for large per-flush batches. The vector must not be a buffer that a
   // reentrant flush could also write (the prepared-draw flush scratch is safe
   // because nested flushes early-out while a flush is in progress).
   bool RequestSharedMemoryRangesInPlace(
-      SharedMemoryRequestReason reason,
       std::vector<SharedMemory::Range>& ranges);
-#if XE_METAL_TELEMETRY
-  void RecordSharedMemoryRequestOutcome(SharedMemoryRequestOutcome outcome);
-#else
-  void RecordSharedMemoryRequestOutcome(SharedMemoryRequestOutcome) {}
-#endif
   MTL::BlitCommandEncoder* GetSharedMemoryUploadBlitEncoder();
-  void EndSharedMemoryUploadBlitEncoder(
-      SharedMemoryUploadEncoderEndReason reason =
-          SharedMemoryUploadEncoderEndReason::kUnknown);
+  void EndSharedMemoryUploadBlitEncoder();
 
   // Standalone (detached) transfer command-buffer helpers.
   // These create command buffers that are independent of the active submission
@@ -565,50 +359,7 @@ class MetalCommandProcessor final : public CommandProcessor {
     kCbvSlotFetch,
     kCbvSlotDescriptorIndices,
   };
-  static constexpr size_t kBindlessRootRebuildReasonCount = 4;
-  enum BindlessRootRebuildReason : size_t {
-    kBindlessRootRebuildFrameOpen,
-    kBindlessRootRebuildDescriptorIndicesPointerChange,
-    kBindlessRootRebuildOtherCbvPointerChange,
-    kBindlessRootRebuildSharedMemoryUavChange,
-  };
-  static constexpr size_t kBindlessRootSlotsChangedBinCount = 6;
-  static constexpr size_t kBindlessRootRebuildDetailCount = 7;
-  enum BindlessRootRebuildDetail : size_t {
-    kBindlessRootDetailSameBufferOffsetChanged,
-    kBindlessRootDetailDifferentBuffer,
-    kBindlessRootDetailDescriptorIndicesOnly,
-    kBindlessRootDetailOtherCbvOnly,
-    kBindlessRootDetailMixedDescriptorAndOther,
-    kBindlessRootDetailResourceIdentityChanged,
-    kBindlessRootDetailResourceIdentitySame,
-  };
-  static constexpr size_t kRenderEncoderBufferStageTelemetryCount = 4;
-  static constexpr size_t kNativeMslDrawConstantsRebuildReasonCount = 10;
-  enum NativeMslDrawConstantsRebuildReason : size_t {
-    kNativeMslDrawConstantsReuse,
-    kNativeMslDrawConstantsInitial,
-    kNativeMslDrawConstantsFrameOpen,
-    kNativeMslDrawConstantsSystemChanged,
-    kNativeMslDrawConstantsFloatChanged,
-    kNativeMslDrawConstantsBoolLoopChanged,
-    kNativeMslDrawConstantsFetchChanged,
-    kNativeMslDrawConstantsDescriptorIndicesChanged,
-    kNativeMslDrawConstantsPrimitiveIndexChanged,
-    kNativeMslDrawConstantsMixed,
-  };
-  static constexpr size_t kNativeMslDrawConstantsRebuildTelemetryCount =
-      kRenderEncoderBufferStageTelemetryCount *
-      kNativeMslDrawConstantsRebuildReasonCount;
-  static constexpr size_t kNativeMslDrawConstantsChangeMaskCount = 64;
-  static constexpr size_t kNativeMslDrawConstantsChangeMaskTelemetryCount =
-      kRenderEncoderBufferStageTelemetryCount *
-      kNativeMslDrawConstantsChangeMaskCount;
-  static constexpr size_t kBindlessRootArgTelemetrySlotCount = 32;
   static constexpr size_t kTrackedRenderEncoderBufferBindingCount = 32;
-  static constexpr size_t kRenderEncoderBufferSlotTelemetryCount =
-      kRenderEncoderBufferStageTelemetryCount *
-      kTrackedRenderEncoderBufferBindingCount;
 
   // Per-draw uniform buffer coordinates passed between IssueDraw sub-methods.
   struct UniformBufferInfo {
@@ -674,27 +425,7 @@ class MetalCommandProcessor final : public CommandProcessor {
     kRenderEncoderEnd,
     kCommandBufferEnd,
     kQuery,
-    kCount,
   };
-  static constexpr size_t kPreparedDrawFlushReasonCount =
-      static_cast<size_t>(PreparedDrawFlushReason::kCount);
-
-  enum class PreparedDrawQueueRejectReason : uint32_t {
-    kNone,
-    kResidentWithoutActiveQueue,
-    kNoSharedMemoryRanges,
-    kMemexport,
-    kTextureUpload,
-    kTextureRequestLoadData,
-    kPendingDrawPassTransfers,
-    kZPDActive,
-    kRenderTargetKeyMismatch,
-    kNativeMslDirectResources,
-    kQueueBudget,
-    kCount,
-  };
-  static constexpr size_t kPreparedDrawQueueRejectReasonCount =
-      static_cast<size_t>(PreparedDrawQueueRejectReason::kCount);
 
   struct PreparedDrawRenderTargetKey {
     uint32_t rb_surface_info = 0;
@@ -826,11 +557,11 @@ class MetalCommandProcessor final : public CommandProcessor {
     MetalTextureCache::TextureMaterializationPlan texture_materialization_plan =
         {};
 
-    DxbcShader::TranslationMetadata native_vertex_metadata = {};
-    DxbcShader::TranslationMetadata native_pixel_metadata = {};
-    native_msl::NativeMslStageBindings native_vertex_bindings = {};
-    native_msl::NativeMslStageBindings native_pixel_bindings = {};
-    bool native_pixel_metadata_valid = false;
+    std::array<DxbcShader::TranslationMetadata, kStageCount>
+        native_metadata = {};
+    std::array<native_msl::NativeMslStageBindings, kStageCount>
+        native_bindings = {};
+    std::array<bool, kStageCount> native_metadata_valid = {};
     std::array<uint32_t, 4> native_primitive_index_constants = {};
     // Prep-time upload results (PrepareNativeMslDrawResources, queue time).
     // Encode consumes these without touching the pool or the reuse caches.
@@ -953,10 +684,7 @@ class MetalCommandProcessor final : public CommandProcessor {
   // the render target cache, texture cache, or ZPD state.
   bool BeginRenderEncoderForWorkerBatch();
   bool FlushPreparedDrawQueue(PreparedDrawFlushReason reason);
-  bool CanQueuePreparedDraw(const PreparedDraw& draw,
-                            PreparedDrawQueueRejectReason& reject_reason) const;
-  void RecordPreparedDrawQueueReject(
-      PreparedDrawQueueRejectReason reject_reason);
+  bool CanQueuePreparedDraw(const PreparedDraw& draw) const;
 
   // Host draw path — refresh top-level argument buffers when root CBV state
   // changes and bind them plus the stable descriptor heap buffers to the
@@ -998,406 +726,18 @@ class MetalCommandProcessor final : public CommandProcessor {
       uint32_t native_msl_draw_constants_slot);
 
  private:
-  // Command buffer management
-  enum class RenderEncoderEndReason : uint32_t {
-    kUnknown,
-    kPrepareForWait,
-    kSwap,
-    kCommandBufferEnd,
-    kRequestTransferCommandBuffer,
-    kSharedMemoryReadDependency,
-    kRenderTargetUpdateDescriptorDirty,
-    kPipelineDescriptorIncompatible,
-    kTextureUploadBeforeDrawPass,
-    kSharedMemoryUploadBeforeDrawPass,
-    kResolveNeedsBoundary,
-    kBeginRenderEncoderDescriptorChanged,
-    kCount,
-  };
-
-  static constexpr size_t kRenderEncoderEndReasonCount =
-      static_cast<size_t>(RenderEncoderEndReason::kCount);
-
   enum class RenderResourceSetKind : uint32_t {
     kFixed,
     kTexture,
     kRoot,
     kCount,
   };
-  static constexpr size_t kRenderResourceSetKindCount =
-      static_cast<size_t>(RenderResourceSetKind::kCount);
-
-  enum class DrawMaterializationSource : uint32_t {
-    kVertexFetch,
-    kGuestIndex,
-    kMemexport,
-    kTextureSource,
-    kCount,
-  };
-  static constexpr size_t kDrawMaterializationSourceCount =
-      static_cast<size_t>(DrawMaterializationSource::kCount);
-
-#if XE_METAL_TELEMETRY
-  struct BackendTelemetryStats {
-    uint64_t swaps = 0;
-    uint64_t draw_calls = 0;
-    // Draw calls that reached SubmitPreparedDraw; draw_calls minus this is
-    // the silent early-out count inside IssueDraw (zero-prim, skipped
-    // emulated draws, not-ready pipelines, ...) — the draw-count audit.
-    uint64_t draws_submitted = 0;
-    uint64_t pipeline_sets = 0;
-    uint64_t pipeline_set_skips = 0;
-    uint64_t texture_requests_before_encoder = 0;
-    uint64_t texture_requests_after_encoder_begin = 0;
-
-    uint64_t begin_encoder_calls = 0;
-    uint64_t begin_encoder_reused_compatible = 0;
-    uint64_t begin_encoder_created = 0;
-    uint64_t begin_encoder_descriptor_restarts = 0;
-    uint64_t begin_encoder_resource_usage_resets = 0;
-    uint64_t begin_encoder_descriptor_failures = 0;
-    uint64_t begin_encoder_creation_failures = 0;
-
-    // Hazard model (scratch/metal_hazard_model_design.md); 0 until enabled.
-    uint64_t hazard_barriers_emitted = 0;
-    uint64_t hazard_fences_emitted = 0;
-    uint64_t hazard_events_emitted = 0;
-    uint64_t hazard_useresource_suppressed = 0;
-    uint64_t hazard_validation_disagreements = 0;
-
-    uint64_t end_encoder_active = 0;
-    uint64_t end_encoder_no_active = 0;
-    std::array<uint64_t, kRenderEncoderEndReasonCount> end_reasons = {};
-    std::array<uint64_t, kTransferRequestSourceCount>
-        transfer_request_sources_total = {};
-    std::array<uint64_t, kTransferRequestSourceCount>
-        transfer_request_sources_active = {};
-    std::array<uint64_t, kTransferRequestSourceCount>
-        transfer_request_sources_no_active = {};
-    std::array<uint64_t, kTransferRequestSourceCount>
-        transfer_request_render_encoder_ends = {};
-    std::array<uint64_t, kSharedMemoryRequestReasonCount>
-        shared_memory_request_upload_bytes = {};
-    std::array<uint64_t, kSharedMemoryRequestReasonCount>
-        shared_memory_request_failures = {};
-    std::array<uint64_t, kSharedMemoryRequestOutcomeCount>
-        shared_memory_request_outcomes = {};
-    std::array<uint64_t, kSharedMemoryUploadRouteCount>
-        shared_memory_upload_route_counts = {};
-    std::array<uint64_t, kSharedMemoryUploadRouteCount>
-        shared_memory_upload_route_bytes = {};
-    uint64_t shared_memory_direct_write_eligible_bytes = 0;
-    uint64_t shared_memory_direct_write_staged_required_bytes = 0;
-    std::array<uint64_t, kSharedMemoryDirectWriteRejectReasonCount>
-        shared_memory_direct_write_reject_counts = {};
-    std::array<uint64_t, kSharedMemoryDirectWriteRejectReasonCount>
-        shared_memory_direct_write_reject_bytes = {};
-    uint64_t shared_memory_lazy_upload_no_upload_batches = 0;
-    uint64_t shared_memory_lazy_upload_direct_only_batches = 0;
-    uint64_t shared_memory_lazy_upload_mixed_batches = 0;
-    uint64_t shared_memory_lazy_upload_staged_only_batches = 0;
-    uint64_t shared_memory_lazy_upload_direct_only_active = 0;
-    uint64_t shared_memory_lazy_upload_mixed_active = 0;
-    uint64_t shared_memory_lazy_upload_staged_only_active = 0;
-    std::array<uint64_t, kTextureUploadSourceRouteCount>
-        texture_upload_source_route_counts = {};
-    std::array<uint64_t, kTextureUploadSourceRouteCount>
-        texture_upload_source_route_bytes = {};
-    std::array<uint64_t, kTextureUploadSourceFallbackReasonCount>
-        texture_upload_source_fallback_reasons = {};
-    std::array<uint64_t, kTextureUploadExecutionDetailCount>
-        texture_upload_execution_details = {};
-    std::array<uint64_t, kTextureReloadReasonCount>
-        texture_reload_reason_counts = {};
-    std::array<uint64_t, kTextureReloadReasonCount>
-        texture_reload_reason_bytes = {};
-    std::array<uint64_t, kTextureWatchInvalidationReasonCount>
-        texture_watch_invalidation_counts = {};
-    std::array<uint64_t, kTextureWatchInvalidationReasonCount>
-        texture_watch_invalidation_bytes = {};
-    std::array<uint64_t, kTextureResolveReloadReasonCount>
-        texture_resolve_reload_counts = {};
-    std::array<uint64_t, kTextureResolveReloadReasonCount>
-        texture_resolve_reload_bytes = {};
-    uint64_t shared_memory_upload_batches = 0;
-    uint64_t shared_memory_upload_batch_input_ranges = 0;
-    uint64_t shared_memory_upload_batch_coalesced_ranges = 0;
-    uint64_t shared_memory_upload_batch_bytes = 0;
-    uint64_t shared_memory_upload_encoder_acquisitions = 0;
-    uint64_t shared_memory_upload_encoder_reuses = 0;
-    uint64_t shared_memory_upload_encoder_copies = 0;
-    // Hazard model (docs/metal_hazard_model_design.md) edge accounting:
-    // producer fence updates and consumer fence waits per encoder kind
-    // (0 = render, 1 = blit, 2 = compute).
-    uint64_t hazard_fence_updates_blit = 0;
-    uint64_t hazard_fence_updates_compute = 0;
-    uint64_t hazard_fence_waits[3] = {};
-    std::array<uint64_t, kSharedMemoryUploadEncoderEndReasonCount>
-        shared_memory_upload_encoder_end_reasons = {};
-    std::array<uint64_t, kDrawMaterializationSourceCount>
-        draw_materialization_source_ranges = {};
-    std::array<uint64_t, kDrawMaterializationSourceCount>
-        draw_materialization_source_bytes = {};
-    std::array<uint64_t, kDrawMaterializationSourceCount>
-        draw_materialization_source_invalid_ranges = {};
-    std::array<uint64_t, kDrawMaterializationSourceCount>
-        draw_materialization_source_invalid_bytes = {};
-    uint64_t draw_materialization_per_draw_requests = 0;
-    uint64_t draw_materialization_per_draw_invalid_requests = 0;
-    uint64_t draw_materialization_per_draw_resident_skips = 0;
-    uint64_t prepared_draw_queue_appends = 0;
-    uint64_t prepared_draw_queue_flushes = 0;
-    uint64_t prepared_draw_queue_single_draw_flushes = 0;
-    uint64_t prepared_draw_queue_draws_flushed = 0;
-    uint64_t prepared_draw_queue_ranges_flushed = 0;
-    uint64_t prepared_draw_queue_bytes_flushed = 0;
-    uint64_t prepared_draw_queue_invalid_flushes = 0;
-    uint64_t prepared_draw_queue_texture_plans_flushed = 0;
-    uint64_t prepared_draw_queue_texture_loads_planned = 0;
-    uint64_t prepared_draw_queue_texture_loads_executed = 0;
-    std::array<uint64_t, kPreparedDrawFlushReasonCount>
-        prepared_draw_queue_flush_reasons = {};
-    std::array<uint64_t, kPreparedDrawQueueRejectReasonCount>
-        prepared_draw_queue_reject_reasons = {};
-
-    std::array<uint64_t, kCbvSlotCount> cbv_uploads = {};
-    std::array<uint64_t, kCbvSlotCount> cbv_reuse_hits = {};
-    std::array<uint64_t, kStageCount> descriptor_index_uploads = {};
-    std::array<uint64_t, kStageCount> bindless_root_allocations = {};
-    std::array<uint64_t, kStageCount> bindless_root_reuse_hits = {};
-    std::array<uint64_t, kStageCount> bindless_root_arg_noop_updates = {};
-    std::array<uint64_t, kStageCount> bindless_root_arg_slots_patched = {};
-    std::array<uint64_t, kStageCount> bindless_root_arg_bytes_copied = {};
-    std::array<uint64_t, kBindlessRootArgTelemetrySlotCount>
-        bindless_root_arg_slot_patches = {};
-    std::array<uint64_t, kBindlessRootRebuildReasonCount>
-        bindless_root_rebuild_reasons = {};
-    std::array<uint64_t, kBindlessRootSlotsChangedBinCount>
-        bindless_root_slots_changed = {};
-    std::array<uint64_t, kBindlessRootRebuildDetailCount>
-        bindless_root_rebuild_details = {};
-    std::array<uint64_t, kNativeMslDrawConstantsRebuildTelemetryCount>
-        native_msl_draw_constants_rebuild_reasons = {};
-    std::array<uint64_t, kNativeMslDrawConstantsChangeMaskTelemetryCount>
-        native_msl_draw_constants_change_masks = {};
-    // Plain-vertex-stage draw-constants slot ring (vertex stage only): number
-    // of times the slot page itself was (re)bound to the vertex stage (once per
-    // page rollover or encoder reset) and number of 48-byte table slots written
-    // (one per non-reused plain-vertex draw). The vertex-stage entries of
-    // render_encoder_buffer_slot_offset_binds for kNativeBufferDrawConstants
-    // collapse to ~0 as a result.
-    uint64_t native_msl_draw_constants_slot_page_binds = 0;
-    uint64_t native_msl_draw_constants_slot_writes = 0;
-    // Native-MSL texture-sign variant churn (PSO-multiplier hypothesis test,
-    // scratch/perf_roadmap_deferred.md). Sign churn = how many render-pipeline
-    // switches were driven only by a change in the per-stage texture-sign key
-    // (vertex or pixel) since the previous draw; live variants = distinct
-    // native-MSL sign-variant translations created (a gauge, monotonically
-    // increasing). High churn relative to pipeline_sets on a title argues for
-    // moving texture signs to a runtime uniform; near-zero kills the
-    // hypothesis.
-    uint64_t pipeline_sets_sign_key_change = 0;
-    uint64_t native_msl_sign_variants_live = 0;
-    std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
-        render_encoder_buffer_full_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
-        render_encoder_buffer_offset_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
-        render_encoder_buffer_noop_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferSlotTelemetryCount>
-        render_encoder_buffer_slot_full_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferSlotTelemetryCount>
-        render_encoder_buffer_slot_offset_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferSlotTelemetryCount>
-        render_encoder_buffer_slot_noop_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
-        render_encoder_buffer_null_binds = {};
-    std::array<uint64_t, kRenderEncoderBufferStageTelemetryCount>
-        render_encoder_buffer_untracked_binds = {};
-    uint64_t render_encoder_use_resource_calls = 0;
-    uint64_t render_encoder_use_resource_skips = 0;
-    uint64_t render_encoder_use_resource_upgrades = 0;
-    uint64_t render_encoder_use_resources_batches = 0;
-    uint64_t render_encoder_use_resources_requested = 0;
-    uint64_t render_encoder_use_resources_skips = 0;
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_set_applies = {};
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_set_skips = {};
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_set_resources = {};
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_registry_serial_skips = {};
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_registry_builds = {};
-    std::array<uint64_t, kRenderResourceSetKindCount>
-        render_resource_registry_registers = {};
-    uint64_t residency_set_allocations_added = 0;
-    uint64_t residency_set_allocation_duplicates = 0;
-    uint64_t residency_set_commits = 0;
-    uint64_t residency_set_resource_refs_covered = 0;
-    uint64_t residency_set_resource_refs_fallback = 0;
-    uint64_t residency_set_use_resources_covered = 0;
-    uint64_t residency_set_use_resources_fallback = 0;
-    uint64_t residency_set_use_heaps_covered = 0;
-    uint64_t residency_set_use_heaps_fallback = 0;
-    uint64_t frame_slot_waits = 0;
-    uint64_t frame_slot_wait_submission_count = 0;
-    uint64_t frame_slot_wait_submission_last = 0;
-  };
-#else
-  struct BackendTelemetryStats {
-    struct NoOpUint64 {
-      constexpr NoOpUint64() = default;
-      constexpr NoOpUint64(uint64_t) {}
-      constexpr operator uint64_t() const { return 0; }
-      constexpr uint64_t operator++() { return 0; }
-      constexpr uint64_t operator++(int) { return 0; }
-      constexpr NoOpUint64& operator=(uint64_t) { return *this; }
-      constexpr NoOpUint64& operator+=(uint64_t) { return *this; }
-    };
-    using NoOpArray = std::array<NoOpUint64, 1>;
-    NoOpUint64 swaps;
-    NoOpUint64 draw_calls;
-    NoOpUint64 draws_submitted;
-    NoOpUint64 pipeline_sets;
-    NoOpUint64 pipeline_set_skips;
-    NoOpUint64 texture_requests_before_encoder;
-    NoOpUint64 texture_requests_after_encoder_begin;
-    NoOpUint64 begin_encoder_calls;
-    NoOpUint64 begin_encoder_reused_compatible;
-    NoOpUint64 begin_encoder_created;
-    NoOpUint64 begin_encoder_descriptor_restarts;
-    NoOpUint64 begin_encoder_resource_usage_resets;
-    NoOpUint64 begin_encoder_descriptor_failures;
-    NoOpUint64 begin_encoder_creation_failures;
-    NoOpUint64 hazard_barriers_emitted;
-    NoOpUint64 hazard_fences_emitted;
-    NoOpUint64 hazard_events_emitted;
-    NoOpUint64 hazard_useresource_suppressed;
-    NoOpUint64 hazard_validation_disagreements;
-    NoOpUint64 end_encoder_active;
-    NoOpUint64 end_encoder_no_active;
-    NoOpArray end_reasons;
-    NoOpArray transfer_request_sources_total;
-    NoOpArray transfer_request_sources_active;
-    NoOpArray transfer_request_sources_no_active;
-    NoOpArray transfer_request_render_encoder_ends;
-    NoOpArray shared_memory_request_upload_bytes;
-    NoOpArray shared_memory_request_failures;
-    NoOpArray shared_memory_request_outcomes;
-    NoOpArray shared_memory_upload_route_counts;
-    NoOpArray shared_memory_upload_route_bytes;
-    NoOpUint64 shared_memory_direct_write_eligible_bytes;
-    NoOpUint64 shared_memory_direct_write_staged_required_bytes;
-    NoOpArray shared_memory_direct_write_reject_counts;
-    NoOpArray shared_memory_direct_write_reject_bytes;
-    NoOpUint64 shared_memory_lazy_upload_no_upload_batches;
-    NoOpUint64 shared_memory_lazy_upload_direct_only_batches;
-    NoOpUint64 shared_memory_lazy_upload_mixed_batches;
-    NoOpUint64 shared_memory_lazy_upload_staged_only_batches;
-    NoOpUint64 shared_memory_lazy_upload_direct_only_active;
-    NoOpUint64 shared_memory_lazy_upload_mixed_active;
-    NoOpUint64 shared_memory_lazy_upload_staged_only_active;
-    NoOpArray texture_upload_source_route_counts;
-    NoOpArray texture_upload_source_route_bytes;
-    NoOpArray texture_upload_source_fallback_reasons;
-    NoOpArray texture_upload_execution_details;
-    NoOpArray texture_reload_reason_counts;
-    NoOpArray texture_reload_reason_bytes;
-    NoOpArray texture_watch_invalidation_counts;
-    NoOpArray texture_watch_invalidation_bytes;
-    NoOpArray texture_resolve_reload_counts;
-    NoOpArray texture_resolve_reload_bytes;
-    NoOpUint64 shared_memory_upload_batches;
-    NoOpUint64 shared_memory_upload_batch_input_ranges;
-    NoOpUint64 shared_memory_upload_batch_coalesced_ranges;
-    NoOpUint64 shared_memory_upload_batch_bytes;
-    NoOpUint64 shared_memory_upload_encoder_acquisitions;
-    NoOpUint64 shared_memory_upload_encoder_reuses;
-    NoOpUint64 shared_memory_upload_encoder_copies;
-    NoOpUint64 hazard_fence_updates_blit;
-    NoOpUint64 hazard_fence_updates_compute;
-    NoOpArray hazard_fence_waits;
-    NoOpArray shared_memory_upload_encoder_end_reasons;
-    NoOpArray draw_materialization_source_ranges;
-    NoOpArray draw_materialization_source_bytes;
-    NoOpArray draw_materialization_source_invalid_ranges;
-    NoOpArray draw_materialization_source_invalid_bytes;
-    NoOpUint64 draw_materialization_per_draw_requests;
-    NoOpUint64 draw_materialization_per_draw_invalid_requests;
-    NoOpUint64 draw_materialization_per_draw_resident_skips;
-    NoOpUint64 prepared_draw_queue_appends;
-    NoOpUint64 prepared_draw_queue_flushes;
-    NoOpUint64 prepared_draw_queue_single_draw_flushes;
-    NoOpUint64 prepared_draw_queue_draws_flushed;
-    NoOpUint64 prepared_draw_queue_ranges_flushed;
-    NoOpUint64 prepared_draw_queue_bytes_flushed;
-    NoOpUint64 prepared_draw_queue_invalid_flushes;
-    NoOpUint64 prepared_draw_queue_texture_plans_flushed;
-    NoOpUint64 prepared_draw_queue_texture_loads_planned;
-    NoOpUint64 prepared_draw_queue_texture_loads_executed;
-    NoOpArray prepared_draw_queue_flush_reasons;
-    NoOpArray prepared_draw_queue_reject_reasons;
-    NoOpArray cbv_uploads;
-    NoOpArray cbv_reuse_hits;
-    NoOpArray descriptor_index_uploads;
-    NoOpArray bindless_root_allocations;
-    NoOpArray bindless_root_reuse_hits;
-    NoOpArray bindless_root_arg_noop_updates;
-    NoOpArray bindless_root_arg_slots_patched;
-    NoOpArray bindless_root_arg_bytes_copied;
-    NoOpArray bindless_root_arg_slot_patches;
-    NoOpArray bindless_root_rebuild_reasons;
-    NoOpArray bindless_root_slots_changed;
-    NoOpArray bindless_root_rebuild_details;
-    NoOpArray native_msl_draw_constants_rebuild_reasons;
-    NoOpArray native_msl_draw_constants_change_masks;
-    NoOpUint64 native_msl_draw_constants_slot_page_binds;
-    NoOpUint64 native_msl_draw_constants_slot_writes;
-    NoOpUint64 pipeline_sets_sign_key_change;
-    NoOpUint64 native_msl_sign_variants_live;
-    NoOpArray render_encoder_buffer_full_binds;
-    NoOpArray render_encoder_buffer_offset_binds;
-    NoOpArray render_encoder_buffer_noop_binds;
-    NoOpArray render_encoder_buffer_slot_full_binds;
-    NoOpArray render_encoder_buffer_slot_offset_binds;
-    NoOpArray render_encoder_buffer_slot_noop_binds;
-    NoOpArray render_encoder_buffer_null_binds;
-    NoOpArray render_encoder_buffer_untracked_binds;
-    NoOpUint64 render_encoder_use_resource_calls;
-    NoOpUint64 render_encoder_use_resource_skips;
-    NoOpUint64 render_encoder_use_resource_upgrades;
-    NoOpUint64 render_encoder_use_resources_batches;
-    NoOpUint64 render_encoder_use_resources_requested;
-    NoOpUint64 render_encoder_use_resources_skips;
-    NoOpArray render_resource_set_applies;
-    NoOpArray render_resource_set_skips;
-    NoOpArray render_resource_set_resources;
-    NoOpArray render_resource_registry_serial_skips;
-    NoOpArray render_resource_registry_builds;
-    NoOpArray render_resource_registry_registers;
-    NoOpUint64 residency_set_allocations_added;
-    NoOpUint64 residency_set_allocation_duplicates;
-    NoOpUint64 residency_set_commits;
-    NoOpUint64 residency_set_resource_refs_covered;
-    NoOpUint64 residency_set_resource_refs_fallback;
-    NoOpUint64 residency_set_use_resources_covered;
-    NoOpUint64 residency_set_use_resources_fallback;
-    NoOpUint64 residency_set_use_heaps_covered;
-    NoOpUint64 residency_set_use_heaps_fallback;
-    NoOpUint64 frame_slot_waits;
-    NoOpUint64 frame_slot_wait_submission_count;
-    NoOpUint64 frame_slot_wait_submission_last;
-  };
-#endif
 
   void FlushCommandBufferAndWait(uint64_t timeout_ns, const char* context);
   MTL::RenderPassDescriptor* GetDrawRenderPassDescriptor(
       bool fallback_depth_attachment_required = false);
   bool BeginRenderEncoderForDraw(
       bool fallback_depth_attachment_required = false);
-  void EndRenderEncoder(RenderEncoderEndReason reason);
   void EndCommandBuffer();
   bool CanEndSubmissionImmediately();
   void WaitForPendingCompletionHandlers();
@@ -1406,13 +746,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   void OpenFrameLifetime();
   void InvalidateFrameTransientBindings();
   void CloseFrameLifetime();
-#if XE_METAL_TELEMETRY
-  void MaybeDumpBackendTelemetry(const char* reason, bool force = false);
-  void ResetBackendTelemetry();
-#else
-  void MaybeDumpBackendTelemetry(const char*, bool = false) {}
-  void ResetBackendTelemetry() {}
-#endif
   void InitializeResidencySet();
   void ShutdownResidencySet();
   void RegisterInitialResidencySetResources();
@@ -1431,14 +764,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   bool IsResidencySetHeapCovered(MTL::Heap* heap) const;
   bool AnySharedMemoryRangeInvalid(const SharedMemory::Range* ranges,
                                    uint32_t range_count) const;
-#if XE_METAL_TELEMETRY
-  void RecordSharedMemoryLazyUploadRoute(
-      const MetalSharedMemory::UploadRouteInfo& route_info,
-      bool render_encoder_active);
-#else
-  void RecordSharedMemoryLazyUploadRoute(
-      const MetalSharedMemory::UploadRouteInfo&, bool) {}
-#endif
   void PrepareSharedMemoryUploadBeforeDrawPass(
       const SharedMemory::Range* ranges, uint32_t range_count);
   bool HasActiveSharedMemoryWritePending() const;
@@ -1526,7 +851,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   static constexpr size_t kResourceHeapSlotsPerTable = 1025 + 2;
   static constexpr size_t kSamplerHeapSlotsPerTable = 257 + 2;
   static constexpr size_t kTopLevelABSlotsPerTable = 32;
-  static_assert(kBindlessRootArgTelemetrySlotCount == kTopLevelABSlotsPerTable);
   static constexpr size_t kTopLevelABBytesPerTable =
       kTopLevelABSlotsPerTable * sizeof(uint64_t);
   // MSC explicit root signatures encode descriptor-table pointers and root
@@ -1552,7 +876,7 @@ class MetalCommandProcessor final : public CommandProcessor {
   // Descriptor tables and common CBVs are shared by every graphics stage, so
   // one top-level argument table can be rebound across
   // vertex/fragment/object/mesh stages. The first stage-local CBV slots are
-  // kept near the shared slots for telemetry continuity.
+  // kept near the shared slots to keep the table compact.
   enum GraphicsRootABSlot : uint32_t {
     kGraphicsRootABSlotSRVSpace0 = kTopLevelABSlotSRVSpace0,
     kGraphicsRootABSlotSRVSpace1 = kTopLevelABSlotSRVSpace1,
@@ -1617,8 +941,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   // one copy; consumed by EndSharedMemoryUploadBlitEncoder to decide whether
   // the producer fence update is needed.
   bool shared_memory_upload_encoder_has_writes_ = false;
-  SharedMemoryRequestReason current_shared_memory_upload_reason_ =
-      SharedMemoryRequestReason::kUnknown;
   // Current command buffer and encoder
   MTL::CommandBuffer* current_command_buffer_ = nullptr;
   MTL::BlitCommandEncoder* shared_memory_upload_blit_encoder_ = nullptr;
@@ -1640,9 +962,6 @@ class MetalCommandProcessor final : public CommandProcessor {
     MTL::Resource* resource = nullptr;
     EncoderResourceUsageState state = {};
   };
-  BackendTelemetryStats backend_telemetry_;
-  uint64_t backend_telemetry_last_dump_swap_ = 0;
-
   // Each flush of the prepared-draw queue that needs uploads costs at least
   // one blit + one render encoder (a full render pass break on TBDR), so the
   // batch budgets directly bound the per-frame encoder count. The byte budget
@@ -1847,15 +1166,14 @@ class MetalCommandProcessor final : public CommandProcessor {
   // table snapshot for Metal to bind.
   bool MaterializeGraphicsRootArguments(GraphicsRootArgumentState& state);
   ConstantBufferBinding cbuffer_binding_system_;
-  ConstantBufferBinding cbuffer_binding_float_vertex_;
-  ConstantBufferBinding cbuffer_binding_float_pixel_;
+  std::array<ConstantBufferBinding, kStageCount> cbuffer_binding_float_;
   ConstantBufferBinding cbuffer_binding_bool_loop_;
   // Xenos has one physical fetch-constant register file. Match D3D12/Vulkan by
   // uploading one shared fetch snapshot and referencing it from every active
   // shader stage.
   ConstantBufferBinding cbuffer_binding_fetch_;
-  ConstantBufferBinding cbuffer_binding_descriptor_indices_vertex_;
-  ConstantBufferBinding cbuffer_binding_descriptor_indices_pixel_;
+  std::array<ConstantBufferBinding, kStageCount>
+      cbuffer_binding_descriptor_indices_;
 
   static constexpr size_t kFetchConstantDwordCount =
       xenos::kTextureFetchConstantCount * 6;
@@ -1881,14 +1199,12 @@ class MetalCommandProcessor final : public CommandProcessor {
   // Float constant usage bitmaps for the current shader pair.
   // Used to gate WriteRegister invalidation: only dirty the float CBV
   // when the written register is in the current shader's bitmap.
-  // Matches D3D12's current_float_constant_map_vertex_/pixel_ at
+  // Matches D3D12's current_float_constant_maps_[kStageVertex]/pixel_ at
   // d3d12_command_processor.h:829-830.
-  uint64_t current_float_constant_map_vertex_[4] = {};
-  uint64_t current_float_constant_map_pixel_[4] = {};
-  size_t current_texture_layout_uid_vertex_ = 0;
-  size_t current_texture_layout_uid_pixel_ = 0;
-  size_t current_sampler_layout_uid_vertex_ = 0;
-  size_t current_sampler_layout_uid_pixel_ = 0;
+  std::array<std::array<uint64_t, 4>, kStageCount>
+      current_float_constant_maps_ = {};
+  std::array<size_t, kStageCount> current_texture_layout_uids_ = {};
+  std::array<size_t, kStageCount> current_sampler_layout_uids_ = {};
   struct NativeMslBindingLayoutUidCache {
     const void* texture_bindings_data = nullptr;
     size_t texture_binding_count = 0;
@@ -1909,29 +1225,26 @@ class MetalCommandProcessor final : public CommandProcessor {
     MetalTextureCache::SamplerParameters parameters = {};
     bool valid = false;
   };
-  std::vector<MetalTextureCache::TextureSRVKey>
-      current_texture_srv_keys_vertex_;
-  std::vector<MetalTextureCache::TextureSRVKey> current_texture_srv_keys_pixel_;
-  std::vector<MetalTextureCache::SamplerParameters> current_samplers_vertex_;
-  std::vector<MetalTextureCache::SamplerParameters> current_samplers_pixel_;
-  std::vector<SamplerParameterInputCache>
-      current_sampler_parameter_inputs_vertex_;
-  std::vector<SamplerParameterInputCache>
-      current_sampler_parameter_inputs_pixel_;
-  std::vector<MTL::Texture*> current_texture_bindless_resources_vertex_;
-  std::vector<MTL::Texture*> current_texture_bindless_resources_pixel_;
+  std::array<std::vector<MetalTextureCache::TextureSRVKey>, kStageCount>
+      current_texture_srv_keys_;
+  std::array<std::vector<MetalTextureCache::SamplerParameters>, kStageCount>
+      current_samplers_;
+  std::array<std::vector<SamplerParameterInputCache>, kStageCount>
+      current_sampler_parameter_inputs_;
+  std::array<std::vector<MTL::Texture*>, kStageCount>
+      current_texture_bindless_resources_;
   // Texture-cache destroy epoch observed when the bindless texture vectors
   // above were last (re)built. A mismatch means a MetalTexture (and its
   // swizzled views) was freed since those raw pointers were cached, so the
   // vectors are rebuilt before they are residency-referenced. See
   // PrepareDrawConstants / BuildBindlessTextureResourceSet.
   uint64_t last_bindless_texture_destroy_epoch_ = 0;
-  std::vector<uint32_t> scratch_texture_bindless_indices_vertex_;
-  std::vector<MTL::Texture*> scratch_texture_bindless_resources_vertex_;
-  std::vector<uint32_t> scratch_sampler_bindless_indices_vertex_;
-  std::vector<uint32_t> scratch_texture_bindless_indices_pixel_;
-  std::vector<MTL::Texture*> scratch_texture_bindless_resources_pixel_;
-  std::vector<uint32_t> scratch_sampler_bindless_indices_pixel_;
+  std::array<std::vector<uint32_t>, kStageCount>
+      scratch_texture_bindless_indices_;
+  std::array<std::vector<MTL::Texture*>, kStageCount>
+      scratch_texture_bindless_resources_;
+  std::array<std::vector<uint32_t>, kStageCount>
+      scratch_sampler_bindless_indices_;
   RenderResourceSet current_bindless_fixed_resource_set_;
   RenderResourceSet current_bindless_texture_resource_set_;
   RenderResourceSet current_bindless_root_resource_set_;
@@ -1956,20 +1269,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   };
   std::array<NativeMslTextureSignVariantCache, kStageCount>
       native_msl_texture_sign_variant_cache_ = {};
-  // Tracks the previous native-MSL draw's shader identity and texture-sign keys
-  // so IssueDraw can count sign-only variant switches (the cheap fallback for
-  // pipeline_sets_sign_key_change: same shaders + modifications, different sign
-  // key). valid_ guards the first draw.
-  struct NativeMslSignChurnTracker {
-    bool valid = false;
-    uint64_t vertex_shader_hash = 0;
-    uint64_t pixel_shader_hash = 0;
-    uint64_t vertex_modification = 0;
-    uint64_t pixel_modification = 0;
-    uint64_t vertex_sign_key = 0;
-    uint64_t pixel_sign_key = 0;
-  };
-  NativeMslSignChurnTracker native_msl_sign_churn_tracker_ = {};
   struct NativeMslRuntimeInfoUploadCache {
     std::vector<native_msl::NativeMslTextureRuntimeInfo> payload;
     MTL::Buffer* buffer = nullptr;
@@ -2165,14 +1464,6 @@ class MetalCommandProcessor final : public CommandProcessor {
   void SetRenderEncoderBuffer(RenderEncoderBufferStage stage,
                               MTL::Buffer* buffer, NS::UInteger offset,
                               NS::UInteger index);
-  void SetRenderEncoderVertexBuffer(MTL::Buffer* buffer, NS::UInteger offset,
-                                    NS::UInteger index);
-  void SetRenderEncoderFragmentBuffer(MTL::Buffer* buffer, NS::UInteger offset,
-                                      NS::UInteger index);
-  void SetRenderEncoderObjectBuffer(MTL::Buffer* buffer, NS::UInteger offset,
-                                    NS::UInteger index);
-  void SetRenderEncoderMeshBuffer(MTL::Buffer* buffer, NS::UInteger offset,
-                                  NS::UInteger index);
 
   // Parallel encode workers (metal_parallel_encode /
   // metal_parallel_encode_threads). Ownership protocol: a popped batch is
@@ -2199,7 +1490,7 @@ class MetalCommandProcessor final : public CommandProcessor {
   // The batch the calling worker thread is currently encoding (descriptor,
   // command buffer, extent for BeginRenderEncoderForWorkerBatch).
   static thread_local PreparedDrawBatch* tls_worker_batch_;
-  bool encode_worker_shutdown_ = false;    // guarded by encode_worker_mutex_
+  bool encode_worker_shutdown_ = false;      // guarded by encode_worker_mutex_
   bool encode_worker_batch_failed_ = false;  // guarded by encode_worker_mutex_
   // Completed batch awaiting recycle on the CP thread (guarded by mutex).
   std::vector<PreparedDraw*> encode_worker_retired_draws_;

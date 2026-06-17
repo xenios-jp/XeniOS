@@ -635,9 +635,9 @@ uint32_t TextureCache::GetUsedTextureRangeOverlapMask(
       layout = &computed_layout;
     }
     if (key.base_page &&
-        overlaps(key.base_page << 12,
-                 xe::align(layout->base.level_data_extent_bytes,
-                           UINT32_C(16)))) {
+        overlaps(
+            key.base_page << 12,
+            xe::align(layout->base.level_data_extent_bytes, UINT32_C(16)))) {
       overlap_mask |= index_bit;
       continue;
     }
@@ -890,9 +890,9 @@ bool TextureCache::Texture::TryRevalidateCpuInvalidation(
   bool base_match = false;
   if (base_outdated_ && base_content_hash_valid_) {
     uint32_t base_address = key().base_page << 12;
-    if (XXH3_64bits(memory.TranslatePhysical(base_address),
-                    GetHashedGuestRangeLength(base_address,
-                                              GetGuestBaseSize())) ==
+    if (XXH3_64bits(
+            memory.TranslatePhysical(base_address),
+            GetHashedGuestRangeLength(base_address, GetGuestBaseSize())) ==
         base_content_hash_) {
       base_match = true;
     } else {
@@ -904,9 +904,9 @@ bool TextureCache::Texture::TryRevalidateCpuInvalidation(
   bool mips_match = false;
   if (mips_outdated_ && mips_content_hash_valid_) {
     uint32_t mips_address = key().mip_page << 12;
-    if (XXH3_64bits(memory.TranslatePhysical(mips_address),
-                    GetHashedGuestRangeLength(mips_address,
-                                              GetGuestMipsSize())) ==
+    if (XXH3_64bits(
+            memory.TranslatePhysical(mips_address),
+            GetHashedGuestRangeLength(mips_address, GetGuestMipsSize())) ==
         mips_content_hash_) {
       mips_match = true;
     } else {
@@ -915,14 +915,6 @@ bool TextureCache::Texture::TryRevalidateCpuInvalidation(
   }
   if (base_match || mips_match) {
     MakeLoadedDataUpToDateAndWatch(global_lock, base_match, mips_match);
-    if (base_match) {
-      texture_cache().RecordTextureContentRevalidation(false,
-                                                       GetGuestBaseSize());
-    }
-    if (mips_match) {
-      texture_cache().RecordTextureContentRevalidation(true,
-                                                       GetGuestMipsSize());
-    }
   }
   return !base_outdated_ && !mips_outdated_;
 }
@@ -993,8 +985,6 @@ void TextureCache::WatchCallback(const global_unique_lock_type& global_lock,
                                  bool invalidated_by_gpu) {
   Texture& texture = *static_cast<Texture*>(context);
   bool is_mip = argument != 0;
-  uint32_t byte_count =
-      is_mip ? texture.GetGuestMipsSize() : texture.GetGuestBaseSize();
   TextureWatchInvalidationSource source =
       invalidated_by_gpu
           ? texture.texture_cache().texture_watch_invalidation_source_
@@ -1011,8 +1001,6 @@ void TextureCache::WatchCallback(const global_unique_lock_type& global_lock,
       source == TextureWatchInvalidationSource::kGpuResolve
           ? texture.texture_cache().texture_watch_resolve_source_
           : ResolveProvenanceSource::kUnknown;
-  texture.texture_cache().RecordTextureWatchInvalidation(
-      texture, is_mip, source, byte_count);
   texture.WatchCallback(global_lock, is_mip, source, source_start,
                         source_length, resolve_source);
   texture.texture_cache().texture_became_outdated_.store(
@@ -1156,8 +1144,7 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
   if (nkept == 0) {
     return;
   }
-  if (!PrepareTextureDataLoadRanges(textures, n_textures,
-                                    index_base_outdated,
+  if (!PrepareTextureDataLoadRanges(textures, n_textures, index_base_outdated,
                                     index_mips_outdated)) {
     return;
   }
@@ -1265,9 +1252,9 @@ bool TextureCache::LoadTextureData(Texture& texture) {
 
   TextureKey texture_key = texture.key();
   Texture* texture_to_load = &texture;
-  if (!PrepareTextureDataLoadRanges(
-          &texture_to_load, 1, base_outdated ? UINT64_C(1) : 0,
-          mips_outdated ? UINT64_C(1) : 0)) {
+  if (!PrepareTextureDataLoadRanges(&texture_to_load, 1,
+                                    base_outdated ? UINT64_C(1) : 0,
+                                    mips_outdated ? UINT64_C(1) : 0)) {
     return false;
   }
 
@@ -1287,16 +1274,14 @@ bool TextureCache::LoadTextureData(Texture& texture) {
   // TODO(Triang3l): Load unscaled parts.
   if (base_outdated) {
     if (!RequestTextureDataRange(
-            texture, TextureDataRangeSource::kBase,
-            texture_key.base_page << 12,
+            texture, TextureDataRangeSource::kBase, texture_key.base_page << 12,
             xe::align(texture.GetGuestBaseSize(), UINT32_C(16)))) {
       return false;
     }
   }
   if (mips_outdated) {
     if (!RequestTextureDataRange(
-            texture, TextureDataRangeSource::kMips,
-            texture_key.mip_page << 12,
+            texture, TextureDataRangeSource::kMips, texture_key.mip_page << 12,
             xe::align(texture.GetGuestMipsSize(), UINT32_C(16)))) {
       return false;
     }

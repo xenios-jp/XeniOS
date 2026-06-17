@@ -597,13 +597,6 @@ MetalRenderTargetCache::MetalRenderTargetCache(
 
 MetalRenderTargetCache::~MetalRenderTargetCache() { Shutdown(true); }
 
-MetalRenderTargetCache::TelemetryStats
-MetalRenderTargetCache::GetAndResetTelemetryStats() {
-  TelemetryStats stats = telemetry_;
-  telemetry_ = TelemetryStats();
-  return stats;
-}
-
 RenderTargetCache::Path MetalRenderTargetCache::GetPath() const {
   return Path::kHostRenderTargets;
 }
@@ -614,7 +607,6 @@ void MetalRenderTargetCache::EdramHazardWait(
     return;
   }
   encoder->waitForFence(edram_fence_);
-  command_processor_.RecordHazardFenceWait(2);
 }
 
 void MetalRenderTargetCache::EdramHazardUpdate(
@@ -623,7 +615,6 @@ void MetalRenderTargetCache::EdramHazardUpdate(
     return;
   }
   encoder->updateFence(edram_fence_);
-  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
 }
 
 void MetalRenderTargetCache::EdramHazardWait(MTL::BlitCommandEncoder* encoder) {
@@ -631,7 +622,6 @@ void MetalRenderTargetCache::EdramHazardWait(MTL::BlitCommandEncoder* encoder) {
     return;
   }
   encoder->waitForFence(edram_fence_);
-  command_processor_.RecordHazardFenceWait(1);
 }
 
 void MetalRenderTargetCache::EdramHazardUpdate(
@@ -640,7 +630,6 @@ void MetalRenderTargetCache::EdramHazardUpdate(
     return;
   }
   encoder->updateFence(edram_fence_);
-  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
@@ -650,7 +639,6 @@ void MetalRenderTargetCache::RenderTargetHazardWait(
     return;
   }
   encoder->waitForFence(fence, MTL::RenderStageFragment);
-  command_processor_.RecordHazardFenceWait(0);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
@@ -660,7 +648,6 @@ void MetalRenderTargetCache::RenderTargetHazardUpdate(
     return;
   }
   encoder->updateFence(fence, MTL::RenderStageFragment);
-  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
@@ -670,7 +657,6 @@ void MetalRenderTargetCache::RenderTargetHazardWait(
     return;
   }
   encoder->waitForFence(fence);
-  command_processor_.RecordHazardFenceWait(2);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
@@ -680,7 +666,6 @@ void MetalRenderTargetCache::RenderTargetHazardUpdate(
     return;
   }
   encoder->updateFence(fence);
-  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/true);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardWait(
@@ -690,7 +675,6 @@ void MetalRenderTargetCache::RenderTargetHazardWait(
     return;
   }
   encoder->waitForFence(fence);
-  command_processor_.RecordHazardFenceWait(1);
 }
 
 void MetalRenderTargetCache::RenderTargetHazardUpdate(
@@ -700,7 +684,6 @@ void MetalRenderTargetCache::RenderTargetHazardUpdate(
     return;
   }
   encoder->updateFence(fence);
-  command_processor_.RecordHazardFenceUpdate(/*compute_encoder=*/false);
 }
 
 bool MetalRenderTargetCache::InitializeEdramBufferViews() {
@@ -4351,8 +4334,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     // RequestTransferCommandBuffer ends any active render encoder and ensures
     // transfer work has a command buffer. It does not require a standalone
     // command-buffer submission if the current one can be reused.
-    cmd = command_processor_.RequestTransferCommandBuffer(
-        MetalCommandProcessor::TransferRequestSource::kRenderTargetTransfer);
+    cmd = command_processor_.RequestTransferCommandBuffer();
   } else {
     // An externally-provided command buffer still requires the render
     // encoder to be ended before transfer work can proceed.
@@ -4601,7 +4583,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         };
         consume_merged_clear(merged_clear_depth_index);
         consume_merged_clear(merged_clear_color_index);
-        ++telemetry_.resolve_clear.load_action_merged_passes;
       }
     }
   }
@@ -4828,7 +4809,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             };
             consume_draw_clear(draw_clear_depth_index);
             consume_draw_clear(draw_clear_color_index);
-            ++telemetry_.resolve_clear.load_action_merged_passes;
           }
         }
       }
@@ -5858,11 +5838,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       // Fully-covering clears never have transfer draws, so explicitly create
       // the otherwise-empty pass that carries the load action - without an
       // encoder, the clear would silently never happen.
-      if (ensure_transfer_encoder()) {
-        ++telemetry_.resolve_clear.load_action_single_target;
+      if (!ensure_transfer_encoder()) {
+        return false;
       }
     } else if (resolve_clear_needed) {
-      ++telemetry_.resolve_clear.draw_clears;
       uint64_t clear_value = render_target_resolve_clear_values[i];
       if (dest_is_depth) {
         uint32_t depth_guest_clear_value =

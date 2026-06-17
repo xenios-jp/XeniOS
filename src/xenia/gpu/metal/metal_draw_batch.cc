@@ -125,8 +125,9 @@ void MetalCommandProcessor::TryTrimPreparedDrawRetainedStorage() {
     TrimRetainedVector(draw.texture_resource_set.resources, 512);
     TrimRetainedVector(draw.texture_materialization_plan.source_ranges,
                        kPreparedDrawQueueMaxRanges * 2);
-    TrimRetainedVector(draw.native_vertex_bindings.runtime_info, 64);
-    TrimRetainedVector(draw.native_pixel_bindings.runtime_info, 64);
+    for (auto& native_bindings : draw.native_bindings) {
+      TrimRetainedVector(native_bindings.runtime_info, 64);
+    }
   }
   TrimRetainedVector(prepared_draw_flush_draws_,
                      kPreparedDrawQueueMaxDraws * 2);
@@ -186,9 +187,10 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.texture_resource_set.source_serial = 0;
   draw.texture_materialization_plan.Reset();
 
-  draw.native_vertex_bindings.Clear();
-  draw.native_pixel_bindings.Clear();
-  draw.native_pixel_metadata_valid = false;
+  for (auto& native_bindings : draw.native_bindings) {
+    native_bindings.Clear();
+  }
+  draw.native_metadata_valid = {};
   draw.native_primitive_index_constants = {};
   draw.native_primitive_index_buffer = nullptr;
   draw.native_primitive_index_gpu_address = 0;
@@ -211,25 +213,12 @@ void MetalCommandProcessor::ResetPreparedDrawForReuse(PreparedDraw& draw) {
   draw.has_pending_draw_pass_transfers = false;
 }
 
-void MetalCommandProcessor::RecordPreparedDrawQueueReject(
-    PreparedDrawQueueRejectReason reject_reason) {
-  const size_t reject_index = static_cast<size_t>(reject_reason);
-  if (reject_index <
-      backend_telemetry_.prepared_draw_queue_reject_reasons.size()) {
-    ++backend_telemetry_.prepared_draw_queue_reject_reasons[reject_index];
-  }
-}
-
 bool MetalCommandProcessor::CanQueuePreparedDraw(
-    const PreparedDraw& draw,
-    PreparedDrawQueueRejectReason& reject_reason) const {
-  reject_reason = PreparedDrawQueueRejectReason::kNone;
+    const PreparedDraw& draw) const {
   if (draw.memexport_used) {
-    reject_reason = PreparedDrawQueueRejectReason::kMemexport;
     return false;
   }
   if (draw.has_pending_draw_pass_transfers) {
-    reject_reason = PreparedDrawQueueRejectReason::kPendingDrawPassTransfers;
     return false;
   }
   // Draws inside an active ZPD query window may queue: EncodePreparedDraw
@@ -242,17 +231,14 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
     // Nothing to batch and nothing queued to keep ordering with - encode
     // immediately. When the queue is non-empty, joining it is free (the draw
     // adds no upload work) and keeps the batch alive instead of flushing it.
-    reject_reason = PreparedDrawQueueRejectReason::kNoSharedMemoryRanges;
     return false;
   }
   if (!draw.has_invalid_shared_memory && prepared_draw_queue_.empty() &&
       encode_ctx().render_encoder && !draw.texture_upload_needed) {
-    reject_reason = PreparedDrawQueueRejectReason::kResidentWithoutActiveQueue;
     return false;
   }
   if (prepared_draw_queue_render_target_key_valid_ &&
       draw.render_target_key != prepared_draw_queue_render_target_key_) {
-    reject_reason = PreparedDrawQueueRejectReason::kRenderTargetKeyMismatch;
     return false;
   }
 
@@ -265,7 +251,6 @@ bool MetalCommandProcessor::CanQueuePreparedDraw(
   if (prepared_draw_queue_.size() + 1 > kPreparedDrawQueueMaxDraws ||
       range_count > kPreparedDrawQueueMaxRanges ||
       byte_count > kPreparedDrawQueueMaxBytes) {
-    reject_reason = PreparedDrawQueueRejectReason::kQueueBudget;
     return false;
   }
   return true;
@@ -290,15 +275,6 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
   }
   if (prepared_draw_queue_.empty()) {
     return true;
-  }
-  const size_t reason_index = static_cast<size_t>(reason);
-  if (reason_index <
-      backend_telemetry_.prepared_draw_queue_flush_reasons.size()) {
-    ++backend_telemetry_.prepared_draw_queue_flush_reasons[reason_index];
-  }
-  ++backend_telemetry_.prepared_draw_queue_flushes;
-  if (prepared_draw_queue_.size() == 1) {
-    ++backend_telemetry_.prepared_draw_queue_single_draw_flushes;
   }
 
   std::vector<PreparedDraw*>& draws = prepared_draw_flush_draws_;
@@ -370,13 +346,6 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
       shared_memory_ && !ranges.empty() &&
       AnySharedMemoryRangeInvalid(ranges.data(),
                                   static_cast<uint32_t>(ranges.size()));
-  backend_telemetry_.prepared_draw_queue_draws_flushed += draws.size();
-  backend_telemetry_.prepared_draw_queue_ranges_flushed += ranges.size();
-  backend_telemetry_.prepared_draw_queue_bytes_flushed += byte_count;
-  if (has_invalid_shared_memory) {
-    ++backend_telemetry_.prepared_draw_queue_invalid_flushes;
-  }
-
   const bool previous_flushing = flushing_prepared_draw_queue_;
   flushing_prepared_draw_queue_ = true;
   auto finish_flush = [&]() {
@@ -397,18 +366,16 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
   if (has_invalid_shared_memory && shared_memory_ && !ranges.empty()) {
     PrepareSharedMemoryUploadBeforeDrawPass(
         ranges.data(), static_cast<uint32_t>(ranges.size()));
-    if (!RequestSharedMemoryRangesInPlace(
-            SharedMemoryRequestReason::kDrawMaterialization, ranges)) {
+    if (!RequestSharedMemoryRangesInPlace(ranges)) {
       XELOGE("Failed to request prepared-draw shared-memory ranges");
       return fail_flush();
     }
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kMaterializationDrain);
+    EndSharedMemoryUploadBlitEncoder();
   }
 
   if (has_texture_materialization && texture_cache_) {
     if (encode_ctx().render_encoder) {
-      EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
+      EndRenderEncoder();
     }
     if (!EnsureCommandBuffer()) {
       return fail_flush();
@@ -419,16 +386,11 @@ bool MetalCommandProcessor::FlushPreparedDrawQueue(
       if (!draw->texture_materialization_plan.NeedsTextureUpload()) {
         continue;
       }
-      ++backend_telemetry_.prepared_draw_queue_texture_plans_flushed;
-      backend_telemetry_.prepared_draw_queue_texture_loads_planned +=
-          draw->texture_materialization_plan.planned_load_count;
       if (!texture_cache_->ExecuteTextureMaterialization(
               draw->texture_materialization_plan)) {
         texture_materialization_succeeded = false;
         break;
       }
-      backend_telemetry_.prepared_draw_queue_texture_loads_executed +=
-          draw->texture_materialization_plan.executed_load_count;
     }
     if (!texture_cache_->EndTextureUploadBatch()) {
       texture_materialization_succeeded = false;
@@ -470,9 +432,7 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
   if (!draw) {
     return false;
   }
-  PreparedDrawQueueRejectReason reject_reason =
-      PreparedDrawQueueRejectReason::kNone;
-  if (CanQueuePreparedDraw(*draw, reject_reason)) {
+  if (CanQueuePreparedDraw(*draw)) {
     if (prepared_draw_queue_.empty()) {
       prepared_draw_queue_render_target_key_ = draw->render_target_key;
       prepared_draw_queue_render_target_key_valid_ = true;
@@ -480,14 +440,12 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
     prepared_draw_queue_.push_back(draw);
     prepared_draw_queue_range_count_ += draw->materialization_ranges.size();
     prepared_draw_queue_byte_count_ += draw->invalid_byte_count;
-    ++backend_telemetry_.prepared_draw_queue_appends;
     if (prepared_draw_queue_.size() >= kPreparedDrawQueueMaxDraws) {
       return FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueBudget);
     }
     return true;
   }
 
-  RecordPreparedDrawQueueReject(reject_reason);
   if (!FlushPreparedDrawQueue(PreparedDrawFlushReason::kQueueReject)) {
     RecyclePreparedDraw(draw);
     TryResetPreparedDrawPayloadArena();
@@ -521,23 +479,21 @@ bool MetalCommandProcessor::SubmitPreparedDraw(PreparedDraw* draw) {
   if (has_invalid_shared_memory && shared_memory_ && materialization_ranges) {
     PrepareSharedMemoryUploadBeforeDrawPass(materialization_ranges,
                                             materialization_range_count);
-    if (!RequestSharedMemoryRanges(
-            SharedMemoryRequestReason::kDrawMaterialization,
-            materialization_ranges, materialization_range_count)) {
+    if (!RequestSharedMemoryRanges(materialization_ranges,
+                                   materialization_range_count)) {
       XELOGE("Failed to request {} current-draw shared-memory ranges",
              materialization_range_count);
       RecyclePreparedDraw(draw);
       TryResetPreparedDrawPayloadArena();
       return false;
     }
-    EndSharedMemoryUploadBlitEncoder(
-        SharedMemoryUploadEncoderEndReason::kMaterializationDrain);
+    EndSharedMemoryUploadBlitEncoder();
   }
 
   if (draw->texture_materialization_plan.NeedsTextureUpload() &&
       texture_cache_) {
     if (encode_ctx().render_encoder) {
-      EndRenderEncoder(RenderEncoderEndReason::kTextureUploadBeforeDrawPass);
+      EndRenderEncoder();
     }
     if (!EnsureCommandBuffer()) {
       RecyclePreparedDraw(draw);
