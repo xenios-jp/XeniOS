@@ -17,6 +17,7 @@
   xe::ui::IOSWindowedAppContext* app_context_;
   IOSProfileStatusHandler on_status_;
   BOOL shows_dismiss_button_;
+  BOOL profile_reload_scheduled_;
   std::vector<xe::ui::IOSProfileSummary> profiles_;
 }
 
@@ -47,8 +48,26 @@
   }
 }
 
+- (void)scheduleProfileServicesReload {
+  if (profile_reload_scheduled_ || !app_context_ || app_context_->ProfileServicesReady()) {
+    return;
+  }
+
+  profile_reload_scheduled_ = YES;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 4), dispatch_get_main_queue(), ^{
+    self->profile_reload_scheduled_ = NO;
+    if (!self->app_context_ || !self.view.window) {
+      return;
+    }
+    [self reloadProfiles];
+  });
+}
+
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
+  if (app_context_ && !app_context_->ProfileServicesReady()) {
+    app_context_->PrepareProfileServices();
+  }
   [self reloadProfiles];
 }
 
@@ -59,9 +78,15 @@
 - (void)reloadProfiles {
   profiles_.clear();
   if (app_context_) {
+    if (!app_context_->ProfileServicesReady()) {
+      app_context_->PrepareProfileServices();
+    }
     profiles_ = app_context_->ListProfiles();
   }
   [self.tableView reloadData];
+  if (app_context_ && !app_context_->ProfileServicesReady()) {
+    [self scheduleProfileServicesReload];
+  }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
@@ -87,6 +112,9 @@
     return @"Create and sign in profiles used by Xbox Live emulation.";
   }
   if (profiles_.empty()) {
+    if (app_context_ && !app_context_->ProfileServicesReady()) {
+      return @"Loading profiles...";
+    }
     return @"No profiles created yet.";
   }
   return nil;
@@ -140,6 +168,14 @@
 
 - (void)presentCreateProfileAlert {
   if (!app_context_) {
+    return;
+  }
+  if (!app_context_->ProfileServicesReady()) {
+    app_context_->PrepareProfileServices();
+    if (on_status_) {
+      on_status_(@"Initializing profile services...");
+    }
+    [self scheduleProfileServicesReload];
     return;
   }
 
