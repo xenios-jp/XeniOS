@@ -10,6 +10,7 @@
 #ifndef XENIA_UI_WINDOWED_APP_CONTEXT_IOS_H_
 #define XENIA_UI_WINDOWED_APP_CONTEXT_IOS_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -159,6 +160,9 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     profiles_list_callback_ = std::move(callback);
   }
   std::vector<IOSProfileSummary> ListProfiles() const {
+    if (!ProfileServicesReady()) {
+      PrepareProfileServices();
+    }
     if (!profiles_list_callback_) {
       return {};
     }
@@ -188,7 +192,14 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   void set_profile_services_ready_callback(ProfileServicesReadyCallback callback) {
     profile_services_ready_callback_ = std::move(callback);
   }
+  bool ProfileServicesReady() const {
+    return profile_services_ready_.load(std::memory_order_acquire);
+  }
+  void SetProfileServicesReady(bool ready) const {
+    profile_services_ready_.store(ready, std::memory_order_release);
+  }
   void NotifyProfileServicesReady() const {
+    SetProfileServicesReady(true);
     if (profile_services_ready_callback_) {
       profile_services_ready_callback_();
     }
@@ -436,6 +447,7 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   PatchDiscoverySummaryCallback patch_discovery_summary_callback_;
   PatchSetEnabledCallback patch_set_enabled_callback_;
   ControllerStateCallback controller_state_callback_;
+  mutable std::atomic<bool> profile_services_ready_{false};
   ProfileServicesReadyCallback profile_services_ready_callback_;
   ProfileServicesPrepareCallback profile_services_prepare_callback_;
   MessageBoxPromptCallback message_box_prompt_callback_;

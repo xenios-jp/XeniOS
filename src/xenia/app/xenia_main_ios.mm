@@ -558,10 +558,13 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
 };
 
 bool EmulatorAppIOS::EnsureProfileServicesReady() {
+  auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
   if (emulator_ && emulator_->kernel_state() && emulator_->kernel_state()->xam_state()) {
+    ios_context.SetProfileServicesReady(true);
     return true;
   }
 
+  ios_context.SetProfileServicesReady(false);
   if (!shutting_down_.load(std::memory_order_acquire) &&
       !emulator_thread_running_.load(std::memory_order_acquire) &&
       !emulator_initialized_.load(std::memory_order_acquire)) {
@@ -672,11 +675,16 @@ bool EmulatorAppIOS::OnInitialize() {
     }
     if (!launch_module.empty()) {
       std::filesystem::path launch_module_path(launch_module);
+      const std::string relaunch_extension = relaunch_target.extension().string();
+      const bool relaunch_target_is_xex = xe_strcasecmp(relaunch_extension.c_str(), ".xex") == 0;
+      const bool relaunch_target_is_disc_container =
+          xe_strcasecmp(relaunch_extension.c_str(), ".iso") == 0 ||
+          xe_strcasecmp(relaunch_extension.c_str(), ".zar") == 0;
       if (relaunch_target.empty()) {
         relaunch_target = launch_module_path;
-      } else if (relaunch_target.extension() == ".xex" || relaunch_target.extension() == ".XEX") {
+      } else if (relaunch_target_is_xex) {
         relaunch_target = relaunch_target.parent_path() / launch_module_path;
-      } else {
+      } else if (!relaunch_target_is_disc_container) {
         relaunch_target = relaunch_target / launch_module_path;
       }
     }
@@ -972,7 +980,8 @@ bool EmulatorAppIOS::OnInitialize() {
 
   ios_context.set_profiles_list_callback([this]() {
     std::vector<ui::IOSProfileSummary> profiles;
-    if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+    if (!EnsureProfileServicesReady() || !emulator_ || !emulator_->kernel_state() ||
+        !emulator_->kernel_state()->xam_state()) {
       return profiles;
     }
     auto* profile_manager = emulator_->kernel_state()->xam_state()->profile_manager();
@@ -1027,7 +1036,8 @@ bool EmulatorAppIOS::OnInitialize() {
   });
 
   ios_context.set_profile_sign_in_callback([this](uint64_t xuid) {
-    if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+    if (!EnsureProfileServicesReady() || !emulator_ || !emulator_->kernel_state() ||
+        !emulator_->kernel_state()->xam_state()) {
       return false;
     }
     auto* profile_manager = emulator_->kernel_state()->xam_state()->profile_manager();
@@ -1385,6 +1395,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     if (emulator_initialized_.load(std::memory_order_acquire) &&
         !emulator_cpu_initialized_.load(std::memory_order_acquire) && require_cpu_backend) {
       XELOGI("iOS: Reinitializing emulator for game mode");
+      static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(false);
       emulator_->ShutdownForTitleExitIOS();
     }
 
@@ -1399,6 +1410,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       XELOGE("iOS: Emulator::Setup failed with status {:08X}", setup_result);
       emulator_initialized_.store(false, std::memory_order_release);
       emulator_cpu_initialized_.store(false, std::memory_order_release);
+      static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(false);
       if (launched_with_game) {
         notify_game_exited();
       }
@@ -1411,6 +1423,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
         XELOGE("iOS: Emulator::SetupSubsystems failed with status {:08X}", subsystem_result);
         emulator_initialized_.store(false, std::memory_order_release);
         emulator_cpu_initialized_.store(false, std::memory_order_release);
+        static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(false);
         if (launched_with_game) {
           notify_game_exited();
         }
@@ -1453,6 +1466,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       XELOGE("iOS: Failed to attach presenter to display window");
       emulator_initialized_.store(false, std::memory_order_release);
       emulator_cpu_initialized_.store(false, std::memory_order_release);
+      static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(false);
       if (launched_with_game) {
         notify_game_exited();
       }
@@ -1461,6 +1475,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 
     emulator_initialized_.store(true, std::memory_order_release);
     emulator_cpu_initialized_.store(require_cpu_backend, std::memory_order_release);
+    static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(true);
     XELOGI("iOS: Emulator setup complete");
 
     if (!launched_with_game) {
@@ -1507,6 +1522,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       ClearGameplayInputBlockerIfApplied();
       ClearPresenterForTitleExit();
 
+      static_cast<ui::IOSWindowedAppContext&>(app_context()).SetProfileServicesReady(false);
       // Let GraphicsSystem::Shutdown drain the Metal command processor before
       // its UI-thread presenter reset disconnects the CAMetalLayer surface.
       emulator_->ShutdownForTitleExitIOS();
