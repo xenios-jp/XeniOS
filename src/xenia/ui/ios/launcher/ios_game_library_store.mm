@@ -93,6 +93,22 @@ bool PathIsInDirectory(const std::filesystem::path& path, const std::filesystem:
   return true;
 }
 
+bool TryMakeRelativePathInDirectory(const std::filesystem::path& path,
+                                    const std::filesystem::path& directory,
+                                    std::filesystem::path* relative_path_out) {
+  if (!PathIsInDirectory(path, directory)) {
+    return false;
+  }
+  if (relative_path_out) {
+    std::filesystem::path relative_path = path.lexically_relative(directory);
+    if (relative_path == ".") {
+      relative_path.clear();
+    }
+    *relative_path_out = std::move(relative_path);
+  }
+  return true;
+}
+
 std::filesystem::path WeaklyCanonicalOrAbsolute(const std::filesystem::path& path) {
   std::error_code ec;
   std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
@@ -752,26 +768,50 @@ BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
 
 XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
     const std::filesystem::path& path, BOOL* matchedExternalLocation, NSError** error) {
+  return StartIOSExternalLibraryAccessForPath(path, matchedExternalLocation, nullptr, error);
+}
+
+XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
+    const std::filesystem::path& path, BOOL* matchedExternalLocation,
+    std::filesystem::path* relativePath, NSError** error) {
   if (matchedExternalLocation) {
     *matchedExternalLocation = NO;
+  }
+  if (relativePath) {
+    relativePath->clear();
   }
   const std::filesystem::path normalized_game_path = WeaklyCanonicalOrAbsolute(path);
   for (NSDictionary* record in ExternalLibraryLocationRecords()) {
     BOOL stale = NO;
     NSError* resolve_error = nil;
     NSURL* url = ResolveExternalLibraryRecord(record, &stale, &resolve_error);
-    BOOL record_matches_path = RecordPathContainsGamePath(record, normalized_game_path);
+    std::filesystem::path matched_relative_path;
+    BOOL record_matches_path = NO;
+    NSString* stored_path = [record objectForKey:kExternalLibraryPathKey];
+    if ([stored_path isKindOfClass:[NSString class]] && stored_path.length > 0) {
+      std::filesystem::path root_path =
+          WeaklyCanonicalOrAbsolute(std::filesystem::path(std::string([stored_path UTF8String])));
+      record_matches_path =
+          TryMakeRelativePathInDirectory(normalized_game_path, root_path, &matched_relative_path);
+    }
     if (url.path.length > 0) {
       std::filesystem::path root_path =
           WeaklyCanonicalOrAbsolute(std::filesystem::path(std::string([url.path UTF8String])));
-      record_matches_path =
-          record_matches_path || PathIsInDirectory(normalized_game_path, root_path);
+      std::filesystem::path resolved_relative_path;
+      if (TryMakeRelativePathInDirectory(normalized_game_path, root_path,
+                                         &resolved_relative_path)) {
+        record_matches_path = YES;
+        matched_relative_path = std::move(resolved_relative_path);
+      }
     }
     if (!record_matches_path) {
       continue;
     }
     if (matchedExternalLocation) {
       *matchedExternalLocation = YES;
+    }
+    if (relativePath) {
+      *relativePath = std::move(matched_relative_path);
     }
     if (!url || stale) {
       if (error) {

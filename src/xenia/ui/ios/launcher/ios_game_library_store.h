@@ -56,6 +56,9 @@ BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
                                             NSString** removedName, NSError** error);
 XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
     const std::filesystem::path& path, BOOL* matchedExternalLocation, NSError** error);
+XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
+    const std::filesystem::path& path, BOOL* matchedExternalLocation,
+    std::filesystem::path* relativePath, NSError** error);
 
 #endif  // __OBJC__
 

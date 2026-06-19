@@ -19,6 +19,7 @@
 #include "xenia/xbox.h"
 
 #import "xenia/ui/ios/launcher/ios_content_management.h"
+#import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 @implementation XeniaGameContentViewController {
@@ -122,7 +123,7 @@
   if (installed_content_.empty()) {
     return @"No title updates or DLC are installed for this title.";
   }
-  return @"Swipe left on an installed entry to delete it.";
+  return @"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.";
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -171,7 +172,10 @@
   const IOSInstalledContentEntry& entry = installed_content_[static_cast<size_t>(indexPath.row)];
   cell.textLabel.text = ToNSString(entry.name);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
-  cell.detailTextLabel.text = xe_installed_content_kind_label(entry.kind);
+  cell.detailTextLabel.text =
+      entry.linked
+          ? [NSString stringWithFormat:@"%@ - Linked", xe_installed_content_kind_label(entry.kind)]
+          : xe_installed_content_kind_label(entry.kind);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.accessoryType = UITableViewCellAccessoryNone;
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -193,17 +197,24 @@
   const IOSInstalledContentEntry& entry = installed_content_[static_cast<size_t>(indexPath.row)];
   const std::filesystem::path entry_path = entry.path;
   NSString* display_name = ToNSString(entry.name);
-  UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:@"Delete Content"
-                       message:[NSString stringWithFormat:@"Delete \"%@\"? This cannot be undone.",
-                                                          display_name]
-                preferredStyle:UIAlertControllerStyleAlert];
+  NSString* confirm_title = entry.linked ? @"Unlink Content" : @"Delete Content";
+  NSString* confirm_message =
+      entry.linked
+          ? [NSString stringWithFormat:@"Unlink \"%@\"? The source files in the external folder "
+                                       @"will not be deleted.",
+                                       display_name]
+          : [NSString stringWithFormat:@"Delete \"%@\"? This cannot be undone.", display_name];
+  NSString* action_title = entry.linked ? @"Unlink" : @"Delete";
+  UIAlertController* confirm =
+      [UIAlertController alertControllerWithTitle:confirm_title
+                                          message:confirm_message
+                                   preferredStyle:UIAlertControllerStyleAlert];
   [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
   [confirm
       addAction:[UIAlertAction
-                    actionWithTitle:@"Delete"
+                    actionWithTitle:action_title
                               style:UIAlertActionStyleDestructive
                             handler:^(__unused UIAlertAction* action) {
                               std::error_code ec;
@@ -215,6 +226,7 @@
                                                                display_name, ec.message().c_str()]);
                                 return;
                               }
+                              xe_remove_linked_content_marker(entry);
                               [self refreshLauncherContentState];
                             }]];
   [self presentViewController:confirm animated:YES completion:nil];
@@ -273,13 +285,33 @@
     } break;
     case xe::XContentType::kMarketplaceContent: {
       std::string error_message;
-      install_success = xe_copy_content_package_into_root(
-          package_info, xe_dlc_content_root(title_id_), &error_message);
-      result_title = install_success ? @"Installed" : @"Install Failed";
-      result_message =
-          install_success
-              ? @"DLC installed successfully."
-              : ToNSString(error_message.empty() ? "DLC installation failed." : error_message);
+      BOOL matched_external_location = NO;
+      NSError* external_access_error = nil;
+      std::filesystem::path source_relative_path;
+      XeniaIOSExternalLibraryAccess* external_access = xe::ui::StartIOSExternalLibraryAccessForPath(
+          package_info.path, &matched_external_location, &source_relative_path,
+          &external_access_error);
+      if (matched_external_location && !external_access) {
+        install_success = NO;
+        result_title = @"Link Failed";
+        result_message = external_access_error.localizedDescription
+                             ?: @"XeniOS could not access the linked external folder.";
+      } else if (external_access) {
+        install_success = xe_link_content_package_into_root(
+            package_info, xe_dlc_content_root(title_id_), source_relative_path, &error_message);
+        result_title = install_success ? @"Linked" : @"Link Failed";
+        result_message = install_success ? @"DLC linked from the external folder."
+                                         : ToNSString(error_message.empty() ? "DLC linking failed."
+                                                                            : error_message);
+      } else {
+        install_success = xe_copy_content_package_into_root(
+            package_info, xe_dlc_content_root(title_id_), &error_message);
+        result_title = install_success ? @"Installed" : @"Install Failed";
+        result_message =
+            install_success
+                ? @"DLC installed successfully."
+                : ToNSString(error_message.empty() ? "DLC installation failed." : error_message);
+      }
     } break;
     default:
       result_message =

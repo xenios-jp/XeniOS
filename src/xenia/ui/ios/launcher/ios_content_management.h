@@ -36,6 +36,9 @@ struct IOSInstalledContentEntry {
   IOSInstalledContentKind kind = IOSInstalledContentKind::kTitleUpdate;
   std::string name;
   std::filesystem::path path;
+  bool linked = false;
+  std::filesystem::path linked_source_path;
+  std::filesystem::path linked_relative_path;
 };
 
 struct IOSSelectedContentPackage {
@@ -68,10 +71,19 @@ bool xe_copy_directory_recursive(const std::filesystem::path& source,
 bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        std::string* error_message_out);
+bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
+                                       const std::filesystem::path& destination_root,
+                                       const std::filesystem::path& source_relative_path,
+                                       std::string* error_message_out);
+bool xe_refresh_linked_content_entry(const IOSInstalledContentEntry& entry,
+                                     const std::filesystem::path& current_source_path,
+                                     std::string* error_message_out);
+void xe_remove_linked_content_marker(const IOSInstalledContentEntry& entry);
 
 // Enumerators.
 void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalledContentKind kind,
                                   std::vector<IOSInstalledContentEntry>* content_out);
 std::vector<IOSInstalledContentEntry> xe_list_installed_content(uint32_t title_id);
+std::vector<IOSInstalledContentEntry> xe_list_linked_content(uint32_t title_id);
 
 #endif  // XENIA_UI_IOS_CONTENT_MANAGEMENT_H_

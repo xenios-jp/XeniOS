@@ -367,8 +367,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)setPresentLetterboxEnabled:(BOOL)enabled;
 - (void)presentLibraryAddSheetFromView:(UIView*)sourceView;
 - (void)presentExternalFoldersSheet;
+- (BOOL)appendLinkedContentAccessesForTitleID:(uint32_t)title_id
+                                     accesses:
+                                         (NSMutableArray<XeniaIOSExternalLibraryAccess*>*)accesses
+                                 errorMessage:(NSString**)errorMessage;
 - (void)retainExternalGameAccessForLaunch:(XeniaIOSExternalLibraryAccess*)access
                           replaceExisting:(BOOL)replaceExisting;
+- (void)retainExternalGameAccessesForLaunch:(NSArray<XeniaIOSExternalLibraryAccess*>*)accesses
+                            replaceExisting:(BOOL)replaceExisting;
 - (void)clearActiveExternalGameAccesses;
 
 // Presents `rootController` as the standardized in-game/settings sheet: wraps it
@@ -2511,11 +2517,26 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
   }
 
+  const uint32_t launch_title_id = [self titleIDForGamePath:launch_path];
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* launch_external_accesses = [NSMutableArray array];
+  if (external_access) {
+    [launch_external_accesses addObject:external_access];
+  }
+  NSString* linked_content_access_error = nil;
+  if (![self appendLinkedContentAccessesForTitleID:launch_title_id
+                                          accesses:launch_external_accesses
+                                      errorMessage:&linked_content_access_error]) {
+    [self showStatusToast:(linked_content_access_error ?: @"Linked content is unavailable.")
+                    style:XeniaIOSStatusToastStyleError];
+    [self refreshImportedGamesAsync];
+    return;
+  }
+
   if (self.gameStopInProgress || self.gameRunning) {
     if (self.appContext) {
       self.gameRunning = YES;
       self.gameStopInProgress = NO;
-      active_game_title_id_ = [self titleIDForGamePath:launch_path];
+      active_game_title_id_ = launch_title_id;
       [self applyTouchLayoutModelForTitleID:active_game_title_id_];
       xe_request_landscape_orientation(self);
       [UIView animateWithDuration:0.3
@@ -2526,7 +2547,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
             self.launcherOverlayView.hidden = YES;
             [self updateTouchControlsOverlayVisibilityAnimated:YES];
           }];
-      [self retainExternalGameAccessForLaunch:external_access replaceExisting:NO];
+      [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:NO];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
       [self showStatusToast:@"Unable to queue launch (app context unavailable)."
@@ -2536,7 +2557,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   self.gameRunning = YES;
-  active_game_title_id_ = [self titleIDForGamePath:launch_path];
+  active_game_title_id_ = launch_title_id;
   [self applyTouchLayoutModelForTitleID:active_game_title_id_];
 
   xe_request_landscape_orientation(self);
@@ -2550,7 +2571,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       }];
 
   if (self.appContext) {
-    [self retainExternalGameAccessForLaunch:external_access replaceExisting:YES];
+    [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:YES];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
     [self showStatusToast:@"Unable to launch game (app context unavailable)."
@@ -3340,16 +3361,91 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [folders_controller release];
 }
 
+- (BOOL)appendLinkedContentAccessesForTitleID:(uint32_t)title_id
+                                     accesses:
+                                         (NSMutableArray<XeniaIOSExternalLibraryAccess*>*)accesses
+                                 errorMessage:(NSString**)errorMessage {
+  if (errorMessage) {
+    *errorMessage = nil;
+  }
+  if (!title_id) {
+    return YES;
+  }
+
+  for (IOSInstalledContentEntry& entry : xe_list_linked_content(title_id)) {
+    BOOL matched_external_location = NO;
+    NSError* external_access_error = nil;
+    std::filesystem::path resolved_relative_path;
+    XeniaIOSExternalLibraryAccess* access = xe::ui::StartIOSExternalLibraryAccessForPath(
+        entry.linked_source_path, &matched_external_location, &resolved_relative_path,
+        &external_access_error);
+    if (!matched_external_location || !access) {
+      if (errorMessage) {
+        *errorMessage = external_access_error.localizedDescription
+                            ?: @"Linked content external folder is unavailable.";
+      }
+      return NO;
+    }
+
+    std::filesystem::path relative_path =
+        entry.linked_relative_path.empty() ? resolved_relative_path : entry.linked_relative_path;
+    NSString* access_root_path = access.url.path;
+    if (!relative_path.empty() && access_root_path.length == 0) {
+      if (errorMessage) {
+        *errorMessage = @"Linked content external folder path is unavailable.";
+      }
+      return NO;
+    }
+    std::filesystem::path current_source_path =
+        relative_path.empty()
+            ? entry.linked_source_path
+            : std::filesystem::path(std::string([access_root_path UTF8String])) / relative_path;
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(current_source_path, ec) || ec) {
+      if (errorMessage) {
+        *errorMessage = @"Linked content source file is no longer available.";
+      }
+      return NO;
+    }
+
+    if (current_source_path != entry.linked_source_path) {
+      entry.linked_relative_path = relative_path;
+      std::string refresh_error;
+      if (!xe_refresh_linked_content_entry(entry, current_source_path, &refresh_error)) {
+        if (errorMessage) {
+          *errorMessage =
+              ToNSString(refresh_error.empty() ? "Linked content refresh failed." : refresh_error);
+        }
+        return NO;
+      }
+    }
+
+    if (accesses) {
+      [accesses addObject:access];
+    }
+  }
+  return YES;
+}
+
 - (void)retainExternalGameAccessForLaunch:(XeniaIOSExternalLibraryAccess*)access
                           replaceExisting:(BOOL)replaceExisting {
+  NSArray<XeniaIOSExternalLibraryAccess*>* accesses = access ? @[ access ] : @[];
+  [self retainExternalGameAccessesForLaunch:accesses replaceExisting:replaceExisting];
+}
+
+- (void)retainExternalGameAccessesForLaunch:(NSArray<XeniaIOSExternalLibraryAccess*>*)accesses
+                            replaceExisting:(BOOL)replaceExisting {
   if (!active_external_game_accesses_) {
     active_external_game_accesses_ = [[NSMutableArray alloc] init];
   }
   if (replaceExisting) {
     [active_external_game_accesses_ removeAllObjects];
   }
-  if (access) {
-    [active_external_game_accesses_ addObject:access];
+  for (XeniaIOSExternalLibraryAccess* access in accesses) {
+    if (access) {
+      [active_external_game_accesses_ addObject:access];
+    }
   }
 }
 
