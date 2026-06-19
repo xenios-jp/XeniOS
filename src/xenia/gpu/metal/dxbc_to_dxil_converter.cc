@@ -14,6 +14,7 @@
 
 #include "dxbc_to_dxil_converter.h"
 
+#include <TargetConditionals.h>
 #include <unistd.h>
 #include <algorithm>
 #include <cstdio>
@@ -21,9 +22,15 @@
 #include <fstream>
 #include <string>
 
-#include "DxbcConverter.h"
 #include "third_party/xxhash/xxhash.h"
 #include "xenia/base/logging.h"
+
+// dxilconv (libdxilconv) ships only as device/macOS binaries; there is no
+// iOS-simulator slice. On the simulator the DXBC->DXIL calls are compiled out
+// and the Metal backend uses the native MSL path instead.
+#if !TARGET_OS_SIMULATOR
+#include "DxbcConverter.h"
+#endif
 
 #if !defined(_WIN32) && defined(__EMULATE_UUID)
 size_t UuidStrHash(const char* key) {
@@ -45,6 +52,8 @@ DEFINE_CROSS_PLATFORM_UUIDOF(IUnknown)
 namespace xe {
 namespace gpu {
 namespace metal {
+
+#if !TARGET_OS_SIMULATOR
 
 namespace {
 constexpr wchar_t kDefaultExtraOptions[] = L"-skip-container-parts";
@@ -252,6 +261,40 @@ bool DxbcToDxilConverter::WriteFile(const std::string& path,
   file.write(reinterpret_cast<const char*>(data.data()), data.size());
   return file.good();
 }
+
+#else  // TARGET_OS_SIMULATOR
+
+// iOS-simulator stub: dxilconv is unavailable, so the converter reports itself
+// unavailable and the Metal backend uses the native MSL path.
+DxbcToDxilConverter::DxbcToDxilConverter() = default;
+DxbcToDxilConverter::~DxbcToDxilConverter() = default;
+
+uint64_t DxbcToDxilConverter::GetOptionsHash() const { return 0; }
+
+bool DxbcToDxilConverter::Initialize() {
+  is_available_ = false;
+  return false;
+}
+
+bool DxbcToDxilConverter::Convert(const std::vector<uint8_t>&,
+                                  std::vector<uint8_t>&,
+                                  std::string* error_message) {
+  if (error_message) {
+    *error_message = "dxilconv unavailable (iOS simulator build)";
+  }
+  return false;
+}
+
+IDxbcConverter* DxbcToDxilConverter::GetThreadConverter(std::string*) {
+  return nullptr;
+}
+
+bool DxbcToDxilConverter::WriteFile(const std::string&,
+                                    const std::vector<uint8_t>&) {
+  return false;
+}
+
+#endif  // TARGET_OS_SIMULATOR
 
 }  // namespace metal
 }  // namespace gpu

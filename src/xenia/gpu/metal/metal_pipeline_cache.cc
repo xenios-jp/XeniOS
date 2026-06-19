@@ -1397,6 +1397,15 @@ bool MetalPipelineCache::InitializeShaderTranslation(
   shader_translator_params_.draw_resolution_scale_y = draw_resolution_scale_y;
   shader_translator_generation_.fetch_add(1, std::memory_order_release);
 
+#if TARGET_OS_SIMULATOR
+  // The iOS simulator has no Metal Shader Converter / dxilconv dylib. Force the
+  // native MSL render path and disable the MSC/dxilconv helper-stage island so
+  // standard guest vertex/pixel draws (and, where mesh shaders are available,
+  // the native MSL geometry/tessellation mesh paths) render without them.
+  cvars::metal_native_msl_render = true;
+  cvars::metal_native_msl_helper_msc = false;
+#endif
+
   dxbc_to_dxil_converter_ = std::make_unique<DxbcToDxilConverter>();
   if (!dxbc_to_dxil_converter_->Initialize()) {
     // The DXBC->DXIL path needs the dxilconv library. Native MSL rendering
@@ -1416,8 +1425,14 @@ bool MetalPipelineCache::InitializeShaderTranslation(
 
   metal_shader_converter_ = std::make_unique<MetalShaderConverter>();
   if (!metal_shader_converter_->Initialize()) {
+#if TARGET_OS_SIMULATOR
+    XELOGW(
+        "Metal: Metal Shader Converter unavailable (iOS simulator); using the "
+        "native MSL render path");
+#else
     XELOGE("Failed to initialize Metal Shader Converter");
     return false;
+#endif
   }
 
   bool valid_pipeline_compiler = false;

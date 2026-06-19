@@ -43,12 +43,46 @@ target_link_libraries(xenia-gpu-metal PUBLIC
   xenia-base
   xenia-gpu
   xenia-ui-metal
-  xenia-third-party-dxilconv
-  xenia-third-party-metal-shader-converter
   "-framework Foundation"
   "-framework Metal"
   "-framework MetalKit"
 )
+
+# Apple's Metal Shader Converter (libmetalirconverter) and dxilconv
+# (libdxilconv) ship only as device/macOS binaries - there is no iOS-simulator
+# slice and the converter is closed source. On iOS, pull in their headers and
+# the METAL_SHADER_CONVERTER_AVAILABLE define so the device code paths still
+# compile (the headers are declarations only), but link the actual dylibs only
+# for the device SDK (see src/xenia/app/CMakeLists.txt). Simulator builds
+# compile the converter call sites out via TARGET_OS_SIMULATOR guards and render
+# through the native MSL path. On macOS, link the converters normally.
+if(XE_PLATFORM_IOS)
+  foreach(_xe_msc_lib xenia-third-party-metal-shader-converter
+                      xenia-third-party-dxilconv)
+    if(TARGET ${_xe_msc_lib})
+      get_target_property(_xe_msc_inc ${_xe_msc_lib}
+                          INTERFACE_INCLUDE_DIRECTORIES)
+      if(_xe_msc_inc)
+        target_include_directories(xenia-gpu-metal PUBLIC ${_xe_msc_inc})
+      endif()
+      get_target_property(_xe_msc_def ${_xe_msc_lib}
+                          INTERFACE_COMPILE_DEFINITIONS)
+      if(_xe_msc_def)
+        target_compile_definitions(xenia-gpu-metal PUBLIC ${_xe_msc_def})
+      endif()
+    endif()
+  endforeach()
+  # dxilconv has a build step (custom target); keep it building so the
+  # device-SDK link still has a dylib to link against.
+  if(TARGET xenia-third-party-dxilconv-build)
+    add_dependencies(xenia-gpu-metal xenia-third-party-dxilconv-build)
+  endif()
+else()
+  target_link_libraries(xenia-gpu-metal PUBLIC
+    xenia-third-party-dxilconv
+    xenia-third-party-metal-shader-converter
+  )
+endif()
 xe_shader_rules_metal(xenia-gpu-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders)
 if(APPLE)
   option(XE_METAL_SHADER_DEBUG_INFO

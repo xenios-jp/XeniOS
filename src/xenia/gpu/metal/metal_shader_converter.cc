@@ -9,7 +9,15 @@
 
 #include "xenia/gpu/metal/metal_shader_converter.h"
 
+#include <TargetConditionals.h>
+
+// Apple's Metal Shader Converter ships only as device/macOS binaries; there is
+// no iOS-simulator slice. On the simulator the MSC compiler calls are compiled
+// out (the Metal backend falls back to the native MSL path), so the converter
+// header - which only provides declarations - is not needed there.
+#if !TARGET_OS_SIMULATOR
 #include "metal_irconverter.h"
+#endif
 
 #include "xenia/base/logging.h"
 #include "xenia/gpu/gpu_flags.h"
@@ -18,6 +26,8 @@
 namespace xe {
 namespace gpu {
 namespace metal {
+
+#if !TARGET_OS_SIMULATOR
 
 constexpr uint32_t kFunctionConstantRegisterSpace = 2147420894u;
 // Metal Shader Converter 4.0 enables NaN/Inf optimization by default, in which
@@ -751,6 +761,82 @@ MetalStageCompileResult MetalShaderConverter::CompileStageUncached(
   result.success = true;
   return result;
 }
+
+#else  // TARGET_OS_SIMULATOR
+
+// iOS-simulator stub: the Metal Shader Converter dylib is unavailable, so the
+// converter reports itself unavailable and MetalPipelineCache falls back to the
+// native MSL shader path.
+MetalShaderConverter::MetalShaderConverter()
+    : stage_compile_cache_(std::make_unique<MetalStageCompileCache>()) {}
+
+MetalShaderConverter::~MetalShaderConverter() = default;
+
+bool MetalShaderConverter::Initialize() {
+  is_available_ = false;
+  return false;
+}
+
+void MetalShaderConverter::SetMinimumTarget(uint32_t gpu_family, uint32_t os,
+                                            const std::string& version) {
+  has_minimum_target_ = true;
+  minimum_gpu_family_ = gpu_family;
+  minimum_os_ = os;
+  minimum_os_version_ = version;
+}
+
+void MetalShaderConverter::PopulateDefaultRequestOptions(
+    MetalStageCompileRequest&) const {}
+
+std::shared_ptr<const MetalStageCompileResult>
+MetalShaderConverter::CompileStage(const MetalStageCompileRequest&) {
+  auto result = std::make_shared<MetalStageCompileResult>();
+  result->success = false;
+  result->error_message =
+      "Metal Shader Converter unavailable (iOS simulator build)";
+  return result;
+}
+
+MetalStageCompileResult MetalShaderConverter::CompileStageUncached(
+    const MetalStageCompileRequest&) {
+  MetalStageCompileResult result;
+  result.success = false;
+  result.error_message =
+      "Metal Shader Converter unavailable (iOS simulator build)";
+  return result;
+}
+
+bool MetalShaderConverter::Convert(xenos::ShaderType,
+                                   const std::vector<uint8_t>&,
+                                   MetalShaderConversionResult& result) {
+  result.success = false;
+  result.error_message =
+      "Metal Shader Converter unavailable (iOS simulator build)";
+  return false;
+}
+
+bool MetalShaderConverter::ConvertWithStage(
+    MetalShaderStage, const std::vector<uint8_t>&,
+    MetalShaderConversionResult& result) {
+  result.success = false;
+  result.error_message =
+      "Metal Shader Converter unavailable (iOS simulator build)";
+  return false;
+}
+
+bool MetalShaderConverter::ConvertWithStageEx(
+    MetalShaderStage, const std::vector<uint8_t>&,
+    MetalShaderConversionResult& result, MetalShaderReflectionInfo*,
+    const IRVersionedInputLayoutDescriptor*, std::vector<uint8_t>*, bool, int) {
+  result.success = false;
+  result.error_message =
+      "Metal Shader Converter unavailable (iOS simulator build)";
+  return false;
+}
+
+void* MetalShaderConverter::CreateXbox360RootSignature(bool) { return nullptr; }
+
+#endif  // TARGET_OS_SIMULATOR
 
 }  // namespace metal
 }  // namespace gpu

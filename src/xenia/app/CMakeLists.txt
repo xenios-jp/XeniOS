@@ -128,6 +128,16 @@ if(XE_PLATFORM_IOS)
     set_target_properties(xenia-app PROPERTIES
       XCODE_EMBED_FRAMEWORKS "${_xe_ios_embedded_dylibs}"
       XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES)
+    # The Metal Shader Converter and dxilconv dylibs only exist as iOS-device
+    # binaries, so link them for the device SDK only. The iOS simulator has no
+    # slice for them; simulator builds compile the converter paths out (see the
+    # TARGET_OS_SIMULATOR guards in the Metal backend) and render via native MSL.
+    set(_xe_ios_device_ldflags "$(inherited)")
+    foreach(_xe_dylib ${_xe_ios_embedded_dylibs})
+      string(APPEND _xe_ios_device_ldflags " \"${_xe_dylib}\"")
+    endforeach()
+    set_target_properties(xenia-app PROPERTIES
+      "XCODE_ATTRIBUTE_OTHER_LDFLAGS[sdk=iphoneos*]" "${_xe_ios_device_ldflags}")
   endif()
   target_include_directories(xenia-app PRIVATE
     "${PROJECT_SOURCE_DIR}/third_party/rapidjson/include"
