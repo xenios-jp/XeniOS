@@ -16,8 +16,14 @@
 @implementation XeniaIOSQuickSettingsViewController
 
 - (instancetype)init {
+  return [self initWithGameTitleID:0 gameTitle:nil];
+}
+
+- (instancetype)initWithGameTitleID:(uint32_t)gameTitleID gameTitle:(NSString*)gameTitle {
   self = [super initWithCatalogKind:IOSConfigCatalogKind::kGraphicsCompat
-                              style:UITableViewStyleInsetGrouped];
+                              style:UITableViewStyleInsetGrouped
+                        gameTitleID:gameTitleID
+                          gameTitle:gameTitle];
   if (self) {
     self.liveOverride = YES;
     self.showsRootDismissButton = YES;
@@ -50,8 +56,11 @@
 }
 
 - (void)showDebugSettings {
-  XeniaIOSDebugSettingsViewController* debugVC =
-      [[XeniaIOSDebugSettingsViewController alloc] init];
+  XeniaIOSDebugSettingsViewController* debugVC = [[XeniaIOSDebugSettingsViewController alloc]
+      initWithCatalogKind:IOSConfigCatalogKind::kDebugSettings
+             liveOverride:YES
+              gameTitleID:self.gameTitleID
+                gameTitle:self.gameTitle];
   [self.navigationController pushViewController:debugVC animated:YES];
   [debugVC release];
 }

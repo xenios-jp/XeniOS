@@ -71,7 +71,7 @@ bool OverrideCvarByName(const std::string& key, bool value) {
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<bool>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 bool OverrideCvarByName(const std::string& key, int32_t value) {
@@ -80,7 +80,7 @@ bool OverrideCvarByName(const std::string& key, int32_t value) {
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<int32_t>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 bool OverrideCvarByName(const std::string& key, int64_t value) {
@@ -89,7 +89,7 @@ bool OverrideCvarByName(const std::string& key, int64_t value) {
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<int64_t>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 bool OverrideCvarByName(const std::string& key, double value) {
@@ -98,7 +98,7 @@ bool OverrideCvarByName(const std::string& key, double value) {
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<double>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 bool OverrideCvarByName(const std::string& key, const std::string& value) {
@@ -107,7 +107,7 @@ bool OverrideCvarByName(const std::string& key, const std::string& value) {
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<std::string>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 bool OverrideCvarByName(const std::string& key, const std::filesystem::path& value) {
@@ -116,7 +116,7 @@ bool OverrideCvarByName(const std::string& key, const std::filesystem::path& val
   if (it == cvar::ConfigVars->end()) return false;
   auto* cv = dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(it->second);
   if (!cv) return false;
-  cv->OverrideConfigValue(value);
+  cv->SetGameConfigValue(value);
   return true;
 }
 
@@ -135,25 +135,25 @@ bool OverrideIntegerCvarByName(const std::string& key, int64_t value) {
         value > std::numeric_limits<int32_t>::max()) {
       return false;
     }
-    cv->OverrideConfigValue(static_cast<int32_t>(value));
+    cv->SetGameConfigValue(static_cast<int32_t>(value));
     return true;
   }
   if (auto* cv = dynamic_cast<cvar::ConfigVar<uint32_t>*>(var)) {
     if (value < 0 || value > std::numeric_limits<uint32_t>::max()) {
       return false;
     }
-    cv->OverrideConfigValue(static_cast<uint32_t>(value));
+    cv->SetGameConfigValue(static_cast<uint32_t>(value));
     return true;
   }
   if (auto* cv = dynamic_cast<cvar::ConfigVar<int64_t>*>(var)) {
-    cv->OverrideConfigValue(value);
+    cv->SetGameConfigValue(value);
     return true;
   }
   if (auto* cv = dynamic_cast<cvar::ConfigVar<uint64_t>*>(var)) {
     if (value < 0) {
       return false;
     }
-    cv->OverrideConfigValue(static_cast<uint64_t>(value));
+    cv->SetGameConfigValue(static_cast<uint64_t>(value));
     return true;
   }
   return false;
@@ -165,11 +165,11 @@ bool OverrideFloatingCvarByName(const std::string& key, double value) {
   if (it == cvar::ConfigVars->end()) return false;
   cvar::IConfigVar* var = it->second;
   if (auto* cv = dynamic_cast<cvar::ConfigVar<double>*>(var)) {
-    cv->OverrideConfigValue(value);
+    cv->SetGameConfigValue(value);
     return true;
   }
   if (auto* cv = dynamic_cast<cvar::ConfigVar<float>*>(var)) {
-    cv->OverrideConfigValue(static_cast<float>(value));
+    cv->SetGameConfigValue(static_cast<float>(value));
     return true;
   }
   return false;
@@ -357,7 +357,8 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   UILabel* label = [[[UILabel alloc] init] autorelease];
   label.translatesAutoresizingMaskIntoConstraints = NO;
   label.backgroundColor = [UIColor clearColor];
-  label.text = @"Changes apply immediately for this session";
+  label.text = game_title_id_ ? @"Changes apply immediately and are saved for this game"
+                              : @"Changes apply immediately for this session";
   label.textAlignment = NSTextAlignmentCenter;
   label.textColor = [XeniaTheme textMuted];
   label.numberOfLines = 1;
@@ -1047,6 +1048,15 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
       break;
     default:
       break;
+  }
+
+  if (game_title_id_) {
+    IOSConfigSection section;
+    section.items.push_back(*item);
+    std::vector<IOSConfigSection> sections;
+    sections.push_back(std::move(section));
+    std::set<std::string> dirty_key{item->key};
+    ApplyIOSConfigSectionsToGameConfig(sections, game_title_id_, dirty_key);
   }
 }
 

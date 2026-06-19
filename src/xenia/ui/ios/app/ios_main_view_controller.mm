@@ -1261,7 +1261,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 - (void)presentQuickSettings {
   [self hideInGameMenuOverlay];
-  XeniaIOSQuickSettingsViewController* quickVC = [[XeniaIOSQuickSettingsViewController alloc] init];
+  XeniaIOSQuickSettingsViewController* quickVC =
+      [[XeniaIOSQuickSettingsViewController alloc] initWithGameTitleID:active_game_title_id_
+                                                             gameTitle:nil];
   [self presentPauseSheetWithRootController:quickVC
                               preferredSize:CGSizeMake(480.0, 560.0)
                 preventInteractiveDismissal:NO

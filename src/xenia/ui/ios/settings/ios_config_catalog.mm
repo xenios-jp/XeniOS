@@ -588,8 +588,8 @@ static std::vector<IOSConfigSection> BuildGraphicsCompatSections() {
   IOSConfigSection compat;
   compat.title = "Graphics Compatibility";
   compat.footer =
-      "Live overrides for the running game. Use Compatibility or Per-Game Settings for saved "
-      "config changes.";
+      "Live overrides for the running game. In-game changes are saved as title-specific "
+      "overrides.";
 
   AddEnumSetting(compat.items, "readback_resolve", "Readback Resolve",
                  "Controls CPU readback of render-to-texture resolve results.");
