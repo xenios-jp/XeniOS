@@ -9,6 +9,7 @@
 
 #include "xenia/ui/metal/metal_presenter.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -47,7 +48,8 @@
 #endif
 
 DEFINE_bool(metal_presenter_force_10bpc, true,
-            "Force RGB10A2 guest output for presenter (reduces gamma conversion cost).", "Metal");
+            "Force high-precision guest output for presenter (reduces gamma conversion cost).",
+            "Metal");
 DEFINE_bool(metal_presenter_use_metalfx, false,
             "Use MetalFX spatial scaling when upscaling guest output.", "Metal");
 DEFINE_int32(metal_presenter_metalfx_color_processing, 0,
@@ -73,6 +75,49 @@ DEFINE_bool(metal_allow_tearing, true,
 namespace xe {
 namespace ui {
 namespace metal {
+
+namespace {
+
+MTLPixelFormat GetHighPrecisionGuestOutputFormat() {
+#if XE_PLATFORM_IOS
+  NSOperatingSystemVersion os_version = [NSProcessInfo processInfo].operatingSystemVersion;
+  if (os_version.majorVersion == 18) {
+    // iOS 18 can produce invalid output from RGB10A2 shader writes. Keep newer
+    // runtimes on the D3D12/Vulkan-equivalent format.
+    return MTLPixelFormatRGBA16Float;
+  }
+#endif
+  return MTLPixelFormatRGB10A2Unorm;
+}
+
+float HalfToFloat(uint16_t half) {
+  uint32_t sign = uint32_t(half & 0x8000u) << 16;
+  int32_t exponent = int32_t((half >> 10) & 0x1Fu);
+  uint32_t mantissa = half & 0x03FFu;
+  uint32_t bits;
+  if (!exponent) {
+    if (!mantissa) {
+      bits = sign;
+    } else {
+      exponent = -14;
+      while (!(mantissa & 0x0400u)) {
+        mantissa <<= 1;
+        --exponent;
+      }
+      mantissa &= 0x03FFu;
+      bits = sign | (uint32_t(exponent + 127) << 23) | (mantissa << 13);
+    }
+  } else if (exponent == 0x1F) {
+    bits = sign | 0x7F800000u | (mantissa << 13);
+  } else {
+    bits = sign | (uint32_t(exponent + 112) << 23) | (mantissa << 13);
+  }
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+}  // namespace
 
 MetalPresenter::MetalPresenter(MetalProvider* provider, HostGpuLossCallback host_gpu_loss_callback)
     : Presenter(host_gpu_loss_callback), provider_(provider) {
@@ -317,7 +362,10 @@ bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
 
   uint32_t width = static_cast<uint32_t>(guest_output_texture.width);
   uint32_t height = static_cast<uint32_t>(guest_output_texture.height);
-  size_t stride = width * 4;  // 4 bytes per pixel
+  MTLPixelFormat pixel_format = guest_output_texture.pixelFormat;
+  bool is_rgba16_float = pixel_format == MTLPixelFormatRGBA16Float;
+  size_t readback_stride = width * (is_rgba16_float ? 8 : 4);
+  size_t stride = width * 4;  // RawImage is always RGBA8.
 
   XELOGD("Metal CaptureGuestOutput: Reading real texture data {}x{} from mailbox index {}", width,
          height, guest_output_mailbox_index);
@@ -329,7 +377,8 @@ bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
 
   MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
   id<MTLBuffer> readback_buffer =
-      [(__bridge id<MTLDevice>)device_ newBufferWithLength:height * stride options:options];
+      [(__bridge id<MTLDevice>)device_ newBufferWithLength:height * readback_stride
+                                                   options:options];
 
   if (!readback_buffer) {
     XELOGE("Metal CaptureGuestOutput: Failed to create readback buffer");
@@ -357,8 +406,8 @@ bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
                      sourceSize:MTLSizeMake(width, height, 1)
                        toBuffer:readback_buffer
               destinationOffset:0
-         destinationBytesPerRow:stride
-       destinationBytesPerImage:height * stride];
+         destinationBytesPerRow:readback_stride
+       destinationBytesPerImage:height * readback_stride];
 
   [blit_encoder endEncoding];
 
@@ -372,15 +421,10 @@ bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
     return false;
   }
 
-  std::memcpy(image_out.data.data(), buffer_contents, height * stride);
-
-  [readback_buffer release];
-
   // `stbi_write_png` expects RGBA8. Convert packed 10bpc and BGRA8 to RGBA8
   // and force alpha to 255 (matches D3D12/Vulkan behavior).
   uint8_t* pixel_data = image_out.data.data();
   size_t pixel_count = width * height;
-  MTLPixelFormat pixel_format = guest_output_texture.pixelFormat;
   bool is_rgb10a2 = pixel_format == MTLPixelFormatRGB10A2Unorm
 #ifdef MTLPixelFormatRGB10A2Unorm_sRGB
                     || pixel_format == MTLPixelFormatRGB10A2Unorm_sRGB
@@ -397,6 +441,30 @@ bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
     is_bgr10a2 = true;
   }
 #endif
+  if (is_rgba16_float) {
+    auto to_8bpc = [](float value) -> uint8_t {
+      if (!(value > 0.0f)) {
+        return 0;
+      }
+      if (value >= 1.0f) {
+        return 255;
+      }
+      return static_cast<uint8_t>(value * 255.0f + 0.5f);
+    };
+    const uint16_t* source = reinterpret_cast<const uint16_t*>(buffer_contents);
+    for (size_t i = 0; i < pixel_count; ++i) {
+      size_t offset = i * 4;
+      pixel_data[offset + 0] = to_8bpc(HalfToFloat(source[offset + 0]));
+      pixel_data[offset + 1] = to_8bpc(HalfToFloat(source[offset + 1]));
+      pixel_data[offset + 2] = to_8bpc(HalfToFloat(source[offset + 2]));
+      pixel_data[offset + 3] = 255;
+    }
+  } else {
+    std::memcpy(image_out.data.data(), buffer_contents, height * stride);
+  }
+
+  [readback_buffer release];
+
   if (is_rgb10a2 || is_bgr10a2) {
     auto to_8bpc = [](uint32_t value) -> uint8_t {
       return static_cast<uint8_t>((value * 255u + 511u) / 1023u);
@@ -863,8 +931,9 @@ bool MetalPresenter::RefreshGuestOutputImpl(
   }
 
   id<MTLTexture> guest_output_texture = guest_output_textures_[mailbox_index];
-  MTLPixelFormat guest_output_format =
-      ::cvars::metal_presenter_force_10bpc ? MTLPixelFormatRGB10A2Unorm : MTLPixelFormatRGBA8Unorm;
+  MTLPixelFormat guest_output_format = ::cvars::metal_presenter_force_10bpc
+                                           ? GetHighPrecisionGuestOutputFormat()
+                                           : MTLPixelFormatRGBA8Unorm;
 
   if (!guest_output_texture || guest_output_texture.width != frontbuffer_width ||
       guest_output_texture.height != frontbuffer_height ||
@@ -1463,30 +1532,6 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
 #endif
     return false;
   };
-  auto is_rgb10a2_format = [](MTLPixelFormat fmt) -> bool {
-    switch (fmt) {
-      case MTLPixelFormatRGB10A2Unorm:
-        return true;
-      default:
-        break;
-    }
-#ifdef MTLPixelFormatRGB10A2Unorm_sRGB
-    if (fmt == MTLPixelFormatRGB10A2Unorm_sRGB) {
-      return true;
-    }
-#endif
-#ifdef MTLPixelFormatBGR10A2Unorm
-    if (fmt == MTLPixelFormatBGR10A2Unorm) {
-      return true;
-    }
-#endif
-#ifdef MTLPixelFormatBGR10A2Unorm_sRGB
-    if (fmt == MTLPixelFormatBGR10A2Unorm_sRGB) {
-      return true;
-    }
-#endif
-    return false;
-  };
   bool decode_srgb = false;
   bool encode_srgb = false;
   MTL::Texture* sample_texture = source_texture;
@@ -1551,7 +1596,8 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
   if (apply_gamma) {
     id<MTLTexture> gamma_dest_texture = dest_metal_texture;
     bool needs_gamma_convert = false;
-    if (!is_rgb10a2_format(dst_format)) {
+    MTLPixelFormat gamma_output_format = GetHighPrecisionGuestOutputFormat();
+    if (dst_format != gamma_output_format) {
       if (!gamma_output_texture_ || gamma_output_width_ != copy_width ||
           gamma_output_height_ != copy_height) {
         if (gamma_output_texture_) {
@@ -1559,7 +1605,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
           gamma_output_texture_ = nullptr;
         }
         MTLTextureDescriptor* gamma_desc =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGB10A2Unorm
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:gamma_output_format
                                                                width:copy_width
                                                               height:copy_height
                                                            mipmapped:NO];

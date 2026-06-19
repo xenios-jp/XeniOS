@@ -262,10 +262,11 @@ static std::vector<IOSConfigSection> BuildDisplaySections() {
   IOSConfigSection display;
   display.title = "Display";
   display.footer = "These settings affect frame pacing and the Metal presenter output.";
-  AddBoolSetting(display.items, "metal_presenter_force_10bpc", "Force 10bpc Presenter Output",
-                 "Metal-only. Uses RGB10A2 output, which is the default path and usually "
-                 "reduces gamma-conversion cost on Apple GPUs. Disable only if colors, "
-                 "captures, or display compatibility look wrong.",
+  AddBoolSetting(display.items, "metal_presenter_force_10bpc",
+                 "Force High-Precision Presenter Output",
+                 "Metal-only. Uses a high-precision presenter target, which is the default "
+                 "path and usually reduces gamma-conversion cost on Apple GPUs. Disable only "
+                 "if colors, captures, or display compatibility look wrong.",
                  true);
   AddBoolSetting(display.items, "present_letterbox", "Letterbox",
                  "Maintains the guest display aspect with bars when the presenter surface "
