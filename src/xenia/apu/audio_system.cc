@@ -9,6 +9,7 @@
 
 #include "xenia/apu/audio_system.h"
 
+#include <chrono>
 #include <cstring>
 
 #include "xenia/apu/apu_flags.h"
@@ -57,6 +58,14 @@ DEFINE_uint32(apu_max_queued_frames, kApuQueuedFramesDefault,
               "Value range: [4-64]",
               "APU");
 UPDATE_from_uint32(apu_max_queued_frames, 2024, 8, 31, 20, 64);
+
+DEFINE_bool(apu_pace_callbacks, true,
+            "Space guest audio callbacks one Xenos audio frame (5.333 ms) "
+            "apart. Host drivers can release several buffer slots at once "
+            "(e.g. PHASE on iOS completes buffers per IO cycle), which would "
+            "otherwise run the guest callback back-to-back and starve the "
+            "title's audio thread, producing silent/repeated frames.",
+            "APU");
 
 namespace xe {
 namespace apu {
@@ -184,6 +193,27 @@ void AudioSystem::WorkerThreadMain() {
 
       if (client_callback) {
         SCOPE_profile_cpu_i("apu", "xe::apu::AudioSystem->client_callback");
+        if (cvars::apu_pace_callbacks) {
+          // The semaphore only provides back-pressure; pace the pumps to the
+          // guest's 5.333 ms audio frame cadence so the title's audio thread
+          // gets to refill its buffer between callbacks. Similar to
+          // xenia-canary 6e5b8324f ("[APU] Pace audio subsystem").
+          constexpr auto kPumpInterval = std::chrono::nanoseconds(5333333);
+          static std::chrono::steady_clock::time_point
+              next_pump[kMaximumClientCount];
+          const auto now = std::chrono::steady_clock::now();
+          auto& next = next_pump[index];
+          if (next.time_since_epoch().count() == 0 ||
+              now - next > 2 * kPumpInterval) {
+            next = now;
+          }
+          if (next > now) {
+            xe::threading::NanoSleepPrecise(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(next - now)
+                    .count());
+          }
+          next += kPumpInterval;
+        }
         uint64_t args[] = {client_callback_arg};
         processor_->Execute(worker_thread_->thread_state(), client_callback,
                             args, xe::countof(args));
