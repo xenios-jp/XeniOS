@@ -63,6 +63,24 @@
 DECLARE_bool(async_shader_compilation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(submit_on_primary_buffer_end);
+DEFINE_bool(metal_resolve_readback, true,
+            "Copy resolved pixels from the shared memory buffer back to guest "
+            "RAM (like D3D12/Vulkan resolve readback), so titles that read "
+            "resolve destinations on the CPU (such as auto-exposure luminance "
+            "measurement) see current data instead of stale guest memory.",
+            "Metal");
+DEFINE_bool(metal_resolve_readback_deferred, true,
+            "Copy resolve readback to guest RAM from the command buffer "
+            "completion handler, after the GPU has executed the resolve, "
+            "instead of immediately (which copies the previous result).",
+            "Metal");
+DEFINE_uint32(metal_resolve_readback_max_bytes, 65536,
+              "Largest resolve destination range (bytes) copied back to guest "
+              "RAM by metal_resolve_readback. Small CPU-read targets such as "
+              "luminance measurement textures fit; larger (full-frame) "
+              "resolves are skipped, since writing them back invalidates and "
+              "reuploads the watched pages every frame. 0 = no limit.",
+              "Metal");
 
 DEFINE_bool(
     metal_float_constants_dirty_on_change, true,
@@ -5643,6 +5661,45 @@ bool MetalCommandProcessor::IssueCopy() {
                                      copy_command_buffer, &resolve_plan)) {
     XELOGE("MetalCommandProcessor::IssueCopy - Resolve failed");
     return false;
+  }
+
+  // Resolved pixels only land in the GPU-visible shared memory buffer, which is
+  // a separate copy of guest physical memory, so titles reading a resolve
+  // destination on the CPU would see stale guest RAM. The buffer uses shared
+  // storage - copy the written range back, like the D3D12/Vulkan readback.
+  if (cvars::metal_resolve_readback && written_length &&
+      (!cvars::metal_resolve_readback_max_bytes ||
+       written_length <= cvars::metal_resolve_readback_max_bytes) &&
+      shared_memory_ &&
+      GetReadbackResolveMode() != ReadbackResolveMode::kDisabled &&
+      texture_cache_ && !texture_cache_->IsDrawResolutionScaled()) {
+    MTL::Buffer* shared_buffer = shared_memory_->GetBuffer();
+    VirtualHeap* physical_heap = memory_->GetPhysicalHeap();
+    HeapAllocationInfo alloc_info;
+    if (shared_buffer && shared_buffer->contents() && physical_heap &&
+        uint64_t(written_address) + written_length <= shared_buffer->length() &&
+        physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
+        (alloc_info.state & kMemoryAllocationCommit) &&
+        (alloc_info.protect & kMemoryProtectWrite) &&
+        uint64_t(written_address) + written_length <=
+            uint64_t(alloc_info.base_address) + alloc_info.region_size) {
+      uint8_t* readback_dst = memory_->TranslatePhysical(written_address);
+      uint8_t* readback_src =
+          static_cast<uint8_t*>(shared_buffer->contents()) + written_address;
+      const uint32_t readback_length = written_length;
+      MTL::CommandBuffer* readback_cmd = cvars::metal_resolve_readback_deferred
+                                             ? EnsureCommandBuffer()
+                                             : nullptr;
+      if (readback_cmd) {
+        readback_cmd->addCompletedHandler(
+            [readback_dst, readback_src,
+             readback_length](MTL::CommandBuffer* completed_cmd) {
+              memory::vastcpy(readback_dst, readback_src, readback_length);
+            });
+      } else {
+        memory::vastcpy(readback_dst, readback_src, readback_length);
+      }
+    }
   }
 
   return true;
