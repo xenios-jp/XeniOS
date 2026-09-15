@@ -239,6 +239,11 @@ class ShaderStorageWriter {
           xe::path_to_utf8(pipeline_storage_file_path));
       return false;
     }
+    // On Apple/BSD libc, fopen "a+" positions the stream at the end of the
+    // file (glibc and MSVC start reading at 0), so the header read below would
+    // fail and the whole storage would be truncated on every launch. Rewind
+    // explicitly; writes still append because of the "a" mode.
+    xe::filesystem::Seek(pipeline_storage_file_, 0, SEEK_SET);
 
     // Read pipeline descriptions.
     const uint32_t pipeline_storage_version_swapped =
@@ -314,6 +319,8 @@ class ShaderStorageWriter {
       pipeline_storage_file_ = nullptr;
       return false;
     }
+    // See the pipeline storage file above - rewind before reading on Apple.
+    xe::filesystem::Seek(shader_storage_file_, 0, SEEK_SET);
 
     // Load shaders from storage.
     size_t shaders_loaded = 0;
