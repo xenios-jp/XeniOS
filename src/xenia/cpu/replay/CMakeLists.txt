@@ -1,6 +1,7 @@
 # xenia-cpu-replay: compiles a JIT corpus recorded with --jit_corpus_out.
 add_executable(xenia-cpu-replay
   ${CMAKE_CURRENT_SOURCE_DIR}/cpu_replay_main.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/invocation_replay.cc
 )
 if(WIN32)
   target_sources(xenia-cpu-replay PRIVATE

@@ -126,6 +126,10 @@ void MaybeYield();
 // Memory barrier (request - may be ignored).
 void SyncMemory();
 
+// Asks the host to run the current thread on its efficiency cores, as a phone
+// runs most guest threads. False where the host offers no such control.
+bool PreferEfficiencyCores();
+
 // Sleeps the current thread for at least as long as the given duration.
 void Sleep(std::chrono::microseconds duration);
 void NanoSleep(int64_t ns);

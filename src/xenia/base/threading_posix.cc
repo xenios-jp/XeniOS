@@ -38,6 +38,7 @@
 #if XE_PLATFORM_MAC
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <pthread/qos.h>
 #endif
 
 #if XE_PLATFORM_LINUX
@@ -212,6 +213,14 @@ void MaybeYield() {
 }
 
 void SyncMemory() { __sync_synchronize(); }
+
+bool PreferEfficiencyCores() {
+#if XE_PLATFORM_MAC
+  return pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0) == 0;
+#else
+  return false;
+#endif  // XE_PLATFORM_MAC
+}
 
 static void SleepFor(timespec rqtp) {
   timespec rmtp = {};

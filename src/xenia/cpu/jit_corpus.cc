@@ -36,6 +36,7 @@ enum : uint32_t {
   kTagProfile,
   kTagMemoryPage,
   kTagInvocation,
+  kTagCheckedInvocation,
 };
 
 constexpr uint32_t kFlagRestore = 1u << 10;
@@ -76,6 +77,7 @@ class Reader {
  public:
   explicit Reader(const std::vector<uint8_t>& data) : data_(data) {}
   bool at_end() const { return offset_ == data_.size(); }
+  size_t offset() const { return offset_; }
   size_t remaining() const { return data_.size() - offset_; }
   const uint8_t* Skip(size_t size) {
     offset_ += size;
@@ -157,8 +159,9 @@ void AppendPageList(std::vector<uint8_t>* out,
 
 void AppendInvocation(std::vector<uint8_t>* out,
                       const JitCorpus::Invocation& invocation) {
-  const uint32_t header[] = {kTagInvocation, invocation.function,
-                             invocation.return_address, invocation.thread};
+  const uint32_t header[] = {
+      invocation.checked ? kTagCheckedInvocation : kTagInvocation,
+      invocation.function, invocation.return_address, invocation.thread};
   Append(out, header, sizeof(header));
   Append(out, invocation.entry_registers.data(), JitCorpus::kRegistersSize);
   Append(out, invocation.exit_registers.data(), JitCorpus::kRegistersSize);
@@ -234,6 +237,27 @@ JitCorpus::PageList JitCorpus::DiffPages(const PageList& from,
   return out;
 }
 
+JitCorpus::PageList JitCorpus::ApplyPages(const PageList& base,
+                                          const PageList& diff) {
+  PageList out;
+  out.reserve(base.size() + diff.size());
+  auto b = base.begin(), d = diff.begin();
+  while (b != base.end() || d != diff.end()) {
+    if (d == diff.end() || (b != base.end() && b->first < d->first)) {
+      out.push_back(*b++);
+      continue;
+    }
+    if (b != base.end() && b->first == d->first) {
+      ++b;
+    }
+    if (d->second) {
+      out.push_back(*d);
+    }
+    ++d;
+  }
+  return out;
+}
+
 bool JitCorpus::GetCvar(const std::string& name, uint64_t* value) {
   return VisitCvar(
       name, [&](auto* typed) { *value = uint64_t(*typed->current_value()); });
@@ -268,6 +292,7 @@ bool JitCorpus::Read(const std::filesystem::path& path, JitCorpus* out,
     return false;
   }
   while (!reader.at_end()) {
+    const size_t start = reader.offset();
     uint32_t tag = 0;
     bool complete = reader.Read(&tag);
     if (complete && tag == kTagCvar) {
@@ -319,8 +344,10 @@ bool JitCorpus::Read(const std::filesystem::path& path, JitCorpus* out,
       if (complete) {
         out->memory_pages.emplace(hash, reader.Skip(kMemoryPageSize));
       }
-    } else if (complete && tag == kTagInvocation) {
+    } else if (complete &&
+               (tag == kTagInvocation || tag == kTagCheckedInvocation)) {
       Invocation invocation;
+      invocation.checked = tag == kTagCheckedInvocation;
       complete = ReadInvocation(reader, &invocation);
       if (complete) {
         out->invocations.push_back(std::move(invocation));
@@ -333,8 +360,51 @@ bool JitCorpus::Read(const std::filesystem::path& path, JitCorpus* out,
       out->truncated = true;
       break;
     }
+    if (tag != kTagMemoryPage && tag != kTagInvocation &&
+        tag != kTagCheckedInvocation) {
+      out->other_records.emplace_back(start, reader.offset());
+    }
   }
   return true;
+}
+
+bool JitCorpus::Rewrite(const std::filesystem::path& path,
+                        const std::vector<Invocation>& invocations) const {
+  std::vector<uint8_t> out;
+  const uint32_t header[] = {kMagic, kVersion};
+  Append(&out, header, sizeof(header));
+  for (const auto& [start, end] : other_records) {
+    Append(&out, data.data() + start, end - start);
+  }
+  std::unordered_set<uint64_t> written;
+  for (const Invocation& invocation : invocations) {
+    for (const auto& [address, hash] : invocation.memory) {
+      auto it = memory_pages.find(hash);
+      if (it != memory_pages.end() && written.insert(hash).second) {
+        const uint32_t tag = kTagMemoryPage;
+        Append(&out, &tag, sizeof(tag));
+        Append(&out, &hash, sizeof(hash));
+        Append(&out, it->second, kMemoryPageSize);
+      }
+    }
+  }
+  for (const Invocation& invocation : invocations) {
+    AppendInvocation(&out, invocation);
+  }
+  // Written aside first, as the old contents are in use until then.
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  FILE* file = xe::filesystem::OpenFile(temporary, "wb");
+  if (!file) {
+    return false;
+  }
+  const bool written_all = fwrite(out.data(), out.size(), 1, file) == 1;
+  if (fclose(file) != 0 || !written_all) {
+    return false;
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  return !error;
 }
 
 std::unique_ptr<JitCorpusWriter> JitCorpusWriter::Create(
