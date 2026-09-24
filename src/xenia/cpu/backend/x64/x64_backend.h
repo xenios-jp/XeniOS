@@ -219,6 +219,10 @@ class X64Backend : public Backend {
   uint64_t CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                         uint64_t current_pc) override;
 
+  void CountHostInstructions(const uint8_t* code, size_t size,
+                             uint32_t* instructions,
+                             uint32_t* stable) const override;
+
   void InstallBreakpoint(Breakpoint* breakpoint) override;
   void InstallBreakpoint(Breakpoint* breakpoint, Function* fn) override;
   void UninstallBreakpoint(Breakpoint* breakpoint) override;

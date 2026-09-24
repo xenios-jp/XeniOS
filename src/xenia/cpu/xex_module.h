@@ -253,7 +253,7 @@ class XexModule : public xe::cpu::Module {
              XEX_MODULE_PATCH_FULL));
   }
 
-  InfoCacheFlags* GetInstructionAddressFlags(uint32_t guest_addr);
+  InfoCacheFlags* GetInstructionAddressFlags(uint32_t guest_addr) override;
 
   virtual void Precompile() override;
   // Compiles everything early precompilation discovers, if enabled.

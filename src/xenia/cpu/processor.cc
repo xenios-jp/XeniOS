@@ -33,6 +33,7 @@
 #include "xenia/cpu/breakpoint.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/export_resolver.h"
+#include "xenia/cpu/jit_corpus.h"
 #include "xenia/cpu/module.h"
 #include "xenia/cpu/ppc/ppc_decode_data.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
@@ -57,6 +58,10 @@
 DEFINE_bool(debug, DEFAULT_DEBUG_FLAG,
             "Allow debugging and retain debug information.", "General");
 DEFINE_bool(break_on_start, false, "Break into the debugger on startup.",
+            "CPU");
+DEFINE_path(jit_corpus_out, "",
+            "Record every function the JIT compiles to this file, for "
+            "xenia-cpu-replay. The file contains guest code.",
             "CPU");
 
 namespace xe {
@@ -263,6 +268,10 @@ bool Processor::Setup(std::unique_ptr<backend::Backend> backend) {
   }
 
   RefreshTraceCountsEnabled();
+
+  if (!cvars::jit_corpus_out.empty()) {
+    jit_corpus_writer_ = JitCorpusWriter::Create(this, cvars::jit_corpus_out);
+  }
 
   return true;
 }
@@ -943,6 +952,10 @@ bool Processor::DemandFunction(Function* function) {
 
     // Before we give the symbol back to the rest, let the debugger know.
     OnFunctionDefined(function);
+
+    if (jit_corpus_writer_) {
+      jit_corpus_writer_->RecordFunction(static_cast<GuestFunction*>(function));
+    }
 
     function->set_status(Symbol::Status::kDefined);
     symbol_status = function->status();
