@@ -47,7 +47,8 @@ class Processor;
 // functions that used the most host CPU: the registers each started with, all
 // of guest memory at that point, what the kernel exports it called returned,
 // and the registers and memory it ended with. Memory is stored as 4 KiB pages
-// by content hash, each content once, physical memory at vA0000000.
+// by content hash, each content once, physical memory at vA0000000. The first
+// replay checks them and rewrites the file with only the pages each touches.
 struct JitCorpus {
   static constexpr uint32_t kMagic = 0x52434A58;  // "XJCR"
   static constexpr uint32_t kVersion = 1;
@@ -100,21 +101,27 @@ struct JitCorpus {
     uint32_t return_address;
     // Guest KTHREAD of the thread it ran on.
     uint32_t thread;
+    // Captured: memory is all of it, as the pages that differ from the
+    // previous invocation's, a hash of 0 for a page no longer there, and
+    // writes are the pages anything changed meanwhile. Checked, by a replay
+    // that reproduced it: memory is the pages it touches and writes those it
+    // changes.
+    bool checked;
     std::vector<uint8_t> entry_registers;
     std::vector<uint8_t> exit_registers;
     std::vector<ExportCall> exports;
-    // Memory at entry, as the pages that differ from the previous invocation's
-    // entry, a hash of 0 for a page no longer there.
+    // Pages with the contents they had at entry.
     PageList memory;
-    // The pages that changed by exit, with what they held then.
+    // Pages with the contents they had at exit.
     PageList writes;
   };
 
   // Hash of a memory page's contents, never 0.
   static uint64_t HashMemoryPage(const void* data);
   // The pages of |to| that differ from |from|, a hash of 0 for those |to|
-  // lacks.
+  // lacks, and applying such a difference.
   static PageList DiffPages(const PageList& from, const PageList& to);
+  static PageList ApplyPages(const PageList& base, const PageList& diff);
 
   // Function metadata the backend reads from callees and the scanner from
   // restore helpers.
@@ -150,6 +157,13 @@ struct JitCorpus {
   std::unordered_map<uint64_t, const uint8_t*> memory_pages;
   bool truncated = false;
   std::vector<uint8_t> data;
+  // Where in data the records other than memory pages and invocations are.
+  std::vector<std::pair<size_t, size_t>> other_records;
+
+  // Replaces the file with its other records, |invocations| and the memory
+  // pages they start with.
+  bool Rewrite(const std::filesystem::path& path,
+               const std::vector<Invocation>& invocations) const;
 };
 
 class JitCorpusWriter {
