@@ -161,6 +161,8 @@ void NanoSleep(int64_t ns) {
 }
 void SyncMemory() { MemoryBarrier(); }
 
+bool PreferEfficiencyCores() { return false; }
+
 void Sleep(std::chrono::microseconds duration) {
   if (duration.count() < 100) {
     MaybeYield();
