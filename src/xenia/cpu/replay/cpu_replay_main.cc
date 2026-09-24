@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -17,14 +18,17 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/threading.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/jit_corpus.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/cpu/replay/invocation_replay.h"
 #include "xenia/cpu/xex_module.h"
 #include "xenia/memory.h"
 
@@ -48,14 +52,14 @@ DEFINE_string(replay_dump, "",
               "Print the guest code, optimized HIR and host code of the "
               "function at this guest address (hex).",
               "General");
+DEFINE_bool(replay_efficiency_cores, false,
+            "Time captured invocations on the efficiency cores, where a phone "
+            "runs most guest threads, rather than the performance cores.",
+            "General");
 
 namespace xe {
 namespace cpu {
 namespace {
-
-// Replay only compiles, so an extern needs an address, not a body.
-void ReplayExternHandler(ppc::PPCContext* ppc_context,
-                         kernel::KernelState* kernel_state) {}
 
 // Serves the compile what the capturing modules did: save/restore and extern
 // metadata, and the instructions recorded as accessing MMIO.
@@ -98,7 +102,7 @@ class CorpusModule : public Module {
     auto it = symbol_flags_.find(address);
     if (it != symbol_flags_.end()) {
       JitCorpus::UnpackSymbolFlags(it->second, function.get(),
-                                   ReplayExternHandler);
+                                   InvocationReplay::ExternHandler);
     }
     return function;
   }
@@ -147,6 +151,10 @@ struct Row {
   uint64_t host_instructions;
   uint64_t stable_instructions;
   uint64_t captured_stable_instructions;
+  // Host time per captured invocation, 0 if none was timed, and the host
+  // CPU samples the capture took in the function.
+  double ns_per_invocation;
+  uint32_t samples;
 };
 
 bool WriteRows(const std::filesystem::path& path,
@@ -158,17 +166,20 @@ bool WriteRows(const std::filesystem::path& path,
   }
   fmt::print(file,
              "address,guest_instructions,host_bytes,host_instructions,"
-             "stable_instructions,captured_stable_instructions\n");
+             "stable_instructions,captured_stable_instructions,"
+             "ns_per_invocation\n");
   for (const Row& row : rows) {
-    fmt::print(file, "{:08X},{},{},{},{},{}\n", row.address,
+    fmt::print(file, "{:08X},{},{},{},{},{},{:.1f}\n", row.address,
                row.guest_instructions, row.host_bytes, row.host_instructions,
-               row.stable_instructions, row.captured_stable_instructions);
+               row.stable_instructions, row.captured_stable_instructions,
+               row.ns_per_invocation);
   }
   fclose(file);
   return true;
 }
 
-// Stable instruction counts against a CSV from another build or cvar set.
+// Stable instruction counts, and host time per captured invocation, against a
+// CSV from another build or cvar set.
 bool CompareRows(const std::filesystem::path& path,
                  const std::vector<Row>& rows) {
   FILE* file = xe::filesystem::OpenFile(path, "r");
@@ -176,13 +187,15 @@ bool CompareRows(const std::filesystem::path& path,
     fmt::print(stderr, "Unable to open {}\n", xe::path_to_utf8(path));
     return false;
   }
-  std::unordered_map<uint32_t, uint64_t> baseline;
+  std::unordered_map<uint32_t, std::pair<uint64_t, double>> baseline;
   char line[256];
   unsigned int address;
   unsigned long long stable;
+  double ns = 0.0;
   while (fgets(line, sizeof(line), file)) {
-    if (sscanf(line, "%X,%*u,%*u,%*u,%llu", &address, &stable) == 2) {
-      baseline[address] = stable;
+    if (sscanf(line, "%X,%*u,%*u,%*u,%llu,%*u,%lf", &address, &stable, &ns) >=
+        2) {
+      baseline[address] = {stable, ns};
     }
   }
   fclose(file);
@@ -194,17 +207,34 @@ bool CompareRows(const std::filesystem::path& path,
   };
   std::vector<Change> changes;
   uint64_t before = 0, after = 0, common = 0;
+  // Time, with how much each function moved the total weighted by samples.
+  struct Timing {
+    uint32_t address;
+    double before;
+    double after;
+    double impact;
+  };
+  std::vector<Timing> timings;
+  double weight = 0.0, weighted = 0.0;
   for (const Row& row : rows) {
     auto it = baseline.find(row.address);
     if (it == baseline.end()) {
       continue;
     }
+    const auto [base_stable, base_ns] = it->second;
     ++common;
-    before += it->second;
+    before += base_stable;
     after += row.stable_instructions;
-    if (it->second != row.stable_instructions) {
-      changes.push_back(
-          {row.address, int64_t(it->second), int64_t(row.stable_instructions)});
+    if (base_stable != row.stable_instructions) {
+      changes.push_back({row.address, int64_t(base_stable),
+                         int64_t(row.stable_instructions)});
+    }
+    if (base_ns > 0.0 && row.ns_per_invocation > 0.0) {
+      const double ratio = row.ns_per_invocation / base_ns;
+      timings.push_back({row.address, base_ns, row.ns_per_invocation,
+                         row.samples * (ratio - 1.0)});
+      weight += row.samples;
+      weighted += row.samples * ratio;
     }
   }
   std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) {
@@ -228,7 +258,175 @@ bool CompareRows(const std::filesystem::path& path,
     fmt::print("  better  {:08X} {:+} ({} -> {})\n", c.address,
                c.after - c.before, c.before, c.after);
   }
+  if (timings.empty()) {
+    return true;
+  }
+  std::sort(timings.begin(), timings.end(),
+            [](const auto& a, const auto& b) { return a.impact > b.impact; });
+  fmt::print(
+      "time      {} functions timed in both: {:+.2f}% weighted by samples\n",
+      timings.size(), (weighted / weight - 1.0) * 100.0);
+  for (size_t i = 0; i < timings.size(); ++i) {
+    const Timing& t = timings[i];
+    const bool slower = t.after > t.before;
+    if (slower ? i < 10 : timings.size() - i <= 10) {
+      fmt::print("  {}  {:08X} {:+.2f}% ({:.0f} -> {:.0f} ns)\n",
+                 slower ? "slower" : "faster", t.address,
+                 (t.after / t.before - 1.0) * 100.0, t.before, t.after);
+    }
+  }
   return true;
+}
+
+// Runs every captured invocation once, checking it against the capture, then
+// times each function's in the order they were captured, over several runs.
+// The first replay of a capture keeps only the invocations it reproduces, and
+// rewrites the corpus with just the memory they touch.
+bool ReplayInvocations(Processor* processor, const JitCorpus& corpus,
+                       std::vector<Row>* rows) {
+  InvocationReplay replay(processor, corpus);
+  if (!replay.Initialize()) {
+    fmt::print(stderr, "Unable to map guest memory\n");
+    return false;
+  }
+  const bool captured = !corpus.invocations.front().checked;
+  std::vector<JitCorpus::Invocation> checked;
+  std::unordered_set<uint32_t> mismatched;
+  uint32_t others = 0, reading_others = 0, unrecorded = 0;
+  for (size_t i = 0; i < corpus.invocations.size(); ++i) {
+    const auto& invocation = corpus.invocations[i];
+    JitCorpus::Invocation result;
+    uint32_t pages = 0;
+    const std::string mismatch =
+        replay.Check(invocation, &result, &pages, &unrecorded);
+    if (mismatch.empty()) {
+      checked.push_back(std::move(result));
+      others += pages;
+      reading_others += pages != 0;
+      continue;
+    }
+    if (!captured) {
+      mismatched.insert(invocation.function);
+    }
+    fmt::print("{}  {:08X} invocation {}: {}\n",
+               captured ? "dropped " : "MISMATCH", invocation.function, i,
+               mismatch);
+  }
+  if (captured) {
+    const uint64_t size = std::filesystem::file_size(cvars::replay_corpus);
+    if (!corpus.Rewrite(cvars::replay_corpus, checked)) {
+      fmt::print(stderr, "Unable to rewrite the corpus\n");
+      return false;
+    }
+    fmt::print(
+        "checked   {} of {} captured invocations reproduce the capture, {} of "
+        "them touching {} pages something else changed meanwhile; corpus "
+        "rewritten with the pages they touch, {} MB -> {} MB\n",
+        checked.size(), corpus.invocations.size(), reading_others, others,
+        size >> 20, std::filesystem::file_size(cvars::replay_corpus) >> 20);
+  } else {
+    fmt::print("exact     {} of {} invocations{}\n", checked.size(),
+               corpus.invocations.size(),
+               unrecorded ? fmt::format(", touching {} pages the first replay "
+                                        "did not",
+                                        unrecorded)
+                          : std::string());
+  }
+
+  // Each function's invocations in capture order, hottest function first.
+  std::unordered_map<uint32_t, std::vector<const JitCorpus::Invocation*>>
+      by_function;
+  for (const auto& invocation : checked) {
+    by_function[invocation.function].push_back(&invocation);
+  }
+  uint64_t guest_samples = 0, covered_samples = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> timed;
+  for (const auto& [address, samples] : corpus.profile) {
+    guest_samples += samples;
+    if (by_function.count(address) && !mismatched.count(address)) {
+      covered_samples += samples;
+      timed.emplace_back(address, samples);
+    }
+  }
+  fmt::print(
+      "coverage  {:.1f}% of the samples in guest code are in the {} "
+      "functions reproduced ({} of {}, {} samples in all)\n",
+      guest_samples ? 100.0 * covered_samples / guest_samples : 0.0,
+      timed.size(), covered_samples, guest_samples, corpus.profile_samples);
+
+  if (cvars::replay_efficiency_cores &&
+      !xe::threading::PreferEfficiencyCores()) {
+    fmt::print("--replay_efficiency_cores has no effect on this platform\n");
+  }
+  std::unordered_map<uint32_t, Row*> row_of;
+  for (Row& row : *rows) {
+    row_of[row.address] = &row;
+  }
+  // The host clock may tick only every 42 ns, which some invocations take
+  // less than, so each is run alone many times over, in capture order, and
+  // the mean taken: of many runs it resolves far below a tick. Runs over twice
+  // the 90th percentile, which were interrupted, are left out. The functions
+  // take turns over several rounds, and the fastest round counts, as other
+  // work on the host can only slow a round down.
+  const uint64_t frequency = Clock::host_tick_frequency_platform();
+  constexpr size_t kRounds = 8;
+  const uint64_t budget = frequency / 40;
+  std::vector<std::vector<double>> rounds(timed.size());
+  size_t runs = 0;
+  for (size_t round = 0; round < kRounds; ++round) {
+    for (size_t f = 0; f < timed.size(); ++f) {
+      const auto& invocations = by_function[timed[f].first];
+      std::vector<std::vector<uint64_t>> times(invocations.size());
+      const uint64_t start = Clock::host_tick_count_platform();
+      // The first run of each warms up and is left out.
+      for (size_t run = 0;
+           run < 2 || Clock::host_tick_count_platform() - start < budget;
+           ++run) {
+        for (size_t k = 0; k < invocations.size(); ++k) {
+          const uint64_t time = replay.Time(*invocations[k]);
+          if (run) {
+            times[k].push_back(time);
+          }
+        }
+      }
+      double ticks = 0.0;
+      for (const auto& invocation_times : times) {
+        std::vector<uint64_t> sorted = invocation_times;
+        auto p90 = sorted.begin() + sorted.size() * 9 / 10;
+        std::nth_element(sorted.begin(), p90, sorted.end());
+        uint64_t sum = 0, count = 0;
+        for (uint64_t time : invocation_times) {
+          if (time <= 2 * *p90 + 1) {
+            sum += time;
+            ++count;
+          }
+        }
+        ticks += double(sum) / double(count) / double(times.size());
+      }
+      rounds[f].push_back(ticks * 1e9 / double(frequency));
+      runs += times[0].size();
+    }
+  }
+  double weighted = 0.0;
+  for (size_t f = 0; f < timed.size(); ++f) {
+    const auto [address, samples] = timed[f];
+    const double ns = *std::min_element(rounds[f].begin(), rounds[f].end());
+    if (auto it = row_of.find(address); it != row_of.end()) {
+      it->second->ns_per_invocation = ns;
+      it->second->samples = samples;
+    }
+    weighted += samples * ns;
+    fmt::print("  {:08X} {:5.1f}% of samples, {} invocations, {:.1f} ns\n",
+               address, 100.0 * samples / guest_samples,
+               by_function[address].size(), ns);
+  }
+  fmt::print(
+      "time      {:.0f} ns per invocation weighted by samples, over {} "
+      "functions on the {} cores, {} runs of each invocation\n",
+      covered_samples ? weighted / covered_samples : 0.0, timed.size(),
+      cvars::replay_efficiency_cores ? "efficiency" : "performance",
+      timed.empty() ? 0 : runs / timed.size());
+  return mismatched.empty();
 }
 
 int cpu_replay_main(const std::vector<std::string>& args) {
@@ -276,6 +474,7 @@ int cpu_replay_main(const std::vector<std::string>& args) {
           ? 0
           : xe::string_util::from_string<uint32_t>(cvars::replay_dump, true);
 
+  ExceptionHandler::Install(InvocationReplay::HandleException, nullptr);
   auto memory = std::make_unique<Memory>();
   if (!memory->Initialize()) {
     return 1;
@@ -294,7 +493,8 @@ int cpu_replay_main(const std::vector<std::string>& args) {
 
   for (const auto& range : corpus.mmio_ranges) {
     memory->AddVirtualMappedRange(range.address, range.mask, range.size,
-                                  nullptr, nullptr, nullptr);
+                                  nullptr, InvocationReplay::MmioRead,
+                                  InvocationReplay::MmioWrite);
   }
   // With the word after, zero unless recorded, as that is where the scanner
   // may have found the end of the function.
@@ -347,7 +547,9 @@ int cpu_replay_main(const std::vector<std::string>& args) {
                function->machine_code_length(),
                instructions,
                stable,
-               record.stable_instructions};
+               record.stable_instructions,
+               0.0,
+               0};
     identical += row.stable_instructions == row.captured_stable_instructions;
     total.guest_instructions += row.guest_instructions;
     total.host_bytes += row.host_bytes;
@@ -378,6 +580,10 @@ int cpu_replay_main(const std::vector<std::string>& args) {
              total.stable_instructions);
   fmt::print("capture   {} stable, {} of {} functions the same\n",
              total.captured_stable_instructions, identical, rows.size());
+  if (!corpus.invocations.empty() &&
+      !ReplayInvocations(processor.get(), corpus, &rows)) {
+    return 1;
+  }
   if (!cvars::replay_csv.empty() && !WriteRows(cvars::replay_csv, rows)) {
     return 1;
   }
