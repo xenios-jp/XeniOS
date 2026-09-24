@@ -396,7 +396,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Get or create a pool slot for a v128 constant with no immediate form.
   Xbyak_aarch64::Label& GetV128ConstLabel(const vec128_t& value);
 
-  XexModule* GuestModule() { return guest_module_; }
+  Module* GuestModule() { return guest_module_; }
 
  protected:
   void* Emplace(const EmitFunctionInfo& func_info,
@@ -416,7 +416,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   A64Backend* backend_ = nullptr;
   A64CodeCache* code_cache_ = nullptr;
   XbyakA64Allocator* allocator_ = nullptr;
-  XexModule* guest_module_ = nullptr;
+  Module* guest_module_ = nullptr;
   uint64_t feature_flags_ = 0;
   uint32_t current_guest_function_ = 0;
   bool guest_tlb_ = false;

@@ -481,6 +481,16 @@ bool TestCapstoneEflags(uint32_t eflags, uint32_t insn) {
   }
 }
 
+void X64Backend::CountHostInstructions(const uint8_t* code, size_t size,
+                                       uint32_t* instructions,
+                                       uint32_t* stable) const {
+  // A 64-bit immediate is one instruction, whatever its value.
+  cs_insn* insns = nullptr;
+  size_t count = cs_disasm(capstone_handle_, code, size, 0, 0, &insns);
+  cs_free(insns, count);
+  *instructions = *stable = uint32_t(count);
+}
+
 uint64_t X64Backend::CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                                   uint64_t current_pc) {
   auto machine_code_ptr = reinterpret_cast<const uint8_t*>(current_pc);
