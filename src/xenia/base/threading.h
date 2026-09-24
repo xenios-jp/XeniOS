@@ -504,6 +504,10 @@ class Thread : public WaitHandle {
   // Suspends the specified thread.
   virtual bool Suspend(uint32_t* out_previous_suspend_count = nullptr) = 0;
 
+  // Briefly suspends the thread to read the address it is executing, for a
+  // sampling profiler. 0 where that is not implemented.
+  virtual uint64_t SampleProgramCounter() { return 0; }
+
   // Terminates the thread.
   // No destructors are called, and this function does not return.
   // The state of the thread object becomes signaled, releasing any other

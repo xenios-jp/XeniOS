@@ -15,6 +15,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/cpu/mmio_handler.h"
 #include "xenia/cpu/module.h"
 #include "xenia/cpu/processor.h"
@@ -32,6 +33,9 @@ enum : uint32_t {
   kTagPage,
   kTagDeclaration,
   kTagFunction,
+  kTagProfile,
+  kTagMemoryPage,
+  kTagInvocation,
 };
 
 constexpr uint32_t kFlagRestore = 1u << 10;
@@ -72,6 +76,11 @@ class Reader {
  public:
   explicit Reader(const std::vector<uint8_t>& data) : data_(data) {}
   bool at_end() const { return offset_ == data_.size(); }
+  size_t remaining() const { return data_.size() - offset_; }
+  const uint8_t* Skip(size_t size) {
+    offset_ += size;
+    return data_.data() + offset_ - size;
+  }
   bool Read(void* out, size_t size) {
     if (data_.size() - offset_ < size) {
       return false;
@@ -93,6 +102,78 @@ class Reader {
   const std::vector<uint8_t>& data_;
   size_t offset_ = 0;
 };
+
+bool ReadPageList(Reader& reader, JitCorpus::PageList* out) {
+  uint32_t count;
+  if (!reader.Read(&count) || count > (1u << 20)) {
+    return false;
+  }
+  out->resize(count);
+  for (auto& [address, hash] : *out) {
+    if (!reader.Read(&address) || !reader.Read(&hash)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ReadInvocation(Reader& reader, JitCorpus::Invocation* out) {
+  uint32_t count;
+  if (!reader.Read(&out->function) || !reader.Read(&out->return_address) ||
+      !reader.Read(&out->thread) ||
+      !reader.Read(&out->entry_registers, JitCorpus::kRegistersSize) ||
+      !reader.Read(&out->exit_registers, JitCorpus::kRegistersSize) ||
+      !reader.Read(&count) || count > (1u << 16)) {
+    return false;
+  }
+  out->exports.resize(count);
+  for (auto& call : out->exports) {
+    uint32_t length;
+    std::vector<uint8_t> name;
+    if (!reader.Read(&call.return_address) || !reader.Read(&call.result) ||
+        !reader.Read(&length) || length > 256 || !reader.Read(&name, length)) {
+      return false;
+    }
+    call.name.assign(name.begin(), name.end());
+  }
+  return ReadPageList(reader, &out->memory) &&
+         ReadPageList(reader, &out->writes);
+}
+
+void Append(std::vector<uint8_t>* out, const void* data, size_t size) {
+  auto bytes = static_cast<const uint8_t*>(data);
+  out->insert(out->end(), bytes, bytes + size);
+}
+
+void AppendPageList(std::vector<uint8_t>* out,
+                    const JitCorpus::PageList& pages) {
+  const uint32_t count = uint32_t(pages.size());
+  Append(out, &count, sizeof(count));
+  for (const auto& [address, hash] : pages) {
+    Append(out, &address, sizeof(address));
+    Append(out, &hash, sizeof(hash));
+  }
+}
+
+void AppendInvocation(std::vector<uint8_t>* out,
+                      const JitCorpus::Invocation& invocation) {
+  const uint32_t header[] = {kTagInvocation, invocation.function,
+                             invocation.return_address, invocation.thread};
+  Append(out, header, sizeof(header));
+  Append(out, invocation.entry_registers.data(), JitCorpus::kRegistersSize);
+  Append(out, invocation.exit_registers.data(), JitCorpus::kRegistersSize);
+  const uint32_t export_count = uint32_t(invocation.exports.size());
+  Append(out, &export_count, sizeof(export_count));
+  for (const auto& call : invocation.exports) {
+    const uint32_t length = uint32_t(call.name.size());
+    Append(out, &call.return_address, sizeof(call.return_address));
+    Append(out, &call.result, sizeof(call.result));
+    Append(out, &length, sizeof(length));
+    Append(out, call.name.data(), length);
+  }
+  AppendPageList(out, invocation.memory);
+  AppendPageList(out, invocation.writes);
+}
 
 bool ReadFunction(Reader& reader, JitCorpus::FunctionRecord* out) {
   uint32_t count;
@@ -129,6 +210,30 @@ void JitCorpus::UnpackSymbolFlags(uint32_t flags, GuestFunction* function,
   }
 }
 
+uint64_t JitCorpus::HashMemoryPage(const void* data) {
+  const uint64_t hash = XXH3_64bits(data, kMemoryPageSize);
+  return hash ? hash : 1;
+}
+
+JitCorpus::PageList JitCorpus::DiffPages(const PageList& from,
+                                         const PageList& to) {
+  PageList out;
+  auto f = from.begin(), t = to.begin();
+  while (f != from.end() || t != to.end()) {
+    if (t == to.end() || (f != from.end() && f->first < t->first)) {
+      out.emplace_back((f++)->first, 0);
+    } else if (f == from.end() || t->first < f->first) {
+      out.push_back(*t++);
+    } else {
+      if (f->second != t->second) {
+        out.push_back(*t);
+      }
+      ++f, ++t;
+    }
+  }
+  return out;
+}
+
 bool JitCorpus::GetCvar(const std::string& name, uint64_t* value) {
   return VisitCvar(
       name, [&](auto* typed) { *value = uint64_t(*typed->current_value()); });
@@ -143,7 +248,7 @@ bool JitCorpus::SetCvar(const std::string& name, uint64_t value) {
 
 bool JitCorpus::Read(const std::filesystem::path& path, JitCorpus* out,
                      std::string* error) {
-  std::vector<uint8_t> data;
+  std::vector<uint8_t>& data = out->data;
   if (FILE* file = xe::filesystem::OpenFile(path, "rb")) {
     data.resize(std::filesystem::file_size(path));
     if (!data.empty() && fread(data.data(), data.size(), 1, file) != 1) {
@@ -199,6 +304,26 @@ bool JitCorpus::Read(const std::filesystem::path& path, JitCorpus* out,
       if (complete) {
         (tag == kTagFunction ? out->functions : out->declarations)
             .push_back(std::move(record));
+      }
+    } else if (complete && tag == kTagProfile) {
+      uint32_t count;
+      complete = reader.Read(&out->profile_samples) && reader.Read(&count) &&
+                 count < (1u << 24);
+      out->profile.resize(complete ? count : 0);
+      for (auto& [address, samples] : out->profile) {
+        complete = complete && reader.Read(&address) && reader.Read(&samples);
+      }
+    } else if (complete && tag == kTagMemoryPage) {
+      uint64_t hash;
+      complete = reader.Read(&hash) && reader.remaining() >= kMemoryPageSize;
+      if (complete) {
+        out->memory_pages.emplace(hash, reader.Skip(kMemoryPageSize));
+      }
+    } else if (complete && tag == kTagInvocation) {
+      Invocation invocation;
+      complete = ReadInvocation(reader, &invocation);
+      if (complete) {
+        out->invocations.push_back(std::move(invocation));
       }
     } else if (complete) {
       *error = fmt::format("unknown record type {}", tag);
@@ -351,6 +476,38 @@ void JitCorpusWriter::WriteFunction(uint32_t tag, const GuestFunction* function,
   Write(record, sizeof(record));
   Write(code.data(), code.size());
   Write(mmio.data(), mmio.size());
+}
+
+void JitCorpusWriter::WriteProfile(
+    uint64_t samples,
+    const std::vector<std::pair<uint32_t, uint32_t>>& profile) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t tag = kTagProfile, count = uint32_t(profile.size());
+  Write(&tag, sizeof(tag));
+  Write(&samples, sizeof(samples));
+  Write(&count, sizeof(count));
+  for (const auto& [address, function_samples] : profile) {
+    Write(&address, sizeof(address));
+    Write(&function_samples, sizeof(function_samples));
+  }
+}
+
+void JitCorpusWriter::WriteMemoryPage(uint64_t hash, const void* data) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t tag = kTagMemoryPage;
+  Write(&tag, sizeof(tag));
+  Write(&hash, sizeof(hash));
+  Write(data, JitCorpus::kMemoryPageSize);
+}
+
+void JitCorpusWriter::WriteInvocation(const JitCorpus::Invocation& invocation) {
+  std::vector<uint8_t> record;
+  AppendInvocation(&record, invocation);
+  auto global_lock = global_critical_region_.Acquire();
+  Write(record.data(), record.size());
+  if (file_) {
+    fflush(file_);
+  }
 }
 
 void JitCorpusWriter::Write(const void* data, size_t size) {
