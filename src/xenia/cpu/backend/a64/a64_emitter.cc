@@ -90,7 +90,7 @@ bool A64Emitter::Emit(GuestFunction* function, hir::HIRBuilder* builder,
                       std::vector<SourceMapEntry>* out_source_map) {
   SCOPE_profile_cpu_f("cpu");
 
-  guest_module_ = dynamic_cast<XexModule*>(function->module());
+  guest_module_ = function->module();
 
   debug_info_ = debug_info;
   debug_info_flags_ = debug_info_flags;

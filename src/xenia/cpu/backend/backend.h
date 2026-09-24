@@ -82,6 +82,15 @@ class Backend {
   virtual uint64_t CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                                 uint64_t current_pc) = 0;
 
+  // Counts the host instructions in emitted code, and the same with each
+  // constant that takes several instructions counted once. Only the second is
+  // independent of where the process was loaded.
+  virtual void CountHostInstructions(const uint8_t* code, size_t size,
+                                     uint32_t* instructions,
+                                     uint32_t* stable) const {
+    *instructions = *stable = 0;
+  }
+
   virtual void InstallBreakpoint(Breakpoint* breakpoint) {}
   virtual void InstallBreakpoint(Breakpoint* breakpoint, Function* fn) {}
   virtual void UninstallBreakpoint(Breakpoint* breakpoint) {}

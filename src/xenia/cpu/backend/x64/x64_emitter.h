@@ -416,7 +416,7 @@ class X64Emitter : public Xbyak::CodeGenerator {
   void LoadVmxMxcsrDirect();     // unsafe, does not change mxcsr_mode_
   void LoadVmxDazMxcsrDirect();  // unsafe, does not change mxcsr_mode_
 
-  XexModule* GuestModule() { return guest_module_; }
+  Module* GuestModule() { return guest_module_; }
 
   void EmitProfilerEpilogue();
 
@@ -486,7 +486,7 @@ class X64Emitter : public Xbyak::CodeGenerator {
   X64Backend* backend_ = nullptr;
   X64CodeCache* code_cache_ = nullptr;
   XbyakAllocator* allocator_ = nullptr;
-  XexModule* guest_module_ = nullptr;
+  Module* guest_module_ = nullptr;
   bool synchronize_stack_on_next_instruction_ = false;
   uint64_t feature_flags_ = 0;
   uint32_t current_guest_function_ = 0;

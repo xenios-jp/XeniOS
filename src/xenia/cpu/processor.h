@@ -41,6 +41,7 @@ namespace cpu {
 constexpr fourcc_t kProcessorSaveSignature = make_fourcc("PROC");
 
 class Breakpoint;
+class JitCorpusWriter;
 class StackWalker;
 class XexModule;
 
@@ -376,6 +377,8 @@ class Processor {
   bool trace_counts_enabled_ = false;
   size_t trace_counts_next_offset_ = 0;
   size_t trace_counts_committed_ = 0;
+
+  std::unique_ptr<JitCorpusWriter> jit_corpus_writer_;
 
   std::unique_ptr<ppc::PPCFrontend> frontend_;
   std::unique_ptr<backend::Backend> backend_;

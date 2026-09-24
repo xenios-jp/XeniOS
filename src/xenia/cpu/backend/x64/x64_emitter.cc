@@ -109,7 +109,7 @@ bool X64Emitter::Emit(GuestFunction* function, HIRBuilder* builder,
                       void** out_code_address, size_t* out_code_size,
                       std::vector<SourceMapEntry>* out_source_map) {
   SCOPE_profile_cpu_f("cpu");
-  guest_module_ = dynamic_cast<XexModule*>(function->module());
+  guest_module_ = function->module();
   current_guest_function_ = function->address();
   // Reset.
   debug_info_ = debug_info;

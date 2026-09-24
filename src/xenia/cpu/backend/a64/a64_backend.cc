@@ -1838,6 +1838,28 @@ int64_t SignExtend(uint64_t value, uint32_t bits) {
 
 }  // namespace
 
+void A64Backend::CountHostInstructions(const uint8_t* code, size_t size,
+                                       uint32_t* instructions,
+                                       uint32_t* stable) const {
+  // A 64-bit constant is a MOVZ or MOVN and a MOVK for each further halfword
+  // that is not zero, so a host address takes one to four instructions, and
+  // the zero padding that realigns what follows changes with it.
+  auto is_move_wide = [](uint32_t insn) {
+    return (insn & 0x1F800000) == 0x12800000 && ((insn >> 29) & 3) != 1;
+  };
+  const auto* words = reinterpret_cast<const uint32_t*>(code);
+  *instructions = *stable = 0;
+  for (size_t i = 0; i < size / 4; ++i) {
+    if (!words[i]) {
+      continue;
+    }
+    ++*instructions;
+    *stable += !(i && ((words[i] >> 29) & 3) == 3 && is_move_wide(words[i]) &&
+                 is_move_wide(words[i - 1]) &&
+                 (words[i] & 0x1F) == (words[i - 1] & 0x1F));
+  }
+}
+
 uint64_t A64Backend::CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                                   uint64_t current_pc) {
   const auto& ctx = thread_info->host_context;

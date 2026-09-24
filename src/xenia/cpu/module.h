@@ -25,6 +25,7 @@ namespace xe {
 namespace cpu {
 
 class Processor;
+struct InfoCacheFlags;
 
 class Module {
  public:
@@ -46,6 +47,11 @@ class Module {
   // Whether a function that reaches |address| after a call ends at the call,
   // because the code there belongs to another function.
   virtual bool EndsBeforeCallReturn(uint32_t address) { return false; }
+
+  // What is known about the instruction at a guest code address, or null.
+  virtual InfoCacheFlags* GetInstructionAddressFlags(uint32_t address) {
+    return nullptr;
+  }
 
   Symbol* LookupSymbol(uint32_t address, bool wait = true);
   virtual Symbol::Status DeclareFunction(uint32_t address,

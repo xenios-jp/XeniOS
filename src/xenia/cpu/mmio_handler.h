@@ -74,6 +74,7 @@ class MMIOHandler {
                      void* context, MMIOReadCallback read_callback,
                      MMIOWriteCallback write_callback);
   MMIORange* LookupRange(uint32_t virtual_address);
+  const std::vector<MMIORange>& mapped_ranges() const { return mapped_ranges_; }
 
   bool CheckLoad(uint32_t virtual_address, uint32_t* out_value);
   bool CheckStore(uint32_t virtual_address, uint32_t value);

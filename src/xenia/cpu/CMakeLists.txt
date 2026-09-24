@@ -11,6 +11,10 @@ target_include_directories(xenia-cpu PRIVATE
 target_link_libraries(xenia-cpu PUBLIC mbedtls xenia-base mspack)
 xe_target_defaults(xenia-cpu)
 
+if(XENIA_BUILD_MISC)
+  add_subdirectory(replay)
+endif()
+
 if(XENIA_BUILD_TESTS)
   add_subdirectory(testing)
   add_subdirectory(ppc/testing)
