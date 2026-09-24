@@ -16,12 +16,14 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "xenia/base/mutex.h"
 #include "xenia/cpu/function.h"
+#include "xenia/cpu/ppc/ppc_context.h"
 
 namespace xe {
 namespace cpu {
@@ -40,6 +42,12 @@ class Processor;
 // and the guest changes page protection as it runs. A capture normally ends
 // with the process being killed, so reading stops quietly at a truncated last
 // record. The file holds guest code and is not redistributable.
+//
+// A capture (jit_corpus_capture_after) adds real invocations of the guest
+// functions that used the most host CPU: the registers each started with, all
+// of guest memory at that point, what the kernel exports it called returned,
+// and the registers and memory it ended with. Memory is stored as 4 KiB pages
+// by content hash, each content once, physical memory at vA0000000.
 struct JitCorpus {
   static constexpr uint32_t kMagic = 0x52434A58;  // "XJCR"
   static constexpr uint32_t kVersion = 1;
@@ -73,6 +81,41 @@ struct JitCorpus {
     std::vector<uint8_t> mmio;
   };
 
+  static constexpr uint32_t kMemoryPageSize = 4096;
+  // Physical memory pages are at their vA0000000 view, where it is mapped
+  // whole.
+  static constexpr uint32_t kPhysicalMemory = 0xA0000000;
+  // Guest pages by address, with the hashes of their contents.
+  using PageList = std::vector<std::pair<uint32_t, uint64_t>>;
+  // The guest-visible registers, the start of a PPCContext.
+  static constexpr size_t kRegistersSize = offsetof(ppc::PPCContext, thread_id);
+  struct ExportCall {
+    // The guest address it returns to, the export and what it left in r3.
+    uint32_t return_address;
+    std::string name;
+    uint64_t result;
+  };
+  struct Invocation {
+    uint32_t function;
+    uint32_t return_address;
+    // Guest KTHREAD of the thread it ran on.
+    uint32_t thread;
+    std::vector<uint8_t> entry_registers;
+    std::vector<uint8_t> exit_registers;
+    std::vector<ExportCall> exports;
+    // Memory at entry, as the pages that differ from the previous invocation's
+    // entry, a hash of 0 for a page no longer there.
+    PageList memory;
+    // The pages that changed by exit, with what they held then.
+    PageList writes;
+  };
+
+  // Hash of a memory page's contents, never 0.
+  static uint64_t HashMemoryPage(const void* data);
+  // The pages of |to| that differ from |from|, a hash of 0 for those |to|
+  // lacks.
+  static PageList DiffPages(const PageList& from, const PageList& to);
+
   // Function metadata the backend reads from callees and the scanner from
   // restore helpers.
   static uint32_t PackSymbolFlags(const GuestFunction* function);
@@ -98,7 +141,15 @@ struct JitCorpus {
   std::vector<Page> pages;
   std::vector<FunctionRecord> declarations;
   std::vector<FunctionRecord> functions;
+  // Host CPU samples taken before the capture, and how many of them landed in
+  // each guest function.
+  uint64_t profile_samples = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> profile;
+  std::vector<Invocation> invocations;
+  // Memory page contents by hash, pointing into data.
+  std::unordered_map<uint64_t, const uint8_t*> memory_pages;
   bool truncated = false;
+  std::vector<uint8_t> data;
 };
 
 class JitCorpusWriter {
@@ -108,6 +159,11 @@ class JitCorpusWriter {
   ~JitCorpusWriter();
 
   void RecordFunction(GuestFunction* function);
+
+  void WriteProfile(uint64_t samples,
+                    const std::vector<std::pair<uint32_t, uint32_t>>& profile);
+  void WriteMemoryPage(uint64_t hash, const void* data);
+  void WriteInvocation(const JitCorpus::Invocation& invocation);
 
  private:
   JitCorpusWriter(Processor* processor, FILE* file)

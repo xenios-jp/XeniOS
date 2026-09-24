@@ -90,12 +90,15 @@ KernelState::KernelState(Emulator* emulator)
       kMemoryProtectRead | kMemoryProtectWrite);
 
   xenia_assert(fixed_alloc_worked);
+
+  StartInvocationCapture(this);
 }
 
 KernelState::~KernelState() {
   // Before anything a timer callback touches goes away.
   XTimer::CancelAll();
 
+  StopInvocationCapture();
   SetExecutableModule(nullptr);
 
   ShutdownDispatchThread();
@@ -1442,6 +1445,10 @@ bool KernelState::Save(ByteStream* stream) {
 // this only gets triggered once per ms at most, so fields other than tick count
 // will probably not be updated in a timely manner for guest code that uses them
 void KernelState::UpdateKeTimestampBundle() {
+  // A thread running alone, being captured, sees time stand still.
+  if (guest_scheduler_->freezer()) {
+    return;
+  }
   X_TIME_STAMP_BUNDLE* lpKeTimeStampBundle =
       memory_->TranslateVirtual<X_TIME_STAMP_BUNDLE*>(ke_timestamp_bundle_ptr_);
   uint32_t uptime_ms = Clock::QueryGuestUptimeMillis();

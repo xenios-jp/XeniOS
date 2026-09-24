@@ -104,6 +104,8 @@ class A64HelperEmitter : public A64Emitter {
   void* EmitFrsqrteHelper();
   void* EmitReservedStoreHelper(bool bit64, ReservedStoreFaultSite& fault_site);
   ReservedStoreThunk EmitReservedStoreThunk(void* helper);
+  void* EmitFunctionEntryHook(GuestFunction* function, FunctionEntryHook hook,
+                              uint32_t first_instruction);
 
  private:
   // Clobbers x11. Installs the AAPCS64 default FPCR for host code.
@@ -1906,6 +1908,84 @@ uint64_t A64Backend::CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
     return ReadXReg(ctx, (insn >> 5) & 0x1F);
   }
   return next_pc;
+}
+
+// Calls the hook with the registers the function was entered with, then
+// either returns to the caller or runs the displaced first instruction and
+// jumps back into the function.
+void* A64HelperEmitter::EmitFunctionEntryHook(GuestFunction* function,
+                                              FunctionEntryHook hook,
+                                              uint32_t first_instruction) {
+  // At a guest function's entry only x0, the guest return address, and the
+  // link register are live: callers branch through x9 or x16 to the entry, and
+  // the guest-to-host thunk preserves the guest state.
+  sub(sp, sp, 16);
+  stp(x0, x30, ptr(sp));
+  mov(x2, x0);
+  mov(x1, reinterpret_cast<uint64_t>(function));
+  mov(x0, reinterpret_cast<uint64_t>(hook));
+  mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+  blr(x9);
+  mov(x16, x0);
+  ldp(x0, x30, ptr(sp));
+  add(sp, sp, 16);
+  Xbyak_aarch64::Label run;
+  cbz(x16, run);
+  ret();
+  L(run);
+  dd(first_instruction);
+  mov(x16, reinterpret_cast<uint64_t>(function->machine_code()) + 4);
+  br(x16);
+
+  EmitFunctionInfo func_info = {};
+  func_info.code_size.total = getSize();
+  func_info.code_size.prolog = 8;
+  func_info.code_size.body = getSize() - 8;
+  func_info.prolog_stack_alloc_offset = 4;
+  func_info.stack_size = 16;
+  func_info.lr_save_offset = 8;
+  return Emplace(func_info);
+}
+
+bool A64Backend::HookFunctionEntry(GuestFunction* function,
+                                   FunctionEntryHook hook) {
+  auto code = static_cast<uint8_t*>(function->machine_code());
+  if (!code || entry_hooks_.count(function)) {
+    return false;
+  }
+  // The prolog starts by sizing the frame, SUB SP, SP, #imm or a constant
+  // into x17. Neither is PC-relative, so it runs as well from the stub.
+  const uint32_t first = xe::load<uint32_t>(code);
+  const bool sub_sp = (first & 0xFF8003FF) == 0xD10003FF;
+  const bool to_x17 =
+      (first & 0x1F) == 17 && ((first & 0x7F800000) == 0x52800000 ||
+                               (first & 0x7F8003E0) == 0x320003E0);
+  if (!sub_sp && !to_x17) {
+    return false;
+  }
+  XbyakA64Allocator allocator;
+  A64HelperEmitter emitter(this, &allocator);
+  auto stub = static_cast<uint8_t*>(
+      emitter.EmitFunctionEntryHook(function, hook, first));
+  const int64_t offset = stub - code;
+  if (!stub || offset < -(int64_t(1) << 27) || offset >= (int64_t(1) << 27)) {
+    return false;
+  }
+  const uint32_t branch = 0x14000000 | (uint32_t(offset >> 2) & 0x03FFFFFF);
+  if (!code_cache()->PatchCode(code, &branch, sizeof(branch))) {
+    return false;
+  }
+  entry_hooks_[function] = first;
+  return true;
+}
+
+void A64Backend::UnhookFunctionEntry(GuestFunction* function) {
+  auto it = entry_hooks_.find(function);
+  if (it != entry_hooks_.end()) {
+    code_cache()->PatchCode(function->machine_code(), &it->second,
+                            sizeof(it->second));
+    entry_hooks_.erase(it);
+  }
 }
 
 // ARM64 BRK #0 encoding (4 bytes, fixed-width instruction).

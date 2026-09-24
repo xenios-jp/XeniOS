@@ -1344,6 +1344,36 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     return true;
   }
 
+#if XE_PLATFORM_MAC
+  uint64_t SampleProgramCounter() const {
+    WaitStarted();
+    const mach_port_t port = pthread_mach_thread_np(thread_);
+    if (thread_suspend(port) != KERN_SUCCESS) {
+      return 0;
+    }
+    uint64_t pc = 0;
+#if XE_ARCH_ARM64
+    arm_thread_state64_t state;
+    mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(port, ARM_THREAD_STATE64,
+                         reinterpret_cast<thread_state_t>(&state),
+                         &count) == KERN_SUCCESS) {
+      pc = arm_thread_state64_get_pc(state);
+    }
+#else
+    x86_thread_state64_t state;
+    mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
+    if (thread_get_state(port, x86_THREAD_STATE64,
+                         reinterpret_cast<thread_state_t>(&state),
+                         &count) == KERN_SUCCESS) {
+      pc = state.__rip;
+    }
+#endif  // XE_ARCH_ARM64
+    thread_resume(port);
+    return pc;
+  }
+#endif  // XE_PLATFORM_MAC
+
   bool Suspend(uint32_t* out_previous_suspend_count = nullptr) {
     if (out_previous_suspend_count) {
       *out_previous_suspend_count = 0;
@@ -1781,6 +1811,12 @@ class PosixThread final : public PosixConditionHandle<Thread> {
   bool Suspend(uint32_t* out_previous_suspend_count) override {
     return handle_.Suspend(out_previous_suspend_count);
   }
+
+#if XE_PLATFORM_MAC
+  uint64_t SampleProgramCounter() override {
+    return handle_.SampleProgramCounter();
+  }
+#endif  // XE_PLATFORM_MAC
 
   void Terminate(int exit_code) override { handle_.Terminate(exit_code); }
 
