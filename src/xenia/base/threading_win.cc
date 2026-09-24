@@ -587,6 +587,24 @@ class Win32Thread : public Win32Handle<Thread> {
     return true;
   }
 
+  uint64_t SampleProgramCounter() override {
+    if (SuspendThread(handle_) == UINT_MAX) {
+      return 0;
+    }
+    CONTEXT context = {};
+    context.ContextFlags = CONTEXT_CONTROL;
+    uint64_t pc = 0;
+    if (GetThreadContext(handle_, &context)) {
+#if XE_ARCH_AMD64
+      pc = context.Rip;
+#elif XE_ARCH_ARM64
+      pc = context.Pc;
+#endif  // XE_ARCH
+    }
+    ResumeThread(handle_);
+    return pc;
+  }
+
   bool Suspend(uint32_t* out_previous_suspend_count = nullptr) override {
     if (out_previous_suspend_count) {
       *out_previous_suspend_count = 0;

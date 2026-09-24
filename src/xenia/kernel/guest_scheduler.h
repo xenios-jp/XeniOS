@@ -119,6 +119,20 @@ class GuestScheduler {
   // freeze the guest threads sharing it. The Fence must have one waiter.
   static void WaitOnFence(xe::threading::Fence& fence);
 
+  // Stops every other guest thread at its next safepoint or wait, for as long
+  // as the calling fiber neither blocks nor yields. False, with them running
+  // again, if they did not all stop within |timeout|.
+  bool FreezeOthers(std::chrono::milliseconds timeout);
+  // Lets them run again, from any thread. False if the freeze had already
+  // ended, because the fiber that froze the others blocked or yielded, or
+  // Thaw was called before.
+  bool Thaw();
+  // The fiber running alone after FreezeOthers, if any.
+  XThread* freezer() const { return freezer_.load(std::memory_order_relaxed); }
+
+  // Where each dispatch thread is executing, for a sampling profiler.
+  void SampleProgramCounters(std::vector<uint64_t>* pcs) const;
+
   // Opens a background-scheduling window on the background processors, as the
   // console does from its vblank DPC. Those CPUs prefer the low priority band
   // for its duration. Safe to call off a dispatch thread.
@@ -334,6 +348,13 @@ class GuestScheduler {
   std::atomic<bool> global_lock_hazard_saturated_{false};
   std::mutex global_lock_hazard_mutex_;
   std::unordered_set<uint64_t> global_lock_hazard_stacks_;
+
+  // The fiber running alone after FreezeOthers, its CPU, the other CPUs
+  // stopped for it, and the event they wait on until Thaw.
+  std::atomic<XThread*> freezer_{nullptr};
+  int freezer_cpu_ = -1;
+  std::atomic<int> frozen_cpus_{0};
+  std::unique_ptr<xe::threading::Event> thaw_event_;
 
   std::atomic<bool> started_{false};
   std::atomic<bool> shutting_down_{false};
