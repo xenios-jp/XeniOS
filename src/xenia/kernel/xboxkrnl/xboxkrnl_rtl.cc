@@ -529,19 +529,6 @@ DECLARE_XBOXKRNL_EXPORT1(RtlImageXexHeaderField, kNone, kImplemented);
 // Ref:
 // https://github.com/reactos/reactos/blob/master/sdk/lib/rtl/critical.c
 
-// This structure tries to match the one on the 360 as best I can figure out.
-// Unfortunately some games have the critical sections pre-initialized in
-// their embedded data and InitializeCriticalSection will never be called.
-#pragma pack(push, 1)
-struct X_RTL_CRITICAL_SECTION {
-  X_DISPATCH_HEADER header;
-  int32_t lock_count;                          // 0x10 -1 -> 0 on first lock
-  xe::be<int32_t> recursion_count;             // 0x14  0 -> 1 on first lock
-  TypedGuestPointer<X_KTHREAD> owning_thread;  // 0x18 PKTHREAD 0 unless locked
-};
-#pragma pack(pop)
-static_assert_size(X_RTL_CRITICAL_SECTION, 28);
-
 void xeRtlInitializeCriticalSection(X_RTL_CRITICAL_SECTION* cs,
                                     uint32_t cs_ptr) {
   cs->header.type = X_OBJECT_TYPES::EventSynchronizationObject;

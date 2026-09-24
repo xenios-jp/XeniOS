@@ -21,6 +21,7 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/cpu/export_resolver.h"
 #include "xenia/cpu/ppc/ppc_context.h"
+#include "xenia/kernel/invocation_capture.h"
 #include "xenia/kernel/kernel_flags.h"
 #include "xenia/kernel/kernel_state.h"
 
@@ -558,6 +559,11 @@ struct ExportRegistrerHelper {
         new cpu::Export(ORDINAL, xe::cpu::Export::Type::kFunction, name, TAGS);
     struct X {
       static void Trampoline(PPCContext* ppc_context) {
+        const bool captured = XE_UNLIKELY(
+            capturing_context.load(std::memory_order_relaxed) == ppc_context);
+        if (captured) {
+          CaptureExportCall(ppc_context, export_entry, false);
+        }
         Param::Init init = {
             ppc_context,
             0,
@@ -590,6 +596,9 @@ struct ExportRegistrerHelper {
               (xe::cpu::ExportTag::kLog | xe::cpu::ExportTag::kLogResult)) {
             // TODO(benvanik): log result.
           }
+        }
+        if (captured) {
+          CaptureExportCall(ppc_context, export_entry, true);
         }
       }
     };

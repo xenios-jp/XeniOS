@@ -52,6 +52,12 @@ struct SequenceSample {
   uint32_t host_bytes;
 };
 
+// Runs on entry to a function hooked with Backend::HookFunctionEntry, before
+// its prolog, with the guest return address the call passed. Returns nonzero
+// if it ran the function itself, which then returns to its caller at once.
+using FunctionEntryHook = uint64_t (*)(void* raw_context, uint64_t function,
+                                       uint64_t return_address);
+
 class Backend {
  public:
   explicit Backend();
@@ -94,6 +100,14 @@ class Backend {
   virtual void InstallBreakpoint(Breakpoint* breakpoint) {}
   virtual void InstallBreakpoint(Breakpoint* breakpoint, Function* fn) {}
   virtual void UninstallBreakpoint(Breakpoint* breakpoint) {}
+
+  // Makes every call to |function| go through |hook| until unhooked, which
+  // costs a host call per entry. False if the backend cannot.
+  virtual bool HookFunctionEntry(GuestFunction* function,
+                                 FunctionEntryHook hook) {
+    return false;
+  }
+  virtual void UnhookFunctionEntry(GuestFunction* function) {}
   // ctx points to the start of a ppccontext, ctx - page_allocation_granularity
   // up until the start of ctx may be used by the backend to store whatever data
   // they want
