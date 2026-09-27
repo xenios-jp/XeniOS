@@ -956,6 +956,17 @@ dword_result_t NtCancelTimer_entry(dword_t timer_handle,
 }
 DECLARE_XBOXKRNL_EXPORT1(NtCancelTimer, kThreading, kImplemented);
 
+// A user APC queued before an alertable wait may lose its POSIX wake signal.
+// Drain pending APCs before blocking so the wait can return X_STATUS_USER_APC.
+static X_STATUS xeDrainUserApcsOnAlertableWaitEntry() {
+  // Host audio/GPU threads do not own the guest stack state used by APCs.
+  auto* thread = XThread::GetCurrentThread();
+  if (!thread || !thread->is_guest_thread()) {
+    return X_STATUS_SUCCESS;
+  }
+  return xeProcessUserApcs(nullptr);
+}
+
 uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason,
                                  uint32_t processor_mode, uint32_t alertable,
                                  uint64_t* timeout_ptr) {
@@ -965,6 +976,10 @@ uint32_t xeKeWaitForSingleObject(void* object_ptr, uint32_t wait_reason,
     // The only kind-of failure code (though this should never happen)
     assert_always();
     return X_STATUS_ABANDONED_WAIT_0;
+  }
+
+  if (alertable && xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+    return X_STATUS_USER_APC;
   }
 
   X_STATUS result =
@@ -996,6 +1011,11 @@ uint32_t NtWaitForSingleObjectEx(uint32_t object_handle, uint32_t wait_mode,
   auto object =
       kernel_state()->object_table()->LookupObject<XObject>(object_handle);
   if (object) {
+    if (alertable &&
+        xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+      return X_STATUS_USER_APC;
+    }
+
     uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
     result =
         object->Wait(3, wait_mode, alertable, timeout_ptr ? &timeout : nullptr);
@@ -1043,6 +1063,10 @@ dword_result_t KeWaitForMultipleObjects_entry(
       objects[n] = std::move(object_ref);
     }
   }
+  if (alertable && xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+    return X_STATUS_USER_APC;
+  }
+
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
   X_STATUS result = XObject::WaitMultiple(
       uint32_t(count), reinterpret_cast<XObject**>(&objects[0]), wait_type,
@@ -1086,6 +1110,10 @@ uint32_t xeNtWaitForMultipleObjectsEx(uint32_t count, xe::be<uint32_t>* handles,
       }
       objects[n] = std::move(object);
     }
+  }
+
+  if (alertable && xeDrainUserApcsOnAlertableWaitEntry() == X_STATUS_USER_APC) {
+    return X_STATUS_USER_APC;
   }
 
   auto result =
