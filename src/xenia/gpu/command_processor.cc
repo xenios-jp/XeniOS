@@ -377,11 +377,18 @@ void CommandProcessor::RestoreGammaRamp(
 }
 
 void CommandProcessor::CallInThread(std::function<void()> fn) {
-  if (pending_fns_.empty() &&
-      kernel::XThread::IsInThread(worker_thread_.get())) {
+  bool run_now = false;
+  {
+    std::lock_guard lock(pending_fns_mutex_);
+    if (pending_fns_.empty() &&
+        kernel::XThread::IsInThread(worker_thread_.get())) {
+      run_now = true;
+    } else {
+      pending_fns_.push(std::move(fn));
+    }
+  }
+  if (run_now) {
     fn();
-  } else {
-    pending_fns_.push(std::move(fn));
   }
 }
 
@@ -517,11 +524,23 @@ void CommandProcessor::WorkerThreadMain() {
   SetTitleStateSuffix(MakeTitleStateSuffix());
 
   while (worker_running_) {
-    while (!pending_fns_.empty()) {
-      auto fn = std::move(pending_fns_.front());
-      pending_fns_.pop();
+    while (true) {
+      std::function<void()> fn;
+      {
+        std::lock_guard lock(pending_fns_mutex_);
+        if (pending_fns_.empty()) {
+          break;
+        }
+        fn = std::move(pending_fns_.front());
+        pending_fns_.pop();
+      }
       fn();
     }
+
+    auto has_pending_functions = [this]() {
+      std::lock_guard lock(pending_fns_mutex_);
+      return !pending_fns_.empty();
+    };
 
     uint32_t write_ptr_index = write_ptr_index_.load();
     if (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index) {
@@ -549,11 +568,11 @@ void CommandProcessor::WorkerThreadMain() {
         // The guest may be spinning on a held-back signal.
         SubmitHeldSignals();
         write_ptr_index = write_ptr_index_.load();
-      } while (worker_running_ && pending_fns_.empty() &&
+      } while (worker_running_ && !has_pending_functions() &&
                (write_ptr_index == 0xBAADF00D ||
                 read_ptr_index_ == write_ptr_index));
       ReturnFromWait();
-      if (!worker_running_ || !pending_fns_.empty()) {
+      if (!worker_running_ || has_pending_functions()) {
         continue;
       }
     }
