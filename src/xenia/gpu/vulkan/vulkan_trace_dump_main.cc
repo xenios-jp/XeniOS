@@ -9,6 +9,7 @@
 
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/gpu/trace_dump.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
@@ -45,6 +46,23 @@ class VulkanTraceDump : public TraceDump {
             ->renderdoc_api();
     if (renderdoc_api && renderdoc_api->api_1_0_0()->IsFrameCapturing()) {
       renderdoc_api->api_1_0_0()->EndFrameCapture(nullptr, nullptr);
+    }
+  }
+
+  void AwaitGuestMemoryWrites(uint32_t base, uint32_t size) override {
+    // Playback waits for command translation, not for the GPU, so resolves
+    // can still be queued.
+    auto* command_processor = static_cast<VulkanCommandProcessor*>(
+        graphics_system_->command_processor());
+    bool completed = false;
+    threading::Fence fence;
+    command_processor->CallInThread([&]() {
+      completed = command_processor->AwaitGuestMemoryWrites(base, size);
+      fence.Signal();
+    });
+    fence.Wait();
+    if (!completed) {
+      XELOGE("Vulkan trace dump: GPU work did not complete before readback");
     }
   }
 };
