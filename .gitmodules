@@ -134,3 +134,6 @@
 [submodule "third_party/mbedtls"]
 	path = third_party/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "third_party/spirv2air"]
+	path = third_party/spirv2air
+	url = https://github.com/xenios-jp/spirv2air.git

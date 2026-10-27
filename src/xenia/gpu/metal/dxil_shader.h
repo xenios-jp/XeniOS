@@ -21,9 +21,13 @@ namespace gpu {
 namespace metal {
 
 class MetalShaderConverter;
+struct MetalShaderConversionResult;
 
-// Metal shader translated via SPIR-V -> DXIL (Mesa) -> AIR (Metal Shader
-// Converter). Resources follow the MSC top-level argument buffer ABI that
+// Metal guest shader using the converter-compatible resource interface.
+// Compile SPIR-V directly with spirv2air, with Mesa/DXIL and Metal Shader
+// Converter as a fallback for unsupported guest shaders, or with the converter
+// alone (metal_shader_compiler).
+// Either way, resources follow the MSC top-level argument buffer ABI that
 // MetalShaderConverter's root signature describes.
 class DxilShader : public SpirvShader {
  public:
@@ -37,8 +41,9 @@ class DxilShader : public SpirvShader {
         : SpirvTranslation(shader, modification) {}
     ~DxilTranslation();
 
-    // Converts the SPIR-V binary (already in translated_binary()) to DXIL and
-    // then to a Metal library, and looks up its entry point.
+    // Compiles the SPIR-V binary (already in translated_binary()) to a Metal
+    // library with an available compiler, and looks up its
+    // entry point.
     bool CompileToAir(MTL::Device* device,
                       const MetalShaderConverter& converter);
 
@@ -47,6 +52,15 @@ class DxilShader : public SpirvShader {
     const std::string& entry_point_name() const { return entry_point_name_; }
 
    private:
+    // SPIR-V -> AIR directly (spirv2air). False if this build lacks spirv2air
+    // or the shader uses something it doesn't support (logged).
+    bool CompileToAirWithSpirv2air(
+        MetalShaderConversionResult& conversion) const;
+    // SPIR-V -> DXIL (spirv_to_dxil) -> AIR (Metal Shader Converter).
+    bool CompileToAirWithConverter(
+        const MetalShaderConverter& converter,
+        MetalShaderConversionResult& conversion) const;
+
     MTL::Library* metal_library_ = nullptr;
     MTL::Function* metal_function_ = nullptr;
     std::string entry_point_name_;

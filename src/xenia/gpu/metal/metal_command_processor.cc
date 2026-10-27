@@ -73,10 +73,17 @@ DEFINE_int32(
     "Metal");
 DEFINE_bool(
     metal_use_dxil, true,
-    "Translate guest shaders through SPIR-V -> DXIL -> AIR with Apple's Metal "
-    "Shader Converter instead of SPIRV-Cross.",
+    "Compile guest shaders to AIR with the Metal Shader Converter resource "
+    "interface (see metal_shader_compiler) instead of SPIRV-Cross MSL.",
     "Metal");
 UPDATE_from_bool(metal_use_dxil, 2026, 8, 21, 12, false);
+DEFINE_string(
+    metal_shader_compiler, "spirv2air",
+    "Guest shader compiler with metal_use_dxil.\n"
+    " spirv2air: SPIR-V -> AIR directly, falling back to msc for shaders it "
+    "can't translate.\n"
+    " msc: SPIR-V -> DXIL -> AIR with Apple's Metal Shader Converter.",
+    "Metal");
 DEFINE_int32(
     metal_pipeline_creation_threads, -1,
     "Number of threads used for SPIRV-Cross shader and render pipeline "
@@ -132,8 +139,8 @@ void AddPendingWrite(std::vector<draw_util::MemExportRange>& writes,
   writes.push_back(write);
 }
 
-// Guest shaders go SPIR-V -> DXIL -> AIR instead of SPIR-V -> MSL. Both start
-// from the same SpirvShaderTranslator output.
+// Select the converter-compatible resource interface rather than SPIRV-Cross
+// MSL. Guest compilation may use native AIR or the Mesa/DXIL converter path.
 bool UseDxilPath() { return cvars::metal_use_dxil; }
 
 // function_name_suffix is appended to the entry point name of the converted
@@ -664,7 +671,12 @@ std::string MetalCommandProcessor::MakeTitleStateSuffix() const {
     return {};
   }
   std::ostringstream suffix;
-  suffix << (UseDxilPath() ? " - DXIL" : " - SPIRV-Cross");
+  if (!UseDxilPath()) {
+    suffix << " - SPIRV-Cross";
+  } else {
+    suffix << (cvars::metal_shader_compiler == "msc" ? " - MSC"
+                                                     : " - spirv2air");
+  }
   uint32_t draw_resolution_scale_x =
       texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
   uint32_t draw_resolution_scale_y =
@@ -1148,10 +1160,12 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
   MTL::FunctionConstantValues* values =
       MTL::FunctionConstantValues::alloc()->init();
   for (uint32_t i = 0; i < binding_count; ++i) {
-    values->setConstantValue(
-        &states[4 * i], MTL::DataTypeUInt4,
-        NS::String::string(fmt::format("MSC_FC_{}", i).c_str(),
-                           NS::UTF8StringEncoding));
+    for (const char* prefix : {"MSC_FC_", "spirv2air_fc_"}) {
+      values->setConstantValue(
+          &states[4 * i], MTL::DataTypeUInt4,
+          NS::String::string(fmt::format("{}{}", prefix, i).c_str(),
+                             NS::UTF8StringEncoding));
+    }
   }
   NS::Error* error = nullptr;
   MTL::Function* function = library->newFunction(
