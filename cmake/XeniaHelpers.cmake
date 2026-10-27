@@ -406,6 +406,14 @@ function(xe_shader_rules_slang target shader_dir)
     if(NOT _stage IN_LIST _valid_stages)
       continue()
     endif()
+    # `// XE_MSL_ONLY` — skip dxil and spirv (Metal-only shader).
+    if(NOT ARG_TARGET STREQUAL "msl")
+      file(STRINGS "${src}" _xe_msl_only LIMIT_COUNT 1
+           REGEX "^[ \t]*//[ \t]*XE_MSL_ONLY")
+      if(_xe_msl_only)
+        continue()
+      endif()
+    endif()
     # For spirv/msl: defer to the legacy spirv/metal rules when a hand-tuned
     # .glsl/.xesl twin still exists at the same id, so we don't double-generate
     # the same output header. Once the .slang version is proven for those

@@ -1576,7 +1576,8 @@ bool RenderTargetCache::IsResolveSourceNativeOnly(uint32_t base,
 RenderTargetCache::DirectResolveEligibility
 RenderTargetCache::GetDirectResolveEligibility(
     const draw_util::ResolveInfo& resolve_info,
-    draw_util::ResolveCopyShaderIndex copy_shader) const {
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    bool allow_full32_4x_average) const {
   if (GetPath() != Path::kHostRenderTargets) {
     return DirectResolveEligibility::kNotHostRenderTargets;
   }
@@ -1586,6 +1587,32 @@ RenderTargetCache::GetDirectResolveEligibility(
     case draw_util::ResolveCopyShaderIndex::kFast64bpp1x2xMSAA:
     case draw_util::ResolveCopyShaderIndex::kFast64bpp4xMSAA:
       break;
+    case draw_util::ResolveCopyShaderIndex::kFull32bpp: {
+      // The four-sample average of an unsigned normalized 8_8_8_8 or
+      // 2_10_10_10 source into a destination of the same layout.
+      if (!allow_full32_4x_average || resolve_info.IsCopyingDepth() ||
+          resolve_info.color_edram_info.msaa_samples !=
+              xenos::MsaaSamples::k4X ||
+          resolve_info.copy_dest_info.copy_dest_exp_bias ||
+          resolve_info.copy_dest_info.copy_dest_number !=
+              xenos::SurfaceNumberFormat::kUnsignedRepeatingFraction ||
+          resolve_info.copy_dest_coordinate_info.copy_sample_select !=
+              xenos::CopySampleSelect::k0123) {
+        return DirectResolveEligibility::kConvertingCopyShader;
+      }
+      auto source_format =
+          xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format);
+      xenos::ColorFormat dest_format =
+          resolve_info.copy_dest_info.copy_dest_format;
+      if (!(source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 &&
+            dest_format == xenos::ColorFormat::k_8_8_8_8) &&
+          !((source_format == xenos::ColorRenderTargetFormat::k_2_10_10_10 ||
+             source_format ==
+                 xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10) &&
+            dest_format == xenos::ColorFormat::k_2_10_10_10)) {
+        return DirectResolveEligibility::kConvertingCopyShader;
+      }
+    } break;
     default:
       return DirectResolveEligibility::kConvertingCopyShader;
   }

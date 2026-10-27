@@ -28,6 +28,19 @@ entry_inputs_end_code_begin_compute_xe
 {
   // 1 thread = 4 host pixels.
   XeResolveInfo resolve_info = XeResolveGetInfo(pass_push_consts_xe);
+#ifdef XE_RESOLVE_SPECIALIZED_SOURCE_FORMAT
+  // Only selected for matching unscaled color resolves by the Metal backend.
+  // Addresses, pitches, endian, channel swap, exponent bias and half-pixel
+  // handling remain dynamic.
+  resolve_info.edram_format = XE_RESOLVE_SPECIALIZED_SOURCE_FORMAT;
+  resolve_info.edram_format_ints_log2 = XE_RESOLVE_SPECIALIZED_SOURCE_64BPP;
+  resolve_info.edram_msaa_samples = XE_RESOLVE_SPECIALIZED_MSAA;
+  resolve_info.edram_is_depth = false;
+  resolve_info.decode_pwl_gamma = false;
+  resolve_info.dest_format = XE_RESOLVE_SPECIALIZED_DEST_FORMAT;
+  resolve_info.dest_num_format = XE_RESOLVE_SPECIALIZED_DEST_NUM_FORMAT;
+  resolve_info.sample_select = XE_RESOLVE_SPECIALIZED_SAMPLE_SELECT;
+#endif
   uint2_xe pixel_index = in_global_thread_id_xe.xy << uint2_xe(2u, 0u);
   // Group height can't cross resolve granularity, Y overflow check not needed.
   dont_flatten_xe
