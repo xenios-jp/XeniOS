@@ -5618,6 +5618,17 @@ bool MetalRenderTargetCache::TransferDrawsSamplesSeparately(
   if (key.source_msaa_samples != xenos::MsaaSamples::k1X) {
     return false;
   }
+  // Observed on Apple GPUs with the depth-and-stencil output state (not-equal
+  // depth test, stencil replace on depth failure): the fragment sample mask
+  // confines the depth write to the covered sample, but the stencil replace
+  // still reaches the masked samples, so the last sample draw's stencil lands
+  // in every sample of the pixel. Per-sample shading writes each sample's own
+  // stencil.
+  if (kEdramTransferModes[size_t(key.mode)].output ==
+          EdramTransferOutput::kDepth &&
+      UseNativeStencilOutputInTransfers()) {
+    return false;
+  }
   return EdramTransferHostDepthIsCopy(key.mode) ||
          key.host_depth_source_msaa_samples == xenos::MsaaSamples::k1X;
 }
