@@ -3684,6 +3684,61 @@ void MetalRenderTargetCache::DumpRenderTargets(
   std::vector<ResolveCopyDumpRectangle> rectangles;
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
                                  dump_pitch, rectangles);
+  // Merge adjacent rectangles of the same source to dispatch fewer times.
+  // Restrict the proof to one physical EDRAM period, so combining dispatches
+  // cannot turn ordered writes to the same physical tile into concurrent ones.
+  if (!IsDrawResolutionScaled() && dump_base < xenos::kEdramTileCount &&
+      dump_rows && dump_pitch && dump_row_length_used <= dump_pitch &&
+      uint64_t(dump_rows - 1) * dump_pitch + dump_row_length_used <=
+          xenos::kEdramTileCount &&
+      rectangles.size() > 1) {
+    // The rectangles come from the planner in address order, each a valid
+    // non-empty span within the checked period. Equality of the render target
+    // also fixes the texture view, format, source pitch and MSAA. The dispatch
+    // base stays unwrapped: source addressing needs the 12th tile bit. A merge
+    // is accepted only if it strictly reduces the dispatches, not the tiles or
+    // bytes written.
+    auto merge_adjacent = [&](ResolveCopyDumpRectangle& left,
+                              const ResolveCopyDumpRectangle& right) {
+      if (left.render_target != right.render_target) {
+        return false;
+      }
+      const uint32_t left_last_row = left.row_first + left.rows - 1;
+      const bool touches = left_last_row * dump_pitch + left.row_last_end ==
+                           right.row_first * dump_pitch + right.row_first_start;
+      const bool only_pitch_padding =
+          left.row_last_end == dump_row_length_used &&
+          right.row_first_start == 0 && right.row_first == left_last_row + 1;
+      if (!touches && !only_pitch_padding) {
+        return false;
+      }
+      ResolveCopyDumpRectangle merged = left;
+      merged.rows = right.row_first + right.rows - left.row_first;
+      merged.row_last_end = right.row_last_end;
+      ResolveCopyDumpRectangle::Dispatch
+          scratch[ResolveCopyDumpRectangle::kMaxDispatches];
+      if (merged.GetDispatches(dump_pitch, dump_row_length_used, scratch) >=
+          left.GetDispatches(dump_pitch, dump_row_length_used, scratch) +
+              right.GetDispatches(dump_pitch, dump_row_length_used, scratch)) {
+        return false;
+      }
+      left = merged;
+      return true;
+    };
+    size_t output_count = 0;
+    for (size_t input_index = 0; input_index < rectangles.size();
+         ++input_index) {
+      if (output_count && merge_adjacent(rectangles[output_count - 1],
+                                         rectangles[input_index])) {
+        continue;
+      }
+      if (output_count != input_index) {
+        rectangles[output_count] = rectangles[input_index];
+      }
+      ++output_count;
+    }
+    rectangles.erase(rectangles.begin() + output_count, rectangles.end());
+  }
   if (rectangles.empty()) {
     XELOGW(
         "MetalRenderTargetCache::DumpRenderTargets: no rectangles for base={} "
