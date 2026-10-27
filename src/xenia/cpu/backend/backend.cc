@@ -22,9 +22,9 @@
 #include "xenia/cpu/thread_state.h"
 
 DEFINE_bool(release_core_in_spin_waits, true,
-            "Release the host core from guest db16cyc spin-wait loops, "
-            "instead of spinning on it while the thread they wait on may "
-            "need it. Only the a64 backend does.",
+            "Release the host core from guest spin-wait loops, db16cyc delays "
+            "and short polling loops, instead of spinning on it while the "
+            "thread they wait on may need it. Only the a64 backend does.",
             "CPU");
 DEFINE_bool(debugprint_trap_log, false,
             "Log debugprint traps to the active debugger", "CPU");

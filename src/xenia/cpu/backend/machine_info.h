@@ -18,6 +18,8 @@ namespace backend {
 
 struct MachineInfo {
   bool supports_extended_load_store;
+  // Acts on DELAY_EXECUTION_INJECTED (SpinWaitInjectionPass).
+  bool supports_spin_wait_release;
 
   struct RegisterSet {
     enum Types {
