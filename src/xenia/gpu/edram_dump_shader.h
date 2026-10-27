@@ -56,6 +56,11 @@ union EdramDumpShaderKey {
     // Average all four samples of an RGBA8 4x source while resolving directly.
     // Only meaningful with direct_resolve.
     uint32_t direct_resolve_4x_average : 1;
+    // Also store the logical texels - after the resolve's red/blue swap,
+    // before its endian transform - as raw dwords in an existing,
+    // correctly-sized texture-cache image viewed as R32Uint for 32bpp sources
+    // or RG32Uint for 64bpp ones. Color sources only.
+    uint32_t direct_resolve_texture : 1;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -131,6 +136,9 @@ enum EdramDumpShaderPushConstant : uint32_t {
   // Where this dispatch's first tile sits in the resolve's tile grid, so the
   // threads can place themselves without dividing the linear index back out.
   kEdramDumpShaderPushConstantResolveDispatchTile,
+  // Logical consumer dimensions, not the resolve's 8-pixel-aligned extent.
+  kEdramDumpShaderPushConstantResolveTextureWidth,
+  kEdramDumpShaderPushConstantResolveTextureHeight,
 
   kEdramDumpShaderPushConstantCount,
 };

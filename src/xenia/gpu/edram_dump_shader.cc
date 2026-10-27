@@ -115,6 +115,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   spv::Id type_void = builder.makeVoidType();
   spv::Id type_int = builder.makeIntType(32);
   spv::Id type_int2 = builder.makeVectorType(type_int, 2);
+  spv::Id type_int3 = builder.makeVectorType(type_int, 3);
   spv::Id type_uint = builder.makeUintType(32);
   spv::Id type_uint2 = builder.makeVectorType(type_uint, 2);
   spv::Id type_uint3 = builder.makeVectorType(type_uint, 3);
@@ -161,6 +162,22 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   } else {
     source_is_uint = options.source_is_uint;
   }
+  // The optional resolve texture is binding 1 of the destination set, next to
+  // the guest-memory destination buffer at binding 0.
+  spv::Id resolve_texture = spv::NoResult;
+  if (key.direct_resolve_texture) {
+    assert_false(key.is_depth);
+    resolve_texture = builder.createVariable(
+        spv::NoPrecision, spv::StorageClassUniformConstant,
+        builder.makeImageType(type_uint, spv::Dim2D, false, true, false, 2,
+                              format_is_64bpp ? spv::ImageFormat::Rg32ui
+                                              : spv::ImageFormat::R32ui),
+        "xe_resolve_texture");
+    builder.addDecoration(resolve_texture, spv::DecorationDescriptorSet,
+                          options.descriptor_set_dest);
+    builder.addDecoration(resolve_texture, spv::DecorationBinding, 1);
+    builder.addDecoration(resolve_texture, spv::DecorationNonReadable);
+  }
   spv::Id source_component_type = source_is_uint ? type_uint : type_float;
   spv::Id source_texture = builder.createVariable(
       spv::NoPrecision, spv::StorageClassUniformConstant,
@@ -195,6 +212,8 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       "resolve_dest_base",
       "resolve_height_div_8",
       "resolve_dispatch_tile",
+      "resolve_texture_width",
+      "resolve_texture_height",
   };
   static_assert(
       xe::countof(kPushConstantNames) == kEdramDumpShaderPushConstantCount,
@@ -1108,6 +1127,17 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
         spv::OpLogicalOr, type_bool, endian_is_8in32,
         equals(endian, uint32_t(xenos::Endian128::k16in32)));
 
+    spv::Id texture_width = spv::NoResult;
+    spv::Id texture_height = spv::NoResult;
+    spv::Id loaded_resolve_texture = spv::NoResult;
+    if (key.direct_resolve_texture) {
+      texture_width =
+          load_push_constant(kEdramDumpShaderPushConstantResolveTextureWidth);
+      texture_height =
+          load_push_constant(kEdramDumpShaderPushConstantResolveTextureHeight);
+      loaded_resolve_texture =
+          builder.createLoad(resolve_texture, spv::NoPrecision);
+    }
     for (uint32_t i = 0; i < pixels_per_thread; ++i) {
       spv::Id* pixel = &run_packed[i * dwords_per_pixel];
       if (!format_is_64bpp) {
@@ -1134,15 +1164,52 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
                                        bitwise_and(pixel[1], 0xFFFF));
         spv::Id swapped_1 = bitwise_or(bitwise_and(pixel[1], ~uint32_t(0xFFFF)),
                                        bitwise_and(pixel[0], 0xFFFF));
-        spv::Id red_blue_0 = builder.createTriOp(
-            spv::OpSelect, type_uint, swap_64bpp, swapped_0, pixel[0]);
-        spv::Id red_blue_1 = builder.createTriOp(
-            spv::OpSelect, type_uint, swap_64bpp, swapped_1, pixel[1]);
-        // Then the 8in64 dword exchange, before the 32-bit swaps below.
-        pixel[0] = builder.createTriOp(spv::OpSelect, type_uint, is_8in64,
-                                       red_blue_1, red_blue_0);
-        pixel[1] = builder.createTriOp(spv::OpSelect, type_uint, is_8in64,
-                                       red_blue_0, red_blue_1);
+        pixel[0] = builder.createTriOp(spv::OpSelect, type_uint, swap_64bpp,
+                                       swapped_0, pixel[0]);
+        pixel[1] = builder.createTriOp(spv::OpSelect, type_uint, swap_64bpp,
+                                       swapped_1, pixel[1]);
+      }
+      if (key.direct_resolve_texture) {
+        // The texture-cache image holds what the ordinary loader would copy
+        // from the resolved memory: the swapped, not yet endian-transformed
+        // texels, as raw dwords.
+        spv::Id texture_x =
+            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
+        spv::Id texture_write_condition =
+            builder.createBinOp(spv::OpLogicalAnd, type_bool,
+                                builder.createBinOp(spv::OpULessThan, type_bool,
+                                                    texture_x, texture_width),
+                                builder.createBinOp(spv::OpULessThan, type_bool,
+                                                    dest_y, texture_height));
+        SpirvBuilder::IfBuilder if_texture_write(
+            texture_write_condition, spv::SelectionControlMaskNone, builder);
+        id_vector_temp.clear();
+        id_vector_temp.push_back(pixel[0]);
+        id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
+        id_vector_temp.push_back(const_uint_0);
+        id_vector_temp.push_back(const_uint_0);
+        spv::Id texel =
+            builder.createCompositeConstruct(type_uint4, id_vector_temp);
+        id_vector_temp.clear();
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, texture_x));
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, dest_y));
+        id_vector_temp.push_back(builder.makeIntConstant(0));
+        spv::Id coordinates =
+            builder.createCompositeConstruct(type_int3, id_vector_temp);
+        builder.createNoResultOp(spv::OpImageWrite,
+                                 {loaded_resolve_texture, coordinates, texel});
+        if_texture_write.makeEndIf();
+      }
+      if (format_is_64bpp) {
+        // The 8in64 dword exchange, before the 32-bit swaps below.
+        spv::Id exchanged_0 = builder.createTriOp(spv::OpSelect, type_uint,
+                                                  is_8in64, pixel[1], pixel[0]);
+        spv::Id exchanged_1 = builder.createTriOp(spv::OpSelect, type_uint,
+                                                  is_8in64, pixel[0], pixel[1]);
+        pixel[0] = exchanged_0;
+        pixel[1] = exchanged_1;
       }
       for (uint32_t j = 0; j <= uint32_t(format_is_64bpp); ++j) {
         spv::Id value = pixel[j];
