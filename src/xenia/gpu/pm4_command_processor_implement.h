@@ -1156,8 +1156,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
     uint32_t writeback_size = register_file_->values[XE_GPU_REG_WRITEBACK_SIZE];
     uint32_t writeback_offset = address - writeback_base;
     // check whether the guest has written writeback base. if they haven't, skip
-    // the offset check
-    if (writeback_base != 0 && writeback_offset < writeback_size) {
+    // the offset check. The 0x7F window is 16 MiB, mapping physical memory
+    // from byte zero, so the offset is also the physical address written.
+    if (writeback_base != 0 && writeback_offset < writeback_size &&
+        writeback_offset < 0x01000000) {
       write_destination =
           memory_->TranslateVirtual(0x7F000000 + writeback_offset);
       // The same memory as this physical address.
@@ -1168,7 +1170,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
   // included.
   COMMAND_PROCESSOR::WriteGuestFence(write_destination, write_physical_address,
                                      data_value);
-  trace_writer_.WriteMemoryWrite(CpuToGpu(address), 4);
+  trace_writer_.WriteMemoryWrite(CpuToGpu(write_physical_address), 4);
   return true;
 }
 
