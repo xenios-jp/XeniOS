@@ -1264,6 +1264,27 @@ if(WIN32 OR APPLE)
   endif()
 
   set(_xe_s2d_build "${CMAKE_BINARY_DIR}/third_party/mesa-build")
+  set(_xe_s2d_extra_byproducts "")
+  if(APPLE)
+    # Keep the pinned submodule unchanged. The generated source tree shares
+    # file data through APFS clones where available.
+    set(_xe_mesa_original_dir "${_xe_mesa_dir}")
+    set(_xe_mesa_prepare "${CMAKE_SOURCE_DIR}/tools/build/prepare_mesa_metal.py")
+    set(_xe_mesa_dir "${CMAKE_BINARY_DIR}/third_party/mesa-metal-source")
+    set(_xe_s2d_build "${CMAKE_BINARY_DIR}/third_party/mesa-metal-build")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${_xe_mesa_prepare}")
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}" "${_xe_mesa_prepare}"
+        "${_xe_mesa_original_dir}" "${_xe_mesa_dir}"
+      RESULT_VARIABLE _xe_mesa_prepare_result
+      OUTPUT_QUIET ERROR_VARIABLE _xe_mesa_prepare_error)
+    if(NOT _xe_mesa_prepare_result EQUAL 0)
+      message(FATAL_ERROR "Mesa Metal source preparation failed: ${_xe_mesa_prepare_error}")
+    endif()
+    list(APPEND _xe_s2d_extra_byproducts
+        "${_xe_mesa_dir}/xenia-metal/xenia_mesa_metal_version.h")
+  endif()
   set(_xe_s2d_main "${_xe_s2d_build}/src/microsoft/spirv_to_dxil/libspirv_to_dxil.a")
   # Dependency archives, in the layout meson emits under the build tree.
   set(_xe_s2d_deps
@@ -1404,6 +1425,16 @@ endian = 'little'
     endif()
   endif()
 
+  set(_xe_s2d_build_command "${XE_NINJA_EXECUTABLE}" -C "${_xe_s2d_build}"
+      ${_xe_s2d_ninja_targets})
+  if(APPLE)
+    # Refresh local Mesa edits before the incremental Meson build, and stamp
+    # Mesa's version from the original checkout rather than the generated tree.
+    set(_xe_s2d_build_command "${Python3_EXECUTABLE}" "${_xe_mesa_prepare}"
+        "${_xe_mesa_original_dir}" "${_xe_mesa_dir}" --run
+        "${XE_NINJA_EXECUTABLE}" -C "${_xe_s2d_build}" ${_xe_s2d_ninja_targets})
+  endif()
+
   include(ExternalProject)
   # Wipe then setup keeps the configure step idempotent across reconfigures.
   ExternalProject_Add(mesa_spirv_to_dxil
@@ -1412,10 +1443,9 @@ endian = 'little'
       "${CMAKE_COMMAND}" -E rm -rf "${_xe_s2d_build}"
       COMMAND "${XE_MESON_EXECUTABLE}" setup "${_xe_s2d_build}" "${_xe_mesa_dir}"
         ${_xe_s2d_meson_args}
-    BUILD_COMMAND "${XE_NINJA_EXECUTABLE}" -C "${_xe_s2d_build}"
-      ${_xe_s2d_ninja_targets}
+    BUILD_COMMAND ${_xe_s2d_build_command}
     INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS "${_xe_s2d_main}" ${_xe_s2d_deps}
+    BUILD_BYPRODUCTS "${_xe_s2d_main}" ${_xe_s2d_deps} ${_xe_s2d_extra_byproducts}
     # Editable source tree, so re-run ninja every build. It is incremental and
     # cheap when nothing changed, and picks up local Mesa edits.
     BUILD_ALWAYS ON
@@ -1434,6 +1464,10 @@ endian = 'little'
     INTERFACE_INCLUDE_DIRECTORIES
       "${_xe_mesa_dir}/src/microsoft/spirv_to_dxil;${_xe_mesa_dir}/src/microsoft/compiler"
     INTERFACE_LINK_LIBRARIES "${_xe_s2d_link}")
+  if(APPLE)
+    target_include_directories(spirv_to_dxil INTERFACE "${_xe_mesa_dir}/xenia-metal")
+    target_compile_definitions(spirv_to_dxil INTERFACE XE_MESA_METAL_FMAD32=1)
+  endif()
   # Multi-Config evaluates every config, so point each at the same archive.
   foreach(_xe_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${_xe_cfg}" _xe_cfg_u)

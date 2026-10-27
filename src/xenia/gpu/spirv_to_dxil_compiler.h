@@ -34,6 +34,10 @@ class SpirvToDxilCompiler {
   // is DXIL.dll's validator, without which every translation fails.
   static bool IsSignerAvailable();
 
+  // Whether the optional MSC overlay can retain explicit 32-bit multiply-add
+  // intrinsics without enabling implicit contraction.
+  static bool SupportsMscFmad32();
+
   // Register and space of the CBV Mesa lowers SPIR-V push constants to, which
   // a root signature must supply as root constants or a CBV. Mesa sizes that
   // CBV from the bytes the shader actually loads, rounded up to a 16-byte row.
@@ -63,7 +67,8 @@ class SpirvToDxilCompiler {
   static std::vector<uint8_t> Translate(const uint32_t* spirv_words,
                                         size_t spirv_word_count, Stage stage,
                                         bool lower_to_bindless = false,
-                                        uint32_t input_clip_size = 0);
+                                        uint32_t input_clip_size = 0,
+                                        bool preserve_msc_fmad32 = false);
 
   // One SPIR-V stage for TranslateLinked.
   struct LinkedStage {
@@ -78,7 +83,8 @@ class SpirvToDxilCompiler {
   // patch constants). Stages must be in pipeline order (vertex first). Returns
   // one signed DXIL blob per input stage, or an empty vector on failure.
   static std::vector<std::vector<uint8_t>> TranslateLinked(
-      const std::vector<LinkedStage>& stages, bool lower_to_bindless = false);
+      const std::vector<LinkedStage>& stages, bool lower_to_bindless = false,
+      bool preserve_msc_fmad32 = false);
 };
 
 }  // namespace gpu
