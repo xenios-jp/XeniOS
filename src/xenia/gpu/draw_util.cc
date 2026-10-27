@@ -9,6 +9,9 @@
 
 #include "xenia/gpu/draw_util.h"
 
+#include <cmath>
+#include <cstdlib>
+
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
@@ -1090,8 +1093,98 @@ uint32_t GetNormalizedColorMask(const RegisterFile& regs,
   return normalized_color_mask;
 }
 
+namespace {
+// The elements [first, end) that the export sites of a stream can write for
+// vertex indices, or false if they are not provably bounded.
+bool GetVertexIndexedMemExportElements(
+    const RegisterFile& regs, const Shader& shader,
+    uint32_t float_constants_base, uint32_t stream_constant,
+    const xenos::xe_gpu_memexport_stream_t& stream,
+    const VertexIndexRange& vertex_indices, uint32_t& first_out,
+    uint32_t& end_out) {
+  // dword_1 is 2^23 plus an element offset in the mantissa, so that adding an
+  // integer index below 2^23 to it places the element index in the mantissa.
+  if ((stream.dword_1 >> 23) != 0x96) {
+    return false;
+  }
+  auto constant = [&](uint32_t index, SwizzleSource component, uint32_t& bits) {
+    if (component == SwizzleSource::k0 || component == SwizzleSource::k1) {
+      bits = component == SwizzleSource::k1 ? 0x3F800000 : 0;
+      return true;
+    }
+    if (float_constants_base + index >= 512) {
+      return false;
+    }
+    bits =
+        regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X +
+                    (float_constants_base + index) * 4 + uint32_t(component)];
+    return true;
+  };
+  // An integer term below 2^23 keeps every step of the float mad exact.
+  auto integer = [](uint32_t bits, int64_t& value) {
+    float f = xe::memory::Reinterpret<float>(bits);
+    if (!(std::abs(f) < float(1 << 23)) || std::trunc(f) != f) {
+      return false;
+    }
+    value = int64_t(f);
+    return true;
+  };
+  int64_t index_min = INT64_MAX, index_max = INT64_MIN;
+  for (const Shader::VertexIndexedMemExport& site :
+       shader.vertex_indexed_memexports()) {
+    if (site.stream_constant != stream_constant) {
+      continue;
+    }
+    // Only the index lane may be scaled, by exactly 1, so the product leaves
+    // the base, format and count lanes of the descriptor unchanged.
+    uint32_t multiplier[4], scale_bits, offset_bits;
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (!constant(site.multiplier_constant, site.multiplier_components[i],
+                    multiplier[i]) ||
+          multiplier[i] != (i == 1 ? 0x3F800000u : 0u)) {
+        return false;
+      }
+    }
+    int64_t scale, offset;
+    if (!constant(site.scale_constant, site.scale_component, scale_bits) ||
+        !constant(site.offset_constant, site.offset_component, offset_bits) ||
+        !integer(scale_bits, scale) || !integer(offset_bits, offset)) {
+      return false;
+    }
+    for (uint32_t vertex_index : {vertex_indices.first, vertex_indices.last}) {
+      int64_t product = int64_t(vertex_index) * scale;
+      int64_t index = product + offset;
+      if (std::abs(product) >= (int64_t(1) << 24) ||
+          std::abs(index) >= (int64_t(1) << 24)) {
+        return false;
+      }
+      index_min = std::min(index_min, index);
+      index_max = std::max(index_max, index);
+    }
+  }
+  if (index_min > index_max) {
+    return false;
+  }
+  // The shader stores eM# to element index + #, for elements from 0 to below
+  // the count.
+  int64_t element_offset = stream.dword_1 & 0x7FFFFF;
+  int64_t first = std::max(index_min + element_offset, int64_t(0));
+  int64_t end =
+      std::min(index_max + element_offset +
+                   (32 - xe::lzcnt(uint32_t(shader.memexport_eM_written()))),
+               int64_t(stream.index_count));
+  if (first >= end) {
+    first = end = 0;
+  }
+  first_out = uint32_t(first);
+  end_out = uint32_t(end);
+  return true;
+}
+}  // namespace
+
 void AddMemExportRanges(const RegisterFile& regs, const Shader& shader,
-                        std::vector<MemExportRange>& ranges_out) {
+                        std::vector<MemExportRange>& ranges_out,
+                        const VertexIndexRange* vertex_indices) {
   if (!shader.memexport_eM_written()) {
     // The shader has eA writes, but no real exports.
     return;
@@ -1126,6 +1219,22 @@ void AddMemExportRanges(const RegisterFile& regs, const Shader& shader,
     // Mask to physical like the shader - the guest may use a mirror window.
     uint32_t stream_base_address_dwords =
         xenos::CpuToGpu(uint32_t(stream.base_address) << 2) >> 2;
+    uint32_t first_element, end_element;
+    if (vertex_indices &&
+        GetVertexIndexedMemExportElements(
+            regs, shader, float_constants_base, constant_index, stream,
+            *vertex_indices, first_element, end_element)) {
+      if (first_element != end_element) {
+        uint32_t element_size_bytes = format_info.bits_per_pixel >> 3;
+        uint32_t first_byte = (stream_base_address_dwords << 2) +
+                              first_element * element_size_bytes;
+        uint32_t end_byte = (stream_base_address_dwords << 2) +
+                            end_element * element_size_bytes;
+        ranges_out.emplace_back(first_byte >> 2,
+                                end_byte - (first_byte & ~uint32_t(3)));
+      }
+      continue;
+    }
     // Try to reduce the number of shared memory operations when writing
     // different elements into the same buffer through different exports
     // (happens in 4D5307E6).
