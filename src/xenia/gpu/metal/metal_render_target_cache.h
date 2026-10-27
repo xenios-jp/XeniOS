@@ -122,9 +122,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
   bool IsGammaFormatHostStorageSeparate() const override;
 
-  // Check if the render target key uses a 64bpp format.
-  bool IsKey64bpp(RenderTargetKey key) const;
-
   void ClearCache() override;
   void BeginFrame() override;
 
@@ -428,15 +425,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   std::unordered_map<TransferClearPipelineKey, MTL::RenderPipelineState*,
                      TransferClearPipelineKey::Hasher>
       transfer_clear_pipelines_;
-  static constexpr uint32_t kTransferInstanceBufferCount = 3;
-  std::array<MTL::Buffer*, kTransferInstanceBufferCount>
-      transfer_instance_buffers_ = {};
-  std::array<size_t, kTransferInstanceBufferCount>
-      transfer_instance_buffer_sizes_ = {};
-  std::array<std::vector<MTL::Buffer*>, kTransferInstanceBufferCount>
-      transfer_instance_retired_buffers_ = {};
-  uint64_t transfer_instance_buffer_frame_id_ = 0;
-  size_t transfer_instance_buffer_offset_ = 0;
   MTL::DepthStencilState* transfer_depth_state_ = nullptr;
   MTL::DepthStencilState* transfer_depth_stencil_output_state_ = nullptr;
   MTL::DepthStencilState* transfer_depth_state_none_ = nullptr;
