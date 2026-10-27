@@ -1697,6 +1697,31 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
   return PreflightPendingDrawPassTransfers(attachment_formats);
 }
 
+bool MetalRenderTargetCache::PendingDrawPassTransfersPrepareable() const {
+  // Attachment zero is depth/stencil; color attachments start at one. A queue
+  // into depth alone is admitted whatever its sources.
+  if (pending_draw_pass_transfer_mask_ <= 1) {
+    return true;
+  }
+  for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+    if (!(pending_draw_pass_transfer_mask_ & (1u << i))) {
+      continue;
+    }
+    const auto* target = pending_draw_pass_render_targets_[i];
+    if (!target || target->key().is_depth ||
+        pending_draw_pass_transfers_[i].empty()) {
+      return false;
+    }
+    for (const Transfer& transfer : pending_draw_pass_transfers_[i]) {
+      if (!transfer.source || transfer.source->key().is_depth ||
+          transfer.host_depth_source) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool MetalRenderTargetCache::EncodePendingDrawPassTransfers(
     MTL::RenderCommandEncoder* encoder,
     MTL::RenderPassDescriptor* pass_descriptor,
