@@ -753,7 +753,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
       uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
       MTL::CommandBuffer* command_buffer,
-      MTL::Texture* refresh_texture = nullptr);
+      MTL::Texture* refresh_texture = nullptr, uint32_t refresh_offset_y = 0,
+      bool refresh_depth_float = false);
 
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,

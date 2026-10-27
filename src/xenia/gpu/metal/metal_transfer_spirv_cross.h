@@ -48,7 +48,8 @@ MTL::Function* CompileTransferFragmentFunctionMsl(
     std::string* error_out);
 
 // Direct resolve with a sampled-image output: push constants at buffer 0,
-// guest destination at buffer 1, source at texture 0, output at texture 1.
+// guest destination at buffer 1, source at texture 0, output at texture 1,
+// source stencil at texture 2.
 MTL::Function* CompileResolveRefreshFunctionMsl(
     MTL::Device* device, const std::vector<uint32_t>& spirv,
     std::string* error_out);
