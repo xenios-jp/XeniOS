@@ -73,10 +73,6 @@
 #include "xenia/gpu/texture_util.h"
 #include "xenia/gpu/xenos.h"
 
-DEFINE_bool(
-    metal_allow_gamma_unorm16, false,
-    "Allow gamma_render_target_as_unorm16 on Metal despite known issues",
-    "Metal");
 DEFINE_bool(metal_transfer_fast_divmod, true,
             "Use fast exact div/mod in Metal transfer shaders", "Metal");
 DEFINE_bool(metal_transfer_spirv_cross, true,
@@ -736,14 +732,7 @@ bool MetalRenderTargetCache::Initialize() {
         "transfers will use eight masked draws per rectangle");
   }
 
-  gamma_render_target_as_unorm16_ = ::cvars::gamma_render_target_as_unorm16 &&
-                                    ::cvars::metal_allow_gamma_unorm16;
-  if (::cvars::gamma_render_target_as_unorm16 &&
-      !::cvars::metal_allow_gamma_unorm16) {
-    XELOGW(
-        "Metal: gamma_render_target_as_unorm16 disabled due to known issues; "
-        "set --metal_allow_gamma_unorm16=true to force");
-  }
+  gamma_render_target_as_unorm16_ = ::cvars::gamma_render_target_as_unorm16;
 
   // Create the EDRAM buffer.
   //
