@@ -18,12 +18,14 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -433,6 +435,22 @@ class MetalCommandProcessor : public CommandProcessor {
       const PipelineCompileRequest& request);
   MTL::RenderPipelineState* CreatePipelineState(
       const PipelineCompileRequest& request, std::string* error_out);
+  bool UsesVertexFetchStateFunctionConstants(
+      const Shader::Translation* translation) const;
+  bool UsesPixelFetchStateFunctionConstants(
+      const Shader::Translation* translation) const;
+  void SetPipelineFunctionConstants(PipelineCompileRequest& request,
+                                    const Shader::Translation* vertex,
+                                    const Shader::Translation* pixel);
+  MTL::Function* GetSpecializedFunction(MTL::Library* library,
+                                        const std::string& function_name,
+                                        const uint32_t* states,
+                                        uint32_t binding_count,
+                                        std::string* error_out);
+  MTL::Function* GetPipelineVertexFunction(
+      const PipelineCompileRequest& request, std::string* error_out);
+  MTL::Function* GetPipelineFragmentFunction(
+      const PipelineCompileRequest& request, std::string* error_out);
   void AsyncCompileThread(size_t thread_index);
   // Fills a request's attachment formats and blend state from the active render
   // pass and the registers, returning the pipeline cache key. The translations
@@ -640,15 +658,25 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t blendcontrol[4];  // RB_BLENDCONTROL, zeroed for unwritten targets
     uint32_t normalized_color_mask;
     uint32_t sample_count;
+    // Only constants the shader reads contribute to its pipeline identity.
+    // Texture arithmetic and system flags stay dynamic.
+    uint32_t vertex_fetch_endians
+        [SpirvShaderTranslator::kVertexFetchEndianBindingCount * 4];
+    uint32_t vertex_bool_constants[256 / 32];
+    uint32_t pixel_bool_constants[256 / 32];
+    uint32_t vertex_loop_constants[32];
+    uint32_t pixel_loop_constants[32];
 
     PipelineKind kind : 2;                          // 2
     xenos::TessellationMode tessellation_mode : 2;  // 4
     Shader::HostVertexShaderType host_vertex_shader_type
         : Shader::kHostVertexShaderTypeBitCount;  // 8
-    uint32_t padding : 24;                        // 32
+    uint32_t vertex_fetch_states_specialized : 1;
+    uint32_t fragment_fetch_states_specialized : 1;
+    uint32_t padding : 22;  // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20260924;
+    static constexpr uint32_t kVersion = 0x20261016;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }
@@ -681,6 +709,10 @@ class MetalCommandProcessor : public CommandProcessor {
     // kDxilTessellation: owned by dxil_tessellation_cache_, which outlives
     // every compile thread, as does the fragment library's translation.
     const DxilTessellationShaders* tessellation_shaders = nullptr;
+    MTL::Library* vertex_library = nullptr;
+    std::string vertex_function_name;
+    bool vertex_fetch_states_specialized = false;
+    bool fragment_fetch_states_specialized = false;
     MTL::Library* fragment_library = nullptr;
     std::string fragment_function_name;
   };
@@ -708,6 +740,11 @@ class MetalCommandProcessor : public CommandProcessor {
     }
   };
   memexport_format_profile::ProfilePool memexport_format_profiles_;
+  std::mutex specialized_functions_mutex_;
+  // Compare the complete specialization identity; a hash alone may collide.
+  using SpecializedFunctionKey =
+      std::tuple<uintptr_t, std::string, std::vector<uint32_t>>;
+  std::map<SpecializedFunctionKey, MTL::Function*> specialized_functions_;
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
                       ShaderCompileRequestCompare>
       async_shader_queue_;
