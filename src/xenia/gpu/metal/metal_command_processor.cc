@@ -3646,12 +3646,14 @@ void MetalCommandProcessor::UpdateGuestConstantCaches(
     rebuild_packed_float_constants(msl_cached_float_constants_vertex_,
                                    vertex_shader,
                                    XE_GPU_REG_SHADER_CONSTANT_000_X);
+    ++dxil_guest_constant_versions_[0];
     msl_float_constants_dirty_vertex_ = false;
   }
   if (msl_float_constants_dirty_pixel_) {
     rebuild_packed_float_constants(msl_cached_float_constants_pixel_,
                                    pixel_shader,
                                    XE_GPU_REG_SHADER_CONSTANT_256_X);
+    ++dxil_guest_constant_versions_[1];
     msl_float_constants_dirty_pixel_ = false;
   }
 
@@ -3659,12 +3661,14 @@ void MetalCommandProcessor::UpdateGuestConstantCaches(
     std::memcpy(msl_cached_bool_loop_constants_.data(),
                 &regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031],
                 kBoolLoopConstantsSize);
+    ++dxil_guest_constant_versions_[2];
     msl_bool_loop_constants_dirty_ = false;
   }
   if (msl_fetch_constants_dirty_) {
     std::memcpy(msl_cached_fetch_constants_.data(),
                 &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0],
                 kFetchConstantsSize);
+    ++dxil_guest_constant_versions_[3];
     msl_fetch_constants_dirty_ = false;
   }
 }
@@ -5306,7 +5310,8 @@ bool MetalCommandProcessor::IssueDrawDxil(
   UpdateGuestConstantCaches(dxil_vertex_shader, dxil_pixel_shader, regs);
   MetalDxilBinder::Constants constants;
   constants.system = {&spirv_system_constants_,
-                      uint32_t(sizeof(spirv_system_constants_))};
+                      uint32_t(sizeof(spirv_system_constants_)),
+                      msl_system_constants_version_};
   // The uniform block is declared as float_count vec4s (256 with
   // float_dynamic_addressing), so nothing past that is addressable.
   auto declared_float_bytes = [](const Shader* shader) -> uint32_t {
@@ -5317,14 +5322,18 @@ bool MetalCommandProcessor::IssueDrawDxil(
                     uint32_t(kCbvSizeBytes));
   };
   constants.float_vertex = {msl_cached_float_constants_vertex_.data(),
-                            declared_float_bytes(dxil_vertex_shader)};
+                            declared_float_bytes(dxil_vertex_shader),
+                            dxil_guest_constant_versions_[0]};
   // The placeholder binds no pixel stage, so it declares no float constants.
   constants.float_pixel = {msl_cached_float_constants_pixel_.data(),
-                           declared_float_bytes(bind_pixel_shader)};
+                           declared_float_bytes(bind_pixel_shader),
+                           dxil_guest_constant_versions_[1]};
   constants.bool_loop = {msl_cached_bool_loop_constants_.data(),
-                         uint32_t(kBoolLoopConstantsSize)};
+                         uint32_t(kBoolLoopConstantsSize),
+                         dxil_guest_constant_versions_[2]};
   constants.fetch = {msl_cached_fetch_constants_.data(),
-                     uint32_t(kFetchConstantsSize)};
+                     uint32_t(kFetchConstantsSize),
+                     dxil_guest_constant_versions_[3]};
   if (!dxil_binder_.Bind(current_render_encoder_, dxil_vertex_shader,
                          bind_pixel_shader, constants, memexport_used,
                          is_tessellated)) {
