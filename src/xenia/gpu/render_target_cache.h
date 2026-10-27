@@ -730,7 +730,8 @@ class RenderTargetCache {
       const draw_util::ResolveInfo& resolve_info,
       draw_util::ResolveCopyShaderIndex copy_shader,
       bool allow_full32_4x_average = false,
-      bool allow_cross_depth_color = false) const;
+      bool allow_cross_depth_color = false,
+      bool allow_full32_rgb10f_1x = false) const;
 
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected

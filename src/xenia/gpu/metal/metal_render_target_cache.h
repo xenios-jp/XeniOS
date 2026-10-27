@@ -329,6 +329,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // The rgb10-4x copy reading the 4x render target directly.
   MTL::ComputePipelineState* resolve_full_32bpp_rgb10_4x_direct_pipeline_ =
       nullptr;
+  MTL::ComputePipelineState* resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
+      nullptr;
+  MTL::ComputePipelineState*
+      resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
   MTL::ComputePipelineState* resolve_full_64bpp_pipeline_ = nullptr;
   // One per kResolveSpecializations entry, in its order.
   std::vector<MTL::ComputePipelineState*> resolve_specialized_pipelines_;
