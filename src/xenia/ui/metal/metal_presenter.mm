@@ -74,7 +74,7 @@ MetalPresenter::MetalPresenter(MetalProvider* provider, HostGpuLossCallback host
   guest_output_waited_submission_ = 0;
 }
 
-MetalPresenter::~MetalPresenter() = default;
+MetalPresenter::~MetalPresenter() { Shutdown(); }
 
 bool MetalPresenter::Initialize() {
   // Use the shared MetalProvider command queue so presenter work is serialized
@@ -1237,15 +1237,18 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
     copy_command_buffer.label = @"XeniaGuestOutputCopy";
   }
 
-  uint64_t submission_id =
-      guest_output_submission_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (submission_out) {
-    *submission_out = submission_id;
-  }
-  if (shared_event_) {
-    [copy_command_buffer encodeSignalEvent:(id<MTLSharedEvent>)shared_event_ value:submission_id];
-  }
+  auto commit_copy_command_buffer = [&]() {
+    uint64_t submission_id =
+        guest_output_submission_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (submission_out) {
+      *submission_out = submission_id;
+    }
+    if (shared_event_) {
+      [copy_command_buffer encodeSignalEvent:(id<MTLSharedEvent>)shared_event_ value:submission_id];
+    }
 
+    [copy_command_buffer commit];
+  };
 
   // Cast dest_texture to proper Metal texture type
   id<MTLTexture> dest_metal_texture = (id<MTLTexture>)dest_texture;
@@ -1557,7 +1560,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
       [convert_encoder endEncoding];
     }
 
-    [copy_command_buffer commit];
+    commit_copy_command_buffer();
     release_views();
     return true;
   }
@@ -1641,7 +1644,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
                threadsPerThreadgroup:threads_per_threadgroup];
     [compute_encoder endEncoding];
 
-    [copy_command_buffer commit];
+    commit_copy_command_buffer();
     XELOGD("MetalPresenter::CopyTextureToGuestOutput: Shader copy completed successfully");
     release_views();
     return true;
@@ -1682,7 +1685,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
 
   [blit_encoder endEncoding];
 
-  [copy_command_buffer commit];
+  commit_copy_command_buffer();
 
   XELOGD("MetalPresenter::CopyTextureToGuestOutput: Copy completed successfully");
   release_views();
