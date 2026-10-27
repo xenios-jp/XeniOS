@@ -47,6 +47,8 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_rgba8_2x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgba8_2x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgba8_4x_cs.h"
@@ -228,6 +230,19 @@ bool IsFull32RGB10FourSampleAverage(
   const ResolveCopyKey key = GetResolveCopyKey(constants);
   return (key.edram == 0x02000800u || key.edram == 0x0A000800u) &&
          key.dest == (7u << 7) && key.sample == 6;
+}
+
+// A one-sample 2_10_10_10_FLOAT (or 2_10_10_10_FLOAT_AS_16_16_16_16) copy into
+// 2_10_10_10 as an unsigned fraction, with any exponent bias.
+bool IsFull32RGB10FloatOneSample(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull32bpp) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
+         key.dest == (7u << 7) && key.sample == 0;
 }
 
 MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
@@ -953,6 +968,16 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
           device_, resolve_full_32bpp_rgb10_4x_direct_cs_metallib,
           sizeof(resolve_full_32bpp_rgb10_4x_direct_cs_metallib),
           "resolve_full_32bpp_rgb10_4x_direct");
+  resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_32bpp_rgb10f_1x_direct_cs_metallib,
+          sizeof(resolve_full_32bpp_rgb10f_1x_direct_cs_metallib),
+          "resolve_full_32bpp_rgb10f_1x_direct");
+  resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_32bpp_rgb10f_1x_direct_refresh_cs_metallib,
+          sizeof(resolve_full_32bpp_rgb10f_1x_direct_refresh_cs_metallib),
+          "resolve_full_32bpp_rgb10f_1x_direct_refresh");
   resolve_full_64bpp_pipeline_ = CreateComputePipelineFromEmbeddedLibrary(
       device_, resolve_full_64bpp_cs_metallib,
       sizeof(resolve_full_64bpp_cs_metallib), "resolve_full_64bpp");
@@ -1116,6 +1141,14 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_32bpp_rgb10_4x_direct_pipeline_) {
     resolve_full_32bpp_rgb10_4x_direct_pipeline_->release();
     resolve_full_32bpp_rgb10_4x_direct_pipeline_ = nullptr;
+  }
+  if (resolve_full_32bpp_rgb10f_1x_direct_pipeline_) {
+    resolve_full_32bpp_rgb10f_1x_direct_pipeline_->release();
+    resolve_full_32bpp_rgb10f_1x_direct_pipeline_ = nullptr;
+  }
+  if (resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_) {
+    resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_->release();
+    resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
   }
   if (resolve_full_64bpp_pipeline_) {
     resolve_full_64bpp_pipeline_->release();
@@ -3334,16 +3367,32 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
 
   // The 2_10_10_10 four-sample average reads the samples from the one 4x
   // render target owning the whole source with the exact arithmetic of the
-  // rgb10-4x copy, rather than through the dump shader.
+  // rgb10-4x copy, and the 2_10_10_10_FLOAT to 2_10_10_10 conversion the pixels
+  // of the one 1x render target with that of the rgb10f-1x copy, rather than
+  // through the dump shader.
   const bool rgb10_4x_average =
       IsFull32RGB10FourSampleAverage(copy_shader, copy_shader_constants);
+  const bool rgb10f_1x =
+      !rgb10_4x_average &&
+      IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants);
+  const bool copy_from_render_target = rgb10_4x_average || rgb10f_1x;
+  MTL::ComputePipelineState* rgb10_pipeline = nullptr;
   MTL::Texture* rgb10_source = nullptr;
   uint32_t rgb10_origin[2] = {};
-  if (rgb10_4x_average) {
-    if (refresh_texture || rectangles.size() != 1 ||
-        !rectangles[0].render_target ||
-        !resolve_full_32bpp_rgb10_4x_direct_pipeline_ || !group_count_x ||
-        !group_count_y) {
+  if (copy_from_render_target) {
+    if (rgb10_4x_average) {
+      if (refresh_texture) {
+        return false;
+      }
+      rgb10_pipeline = resolve_full_32bpp_rgb10_4x_direct_pipeline_;
+    } else {
+      rgb10_pipeline =
+          refresh_texture
+              ? resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_
+              : resolve_full_32bpp_rgb10f_1x_direct_pipeline_;
+    }
+    if (rectangles.size() != 1 || !rectangles[0].render_target ||
+        !rgb10_pipeline || !group_count_x || !group_count_y) {
       return false;
     }
     auto* rt = static_cast<MetalRenderTarget*>(rectangles[0].render_target);
@@ -3354,25 +3403,40 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     // The shader reads resolve pixel p at render target texel p + origin,
     // which holds while the resolve's rows are the render target's rows: the
     // same pitch, a base at or after the render target's, not wrapping around
-    // EDRAM.
+    // EDRAM. The rgb10f-1x copy converts the floats of an RGBA16Float render
+    // target the way the dump does, which needs the render target to hold the
+    // source format, not just its layout.
+    const xenos::MsaaSamples source_msaa_samples =
+        rgb10_4x_average ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
+    const MTL::PixelFormat source_pixel_format =
+        rgb10_4x_average ? MTL::PixelFormatRGB10A2Unorm
+                         : MTL::PixelFormatRGBA16Float;
     if (!rgb10_source || rt_key.is_depth ||
-        rt_key.msaa_samples != xenos::MsaaSamples::k4X || rt_key.Is64bpp() ||
-        rgb10_source->pixelFormat() != MTL::PixelFormatRGB10A2Unorm ||
-        rgb10_source->sampleCount() != 4 || !edram_info.pitch_tiles ||
+        rt_key.msaa_samples != source_msaa_samples || rt_key.Is64bpp() ||
+        rgb10_source->pixelFormat() != source_pixel_format ||
+        rgb10_source->sampleCount() != (rgb10_4x_average ? 4 : 1) ||
+        (rgb10f_1x &&
+         rt_key.GetColorFormat() !=
+             xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT &&
+         rt_key.GetColorFormat() != xenos::ColorRenderTargetFormat::
+                                        k_2_10_10_10_FLOAT_AS_16_16_16_16) ||
+        !edram_info.pitch_tiles ||
         rt_key.GetPitchTiles() != edram_info.pitch_tiles ||
         edram_info.base_tiles < rt_key.base_tiles) {
       return false;
     }
-    constexpr uint32_t kTileWidth = xenos::kEdramTileWidthSamples >> 1;
-    constexpr uint32_t kTileHeight = xenos::kEdramTileHeightSamples >> 1;
+    const uint32_t tile_width =
+        xenos::kEdramTileWidthSamples >> uint32_t(rgb10_4x_average);
+    const uint32_t tile_height =
+        xenos::kEdramTileHeightSamples >> uint32_t(rgb10_4x_average);
     const uint32_t base_delta = edram_info.base_tiles - rt_key.base_tiles;
-    rgb10_origin[0] = base_delta % edram_info.pitch_tiles * kTileWidth +
+    rgb10_origin[0] = base_delta % edram_info.pitch_tiles * tile_width +
                       resolve_info.coordinate_info.edram_offset_x_div_8 * 8;
-    rgb10_origin[1] = base_delta / edram_info.pitch_tiles * kTileHeight +
+    rgb10_origin[1] = base_delta / edram_info.pitch_tiles * tile_height +
                       resolve_info.coordinate_info.edram_offset_y_div_8 * 8;
     const uint32_t width = resolve_info.coordinate_info.width_div_8 * 8;
     const uint32_t height = resolve_info.height_div_8 * 8;
-    if (rgb10_origin[0] + width > edram_info.pitch_tiles * kTileWidth ||
+    if (rgb10_origin[0] + width > edram_info.pitch_tiles * tile_width ||
         rgb10_origin[0] + width > rgb10_source->width() ||
         rgb10_origin[1] + height > rgb10_source->height()) {
       return false;
@@ -3390,7 +3454,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   std::vector<Source> sources;
   sources.reserve(rectangles.size());
   for (const ResolveCopyDumpRectangle& rectangle : rectangles) {
-    if (rgb10_4x_average) {
+    if (copy_from_render_target) {
       break;
     }
     auto* rt = static_cast<MetalRenderTarget*>(rectangle.render_target);
@@ -3473,25 +3537,36 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   }
 
   bool encode_failed = false;
-  if (rgb10_4x_average) {
+  if (copy_from_render_target) {
     // The kernel declares the origin binding as a writable device buffer, so
     // it is passed in a buffer slice like the other internal compute
     // constants.
+    // The origin, then, for the refresh, the texture's width with the row
+    // offset above it, and its logical height.
+    const uint32_t rgb10_constants[4] = {
+        rgb10_origin[0], rgb10_origin[1],
+        refresh_texture
+            ? uint32_t(refresh_texture->width()) | (refresh_offset_y << 16)
+            : 0,
+        refresh_texture ? uint32_t(refresh_texture->height()) : 0};
     MTL::Buffer* origin_buffer = nullptr;
     NS::UInteger origin_offset = 0;
     if (command_processor_.AcquireSpirvArgumentBufferSlice(
-            sizeof(rgb10_origin), kInternalComputeSliceAlignment,
+            sizeof(rgb10_constants), kInternalComputeSliceAlignment,
             &origin_buffer, &origin_offset)) {
       std::memcpy(
           static_cast<uint8_t*>(origin_buffer->contents()) + origin_offset,
-          rgb10_origin, sizeof(rgb10_origin));
-      encoder->setComputePipelineState(
-          resolve_full_32bpp_rgb10_4x_direct_pipeline_);
+          rgb10_constants, sizeof(rgb10_constants));
+      encoder->setComputePipelineState(rgb10_pipeline);
       encoder->setBytes(&copy_shader_constants, sizeof(copy_shader_constants),
                         0);
       encoder->setBuffer(dest_buffer, 0, 1);
       encoder->setBuffer(origin_buffer, origin_offset, 2);
       encoder->setTexture(rgb10_source, 0);
+      encoder->useResource(rgb10_source, MTL::ResourceUsageRead);
+      if (refresh_texture) {
+        encoder->setTexture(refresh_texture, 1);
+      }
       encoder->dispatchThreadgroups(
           MTL::Size::Make(group_count_x, group_count_y, 1),
           MTL::Size::Make(8, 8, 1));
@@ -3529,7 +3604,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   }
 
   for (size_t rectangle_index = 0;
-       !rgb10_4x_average && rectangle_index < rectangles.size() &&
+       !copy_from_render_target && rectangle_index < rectangles.size() &&
        !encode_failed;
        ++rectangle_index) {
     const ResolveCopyDumpRectangle& rect = rectangles[rectangle_index];
@@ -4411,14 +4486,16 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   MetalTextureCache::ResolveTextureRefreshTarget refresh_target;
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
-                                  /*allow_cross_depth_color=*/true) ==
+                                  /*allow_cross_depth_color=*/true,
+                                  /*allow_rgb10f_1x=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
     auto* texture_cache = command_processor_.texture_cache();
     if (texture_cache &&
         !IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) &&
-        !dest_info.copy_dest_exp_bias &&
+        (!dest_info.copy_dest_exp_bias ||
+         IsFull32RGB10FloatOneSample(copy_shader, copy_constants)) &&
         uint32_t(dest_info.copy_dest_endian) <=
             uint32_t(xenos::Endian::k16in32) &&
         !dest_coordinates.offset_x_div_8 && !dest_coordinates.offset_y_div_8) {

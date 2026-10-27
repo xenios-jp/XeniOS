@@ -1,0 +1,22 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2026 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
+#ifndef XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
+#define XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
+
+// Cache images are single-layer arrays, matching the generic refresh emitter.
+// Write the same logical dword the normal texture loader would read, before
+// the guest-memory endian transform.
+RWTexture2DArray<uint> xe_resolve_refresh_texture : register(u4);
+
+void XeResolveDirectRefreshWrite(uint2_xe texel, uint value) {
+  xe_resolve_refresh_texture[uint3(texel, 0u)] = value;
+}
+
+#endif  // XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
