@@ -181,6 +181,8 @@ void TracePlayer::PlayTraceOnThread(const uint8_t* trace_data,
       case TraceCommandType::kMemoryRead: {
         auto cmd = reinterpret_cast<const MemoryCommand*>(trace_ptr);
         trace_ptr += sizeof(*cmd);
+        command_processor->TracePlaybackWillWriteMemory(cmd->base_ptr,
+                                                        cmd->decoded_length);
         DecompressMemory(cmd->encoding_format, trace_ptr, cmd->encoded_length,
                          memory->TranslatePhysical(cmd->base_ptr),
                          cmd->decoded_length);
