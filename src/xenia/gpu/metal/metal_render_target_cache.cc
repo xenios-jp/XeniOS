@@ -2006,15 +2006,14 @@ bool MetalRenderTargetCache::GetCurrentTransferAttachmentFormats(
     attachment_formats_out.color_attachment_formats[i] = texture->pixelFormat();
     has_color_attachment = true;
   }
+  MTL::Texture* depth_texture =
+      current_depth_target_ ? current_depth_target_->draw_texture() : nullptr;
   // GetRenderPassDescriptor attaches a dummy 8_8_8_8 target at slot 0 when the
-  // guest binds no color target.
-  if (!has_color_attachment) {
+  // guest binds neither a color nor a depth target.
+  if (!has_color_attachment && !depth_texture) {
     attachment_formats_out.color_attachment_formats[0] =
         GetColorDrawPixelFormat(xenos::ColorRenderTargetFormat::k_8_8_8_8);
   }
-
-  MTL::Texture* depth_texture =
-      current_depth_target_ ? current_depth_target_->draw_texture() : nullptr;
   if (depth_texture) {
     MTL::PixelFormat depth_pixel_format = depth_texture->pixelFormat();
     attachment_formats_out.depth_attachment_format = depth_pixel_format;
@@ -2802,11 +2801,12 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     }
   }
 
-  // If no color render targets are bound, attach a dummy color target so Metal
-  // has at least one color attachment. This mirrors the D3D12/Vulkan behavior
-  // where an RTV is always bound when drawing, and also keeps pipeline state
-  // validation happy for depth-only passes.
-  if (!has_any_color_target) {
+  // With neither a color nor a depth target bound, attach a dummy color target,
+  // like the RTV D3D12 and Vulkan always bind when drawing. A depth-only pass
+  // has no color attachment.
+  const bool omit_dummy_color =
+      current_depth_target_ && current_depth_target_->draw_texture();
+  if (!has_any_color_target && !omit_dummy_color) {
     uint32_t samples = std::max(1u, expected_sample_count);
 
     uint32_t width = 1280;
@@ -2919,6 +2919,8 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
                 dummy_color_target_->draw_texture()->sampleCount()));
       }
     }
+  } else if (!has_any_color_target) {
+    dummy_color_target_ = nullptr;
   }
 
   render_pass_descriptor_dirty_ = false;
@@ -3012,6 +3014,10 @@ bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
 
   if (has_current_color_target) {
     return true;
+  }
+  // A depth-only pass has no dummy color attachment.
+  if (expected_depth) {
+    return color_attachments->object(0)->texture() == nullptr;
   }
   MTL::Texture* expected_dummy =
       dummy_color_target_ ? dummy_color_target_->draw_texture() : nullptr;
