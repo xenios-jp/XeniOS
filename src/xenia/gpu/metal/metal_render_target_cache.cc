@@ -550,22 +550,22 @@ struct TransferClearDepthConstants {
 
 // MetalRenderTarget implementation
 MetalRenderTargetCache::MetalRenderTarget::~MetalRenderTarget() {
-  if (stencil_view_) {
-    stencil_view_->release();
-    stencil_view_ = nullptr;
+  auto release = [](MTL::Texture*& texture) {
+    if (texture) {
+      texture->release();
+      texture = nullptr;
+    }
+  };
+  release(spare_depth_stencil_view_);
+  release(spare_depth_texture_);
+  release(stencil_view_);
+  if (draw_texture_ != texture_) {
+    release(draw_texture_);
   }
-  if (draw_texture_ && draw_texture_ != texture_) {
-    draw_texture_->release();
-    draw_texture_ = nullptr;
+  if (transfer_texture_ != texture_) {
+    release(transfer_texture_);
   }
-  if (transfer_texture_ && transfer_texture_ != texture_) {
-    transfer_texture_->release();
-    transfer_texture_ = nullptr;
-  }
-  if (texture_) {
-    texture_->release();
-    texture_ = nullptr;
-  }
+  release(texture_);
 }
 
 // MetalRenderTargetCache implementation
@@ -1225,6 +1225,134 @@ void MetalRenderTargetCache::NoteDrawWrites() {
       MarkContentChanged(current_color_targets_[i]);
     }
   }
+}
+
+bool MetalRenderTargetCache::CanRotateHostDepth(
+    uint32_t render_target_count, RenderTarget* const* render_targets,
+    const std::vector<Transfer>* transfers, bool resolve_clear) const {
+  // The rotation is a SPIR-V Cross transfer draw with native stencil output
+  // from color sources into an unscaled depth destination that is a host
+  // depth source of its own transfers.
+  if (!cvars::metal_transfer_spirv_cross ||
+      !UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
+    return false;
+  }
+  if (!render_target_count || !render_targets || !transfers ||
+      !render_targets[0] || transfers[0].empty()) {
+    return false;
+  }
+  if (resolve_clear) {
+    return false;
+  }
+  const auto* dest = static_cast<const MetalRenderTarget*>(render_targets[0]);
+  const RenderTargetKey dest_key = dest->key();
+  if (dest->needs_initial_clear() || !dest_key.is_depth) {
+    return false;
+  }
+  // Every transfer renders into the spare backing, so together they have to
+  // reach every tile the destination owns without a gap.
+  bool self_sourced = false;
+  uint32_t covered_end_tiles = dest_key.base_tiles;
+  for (const Transfer& transfer : transfers[0]) {
+    if (!transfer.source) {
+      return false;
+    }
+    if (transfer.start_tiles != covered_end_tiles) {
+      return false;
+    }
+    covered_end_tiles = transfer.end_tiles;
+    if (transfer.host_depth_source == dest) {
+      self_sourced = true;
+    }
+  }
+  if (!self_sourced) {
+    return false;
+  }
+  // Nothing else in this update may read the destination, whether it runs
+  // standalone now or inside the draw pass later: after the rotation its
+  // texture() is the new backing.
+  auto reads_dest = [dest](const std::vector<Transfer>& others) {
+    return std::any_of(
+        others.cbegin(), others.cend(), [dest](const Transfer& other) {
+          return other.source == dest || other.host_depth_source == dest;
+        });
+  };
+  for (uint32_t i = 1; i < render_target_count; ++i) {
+    if (reads_dest(transfers[i])) {
+      return false;
+    }
+  }
+  for (uint32_t i = 1; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+    if (reads_dest(pending_draw_pass_transfers_[i])) {
+      return false;
+    }
+  }
+  if (!IsRenderTargetOwnershipFullyCoveredByTransfer(
+          dest_key, dest_key.base_tiles, covered_end_tiles)) {
+    return false;
+  }
+  return true;
+}
+
+bool MetalRenderTargetCache::AcquireSpareDepthBacking(
+    MetalRenderTarget* dest, const std::vector<Transfer>& transfers) {
+  MTL::Texture* old_depth = dest->texture();
+  if (!old_depth || !GetTransferDepthAndStencilOutputState()) {
+    return false;
+  }
+  const RenderTargetKey dest_key = dest->key();
+  const MTL::PixelFormat depth_format =
+      GetDepthPixelFormat(dest_key.GetDepthFormat());
+  // Nothing may fail once the backings are swapped, so every transfer's
+  // pipelines and extents are checked first.
+  std::vector<TransferRectanglePlan> plans;
+  if (!BuildTransferRectanglePlans(dest_key, transfers, nullptr, true, plans)) {
+    return false;
+  }
+  for (const TransferRectanglePlan& plan : plans) {
+    for (uint32_t i = 0; i < plan.rectangle_count; ++i) {
+      const Transfer::Rectangle& rectangle = plan.rectangles[i];
+      if (!rectangle.width_pixels || !rectangle.height_pixels ||
+          uint64_t(rectangle.x_pixels) + rectangle.width_pixels >
+              old_depth->width() ||
+          uint64_t(rectangle.y_pixels) + rectangle.height_pixels >
+              old_depth->height()) {
+        return false;
+      }
+    }
+    const Transfer& transfer = transfers[plan.transfer_index];
+    if (!transfer.source) {
+      return false;
+    }
+    RenderTargetKey host_depth_key;
+    if (transfer.host_depth_source) {
+      host_depth_key = transfer.host_depth_source->key();
+    }
+    const EdramTransferShaderKey depth_shader = GetTransferShaderKey(
+        transfer.source->key(), dest_key,
+        transfer.host_depth_source ? &host_depth_key : nullptr, false, false,
+        0);
+    if (!GetOrCreateTransferPipelines(depth_shader, depth_format, false, true,
+                                      0, nullptr, depth_format, depth_format)) {
+      return false;
+    }
+  }
+  MTL::Texture* spare = dest->spare_depth_texture();
+  if (spare) {
+    return spare->pixelFormat() == old_depth->pixelFormat() &&
+           spare->textureType() == old_depth->textureType() &&
+           spare->width() == old_depth->width() &&
+           spare->height() == old_depth->height() &&
+           spare->sampleCount() == old_depth->sampleCount();
+  }
+  spare = CreateDepthTexture(
+      uint32_t(old_depth->width()), uint32_t(old_depth->height()),
+      dest_key.GetDepthFormat(), MsaaSamplesToCount(dest_key.msaa_samples));
+  if (!spare) {
+    return false;
+  }
+  dest->SetSpareDepthTexture(spare);
+  return true;
 }
 
 bool MetalRenderTargetCache::Update(
@@ -4234,6 +4362,25 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                              ? 1u
                              : 0u;
 
+  // Self-sourced host depth: rather than snapshotting the depth into a buffer
+  // with a compute dispatch, keep the current backing as the read-only host
+  // depth source and render the transfer into a spare backing that becomes
+  // the active one. The generic transfer pass below then targets the new
+  // backing with a don't-care load.
+  MetalRenderTarget* renamed_depth_dest = nullptr;
+  if (host_depth_store_needed && !use_active_render_encoder) {
+    auto* dest = static_cast<MetalRenderTarget*>(render_targets[0]);
+    if (CanRotateHostDepth(render_target_count, render_targets,
+                           render_target_transfers, resolve_clear_needed) &&
+        AcquireSpareDepthBacking(dest, render_target_transfers[0])) {
+      dest->SwapDepthBackings();
+      MarkContentChanged(dest);
+      renamed_depth_dest = dest;
+      host_depth_store_needed = false;
+      render_pass_descriptor_dirty_ = true;
+    }
+  }
+
   // Host depth store pass (dest depth where host depth source == dest).
   bool host_depth_store_dispatched = false;
   if (host_depth_store_needed) {
@@ -4489,6 +4636,11 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     // its own, which is exactly the split the draw-pass path exists to avoid.
     if (!use_active_render_encoder && !transfers.empty()) {
       auto try_blit_transfer = [&](const Transfer& transfer) -> bool {
+        // Only the transfer pass writes a rotated-in backing: it is loaded
+        // with don't-care, so a blit ahead of it would be lost.
+        if (dest_metal_rt == renamed_depth_dest) {
+          return false;
+        }
         auto* source_rt = static_cast<MetalRenderTarget*>(transfer.source);
         if (!source_rt || transfer.host_depth_source) {
           return false;
@@ -4726,7 +4878,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       transfer_pass_load_dontcare = true;
     }
     if (!transfer_pass_load_dontcare && !resolve_clear_needed) {
-      transfer_pass_load_dontcare = transfers_fully_overwrite_target();
+      // A rotated-in spare depth backing holds nothing worth loading: the
+      // transfer overwrites every tile the destination owns.
+      transfer_pass_load_dontcare = dest_metal_rt == renamed_depth_dest ||
+                                    transfers_fully_overwrite_target();
     }
     MTL::LoadAction transfer_load_action = MTL::LoadActionLoad;
     if (resolve_clear_via_load_action) {
@@ -4852,10 +5007,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           if (host_depth_rt) {
             host_depth_key = host_depth_rt->key();
           }
+          // A rotated destination reads its previous backing as an ordinary
+          // host depth texture instead of the snapshot copy.
           EdramTransferShaderKey shader_key = GetTransferShaderKey(
               source_key, dest_key, host_depth_rt ? &host_depth_key : nullptr,
-              host_depth_rt == dest_metal_rt, pass != 0,
-              active_color_attachment_index);
+              host_depth_rt == dest_metal_rt &&
+                  dest_metal_rt != renamed_depth_dest,
+              pass != 0, active_color_attachment_index);
 
           transfer_invocations_.emplace_back(transfer, shader_key);
           if (pass) {
@@ -5376,7 +5534,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               auto* host_depth_rt =
                   static_cast<MetalRenderTarget*>(transfer.host_depth_source);
               MTL::Texture* host_depth_texture =
-                  host_depth_rt ? host_depth_rt->texture() : nullptr;
+                  !host_depth_rt ? nullptr
+                  : host_depth_rt == renamed_depth_dest
+                      ? host_depth_rt->spare_depth_texture()
+                      : host_depth_rt->texture();
               if (!host_depth_texture) {
                 continue;
               }

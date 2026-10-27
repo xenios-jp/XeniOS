@@ -787,6 +787,12 @@ class RenderTargetCache {
                     const std::vector<Transfer>* render_target_transfers,
                     const Transfer::Rectangle* resolve_clear_rectangle) const;
 
+  // Whether one transfer overwrites every tile whose guest value, depth bits or
+  // retained host depth value is represented by this render target.
+  bool IsRenderTargetOwnershipFullyCoveredByTransfer(
+      RenderTargetKey key, uint32_t transfer_start_tiles,
+      uint32_t transfer_end_tiles) const;
+
  private:
   const RegisterFile& register_file_;
   TraceWriter* trace_writer_;
