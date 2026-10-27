@@ -919,8 +919,21 @@ PipelineCache::ConvertGuestMesaTessellationToDxil(
          domain_spirv.size() / sizeof(uint32_t),
          SpirvToDxilCompiler::Stage::kTessellationEvaluation},
     };
-    dxil = SpirvToDxilCompiler::TranslateLinked(stages,
-                                                /*lower_to_bindless=*/true);
+    using HVS = Shader::HostVertexShaderType;
+    bool is_quad = host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
+                   host_vertex_shader_type == HVS::kQuadDomainPatchIndexed;
+    bool is_control_point_indexed =
+        host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
+        host_vertex_shader_type == HVS::kTriangleDomainCPIndexed;
+    // Override unsized SPIR-V hull input arrays with the actual pipeline size.
+    uint32_t input_control_point_count =
+        tessellation_mode == xenos::TessellationMode::kAdaptive ||
+                is_control_point_indexed
+            ? (is_quad ? 4u : 3u)
+            : 1u;
+    dxil = SpirvToDxilCompiler::TranslateLinked(
+        stages, /*lower_to_bindless=*/true,
+        /*preserve_msc_fmad32=*/false, input_control_point_count);
   }
 
   std::lock_guard<std::mutex> lock(mesa_dxil_cache_mutex_);

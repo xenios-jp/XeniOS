@@ -345,7 +345,7 @@ std::vector<uint8_t> SpirvToDxilCompiler::Translate(const uint32_t* spirv_words,
 
 std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
     const std::vector<LinkedStage>& stages, bool lower_to_bindless,
-    bool preserve_msc_fmad32) {
+    bool preserve_msc_fmad32, uint32_t tess_input_control_point_count) {
   if (stages.empty()) {
     return {};
   }
@@ -364,6 +364,7 @@ std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
   dxil_spirv_runtime_conf conf =
       MakeRuntimeConf(lower_to_bindless, /*keep_io_vars=*/false,
                       /*input_clip_size=*/0, preserve_msc_fmad32);
+  conf.tess_input_control_point_count = tess_input_control_point_count;
   dxil_spirv_debug_options debug_options = {};
   dxil_spirv_logger logger = {};
   logger.log = SpirvToDxilLog;
