@@ -1391,6 +1391,24 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
   encoder->setComputePipelineState(use_direct_raw ? direct_raw_pipeline
                                                   : pipeline);
+  MetalBufferHazards::Encoder hazards;
+  if (metal_shared_memory.hazards()) {
+    hazards.Begin(*metal_shared_memory.hazards(), cmd, encoder);
+    if (!texture_resolution_scaled) {
+      for (uint32_t part = 0; part < 2; ++part) {
+        if (!(part ? load_mips : load_base) || snapshot_length[part]) {
+          continue;
+        }
+        // A final 16-byte fetch may extend past the part.
+        hazards.Access(part_guest_address[part],
+                       xe::align(part ? texture.GetGuestMipsSize()
+                                      : texture.GetGuestBaseSize(),
+                                 UINT32_C(16)) +
+                           16,
+                       false);
+      }
+    }
+  }
   if (use_direct_raw) {
     // Slang packs Metal texture arguments separately from HLSL registers.
     encoder->setTexture(direct_raw_view, 0);
@@ -1428,6 +1446,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                                          source_buffer_length)) {
         // cmd is shared with the rest of the batch (or is the draw command
         // buffer), so it must be left without an open encoder.
+        hazards.End();
         encoder->endEncoding();
         handle_upload_failure(false);
         return false;
@@ -1531,6 +1550,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
 
   {
     SCOPE_profile_cpu_i("gpu", "MetalTextureCache::ComputeEncoderEnd");
+    hazards.End();
     encoder->endEncoding();
   }
 

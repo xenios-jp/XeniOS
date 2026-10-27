@@ -53,11 +53,15 @@ bool MetalSharedMemory::Initialize() {
     return false;
   }
 
+  const MTL::ResourceOptions buffer_options =
+      MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeUntracked;
+  hazards_ = std::make_unique<MetalBufferHazards>(device, kBufferSize);
+
   if (cvars::shared_memory_zero_copy) {
     size_t system_page_size = xe::memory::page_size();
     if (reinterpret_cast<uintptr_t>(xbox_ram) % system_page_size == 0) {
-      buffer_ = device->newBuffer(xbox_ram, kBufferSize,
-                                  MTL::ResourceStorageModeShared, nullptr);
+      buffer_ =
+          device->newBuffer(xbox_ram, kBufferSize, buffer_options, nullptr);
       if (buffer_) {
         use_zero_copy_ = true;
         XELOGD("Metal shared memory: using bytes-no-copy buffer");
@@ -71,7 +75,7 @@ bool MetalSharedMemory::Initialize() {
   }
 
   if (!buffer_) {
-    buffer_ = device->newBuffer(kBufferSize, MTL::ResourceStorageModeShared);
+    buffer_ = device->newBuffer(kBufferSize, buffer_options);
   }
   if (!buffer_) {
     XELOGE("Failed to create Metal shared memory buffer");
@@ -171,7 +175,8 @@ bool MetalSharedMemory::UploadRanges(
 }
 
 bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
-                                               uint32_t length) {
+                                               uint32_t length,
+                                               bool order_all_accesses) {
   MTL::CommandBuffer* command_buffer = command_processor_.EnsureCommandBuffer();
   if (!command_buffer) {
     return false;
@@ -180,6 +185,15 @@ bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
   MTL::BlitCommandEncoder* encoder = command_buffer->blitCommandEncoder();
   if (!encoder) {
     return false;
+  }
+  MetalBufferHazards::Encoder hazards;
+  if (hazards_) {
+    hazards.Begin(*hazards_, command_buffer, encoder);
+    if (order_all_accesses) {
+      // Preserve the ordering of a guest fence publication, but track only
+      // the bytes it writes, not a write to the whole buffer.
+      hazards.OrderPreviousAccesses();
+    }
   }
   // The source is in the command buffer's argument buffer pages, which are
   // recycled only after the command buffer completes.
@@ -198,12 +212,16 @@ bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
     std::memcpy(
         static_cast<uint8_t*>(source_buffer->contents()) + source_offset,
         source, copy_length);
+    if (hazards.is_active()) {
+      hazards.Access(start, copy_length, true);
+    }
     encoder->copyFromBuffer(source_buffer, source_offset, buffer_, start,
                             copy_length);
     start += copy_length;
     source += copy_length;
     length -= copy_length;
   }
+  hazards.End();
   encoder->endEncoding();
   return copied;
 }
@@ -214,7 +232,7 @@ bool MetalSharedMemory::WriteGuestMemoryGpuOrdered(uint32_t start,
   if (!use_zero_copy_ || !buffer_ || !data || !length || start >= kBufferSize ||
       length > kBufferSize - start || ((start | length) & 3) ||
       !RequestRange(start, length) ||
-      !CopyToBufferGpuOrdered(start, data, length)) {
+      !CopyToBufferGpuOrdered(start, data, length, true)) {
     return false;
   }
   RangeWrittenByGpu(start, length);
@@ -239,6 +257,7 @@ void MetalSharedMemory::InitializeTraceCompleteDownloads() {
 }
 
 void MetalSharedMemory::Shutdown() {
+  hazards_.reset();
   if (buffer_) {
     buffer_->release();
     buffer_ = nullptr;

@@ -26,6 +26,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "xenia/base/platform.h"
@@ -34,6 +35,7 @@
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/memexport_format_profile.h"
 #include "xenia/gpu/metal/dxil_shader.h"
+#include "xenia/gpu/metal/metal_buffer_hazards.h"
 #include "xenia/gpu/metal/metal_dxil_binder.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
 #include "xenia/gpu/metal/metal_render_target_cache.h"
@@ -295,6 +297,14 @@ class MetalCommandProcessor : public CommandProcessor {
   // shared memory.
   bool RequestDrawSharedMemoryRanges(const Shader& vertex_shader,
                                      const RegisterFile& regs);
+  // With the shared memory ordered by range, encodes the waits the draw needs
+  // for its vertex buffers, guest index buffer and memexport ranges. Call with
+  // the render encoder open, right before the draw.
+  void OrderDrawSharedMemoryAccesses(
+      const Shader* pixel_shader,
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+      MTL::Buffer* index_buffer, uint64_t index_buffer_offset,
+      uint64_t index_buffer_size, const RegisterFile& regs);
   void ComputeDrawViewportInfo(const RegisterFile& regs,
                                const Shader* pixel_shader,
                                reg::RB_DEPTHCONTROL normalized_depth_control,
@@ -530,6 +540,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Current command buffer and encoder
   MTL::CommandBuffer* current_command_buffer_ = nullptr;
   MTL::RenderCommandEncoder* current_render_encoder_ = nullptr;
+  MetalBufferHazards::Encoder render_encoder_shared_memory_hazards_;
+  // Vertex fetch ranges requested for the current draw, as [start, length].
+  std::vector<std::pair<uint32_t, uint32_t>> draw_shared_memory_reads_;
   // Retained for the lifetime of current_render_encoder_. The render target
   // cache may rebuild and release its cached descriptor between draws.
   MTL::RenderPassDescriptor* current_render_pass_descriptor_ = nullptr;

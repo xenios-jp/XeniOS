@@ -13,6 +13,9 @@
 // Metal shared memory attempts bytes-no-copy aliasing on unified-memory
 // devices and falls back to staged uploads when unsupported.
 
+#include <memory>
+
+#include "xenia/gpu/metal/metal_buffer_hazards.h"
 #include "xenia/gpu/shared_memory.h"
 #include "xenia/gpu/trace_writer.h"
 #include "xenia/ui/metal/metal_api.h"
@@ -32,6 +35,9 @@ class MetalSharedMemory : public SharedMemory {
   void ClearCache() override;
 
   MTL::Buffer* GetBuffer() const { return buffer_; }
+  // Every encoder accessing the untracked buffer reports its ranges here.
+  // Null when Metal performs whole-buffer hazard tracking instead.
+  MetalBufferHazards* hazards() const { return hazards_.get(); }
   bool is_zero_copy() const { return use_zero_copy_; }
   // Copies an immutable payload after preceding GPU accesses to aliased RAM.
   // False guarantees that no destination write was encoded.
@@ -57,12 +63,13 @@ class MetalSharedMemory : public SharedMemory {
  private:
   // Copies into the buffer with a blit encoded into the current command buffer,
   // after the work already encoded in it.
-  bool CopyToBufferGpuOrdered(uint32_t start, const void* data,
-                              uint32_t length);
+  bool CopyToBufferGpuOrdered(uint32_t start, const void* data, uint32_t length,
+                              bool order_all_accesses = false);
 
   MetalCommandProcessor& command_processor_;
   TraceWriter& trace_writer_;
   MTL::Buffer* buffer_ = nullptr;
+  std::unique_ptr<MetalBufferHazards> hazards_;
   bool use_zero_copy_ = false;
 };
 

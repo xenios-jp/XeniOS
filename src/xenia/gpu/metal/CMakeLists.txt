@@ -2,6 +2,8 @@ add_library(xenia-gpu-metal STATIC
   dxil_shader.cc
   dxil_shader.h
   ir_runtime_impl.cc
+  metal_buffer_hazards.cc
+  metal_buffer_hazards.h
   metal_command_processor.cc
   metal_command_processor.h
   metal_dxil_binder.cc
