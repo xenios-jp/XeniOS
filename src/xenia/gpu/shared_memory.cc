@@ -286,6 +286,7 @@ void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last,
   uint32_t bucket_last = address_last >> kWatchBucketSizeLog2;
 
   auto global_lock = global_critical_region_.Acquire();
+  ++fire_sequence_;
 
   // Fire global watches.
   for (const auto global_watch : global_watches_) {
