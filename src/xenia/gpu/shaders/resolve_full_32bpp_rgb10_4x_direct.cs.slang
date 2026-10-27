@@ -8,11 +8,17 @@
 #include "endian.xesli"
 #include "pixel_formats.xesli"
 // The EDRAM binding slot carries the source texel origin instead: two dwords,
-// the host render target texel of the resolve area's first pixel.
+// the host render target texel of the resolve area's first pixel. With
+// XE_RESOLVE_DIRECT_REFRESH, two more follow: the refreshed texture's width
+// with the texture row of the resolve's first row in the upper 16 bits, and
+// its height with the number of its aliases in the upper 16 bits.
 #define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
 #include "resolve.xesli"
 
 byte_buffer_align16_wo_declare_xe(xe_resolve_dest, 1, 0, u0, space0, 1)
+#ifdef XE_RESOLVE_DIRECT_REFRESH
+#include "resolve_direct_refresh.xesli"
+#endif
 #define LOCAL_SIZE_X_XE 8
 #define LOCAL_SIZE_Y_XE 8
 #define LOCAL_SIZE_Z_XE 1
@@ -111,6 +117,36 @@ entry_inputs_end_code_begin_compute_xe
   packed = XePack32bpp4Pixels(pixel_0, pixel_1, pixel_2, pixel_3,
                               resolve_info.dest_format,
                               resolve_info.dest_num_format);
+#ifdef XE_RESOLVE_DIRECT_REFRESH
+  {
+    uint texture_width_and_offset_y =
+        byte_buffer_align4_load4_xe(xe_resolve_edram, 8u);
+    uint texture_width = texture_width_and_offset_y & 0xFFFFu;
+    uint texture_height_and_alias_count =
+        byte_buffer_align4_load4_xe(xe_resolve_edram, 12u);
+    uint texture_height = texture_height_and_alias_count & 0xFFFFu;
+    uint alias_count = texture_height_and_alias_count >> 16u;
+    uint texture_y = pixel_index.y + (texture_width_and_offset_y >> 16u);
+    if (texture_y < texture_height) {
+      if (pixel_index.x < texture_width) {
+        XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x, texture_y),
+                                    packed.x, alias_count);
+      }
+      if (pixel_index.x + 1u < texture_width) {
+        XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 1u, texture_y),
+                                    packed.y, alias_count);
+      }
+      if (pixel_index.x + 2u < texture_width) {
+        XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 2u, texture_y),
+                                    packed.z, alias_count);
+      }
+      if (pixel_index.x + 3u < texture_width) {
+        XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 3u, texture_y),
+                                    packed.w, alias_count);
+      }
+    }
+  }
+#endif
   byte_buffer_align16_store16_xe(
       xe_resolve_dest, XeResolveDestPixelAddress(resolve_info, pixel_index, 2u),
       XeEndianSwap32(packed, resolve_info.dest_endian_128));
