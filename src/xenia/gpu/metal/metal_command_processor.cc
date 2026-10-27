@@ -1404,6 +1404,21 @@ void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
 void MetalCommandProcessor::InitializeTrace() {
   CommandProcessor::InitializeTrace();
 
+  auto abandon_trace = [this](const char* reason) {
+    XELOGE("Metal: abandoning frame trace: {}", reason);
+    trace_writer_.Close();
+    trace_state_ = TraceState::kDisabled;
+    trace_frame_file_path_.clear();
+  };
+
+  // Ownership may already name destinations whose transfers were deferred by
+  // an abandoned draw. Materialize them before the standalone snapshot reads.
+  if (render_target_cache_ &&
+      !render_target_cache_->FlushPendingDrawPassTransfers()) {
+    abandon_trace("the queued ownership transfers could not be completed");
+    return;
+  }
+
   // Neither download is bracketed by a submission of its own, so everything in
   // flight has to have landed before they read what the GPU wrote.
   EndCommandBuffer();
@@ -1411,8 +1426,16 @@ void MetalCommandProcessor::InitializeTrace() {
     AwaitSubmissionCompletion(submission_current_);
   }
 
-  if (render_target_cache_ &&
-      render_target_cache_->InitializeTraceSubmitDownloads()) {
+  if (render_target_cache_) {
+    // DumpRenderTargets uses submission-owned argument pages even when its
+    // compute commands are submitted separately. EndCommandBuffer above removed
+    // that owner. Keep a fresh submission alive while the standalone dump and
+    // readback run synchronously; the next guest draw can reuse it afterwards.
+    if (!EnsureCommandBuffer() ||
+        !render_target_cache_->InitializeTraceSubmitDownloads()) {
+      abandon_trace("the initial EDRAM snapshot could not be captured");
+      return;
+    }
     render_target_cache_->InitializeTraceCompleteDownloads();
   }
   if (shared_memory_ && shared_memory_->InitializeTraceSubmitDownloads()) {
@@ -1462,6 +1485,12 @@ void MetalCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
   // Trace playback frame boundary: drop resolve-write tracking from previous
   // frame before restoring a new snapshot.
   ClearResolvedMemory();
+  // Restoring the snapshot also dumps its bootstrap render target. The dump's
+  // descriptor allocations require a live submission, just like capture.
+  if (!EnsureCommandBuffer()) {
+    XELOGE("Metal: unable to begin submission for EDRAM snapshot restore");
+    return;
+  }
   render_target_cache_->RestoreEdramSnapshot(snapshot);
 }
 
