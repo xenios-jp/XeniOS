@@ -15,11 +15,13 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "xenia/gpu/register_file.h"
+#include "xenia/gpu/resolve_refresh_watch_log.h"
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/gpu/texture_cache.h"
 #include "xenia/gpu/texture_info.h"
@@ -121,47 +123,47 @@ class MetalTextureCache : public TextureCache {
   // Narrow producer interface for an existing, exact texture-cache image
   // whose loader copies raw texels or converts packed 24-bit depth. The backend
   // may write the same logical texels there while it performs the required
-  // guest-memory resolve. Partial rectangles retain the untouched texels only
-  // if the texture is current before encoding and publication observes only
-  // the resolve's GPU invalidation. Publication, right
-  // after the resolve marked the range GPU-written, is only accepted if the
-  // range is still valid in shared memory (no CPU write since), and installs
-  // the ordinary cache watch immediately, so later writes take the normal path.
+  // guest-memory resolve. Partial rectangles require current retained texels,
+  // or proof that all writes to an outdated texture stayed within complete
+  // rows being rewritten. Publication rechecks intervening invalidations after
+  // the resolve marks the range GPU-written. It requires valid shared-memory
+  // pages and installs the ordinary watch immediately under the same lock,
+  // so later writes take the normal invalidation path.
   struct ResolveTextureRefreshTarget {
     enum class Transform : uint8_t { kNone, kDepthUnorm24, kDepthFloat24 };
     struct Alias {
-      MTL::Texture* write_texture = nullptr;
+      NS::SharedPtr<MTL::Texture> write_texture;
       void* cache_texture = nullptr;
       uint32_t offset_y = 0;
       bool partial = false;
       uint64_t invalidation_count = 0;
+      bool outdated_within_band = false;
+      uint64_t fire_sequence = 0;
     };
     static constexpr uint32_t kMaxAliases = 3;
-    MTL::Texture* write_texture = nullptr;
-    void* cache_texture = nullptr;
     uint32_t length = 0;
-    uint32_t offset_y = 0;
-    bool partial = false;
-    uint64_t invalidation_count = 0;
+    uint32_t address = 0;
     Transform transform = Transform::kNone;
-    std::array<Alias, kMaxAliases> aliases{};
-    uint32_t alias_count = 0;
+    // The first destination supplies the shared shape and conversion. Keep
+    // every view alive through encoding and publication even if RequestRange
+    // evicts its cache wrapper.
+    std::array<Alias, kMaxAliases + 1> destinations{};
+    uint32_t count = 0;
+
+    std::span<const Alias> textures() const {
+      return {destinations.data(), count};
+    }
 
     bool HasPartial() const {
-      if (partial) {
-        return true;
-      }
-      for (uint32_t i = 0; i < alias_count; ++i) {
-        if (aliases[i].partial) {
+      for (const Alias& texture : textures()) {
+        if (texture.partial) {
           return true;
         }
       }
       return false;
     }
 
-    explicit operator bool() const {
-      return write_texture && cache_texture && length;
-    }
+    explicit operator bool() const { return count != 0; }
   };
   // Other interpretations may join only with matching write format, size,
   // conversion and row offset; unmatched textures retain the normal reload.
@@ -343,6 +345,17 @@ class MetalTextureCache : public TextureCache {
   // resolve refresh destination: an enabled format in the exact tiled 2D
   // single-level shape a 1x resolve can write.
   bool IsResolveRefreshKey(const TextureKey& key) const;
+  ResolveRefreshWatchLog refresh_fire_log_;
+  SharedMemory::GlobalWatchHandle refresh_fire_watch_handle_ = nullptr;
+  static void RefreshFireGlobalWatchCallbackThunk(
+      const global_unique_lock_type& global_lock, void* context,
+      uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);
+  bool RefreshFiresWithin(const global_unique_lock_type& global_lock,
+                          uint64_t first_sequence, uint32_t range_first,
+                          uint32_t range_last, uint32_t cpu_first,
+                          uint32_t cpu_last, uint32_t gpu_first,
+                          uint32_t gpu_last) const;
+
   std::unique_ptr<MetalHeapPool> texture_heap_pool_;
   bool supports_bc_texture_compression_ = false;
 

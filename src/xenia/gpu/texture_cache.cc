@@ -756,6 +756,8 @@ void TextureCache::Texture::WatchCallback(
   } else {
     assert_not_zero(GetGuestBaseSize());
     ++base_invalidation_count_;
+    base_outdated_fire_sequence_ =
+        texture_cache().shared_memory().fire_sequence(global_lock);
     base_last_invalidated_by_gpu_ = invalidated_by_gpu;
     base_outdated_ = true;
     base_watch_handle_ = nullptr;

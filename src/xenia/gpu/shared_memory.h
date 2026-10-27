@@ -45,6 +45,13 @@ class SharedMemory {
   GlobalWatchHandle RegisterGlobalWatch(GlobalWatchCallback callback,
                                         void* callback_context);
   void UnregisterGlobalWatch(GlobalWatchHandle handle);
+  // Number of firings, including the current callback's firing. Access under
+  // the global critical region; global callbacks run before per-range ones.
+  uint64_t fire_sequence(const global_unique_lock_type& global_lock) const {
+    return fire_sequence_;
+  }
+  uint32_t watch_page_size_log2() const { return page_size_log2_; }
+
   typedef void (*WatchCallback)(const global_unique_lock_type& global_lock,
                                 void* context, void* data, uint64_t argument,
                                 bool invalidated_by_gpu);
@@ -182,6 +189,7 @@ class SharedMemory {
   // on it is not hard - the access callback takes a range as an argument, and
   // touched pages of the buffer of this size will be invalidated).
   uint32_t page_size_log2_;
+  uint64_t fire_sequence_ = 0;
 
   bool EnsureHostGpuMemoryAllocated(uint32_t start, uint32_t length);
   uint32_t host_gpu_memory_sparse_granularity_log2_ = UINT32_MAX;
