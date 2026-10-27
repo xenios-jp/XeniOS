@@ -497,6 +497,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // Current command buffer and encoder
   MTL::CommandBuffer* current_command_buffer_ = nullptr;
   MTL::RenderCommandEncoder* current_render_encoder_ = nullptr;
+  // Retained for the lifetime of current_render_encoder_. The render target
+  // cache may rebuild and release its cached descriptor between draws.
   MTL::RenderPassDescriptor* current_render_pass_descriptor_ = nullptr;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;
   // Whether the descriptor the current encoder was created from carried the

@@ -1088,6 +1088,7 @@ void MetalRenderTargetCache::ClearCache() {
   }
   current_depth_target_ = nullptr;
   render_pass_descriptor_dirty_ = true;
+  render_pass_encoder_created_since_targets_changed_ = false;
 
   // Clear the tracking of which render targets have been cleared
   cleared_render_targets_this_frame_.clear();
@@ -1298,6 +1299,9 @@ bool MetalRenderTargetCache::Update(
   // Only mark render pass descriptor as dirty if targets actually changed
   if (targets_changed) {
     render_pass_descriptor_dirty_ = true;
+    // A different attachment set starts a pass of its own, with nothing an
+    // earlier encoder left in these attachments to preserve.
+    render_pass_encoder_created_since_targets_changed_ = false;
   }
 
   return true;
@@ -1332,7 +1336,9 @@ void MetalRenderTargetCache::SetCachedRenderPassLoadActions(
 }
 
 uint32_t MetalRenderTargetCache::GetPendingDrawPassLoadDontCareMask() {
-  if (!HasPendingDrawPassTransfers()) {
+  // An encoder already wrote these attachments, so a reopen has to load them.
+  if (render_pass_encoder_created_since_targets_changed_ ||
+      !HasPendingDrawPassTransfers()) {
     return 0;
   }
   TransferAttachmentFormats attachment_formats;
@@ -2181,8 +2187,6 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
       cached_render_pass_descriptor_sample_count_ == expected_sample_count) {
     // Queuing transfers deliberately does not dirty the descriptor, so their
     // load actions are the one thing this path still has to bring up to date.
-    // An encoder already recording keeps the attachments in tile memory, with
-    // no load left for a DontCare to skip.
     if (render_encoder_pending) {
       ApplyPendingDrawPassLoadActions();
     }
@@ -2207,12 +2211,11 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
   }
   cached_render_pass_descriptor_->retain();
   cached_render_pass_descriptor_sample_count_ = expected_sample_count;
+  cached_render_pass_descriptor_pending_clears_.fill(nullptr);
 
   // Queued transfers that rewrite a destination in full make loading its old
   // contents into tile memory pointless, but only for the pass that actually
   // encodes them - ClearPendingDrawPassTransfers restores this if it doesn't.
-  // A rebuild always hands the command processor a new descriptor, so an
-  // encoder is always created from it.
   pending_draw_pass_load_dontcare_mask_ = GetPendingDrawPassLoadDontCareMask();
   auto pending_load_dontcare = [this](uint32_t pending_index) {
     return (pending_draw_pass_load_dontcare_mask_ &
@@ -2221,7 +2224,6 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
 
   bool has_any_render_target = false;
   bool has_any_color_target = false;
-  bool needs_descriptor_refresh = false;
   uint32_t coverage_width = 0;
   uint32_t coverage_height = 0;
   uint32_t coverage_samples = std::max(1u, expected_sample_count);
@@ -2240,8 +2242,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     if (depth_needs_clear) {
       depth_attachment->setLoadAction(MTL::LoadActionClear);
       depth_attachment->setClearDepth(1.0);
-      current_depth_target_->SetNeedsInitialClear(false);
-      needs_descriptor_refresh = true;
+      cached_render_pass_descriptor_pending_clears_[0] = current_depth_target_;
     } else {
       depth_attachment->setLoadAction(
           depth_load_dontcare ? MTL::LoadActionDontCare : MTL::LoadActionLoad);
@@ -2304,8 +2305,8 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
         color_attachment->setLoadAction(MTL::LoadActionClear);
         color_attachment->setClearColor(
             MTL::ClearColor::Make(0.0, 0.0, 0.0, 0.0));
-        current_color_targets_[i]->SetNeedsInitialClear(false);
-        needs_descriptor_refresh = true;
+        cached_render_pass_descriptor_pending_clears_[1 + i] =
+            current_color_targets_[i];
       } else {
         color_attachment->setLoadAction(pending_load_dontcare(i + 1)
                                             ? MTL::LoadActionDontCare
@@ -2453,29 +2454,102 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     }
   }
 
-  render_pass_descriptor_dirty_ = needs_descriptor_refresh;
+  render_pass_descriptor_dirty_ = false;
   return cached_render_pass_descriptor_;
 }
 
-MTL::Texture* MetalRenderTargetCache::GetColorTarget(uint32_t index) const {
-  if (index >= 4 || !current_color_targets_[index]) {
-    return nullptr;
+void MetalRenderTargetCache::ConsumeRenderPassDescriptorClears(
+    MTL::RenderPassDescriptor* pass_descriptor) {
+  if (!pass_descriptor || pass_descriptor != cached_render_pass_descriptor_) {
+    return;
   }
-  return current_color_targets_[index]->texture();
+  render_pass_encoder_created_since_targets_changed_ = true;
+  bool any_consumed = false;
+  for (MetalRenderTarget*& render_target :
+       cached_render_pass_descriptor_pending_clears_) {
+    if (!render_target) {
+      continue;
+    }
+    render_target->SetNeedsInitialClear(false);
+    render_target = nullptr;
+    any_consumed = true;
+  }
+  if (any_consumed) {
+    // The cached descriptor still has clear load actions. Rebuild it before the
+    // next encoder so the cleared contents are loaded rather than cleared
+    // again.
+    render_pass_descriptor_dirty_ = true;
+  }
 }
 
-MTL::Texture* MetalRenderTargetCache::GetDepthTarget() const {
-  if (!current_depth_target_) {
-    return nullptr;
+bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
+    MTL::RenderPassDescriptor* pass_descriptor,
+    uint32_t expected_sample_count) const {
+  if (pass_descriptor && pass_descriptor == cached_render_pass_descriptor_ &&
+      !render_pass_descriptor_dirty_ &&
+      cached_render_pass_descriptor_sample_count_ == expected_sample_count) {
+    return true;
   }
-  return current_depth_target_->texture();
-}
+  if (!pass_descriptor) {
+    return false;
+  }
 
-MTL::Texture* MetalRenderTargetCache::GetDummyColorTarget() const {
-  if (dummy_color_target_ && dummy_color_target_->texture()) {
-    return dummy_color_target_->texture();
+  auto* depth_attachment = pass_descriptor->depthAttachment();
+  auto* stencil_attachment = pass_descriptor->stencilAttachment();
+  MTL::Texture* expected_depth =
+      current_depth_target_ ? current_depth_target_->draw_texture() : nullptr;
+  if (expected_depth) {
+    if (!depth_attachment || depth_attachment->texture() != expected_depth) {
+      return false;
+    }
+    MTL::PixelFormat depth_format = expected_depth->pixelFormat();
+    bool expects_stencil =
+        depth_format == MTL::PixelFormatDepth32Float_Stencil8 ||
+        depth_format == MTL::PixelFormatDepth24Unorm_Stencil8 ||
+        depth_format == MTL::PixelFormatX32_Stencil8;
+    if (expects_stencil) {
+      if (!stencil_attachment ||
+          stencil_attachment->texture() != expected_depth) {
+        return false;
+      }
+    } else if (stencil_attachment && stencil_attachment->texture()) {
+      return false;
+    }
+  } else if ((depth_attachment && depth_attachment->texture()) ||
+             (stencil_attachment && stencil_attachment->texture())) {
+    return false;
   }
-  return nullptr;
+
+  bool has_current_color_target = false;
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    if (current_color_targets_[i] &&
+        current_color_targets_[i]->draw_texture()) {
+      has_current_color_target = true;
+      break;
+    }
+  }
+  auto* color_attachments = pass_descriptor->colorAttachments();
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    MTL::Texture* actual_color = color_attachments->object(i)->texture();
+    MTL::Texture* expected_color =
+        current_color_targets_[i] ? current_color_targets_[i]->draw_texture()
+                                  : nullptr;
+    if (expected_color) {
+      if (actual_color != expected_color) {
+        return false;
+      }
+    } else if (actual_color && (has_current_color_target || i != 0)) {
+      return false;
+    }
+  }
+
+  if (has_current_color_target) {
+    return true;
+  }
+  MTL::Texture* expected_dummy =
+      dummy_color_target_ ? dummy_color_target_->draw_texture() : nullptr;
+  return expected_dummy &&
+         color_attachments->object(0)->texture() == expected_dummy;
 }
 
 void MetalRenderTargetCache::RecordRenderTargetViewCreated() {

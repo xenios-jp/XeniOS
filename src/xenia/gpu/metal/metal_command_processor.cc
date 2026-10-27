@@ -148,6 +148,45 @@ IRRuntimeTessellationPipelineConfig BuildTessellationPipelineConfig(
   return config;
 }
 
+bool GetTextureSize(MTL::Texture* texture, uint32_t& width_out,
+                    uint32_t& height_out) {
+  if (!texture) {
+    return false;
+  }
+  width_out = std::max(static_cast<uint32_t>(texture->width()), uint32_t(1));
+  height_out = std::max(static_cast<uint32_t>(texture->height()), uint32_t(1));
+  return true;
+}
+
+bool GetRenderPassDescriptorSize(MTL::RenderPassDescriptor* pass_descriptor,
+                                 uint32_t& width_out, uint32_t& height_out) {
+  if (!pass_descriptor) {
+    return false;
+  }
+
+  uint32_t constrained_width =
+      static_cast<uint32_t>(pass_descriptor->renderTargetWidth());
+  uint32_t constrained_height =
+      static_cast<uint32_t>(pass_descriptor->renderTargetHeight());
+  if (constrained_width && constrained_height) {
+    width_out = constrained_width;
+    height_out = constrained_height;
+    return true;
+  }
+
+  // Passes bind at most the guest's color targets, and a stencil attachment
+  // only on the depth texture.
+  auto* color_attachments = pass_descriptor->colorAttachments();
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    if (GetTextureSize(color_attachments->object(i)->texture(), width_out,
+                       height_out)) {
+      return true;
+    }
+  }
+  return GetTextureSize(pass_descriptor->depthAttachment()->texture(),
+                        width_out, height_out);
+}
+
 void GetBoundRenderTargetSize(const MetalRenderTargetCache* render_target_cache,
                               uint32_t fallback_width, uint32_t fallback_height,
                               uint32_t& width_out, uint32_t& height_out) {
@@ -156,20 +195,29 @@ void GetBoundRenderTargetSize(const MetalRenderTargetCache* render_target_cache,
   if (!render_target_cache) {
     return;
   }
-  MTL::Texture* pass_size_texture = render_target_cache->GetColorTarget(0);
-  if (!pass_size_texture) {
-    pass_size_texture = render_target_cache->GetDepthTarget();
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    if (GetTextureSize(render_target_cache->GetColorTargetForDraw(i), width_out,
+                       height_out)) {
+      return;
+    }
   }
-  if (!pass_size_texture) {
-    pass_size_texture = render_target_cache->GetDummyColorTarget();
-  }
-  if (!pass_size_texture) {
+  if (GetTextureSize(render_target_cache->GetDepthTargetForDraw(), width_out,
+                     height_out)) {
     return;
   }
-  width_out =
-      std::max(static_cast<uint32_t>(pass_size_texture->width()), uint32_t(1));
-  height_out =
-      std::max(static_cast<uint32_t>(pass_size_texture->height()), uint32_t(1));
+  GetTextureSize(render_target_cache->GetDummyColorTargetForDraw(), width_out,
+                 height_out);
+}
+
+void GetActiveRenderTargetSize(
+    MTL::RenderPassDescriptor* pass_descriptor,
+    const MetalRenderTargetCache* render_target_cache, uint32_t fallback_width,
+    uint32_t fallback_height, uint32_t& width_out, uint32_t& height_out) {
+  if (GetRenderPassDescriptorSize(pass_descriptor, width_out, height_out)) {
+    return;
+  }
+  GetBoundRenderTargetSize(render_target_cache, fallback_width, fallback_height,
+                           width_out, height_out);
 }
 
 void ClampScissorToBounds(draw_util::Scissor& scissor, uint32_t width,
@@ -589,6 +637,10 @@ MetalCommandProcessor::~MetalCommandProcessor() {
     // In that case, just release it
     current_render_encoder_->release();
     current_render_encoder_ = nullptr;
+  }
+  if (current_render_pass_descriptor_) {
+    current_render_pass_descriptor_->release();
+    current_render_pass_descriptor_ = nullptr;
   }
   if (current_command_buffer_) {
     current_command_buffer_->release();
@@ -2009,6 +2061,10 @@ void MetalCommandProcessor::ShutdownContext() {
     current_render_encoder_->release();
     current_render_encoder_ = nullptr;
   }
+  if (current_render_pass_descriptor_) {
+    current_render_pass_descriptor_->release();
+    current_render_pass_descriptor_ = nullptr;
+  }
   if (current_command_buffer_) {
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
@@ -3173,8 +3229,9 @@ void MetalCommandProcessor::ApplyViewportAndScissor(
   // Clamp scissor to actual render target bounds (Metal requires this).
   uint32_t rt_width = 1;
   uint32_t rt_height = 1;
-  GetBoundRenderTargetSize(render_target_cache_.get(), render_target_width_,
-                           render_target_height_, rt_width, rt_height);
+  GetActiveRenderTargetSize(current_render_pass_descriptor_,
+                            render_target_cache_.get(), render_target_width_,
+                            render_target_height_, rt_width, rt_height);
   ClampScissorToBounds(scissor, rt_width, rt_height);
 
   MTL::Viewport mtl_viewport;
@@ -5322,6 +5379,10 @@ void MetalCommandProcessor::ResetMslCrossEncoderReuseCaches() {
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
   if (!current_render_encoder_) {
+    if (current_render_pass_descriptor_) {
+      current_render_pass_descriptor_->release();
+      current_render_pass_descriptor_ = nullptr;
+    }
     render_encoder_has_zpd_visibility_ = false;
     return;
   }
@@ -5334,7 +5395,10 @@ void MetalCommandProcessor::EndRenderEncoder() {
   current_render_encoder_->endEncoding();
   current_render_encoder_->release();
   current_render_encoder_ = nullptr;
-  current_render_pass_descriptor_ = nullptr;
+  if (current_render_pass_descriptor_) {
+    current_render_pass_descriptor_->release();
+    current_render_pass_descriptor_ = nullptr;
+  }
   render_encoder_has_zpd_visibility_ = false;
   ResetMslRenderEncoderStateCache();
 }
@@ -5393,12 +5457,25 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   // Obtain the render pass descriptor. Prefer the one provided by
   // MetalRenderTargetCache (host render-target path), falling back to the
   // legacy descriptor if needed.
-  MTL::RenderPassDescriptor* pass_descriptor = render_pass_descriptor_;
+  MTL::RenderPassDescriptor* pass_descriptor =
+      current_render_encoder_ ? current_render_pass_descriptor_
+                              : render_pass_descriptor_;
   if (render_target_cache_) {
-    if (MTL::RenderPassDescriptor* cache_desc =
-            render_target_cache_->GetRenderPassDescriptor(
-                1, !current_render_encoder_)) {
-      pass_descriptor = cache_desc;
+    // Check attachment identity before asking the cache to rebuild a dirty
+    // descriptor. Rebuilding releases the cache-owned descriptor, and an
+    // allocator may reuse the same address even though the active encoder has
+    // already captured its old attachments.
+    if (current_render_encoder_ &&
+        !render_target_cache_->IsRenderPassDescriptorCompatible(
+            current_render_pass_descriptor_, 1)) {
+      EndRenderEncoder();
+      pass_descriptor = render_pass_descriptor_;
+    }
+    if (!current_render_encoder_) {
+      if (MTL::RenderPassDescriptor* cache_desc =
+              render_target_cache_->GetRenderPassDescriptor(1, true)) {
+        pass_descriptor = cache_desc;
+      }
     }
   }
   if (!pass_descriptor) {
@@ -5414,14 +5491,15 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       !render_target_cache_->PreflightPendingDrawPassTransfers(
           pass_descriptor)) {
     if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
-      XELOGE(
-          "BeginCommandBuffer: failed to perform the queued render target "
-          "ownership transfers");
+      XELOGE("BeginCommandBuffer: failed to perform render target transfers");
+      return;
     }
-    if (MTL::RenderPassDescriptor* cache_desc =
-            render_target_cache_->GetRenderPassDescriptor(
-                1, !current_render_encoder_)) {
-      pass_descriptor = cache_desc;
+    // The flush may release the old descriptor, including on a failed rebuild.
+    pass_descriptor = render_target_cache_->GetRenderPassDescriptor(
+        1, !current_render_encoder_);
+    if (!pass_descriptor) {
+      XELOGE("BeginCommandBuffer: no render pass descriptor after transfers");
+      return;
     }
   }
 
@@ -5471,6 +5549,11 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       return;
     }
     current_render_encoder_->retain();
+    // A non-null encoder will execute the descriptor's first-use clears when
+    // the pass ends. Keep them pending across encoder-creation failures.
+    if (render_target_cache_) {
+      render_target_cache_->ConsumeRenderPassDescriptorClears(pass_descriptor);
+    }
     ++render_passes_total_;
     current_render_encoder_->setLabel(
         NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
@@ -5479,16 +5562,16 @@ void MetalCommandProcessor::BeginCommandBuffer() {
                                zpd_visibility_pool_->visibility_buffer());
     ff_blend_factor_valid_ = false;
     current_render_pass_descriptor_ = pass_descriptor;
+    current_render_pass_descriptor_->retain();
 
-    // Start the encoder off covering the whole bound render target rather than
-    // a hard-coded 1280x720. Prefer color RT 0 from the MetalRenderTargetCache,
-    // falling back to depth (depth-only passes) and then legacy
-    // render_target_width_/height_ when needed. Every draw applies the guest's
-    // own viewport and scissor over this before it runs.
+    // Start the encoder off covering the whole active render pass rather than
+    // a hard-coded 1280x720. Every draw applies the guest's own viewport and
+    // scissor over this before it runs.
     uint32_t rt_width = 1;
     uint32_t rt_height = 1;
-    GetBoundRenderTargetSize(render_target_cache_.get(), render_target_width_,
-                             render_target_height_, rt_width, rt_height);
+    GetActiveRenderTargetSize(pass_descriptor, render_target_cache_.get(),
+                              render_target_width_, render_target_height_,
+                              rt_width, rt_height);
     MTL::Viewport viewport = {
         0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
         0.0, 1.0};
