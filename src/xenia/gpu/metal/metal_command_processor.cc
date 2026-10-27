@@ -7264,24 +7264,10 @@ void MetalCommandProcessor::ApplyDepthStencilState(
 
   if (depth_control.stencil_enable) {
     uint32_t ref_front = stencil_ref_mask_front.stencilref;
-    uint32_t ref_back = stencil_ref_mask_back.stencilref;
-    auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-    uint32_t ref = ref_front;
-    if (primitive_polygonal && depth_control.backface_enable &&
-        pa_su_sc_mode_cntl.cull_front && !pa_su_sc_mode_cntl.cull_back) {
-      ref = ref_back;
-    } else if (primitive_polygonal && depth_control.backface_enable &&
-               ref_front != ref_back) {
-      static bool mismatch_logged = false;
-      if (!mismatch_logged) {
-        mismatch_logged = true;
-        XELOGW(
-            "Metal: front/back stencil ref differ (front={}, back={}); using "
-            "front for both",
-            ref_front, ref_back);
-      }
-    }
-    current_render_encoder_->setStencilReferenceValue(ref);
+    uint32_t ref_back = primitive_polygonal && depth_control.backface_enable
+                            ? stencil_ref_mask_back.stencilref
+                            : ref_front;
+    current_render_encoder_->setStencilReferenceValues(ref_front, ref_back);
   }
 }
 
