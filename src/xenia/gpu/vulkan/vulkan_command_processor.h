@@ -162,6 +162,19 @@ class VulkanCommandProcessor final : public CommandProcessor {
   void TracePlaybackWillWriteMemory(uint32_t base_ptr,
                                     uint32_t length) override;
   void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) override;
+  // Waits for all GPU work, then copies its output in [base, base + size) into
+  // guest RAM, so the range can be read through the physical view, which read
+  // watches don't cover. Without zero-copy, resolve output otherwise reaches
+  // guest RAM only when the CPU faults on it, and staged memexport output at
+  // frame end.
+  bool AwaitGuestMemoryWrites(uint32_t base, uint32_t size) {
+    if (!AwaitAllQueueOperationsCompletion()) {
+      return false;
+    }
+    FlushMemexportStagingReadback();
+    ProvideResolveOutput(base, size, false);
+    return true;
+  }
 
   void InitializeShaderStorage(
       const std::filesystem::path& cache_root, uint32_t title_id, bool blocking,
