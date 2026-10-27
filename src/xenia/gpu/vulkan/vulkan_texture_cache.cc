@@ -2483,8 +2483,7 @@ VulkanTextureCache::VulkanTextureCache(
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
     VulkanCommandProcessor& command_processor,
     VkPipelineStageFlags guest_shader_pipeline_stages)
-    : TextureCache(register_file, shared_memory,
-                   &command_processor.trace_writer(), draw_resolution_scale_x,
+    : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
                    draw_resolution_scale_y),
       command_processor_(command_processor),
       guest_shader_pipeline_stages_(guest_shader_pipeline_stages) {}

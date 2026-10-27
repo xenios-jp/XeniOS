@@ -120,12 +120,10 @@ const TextureCache::LoadShaderInfo
 
 TextureCache::TextureCache(const RegisterFile& register_file,
                            SharedMemory& shared_memory,
-                           TraceWriter* trace_writer,
                            uint32_t draw_resolution_scale_x,
                            uint32_t draw_resolution_scale_y)
     : register_file_(register_file),
       shared_memory_(shared_memory),
-      trace_writer_(trace_writer),
       draw_resolution_scale_x_(draw_resolution_scale_x),
       draw_resolution_scale_y_(draw_resolution_scale_y),
       draw_resolution_scale_x_divisor_(draw_resolution_scale_x),
@@ -530,42 +528,6 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
   if (bindings_changed) {
     SCOPE_profile_cpu_i("gpu", "TextureCache::UpdateTextureBindings");
     UpdateTextureBindingsImpl(bindings_changed);
-  }
-
-  RecordUsedTexturesInTrace(used_texture_mask);
-}
-
-void TextureCache::RecordUsedTexturesInTrace(uint32_t used_texture_mask) {
-  SCOPE_profile_cpu_f("gpu");
-  if (!trace_writer_ || !trace_writer_->is_open()) {
-    return;
-  }
-  // Only ranges the shared memory actually uploads are recorded, so a texture
-  // still resident from an earlier frame would never reach the trace. The
-  // writer drops ranges it has already written.
-  uint32_t textures_remaining = used_texture_mask;
-  uint32_t index = 0;
-  while (xe::bit_scan_forward(textures_remaining, &index)) {
-    textures_remaining = xe::clear_lowest_bit(textures_remaining);
-    const TextureBinding& binding = texture_bindings_[index];
-    if (!binding.key.is_valid) {
-      continue;
-    }
-    const Texture* texture =
-        binding.texture ? binding.texture : binding.texture_signed;
-    if (!texture) {
-      continue;
-    }
-    if (binding.key.base_page) {
-      trace_writer_->WriteMemoryReadCached(
-          binding.key.base_page << 12,
-          xe::align(texture->GetGuestBaseSize(), UINT32_C(16)));
-    }
-    if (binding.key.mip_page) {
-      trace_writer_->WriteMemoryReadCached(
-          binding.key.mip_page << 12,
-          xe::align(texture->GetGuestMipsSize(), UINT32_C(16)));
-    }
   }
 }
 

@@ -135,8 +135,7 @@ D3D12TextureCache::D3D12TextureCache(const RegisterFile& register_file,
                                      uint32_t draw_resolution_scale_y,
                                      D3D12CommandProcessor& command_processor,
                                      bool bindless_resources_used)
-    : TextureCache(register_file, shared_memory,
-                   &command_processor.trace_writer(), draw_resolution_scale_x,
+    : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
                    draw_resolution_scale_y),
       command_processor_(command_processor),
       bindless_resources_used_(bindless_resources_used) {}
