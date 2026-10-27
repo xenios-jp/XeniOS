@@ -1484,13 +1484,17 @@ MetalCommandProcessor::SpirvArgumentBufferPage::~SpirvArgumentBufferPage() {
 
 void MetalCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
                                                          uint32_t length) {
-  if (!shared_memory_ || !length) {
+  if (!shared_memory_ || !shared_memory_->is_zero_copy() || !length) {
     return;
   }
-  // Submission alone does not keep the GPU from seeing a later CPU restore.
-  // Without range tracking, consume all recorded work before overwriting
-  // guest RAM that GPU accesses may alias.
-  AwaitAllQueueOperationsCompletion();
+  auto* hazards = shared_memory_->hazards();
+  if (!hazards ||
+      render_encoder_shared_memory_hazards_.HasAccess(base_ptr, length) ||
+      hazards->HasPendingAccess(base_ptr, length)) {
+    // Submission alone does not keep the GPU from seeing a later CPU restore.
+    // Consume this recorded version before overwriting aliased guest RAM.
+    AwaitAllQueueOperationsCompletion();
+  }
 }
 
 void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,

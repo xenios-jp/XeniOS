@@ -47,6 +47,8 @@ class MetalBufferHazards {
     void Begin(MetalBufferHazards& hazards, MTL::CommandBuffer* command_buffer,
                MTL::BlitCommandEncoder* encoder);
     bool is_active() const { return hazards_ != nullptr; }
+    // Accesses already encoded in this still-open encoder.
+    bool HasAccess(uint32_t start, uint32_t length) const;
 
     // Encodes the waits for the earlier encoders whose accesses conflict with
     // this one. Returns whether it conflicts with an earlier access by this
@@ -95,6 +97,9 @@ class MetalBufferHazards {
 
   // Forgets the accesses of the command buffers the GPU has completed.
   void Retire();
+  // Includes ended encoders in command buffers that have not been committed.
+  bool HasPendingAccess(uint32_t start, uint32_t length) const;
+
   // For a command buffer released without a commit - nothing in it will run.
   void Discard(MTL::CommandBuffer* command_buffer);
 
