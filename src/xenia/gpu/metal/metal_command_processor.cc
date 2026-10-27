@@ -40,6 +40,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
 #include "xenia/base/xxhash.h"
@@ -5444,6 +5445,138 @@ void MetalCommandProcessor::OnGammaRamp256EntryTableValueWritten() {
 
 void MetalCommandProcessor::OnGammaRampPWLValueWritten() {
   gamma_ramp_pwl_up_to_date_ = false;
+}
+
+MetalCommandProcessor::RegisterRangeClass
+MetalCommandProcessor::ClassifyRegisterRange(uint32_t start_index,
+                                             uint32_t num_registers) {
+  const uint32_t end = start_index + num_registers;
+  auto within = [&](uint32_t first, uint32_t last) {
+    return start_index >= first && end <= last + 1;
+  };
+  auto overlaps = [&](uint32_t first, uint32_t last) {
+    return start_index <= last && first < end;
+  };
+  if (end < start_index || end > RegisterFile::kRegisterCount) {
+    return RegisterRangeClass::kPerRegister;
+  }
+  if (within(XE_GPU_REG_SHADER_CONSTANT_000_X,
+             XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 - 1)) {
+    return RegisterRangeClass::kFloatConstants;
+  }
+  if (within(XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0,
+             XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5)) {
+    return RegisterRangeClass::kFetchConstants;
+  }
+  if (within(XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031,
+             XE_GPU_REG_SHADER_CONSTANT_LOOP_31)) {
+    return RegisterRangeClass::kBoolLoopConstants;
+  }
+  // HandleSpecialRegisterWrite runs for the scratch, coherency and gamma ramp
+  // registers, and a range mixing a shader constant class with anything else
+  // needs the per-register dirtying.
+  if (overlaps(XE_GPU_REG_SCRATCH_REG0, XE_GPU_REG_SCRATCH_REG7) ||
+      overlaps(XE_GPU_REG_COHER_STATUS_HOST, XE_GPU_REG_COHER_STATUS_HOST) ||
+      overlaps(XE_GPU_REG_DC_LUT_RW_INDEX, XE_GPU_REG_DC_LUT_30_COLOR) ||
+      overlaps(XE_GPU_REG_SHADER_CONSTANT_000_X,
+               XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) ||
+      overlaps(XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031,
+               XE_GPU_REG_SHADER_CONSTANT_LOOP_31)) {
+    return RegisterRangeClass::kPerRegister;
+  }
+  return RegisterRangeClass::kOrdinary;
+}
+
+void MetalCommandProcessor::WriteRegistersFromMem(uint32_t start_index,
+                                                  uint32_t* base,
+                                                  uint32_t num_registers) {
+  const RegisterRangeClass range_class =
+      ClassifyRegisterRange(start_index, num_registers);
+  if (range_class == RegisterRangeClass::kPerRegister) {
+    CommandProcessor::WriteRegistersFromMem(start_index, base, num_registers);
+    return;
+  }
+  WriteRegisterRangeFromMem(range_class, start_index, base, num_registers);
+}
+
+void MetalCommandProcessor::WriteRegisterRangeFromRing(xe::RingBuffer* ring,
+                                                       uint32_t base,
+                                                       uint32_t num_registers) {
+  const RegisterRangeClass range_class =
+      ClassifyRegisterRange(base, num_registers);
+  if (range_class == RegisterRangeClass::kPerRegister) {
+    CommandProcessor::WriteRegisterRangeFromRing(ring, base, num_registers);
+    return;
+  }
+  // A range wrapping around the end of the ring is read in two parts.
+  RingBuffer::ReadRange range =
+      ring->BeginRead(num_registers * sizeof(uint32_t));
+  const uint32_t first_registers =
+      uint32_t(range.first_length / sizeof(uint32_t));
+  WriteRegisterRangeFromMem(
+      range_class, base,
+      reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(range.first)),
+      first_registers);
+  if (range.second) {
+    WriteRegisterRangeFromMem(
+        range_class, base + first_registers,
+        reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(range.second)),
+        num_registers - first_registers);
+  }
+  ring->EndRead(range);
+}
+
+void MetalCommandProcessor::WriteRegisterRangeFromMem(
+    RegisterRangeClass range_class, uint32_t start_index, uint32_t* base,
+    uint32_t num_registers) {
+  if (!num_registers) {
+    return;
+  }
+  xe::copy_and_swap_32_unaligned(&register_file_->values[start_index], base,
+                                 num_registers);
+  switch (range_class) {
+    case RegisterRangeClass::kFloatConstants: {
+      // A write to a constant the current shader uses dirties its stage
+      // whether or not the value changed, matching the per-register path.
+      const uint32_t first_constant =
+          (start_index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
+      const uint32_t last_constant = (start_index + num_registers - 1 -
+                                      XE_GPU_REG_SHADER_CONSTANT_000_X) >>
+                                     2;
+      auto touches_live = [&](const uint64_t* constant_map,
+                              uint32_t stage_first_constant) {
+        for (uint32_t i = std::max(first_constant, stage_first_constant);
+             i <= last_constant && i < stage_first_constant + 256; ++i) {
+          const uint32_t stage_index = i - stage_first_constant;
+          if (constant_map[stage_index >> 6] &
+              (uint64_t(1) << (stage_index & 63))) {
+            return true;
+          }
+        }
+        return false;
+      };
+      msl_float_constants_dirty_vertex_ =
+          msl_float_constants_dirty_vertex_ ||
+          touches_live(msl_current_float_constant_map_vertex_.data(), 0);
+      msl_float_constants_dirty_pixel_ =
+          msl_float_constants_dirty_pixel_ ||
+          touches_live(msl_current_float_constant_map_pixel_.data(), 256);
+    } break;
+    case RegisterRangeClass::kFetchConstants: {
+      msl_fetch_constants_dirty_ = true;
+      if (texture_cache_) {
+        const uint32_t dword_start =
+            start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
+        texture_cache_->TextureFetchConstantsWritten(
+            dword_start / 6, (dword_start + num_registers - 1) / 6);
+      }
+    } break;
+    case RegisterRangeClass::kBoolLoopConstants:
+      msl_bool_loop_constants_dirty_ = true;
+      break;
+    default:
+      break;
+  }
 }
 
 void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
