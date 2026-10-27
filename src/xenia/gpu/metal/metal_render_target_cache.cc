@@ -3358,9 +3358,13 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
-    MTL::CommandBuffer* command_buffer, MTL::Texture* refresh_texture,
-    uint32_t refresh_offset_y, bool refresh_depth_float,
-    uint32_t refresh_alias_count, MTL::Texture* const* refresh_aliases) {
+    MTL::CommandBuffer* command_buffer,
+    std::span<MTL::Texture* const> refresh_textures, uint32_t refresh_offset_y,
+    bool refresh_depth_float) {
+  MTL::Texture* refresh_texture =
+      refresh_textures.empty() ? nullptr : refresh_textures.front();
+  const uint32_t refresh_alias_count =
+      refresh_textures.empty() ? 0 : uint32_t(refresh_textures.size() - 1);
   SCOPE_profile_cpu_f("gpu");
   auto* shared = command_processor_.shared_memory();
   MTL::Buffer* dest_buffer = shared ? shared->GetBuffer() : nullptr;
@@ -3583,9 +3587,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         for (uint32_t i = 0;
              i < MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases;
              ++i) {
-          encoder->setTexture(
-              i < refresh_alias_count ? refresh_aliases[i] : refresh_texture,
-              2 + i);
+          encoder->setTexture(i < refresh_alias_count ? refresh_textures[1 + i]
+                                                      : refresh_texture,
+                              2 + i);
         }
       }
       encoder->dispatchThreadgroups(
@@ -3623,11 +3627,11 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     encoder->setTexture(refresh_texture, 1);
     encoder->useResource(refresh_texture, MTL::ResourceUsageWrite);
     for (uint32_t i = 0; i < refresh_alias_count; ++i) {
-      encoder->useResource(refresh_aliases[i], MTL::ResourceUsageWrite);
+      encoder->useResource(refresh_textures[1 + i], MTL::ResourceUsageWrite);
       // The Slang paths bound 2..4 above; generic refresh reserves 2 for
       // stencil.
       if (!copy_from_render_target) {
-        encoder->setTexture(refresh_aliases[i],
+        encoder->setTexture(refresh_textures[1 + i],
                             kResolveRefreshMslFirstAliasTexture + i);
       }
     }
@@ -4539,29 +4543,21 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
           dest_coordinates.pitch_aligned_div_32 << 5,
           xenos::Endian(dest_info.copy_dest_endian), is_depth, refresh_target);
     }
-    // RequestRange may process completed submissions and evict the cache
-    // wrapper. Keep its writable view alive through encoding; publication
-    // separately checks that the wrapper is still in the cache.
-    auto refresh_texture = NS::RetainPtr(refresh_target.write_texture);
-    std::array<NS::SharedPtr<MTL::Texture>,
-               MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases>
-        alias_owners;
     std::array<MTL::Texture*,
-               MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases>
-        alias_views{};
-    for (uint32_t i = 0; i < refresh_target.alias_count; ++i) {
-      alias_owners[i] = NS::RetainPtr(refresh_target.aliases[i].write_texture);
-      alias_views[i] = alias_owners[i].get();
+               MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases + 1>
+        refresh_views{};
+    for (uint32_t i = 0; i < refresh_target.count; ++i) {
+      refresh_views[i] = refresh_target.destinations[i].write_texture.get();
     }
     resolved_directly = DirectResolveRenderTargets(
         resolve_info, copy_shader, copy_constants, dump_base,
         dump_row_length_used, dump_rows, dump_pitch, group_count_x,
-        group_count_y, command_buffer, refresh_texture.get(),
-        refresh_target.offset_y,
+        group_count_y, command_buffer,
+        {refresh_views.data(), refresh_target.count},
+        refresh_target.destinations[0].offset_y,
         refresh_target.transform ==
             MetalTextureCache::ResolveTextureRefreshTarget::Transform::
-                kDepthFloat24,
-        refresh_target.alias_count, alias_views.data());
+                kDepthFloat24);
   }
 
   if (!resolved_directly) {

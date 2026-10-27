@@ -309,6 +309,12 @@ class TextureCache {
         const global_unique_lock_type& global_lock) const {
       return base_last_invalidated_by_gpu_;
     }
+    // The firing that first made this base outdated, or UINT64_MAX if it has
+    // never been current. Only meaningful while base_outdated.
+    uint64_t base_outdated_fire_sequence(
+        const global_unique_lock_type& global_lock) const {
+      return base_outdated_fire_sequence_;
+    }
     bool mips_outdated(const global_unique_lock_type& global_lock) const {
       return mips_outdated_;
     }
@@ -369,6 +375,7 @@ class TextureCache {
     // Whether the recent base level data needs reloading from the memory.
     bool base_outdated_ = false;
     uint64_t base_invalidation_count_ = 0;
+    uint64_t base_outdated_fire_sequence_ = UINT64_MAX;
     bool base_last_invalidated_by_gpu_ = false;
     // Whether the recent mip data needs reloading from the memory.
     bool mips_outdated_ = false;
