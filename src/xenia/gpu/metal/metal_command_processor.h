@@ -572,6 +572,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Retained for the lifetime of current_render_encoder_. The render target
   // cache may rebuild and release its cached descriptor between draws.
   MTL::RenderPassDescriptor* current_render_pass_descriptor_ = nullptr;
+  // The dimensions of the encoded pass, refreshed when creating its encoder.
+  uint32_t render_encoder_width_ = 1;
+  uint32_t render_encoder_height_ = 1;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;
   // Whether the descriptor the current encoder was created from carried the
   // visibility result buffer, so a ZPD segment may be opened on it.
