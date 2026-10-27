@@ -151,6 +151,9 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   // in the 16-byte blocks a direct resolve's runs of pixels store as.
   bool format_is_64bpp = !key.is_depth && xenos::IsColorRenderTargetFormat64bpp(
                                               key.GetColorFormat());
+  bool copy_is_depth =
+      bool(key.is_depth) !=
+      bool(key.direct_resolve && key.direct_resolve_cross_depth_color);
   id_vector_temp.clear();
   id_vector_temp.push_back(builder.makeRuntimeArray(
       key.direct_resolve ? type_uint4
@@ -192,11 +195,11 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     resolve_texture = builder.createVariable(
         spv::NoPrecision, spv::StorageClassUniformConstant,
         builder.makeImageType(
-            key.is_depth ? type_float : type_uint, spv::Dim2D, false, true,
+            copy_is_depth ? type_float : type_uint, spv::Dim2D, false, true,
             false, 2,
-            key.is_depth ? spv::ImageFormat::R32f
-                         : (format_is_64bpp ? spv::ImageFormat::Rg32ui
-                                            : spv::ImageFormat::R32ui)),
+            copy_is_depth ? spv::ImageFormat::R32f
+                          : (format_is_64bpp ? spv::ImageFormat::Rg32ui
+                                             : spv::ImageFormat::R32ui)),
         "xe_resolve_texture");
     builder.addDecoration(resolve_texture, spv::DecorationDescriptorSet,
                           options.descriptor_set_dest);
@@ -1076,6 +1079,22 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       spv::Id pixel_packed[2] = {};
       spv::Id pixel_x =
           i ? add(source_pixel_x, builder.makeUintConstant(i)) : source_pixel_x;
+      if (key.direct_resolve_cross_depth_color) {
+        // A run can cross the middle of a tile (notably at 4x MSAA), so
+        // compensate per pixel rather than once at the start of the run.
+        uint32_t half = tile_pixels_x >> 1;
+        auto pixel_in_tile =
+            i ? add(pixel_in_tile_x, builder.makeUintConstant(i))
+              : pixel_in_tile_x;
+        pixel_x = add(
+            pixel_x,
+            builder.createTriOp(
+                spv::OpSelect, type_uint,
+                builder.createBinOp(spv::OpULessThan, type_bool, pixel_in_tile,
+                                    builder.makeUintConstant(half)),
+                builder.makeUintConstant(half),
+                builder.makeUintConstant(uint32_t(-int32_t(half)))));
+      }
       if (i < fill_extent_x) {
         pixel_x = add(pixel_x, fill_bias_x[i]);
       }
@@ -1212,7 +1231,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
         SpirvBuilder::IfBuilder if_texture_write(
             texture_write_condition, spv::SelectionControlMaskNone, builder);
         spv::Id texel;
-        if (key.is_depth) {
+        if (copy_is_depth) {
           auto depth = EmitResolveRefreshDepthTexel(
               builder, pixel[0], key.direct_resolve_texture_depth_float,
               ext_inst_glsl_std_450);

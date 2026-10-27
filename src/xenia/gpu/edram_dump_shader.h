@@ -64,6 +64,9 @@ union EdramDumpShaderKey {
     uint32_t direct_resolve_texture : 1;
     // Decode packed 20e4 rather than unorm24 when refreshing depth.
     uint32_t direct_resolve_texture_depth_float : 1;
+    // A bitwise 32bpp resolve reading color as depth, or depth as color.
+    // Exactly one side of the EDRAM round trip swaps the 40-sample columns.
+    uint32_t direct_resolve_cross_depth_color : 1;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
