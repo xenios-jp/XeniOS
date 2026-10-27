@@ -680,6 +680,10 @@ class RenderTargetCache {
     assert_true(GetPath() == Path::kHostRenderTargets);
     return last_update_transfers_;
   }
+  std::vector<Transfer>* last_update_transfers() {
+    assert_true(GetPath() == Path::kHostRenderTargets);
+    return last_update_transfers_;
+  }
 
   HostDepthStoreRenderTargetConstant GetHostDepthStoreRenderTargetConstant(
       uint32_t pitch_tiles, bool msaa_2x_supported) const {
