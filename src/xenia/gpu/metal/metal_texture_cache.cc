@@ -477,6 +477,103 @@ bool MetalTextureCache::ShouldUploadViaBlit() const {
   return ::cvars::metal_texture_upload_via_blit;
 }
 
+bool MetalTextureCache::IsResolveRefreshKey(const TextureKey& key) const {
+  if (key.dimension != xenos::DataDimension::k2DOrStacked ||
+      key.GetDepthOrArraySize() != 1 || !key.tiled || key.packed_mips ||
+      key.mip_page || key.mip_max_level || key.signed_separate ||
+      key.scaled_resolve ||
+      FormatInfo::Get(key.format)->type != FormatType::kResolvable) {
+    return false;
+  }
+  // The resolve writes its texels as raw dwords, so only loaders that copy
+  // them unchanged into the image qualify.
+  const LoadShaderIndex load_shader = GetLoadShaderIndexForKey(key);
+  return load_shader == kLoadShaderIndex32bpb ||
+         load_shader == kLoadShaderIndex64bpb;
+}
+
+void MetalTextureCache::PrepareDirectResolveTextureRefresh(
+    xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
+    uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
+    xenos::Endian endianness, ResolveTextureRefreshTarget& target_out) {
+  target_out = {};
+  const xenos::TextureFormat format = ColorFormatToTextureFormat(dest_format);
+  if (IsDrawResolutionScaled() || !length || address != base_address ||
+      !width || !height || !pitch) {
+    return;
+  }
+
+  // The inventory only holds keys that passed IsResolveRefreshKey.
+  MetalTexture* match = nullptr;
+  for (MetalTexture* texture = resolve_refresh_first_; texture;
+       texture = texture->resolve_refresh_next_) {
+    const TextureKey& key = texture->key();
+    if (!key.is_valid || key.format != format ||
+        (key.base_page << 12) != base_address || key.endianness != endianness ||
+        (key.pitch << 5) != pitch ||
+        xe::align(key.GetWidth(), uint32_t(8)) != width ||
+        xe::align(key.GetHeight(), uint32_t(8)) != height) {
+      continue;
+    }
+    // The resolve must write exactly the range the texture is loaded from.
+    if (xe::align(texture->GetGuestBaseSize(), UINT32_C(16)) != length) {
+      continue;
+    }
+    // Two interpretations of the same resolve range are not interchangeable.
+    if (match) {
+      return;
+    }
+    match = texture;
+  }
+  if (!match) {
+    return;
+  }
+
+  MTL::Texture* write_view = match->GetOrCreateResolveWriteView();
+  if (!write_view || write_view->width() != match->key().GetWidth() ||
+      write_view->height() != match->key().GetHeight() ||
+      write_view->arrayLength() != 1 || write_view->sampleCount() != 1) {
+    return;
+  }
+
+  match->MarkAsUsed();
+  target_out.write_texture = write_view;
+  target_out.cache_texture = match;
+  target_out.length = length;
+}
+
+void MetalTextureCache::PublishDirectResolveTextureRefresh(
+    const ResolveTextureRefreshTarget& target) {
+  if (!target) {
+    return;
+  }
+  auto* texture = static_cast<MetalTexture*>(target.cache_texture);
+  bool found = false;
+  for (MetalTexture* current = resolve_refresh_first_; current;
+       current = current->resolve_refresh_next_) {
+    if (current == texture) {
+      found = true;
+      break;
+    }
+  }
+  if (!found ||
+      texture->GetOrCreateResolveWriteView() != target.write_texture) {
+    return;
+  }
+
+  // Called right after the resolve marked the range GPU-written, which made
+  // every page of it valid and invalidated the texture. A CPU write since then
+  // invalidated pages again, which MakeUpToDateAndWatch refuses, so the texture
+  // reloads. A CPU write before that is overwritten by the resolve, which
+  // covers the whole texture, in shared memory and in the texture alike.
+  // Publishing installs the ordinary watch under the same lock, so later writes
+  // take the normal path.
+  auto global_lock = xe::global_critical_region::Acquire();
+  if (texture->base_outdated(global_lock)) {
+    texture->MakeUpToDateAndWatch(global_lock);
+  }
+}
+
 void MetalTextureCache::BeginUploadCommandBufferBatch() {
   ++upload_batch_depth_;
 }
@@ -2096,6 +2193,12 @@ void MetalTextureCache::CompletedSubmissionUpdated(
 void MetalTextureCache::ClearCache() {
   SCOPE_profile_cpu_f("gpu");
 
+  // Destroy backend textures while the derived cache (including the intrusive
+  // resolve-refresh inventory and heap pool) is still alive.
+  TextureCache::ClearCache();
+  assert_null(resolve_refresh_first_);
+  assert_null(resolve_refresh_last_);
+
   for (auto& sampler_pair : sampler_cache_) {
     if (sampler_pair.second) {
       sampler_pair.second->release();
@@ -2175,7 +2278,7 @@ MTL::PixelFormat MetalTextureCache::ConvertXenosFormat(
 MTL::Texture* MetalTextureCache::CreateTexture2D(
     uint32_t width, uint32_t height, uint32_t array_length,
     MTL::PixelFormat format, MTL::TextureSwizzleChannels swizzle,
-    uint32_t mip_levels) {
+    uint32_t mip_levels, bool shader_write) {
   MTL::Device* device = command_processor_->GetMetalDevice();
   if (!device) {
     XELOGE(
@@ -2198,8 +2301,12 @@ MTL::Texture* MetalTextureCache::CreateTexture2D(
   descriptor->setDepth(1);
   descriptor->setArrayLength(array_length);
   descriptor->setMipmapLevelCount(mip_levels);
-  descriptor->setUsage(MTL::TextureUsageShaderRead |
-                       MTL::TextureUsagePixelFormatView);
+  MTL::TextureUsage usage =
+      MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
+  if (shader_write) {
+    usage |= MTL::TextureUsageShaderWrite;
+  }
+  descriptor->setUsage(usage);
   descriptor->setStorageMode(GetCacheTextureStorageMode());
   descriptor->setSwizzle(swizzle);
 
@@ -3368,9 +3475,10 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
       break;
     }
     case xenos::DataDimension::k2DOrStacked: {
-      metal_texture =
-          CreateTexture2D(width, height, key.GetDepthOrArraySize(),
-                          metal_format, metal_swizzle, key.mip_max_level + 1);
+      const bool shader_write = IsResolveRefreshKey(key);
+      metal_texture = CreateTexture2D(width, height, key.GetDepthOrArraySize(),
+                                      metal_format, metal_swizzle,
+                                      key.mip_max_level + 1, shader_write);
       break;
     }
     case xenos::DataDimension::k3D: {
@@ -3444,9 +3552,33 @@ MetalTextureCache::MetalTexture::MetalTexture(MetalTextureCache& texture_cache,
   if (metal_texture_) {
     SetHostMemoryUsage(metal_texture_->allocatedSize());
   }
+  if (track_usage && texture_cache_.IsResolveRefreshKey(key)) {
+    resolve_refresh_registered_ = true;
+    resolve_refresh_previous_ = texture_cache_.resolve_refresh_last_;
+    if (resolve_refresh_previous_) {
+      resolve_refresh_previous_->resolve_refresh_next_ = this;
+    } else {
+      texture_cache_.resolve_refresh_first_ = this;
+    }
+    texture_cache_.resolve_refresh_last_ = this;
+  }
 }
 
 MetalTextureCache::MetalTexture::~MetalTexture() {
+  if (resolve_refresh_registered_) {
+    if (resolve_refresh_previous_) {
+      resolve_refresh_previous_->resolve_refresh_next_ = resolve_refresh_next_;
+    } else {
+      texture_cache_.resolve_refresh_first_ = resolve_refresh_next_;
+    }
+    if (resolve_refresh_next_) {
+      resolve_refresh_next_->resolve_refresh_previous_ =
+          resolve_refresh_previous_;
+    } else {
+      texture_cache_.resolve_refresh_last_ = resolve_refresh_previous_;
+    }
+    resolve_refresh_registered_ = false;
+  }
   uint64_t views_released = 0;
   for (auto& entry : swizzled_view_cache_) {
     if (entry.second) {
@@ -3454,10 +3586,41 @@ MetalTextureCache::MetalTexture::~MetalTexture() {
       entry.second->release();
     }
   }
+  if (resolve_write_view_) {
+    resolve_write_view_->release();
+    resolve_write_view_ = nullptr;
+  }
   if (metal_texture_) {
     metal_texture_->release();
     metal_texture_ = nullptr;
   }
+}
+
+MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateResolveWriteView() {
+  if (resolve_write_view_) {
+    return resolve_write_view_;
+  }
+  if (!metal_texture_) {
+    return nullptr;
+  }
+  MTL::PixelFormat view_format;
+  switch (texture_cache_.GetLoadShaderIndexForKey(key())) {
+    case kLoadShaderIndex32bpb:
+      view_format = MTL::PixelFormatR32Uint;
+      break;
+    case kLoadShaderIndex64bpb:
+      view_format = MTL::PixelFormatRG32Uint;
+      break;
+    default:
+      return nullptr;
+  }
+  if (metal_texture_->textureType() != MTL::TextureType2DArray ||
+      !(metal_texture_->usage() & MTL::TextureUsageShaderWrite) ||
+      !(metal_texture_->usage() & MTL::TextureUsagePixelFormatView)) {
+    return nullptr;
+  }
+  resolve_write_view_ = metal_texture_->newTextureView(view_format);
+  return resolve_write_view_;
 }
 
 MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(

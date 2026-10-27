@@ -117,6 +117,30 @@ class MetalTextureCache : public TextureCache {
     return binding_state_generation_;
   }
 
+  // Narrow producer interface for an existing, exact texture-cache image
+  // whose loader copies raw 32-bit or 64-bit texels. The render-target backend
+  // may write the same logical texels there while it performs the required
+  // guest-memory resolve, which covers the whole texture. Publication, right
+  // after the resolve marked the range GPU-written, is only accepted if the
+  // range is still valid in shared memory (no CPU write since), and installs
+  // the ordinary cache watch immediately, so later writes take the normal path.
+  struct ResolveTextureRefreshTarget {
+    MTL::Texture* write_texture = nullptr;
+    void* cache_texture = nullptr;
+    uint32_t length = 0;
+
+    explicit operator bool() const {
+      return write_texture && cache_texture && length;
+    }
+  };
+  // Leaves target_out empty if there is no single exact texture.
+  void PrepareDirectResolveTextureRefresh(
+      xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
+      uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
+      xenos::Endian endianness, ResolveTextureRefreshTarget& target_out);
+  void PublishDirectResolveTextureRefresh(
+      const ResolveTextureRefreshTarget& target);
+
   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
   bool IsScaledResolveSupportedForFormat(TextureKey key) const override;
   bool EnsureScaledResolveMemoryCommitted(
@@ -191,12 +215,19 @@ class MetalTextureCache : public TextureCache {
                                         xenos::FetchOpDimension dimension,
                                         bool is_signed);
     void Invalidate3DAs2DView() { texture_3d_as_2d_.reset(); }
+    // Integer reinterpretation of the image for the resolve refresh write.
+    MTL::Texture* GetOrCreateResolveWriteView();
 
    private:
+    friend class MetalTextureCache;
     MetalTextureCache& texture_cache_;
     MTL::Texture* metal_texture_;
     std::unique_ptr<MetalTexture> texture_3d_as_2d_;
+    MTL::Texture* resolve_write_view_ = nullptr;
     std::unordered_map<uint64_t, MTL::Texture*> swizzled_view_cache_;
+    MetalTexture* resolve_refresh_previous_ = nullptr;
+    MetalTexture* resolve_refresh_next_ = nullptr;
+    bool resolve_refresh_registered_ = false;
   };
 
  private:
@@ -204,7 +235,8 @@ class MetalTextureCache : public TextureCache {
   MTL::Texture* CreateTexture2D(uint32_t width, uint32_t height,
                                 uint32_t array_length, MTL::PixelFormat format,
                                 MTL::TextureSwizzleChannels swizzle,
-                                uint32_t mip_levels = 1);
+                                uint32_t mip_levels = 1,
+                                bool shader_write = false);
   MTL::Texture* CreateTexture3D(uint32_t width, uint32_t height, uint32_t depth,
                                 MTL::PixelFormat format,
                                 MTL::TextureSwizzleChannels swizzle,
@@ -267,8 +299,15 @@ class MetalTextureCache : public TextureCache {
   MTL::CommandBuffer* upload_batch_command_buffer_ = nullptr;
   bool upload_batch_command_buffer_has_work_ = false;
   uint32_t upload_batch_depth_ = 0;
-  MetalTexture* bindless_used_first_ = nullptr;
-  MetalTexture* bindless_used_last_ = nullptr;
+  // Intrusive inventory of the cache's existing MetalTexture objects. This is
+  // intentionally not a second key/range registry: preparation scans the
+  // authoritative objects and rejects ambiguous aliases.
+  MetalTexture* resolve_refresh_first_ = nullptr;
+  MetalTexture* resolve_refresh_last_ = nullptr;
+  // Whether a texture with this key is created writable and inventoried as a
+  // resolve refresh destination: an enabled format in the exact tiled 2D
+  // single-level shape a 1x resolve can write.
+  bool IsResolveRefreshKey(const TextureKey& key) const;
   std::unique_ptr<MetalHeapPool> texture_heap_pool_;
   bool supports_bc_texture_compression_ = false;
 
