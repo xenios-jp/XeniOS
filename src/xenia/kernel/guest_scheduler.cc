@@ -134,6 +134,15 @@ static bool TakeHeadRequeue(XThread::SchedulerLinks& links) {
 // Reporting threshold for the lock case.
 static constexpr uint32_t kLockPreemptDeferReport = 65536;
 
+// Sleeping a fiber would stall its dispatch thread.
+static void ReleaseSpinWait(void* /*raw_context*/, uint64_t sleep_ns) {
+  if (XThread::GetCurrentFiberThread()) {
+    GuestScheduler::SpinYield();
+  } else {
+    xe::threading::NanoSleep(int64_t(sleep_ns));
+  }
+}
+
 // JIT safepoint handler. The cold path cleared the flag, so the deferred
 // cases re-set it to retry at the next safepoint.
 static void PreemptCurrentFiber(void* /*raw_context*/) {
@@ -248,6 +257,7 @@ void GuestScheduler::EnsureStarted() {
     return;
   }
   xe::cpu::backend::preempt_yield_handler = &PreemptCurrentFiber;
+  xe::cpu::backend::spin_wait_release_handler = &ReleaseSpinWait;
   // Not in the ctor, which runs before per-title cvar overrides are applied.
   double ticks_per_us = CalibrateTicksPerUs();
   ticks_per_us_ = ticks_per_us;
@@ -348,8 +358,10 @@ void GuestScheduler::Shutdown() {
     }
     cpu.host_thread.reset();
   }
-  // Every dispatch thread has exited, so no fiber reaches a safepoint again.
+  // Every dispatch thread has exited, so no fiber reaches a safepoint or a
+  // spin-wait release again.
   xe::cpu::backend::preempt_yield_handler = nullptr;
+  xe::cpu::backend::spin_wait_release_handler = nullptr;
   if (watchdog_thread_) {
     xe::threading::Wait(watchdog_thread_.get(), false);
     watchdog_thread_.reset();
