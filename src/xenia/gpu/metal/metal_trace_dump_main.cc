@@ -116,7 +116,7 @@ class MetalTraceDump : public TraceDump {
            cvars::metal_trace_dump_capture);
   }
 
-  void AwaitGuestMemoryWrites() override {
+  void AwaitGuestMemoryWrites(uint32_t base, uint32_t size) override {
     // Zero-copy shared memory aliases guest memory, so completing the queue
     // is enough.
     auto* command_processor = static_cast<MetalCommandProcessor*>(
