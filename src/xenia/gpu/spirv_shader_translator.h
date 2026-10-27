@@ -565,6 +565,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
 
     // Metal MSC maps descriptor set 9 to named function constants.
     bool fetch_state_function_constants = false;
+    bool structured_vertex_control_flow = false;
     bool allow_float_contraction = false;
   };
 
@@ -689,6 +690,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   void PostTranslation() override;
 
   void ProcessLabel(uint32_t cf_index) override;
+  void ProcessControlFlowInstructionBegin(uint32_t cf_index) override;
 
   void ProcessExecInstructionBegin(const ParsedExecInstruction& instr) override;
   void ProcessExecInstructionEnd(const ParsedExecInstruction& instr) override;
@@ -852,6 +854,28 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // However, if the condition is not different, the instruction-level predicate
   // conditional also won't be closed - this must be checked separately if
   // needed (for example, in jumps).
+  // Whether the guest control flow is emitted as the program counter switch in
+  // the main loop, rather than as structured selections and loops.
+  bool UsesMainSwitch() const {
+    return !cf_structured_ && !current_shader().label_addresses().empty();
+  }
+  // Checks if the whole control flow program can be emitted as structured
+  // SPIR-V selections and loops, and if so, gathers what the control flow
+  // instructions need to emit.
+  bool StructurizeControlFlow();
+  // Checks the instructions in [begin, end). Jumps and loops in the range must
+  // stay within it, though they may also go to end_aliases, which lead to the
+  // same place as `end` - the merges of if-else constructs whose then parts end
+  // at `end`. If loop_body is true, the range is the body of the loop ending at
+  // `end`, which is not entered again at `begin`.
+  bool StructurizeControlFlowRange(
+      const std::vector<ucode::ControlFlowInstruction>& cf_instructions,
+      uint32_t begin, uint32_t end, const std::vector<uint32_t>& end_aliases,
+      bool loop_body, bool in_loop);
+  // Closes the structured selections that end before the control flow
+  // instruction at cf_index.
+  void CloseStructuredSelections(uint32_t cf_index);
+
   spv::Id LoadLoopConstant(uint32_t loop_constant_index);
   spv::Id LoadBoolConstant(uint32_t bool_constant_index);
   spv::Id GetVertexFetchEndian(uint32_t vertex_fetch_constant_index);
@@ -1554,6 +1578,48 @@ class SpirvShaderTranslator : public ShaderTranslator {
   std::unique_ptr<spv::Instruction> main_switch_op_;
   spv::Block* main_switch_merge_;
   std::vector<spv::Id> main_switch_next_pc_phi_operands_;
+
+  // Structured guest control flow, used instead of the main switch when
+  // StructurizeControlFlow succeeds.
+  bool cf_structured_;
+  enum class CfStructuredJump : uint8_t {
+    // Not a jump, or a jump to the next instruction.
+    kNone,
+    // A conditional jump over the instructions until its target, which are
+    // emitted as a selection. For an if-else, the instructions from the target
+    // until the merge are the else part.
+    kIf,
+    // The unconditional jump from the end of the then part of an if-else over
+    // the else part.
+    kElse,
+  };
+  // Per control flow instruction.
+  std::vector<CfStructuredJump> cf_structured_jumps_;
+  // For kIf jumps and for loop_start, the index of the control flow
+  // instruction before which the selection is closed.
+  std::vector<uint32_t> cf_structured_merges_;
+  // For kIf, whether the selection has an else part, starting at the target of
+  // the jump.
+  std::vector<bool> cf_structured_jump_else_;
+  // For the first instruction of the body of a loop, the loop_end index, or
+  // UINT32_MAX.
+  std::vector<uint32_t> cf_structured_loop_ends_;
+  struct CfStructuredConstruct {
+    // For a selection, the index of the control flow instruction before which
+    // it is closed. For a loop, the index of the loop_end instruction.
+    uint32_t end;
+    // Not added to the function yet.
+    spv::Block* merge;
+    // Selection only, not added to the function yet - the else part, until it
+    // is entered.
+    spv::Block* selection_else;
+    // Loop only (null for a selection).
+    spv::Block* loop_header;
+    // Loop only, not added to the function yet.
+    spv::Block* loop_continue;
+  };
+  // Currently open structured constructs, innermost last.
+  std::vector<CfStructuredConstruct> cf_structured_constructs_;
 
   // If the exec bool constant / predicate conditional is open, block after it
   // (not added to the function yet).
