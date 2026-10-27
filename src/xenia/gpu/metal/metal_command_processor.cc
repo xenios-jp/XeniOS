@@ -449,7 +449,7 @@ MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
 }
 
 constexpr uint32_t kPipelineDiskCacheMagic = 0x43504D58;  // 'XMPC'
-constexpr uint32_t kPipelineDiskCacheVersion = 2;
+constexpr uint32_t kPipelineDiskCacheVersion = 3;
 constexpr size_t kPipelineDiskCacheMaxEntrySize = 1 << 20;
 
 XEPACKEDSTRUCT(PipelineDiskCacheHeader, {
@@ -472,7 +472,6 @@ XEPACKEDSTRUCT(PipelineDiskCacheEntryBase, {
   uint32_t stencil_format;
   uint32_t color_formats[4];
   uint32_t normalized_color_mask;
-  uint32_t alpha_to_mask_enable;
   uint32_t blendcontrol[4];
   uint32_t vertex_attribute_count;
   uint32_t vertex_layout_count;
@@ -1108,8 +1107,9 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
   desc->setStencilAttachmentPixelFormat(
       MTL::PixelFormat(request.description.stencil_format));
   desc->setSampleCount(request.description.sample_count);
-  desc->setAlphaToCoverageEnabled(request.description.alpha_to_mask_enable !=
-                                  0);
+  // Xenos alpha-to-mask is emitted by the shader as its sample mask, so the
+  // native alpha-to-coverage stays off.
+  desc->setAlphaToCoverageEnabled(false);
 
   NS::Error* error = nullptr;
   MTL::RenderPipelineState* pipeline =
@@ -1175,8 +1175,9 @@ MetalCommandProcessor::CreateMslTessellationPipelineState(
   desc->setStencilAttachmentPixelFormat(
       MTL::PixelFormat(request.description.stencil_format));
   desc->setSampleCount(request.description.sample_count);
-  desc->setAlphaToCoverageEnabled(request.description.alpha_to_mask_enable !=
-                                  0);
+  // Xenos alpha-to-mask is emitted by the shader as its sample mask, so the
+  // native alpha-to-coverage stays off.
+  desc->setAlphaToCoverageEnabled(false);
 
   NS::Error* error = nullptr;
   MTL::RenderPipelineState* pipeline =
@@ -1239,8 +1240,9 @@ MetalCommandProcessor::CreateDxilTessellationPipelineState(
   desc->setStencilAttachmentPixelFormat(
       MTL::PixelFormat(request.description.stencil_format));
   desc->setRasterSampleCount(request.description.sample_count);
-  desc->setAlphaToCoverageEnabled(request.description.alpha_to_mask_enable !=
-                                  0);
+  // Xenos alpha-to-mask is emitted by the shader as its sample mask, so the
+  // native alpha-to-coverage stays off.
+  desc->setAlphaToCoverageEnabled(false);
 
   IRGeometryTessellationEmulationPipelineDescriptor ir_desc = {};
   // No stage-in: the guest fetches vertices from shared memory, so the host
@@ -3239,6 +3241,12 @@ void MetalCommandProcessor::ApplyViewportAndScissor(
                             render_target_cache_.get(), render_target_width_,
                             render_target_height_, rt_width, rt_height);
   ClampScissorToBounds(scissor, rt_width, rt_height);
+  // Draws that don't rasterize (memexport-only) still run the vertex shader,
+  // but must not touch the retained attachments or contribute samples.
+  if (!draw_util::IsRasterizationPotentiallyDone(
+          regs, draw_util::IsPrimitivePolygonal(regs))) {
+    scissor = {};
+  }
 
   MTL::Viewport mtl_viewport;
   mtl_viewport.originX = static_cast<double>(viewport_info.xy_offset[0]);
@@ -3544,7 +3552,8 @@ bool MetalCommandProcessor::IssueDrawMsl(
   // Compute SPIRV shader modifications.
   SpirvShaderTranslator::Modification vertex_shader_modification =
       GetCurrentSpirvVertexShaderModification(
-          *msl_vertex_shader, host_vertex_shader_type, interpolator_mask);
+          *msl_vertex_shader, host_vertex_shader_type, interpolator_mask,
+          ps_param_gen_pos != UINT32_MAX);
   SpirvShaderTranslator::Modification pixel_shader_modification =
       msl_pixel_shader
           ? GetCurrentSpirvPixelShaderModification(
@@ -4796,7 +4805,8 @@ bool MetalCommandProcessor::IssueDrawDxil(
 
   SpirvShaderTranslator::Modification vertex_shader_modification =
       GetCurrentSpirvVertexShaderModification(
-          *dxil_vertex_shader, host_vertex_shader_type, interpolator_mask);
+          *dxil_vertex_shader, host_vertex_shader_type, interpolator_mask,
+          ps_param_gen_pos != UINT32_MAX);
   SpirvShaderTranslator::Modification pixel_shader_modification =
       dxil_pixel_shader
           ? GetCurrentSpirvPixelShaderModification(
@@ -6316,11 +6326,9 @@ void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
   float polygon_offset = 0.0f;
   draw_util::GetPreferredFacePolygonOffset(
       regs, primitive_polygonal, polygon_offset_scale, polygon_offset);
-  float depth_bias_factor = regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
-                                    xenos::DepthRenderTargetFormat::kD24S8
-                                ? draw_util::kD3D10PolygonOffsetFactorUnorm24
-                                : draw_util::kD3D10PolygonOffsetFactorFloat24;
-  float depth_bias_constant = polygon_offset * depth_bias_factor;
+  float depth_bias_constant =
+      static_cast<float>(draw_util::GetD3D10IntegerPolygonOffset(
+          regs.Get<reg::RB_DEPTH_INFO>().depth_format, polygon_offset));
   float depth_bias_slope =
       polygon_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit *
       float(std::max(render_target_cache_->draw_resolution_scale_x(),
@@ -6513,7 +6521,7 @@ MetalCommandProcessor::GetOrCreateMslTessPipelineState(
 SpirvShaderTranslator::Modification
 MetalCommandProcessor::GetCurrentSpirvVertexShaderModification(
     const Shader& shader, Shader::HostVertexShaderType host_vertex_shader_type,
-    uint32_t interpolator_mask) const {
+    uint32_t interpolator_mask, bool ps_param_gen_used) const {
   const auto& regs = *register_file_;
 
   SpirvShaderTranslator::Modification modification(
@@ -6524,17 +6532,30 @@ MetalCommandProcessor::GetCurrentSpirvVertexShaderModification(
 
   modification.vertex.interpolator_mask = interpolator_mask;
 
+  if (Shader::IsHostVertexShaderTypeDomain(host_vertex_shader_type)) {
+    modification.vertex.tessellation_mode =
+        regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
+  }
+
   auto pa_cl_clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
   uint32_t user_clip_planes =
       pa_cl_clip_cntl.clip_disable ? 0 : pa_cl_clip_cntl.ucp_ena;
   modification.vertex.user_clip_plane_count = xe::bit_count(user_clip_planes);
   modification.vertex.user_clip_plane_cull =
       uint32_t(user_clip_planes && pa_cl_clip_cntl.ucp_cull_only_ena);
+  modification.vertex.vertex_kill_and =
+      uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b100) &&
+               !pa_cl_clip_cntl.vtx_kill_or);
 
-  modification.vertex.output_point_parameters =
-      uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b001) &&
-               regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type ==
-                   xenos::PrimitiveType::kPointList);
+  if (host_vertex_shader_type ==
+      Shader::HostVertexShaderType::kPointListAsTriangleStrip) {
+    modification.vertex.output_point_parameters = uint32_t(ps_param_gen_used);
+  } else {
+    modification.vertex.output_point_parameters =
+        uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b001) &&
+                 regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type ==
+                     xenos::PrimitiveType::kPointList);
+  }
 
   return modification;
 }
@@ -6573,10 +6594,17 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
 
   using DepthStencilMode =
       SpirvShaderTranslator::Modification::DepthStencilMode;
-  if (shader.implicit_early_z_write_allowed() &&
-      (!shader.writes_color_target(0) ||
-       !draw_util::DoesCoverageDependOnAlpha(
-           regs.Get<reg::RB_COLORCONTROL>()))) {
+  if (::cvars::depth_float24_convert_in_pixel_shader &&
+      normalized_depth_control.z_enable &&
+      regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
+          xenos::DepthRenderTargetFormat::kD24FS8) {
+    modification.pixel.depth_stencil_mode =
+        ::cvars::depth_float24_round ? DepthStencilMode::kFloat24Rounding
+                                     : DepthStencilMode::kFloat24Truncating;
+  } else if (shader.implicit_early_z_write_allowed() &&
+             (!shader.writes_color_target(0) ||
+              !draw_util::DoesCoverageDependOnAlpha(
+                  regs.Get<reg::RB_COLORCONTROL>()))) {
     modification.pixel.depth_stencil_mode = DepthStencilMode::kEarlyHint;
   } else {
     modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
@@ -6748,8 +6776,6 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
           ? draw_util::GetNormalizedColorMask(regs,
                                               pixel_shader_writes_color_targets)
           : 0;
-  description.alpha_to_mask_enable =
-      regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable ? 1 : 0;
   for (uint32_t i = 0; i < 4; ++i) {
     // ApplyColorAttachmentState only reads the blend register for a bound RT
     // with a non-zero write mask; zeroing it elsewhere lets those draws share
@@ -6957,16 +6983,20 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
   flags |= uint32_t(alpha_test_function)
            << SpirvShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
 
-  // Gamma correction for render targets.
-  reg::RB_COLOR_INFO color_infos[4];
-  for (uint32_t i = 0; i < 4; ++i) {
+  // Gamma correction for render targets. RGBA16Unorm gamma targets contain
+  // linear values; their linear-to-gamma conversion happens on the EDRAM
+  // store, so the pixel shader must not pre-encode them.
+  reg::RB_COLOR_INFO color_infos[xenos::kMaxColorRenderTargets];
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
     color_infos[i] = regs.Get<reg::RB_COLOR_INFO>(
         reg::RB_COLOR_INFO::rt_register_indices[i]);
   }
-  for (uint32_t i = 0; i < 4; ++i) {
-    if (color_infos[i].color_format ==
-        xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
-      flags |= SpirvShaderTranslator::kSysFlag_ConvertColor0ToGamma << i;
+  if (!render_target_cache_->gamma_render_target_as_unorm16()) {
+    for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+      if (color_infos[i].color_format ==
+          xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
+        flags |= SpirvShaderTranslator::kSysFlag_ConvertColor0ToGamma << i;
+      }
     }
   }
 
@@ -7047,6 +7077,9 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
       uint32_t signs_shift = 8 * (i & 3);
       consts.texture_swizzled_signs[i >> 2] |= uint32_t(texture_signs)
                                                << signs_shift;
+
+      consts.texture_integer_scale_bits[i] =
+          texture_cache_->GetActiveIntegerScaleBits(i);
 
       // Host swizzles: 12 bits per texture, 2 textures per uint32.
       uint32_t texture_swizzle = texture_cache_->GetActiveTextureHostSwizzle(i);

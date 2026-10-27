@@ -2931,6 +2931,11 @@ uint32_t MetalTextureCache::GetHostFormatSwizzle(TextureKey key) const {
     case xenos::TextureFormat::k_11_11_10:
       return xenos::XE_GPU_TEXTURE_SWIZZLE_RGBB;
 
+    case xenos::TextureFormat::k_6_5_5:
+      // The load shader places guest green in host blue and guest blue in
+      // host green.
+      return XE_GPU_MAKE_TEXTURE_SWIZZLE(R, B, G, G);
+
     case xenos::TextureFormat::k_4_4_4_4:
     case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
       // The ARGB4 load shaders output the layout Vulkan pairs with
