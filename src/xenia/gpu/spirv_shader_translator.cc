@@ -3864,9 +3864,9 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
                                  input_fragment_coordinates_, id_vector_temp_),
                              spv::NoPrecision);
     builder_->addCapability(spv::CapabilityDerivativeControl);
-    main_fbo_depth_derivatives_[0] = builder_->createUnaryOp(
+    main_fbo_depth_derivatives_[0] = CreateDerivative(
         spv::OpDPdxCoarse, type_float_, main_fbo_depth_unbiased_);
-    main_fbo_depth_derivatives_[1] = builder_->createUnaryOp(
+    main_fbo_depth_derivatives_[1] = CreateDerivative(
         spv::OpDPdyCoarse, type_float_, main_fbo_depth_unbiased_);
   }
 
@@ -3898,7 +3898,7 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
           spv::OpLogicalOr, type_bool_, quad_needs_execution,
           builder_->createBinOp(
               spv::OpFOrdNotEqual, type_bool_,
-              builder_->createUnaryOp(
+              CreateDerivative(
                   spv::OpDPdxFine, type_float_,
                   builder_->createTriOp(spv::OpSelect, type_float_,
                                         quad_needs_execution, const_float_1_,
@@ -3909,7 +3909,7 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
           spv::OpLogicalOr, type_bool_, quad_needs_execution,
           builder_->createBinOp(
               spv::OpFOrdNotEqual, type_bool_,
-              builder_->createUnaryOp(
+              CreateDerivative(
                   spv::OpDPdyCoarse, type_float_,
                   builder_->createTriOp(spv::OpSelect, type_float_,
                                         quad_needs_execution, const_float_1_,
@@ -4091,13 +4091,11 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
             spv::OpFAdd, type_float4_,
             builder_->createNoContractionBinOp(
                 spv::OpVectorTimesScalar, type_float4_,
-                builder_->createUnaryOp(spv::OpDPdx, type_float4_,
-                                        interpolated_value),
+                CreateDerivative(spv::OpDPdx, type_float4_, interpolated_value),
                 guest_pixel_center_offsets[0]),
             builder_->createNoContractionBinOp(
                 spv::OpVectorTimesScalar, type_float4_,
-                builder_->createUnaryOp(spv::OpDPdy, type_float4_,
-                                        interpolated_value),
+                CreateDerivative(spv::OpDPdy, type_float4_, interpolated_value),
                 guest_pixel_center_offsets[1]));
         var_main_interpolator_guest_center_deltas_[i] =
             builder_->createVariable(spv::NoPrecision,

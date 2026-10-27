@@ -703,7 +703,7 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                                 &derivative_component_index)) {
       derivative_components_remaining &=
           ~(UINT32_C(1) << derivative_component_index);
-      result[derivative_component_index] = builder_->createUnaryOp(
+      result[derivative_component_index] = CreateDerivative(
           (derivative_component_index & 0b01) ? DerivativeYOp()
                                               : DerivativeXOp(),
           type_float_,
@@ -2006,16 +2006,16 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
               builder_->addCapability(spv::CapabilityDerivativeControl);
               // For wide 1D textures, coordinates[0] and coordinates[1]
               // have been remapped. Compute gradients from both.
-              gradient_h_x = builder_->createUnaryOp(
-                  DerivativeXOp(), type_float_, coordinates[0]);
-              gradient_v_x = builder_->createUnaryOp(
-                  DerivativeYOp(), type_float_, coordinates[0]);
+              gradient_h_x = CreateDerivative(DerivativeXOp(), type_float_,
+                                              coordinates[0]);
+              gradient_v_x = CreateDerivative(DerivativeYOp(), type_float_,
+                                              coordinates[0]);
               // For wide 1D textures, also compute Y gradients.
               // coordinates[1] is non-zero only for wide 1D.
-              gradient_h_y = builder_->createUnaryOp(
-                  DerivativeXOp(), type_float_, coordinates[1]);
-              gradient_v_y = builder_->createUnaryOp(
-                  DerivativeYOp(), type_float_, coordinates[1]);
+              gradient_h_y = CreateDerivative(DerivativeXOp(), type_float_,
+                                              coordinates[1]);
+              gradient_v_y = CreateDerivative(DerivativeYOp(), type_float_,
+                                              coordinates[1]);
               gradient_h_x = builder_->createNoContractionBinOp(
                   spv::OpFMul, type_float_, gradient_h_x, lod_gradient_scale_h);
               gradient_v_x = builder_->createNoContractionBinOp(
@@ -2075,10 +2075,10 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                     builder_->createCompositeConstruct(type_float2_,
                                                        id_vector_temp_);
                 builder_->addCapability(spv::CapabilityDerivativeControl);
-                gradients_h = builder_->createUnaryOp(
-                    DerivativeXOp(), type_float2_, gradient_coordinate_vector);
-                gradients_v = builder_->createUnaryOp(
-                    DerivativeYOp(), type_float2_, gradient_coordinate_vector);
+                gradients_h = CreateDerivative(DerivativeXOp(), type_float2_,
+                                               gradient_coordinate_vector);
+                gradients_v = CreateDerivative(DerivativeYOp(), type_float2_,
+                                               gradient_coordinate_vector);
               }
               gradients_h = builder_->createNoContractionBinOp(
                   spv::OpVectorTimesScalar, type_float2_, gradients_h,
@@ -2120,10 +2120,10 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                     builder_->createCompositeConstruct(type_float3_,
                                                        id_vector_temp_);
                 builder_->addCapability(spv::CapabilityDerivativeControl);
-                gradients_h = builder_->createUnaryOp(
-                    DerivativeXOp(), type_float3_, gradient_coordinate_vector);
-                gradients_v = builder_->createUnaryOp(
-                    DerivativeYOp(), type_float3_, gradient_coordinate_vector);
+                gradients_h = CreateDerivative(DerivativeXOp(), type_float3_,
+                                               gradient_coordinate_vector);
+                gradients_v = CreateDerivative(DerivativeYOp(), type_float3_,
+                                               gradient_coordinate_vector);
               }
               gradients_h = builder_->createNoContractionBinOp(
                   spv::OpVectorTimesScalar, type_float3_, gradients_h,
@@ -3247,6 +3247,11 @@ void SpirvShaderTranslator::SampleTexture(
     spv::Id is_any_signed, spv::Id& result_unsigned_out,
     spv::Id& result_signed_out, spv::Id lerp_factor,
     spv::Id lerp_first_unsigned, spv::Id lerp_first_signed) {
+  const spv::Id original_coordinates = texture_parameters.coords;
+  if (!texture_parameters.lod && !texture_parameters.gradX) {
+    texture_parameters.coords =
+        AnchorFragmentDerivativeInput(original_coordinates);
+  }
   for (uint32_t i = 0; i < 2; ++i) {
     SpirvBuilder::IfBuilder sign_if(i ? is_any_signed : is_any_unsigned,
                                     spv::SelectionControlDontFlattenMask,
@@ -3281,11 +3286,15 @@ void SpirvShaderTranslator::SampleTexture(
     (i ? result_signed_out : result_unsigned_out) =
         sign_if.createMergePhi(sign_result, const_float4_0_);
   }
+  texture_parameters.coords = original_coordinates;
 }
 
 spv::Id SpirvShaderTranslator::QueryTextureLod(
     spv::Builder::TextureParameters& texture_parameters, spv::Id image_unsigned,
     spv::Id image_signed, spv::Id sampler, spv::Id is_all_signed) {
+  const spv::Id original_coordinates = texture_parameters.coords;
+  texture_parameters.coords =
+      AnchorFragmentDerivativeInput(original_coordinates);
   // OpSampledImage must be in the same block as where its result is used.
   SpirvBuilder::IfBuilder if_signed(
       is_all_signed, spv::SelectionControlDontFlattenMask, *builder_);
@@ -3313,6 +3322,7 @@ spv::Id SpirvShaderTranslator::QueryTextureLod(
         type_float_, 1);
   }
   if_signed.makeEndIf();
+  texture_parameters.coords = original_coordinates;
   return if_signed.createMergePhi(lod_signed, lod_unsigned);
 }
 
