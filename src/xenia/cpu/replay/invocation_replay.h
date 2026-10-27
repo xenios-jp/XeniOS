@@ -57,6 +57,11 @@ class InvocationReplay {
   // Runs a checked invocation from its entry state, returning the host clock
   // ticks the function took.
   uint64_t Time(const JitCorpus::Invocation& invocation);
+  // Restores and runs it |runs| times over, or only restores it if not |run|,
+  // returning the host instructions the process retired meanwhile, or 0 where
+  // the host does not count them.
+  uint64_t CountInstructions(const JitCorpus::Invocation& invocation,
+                             uint32_t runs, bool run);
 
   // An extern handler, reproducing the next export call the capture
   // recorded.
@@ -72,6 +77,9 @@ class InvocationReplay {
  private:
   uint8_t* HostPage(uint32_t address) const;
   void WritePage(uint32_t address, uint64_t hash);
+  // Restores an invocation's entry memory and registers, returning its
+  // function.
+  Function* Prepare(const JitCorpus::Invocation& invocation);
   bool SetAccess(xe::memory::PageAccess access);
   // Sets the entry registers and runs, watching the pages touched or not.
   Function* Run(const JitCorpus::Invocation& invocation, bool watch);
