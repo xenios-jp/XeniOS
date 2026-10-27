@@ -768,6 +768,7 @@ class CommandProcessor {
   std::atomic<bool> worker_running_;
   kernel::object_ref<kernel::XHostThread> worker_thread_;
 
+  std::mutex pending_fns_mutex_;
   std::queue<std::function<void()>> pending_fns_;
 
   // MicroEngine binary from PM4_ME_INIT
