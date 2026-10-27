@@ -118,16 +118,23 @@ class MetalTextureCache : public TextureCache {
   }
 
   // Narrow producer interface for an existing, exact texture-cache image
-  // whose loader copies raw 32-bit or 64-bit texels. The render-target backend
+  // whose loader copies raw texels or converts packed 24-bit depth. The backend
   // may write the same logical texels there while it performs the required
-  // guest-memory resolve, which covers the whole texture. Publication, right
+  // guest-memory resolve. Partial rectangles retain the untouched texels only
+  // if the texture is current before encoding and publication observes only
+  // the resolve's GPU invalidation. Publication, right
   // after the resolve marked the range GPU-written, is only accepted if the
   // range is still valid in shared memory (no CPU write since), and installs
   // the ordinary cache watch immediately, so later writes take the normal path.
   struct ResolveTextureRefreshTarget {
+    enum class Transform : uint8_t { kNone, kDepthUnorm24, kDepthFloat24 };
     MTL::Texture* write_texture = nullptr;
     void* cache_texture = nullptr;
     uint32_t length = 0;
+    uint32_t offset_y = 0;
+    bool partial = false;
+    uint64_t invalidation_count = 0;
+    Transform transform = Transform::kNone;
 
     explicit operator bool() const {
       return write_texture && cache_texture && length;
@@ -137,7 +144,8 @@ class MetalTextureCache : public TextureCache {
   void PrepareDirectResolveTextureRefresh(
       xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
       uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
-      xenos::Endian endianness, ResolveTextureRefreshTarget& target_out);
+      xenos::Endian endianness, bool depth,
+      ResolveTextureRefreshTarget& target_out);
   void PublishDirectResolveTextureRefresh(
       const ResolveTextureRefreshTarget& target);
 
