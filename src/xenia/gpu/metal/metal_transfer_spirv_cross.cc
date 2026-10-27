@@ -17,9 +17,13 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-MTL::Function* CompileTransferFragmentFunctionMsl(
-    MTL::Device* device, const std::vector<uint32_t>& spirv,
-    std::string* error_out) {
+namespace {
+MTL::Function* CompileFunctionMsl(MTL::Device* device,
+                                  const std::vector<uint32_t>& spirv,
+                                  std::string* error_out,
+                                  bool resolve_refresh) {
+  const auto stage = resolve_refresh ? spv::ExecutionModelGLCompute
+                                     : spv::ExecutionModelFragment;
   std::string msl_source;
   std::string entry_point_name;
   try {
@@ -34,27 +38,28 @@ MTL::Function* CompileTransferFragmentFunctionMsl(
     for (uint32_t set = 0; set < kTransferDescriptorSetCount; ++set) {
       for (uint32_t binding = 0; binding < kTransferBindingsPerSet; ++binding) {
         spirv_cross::MSLResourceBinding resource_binding = {};
-        resource_binding.stage = spv::ExecutionModelFragment;
+        resource_binding.stage = stage;
         resource_binding.desc_set = set;
         resource_binding.binding = binding;
         // The host depth source is the only buffer, and it declares the lowest
         // descriptor set, so it is always set 0 binding 0.
         resource_binding.msl_buffer = kTransferMslHostDepthBufferIndex;
-        resource_binding.msl_texture = TransferMslTextureIndex(set, binding);
+        resource_binding.msl_texture =
+            resolve_refresh ? (set == 1 ? 0 : 1)
+                            : TransferMslTextureIndex(set, binding);
         compiler.add_msl_resource_binding(resource_binding);
       }
     }
     {
       spirv_cross::MSLResourceBinding resource_binding = {};
-      resource_binding.stage = spv::ExecutionModelFragment;
+      resource_binding.stage = stage;
       resource_binding.desc_set = spirv_cross::kPushConstDescSet;
       resource_binding.binding = spirv_cross::kPushConstBinding;
       resource_binding.msl_buffer = kTransferMslPushConstantBufferIndex;
       compiler.add_msl_resource_binding(resource_binding);
     }
     msl_source = compiler.compile();
-    entry_point_name = compiler.get_cleansed_entry_point_name(
-        "main", spv::ExecutionModelFragment);
+    entry_point_name = compiler.get_cleansed_entry_point_name("main", stage);
   } catch (const std::exception& e) {
     *error_out = std::string("SPIRV-Cross: ") + e.what();
     return nullptr;
@@ -84,6 +89,19 @@ MTL::Function* CompileTransferFragmentFunctionMsl(
   }
   pool->release();
   return function;
+}
+}  // namespace
+
+MTL::Function* CompileTransferFragmentFunctionMsl(
+    MTL::Device* device, const std::vector<uint32_t>& spirv,
+    std::string* error_out) {
+  return CompileFunctionMsl(device, spirv, error_out, false);
+}
+
+MTL::Function* CompileResolveRefreshFunctionMsl(
+    MTL::Device* device, const std::vector<uint32_t>& spirv,
+    std::string* error_out) {
+  return CompileFunctionMsl(device, spirv, error_out, true);
 }
 
 }  // namespace metal
