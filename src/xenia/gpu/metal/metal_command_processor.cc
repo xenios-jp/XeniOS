@@ -2168,14 +2168,15 @@ void MetalCommandProcessor::PollCompletedSubmission() {
 
 void MetalCommandProcessor::WaitForPendingCompletionHandlers() {
   constexpr auto kMaxWait = std::chrono::seconds(5);
-  const auto wait_start = std::chrono::steady_clock::now();
+  auto wait_start = std::chrono::steady_clock::now();
   while (pending_completion_handlers_.load(std::memory_order_acquire) != 0) {
     if (std::chrono::steady_clock::now() - wait_start >= kMaxWait) {
       XELOGW(
           "MetalCommandProcessor: timed out waiting for {} completion "
           "handler(s) during shutdown",
           pending_completion_handlers_.load(std::memory_order_relaxed));
-      break;
+      // A timeout is diagnostic, not permission to destroy callback owners.
+      wait_start = std::chrono::steady_clock::now();
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -2213,6 +2214,11 @@ void MetalCommandProcessor::ShutdownContext() {
     current_command_buffer_ = nullptr;
     current_draw_index_ = 0;
     copy_resolve_writes_pending_ = false;
+  }
+
+  // Finish or cancel any standalone upload batch before joining callbacks.
+  if (texture_cache_) {
+    texture_cache_->FinishPendingUploads();
   }
 
   // Even if we have no active command buffer at this point, there may be
@@ -5465,14 +5471,13 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
   current_command_buffer_->addCompletedHandler(
       [this](MTL::CommandBuffer* command_buffer) {
-        std::lock_guard<std::mutex> lock(completion_mutex_);
-        completed_command_buffers_.fetch_add(1, std::memory_order_release);
+        {
+          std::lock_guard<std::mutex> lock(completion_mutex_);
+          completed_command_buffers_.fetch_add(1, std::memory_order_release);
+          completion_cond_.notify_all();
+        }
+        // Publish callback completion after its final owner access and unlock.
         pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
-        // Notify under the lock: a waiter that evaluated the predicate before
-        // the increment would otherwise miss the wakeup, and
-        // WaitForPendingCompletionHandlers can see the counter reach zero and
-        // let the object be destroyed out from under notify_all().
-        completion_cond_.notify_all();
       });
 
   if (primitive_processor_) {
@@ -6245,7 +6250,7 @@ void MetalCommandProcessor::ScheduleSpirvUniformBufferRelease(
             dispatch_semaphore_signal(spirv_uniforms_available_semaphore_);
           }
         }
-        pending_completion_handlers_.fetch_sub(1, std::memory_order_relaxed);
+        pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
       });
 }
 
@@ -6353,7 +6358,7 @@ void MetalCommandProcessor::ScheduleSpirvArgumentBufferRelease(
               pending_spirv_argbuf_releases_.erase(it);
             }
           }
-          pending_completion_handlers_.fetch_sub(1, std::memory_order_relaxed);
+          pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
         });
   }
 }

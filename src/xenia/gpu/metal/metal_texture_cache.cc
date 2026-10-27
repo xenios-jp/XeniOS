@@ -1628,6 +1628,8 @@ void MetalTextureCache::DumpTextureToFile(MTL::Texture* texture,
   }
   MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
   if (!blit) {
+    command_processor_->DiscardAccountedCommandBuffer(
+        cmd, MetalCommandProcessor::CommandBufferKind::kTextureOther);
     readback->release();
     XELOGE("DumpTextureToFile: failed to create blit encoder");
     return;

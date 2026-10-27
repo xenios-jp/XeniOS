@@ -46,6 +46,9 @@ class MetalTextureCache : public TextureCache {
 
   bool Initialize();
   void Shutdown();
+  // Settle standalone upload tickets before the command processor joins
+  // callbacks.
+  void FinishPendingUploads() { AbortUploadCommandBufferBatch(); }
   void ClearCache() override;
   void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
 
