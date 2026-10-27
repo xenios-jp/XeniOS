@@ -46,6 +46,7 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_16bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_refresh_cs.h"
@@ -968,6 +969,11 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
           device_, resolve_full_32bpp_rgb10_4x_direct_cs_metallib,
           sizeof(resolve_full_32bpp_rgb10_4x_direct_cs_metallib),
           "resolve_full_32bpp_rgb10_4x_direct");
+  resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_32bpp_rgb10_4x_direct_refresh_cs_metallib,
+          sizeof(resolve_full_32bpp_rgb10_4x_direct_refresh_cs_metallib),
+          "resolve_full_32bpp_rgb10_4x_direct_refresh");
   resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
       CreateComputePipelineFromEmbeddedLibrary(
           device_, resolve_full_32bpp_rgb10f_1x_direct_cs_metallib,
@@ -1141,6 +1147,10 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_32bpp_rgb10_4x_direct_pipeline_) {
     resolve_full_32bpp_rgb10_4x_direct_pipeline_->release();
     resolve_full_32bpp_rgb10_4x_direct_pipeline_ = nullptr;
+  }
+  if (resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_) {
+    resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_->release();
+    resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ = nullptr;
   }
   if (resolve_full_32bpp_rgb10f_1x_direct_pipeline_) {
     resolve_full_32bpp_rgb10f_1x_direct_pipeline_->release();
@@ -3382,10 +3392,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   uint32_t rgb10_origin[2] = {};
   if (copy_from_render_target) {
     if (rgb10_4x_average) {
-      if (refresh_texture) {
-        return false;
-      }
-      rgb10_pipeline = resolve_full_32bpp_rgb10_4x_direct_pipeline_;
+      rgb10_pipeline =
+          refresh_texture ? resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_
+                          : resolve_full_32bpp_rgb10_4x_direct_pipeline_;
     } else {
       rgb10_pipeline =
           refresh_texture
@@ -4514,7 +4523,10 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
     auto* texture_cache = command_processor_.texture_cache();
     if (texture_cache &&
-        !IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) &&
+        // Four-sample cache reuse exposes helper-lane derivative differences
+        // unless guest fragments keep their helpers within each primitive.
+        (!IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) ||
+         command_processor_.primitive_fragment_helpers_enabled()) &&
         (!dest_info.copy_dest_exp_bias ||
          IsFull32RGB10FloatOneSample(copy_shader, copy_constants)) &&
         uint32_t(dest_info.copy_dest_endian) <=

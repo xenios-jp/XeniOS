@@ -606,6 +606,9 @@ class MetalCommandProcessor : public CommandProcessor {
     return render_target_cache_.get();
   }
   MetalTextureCache* texture_cache() const { return texture_cache_.get(); }
+  bool primitive_fragment_helpers_enabled() const {
+    return spirv_translator_features_.primitive_fragment_helpers;
+  }
 
  private:
   // Shader ucode disassembly buffer (used by AnalyzeUcode).
