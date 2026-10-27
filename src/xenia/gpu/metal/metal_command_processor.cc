@@ -8071,8 +8071,9 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
   consts.point_screen_diameter_to_ndc_radius[0] =
       float(draw_resolution_scale_x) /
       float(std::max(viewport_info.xy_extent[0], uint32_t(1)));
+  // Metal NDC Y increases upward; point T increases downward.
   consts.point_screen_diameter_to_ndc_radius[1] =
-      float(draw_resolution_scale_y) /
+      -float(draw_resolution_scale_y) /
       float(std::max(viewport_info.xy_extent[1], uint32_t(1)));
 
   // Texture swizzled signs and swizzles — retrieved from the texture cache
