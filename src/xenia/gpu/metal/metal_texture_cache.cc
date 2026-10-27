@@ -2449,6 +2449,9 @@ MTL::Texture* MetalTextureCache::CreateNullTextureCube() {
 void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
   SCOPE_profile_cpu_f("gpu");
 
+  if (++binding_state_generation_ == 0) {
+    binding_state_generation_ = 1;
+  }
   BeginUploadCommandBufferBatch();
 
   // Call base class implementation first

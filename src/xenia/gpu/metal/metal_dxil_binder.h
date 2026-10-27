@@ -10,9 +10,12 @@
 #ifndef XENIA_GPU_METAL_METAL_DXIL_BINDER_H_
 #define XENIA_GPU_METAL_METAL_DXIL_BINDER_H_
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
+#include "xenia/gpu/metal/metal_shader_converter.h"
+#include "xenia/gpu/metal/metal_upload_cache.h"
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/ui/metal/metal_api.h"
 
@@ -23,7 +26,6 @@ namespace gpu {
 namespace metal {
 
 class MetalCommandProcessor;
-class MetalShaderConverter;
 
 // Binds one draw's resources for the SPIR-V -> DXIL -> AIR path. Metal Shader
 // Converter shaders take every root parameter from a top-level argument buffer
@@ -56,12 +58,13 @@ class MetalDxilBinder {
   // Writes this draw's descriptor heaps, per-stage index buffers and top-level
   // argument buffer, binds them to the stages the pipeline runs and makes
   // everything they reference resident.
-  // TODO(macos): reuse the previous draw's slices when nothing they hold
-  // changed, instead of re-uploading roughly 10 KB per draw. Needs the reuse
-  // cache dropped whenever the transient pool's pages can be recycled.
   bool Bind(MTL::RenderCommandEncoder* encoder,
             const SpirvShader* vertex_shader, const SpirvShader* pixel_shader,
             const Constants& constants, bool memexport_used, bool tessellated);
+
+  // Drops every reused upload slice. Call before the transient argument pages
+  // they live in can be recycled.
+  void ResetUploadCaches();
 
  private:
   static constexpr uint32_t kStageVertex = 0;
@@ -75,6 +78,15 @@ class MetalDxilBinder {
     MTL::Buffer* buffer = nullptr;
     NS::UInteger offset = 0;
   };
+  bool descriptor_heap_slices_valid_ = false;
+  std::vector<IRDescriptorTableEntry> cached_texture_heap_entries_;
+  std::vector<IRDescriptorTableEntry> cached_sampler_heap_entries_;
+  Slice cached_texture_heap_slice_;
+  Slice cached_sampler_heap_slice_;
+  using ArgumentBufferKey =
+      std::array<uint64_t, size_t(MetalRootParameter::kCount)>;
+  UploadCache<Slice, ArgumentBufferKey> argument_buffer_slices_;
+
   // Where a stage's descriptors start in the heaps both stages share.
   struct StageRange {
     uint32_t texture_start = 0;
@@ -82,6 +94,15 @@ class MetalDxilBinder {
     uint32_t sampler_start = 0;
     uint32_t sampler_count = 0;
   };
+  struct GatherKey {
+    const SpirvShader* vertex_shader = nullptr;
+    const SpirvShader* pixel_shader = nullptr;
+    uint64_t binding_state_generation = 0;
+    bool operator==(const GatherKey&) const = default;
+  };
+  bool gather_cache_valid_ = false;
+  GatherKey gather_cache_key_;
+  std::array<StageRange, kStageCount> gather_cache_ranges_;
 
   // Copies size bytes into a fresh transient slice, zero filling when there is
   // nothing to copy so the slot still points at readable memory.
