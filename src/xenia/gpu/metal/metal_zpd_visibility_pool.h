@@ -16,6 +16,7 @@
 
 namespace MTL {
 class Buffer;
+class CommandBuffer;
 class Device;
 }  // namespace MTL
 
@@ -44,6 +45,11 @@ class MetalZPDVisibilityPool {
   uint32_t capacity() const { return capacity_; }
 
   MTL::Buffer* visibility_buffer() const { return visibility_buffer_; }
+  bool uses_accumulation() const { return readback_buffer_ == nullptr; }
+
+  // Call after ending every render pass that acquired slots. Without
+  // accumulation, preserve its results before the next pass resets them.
+  void EndRenderPass(MTL::CommandBuffer* command_buffer);
 
   bool has_free_indices() const { return !free_indices_.empty(); }
 
@@ -54,14 +60,19 @@ class MetalZPDVisibilityPool {
   // Read the 64-bit sample count from the shared buffer at the given index.
   // The command buffer containing this slot's work must have completed before
   // calling this.
-  uint64_t Read(uint32_t index) const;
+  // False if preserving this pass's results failed; the caller uses its normal
+  // conservative query fallback rather than treating missing results as zero.
+  bool Read(uint32_t index, uint64_t& samples) const;
 
  private:
   MTL::Buffer* visibility_buffer_ = nullptr;
+  MTL::Buffer* readback_buffer_ = nullptr;
   uint64_t* visibility_mapping_ = nullptr;
   uint32_t capacity_ = 0;
 
   std::vector<uint32_t> free_indices_;
+  std::vector<uint32_t> render_pass_indices_;
+  std::vector<bool> failed_results_;
 
   // Bumped on release so stale readbacks from a recycled slot get dropped.
   std::vector<uint32_t> generations_;
