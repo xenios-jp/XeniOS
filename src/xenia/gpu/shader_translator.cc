@@ -769,7 +769,7 @@ void Shader::GatherExecInformation(
       }
     } else {
       auto& op = *reinterpret_cast<const AluInstruction*>(op_ptr);
-      GatherAluInstructionInformation(op, instr.dword_index,
+      GatherAluInstructionInformation(op, instr.dword_index, instr_offset,
                                       ucode_disasm_buffer);
     }
   }
@@ -889,7 +889,7 @@ void Shader::GatherTextureFetchInformation(const TextureFetchInstruction& op,
 
 void Shader::GatherAluInstructionInformation(
     const AluInstruction& op, uint32_t exec_cf_index,
-    StringBuffer& ucode_disasm_buffer) {
+    uint32_t instruction_address, StringBuffer& ucode_disasm_buffer) {
   ParsedAluInstruction instr;
   ParseAluInstruction(op, type(), instr);
   instr.Disassemble(&ucode_disasm_buffer);
@@ -923,6 +923,60 @@ void Shader::GatherAluInstructionInformation(
     uint32_t memexport_stream_constant = instr.GetMemExportStreamConstant();
     if (memexport_stream_constant != UINT32_MAX) {
       memexport_stream_constants_.insert(memexport_stream_constant);
+      // Additionally record how the format lane of this site's export address
+      // is built, so the host can check on the CPU whether that lane is
+      // invariant for a draw, and specialize the translation if it is.
+      //
+      // The export address is mad(result) = operand[0] * operand[1] +
+      // operand[2], component-wise, and operand[2] is the stream descriptor
+      // (GetMemExportStreamConstant has already required it to have a standard
+      // swizzle), so component 2 of the result is component 2 of the
+      // descriptor's dword_2 - the format word - plus the product of component
+      // 2 of the two multiplicands.
+      MemExportStream memexport_stream;
+      memexport_stream.instruction_address = instruction_address;
+      memexport_stream.stream_constant = memexport_stream_constant;
+      memexport_stream.scale = MemExportStream::Scale::kUnknown;
+      // A scalar operation writing a result in the same instruction would
+      // change what ends up in the export address, and is not described by
+      // GetMemExportStreamConstant, so refuse to reason about this site.
+      if (!instr.is_predicated && !instr.scalar_result.GetUsedWriteMask()) {
+        for (uint32_t operand_index = 0; operand_index < 2; ++operand_index) {
+          const InstructionOperand& operand =
+              instr.vector_operands[operand_index];
+          if (operand.storage_addressing_mode !=
+              InstructionStorageAddressingMode::kAbsolute) {
+            continue;
+          }
+          SwizzleSource scale_source = operand.components[2];
+          if (scale_source == SwizzleSource::k0) {
+            // The multiplicand itself is the literal 0.0.
+            memexport_stream.scale = MemExportStream::Scale::kLiteralZero;
+            break;
+          }
+          if (scale_source >= SwizzleSource::k0) {
+            // The literal 1.0 - the product term is the other multiplicand.
+            continue;
+          }
+          if (operand.storage_source !=
+              InstructionStorageSource::kConstantFloat) {
+            continue;
+          }
+          // SM3 tests the absolute multiplicands, so abs/negate modifiers
+          // do not affect the zero proof. Keep both constant candidates.
+          if (memexport_stream.scale ==
+              MemExportStream::Scale::kConstantRegister) {
+            memexport_stream.has_alternate_scale = true;
+            memexport_stream.alternate_scale_constant = operand.storage_index;
+            memexport_stream.alternate_scale_component = uint32_t(scale_source);
+          } else {
+            memexport_stream.scale = MemExportStream::Scale::kConstantRegister;
+            memexport_stream.scale_constant = operand.storage_index;
+            memexport_stream.scale_component = uint32_t(scale_source);
+          }
+        }
+      }
+      memexport_streams_.push_back(memexport_stream);
     } else {
       XELOGE(
           "ShaderTranslator::GatherAluInstructionInformation: Couldn't extract "

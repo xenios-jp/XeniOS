@@ -96,16 +96,20 @@ Shader::Translation::Dump(const std::filesystem::path& base_path,
   return std::make_pair(std::move(binary_path), std::move(disasm_path));
 }
 
-Shader::Translation* Shader::GetOrCreateTranslation(uint64_t modification,
-                                                    bool* is_new) {
+Shader::Translation* Shader::GetOrCreateTranslation(
+    uint64_t modification, bool* is_new,
+    std::shared_ptr<const Specialization> specialization) {
   auto it = translations_.find(modification);
   if (it != translations_.end()) {
+    assert_true(!specialization ||
+                it->second->specialization_.get() == specialization.get());
     if (is_new) {
       *is_new = false;
     }
     return it->second;
   }
   Translation* translation = CreateTranslationInstance(modification);
+  translation->specialization_ = std::move(specialization);
   translations_.emplace(modification, translation);
   if (is_new) {
     *is_new = true;
