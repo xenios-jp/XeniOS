@@ -58,6 +58,8 @@ namespace metal {
 class MetalGraphicsSystem;
 
 class MetalCommandProcessor : public CommandProcessor {
+  friend class MetalRegisterWriteTest;
+
  protected:
 #define OVERRIDING_BASE_CMDPROCESSOR
 #include "../pm4_command_processor_declare.h"
@@ -223,6 +225,27 @@ class MetalCommandProcessor : public CommandProcessor {
       uint32_t normalized_color_mask, const RegisterFile& regs);
   bool IssueCopy() override;
   void WriteRegister(uint32_t index, uint32_t value) override;
+  void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                             uint32_t num_registers) override;
+  void WriteRegisterRangeFromRing(xe::RingBuffer* ring, uint32_t base,
+                                  uint32_t num_registers) override;
+
+  // How a range of register writes can be applied in bulk: all ordinary
+  // registers, or wholly one shader constant class, which is dirtied once. A
+  // range touching registers with side effects, or mixing a constant class
+  // with anything else, is written one register at a time.
+  enum class RegisterRangeClass {
+    kPerRegister,
+    kOrdinary,
+    kFloatConstants,
+    kFetchConstants,
+    kBoolLoopConstants,
+  };
+  static RegisterRangeClass ClassifyRegisterRange(uint32_t start_index,
+                                                  uint32_t num_registers);
+  void WriteRegisterRangeFromMem(RegisterRangeClass range_class,
+                                 uint32_t start_index, uint32_t* base,
+                                 uint32_t num_registers);
 
  private:
   // Initialize shader translation pipeline
