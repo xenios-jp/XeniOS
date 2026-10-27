@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/edram_dump_shader.h"
 
+#include <array>
 #include <initializer_list>
 #include <vector>
 
@@ -191,20 +192,35 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   // The optional resolve texture is binding 1 of the destination set, next to
   // the guest-memory destination buffer at binding 0.
   spv::Id resolve_texture = spv::NoResult;
+  std::array<spv::Id, 3> resolve_texture_aliases;
+  const uint32_t resolve_texture_alias_count =
+      key.direct_resolve_texture ? key.direct_resolve_texture_aliases : 0;
   if (key.direct_resolve_texture) {
-    resolve_texture = builder.createVariable(
-        spv::NoPrecision, spv::StorageClassUniformConstant,
-        builder.makeImageType(
-            copy_is_depth ? type_float : type_uint, spv::Dim2D, false, true,
-            false, 2,
-            copy_is_depth ? spv::ImageFormat::R32f
-                          : (format_is_64bpp ? spv::ImageFormat::Rg32ui
-                                             : spv::ImageFormat::R32ui)),
-        "xe_resolve_texture");
-    builder.addDecoration(resolve_texture, spv::DecorationDescriptorSet,
-                          options.descriptor_set_dest);
-    builder.addDecoration(resolve_texture, spv::DecorationBinding, 1);
-    builder.addDecoration(resolve_texture, spv::DecorationNonReadable);
+    spv::Id type_resolve_texture =
+        copy_is_depth
+            ? builder.makeImageType(type_float, spv::Dim2D, false, true, false,
+                                    2, spv::ImageFormat::R32f)
+            : builder.makeImageType(type_uint, spv::Dim2D, false, true, false,
+                                    2,
+                                    format_is_64bpp ? spv::ImageFormat::Rg32ui
+                                                    : spv::ImageFormat::R32ui);
+    static const char* const kResolveTextureNames[] = {
+        "xe_resolve_texture", "xe_resolve_texture_alias_0",
+        "xe_resolve_texture_alias_1", "xe_resolve_texture_alias_2"};
+    for (uint32_t i = 0; i <= resolve_texture_alias_count; ++i) {
+      spv::Id variable = builder.createVariable(
+          spv::NoPrecision, spv::StorageClassUniformConstant,
+          type_resolve_texture, kResolveTextureNames[i]);
+      builder.addDecoration(variable, spv::DecorationDescriptorSet,
+                            options.descriptor_set_dest);
+      builder.addDecoration(variable, spv::DecorationBinding, 1 + i);
+      builder.addDecoration(variable, spv::DecorationNonReadable);
+      if (i) {
+        resolve_texture_aliases[i - 1] = variable;
+      } else {
+        resolve_texture = variable;
+      }
+    }
   }
   spv::Id source_component_type = source_is_uint ? type_uint : type_float;
   spv::Id source_texture = builder.createVariable(
@@ -1175,15 +1191,20 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     spv::Id texture_height = spv::NoResult;
     spv::Id texture_y = spv::NoResult;
     spv::Id loaded_resolve_texture = spv::NoResult;
+    std::array<spv::Id, 3> loaded_resolve_texture_aliases;
     if (key.direct_resolve_texture) {
-      auto width_and_offset_y =
+      spv::Id texture_width_and_offset_y =
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureWidth);
-      texture_width = bitwise_and(width_and_offset_y, 0xFFFF);
-      texture_y = add(dest_y, shift_right(width_and_offset_y, 16));
+      texture_width = bitwise_and(texture_width_and_offset_y, 0xFFFF);
+      texture_y = add(dest_y, shift_right(texture_width_and_offset_y, 16));
       texture_height =
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureHeight);
       loaded_resolve_texture =
           builder.createLoad(resolve_texture, spv::NoPrecision);
+      for (uint32_t i = 0; i < resolve_texture_alias_count; ++i) {
+        loaded_resolve_texture_aliases[i] =
+            builder.createLoad(resolve_texture_aliases[i], spv::NoPrecision);
+      }
     }
     for (uint32_t i = 0; i < pixels_per_thread; ++i) {
       spv::Id* pixel = &run_packed[i * dwords_per_pixel];
@@ -1256,6 +1277,11 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
             builder.createCompositeConstruct(type_int3, id_vector_temp);
         builder.createNoResultOp(spv::OpImageWrite,
                                  {loaded_resolve_texture, coordinates, texel});
+        for (uint32_t j = 0; j < resolve_texture_alias_count; ++j) {
+          builder.createNoResultOp(
+              spv::OpImageWrite,
+              {loaded_resolve_texture_aliases[j], coordinates, texel});
+        }
         if_texture_write.makeEndIf();
       }
       if (format_is_64bpp) {

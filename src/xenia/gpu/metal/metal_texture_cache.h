@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_METAL_METAL_TEXTURE_CACHE_H_
 #define XENIA_GPU_METAL_METAL_TEXTURE_CACHE_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -128,6 +129,14 @@ class MetalTextureCache : public TextureCache {
   // the ordinary cache watch immediately, so later writes take the normal path.
   struct ResolveTextureRefreshTarget {
     enum class Transform : uint8_t { kNone, kDepthUnorm24, kDepthFloat24 };
+    struct Alias {
+      MTL::Texture* write_texture = nullptr;
+      void* cache_texture = nullptr;
+      uint32_t offset_y = 0;
+      bool partial = false;
+      uint64_t invalidation_count = 0;
+    };
+    static constexpr uint32_t kMaxAliases = 3;
     MTL::Texture* write_texture = nullptr;
     void* cache_texture = nullptr;
     uint32_t length = 0;
@@ -135,12 +144,27 @@ class MetalTextureCache : public TextureCache {
     bool partial = false;
     uint64_t invalidation_count = 0;
     Transform transform = Transform::kNone;
+    std::array<Alias, kMaxAliases> aliases{};
+    uint32_t alias_count = 0;
+
+    bool HasPartial() const {
+      if (partial) {
+        return true;
+      }
+      for (uint32_t i = 0; i < alias_count; ++i) {
+        if (aliases[i].partial) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     explicit operator bool() const {
       return write_texture && cache_texture && length;
     }
   };
-  // Leaves target_out empty if there is no single exact texture.
+  // Other interpretations may join only with matching write format, size,
+  // conversion and row offset; unmatched textures retain the normal reload.
   void PrepareDirectResolveTextureRefresh(
       xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
       uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,

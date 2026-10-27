@@ -11,7 +11,7 @@
 // the host render target texel of the resolve area's first pixel. With
 // XE_RESOLVE_DIRECT_REFRESH, two more follow: the refreshed texture's width
 // with the texture row of the resolve's first row in the upper 16 bits, and
-// its logical height.
+// its height with the number of its aliases in the upper 16 bits.
 #define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
 #include "resolve.xesli"
 
@@ -147,24 +147,27 @@ entry_inputs_end_code_begin_compute_xe
     uint texture_width_and_offset_y =
         byte_buffer_align4_load4_xe(xe_resolve_edram, 8u);
     uint texture_width = texture_width_and_offset_y & 0xFFFFu;
-    uint texture_height = byte_buffer_align4_load4_xe(xe_resolve_edram, 12u);
+    uint texture_height_and_alias_count =
+        byte_buffer_align4_load4_xe(xe_resolve_edram, 12u);
+    uint texture_height = texture_height_and_alias_count & 0xFFFFu;
+    uint alias_count = texture_height_and_alias_count >> 16u;
     uint texture_y = pixel_index.y + (texture_width_and_offset_y >> 16u);
     if (texture_y < texture_height) {
       if (pixel_index.x < texture_width) {
         XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x, texture_y),
-                                    packed.x);
+                                    packed.x, alias_count);
       }
       if (pixel_index.x + 1u < texture_width) {
         XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 1u, texture_y),
-                                    packed.y);
+                                    packed.y, alias_count);
       }
       if (pixel_index.x + 2u < texture_width) {
         XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 2u, texture_y),
-                                    packed.z);
+                                    packed.z, alias_count);
       }
       if (pixel_index.x + 3u < texture_width) {
         XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 3u, texture_y),
-                                    packed.w);
+                                    packed.w, alias_count);
       }
     }
   }

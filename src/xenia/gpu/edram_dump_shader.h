@@ -67,6 +67,8 @@ union EdramDumpShaderKey {
     // A bitwise 32bpp resolve reading color as depth, or depth as color.
     // Exactly one side of the EDRAM round trip swaps the 40-sample columns.
     uint32_t direct_resolve_cross_depth_color : 1;
+    // Up to three compatible destination images, following binding 1.
+    uint32_t direct_resolve_texture_aliases : 2;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
