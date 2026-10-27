@@ -218,7 +218,7 @@ class MetalCommandProcessor : public CommandProcessor {
   bool IssueDrawDxil(
       Shader* vertex_shader, Shader* pixel_shader,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
-      bool primitive_polygonal, bool memexport_used,
+      bool primitive_polygonal, bool memexport_used, bool pure_memexport_draw,
       uint32_t normalized_color_mask, const RegisterFile& regs);
   bool IssueCopy() override;
   void WriteRegister(uint32_t index, uint32_t value) override;
@@ -976,9 +976,17 @@ class MetalCommandProcessor : public CommandProcessor {
   void EndSubmissionForMemexport() {}
   // DXIL exports not yet separated from later GPU consumers by a pass boundary.
   std::vector<draw_util::MemExportRange> render_encoder_memexport_ranges_;
+  // Whether every draw in the current render encoder was a pure vertex
+  // memexport draw, so a later one in the chain may use a barrier instead of
+  // ending the pass.
+  bool render_encoder_memexport_draws_are_pure_ = true;
+  // memexport_ranges_, narrowed for a pure memexport draw to what its vertex
+  // indices can reach.
+  std::vector<draw_util::MemExportRange> memexport_ordering_ranges_;
   bool DrawOverlapsPendingMemexport(
       const Shader& vertex_shader, const Shader* pixel_shader,
-      const IndexBufferInfo* index_buffer_info) const;
+      const IndexBufferInfo* index_buffer_info,
+      const draw_util::VertexIndexRange* vertex_indices) const;
   // Page tracking so a fence the guest reads can await export output. The
   // fragment's host/device routing half is unused - Metal has one buffer.
 #include "../command_processor_memexport.inc"

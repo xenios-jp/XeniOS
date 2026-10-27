@@ -89,6 +89,47 @@ namespace gpu {
 namespace metal {
 
 namespace {
+
+// A draw that only exports memory from the vertex shader: non-rasterizing,
+// auto-indexed (a host builtin index buffer may be used for the expansion, but
+// no guest indices are read from the shared buffer being exported), with no
+// pixel shader, and not tessellated - DXIL tessellation lowers the guest vertex
+// shader to object/mesh work, which a barrier naming only
+// MTL::RenderStageVertex does not order. Matches PrimitiveProcessor::Process
+// before it can read or convert indices.
+bool IsPureDxilMemexportDraw(const RegisterFile& regs, bool rasterization_done,
+                             bool vertex_memexport, bool has_export_range,
+                             bool has_pixel_shader,
+                             bool has_guest_index_buffer) {
+  const auto initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+  return !rasterization_done && vertex_memexport && has_export_range &&
+         !has_pixel_shader && !has_guest_index_buffer &&
+         initiator.source_select == xenos::SourceSelect::kAutoIndex &&
+         !(xenos::IsMajorModeExplicit(initiator.major_mode,
+                                      initiator.prim_type) &&
+           regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
+               xenos::VGTOutputPath::kTessellationEnable);
+}
+
+// Merges a write into one it overlaps or touches, so long chains of narrowed
+// exports keep the overlap checks against them short.
+void AddPendingWrite(std::vector<draw_util::MemExportRange>& writes,
+                     const draw_util::MemExportRange& write) {
+  uint64_t begin = uint64_t(write.base_address_dwords) << 2;
+  uint64_t end = begin + write.size_bytes;
+  for (draw_util::MemExportRange& other : writes) {
+    uint64_t other_begin = uint64_t(other.base_address_dwords) << 2;
+    uint64_t other_end = other_begin + other.size_bytes;
+    if (begin <= other_end && other_begin <= end) {
+      begin = std::min(begin, other_begin);
+      other.base_address_dwords = uint32_t(begin >> 2);
+      other.size_bytes = uint32_t(std::max(end, other_end) - begin);
+      return;
+    }
+  }
+  writes.push_back(write);
+}
+
 // Guest shaders go SPIR-V -> DXIL -> AIR instead of SPIR-V -> MSL. Both start
 // from the same SpirvShaderTranslator output.
 bool UseDxilPath() { return cvars::metal_use_dxil; }
@@ -1588,7 +1629,8 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
 
 bool MetalCommandProcessor::DrawOverlapsPendingMemexport(
     const Shader& vertex_shader, const Shader* pixel_shader,
-    const IndexBufferInfo* index_buffer_info) const {
+    const IndexBufferInfo* index_buffer_info,
+    const draw_util::VertexIndexRange* vertex_indices) const {
   if (render_encoder_memexport_ranges_.empty()) {
     return false;
   }
@@ -1607,6 +1649,27 @@ bool MetalCommandProcessor::DrawOverlapsPendingMemexport(
   };
   // Both shader stages can perform guest vertex fetches from shared memory.
   auto fetches_overlap = [&](const Shader& shader) {
+    if (vertex_indices && shader.vertex_fetches_vertex_indexed()) {
+      for (const Shader::VertexFetchStride& stride :
+           shader.vertex_fetch_strides()) {
+        const auto fetch =
+            register_file_->GetVertexFetch(stride.fetch_constant);
+        int64_t first =
+            std::max(int64_t(vertex_indices->first) * stride.stride_words +
+                         shader.vertex_fetch_min_word_offset(),
+                     int64_t(0));
+        int64_t end =
+            std::min(int64_t(vertex_indices->last) * stride.stride_words +
+                         shader.vertex_fetch_end_word_offset(),
+                     int64_t(fetch.size));
+        if (first < end &&
+            overlaps(xenos::CpuToGpu(fetch.address << 2) + uint32_t(first << 2),
+                     uint64_t(end - first) << 2)) {
+          return true;
+        }
+      }
+      return false;
+    }
     const auto& bitmap = shader.constant_register_map().vertex_fetch_bitmap;
     for (uint32_t i = 0; i < xe::countof(bitmap); ++i) {
       uint32_t bits = bitmap[i], bit;
@@ -1631,7 +1694,7 @@ bool MetalCommandProcessor::DrawOverlapsPendingMemexport(
     return true;
   }
   // Overlapping exports also require ordering, including partial-word RMW.
-  for (const auto& written : memexport_ranges_) {
+  for (const auto& written : memexport_ordering_ranges_) {
     if (overlaps(written.base_address_dwords << 2, written.size_bytes)) {
       return true;
     }
@@ -2043,6 +2106,7 @@ void MetalCommandProcessor::WaitForPendingCompletionHandlers() {
 
 void MetalCommandProcessor::ShutdownContext() {
   render_encoder_memexport_ranges_.clear();
+  render_encoder_memexport_draws_are_pure_ = true;
   // End any active render encoder before shutdown
   if (current_render_encoder_) {
     current_render_encoder_->endEncoding();
@@ -3067,11 +3131,41 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
   memexport_ranges_awaited_ =
       IsMemexportAwaited(memexport_used_vertex, memexport_used_pixel);
+  const bool pure_memexport_draw = IsPureDxilMemexportDraw(
+      regs, is_rasterization_done, memexport_used_vertex,
+      !memexport_ranges_.empty(), pixel_shader != nullptr,
+      index_buffer_info != nullptr);
+  // A pure memexport draw is ordered only against what its vertex indices can
+  // reach. Auto-indexed guest vertex indices are VGT_INDX_OFFSET plus 0 to
+  // below the index count.
+  draw_util::VertexIndexRange pure_vertex_indices;
+  const draw_util::VertexIndexRange* vertex_indices = nullptr;
+  memexport_ordering_ranges_ = memexport_ranges_;
+  if (pure_memexport_draw && index_count) {
+    pure_vertex_indices.first = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
+    if (uint64_t(pure_vertex_indices.first) + index_count <=
+        (uint64_t(1) << 24)) {
+      pure_vertex_indices.last = pure_vertex_indices.first + index_count - 1;
+      vertex_indices = &pure_vertex_indices;
+      memexport_ordering_ranges_.clear();
+      draw_util::AddMemExportRanges(regs, *vertex_shader,
+                                    memexport_ordering_ranges_, vertex_indices);
+    }
+  }
   if (UseDxilPath() && current_render_encoder_ &&
       DrawOverlapsPendingMemexport(*vertex_shader, pixel_shader,
-                                   index_buffer_info)) {
-    // Order the export before this draw's accesses by ending the pass.
-    EndRenderEncoder();
+                                   index_buffer_info, vertex_indices)) {
+    // Order the export before this draw's accesses. Within a chain of pure
+    // vertex memexport draws, which can only overlap through vertex fetches
+    // and exports, a fresh vertex-to-vertex buffer memory barrier does; any
+    // other draw ends the pass.
+    if (pure_memexport_draw && render_encoder_memexport_draws_are_pure_) {
+      current_render_encoder_->memoryBarrier(MTL::BarrierScopeBuffers,
+                                             MTL::RenderStageVertex,
+                                             MTL::RenderStageVertex);
+    } else {
+      EndRenderEncoder();
+    }
   }
   // Primitive/index processing (like D3D12/Vulkan).
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
@@ -3152,9 +3246,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   if (UseDxilPath()) {
-    bool ok = IssueDrawDxil(vertex_shader, pixel_shader,
-                            primitive_processing_result, primitive_polygonal,
-                            memexport_used, normalized_color_mask, regs);
+    bool ok =
+        IssueDrawDxil(vertex_shader, pixel_shader, primitive_processing_result,
+                      primitive_polygonal, memexport_used, pure_memexport_draw,
+                      normalized_color_mask, regs);
     return ok;
   }
 
@@ -4824,7 +4919,7 @@ MetalCommandProcessor::GetOrCreateDxilTessellationPipelineState(
 bool MetalCommandProcessor::IssueDrawDxil(
     Shader* vertex_shader, Shader* pixel_shader,
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
-    bool primitive_polygonal, bool memexport_used,
+    bool primitive_polygonal, bool memexport_used, bool pure_memexport_draw,
     uint32_t normalized_color_mask, const RegisterFile& regs) {
   SCOPE_profile_cpu_f("gpu");
   assert_not_null(vertex_shader);
@@ -5139,11 +5234,12 @@ bool MetalCommandProcessor::IssueDrawDxil(
   }
 
   if (memexport_used) {
-    for (const draw_util::MemExportRange& range : memexport_ranges_) {
-      render_encoder_memexport_ranges_.push_back(range);
+    for (const draw_util::MemExportRange& range : memexport_ordering_ranges_) {
+      AddPendingWrite(render_encoder_memexport_ranges_, range);
     }
     NoteMemexportRangesWritten();
   }
+  render_encoder_memexport_draws_are_pure_ &= pure_memexport_draw;
 
   ++current_draw_index_;
   return true;
@@ -5450,6 +5546,7 @@ void MetalCommandProcessor::ResetMslCrossEncoderReuseCaches() {
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
   render_encoder_memexport_ranges_.clear();
+  render_encoder_memexport_draws_are_pure_ = true;
   if (!current_render_encoder_) {
     if (current_render_pass_descriptor_) {
       current_render_pass_descriptor_->release();
