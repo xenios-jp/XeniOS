@@ -46,9 +46,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     ~MetalRenderTarget() override;
 
     MTL::Texture* texture() const { return texture_; }
-    MTL::Texture* draw_texture() const {
-      return draw_texture_ ? draw_texture_ : texture_;
-    }
     MTL::Texture* transfer_texture() const {
       return transfer_texture_ ? transfer_texture_ : texture_;
     }
@@ -62,7 +59,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     void SwapDepthBackings() {
       assert_not_null(texture_);
       assert_not_null(spare_depth_texture_);
-      assert_null(draw_texture_);
       assert_null(transfer_texture_);
       std::swap(texture_, spare_depth_texture_);
       std::swap(stencil_view_, spare_depth_stencil_view_);
@@ -82,7 +78,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
         texture_ = texture;
       }
     }
-    void SetDrawTexture(MTL::Texture* texture) { draw_texture_ = texture; }
     void SetTransferTexture(MTL::Texture* texture) {
       transfer_texture_ = texture;
     }
@@ -114,7 +109,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
    private:
     MTL::Texture* texture_ = nullptr;
-    MTL::Texture* draw_texture_ = nullptr;
     MTL::Texture* transfer_texture_ = nullptr;
     MTL::Texture* stencil_view_ = nullptr;
     MTL::Texture* spare_depth_texture_ = nullptr;
@@ -601,8 +595,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::Texture* GetStencilTextureView(MetalRenderTarget* render_target);
 
   MTL::PixelFormat GetColorResourcePixelFormat(
-      xenos::ColorRenderTargetFormat format) const;
-  MTL::PixelFormat GetColorDrawPixelFormat(
       xenos::ColorRenderTargetFormat format) const;
   MTL::PixelFormat GetColorOwnershipTransferPixelFormat(
       xenos::ColorRenderTargetFormat format, bool* is_integer_out) const;
