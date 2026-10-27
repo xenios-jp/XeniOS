@@ -3404,8 +3404,10 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     shader_key.msaa_samples = rt_key.msaa_samples;
     shader_key.direct_resolve = 1;
     shader_key.direct_resolve_texture = refresh_texture != nullptr;
+    shader_key.direct_resolve_cross_depth_color =
+        rt_key.is_depth != uint32_t(resolve_info.IsCopyingDepth());
     shader_key.direct_resolve_texture_depth_float =
-        refresh_texture && rt_key.is_depth && refresh_depth_float;
+        refresh_texture && resolve_info.IsCopyingDepth() && refresh_depth_float;
     shader_key.direct_resolve_4x_average =
         IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
     Source source;
@@ -4408,7 +4410,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   bool resolved_directly = false;
   MetalTextureCache::ResolveTextureRefreshTarget refresh_target;
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
-      GetDirectResolveEligibility(resolve_info, copy_shader, true) ==
+      GetDirectResolveEligibility(resolve_info, copy_shader, true,
+                                  /*allow_cross_depth_color=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
