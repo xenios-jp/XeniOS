@@ -941,6 +941,45 @@ class Shader {
   // Whether the shader contains subroutine calls (cond_call).
   bool uses_subroutine_calls() const { return uses_subroutine_calls_; }
 
+  // A vertex shader memexport site whose address is proven to be
+  // `mad eA, rT.cccc, c[multiplier], c[stream]`, with rT.c holding
+  // `mad(r0.x, c[scale], c[offset])` (optionally truncated or floored), where
+  // r0.x is the guest vertex index the host shader stores there. Constant
+  // indices are within the float constant bank, before SQ_VS_CONST's base.
+  struct VertexIndexedMemExport {
+    uint32_t stream_constant;
+    uint32_t scale_constant;
+    SwizzleSource scale_component;
+    uint32_t offset_constant;
+    SwizzleSource offset_component;
+    uint32_t multiplier_constant;
+    SwizzleSource multiplier_components[4];
+  };
+  // Every memexport site of the shader, or empty if any is not proven.
+  const std::vector<VertexIndexedMemExport>& vertex_indexed_memexports() const {
+    return vertex_indexed_memexports_;
+  }
+  // Whether every vfetch_full of the shader either has no stride or is indexed
+  // by r0.x holding the guest vertex index. Then a vertex fetch reads only
+  // words [index * stride + min_offset, index * stride + end_offset) of the
+  // fetch constants of vertex_fetch_strides(), for any vfetch_full stride.
+  bool vertex_fetches_vertex_indexed() const {
+    return vertex_fetches_vertex_indexed_;
+  }
+  struct VertexFetchStride {
+    uint32_t fetch_constant;
+    uint32_t stride_words;
+  };
+  const std::vector<VertexFetchStride>& vertex_fetch_strides() const {
+    return vertex_fetch_strides_;
+  }
+  int32_t vertex_fetch_min_word_offset() const {
+    return vertex_fetch_min_word_offset_;
+  }
+  int32_t vertex_fetch_end_word_offset() const {
+    return vertex_fetch_end_word_offset_;
+  }
+
   // c# registers used as the addend in MAD operations to eA.
   const std::set<uint32_t>& memexport_stream_constants() const {
     return memexport_stream_constants_;
@@ -1163,6 +1202,11 @@ class Shader {
   std::set<uint32_t> memexport_stream_constants_;
   // Set during analysis if the shader contains any cond_call.
   bool uses_subroutine_calls_ = false;
+  std::vector<VertexIndexedMemExport> vertex_indexed_memexports_;
+  bool vertex_fetches_vertex_indexed_ = false;
+  std::vector<VertexFetchStride> vertex_fetch_strides_;
+  int32_t vertex_fetch_min_word_offset_ = 0;
+  int32_t vertex_fetch_end_word_offset_ = 0;
 
   // Modification bits -> translation.
   std::unordered_map<uint64_t, Translation*> translations_;
@@ -1172,6 +1216,7 @@ class Shader {
   bool is_drawn_ = false;
 
  private:
+  void AnalyzeVertexIndexing();
   void GatherExecInformation(
       const ParsedExecInstruction& instr,
       ucode::VertexFetchInstruction& previous_vfetch_full,

@@ -583,10 +583,20 @@ struct MemExportRange {
       : base_address_dwords(base_address_dwords), size_bytes(size_bytes) {}
 };
 
+// Guest vertex indices [first, last] of a draw, both below 2^24.
+struct VertexIndexRange {
+  uint32_t first;
+  uint32_t last;
+};
+
 // Gathers memory ranges involved in memexports in the shader with the float
-// constants from the registers, adding them to ranges_out.
+// constants from the registers, adding them to ranges_out. With the draw's
+// vertex indices, the ranges of streams whose every export site the vertex
+// shader proves to be addressed by the vertex index are narrowed to the
+// elements those indices can reach.
 void AddMemExportRanges(const RegisterFile& regs, const Shader& shader,
-                        std::vector<MemExportRange>& ranges_out);
+                        std::vector<MemExportRange>& ranges_out,
+                        const VertexIndexRange* vertex_indices = nullptr);
 
 // To avoid passing values that the shader won't understand (even though
 // Direct3D 9 shouldn't pass them anyway).
