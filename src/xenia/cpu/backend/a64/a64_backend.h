@@ -189,6 +189,9 @@ struct A64BackendContext {
   unsigned int host_return_stackpoint_depth;
   uint64_t host_return_stack;
   uint64_t host_return_address;
+  // Spin-wait release state (a64_seq_memory.cc).
+  unsigned int db16cyc_count;
+  uint64_t db16cyc_last_tick;
 };
 
 // Default FPCR for FPU mode (round to nearest, no flush to zero).
