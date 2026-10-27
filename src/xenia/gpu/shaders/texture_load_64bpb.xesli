@@ -9,6 +9,18 @@
 
 #include "texture_load.xesli"
 
+#ifdef XE_TEXTURE_LOAD_IMAGE_TYPE
+  #define XE_TEXTURE_LOAD_64BPB_STORE(block_x_offset, blocks)                \
+    xe_texture_load_dest_image[uint3_xe(block_index.x + block_x_offset,      \
+                                        block_index.y, 0u)] = (blocks).xy;   \
+    xe_texture_load_dest_image[uint3_xe(block_index.x + block_x_offset + 1u, \
+                                        block_index.y, 0u)] = (blocks).zw
+#else
+  #define XE_TEXTURE_LOAD_64BPB_STORE(block_x_offset, blocks) \
+    byte_buffer_align16_store16_xe(xe_texture_load_dest, block_offset_host, \
+                                   blocks)
+#endif
+
 XE_TEXTURE_LOAD_ENTRY(16)
 {
   // 1 thread = 4 blocks passed through an externally provided
@@ -28,15 +40,13 @@ XE_TEXTURE_LOAD_ENTRY(16)
   uint4_xe guest_blocks = XeEndianSwap32(
       byte_buffer_align16_load16_xe(xe_texture_load_source, block_offset_guest),
       load_info.endian_32);
-  byte_buffer_align16_store16_xe(xe_texture_load_dest, block_offset_host,
-                                 XE_TEXTURE_LOAD_64BPB_TRANSFORM(guest_blocks));
+  XE_TEXTURE_LOAD_64BPB_STORE(0u, XE_TEXTURE_LOAD_64BPB_TRANSFORM(guest_blocks));
   block_offset_host += 16u;
   block_offset_guest +=
       XeTextureLoadLocalXAddressXor(2u, 3u, load_info.is_tiled);
   guest_blocks = XeEndianSwap32(
       byte_buffer_align16_load16_xe(xe_texture_load_source, block_offset_guest),
       load_info.endian_32);
-  byte_buffer_align16_store16_xe(xe_texture_load_dest, block_offset_host,
-                                 XE_TEXTURE_LOAD_64BPB_TRANSFORM(guest_blocks));
+  XE_TEXTURE_LOAD_64BPB_STORE(2u, XE_TEXTURE_LOAD_64BPB_TRANSFORM(guest_blocks));
 }
 entry_code_end_compute_xe
