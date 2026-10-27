@@ -664,9 +664,14 @@ void CommandProcessor::ShutdownContext() {
 }
 
 uint32_t CommandProcessor::GuestReadPtrOffset(int32_t offset) const {
-  return uint32_t(reader_.read_ptr() -
-                  reinterpret_cast<uintptr_t>(memory_->physical_membase()) +
-                  offset);
+  uintptr_t ptr = reader_.read_ptr() + offset;
+  // Reading the last dword wraps the cursor to the beginning of the ring.
+  // Tracing still needs the address of that dword, including for one-word NOPs.
+  if (ptr < reinterpret_cast<uintptr_t>(reader_.buffer())) {
+    ptr += reader_.capacity();
+  }
+  return uint32_t(ptr -
+                  reinterpret_cast<uintptr_t>(memory_->physical_membase()));
 }
 
 void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
