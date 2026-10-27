@@ -283,11 +283,15 @@ class Processor {
   void RecordSequenceSamples(uint32_t start_address,
                              std::vector<backend::SequenceSample> samples);
   bool trace_counts_enabled() const { return trace_counts_enabled_; }
+  // Write the guestcoverage, guestcoveragethreads and guestsequences tables
+  // appended to the profiler's CSV dump.
+  void DumpTraceCounts(FILE* f);
+  // How often each instruction of the function at |address| ran, empty unless
+  // it is counted.
+  std::vector<uint64_t> GetTraceCounts(uint32_t address);
 
  private:
-  // Write the guestcoverage, guestcoveragethreads and guestsequences tables
-  // appended to the profiler's CSV dump. Both require trace_counts_mutex_.
-  void DumpTraceCounts(FILE* f);
+  // Requires trace_counts_mutex_.
   void DumpSequences(FILE* f);
 
   // All require trace_counts_mutex_ held.
