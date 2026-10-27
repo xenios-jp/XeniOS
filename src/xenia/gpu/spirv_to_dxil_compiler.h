@@ -82,9 +82,12 @@ class SpirvToDxilCompiler {
   // way tessellation hull and domain shaders reconcile control point counts and
   // patch constants). Stages must be in pipeline order (vertex first). Returns
   // one signed DXIL blob per input stage, or an empty vector on failure.
+  // tess_input_control_point_count specifies the pipeline's input patch size;
+  // zero preserves the SPIR-V declaration, which may use a maximum array size.
   static std::vector<std::vector<uint8_t>> TranslateLinked(
       const std::vector<LinkedStage>& stages, bool lower_to_bindless = false,
-      bool preserve_msc_fmad32 = false);
+      bool preserve_msc_fmad32 = false,
+      uint32_t tess_input_control_point_count = 0);
 };
 
 }  // namespace gpu
