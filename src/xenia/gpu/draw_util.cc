@@ -311,11 +311,6 @@ bool IsPixelShaderNeededWithRasterization(const Shader& shader,
   return false;
 }
 
-static float ViewportRecip2_0(float f) {
-  float f1 = ArchReciprocalRefined(f);
-  return f1 + f1;
-}
-
 // chrispy: todo, the int/float divides and the nan-checked mins show up
 // relatively high on uprof when i uc to 1.7ghz
 void GetHostViewportInfo(GetViewportInfoArgs* XE_RESTRICT args,
@@ -544,12 +539,10 @@ void GetHostViewportInfo(GetViewportInfoArgs* XE_RESTRICT args,
           (i ? args->draw_resolution_scale_y : args->draw_resolution_scale_x);
       float extent_axis_unscaled_float = float(extent_axis_unscaled);
 
-      float pixels_to_ndc_axis = ViewportRecip2_0(extent_axis_unscaled_float);
-
-      ndc_scale[i] = scale_xy[i] * pixels_to_ndc_axis;
+      ndc_scale[i] = scale_xy[i] * 2.0f / extent_axis_unscaled_float;
       ndc_offset[i] = (offset_base_xy[i] - extent_axis_unscaled_float * 0.5f +
                        offset_add_xy[i]) *
-                      pixels_to_ndc_axis;
+                      2.0f / extent_axis_unscaled_float;
     }
 
     // Z.
@@ -603,14 +596,14 @@ void GetHostViewportInfo(GetViewportInfoArgs* XE_RESTRICT args,
         // space, a region previously outside -W...W should end up within it, so
         // the scale should be < 1.
         float axis_extent_rounded = float(axis_extent_int);
-        float inv_axis_extent_rounded =
-            ArchReciprocalRefined(axis_extent_rounded);
-
-        ndc_scale_axis = scale_axis * 2.0f * inv_axis_extent_rounded;
+        // Preserve an exact identity when the guest and host bounds match.
+        // A refined approximate reciprocal can still shift the clip positions
+        // by an ULP, causing point-sampled passes to read neighboring texels.
+        ndc_scale_axis = scale_axis * 2.0f / axis_extent_rounded;
         // Move the origin of the snapped coordinates back to the original one.
         ndc_offset_axis = (float(offset_axis) -
                            (float(axis_0_int) + axis_extent_rounded * 0.5f)) *
-                          2.0f * inv_axis_extent_rounded;
+                          2.0f / axis_extent_rounded;
       } else {
         // Empty viewport (everything outside the viewport scissor).
         ndc_scale_axis = 1.0f;
