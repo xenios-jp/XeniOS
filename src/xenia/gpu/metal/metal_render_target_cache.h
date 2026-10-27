@@ -211,6 +211,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool HasPendingDrawPassTransfers() const {
     return pending_draw_pass_transfer_mask_ != 0;
   }
+  // Whether a draw may prepare its uploads before ending a changed pass with
+  // these transfers queued for the next one: nothing queued, only transfers
+  // into depth, or only color-to-color transfers. Depth-to-color and mixed
+  // queues keep the eager pass boundary.
+  bool PendingDrawPassTransfersPrepareable() const;
   // Whether the queue can be encoded into a pass with this descriptor, checked
   // before the encoder exists so a rejected queue can still be run standalone.
   bool PreflightPendingDrawPassTransfers(

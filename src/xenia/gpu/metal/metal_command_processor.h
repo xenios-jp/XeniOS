@@ -279,6 +279,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // Splits the command buffer when the draw samples memory a pending resolve
   // wrote, then requests the textures the draw uses. Returns false when the
   // draw has to be skipped.
+  bool CanDeferEmptyDrawEncoder();
   bool PrepareDrawTextures(uint32_t used_texture_mask,
                            const RegisterFile& regs);
   // Refreshes the packed float / bool-loop / fetch constant blobs from the

@@ -3325,9 +3325,25 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
   }
 
-  // Begin command buffer if needed (will use cache-provided render targets).
-  BeginCommandBuffer();
-  if (!current_command_buffer_ || !current_render_encoder_) {
+  // Pipeline formats can be derived from the cache without opening a render
+  // encoder. Pending attachment transfers stay queued for the head of the
+  // eventual pass while independent texture and shared-memory uploads are
+  // encoded first. First-use clears still keep the encoder eager. Queries are
+  // opened around guest draws, not around the preceding ownership transfers.
+  if (UseDxilPath() && current_render_encoder_ && render_target_cache_ &&
+      render_target_cache_->PendingDrawPassTransfersPrepareable() &&
+      !render_target_cache_->IsRenderPassDescriptorCompatible(
+          current_render_pass_descriptor_, 1)) {
+    EndRenderEncoder();
+  }
+  const bool initial_draw_encoder_deferred = CanDeferEmptyDrawEncoder();
+  if (initial_draw_encoder_deferred) {
+    EnsureCommandBuffer();
+  } else {
+    BeginCommandBuffer();
+  }
+  if (!current_command_buffer_ ||
+      (!current_render_encoder_ && !initial_draw_encoder_deferred)) {
     static bool spirv_no_command_buffer_logged = false;
     if (!spirv_no_command_buffer_logged) {
       spirv_no_command_buffer_logged = true;
@@ -3343,6 +3359,13 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         IssueDrawDxil(vertex_shader, pixel_shader, primitive_processing_result,
                       primitive_polygonal, memexport_used, pure_memexport_draw,
                       normalized_color_mask, regs);
+    // A pending shader or failed upload may abandon the draw. Preserve the
+    // eager path's clear and ownership writes before the next packet changes
+    // registers or observes EDRAM. Successful draws already opened the pass.
+    if (initial_draw_encoder_deferred && !current_render_encoder_) {
+      BeginCommandBuffer();
+      ok &= current_render_encoder_ != nullptr;
+    }
     return ok;
   }
 
@@ -3515,6 +3538,33 @@ void MetalCommandProcessor::ApplyViewportAndScissor(
     msl_scissor_ = mtl_scissor;
     msl_scissor_valid_ = true;
   }
+}
+
+bool MetalCommandProcessor::CanDeferEmptyDrawEncoder() {
+  if (!UseDxilPath() || current_render_encoder_ || !render_target_cache_) {
+    return false;
+  }
+  // This only derives a descriptor. Clear consumption remains in the final
+  // BeginCommandBuffer, and any pending clear keeps the original ordering.
+  auto* desc = render_target_cache_->GetRenderPassDescriptor(1, true);
+  if (!desc) {
+    return false;
+  }
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    auto* a = desc->colorAttachments()->object(i);
+    if (a->texture() && a->loadAction() == MTL::LoadActionClear) {
+      return false;
+    }
+  }
+  if (desc->depthAttachment()->texture() &&
+      desc->depthAttachment()->loadAction() == MTL::LoadActionClear) {
+    return false;
+  }
+  if (desc->stencilAttachment()->texture() &&
+      desc->stencilAttachment()->loadAction() == MTL::LoadActionClear) {
+    return false;
+  }
+  return true;
 }
 
 bool MetalCommandProcessor::PrepareDrawTextures(uint32_t used_texture_mask,
@@ -6964,7 +7014,7 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
   // setRenderPipelineState validation failures when the pass descriptor differs
   // from the cache snapshot (for instance, after attachment reconfiguration).
   MTL::RenderPassDescriptor* pass_descriptor = current_render_pass_descriptor_;
-  if (!pass_descriptor) {
+  if (!pass_descriptor && !render_target_cache_) {
     pass_descriptor = render_pass_descriptor_;
   }
   if (pass_descriptor) {
