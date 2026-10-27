@@ -109,12 +109,6 @@ class ScopedAutoreleasePool {
   NS::AutoreleasePool* pool_;
 };
 
-#if XE_PLATFORM_IOS
-constexpr size_t kTransferInstanceBufferMaxBytes = 64ull * 1024ull * 1024ull;
-#else
-constexpr size_t kTransferInstanceBufferMaxBytes = 256ull * 1024ull * 1024ull;
-#endif
-
 MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
     MTL::Device* device, const void* metallib_data, size_t metallib_size,
     const char* debug_name, const char* entry_point_name = "entry_xe") {
@@ -554,18 +548,6 @@ struct TransferClearDepthConstants {
 
 }  // namespace
 
-bool MetalRenderTargetCache::IsKey64bpp(RenderTargetKey key) const {
-  // For host texture storage and transfers, gamma-as-unorm16 uses RGBA16Unorm
-  // which is 64bpp. This is needed for correct transfer calculations.
-  // NOTE: EDRAM dump path needs special handling - the EDRAM buffer is still
-  // 32bpp even when host storage is 64bpp. See DumpRenderTargets.
-  return key.Is64bpp() ||
-         (!key.is_depth &&
-          key.GetColorFormat() ==
-              xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA &&
-          gamma_render_target_as_unorm16_);
-}
-
 // MetalRenderTarget implementation
 MetalRenderTargetCache::MetalRenderTarget::~MetalRenderTarget() {
   if (stencil_view_) {
@@ -766,22 +748,6 @@ void MetalRenderTargetCache::Shutdown(bool from_destructor) {
     transfer_dummy_buffer_->release();
     transfer_dummy_buffer_ = nullptr;
   }
-  for (auto& buffer : transfer_instance_buffers_) {
-    if (buffer) {
-      buffer->release();
-      buffer = nullptr;
-    }
-  }
-  for (auto& retired_list : transfer_instance_retired_buffers_) {
-    for (auto* buffer : retired_list) {
-      if (buffer) {
-        buffer->release();
-      }
-    }
-    retired_list.clear();
-  }
-  transfer_instance_buffer_sizes_.fill(0);
-  transfer_instance_buffer_offset_ = 0;
   for (size_t i = 0; i < xe::countof(transfer_dummy_color_float_); ++i) {
     if (transfer_dummy_color_float_[i]) {
       transfer_dummy_color_float_[i]->release();
@@ -1154,11 +1120,10 @@ void MetalRenderTargetCache::BeginFrame() {
       (frame_id_ % uint64_t(::cvars::metal_memory_log_rate)) == 0) {
     XELOGI(
         "Metal mem: frame={} rt={} map={} dummy={} pipelines={} "
-        "transfer_shaders={} inst_buf_sizes=[{}, {}, {}]",
+        "transfer_shaders={}",
         frame_id_, render_target_map_.size(), render_target_map_.size(),
         dummy_color_targets_.size(), transfer_pipelines_.size(),
-        transfer_fragment_functions_.size(), transfer_instance_buffer_sizes_[0],
-        transfer_instance_buffer_sizes_[1], transfer_instance_buffer_sizes_[2]);
+        transfer_fragment_functions_.size());
   }
 }
 
@@ -1188,13 +1153,10 @@ bool MetalRenderTargetCache::Update(
         0) {
       XELOGI(
           "Metal mem: frame={} rt={} map={} dummy={} pipelines={} "
-          "transfer_shaders={} inst_buf_sizes=[{}, {}, {}]",
+          "transfer_shaders={}",
           frame_id_, render_target_map_.size(), render_target_map_.size(),
           dummy_color_targets_.size(), transfer_pipelines_.size(),
-          transfer_fragment_functions_.size(),
-          transfer_instance_buffer_sizes_[0],
-          transfer_instance_buffer_sizes_[1],
-          transfer_instance_buffer_sizes_[2]);
+          transfer_fragment_functions_.size());
     }
   }
 
@@ -1391,7 +1353,7 @@ bool MetalRenderTargetCache::BuildTransferRectanglePlans(
     TransferRectanglePlan plan;
     plan.transfer_index = transfer_index;
     plan.rectangle_count = transfer.GetRectangles(
-        dest_key, IsKey64bpp(dest_key), plan.rectangles.data(), cutout);
+        dest_key, dest_key.Is64bpp(), plan.rectangles.data(), cutout);
     if (!plan.rectangle_count) {
       if (require_all_rectangles) {
         transfer_rectangles_out.clear();
@@ -4358,129 +4320,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       return true;
     };
 
-    auto allocate_instance_buffer = [&](size_t size, MTL::Buffer*& buffer,
-                                        size_t& offset) -> bool {
-      if (!device_) {
-        return false;
-      }
-      uint32_t buffer_index =
-          uint32_t(frame_id_ % kTransferInstanceBufferCount);
-      if (transfer_instance_buffer_frame_id_ != frame_id_) {
-        transfer_instance_buffer_frame_id_ = frame_id_;
-        transfer_instance_buffer_offset_ = 0;
-        auto& retired_buffers =
-            transfer_instance_retired_buffers_[buffer_index];
-        for (auto* retired_buffer : retired_buffers) {
-          if (retired_buffer) {
-            retired_buffer->release();
-          }
-        }
-        retired_buffers.clear();
-      }
-      constexpr size_t kAlignment = 256;
-      size_t aligned_offset =
-          xe::align(transfer_instance_buffer_offset_, size_t(kAlignment));
-      if (size > kTransferInstanceBufferMaxBytes ||
-          aligned_offset > kTransferInstanceBufferMaxBytes ||
-          aligned_offset > (kTransferInstanceBufferMaxBytes - size)) {
-        return false;
-      }
-      size_t required = aligned_offset + size;
-      if (transfer_instance_buffers_[buffer_index] &&
-          transfer_instance_buffer_sizes_[buffer_index] < required &&
-          aligned_offset != 0) {
-        return false;
-      }
-      if (!transfer_instance_buffers_[buffer_index] ||
-          transfer_instance_buffer_sizes_[buffer_index] < required) {
-        size_t new_size = xe::round_up<size_t>(required, 65536);
-        if (new_size > kTransferInstanceBufferMaxBytes) {
-          new_size = kTransferInstanceBufferMaxBytes;
-        }
-        if (new_size < required) {
-          return false;
-        }
-        if (transfer_instance_buffers_[buffer_index]) {
-          transfer_instance_retired_buffers_[buffer_index].push_back(
-              transfer_instance_buffers_[buffer_index]);
-          transfer_instance_buffers_[buffer_index] = nullptr;
-        }
-        MTL::ResourceOptions options = MTL::ResourceStorageModeShared |
-                                       MTL::ResourceCPUCacheModeWriteCombined;
-        MTL::Buffer* new_buffer = device_->newBuffer(new_size, options);
-        if (!new_buffer) {
-          transfer_instance_buffer_sizes_[buffer_index] = 0;
-          return false;
-        }
-        transfer_instance_buffers_[buffer_index] = new_buffer;
-        transfer_instance_buffer_sizes_[buffer_index] = new_size;
-      }
-      buffer = transfer_instance_buffers_[buffer_index];
-      if (!buffer) {
-        return false;
-      }
-      offset = aligned_offset;
-      transfer_instance_buffer_offset_ = aligned_offset + size;
-      return true;
-    };
-
-    auto build_rect_instance_stream =
-        [&](const Transfer::Rectangle* rectangles, uint32_t rectangle_count,
-            MTL::Buffer*& out_buffer, size_t& out_buffer_offset,
-            uint32_t& out_instance_count) -> bool {
-      out_buffer = nullptr;
-      out_buffer_offset = 0;
-      out_instance_count = 0;
-      if (!rectangles || !rectangle_count) {
-        return false;
-      }
-      size_t buffer_size =
-          size_t(rectangle_count) * sizeof(TransferRectInstance);
-      if (!buffer_size) {
-        return false;
-      }
-      MTL::Buffer* buffer = nullptr;
-      size_t buffer_offset = 0;
-      if (!allocate_instance_buffer(buffer_size, buffer, buffer_offset)) {
-        return false;
-      }
-      if (!buffer) {
-        return false;
-      }
-      auto* instances = reinterpret_cast<TransferRectInstance*>(
-          reinterpret_cast<uint8_t*>(buffer->contents()) + buffer_offset);
-      if (!instances) {
-        return false;
-      }
-      uint32_t instance_count = 0;
-      for (uint32_t rect_index = 0; rect_index < rectangle_count;
-           ++rect_index) {
-        uint32_t scaled_x = 0;
-        uint32_t scaled_y = 0;
-        uint32_t scaled_width = 0;
-        uint32_t scaled_height = 0;
-        if (!get_scaled_rect(rectangles[rect_index], scaled_x, scaled_y,
-                             scaled_width, scaled_height)) {
-          continue;
-        }
-        if (!scaled_width || !scaled_height) {
-          continue;
-        }
-        TransferRectInstance& instance = instances[instance_count++];
-        instance.origin_x = float(scaled_x);
-        instance.origin_y = float(scaled_y);
-        instance.size_x = float(scaled_width);
-        instance.size_y = float(scaled_height);
-      }
-      if (!instance_count) {
-        return false;
-      }
-      out_buffer = buffer;
-      out_buffer_offset = buffer_offset;
-      out_instance_count = instance_count;
-      return true;
-    };
-
     std::vector<Transfer> filtered_transfers;
     bool used_blit = false;
     MTL::BlitCommandEncoder* blit_encoder = nullptr;
@@ -4511,8 +4350,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
 
-        bool base_tiles_match = source_key.base_tiles == dest_key.base_tiles;
-        if (dest_is_depth && !base_tiles_match) {
+        if (source_key.base_tiles != dest_key.base_tiles ||
+            source_key.next_period != dest_key.next_period) {
           return false;
         }
 
@@ -4538,9 +4377,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         }
 
         Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-        uint32_t rectangle_count =
-            transfer.GetRectangles(dest_key, IsKey64bpp(dest_key), rectangles,
-                                   resolve_clear_rectangle);
+        uint32_t rectangle_count = transfer.GetRectangles(
+            dest_key, dest_key.Is64bpp(), rectangles, resolve_clear_rectangle);
         if (!rectangle_count) {
           return false;
         }
@@ -4550,151 +4388,20 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
 
-        if (base_tiles_match || dest_is_depth) {
-          for (uint32_t rect_index = 0; rect_index < rectangle_count;
-               ++rect_index) {
-            uint32_t scaled_x = 0;
-            uint32_t scaled_y = 0;
-            uint32_t scaled_width = 0;
-            uint32_t scaled_height = 0;
-            if (!get_scaled_rect(rectangles[rect_index], scaled_x, scaled_y,
-                                 scaled_width, scaled_height)) {
-              continue;
-            }
-            MTL::Origin origin = MTL::Origin::Make(scaled_x, scaled_y, 0);
-            MTL::Size size = MTL::Size::Make(scaled_width, scaled_height, 1);
-            blit->copyFromTexture(source_texture, 0, 0, origin, size,
-                                  dest_texture, 0, 0, origin);
+        for (uint32_t rect_index = 0; rect_index < rectangle_count;
+             ++rect_index) {
+          uint32_t scaled_x = 0;
+          uint32_t scaled_y = 0;
+          uint32_t scaled_width = 0;
+          uint32_t scaled_height = 0;
+          if (!get_scaled_rect(rectangles[rect_index], scaled_x, scaled_y,
+                               scaled_width, scaled_height)) {
+            continue;
           }
-        } else {
-          // Base-tile offset blit (color only, non-MSAA, tile-aligned).
-          uint32_t pitch_tiles = dest_key.pitch_tiles_at_32bpp;
-          if (!pitch_tiles) {
-            return false;
-          }
-          uint32_t tile_width_pixels =
-              tile_width_samples >>
-              ((IsKey64bpp(dest_key) ? 1u : 0u) +
-               uint32_t(dest_key.msaa_samples >= xenos::MsaaSamples::k4X));
-          uint32_t tile_height_pixels =
-              tile_height_samples >>
-              uint32_t(dest_key.msaa_samples >= xenos::MsaaSamples::k2X);
-          if (!tile_width_pixels || !tile_height_pixels) {
-            return false;
-          }
-          uint32_t delta_tiles = (dest_key.base_tiles - source_key.base_tiles) &
-                                 (xenos::kEdramTileCount - 1u);
-          uint32_t delta_rows = delta_tiles / pitch_tiles;
-          uint32_t delta_x = delta_tiles % pitch_tiles;
-          uint32_t total_rows =
-              (xenos::kEdramTileCount + pitch_tiles - 1u) / pitch_tiles;
-
-          struct ScaledRect {
-            uint32_t x;
-            uint32_t y;
-            uint32_t width;
-            uint32_t height;
-          };
-          std::vector<ScaledRect> scaled_rects;
-          scaled_rects.reserve(rectangle_count);
-          for (uint32_t rect_index = 0; rect_index < rectangle_count;
-               ++rect_index) {
-            uint32_t scaled_x = 0;
-            uint32_t scaled_y = 0;
-            uint32_t scaled_width = 0;
-            uint32_t scaled_height = 0;
-            if (!get_scaled_rect(rectangles[rect_index], scaled_x, scaled_y,
-                                 scaled_width, scaled_height)) {
-              continue;
-            }
-            if ((scaled_x % tile_width_pixels) ||
-                (scaled_y % tile_height_pixels) ||
-                (scaled_width % tile_width_pixels) ||
-                (scaled_height % tile_height_pixels)) {
-              return false;
-            }
-            if (!scaled_width || !scaled_height) {
-              continue;
-            }
-            scaled_rects.push_back(
-                {scaled_x, scaled_y, scaled_width, scaled_height});
-          }
-          if (scaled_rects.empty()) {
-            return false;
-          }
-
-          for (const auto& rect : scaled_rects) {
-            uint32_t tile_x = rect.x / tile_width_pixels;
-            uint32_t tile_y = rect.y / tile_height_pixels;
-            uint32_t tiles_w = rect.width / tile_width_pixels;
-            uint32_t tiles_h = rect.height / tile_height_pixels;
-            if (!tiles_w || !tiles_h) {
-              continue;
-            }
-
-            uint32_t source_tile_x_base = tile_x + delta_x;
-            uint32_t source_tile_x = source_tile_x_base % pitch_tiles;
-            uint32_t source_tile_y =
-                tile_y + delta_rows + (source_tile_x_base / pitch_tiles);
-            if (source_tile_y >= total_rows) {
-              source_tile_y %= total_rows;
-            }
-
-            uint32_t rows_before_wrap =
-                std::min(tiles_h, total_rows - source_tile_y);
-            uint32_t rows_after_wrap = tiles_h - rows_before_wrap;
-
-            uint32_t tiles_before_wrap_x =
-                (source_tile_x + tiles_w <= pitch_tiles)
-                    ? tiles_w
-                    : (pitch_tiles - source_tile_x);
-            uint32_t tiles_after_wrap_x = tiles_w - tiles_before_wrap_x;
-
-            for (uint32_t wrap_y = 0; wrap_y <= (rows_after_wrap ? 1u : 0u);
-                 ++wrap_y) {
-              uint32_t y_offset_tiles = wrap_y ? rows_before_wrap : 0u;
-              uint32_t rows = wrap_y ? rows_after_wrap : rows_before_wrap;
-              if (!rows) {
-                continue;
-              }
-              uint32_t dest_y_pixels =
-                  rect.y + y_offset_tiles * tile_height_pixels;
-              uint32_t source_y_tiles = wrap_y ? 0u : source_tile_y;
-              uint32_t source_y_pixels = source_y_tiles * tile_height_pixels;
-              uint32_t height_pixels = rows * tile_height_pixels;
-
-              // X segment 0.
-              if (tiles_before_wrap_x) {
-                uint32_t dest_x_pixels = rect.x;
-                uint32_t source_x_pixels = source_tile_x * tile_width_pixels;
-                uint32_t width_pixels = tiles_before_wrap_x * tile_width_pixels;
-                MTL::Origin src_origin =
-                    MTL::Origin::Make(source_x_pixels, source_y_pixels, 0);
-                MTL::Origin dst_origin =
-                    MTL::Origin::Make(dest_x_pixels, dest_y_pixels, 0);
-                MTL::Size size =
-                    MTL::Size::Make(width_pixels, height_pixels, 1);
-                blit->copyFromTexture(source_texture, 0, 0, src_origin, size,
-                                      dest_texture, 0, 0, dst_origin);
-              }
-
-              // X segment 1 (wrap).
-              if (tiles_after_wrap_x) {
-                uint32_t dest_x_pixels =
-                    rect.x + tiles_before_wrap_x * tile_width_pixels;
-                uint32_t source_x_pixels = 0;
-                uint32_t width_pixels = tiles_after_wrap_x * tile_width_pixels;
-                MTL::Origin src_origin =
-                    MTL::Origin::Make(source_x_pixels, source_y_pixels, 0);
-                MTL::Origin dst_origin =
-                    MTL::Origin::Make(dest_x_pixels, dest_y_pixels, 0);
-                MTL::Size size =
-                    MTL::Size::Make(width_pixels, height_pixels, 1);
-                blit->copyFromTexture(source_texture, 0, 0, src_origin, size,
-                                      dest_texture, 0, 0, dst_origin);
-              }
-            }
-          }
+          MTL::Origin origin = MTL::Origin::Make(scaled_x, scaled_y, 0);
+          MTL::Size size = MTL::Size::Make(scaled_width, scaled_height, 1);
+          blit->copyFromTexture(source_texture, 0, 0, origin, size,
+                                dest_texture, 0, 0, origin);
         }
 
         used_blit = true;
@@ -4737,9 +4444,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       }
       for (const Transfer& transfer : transfers_for_shaders) {
         Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-        uint32_t rectangle_count =
-            transfer.GetRectangles(dest_key, IsKey64bpp(dest_key), rectangles,
-                                   resolve_clear_rectangle);
+        uint32_t rectangle_count = transfer.GetRectangles(
+            dest_key, dest_key.Is64bpp(), rectangles, resolve_clear_rectangle);
         if (rectangle_count != 1 || !is_full_target_rectangle(rectangles[0])) {
           return false;
         }
@@ -5023,7 +4729,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               Transfer::Rectangle
                   rectangles[Transfer::kMaxRectanglesWithCutout];
               uint32_t rectangle_count =
-                  transfer.GetRectangles(dest_key, IsKey64bpp(dest_key),
+                  transfer.GetRectangles(dest_key, dest_key.Is64bpp(),
                                          rectangles, resolve_clear_rectangle);
               for (uint32_t rect_index = 0; rect_index < rectangle_count;
                    ++rect_index) {
@@ -5048,11 +4754,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         uint32_t last_transfer_stencil_reference = 0;
         bool transfer_vertex_constants_valid = false;
         TransferVertexConstants last_transfer_vertex_constants = {};
-        enum class TransferVertexSlot1Binding { kNone, kBuffer, kBytes };
-        TransferVertexSlot1Binding last_transfer_vertex_slot_1_binding =
-            TransferVertexSlot1Binding::kNone;
-        MTL::Buffer* last_transfer_vertex_buffer_1 = nullptr;
-        size_t last_transfer_vertex_buffer_1_offset = 0;
         bool last_transfer_vertex_bytes_1_valid = false;
         TransferRectInstance last_transfer_vertex_bytes_1 = {};
         auto bind_transfer_pipeline = [&](MTL::RenderPipelineState* pipeline) {
@@ -5346,36 +5047,15 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             last_transfer_scissor_valid = true;
           }
         };
-        auto bind_transfer_vertex_buffer_1 = [&](MTL::Buffer* buffer,
-                                                 size_t offset) {
-          if (last_transfer_vertex_slot_1_binding !=
-                  TransferVertexSlot1Binding::kBuffer ||
-              last_transfer_vertex_buffer_1 != buffer ||
-              last_transfer_vertex_buffer_1_offset != offset) {
-            encoder->setVertexBuffer(buffer, offset, 1);
-            mark_encoder_mutation(kDrawPassTransferEncoderMutationVertexSlot1);
-            last_transfer_vertex_slot_1_binding =
-                TransferVertexSlot1Binding::kBuffer;
-            last_transfer_vertex_buffer_1 = buffer;
-            last_transfer_vertex_buffer_1_offset = offset;
-            last_transfer_vertex_bytes_1_valid = false;
-          }
-        };
         auto bind_transfer_vertex_bytes_1 =
             [&](const TransferRectInstance& rect_instance) {
-              if (last_transfer_vertex_slot_1_binding !=
-                      TransferVertexSlot1Binding::kBytes ||
-                  !last_transfer_vertex_bytes_1_valid ||
+              if (!last_transfer_vertex_bytes_1_valid ||
                   std::memcmp(&last_transfer_vertex_bytes_1, &rect_instance,
                               sizeof(rect_instance)) != 0) {
                 encoder->setVertexBytes(&rect_instance, sizeof(rect_instance),
                                         1);
                 mark_encoder_mutation(
                     kDrawPassTransferEncoderMutationVertexSlot1);
-                last_transfer_vertex_slot_1_binding =
-                    TransferVertexSlot1Binding::kBytes;
-                last_transfer_vertex_buffer_1 = nullptr;
-                last_transfer_vertex_buffer_1_offset = 0;
                 last_transfer_vertex_bytes_1 = rect_instance;
                 last_transfer_vertex_bytes_1_valid = true;
               }
@@ -5392,10 +5072,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                   1);
               mark_encoder_mutation(
                   kDrawPassTransferEncoderMutationVertexSlot1);
-              last_transfer_vertex_slot_1_binding =
-                  TransferVertexSlot1Binding::kBytes;
-              last_transfer_vertex_buffer_1 = nullptr;
-              last_transfer_vertex_buffer_1_offset = 0;
               last_transfer_vertex_bytes_1_valid = false;
             };
         auto set_full_transfer_viewport_scissor = [&]() {
@@ -5439,7 +5115,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
             uint32_t rectangle_count =
                 transfer_invocations_[merged_index].transfer.GetRectangles(
-                    dest_key, IsKey64bpp(dest_key), rectangles,
+                    dest_key, dest_key.Is64bpp(), rectangles,
                     resolve_clear_rectangle);
             for (uint32_t rect_index = 0; rect_index < rectangle_count;
                  ++rect_index) {
@@ -5579,38 +5255,26 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
           const uint32_t rectangle_count =
               uint32_t(merged_transfer_rectangles.size());
-
-          MTL::Buffer* rect_instance_buffer = nullptr;
-          size_t rect_instance_buffer_offset = 0;
-          uint32_t rect_instance_count = 0;
-          std::vector<TransferRectInstance> rect_instance_fallback;
-          if (rectangle_count > 1) {
-            build_rect_instance_stream(merged_transfer_rectangles.data(),
-                                       rectangle_count, rect_instance_buffer,
-                                       rect_instance_buffer_offset,
-                                       rect_instance_count);
-          }
-          if (!rect_instance_buffer || !rect_instance_count) {
-            rect_instance_fallback.reserve(rectangle_count);
-            for (uint32_t rect_index = 0; rect_index < rectangle_count;
-                 ++rect_index) {
-              uint32_t scaled_x = 0;
-              uint32_t scaled_y = 0;
-              uint32_t scaled_width = 0;
-              uint32_t scaled_height = 0;
-              if (!get_scaled_rect(merged_transfer_rectangles[rect_index],
-                                   scaled_x, scaled_y, scaled_width,
-                                   scaled_height) ||
-                  !scaled_width || !scaled_height) {
-                continue;
-              }
-              TransferRectInstance rect_instance = {};
-              rect_instance.origin_x = float(scaled_x);
-              rect_instance.origin_y = float(scaled_y);
-              rect_instance.size_x = float(scaled_width);
-              rect_instance.size_y = float(scaled_height);
-              rect_instance_fallback.push_back(rect_instance);
+          std::vector<TransferRectInstance> rect_instance_list;
+          rect_instance_list.reserve(rectangle_count);
+          for (uint32_t rect_index = 0; rect_index < rectangle_count;
+               ++rect_index) {
+            uint32_t scaled_x = 0;
+            uint32_t scaled_y = 0;
+            uint32_t scaled_width = 0;
+            uint32_t scaled_height = 0;
+            if (!get_scaled_rect(merged_transfer_rectangles[rect_index],
+                                 scaled_x, scaled_y, scaled_width,
+                                 scaled_height) ||
+                !scaled_width || !scaled_height) {
+              continue;
             }
+            TransferRectInstance rect_instance = {};
+            rect_instance.origin_x = float(scaled_x);
+            rect_instance.origin_y = float(scaled_y);
+            rect_instance.size_x = float(scaled_width);
+            rect_instance.size_y = float(scaled_height);
+            rect_instance_list.push_back(rect_instance);
           }
 
           MTL::RenderPipelineState* pipeline = GetOrCreateTransferPipelines(
@@ -5632,20 +5296,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                   : 1;
 
           auto draw_transfer_rects = [&]() {
-            if (rect_instance_buffer && rect_instance_count) {
-              set_full_transfer_viewport_scissor();
-              bind_transfer_vertex_buffer_1(rect_instance_buffer,
-                                            rect_instance_buffer_offset);
-              encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip,
-                                      NS::UInteger(0), NS::UInteger(4),
-                                      NS::UInteger(rect_instance_count));
-            } else if (!rect_instance_fallback.empty()) {
+            if (!rect_instance_list.empty()) {
               set_full_transfer_viewport_scissor();
               constexpr uint32_t kTransferRectInlineBatchMax = 240;
               const TransferRectInstance* rect_instances =
-                  rect_instance_fallback.data();
+                  rect_instance_list.data();
               uint32_t rect_instances_remaining =
-                  uint32_t(rect_instance_fallback.size());
+                  uint32_t(rect_instance_list.size());
               while (rect_instances_remaining) {
                 uint32_t batch_count = std::min(rect_instances_remaining,
                                                 kTransferRectInlineBatchMax);
