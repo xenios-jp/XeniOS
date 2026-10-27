@@ -383,6 +383,27 @@ void Processor::DumpTraceCounts(FILE* f) {
   DumpSequences(f);
 }
 
+std::vector<uint64_t> Processor::GetTraceCounts(uint32_t address) {
+  std::lock_guard<std::mutex> lock(trace_counts_mutex_);
+  std::vector<uint64_t> counts;
+  for (auto& region : trace_counts_regions_) {
+    if (region.start_address != address) {
+      continue;
+    }
+    counts.resize(region.count);
+    for (size_t i = 0; i < region.count; ++i) {
+      uint64_t total = region.retired[i];
+      for (auto& arena : trace_counts_arenas_) {
+        total +=
+            reinterpret_cast<const uint64_t*>(arena.base + region.offset)[i];
+      }
+      counts[i] = total;
+    }
+    break;
+  }
+  return counts;
+}
+
 // Which backend sequence the emitted code actually spends its executions in.
 // Every key maps to exactly one selection in the backend's sequence table, so
 // the top rows name the emitters worth optimizing for this title.
@@ -391,6 +412,8 @@ void Processor::DumpSequences(FILE* f) {
     uint64_t executed = 0;
     uint64_t occurrences = 0;
     uint64_t host_bytes = 0;
+    // Host bytes weighted by how often each occurrence ran.
+    uint64_t executed_bytes = 0;
   };
   std::map<uint64_t, SequenceRow> sequences;
   std::vector<uint64_t> totals;
@@ -416,6 +439,7 @@ void Processor::DumpSequences(FILE* f) {
       row.executed += totals[sample.guest_index];
       row.occurrences += 1;
       row.host_bytes += sample.host_bytes;
+      row.executed_bytes += totals[sample.guest_index] * sample.host_bytes;
       grand_total += totals[sample.guest_index];
     }
   }
@@ -431,17 +455,19 @@ void Processor::DumpSequences(FILE* f) {
 
   std::fprintf(f, "\n\nguestsequences,%llu\n",
                static_cast<unsigned long long>(grand_total));
-  std::fprintf(f, "key,sequence,executed,share,occurrences,avgbytes\n");
+  std::fprintf(f,
+               "key,sequence,executed,share,occurrences,avgbytes,"
+               "executedbytes\n");
   for (auto& row : rows) {
     std::string label =
         backend_ ? backend_->FormatSequenceKey(row.first) : std::string();
-    std::fprintf(
-        f, "\"%016llX\",\"%s\",%llu,%.6f,%llu,%.2f\n",
-        static_cast<unsigned long long>(row.first), label.c_str(),
-        static_cast<unsigned long long>(row.second.executed),
-        double(row.second.executed) / double(grand_total),
-        static_cast<unsigned long long>(row.second.occurrences),
-        double(row.second.host_bytes) / double(row.second.occurrences));
+    std::fprintf(f, "\"%016llX\",\"%s\",%llu,%.6f,%llu,%.2f,%llu\n",
+                 static_cast<unsigned long long>(row.first), label.c_str(),
+                 static_cast<unsigned long long>(row.second.executed),
+                 double(row.second.executed) / double(grand_total),
+                 static_cast<unsigned long long>(row.second.occurrences),
+                 double(row.second.host_bytes) / double(row.second.occurrences),
+                 static_cast<unsigned long long>(row.second.executed_bytes));
   }
 }
 
