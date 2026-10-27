@@ -37,6 +37,9 @@ void MetalDxilBinder::ResetUploadCaches() {
   for (auto& cache : constant_slices_) {
     cache.Reset();
   }
+  for (auto& cache : stage_index_slices_) {
+    cache.Reset();
+  }
   descriptor_heap_slices_valid_ = false;
   cached_texture_heap_slice_ = {};
   cached_sampler_heap_slice_ = {};
@@ -207,17 +210,22 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     const StageRange& range = stage_ranges[stage];
     size_t entry_count =
         std::max(size_t(range.texture_count + range.sampler_count), size_t(1));
-    stage_indices_.assign(entry_count * 2, 0);
-    for (uint32_t i = 0; i < range.texture_count; ++i) {
-      stage_indices_[size_t(i) * 2] = range.texture_start + i;
-    }
-    for (uint32_t j = 0; j < range.sampler_count; ++j) {
-      stage_indices_[(size_t(range.texture_count) + j) * 2 + 1] =
-          range.sampler_start + j;
-    }
-    if (!Upload(stage_indices_.data(),
-                uint32_t(stage_indices_.size() * sizeof(uint32_t)),
-                stage_index_buffers[stage])) {
+    const uint32_t byte_count = uint32_t(entry_count * 2 * sizeof(uint32_t));
+    const StageIndexKey key = {range.texture_start, range.texture_count,
+                               range.sampler_start, range.sampler_count};
+    auto upload_indices = [&](Slice& out) {
+      stage_indices_.assign(entry_count * 2, 0);
+      for (uint32_t i = 0; i < range.texture_count; ++i) {
+        stage_indices_[size_t(i) * 2] = range.texture_start + i;
+      }
+      for (uint32_t j = 0; j < range.sampler_count; ++j) {
+        stage_indices_[(size_t(range.texture_count) + j) * 2 + 1] =
+            range.sampler_start + j;
+      }
+      return Upload(stage_indices_.data(), byte_count, out);
+    };
+    if (!stage_index_slices_[stage].GetOrUpload(key, upload_indices,
+                                                stage_index_buffers[stage])) {
       XELOGE("MetalDxilBinder: failed to allocate a texture index buffer");
       return false;
     }

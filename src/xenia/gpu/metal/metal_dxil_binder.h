@@ -85,6 +85,11 @@ class MetalDxilBinder {
   // whenever the contents change.
   using ConstantKey = std::pair<uint32_t, uint64_t>;
   std::array<UploadCache<Slice, ConstantKey>, kConstantCount> constant_slices_;
+  // Complete heap starts and binding counts for one stage. Equal keys imply
+  // equal index-buffer bytes, including the all-zero no-binding placeholder.
+  using StageIndexKey = std::array<uint32_t, 4>;
+  std::array<UploadCache<Slice, StageIndexKey>, kStageCount>
+      stage_index_slices_;
   bool descriptor_heap_slices_valid_ = false;
   std::vector<IRDescriptorTableEntry> cached_texture_heap_entries_;
   std::vector<IRDescriptorTableEntry> cached_sampler_heap_entries_;
