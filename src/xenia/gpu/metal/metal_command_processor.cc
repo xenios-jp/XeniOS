@@ -65,6 +65,7 @@
 DECLARE_bool(precise_interpolation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(submit_on_primary_buffer_end);
+
 DEFINE_int32(
     metal_draw_ring_count, 128,
     "Metal per-command-buffer draw ring size (descriptor-table pages). "
@@ -1123,6 +1124,141 @@ void MetalCommandProcessor::ApplyColorAttachmentState(
   }
 }
 
+MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
+    MTL::Library* library, const std::string& function_name,
+    const uint32_t* states, uint32_t binding_count, std::string* error_out) {
+  if (!library || function_name.empty()) {
+    if (error_out) {
+      *error_out = "missing shader library";
+    }
+    return nullptr;
+  }
+  SpecializedFunctionKey key{
+      uintptr_t(library), function_name,
+      std::vector<uint32_t>(states, states + 4 * binding_count)};
+  {
+    std::lock_guard<std::mutex> lock(specialized_functions_mutex_);
+    auto it = specialized_functions_.find(key);
+    if (it != specialized_functions_.end()) {
+      return it->second;
+    }
+  }
+  // The shader only declares the constants of the bindings it reads, and Metal
+  // ignores values for constants a function doesn't declare.
+  MTL::FunctionConstantValues* values =
+      MTL::FunctionConstantValues::alloc()->init();
+  for (uint32_t i = 0; i < binding_count; ++i) {
+    values->setConstantValue(
+        &states[4 * i], MTL::DataTypeUInt4,
+        NS::String::string(fmt::format("MSC_FC_{}", i).c_str(),
+                           NS::UTF8StringEncoding));
+  }
+  NS::Error* error = nullptr;
+  MTL::Function* function = library->newFunction(
+      NS::String::string(function_name.c_str(), NS::UTF8StringEncoding), values,
+      &error);
+  values->release();
+  if (!function) {
+    if (error_out) {
+      *error_out = error && error->localizedDescription()
+                       ? error->localizedDescription()->utf8String()
+                       : "fetch state specialization failed";
+    }
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(specialized_functions_mutex_);
+  auto [it, inserted] =
+      specialized_functions_.emplace(std::move(key), function);
+  if (!inserted) {
+    // Another compile thread specialized it meanwhile.
+    function->release();
+  }
+  return it->second;
+}
+
+MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
+    const PipelineCompileRequest& request, std::string* error_out) {
+  if (!request.vertex_fetch_states_specialized) {
+    return request.vertex_function;
+  }
+  uint32_t states[SpirvShaderTranslator::kFetchStateBindingCount * 4] = {};
+  std::memcpy(states, request.description.vertex_fetch_endians,
+              sizeof(request.description.vertex_fetch_endians));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateBoolConstantsBinding * 4],
+      request.description.vertex_bool_constants,
+      sizeof(request.description.vertex_bool_constants));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateLoopConstantsBinding * 4],
+      request.description.vertex_loop_constants,
+      sizeof(request.description.vertex_loop_constants));
+  return GetSpecializedFunction(
+      request.vertex_library, request.vertex_function_name, states,
+      SpirvShaderTranslator::kFetchStateBindingCount, error_out);
+}
+
+MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
+    const PipelineCompileRequest& request, std::string* error_out) {
+  if (!request.fragment_fetch_states_specialized) {
+    return request.fragment_function;
+  }
+  uint32_t states[SpirvShaderTranslator::kFetchStateBindingCount * 4] = {};
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateBoolConstantsBinding * 4],
+      request.description.pixel_bool_constants,
+      sizeof(request.description.pixel_bool_constants));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateLoopConstantsBinding * 4],
+      request.description.pixel_loop_constants,
+      sizeof(request.description.pixel_loop_constants));
+  return GetSpecializedFunction(
+      request.fragment_library, request.fragment_function_name, states,
+      SpirvShaderTranslator::kFetchStateBindingCount, error_out);
+}
+
+bool MetalCommandProcessor::UsesVertexFetchStateFunctionConstants(
+    const Shader::Translation* translation) const {
+  return spirv_translator_features_.fetch_state_function_constants &&
+         translation &&
+         !Shader::IsHostVertexShaderTypeDomain(
+             SpirvShaderTranslator::Modification(translation->modification())
+                 .vertex.host_vertex_shader_type) &&
+         (!translation->shader().vertex_bindings().empty() ||
+          UsesPixelFetchStateFunctionConstants(translation));
+}
+
+bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
+    const Shader::Translation* translation) const {
+  if (!spirv_translator_features_.fetch_state_function_constants ||
+      !translation) {
+    return false;
+  }
+  const auto& constants = translation->shader().constant_register_map();
+  return constants.loop_bitmap ||
+         std::any_of(std::begin(constants.bool_bitmap),
+                     std::end(constants.bool_bitmap),
+                     [](uint32_t bits) { return bits != 0; });
+}
+
+void MetalCommandProcessor::SetPipelineFunctionConstants(
+    PipelineCompileRequest& request, const Shader::Translation* vertex,
+    const Shader::Translation* pixel) {
+  request.vertex_fetch_states_specialized =
+      UsesVertexFetchStateFunctionConstants(vertex);
+  request.fragment_fetch_states_specialized =
+      UsesPixelFetchStateFunctionConstants(pixel);
+  if (request.vertex_fetch_states_specialized) {
+    auto* translation = static_cast<const DxilShader::DxilTranslation*>(vertex);
+    request.vertex_library = translation->metal_library();
+    request.vertex_function_name = translation->entry_point_name();
+  }
+  if (request.fragment_fetch_states_specialized) {
+    auto* translation = static_cast<const DxilShader::DxilTranslation*>(pixel);
+    request.fragment_library = translation->metal_library();
+    request.fragment_function_name = translation->entry_point_name();
+  }
+}
+
 MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
     const PipelineCompileRequest& request, std::string* error_out) {
   if (error_out) {
@@ -1136,7 +1272,9 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
     case PipelineKind::kRender:
       break;
   }
-  if (!request.vertex_function) {
+  MTL::Function* vertex_function =
+      GetPipelineVertexFunction(request, error_out);
+  if (!vertex_function) {
     if (error_out) {
       *error_out = "missing vertex shader function";
     }
@@ -1145,9 +1283,15 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
 
   MTL::RenderPipelineDescriptor* desc =
       MTL::RenderPipelineDescriptor::alloc()->init();
-  desc->setVertexFunction(request.vertex_function);
-  if (request.fragment_function) {
-    desc->setFragmentFunction(request.fragment_function);
+  desc->setVertexFunction(vertex_function);
+  MTL::Function* fragment_function =
+      GetPipelineFragmentFunction(request, error_out);
+  if (request.fragment_fetch_states_specialized && !fragment_function) {
+    desc->release();
+    return nullptr;
+  }
+  if (fragment_function) {
+    desc->setFragmentFunction(fragment_function);
   }
 
   ApplyColorAttachmentState(desc->colorAttachments(), request);
@@ -1293,31 +1437,100 @@ MetalCommandProcessor::CreateDxilTessellationPipelineState(
   // native alpha-to-coverage stays off.
   desc->setAlphaToCoverageEnabled(false);
 
-  IRGeometryTessellationEmulationPipelineDescriptor ir_desc = {};
+  // Linked the way IRRuntimeNewGeometryTessellationEmulationPipeline does, but
+  // with a fragment function rather than a library and a name, as a pixel
+  // shader specialized on bool and loop constants needs function constants.
+  MTL::Function* fragment_function =
+      GetPipelineFragmentFunction(request, error_out);
+  if (request.fragment_fetch_states_specialized && !fragment_function) {
+    desc->release();
+    return nullptr;
+  }
+  IRRuntimeTessellationPipelineConfig config =
+      BuildTessellationPipelineConfig(shaders->vertex.reflection, hull, domain);
+  auto new_function = [](MTL::Library* library, const std::string& name,
+                         MTL::FunctionConstantValues* values,
+                         NS::Error** error) -> MTL::Function* {
+    if (!library) {
+      return nullptr;
+    }
+    NS::String* ns_name =
+        NS::String::string(name.c_str(), NS::UTF8StringEncoding);
+    return values ? library->newFunction(ns_name, values, error)
+                  : library->newFunction(ns_name);
+  };
+  NS::Error* error = nullptr;
+  MTL::FunctionConstantValues* vertex_values =
+      MTL::FunctionConstantValues::alloc()->init();
+  bool tessellation_enabled = true;
+  vertex_values->setConstantValue(&tessellation_enabled, MTL::DataTypeBool,
+                                  MTLSTR("tessellationEnabled"));
+  MTL::FunctionConstantValues* hull_values =
+      MTL::FunctionConstantValues::alloc()->init();
+  hull_values->setConstantValue(&config.vsOutputSizeInBytes, MTL::DataTypeInt,
+                                MTLSTR("vertex_shader_output_size_fc"));
+  hull_values->setConstantValue(&config.hsMaxTessellationFactor,
+                                MTL::DataTypeFloat,
+                                MTLSTR("max_tessellation_factor_fc"));
   // The guest fetches vertices from shared memory, so the host vertex shader
   // takes no attributes, but the pipeline still links a stage-in function.
-  ir_desc.stageInLibrary = shaders->stage_in_library;
-  ir_desc.vertexLibrary = shaders->vertex.library;
-  ir_desc.vertexFunctionName = shaders->vertex.function_name.c_str();
-  ir_desc.hullLibrary = shaders->hull.library;
-  ir_desc.hullFunctionName = shaders->hull.function_name.c_str();
-  ir_desc.domainLibrary = shaders->domain.library;
-  ir_desc.domainFunctionName = shaders->domain.function_name.c_str();
-  // MSC synthesizes the passthrough. The guest has no geometry shader.
-  ir_desc.geometryLibrary = nullptr;
-  ir_desc.geometryFunctionName = geometry_function;
-  ir_desc.fragmentLibrary = request.fragment_library;
-  ir_desc.fragmentFunctionName = request.fragment_function_name.empty()
-                                     ? nullptr
-                                     : request.fragment_function_name.c_str();
-  ir_desc.basePipelineDescriptor = desc;
-  ir_desc.pipelineConfig =
-      BuildTessellationPipelineConfig(shaders->vertex.reflection, hull, domain);
+  MTL::Function* stage_in_function =
+      new_function(shaders->stage_in_library, "irconverter_stage_in_shader",
+                   nullptr, nullptr);
+  // The vertex stage is emulated in the object function.
+  MTL::Function* object_function = new_function(
+      shaders->vertex.library,
+      shaders->vertex.function_name + ".dxil_irconverter_object_shader",
+      vertex_values, &error);
+  // MSC compiles the hull stage into the control point and patch constant
+  // phases, and the tessellator.
+  MTL::Function* hull_function = new_function(
+      shaders->hull.library, "irconverter_hull_shader", hull_values, &error);
+  MTL::Function* tessellator_function = new_function(
+      shaders->hull.library, "irconverter_tessellator", hull_values, &error);
+  MTL::Function* domain_function =
+      new_function(shaders->domain.library, "irconverter_dxil_domain_shader",
+                   nullptr, nullptr);
+  // The guest has no geometry shader. MSC synthesizes the passthrough that
+  // the mesh function emulates the geometry stage with.
+  MTL::Function* mesh_function = new_function(
+      shaders->domain.library, geometry_function, nullptr, nullptr);
+  vertex_values->release();
+  hull_values->release();
 
-  NS::Error* error = nullptr;
-  MTL::RenderPipelineState* pipeline =
-      IRRuntimeNewGeometryTessellationEmulationPipeline(device_, &ir_desc,
-                                                        &error);
+  MTL::RenderPipelineState* pipeline = nullptr;
+  if (stage_in_function && object_function && hull_function &&
+      tessellator_function && domain_function && mesh_function) {
+    desc->setObjectFunction(object_function);
+    desc->setMeshFunction(mesh_function);
+    desc->setFragmentFunction(fragment_function);
+    const NS::Object* object_linked[] = {stage_in_function, hull_function};
+    MTL::LinkedFunctions* object_linked_functions =
+        MTL::LinkedFunctions::alloc()->init();
+    object_linked_functions->setFunctions(
+        NS::Array::array(object_linked, std::size(object_linked)));
+    desc->setObjectLinkedFunctions(object_linked_functions);
+    object_linked_functions->release();
+    const NS::Object* mesh_linked[] = {tessellator_function, domain_function};
+    MTL::LinkedFunctions* mesh_linked_functions =
+        MTL::LinkedFunctions::alloc()->init();
+    mesh_linked_functions->setFunctions(
+        NS::Array::array(mesh_linked, std::size(mesh_linked)));
+    desc->setMeshLinkedFunctions(mesh_linked_functions);
+    mesh_linked_functions->release();
+    error = nullptr;
+    pipeline = device_->newRenderPipelineState(desc, MTL::PipelineOptionNone,
+                                               nullptr, &error);
+  } else if (error_out && !error) {
+    *error_out = "missing tessellation stage function";
+  }
+  for (MTL::Function* function :
+       {stage_in_function, object_function, hull_function, tessellator_function,
+        domain_function, mesh_function}) {
+    if (function) {
+      function->release();
+    }
+  }
   desc->release();
   if (!pipeline && error_out && error) {
     NS::String* description = error->localizedDescription();
@@ -2141,6 +2354,7 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   // Both guest shader paths consume this translator's SPIR-V. Enable all
   // features as a baseline, then disable what Metal doesn't need.
   SpirvShaderTranslator::Features spirv_features(true);
+  spirv_features.fetch_state_function_constants = UseDxilPath();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
   // Barycentric interpolation not needed for current Metal path.
@@ -2333,6 +2547,13 @@ void MetalCommandProcessor::ShutdownContext() {
     }
   }
   async_pipeline_cache_.clear();
+  {
+    std::lock_guard<std::mutex> lock(specialized_functions_mutex_);
+    for (auto& [key, function] : specialized_functions_) {
+      function->release();
+    }
+    specialized_functions_.clear();
+  }
   dxil_tessellation_cache_.clear();
   if (tessellator_tables_buffer_) {
     tessellator_tables_buffer_->release();
@@ -2490,6 +2711,7 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
   request.description = description;
   request.pipeline_key = description.GetHash();
   request.priority = pixel_translation ? 2 : 1;
+  Shader::Translation* vertex_translation = nullptr;
   if (PipelineKind(description.kind) == PipelineKind::kDxilTessellation) {
     // The domain modification never becomes a standalone vertex function, so
     // it is asked for through the linked stages rather than translated here.
@@ -2508,14 +2730,22 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
       request.fragment_function_name = dxil_pixel->entry_point_name();
     }
   } else {
-    Shader::Translation* vertex_translation = GetOrCreateHostTranslation(
+    vertex_translation = GetOrCreateHostTranslation(
         *vertex_it->second, description.vertex_shader_modification,
         /*allow_async=*/false, &status);
     if (status != ShaderCompileStatus::kReady) {
       return "VS not buildable";
     }
     request.vertex_function = GetHostShaderFunction(vertex_translation);
-    request.fragment_function = GetHostShaderFunction(pixel_translation);
+  }
+
+  request.fragment_function = GetHostShaderFunction(pixel_translation);
+  SetPipelineFunctionConstants(request, vertex_translation, pixel_translation);
+  if (description.vertex_fetch_states_specialized !=
+          request.vertex_fetch_states_specialized ||
+      description.fragment_fetch_states_specialized !=
+          request.fragment_fetch_states_specialized) {
+    return "belonging to another specialization configuration";
   }
 
   PipelineCompileStatus pipeline_status = PipelineCompileStatus::kFailed;
@@ -5169,6 +5399,7 @@ MetalCommandProcessor::GetOrCreateDxilTessellationPipelineState(
     DxilShader::DxilTranslation* pixel_translation, const RegisterFile& regs,
     PipelineCompileStatus* compile_status_out) {
   PipelineCompileRequest request = {};
+  request.fragment_function = GetHostShaderFunction(pixel_translation);
   PopulatePipelineCompileRequest(regs, domain_translation, pixel_translation,
                                  request);
   // The linked stage set is identified by the domain shader plus these two, so
@@ -7422,6 +7653,43 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
                       reg::RB_BLENDCONTROL::rt_register_indices[i])
                   .value
             : 0u;
+  }
+  SetPipelineFunctionConstants(request, vertex_translation, pixel_translation);
+  description.vertex_fetch_states_specialized =
+      request.vertex_fetch_states_specialized;
+  description.fragment_fetch_states_specialized =
+      request.fragment_fetch_states_specialized;
+  auto get_bool_loop_constants = [&regs](const Shader::Translation* translation,
+                                         uint32_t* bool_constants,
+                                         uint32_t* loop_constants) {
+    const auto& constants = translation->shader().constant_register_map();
+    for (uint32_t i = 0; i < 256 / 32; ++i) {
+      bool_constants[i] =
+          regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 + i] &
+          constants.bool_bitmap[i];
+    }
+    uint32_t loops = constants.loop_bitmap;
+    uint32_t i;
+    while (xe::bit_scan_forward(loops, &i)) {
+      loops &= ~(UINT32_C(1) << i);
+      loop_constants[i] = regs.values[XE_GPU_REG_SHADER_CONSTANT_LOOP_00 + i];
+    }
+  };
+  if (request.vertex_fetch_states_specialized) {
+    const uint32_t* fetch = &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+    for (const Shader::VertexBinding& binding :
+         vertex_translation->shader().vertex_bindings()) {
+      uint32_t i = binding.fetch_constant;
+      description.vertex_fetch_endians[i >> 4] |= (fetch[2 * i + 1] & 3)
+                                                  << (2 * (i & 15));
+    }
+    get_bool_loop_constants(vertex_translation,
+                            description.vertex_bool_constants,
+                            description.vertex_loop_constants);
+  }
+  if (request.fragment_fetch_states_specialized) {
+    get_bool_loop_constants(pixel_translation, description.pixel_bool_constants,
+                            description.pixel_loop_constants);
   }
   request.priority = pixel_translation ? 2 : 1;
   request.pipeline_key = description.GetHash();
