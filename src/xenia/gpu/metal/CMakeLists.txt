@@ -48,6 +48,11 @@ target_link_libraries(xenia-gpu-metal PUBLIC
   "-framework MetalKit"
 )
 target_link_libraries(xenia-gpu-metal PRIVATE glslang-spirv)
+# Use the pinned compiler dependency with Xenia's SPIR-V headers.
+set(SPIRV2AIR_SPIRV_HEADERS_DIR
+    ${PROJECT_SOURCE_DIR}/third_party/SPIRV-Headers/include)
+include(${PROJECT_SOURCE_DIR}/third_party/spirv2air/cmake/spirv2air.cmake)
+target_link_libraries(xenia-gpu-metal PRIVATE spirv2air::spirv2air)
 # The tessellation path feeds the SPIR-V host vertex/hull shaders through Mesa,
 # so it includes their vulkan_spirv headers, which the Vulkan backend generates.
 # Depend on that generation so the headers exist on a clean build.
