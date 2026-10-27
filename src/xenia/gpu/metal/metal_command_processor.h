@@ -151,6 +151,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // Force issue a swap to push render target to presenter (for trace dumps)
   void ForceIssueSwap();
   bool HasSeenSwap() const { return saw_swap_; }
+  // Commits the open submission, then blocks until every submission completes.
+  void AwaitAllQueueOperationsCompletion();
   void SetSwapDestSwap(uint32_t dest_base, bool swap);
   bool ConsumeSwapDestSwap(uint32_t dest_base, bool* swap_out);
 
@@ -242,8 +244,6 @@ class MetalCommandProcessor : public CommandProcessor {
   // Blocks until the given submission's command buffer has completed. The
   // submission must already be committed.
   void AwaitSubmissionCompletion(uint64_t submission);
-  // Commits the open submission, then blocks until every submission completes.
-  void AwaitAllQueueOperationsCompletion();
   void AddGpuTimeHandler(MTL::CommandBuffer* command_buffer);
   void WaitForPendingCompletionHandlers();
   void ProcessCompletedSubmissions();

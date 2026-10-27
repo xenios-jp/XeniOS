@@ -14,6 +14,7 @@
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
 #include "xenia/gpu/trace_dump.h"
@@ -93,7 +94,14 @@ class MetalTraceDump : public TraceDump {
     auto* command_processor = static_cast<MetalCommandProcessor*>(
         graphics_system_->command_processor());
     if (command_processor && !command_processor->HasSeenSwap()) {
-      command_processor->ForceIssueSwap();
+      // The swap records into the command processor's command buffer, which
+      // only its own thread may touch.
+      threading::Fence swap_fence;
+      command_processor->CallInThread([&]() {
+        command_processor->ForceIssueSwap();
+        swap_fence.Signal();
+      });
+      swap_fence.Wait();
     }
 
     if (!capturing_) {
@@ -106,6 +114,19 @@ class MetalTraceDump : public TraceDump {
     }
     XELOGI("Metal trace dump: capture written to {}",
            cvars::metal_trace_dump_capture);
+  }
+
+  void AwaitGuestMemoryWrites() override {
+    // Zero-copy shared memory aliases guest memory, so completing the queue
+    // is enough.
+    auto* command_processor = static_cast<MetalCommandProcessor*>(
+        graphics_system_->command_processor());
+    threading::Fence fence;
+    command_processor->CallInThread([&]() {
+      command_processor->AwaitAllQueueOperationsCompletion();
+      fence.Signal();
+    });
+    fence.Wait();
   }
 
  private:
