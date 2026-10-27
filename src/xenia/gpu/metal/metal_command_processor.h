@@ -170,6 +170,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // the autorelease pool is drained, preventing hangs from deferred
   // deallocation.
   void PrepareForWait() override;
+  void SubmitBeforeShortMemoryPoll() override { PrepareForWait(); }
   void PollCompletedSubmission() override;
 
   // ZPD occlusion query backend overrides. Metal has no query pool object:
