@@ -73,6 +73,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     void SetNeedsInitialClear(bool needs_initial_clear) {
       needs_initial_clear_ = needs_initial_clear;
     }
+    // Changes whenever the backing's content may have changed: draws that may
+    // write it, clears, transfers into it, backing swaps. Values come from one
+    // cache-wide counter, so no two render targets ever share one.
+    uint64_t content_generation() const { return content_generation_; }
+    void SetContentGeneration(uint64_t generation) {
+      content_generation_ = generation;
+    }
 
     // Public constructor for creating render targets
     MetalRenderTarget(RenderTargetKey key) : RenderTarget(key) {}
@@ -83,6 +90,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     MTL::Texture* transfer_texture_ = nullptr;
     MTL::Texture* stencil_view_ = nullptr;
     uint32_t temporary_sort_index_ = UINT32_MAX;
+    uint64_t content_generation_ = 0;
     bool needs_initial_clear_ = true;
   };
 
@@ -231,6 +239,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // abandons the queue has to come through here - ownership is already marked
   // transferred, so dropping it corrupts the destination.
   bool FlushPendingDrawPassTransfers();
+  // Accounts for an encoded draw possibly having written its attachments;
+  // called after the draw so the pass-head transfers it followed are already
+  // recorded.
+  void NoteDrawWrites();
 
  protected:
   // Virtual methods from RenderTargetCache
@@ -453,6 +465,37 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // indexed like the base class's accumulated targets (0 depth, 1..4 color).
   std::array<std::vector<Transfer>, 1 + xenos::kMaxColorRenderTargets>
       pending_draw_pass_transfers_;
+  // The last ownership transfer that wrote each EDRAM tile, performed or
+  // elided, with the content generations of both ends at that time. A
+  // transfer straight back that finds both unchanged is elided: the
+  // destination's backing still holds exactly what it would rebuild.
+  struct TileTransferRecord {
+    RenderTargetKey dest;
+    RenderTargetKey source;
+    uint64_t source_generation = 0;
+    uint64_t dest_generation = 0;
+  };
+  std::array<TileTransferRecord, xenos::kEdramTileCount>
+      tile_transfer_records_ = {};
+  uint64_t next_content_generation_ = 1;
+  // What the draw of the last Update may write, for NoteDrawWrites.
+  bool draw_may_write_depth_ = false;
+  bool draw_may_write_stencil_ = false;
+  uint32_t draw_color_write_mask_ = 0;
+  void MarkContentChanged(MetalRenderTarget* render_target) {
+    render_target->SetContentGeneration(next_content_generation_++);
+  }
+  // Records that the transfer (or elided transfer) into dest from source was
+  // the last one to write these tiles.
+  void RecordTileTransfer(uint32_t start_tiles, uint32_t end_tiles,
+                          const MetalRenderTarget* dest,
+                          const MetalRenderTarget* source);
+  // Drops the transfers of the last update whose result the destination's
+  // backing already holds.
+  void ElideRedundantTransfers();
+  // Accounts for dest being written by these transfers (or a clear).
+  void RecordPerformedTransfers(MetalRenderTarget* dest,
+                                const std::vector<Transfer>& transfers);
   std::array<RenderTarget*, 1 + xenos::kMaxColorRenderTargets>
       pending_draw_pass_render_targets_ = {};
   uint32_t pending_draw_pass_transfer_mask_ = 0;

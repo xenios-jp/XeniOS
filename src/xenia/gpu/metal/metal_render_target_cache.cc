@@ -1130,11 +1130,119 @@ void MetalRenderTargetCache::BeginFrame() {
   }
 }
 
+namespace {
+// Erases the transfers matching the predicate in place, calling it once per
+// transfer in order.
+template <typename T, typename Predicate>
+void EraseTransfersIf(std::vector<T>& transfers, Predicate predicate) {
+  size_t kept = 0;
+  for (size_t i = 0; i < transfers.size(); ++i) {
+    if (predicate(transfers[i])) {
+      continue;
+    }
+    if (kept != i) {
+      transfers[kept] = transfers[i];
+    }
+    ++kept;
+  }
+  transfers.erase(transfers.begin() + kept, transfers.end());
+}
+}  // namespace
+
+void MetalRenderTargetCache::RecordTileTransfer(
+    uint32_t start_tiles, uint32_t end_tiles, const MetalRenderTarget* dest,
+    const MetalRenderTarget* source) {
+  const TileTransferRecord record = {
+      dest->key(), source ? source->key() : RenderTargetKey(),
+      source ? source->content_generation() : 0, dest->content_generation()};
+  std::fill(tile_transfer_records_.begin() + start_tiles,
+            tile_transfer_records_.begin() + end_tiles, record);
+}
+
+void MetalRenderTargetCache::ElideRedundantTransfers() {
+  RenderTarget* const* targets = last_update_accumulated_render_targets();
+  std::vector<Transfer>* transfer_lists = last_update_transfers();
+  for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+    auto* dest = static_cast<MetalRenderTarget*>(targets[i]);
+    std::vector<Transfer>& transfers = transfer_lists[i];
+    if (!dest) {
+      continue;
+    }
+    const RenderTargetKey dest_key = dest->key();
+    // A transfer straight back whose source and destination are both
+    // unchanged since the transfer that last wrote every tile it covers would
+    // rewrite exactly what the destination's backing already holds.
+    auto round_trip = [&](const Transfer& transfer) {
+      auto* source = static_cast<MetalRenderTarget*>(transfer.source);
+      // The host depth must be the destination's own, which is what its
+      // backing already holds; a third render target's host depth is another
+      // result.
+      if (!source || dest->needs_initial_clear() ||
+          source->needs_initial_clear() ||
+          (transfer.host_depth_source && transfer.host_depth_source != dest)) {
+        return false;
+      }
+      for (uint32_t tile = transfer.start_tiles; tile < transfer.end_tiles;
+           ++tile) {
+        const TileTransferRecord& record = tile_transfer_records_[tile];
+        if (record.dest.key != source->key().key ||
+            record.source.key != dest_key.key ||
+            record.dest_generation != source->content_generation() ||
+            record.source_generation != dest->content_generation()) {
+          return false;
+        }
+      }
+      return true;
+    };
+    EraseTransfersIf(transfers, [&](const Transfer& transfer) {
+      if (!round_trip(transfer)) {
+        return false;
+      }
+      RecordTileTransfer(transfer.start_tiles, transfer.end_tiles, dest,
+                         static_cast<MetalRenderTarget*>(transfer.source));
+      return true;
+    });
+  }
+}
+
+void MetalRenderTargetCache::RecordPerformedTransfers(
+    MetalRenderTarget* dest, const std::vector<Transfer>& transfers) {
+  MarkContentChanged(dest);
+  for (const Transfer& transfer : transfers) {
+    RecordTileTransfer(transfer.start_tiles, transfer.end_tiles, dest,
+                       static_cast<MetalRenderTarget*>(transfer.source));
+  }
+}
+
+void MetalRenderTargetCache::NoteDrawWrites() {
+  if (current_depth_target_ &&
+      (draw_may_write_depth_ || draw_may_write_stencil_)) {
+    MarkContentChanged(current_depth_target_);
+  }
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    if (current_color_targets_[i] &&
+        ((draw_color_write_mask_ >> (i * 4)) & 0b1111)) {
+      MarkContentChanged(current_color_targets_[i]);
+    }
+  }
+}
+
 bool MetalRenderTargetCache::Update(
     bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, const Shader& vertex_shader,
     int32_t window_offset_tiles) {
   SCOPE_profile_cpu_f("gpu");
+  // What the draw may write, for NoteDrawWrites after it is encoded.
+  const RegisterFile& regs = register_file();
+  draw_may_write_depth_ = normalized_depth_control.z_enable &&
+                          normalized_depth_control.z_write_enable;
+  draw_may_write_stencil_ =
+      normalized_depth_control.stencil_enable &&
+      (regs.Get<reg::RB_STENCILREFMASK>().stencilwritemask ||
+       (normalized_depth_control.backface_enable &&
+        regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF)
+            .stencilwritemask));
+  draw_color_write_mask_ = normalized_color_mask;
   // Reaching another update means the command processor never got to encode
   // the queued transfers into a pass. Their ownership is already transferred,
   // so run them standalone before the base update reshuffles ownership again.
@@ -1209,6 +1317,9 @@ bool MetalRenderTargetCache::Update(
   // EDRAM regions are aliased between different RT configurations.
   // The base class Update() populates last_update_transfers() with the needed
   // transfers based on EDRAM tile overlaps.
+  // Transfers whose result the destination's backing already holds are
+  // dropped before anything queues or draws them.
+  ElideRedundantTransfers();
   const std::vector<Transfer>* update_transfers = last_update_transfers();
   if (::cvars::metal_transfer_in_draw_pass) {
     std::array<std::vector<Transfer>, 1 + xenos::kMaxColorRenderTargets>
@@ -1850,6 +1961,8 @@ bool MetalRenderTargetCache::IsHostDepthEncodingDifferent(
 }
 
 void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
+  // Every backing is rewritten from the snapshot.
+  tile_transfer_records_.fill({});
   if (!snapshot) {
     return;
   }
@@ -4214,6 +4327,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
 
     auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
+    RecordPerformedTransfers(dest_metal_rt, transfers);
     const bool dest_needed_initial_clear = dest_metal_rt->needs_initial_clear();
     if (dest_needed_initial_clear) {
       dest_metal_rt->SetNeedsInitialClear(false);
