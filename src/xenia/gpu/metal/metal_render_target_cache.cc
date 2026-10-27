@@ -3800,18 +3800,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     }
 
     if (pipeline && group_count_x && group_count_y) {
-      uint32_t dest_pitch_pixels =
-          copy_constants.dest_relative.dest_coordinate_info.pitch_aligned_div_32
-          << 5;
-      if (dest_pitch_pixels < resolve_width) {
-        uint32_t new_pitch_pixels = (resolve_width + 31) & ~31u;
-        XELOGW(
-            "MetalResolve: overriding dest pitch {} -> {} "
-            "(resolve_width={})",
-            dest_pitch_pixels, new_pitch_pixels, resolve_width);
-        copy_constants.dest_relative.dest_coordinate_info.pitch_aligned_div_32 =
-            new_pitch_pixels >> 5;
-      }
+      // Preserve the guest pitch from GetCopyShader: destination extents and
+      // access tracking use the same layout computed by GetResolveInfo.
       auto* shared = command_processor_.shared_memory();
       auto* texture_cache = command_processor_.texture_cache();
       MTL::Buffer* dest_buffer = nullptr;
