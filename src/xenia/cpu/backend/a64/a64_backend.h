@@ -192,6 +192,10 @@ struct A64BackendContext {
   // Spin-wait release state (a64_seq_memory.cc).
   unsigned int db16cyc_count;
   uint64_t db16cyc_last_tick;
+  unsigned int spin_wait_iterations;
+  unsigned int spin_wait_loop;
+  unsigned int spin_wait_released;
+  uint64_t spin_wait_start_tick;
 };
 
 // Default FPCR for FPU mode (round to nearest, no flush to zero).
