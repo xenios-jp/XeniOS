@@ -1044,10 +1044,53 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   size_t constants_size = xe::align(sizeof(MetalLoadConstants), size_t(16));
   size_t dispatch_count = stored_levels.size() * size_t(array_size);
   size_t constants_buffer_size = constants_size * dispatch_count;
+
+  // Stage small CPU-only parts after the constants so the deferred GPU load
+  // reads immutable bytes after this copy. This does not make concurrent guest
+  // stores atomic; the ordinary texture validity and watch checks still apply.
+  // GPU-written parts (resolves, memory exports) stay in shared memory, where
+  // their pending writes are ordered before the load. The size limit bounds
+  // staging allocation and CPU copy cost. A final 16-byte fetch may extend
+  // past the part, so reserve 16 bytes of slack after each copy.
+  constexpr uint32_t kSnapshotMaxBytes = UINT32_C(1) << 20;
+  constexpr size_t kSnapshotAlignment = 256;
+  const uint8_t* guest_ram = metal_shared_memory.GetXboxRamBase();
+  const uint32_t part_guest_address[2] = {base_guest_address,
+                                          mips_guest_address};
+  uint32_t snapshot_length[2] = {};
+  size_t snapshot_offset[2] = {};
+  if (!texture_resolution_scaled && guest_ram) {
+    auto global_lock = xe::global_critical_region::Acquire();
+    for (uint32_t part = 0; part < 2; ++part) {
+      if (!(part ? load_mips : load_base)) {
+        continue;
+      }
+      uint32_t length = xe::align(
+          part ? texture.GetGuestMipsSize() : texture.GetGuestBaseSize(),
+          UINT32_C(16));
+      if (!length || length > kSnapshotMaxBytes ||
+          !shared_memory().IsRangeValid(part_guest_address[part], length,
+                                        true)) {
+        continue;
+      }
+      snapshot_offset[part] =
+          xe::align(constants_buffer_size, kSnapshotAlignment);
+      snapshot_length[part] = length;
+      constants_buffer_size = snapshot_offset[part] + length + 16;
+    }
+  }
+
   MTL::Buffer* constants_buffer = acquire_buffer(constants_buffer_size);
   if (!constants_buffer) {
     release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
     return false;
+  }
+  for (uint32_t part = 0; part < 2; ++part) {
+    if (snapshot_length[part]) {
+      std::memcpy(static_cast<uint8_t*>(constants_buffer->contents()) +
+                      snapshot_offset[part],
+                  guest_ram + part_guest_address[part], snapshot_length[part]);
+    }
   }
 
   const bool use_blit_upload = ShouldUploadViaBlit();
@@ -1150,9 +1193,6 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     return false;
   }
   encoder->setComputePipelineState(pipeline);
-  if (!texture_resolution_scaled) {
-    encoder->setBuffer(shared_buffer, 0, 2);
-  }
 
   uint32_t guest_x_blocks_per_group_log2 =
       load_shader_info.GetGuestXBlocksPerGroupLog2();
@@ -1161,7 +1201,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                       UINT32_C(1) << kLoadGuestYBlocksPerGroupLog2, 1);
 
   bool scaled_mips_source_set_up = false;
-  MTL::Buffer* source_buffer = shared_buffer;
+  MTL::Buffer* source_buffer = nullptr;
   size_t source_buffer_offset = 0;
   size_t source_buffer_length = 0;
 
@@ -1198,8 +1238,21 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
 
     uint32_t level_guest_offset = 0;
     if (!texture_resolution_scaled) {
-      level_guest_offset =
-          is_base_storage ? base_guest_address : mips_guest_address;
+      const uint32_t part = is_base_storage ? 0 : 1;
+      MTL::Buffer* part_source_buffer = shared_buffer;
+      size_t part_source_offset = 0;
+      if (snapshot_length[part]) {
+        part_source_buffer = constants_buffer;
+        part_source_offset = snapshot_offset[part];
+      } else {
+        level_guest_offset = part_guest_address[part];
+      }
+      if (part_source_buffer != source_buffer ||
+          part_source_offset != source_buffer_offset) {
+        encoder->setBuffer(part_source_buffer, part_source_offset, 2);
+        source_buffer = part_source_buffer;
+        source_buffer_offset = part_source_offset;
+      }
     }
     if (!is_base_storage) {
       uint32_t mip_offset = guest_layout.mip_offsets_bytes[stored_level.level];
