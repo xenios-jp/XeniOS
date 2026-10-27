@@ -3197,7 +3197,8 @@ static MetalTextureCache::SamplerParameters BuildSamplerParametersFromFetch(
   if (aniso_filter != xenos::AnisoFilter::kDisabled) {
     parameters.mag_linear = 1;
     parameters.min_linear = 1;
-    parameters.mip_linear = 1;
+    // Metal supports mip filtering independently of anisotropy.
+    parameters.mip_linear = mip_filter == xenos::TextureFilter::kLinear;
   } else {
     xenos::TextureFilter mag_filter =
         req_mag_filter == xenos::TextureFilter::kUseFetchConst
@@ -3258,7 +3259,8 @@ MTL::SamplerState* MetalTextureCache::GetOrCreateSampler(
   if (parameters.aniso_filter != xenos::AnisoFilter::kDisabled) {
     desc->setMinFilter(MTL::SamplerMinMagFilterLinear);
     desc->setMagFilter(MTL::SamplerMinMagFilterLinear);
-    desc->setMipFilter(MTL::SamplerMipFilterLinear);
+    desc->setMipFilter(parameters.mip_linear ? MTL::SamplerMipFilterLinear
+                                             : MTL::SamplerMipFilterNearest);
     desc->setMaxAnisotropy(1u << (uint32_t(parameters.aniso_filter) - 1));
   } else {
     desc->setMinFilter(parameters.min_linear ? MTL::SamplerMinMagFilterLinear
