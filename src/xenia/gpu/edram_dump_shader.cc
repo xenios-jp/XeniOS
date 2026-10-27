@@ -1040,20 +1040,33 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       spv::Id type_float4 = builder.makeVectorType(type_float, 4);
       spv::Id sum = spv::NoResult;
       for (uint32_t sample = 0; sample < 4; ++sample) {
-        spv::Builder::TextureParameters source_texture_parameters = {};
-        source_texture_parameters.sampler =
-            builder.createLoad(source_texture, spv::NoPrecision);
-        id_vector_temp.clear();
-        id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, pixel_x));
-        id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, pixel_y));
-        source_texture_parameters.coords =
-            builder.createCompositeConstruct(type_int2, id_vector_temp);
-        source_texture_parameters.sample = builder.makeIntConstant(sample);
-        spv::Id value = builder.createTextureCall(
-            spv::NoPrecision, type_float4, false, true, false, false, false,
-            source_texture_parameters, spv::ImageOperandsMaskNone);
+        spv::Id value;
+        if (key.GetColorFormat() != xenos::ColorRenderTargetFormat::k_8_8_8_8) {
+          // The resolve interprets EDRAM as RGBA8, but its owner may store a
+          // different format. Match the dump-and-resolve round trip before
+          // averaging, including gamma encoding and per-sample quantization.
+          spv::Id packed[2] = {};
+          load_and_pack(pixel_x, pixel_y, builder.makeIntConstant(sample),
+                        packed);
+          value = builder.createUnaryBuiltinCall(
+              type_float4, ext_inst_glsl_std_450, GLSLstd450UnpackUnorm4x8,
+              packed[0]);
+        } else {
+          spv::Builder::TextureParameters source_texture_parameters = {};
+          source_texture_parameters.sampler =
+              builder.createLoad(source_texture, spv::NoPrecision);
+          id_vector_temp.clear();
+          id_vector_temp.push_back(
+              builder.createUnaryOp(spv::OpBitcast, type_int, pixel_x));
+          id_vector_temp.push_back(
+              builder.createUnaryOp(spv::OpBitcast, type_int, pixel_y));
+          source_texture_parameters.coords =
+              builder.createCompositeConstruct(type_int2, id_vector_temp);
+          source_texture_parameters.sample = builder.makeIntConstant(sample);
+          value = builder.createTextureCall(
+              spv::NoPrecision, type_float4, false, true, false, false, false,
+              source_texture_parameters, spv::ImageOperandsMaskNone);
+        }
         sum = sum == spv::NoResult
                   ? value
                   : builder.createBinOp(spv::OpFAdd, type_float4, sum, value);
