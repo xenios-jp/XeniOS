@@ -134,12 +134,9 @@ class MetalPresenter : public Presenter {
   id gamma_output_texture_ = nullptr;        // id<MTLTexture>
   uint32_t gamma_output_width_ = 0;
   uint32_t gamma_output_height_ = 0;
-  id gamma_ramp_buffer_ = nullptr;         // id<MTLBuffer>
-  id gamma_ramp_table_texture_ = nullptr;  // id<MTLTexture>
-  id gamma_ramp_pwl_texture_ = nullptr;    // id<MTLTexture>
-  uint32_t gamma_ramp_buffer_size_ = 0;
-  bool gamma_ramp_table_valid_ = false;
-  bool gamma_ramp_pwl_valid_ = false;
+  id gamma_ramp_buffer_ = nullptr;               // id<MTLBuffer>
+  id gamma_ramp_table_texture_ = nullptr;        // id<MTLTexture>
+  id gamma_ramp_pwl_texture_ = nullptr;          // id<MTLTexture>
   id guest_output_pipeline_bilinear_ = nullptr;  // id<MTLRenderPipelineState>
   id guest_output_pipeline_bilinear_dither_ =
       nullptr;                         // id<MTLRenderPipelineState>

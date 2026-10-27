@@ -146,9 +146,6 @@ void MetalPresenter::Shutdown() {
     [gamma_ramp_buffer_ release];
     gamma_ramp_buffer_ = nullptr;
   }
-  gamma_ramp_buffer_size_ = 0;
-  gamma_ramp_table_valid_ = false;
-  gamma_ramp_pwl_valid_ = false;
   if (guest_output_pipeline_bilinear_) {
     [guest_output_pipeline_bilinear_ release];
     guest_output_pipeline_bilinear_ = nullptr;
@@ -788,94 +785,63 @@ bool MetalPresenter::RefreshGuestOutputImpl(
 
 bool MetalPresenter::UpdateGammaRamp(const void* table_data, size_t table_bytes,
                                      const void* pwl_data, size_t pwl_bytes) {
-  if (!table_data || !pwl_data || !table_bytes || !pwl_bytes) {
-    XELOGW("MetalPresenter::UpdateGammaRamp: missing gamma ramp data");
-    gamma_ramp_table_valid_ = false;
-    gamma_ramp_pwl_valid_ = false;
+  constexpr uint32_t kTableWidth = 256;
+  constexpr uint32_t kPwlWidth = 384;
+  if (!table_data || !pwl_data || table_bytes != kTableWidth * sizeof(uint32_t) ||
+      pwl_bytes != kPwlWidth * sizeof(uint32_t)) {
+    XELOGW("MetalPresenter::UpdateGammaRamp: invalid gamma ramp data");
     return false;
   }
   id<MTLDevice> mtl_device = (__bridge id<MTLDevice>)device_;
   if (!mtl_device) {
-    XELOGW("MetalPresenter::UpdateGammaRamp: no Metal device");
     return false;
   }
 
-  size_t total_bytes = table_bytes + pwl_bytes;
-  if (!gamma_ramp_buffer_ || gamma_ramp_buffer_size_ < total_bytes) {
-    if (gamma_ramp_table_texture_) {
-      [gamma_ramp_table_texture_ release];
-      gamma_ramp_table_texture_ = nullptr;
-    }
-    if (gamma_ramp_pwl_texture_) {
-      [gamma_ramp_pwl_texture_ release];
-      gamma_ramp_pwl_texture_ = nullptr;
-    }
-    if (gamma_ramp_buffer_) {
-      [gamma_ramp_buffer_ release];
-      gamma_ramp_buffer_ = nullptr;
-    }
-    gamma_ramp_buffer_ = [mtl_device newBufferWithLength:total_bytes
-                                                 options:MTLResourceStorageModeShared];
-    if (!gamma_ramp_buffer_) {
-      XELOGE("MetalPresenter::UpdateGammaRamp: failed to allocate buffer");
-      gamma_ramp_buffer_size_ = 0;
-      gamma_ramp_table_texture_ = nullptr;
-      gamma_ramp_pwl_texture_ = nullptr;
-      gamma_ramp_table_valid_ = false;
-      gamma_ramp_pwl_valid_ = false;
+  // Each update publishes immutable storage. Previously submitted copies may
+  // still be reading the old generation; retaining its object is not a snapshot.
+  @autoreleasepool {
+    const size_t total_bytes = table_bytes + pwl_bytes;
+    id<MTLBuffer> buffer = [mtl_device newBufferWithLength:total_bytes
+                                                   options:MTLResourceStorageModeShared];
+    if (!buffer || ![buffer contents]) {
+      [buffer release];
       return false;
     }
-    gamma_ramp_buffer_size_ = static_cast<uint32_t>(total_bytes);
-    gamma_ramp_table_texture_ = nullptr;
-    gamma_ramp_pwl_texture_ = nullptr;
-  }
-
-  void* contents = [gamma_ramp_buffer_ contents];
-  if (!contents) {
-    XELOGE("MetalPresenter::UpdateGammaRamp: gamma ramp buffer has no contents");
-    gamma_ramp_table_valid_ = false;
-    gamma_ramp_pwl_valid_ = false;
-    return false;
-  }
-  std::memcpy(contents, table_data, table_bytes);
-  std::memcpy(reinterpret_cast<uint8_t*>(contents) + table_bytes, pwl_data, pwl_bytes);
-
-  if (!gamma_ramp_table_texture_) {
-    constexpr uint32_t kGammaRampTableWidth = 256;
-    constexpr NSUInteger kGammaRampTableBytesPerRow = kGammaRampTableWidth * sizeof(uint32_t);
+    std::memcpy([buffer contents], table_data, table_bytes);
+    std::memcpy(static_cast<uint8_t*>([buffer contents]) + table_bytes, pwl_data, pwl_bytes);
     MTLTextureDescriptor* table_desc =
         [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:MTLPixelFormatRGB10A2Unorm
-                                                               width:kGammaRampTableWidth
+                                                               width:kTableWidth
                                                      resourceOptions:MTLResourceStorageModeShared
                                                                usage:MTLTextureUsageShaderRead];
-    gamma_ramp_table_texture_ =
-        [gamma_ramp_buffer_ newTextureWithDescriptor:table_desc
-                                              offset:0
-                                         bytesPerRow:kGammaRampTableBytesPerRow];
-    if (!gamma_ramp_table_texture_) {
-      XELOGE("MetalPresenter::UpdateGammaRamp: failed to create table texture");
-    }
-  }
-  if (!gamma_ramp_pwl_texture_) {
-    constexpr uint32_t kGammaRampPwlWidth = 384;
-    constexpr NSUInteger kGammaRampPwlBytesPerRow = kGammaRampPwlWidth * sizeof(uint32_t);
+    id<MTLTexture> table_texture = [buffer newTextureWithDescriptor:table_desc
+                                                             offset:0
+                                                        bytesPerRow:table_bytes];
     MTLTextureDescriptor* pwl_desc =
         [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:MTLPixelFormatRG16Uint
-                                                               width:kGammaRampPwlWidth
+                                                               width:kPwlWidth
                                                      resourceOptions:MTLResourceStorageModeShared
                                                                usage:MTLTextureUsageShaderRead];
-    gamma_ramp_pwl_texture_ =
-        [gamma_ramp_buffer_ newTextureWithDescriptor:pwl_desc
-                                              offset:table_bytes
-                                         bytesPerRow:kGammaRampPwlBytesPerRow];
-    if (!gamma_ramp_pwl_texture_) {
-      XELOGE("MetalPresenter::UpdateGammaRamp: failed to create PWL texture");
+    id<MTLTexture> pwl_texture = [buffer newTextureWithDescriptor:pwl_desc
+                                                           offset:table_bytes
+                                                      bytesPerRow:pwl_bytes];
+    if (!table_texture || !pwl_texture) {
+      [table_texture release];
+      [pwl_texture release];
+      [buffer release];
+      return false;
     }
-  }
 
-  gamma_ramp_table_valid_ = gamma_ramp_table_texture_ != nullptr;
-  gamma_ramp_pwl_valid_ = gamma_ramp_pwl_texture_ != nullptr;
-  return gamma_ramp_table_valid_ && gamma_ramp_pwl_valid_;
+    // Preserve the previous valid generation on any construction failure.
+    // Ordinary Metal command buffers retain resources used by earlier copies.
+    [gamma_ramp_table_texture_ release];
+    [gamma_ramp_pwl_texture_ release];
+    [gamma_ramp_buffer_ release];
+    gamma_ramp_buffer_ = buffer;
+    gamma_ramp_table_texture_ = table_texture;
+    gamma_ramp_pwl_texture_ = pwl_texture;
+    return true;
+  }
 }
 
 bool MetalPresenter::EnsureCopyTextureConvertPipelines() {
@@ -1430,8 +1396,9 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
     encode_srgb = true;
   }
 
-  bool apply_gamma = EnsureApplyGammaPipelines() &&
-                     (use_pwl_gamma_ramp ? gamma_ramp_pwl_valid_ : gamma_ramp_table_valid_);
+  bool apply_gamma =
+      EnsureApplyGammaPipelines() && (use_pwl_gamma_ramp ? gamma_ramp_pwl_texture_ != nullptr
+                                                         : gamma_ramp_table_texture_ != nullptr);
   if (apply_gamma) {
     id<MTLTexture> gamma_dest_texture = dest_metal_texture;
     bool needs_gamma_convert = false;
