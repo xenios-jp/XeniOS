@@ -52,6 +52,13 @@ DEFINE_string(replay_dump, "",
               "Print the guest code, optimized HIR and host code of the "
               "function at this guest address (hex).",
               "General");
+DEFINE_path(
+    replay_coverage, "",
+    "Count how often each guest instruction runs in the replays and "
+    "write the totals by function and by backend sequence to this "
+    "file. Slows the replays, so their times say nothing. With --replay_dump, "
+    "the counts of that function are printed with its code.",
+    "General");
 DEFINE_bool(replay_efficiency_cores, false,
             "Time captured invocations on the efficiency cores, where a phone "
             "runs most guest threads, rather than the performance cores.",
@@ -167,12 +174,12 @@ bool WriteRows(const std::filesystem::path& path,
   fmt::print(file,
              "address,guest_instructions,host_bytes,host_instructions,"
              "stable_instructions,captured_stable_instructions,"
-             "ns_per_invocation\n");
+             "ns_per_invocation,samples\n");
   for (const Row& row : rows) {
-    fmt::print(file, "{:08X},{},{},{},{},{},{:.1f}\n", row.address,
+    fmt::print(file, "{:08X},{},{},{},{},{},{:.1f},{}\n", row.address,
                row.guest_instructions, row.host_bytes, row.host_instructions,
                row.stable_instructions, row.captured_stable_instructions,
-               row.ns_per_invocation);
+               row.ns_per_invocation, row.samples);
   }
   fclose(file);
   return true;
@@ -413,7 +420,6 @@ bool ReplayInvocations(Processor* processor, const JitCorpus& corpus,
     const double ns = *std::min_element(rounds[f].begin(), rounds[f].end());
     if (auto it = row_of.find(address); it != row_of.end()) {
       it->second->ns_per_invocation = ns;
-      it->second->samples = samples;
     }
     weighted += samples * ns;
     fmt::print("  {:08X} {:5.1f}% of samples, {} invocations, {:.1f} ns\n",
@@ -486,6 +492,9 @@ int cpu_replay_main(const std::vector<std::string>& args) {
   backend = std::make_unique<backend::a64::A64Backend>();
 #endif  // XE_ARCH
   auto processor = std::make_unique<Processor>(memory.get(), nullptr);
+  if (!cvars::replay_coverage.empty()) {
+    cvars::trace_function_coverage = true;
+  }
   if (!processor->Setup(std::move(backend))) {
     fmt::print(stderr, "Unable to set up the backend\n");
     return 1;
@@ -512,6 +521,8 @@ int cpu_replay_main(const std::vector<std::string>& args) {
 
   // In capture order, with the page protection of the time.
   std::vector<Row> rows;
+  std::unordered_map<uint32_t, uint32_t> samples_of(corpus.profile.begin(),
+                                                    corpus.profile.end());
   std::unordered_set<uint32_t> compiled;
   uint32_t failed = 0, duplicates = 0, extents_differ = 0, identical = 0;
   Row total = {};
@@ -550,6 +561,9 @@ int cpu_replay_main(const std::vector<std::string>& args) {
                record.stable_instructions,
                0.0,
                0};
+    if (auto it = samples_of.find(record.address); it != samples_of.end()) {
+      row.samples = it->second;
+    }
     identical += row.stable_instructions == row.captured_stable_instructions;
     total.guest_instructions += row.guest_instructions;
     total.host_bytes += row.host_bytes;
@@ -583,6 +597,27 @@ int cpu_replay_main(const std::vector<std::string>& args) {
   if (!corpus.invocations.empty() &&
       !ReplayInvocations(processor.get(), corpus, &rows)) {
     return 1;
+  }
+  if (!cvars::replay_coverage.empty()) {
+    FILE* file = xe::filesystem::OpenFile(cvars::replay_coverage, "w");
+    if (!file) {
+      fmt::print(stderr, "Unable to write {}\n",
+                 xe::path_to_utf8(cvars::replay_coverage));
+      return 1;
+    }
+    processor->DumpTraceCounts(file);
+    std::fclose(file);
+    if (dump_address) {
+      const std::vector<uint64_t> counts =
+          processor->GetTraceCounts(dump_address);
+      fmt::print("counts    {:08X}\n", dump_address);
+      for (size_t i = 0; i < counts.size(); ++i) {
+        if (counts[i]) {
+          fmt::print("  {:08X} {}\n", dump_address + uint32_t(i * 4),
+                     counts[i]);
+        }
+      }
+    }
   }
   if (!cvars::replay_csv.empty() && !WriteRows(cvars::replay_csv, rows)) {
     return 1;
