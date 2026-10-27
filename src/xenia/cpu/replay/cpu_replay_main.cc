@@ -59,6 +59,11 @@ DEFINE_path(
     "file. Slows the replays, so their times say nothing. With --replay_dump, "
     "the counts of that function are printed with its code.",
     "General");
+DEFINE_bool(replay_count_instructions, false,
+            "Also count the host instructions each captured invocation "
+            "retires, which unlike its time does not vary with the host's "
+            "load. macOS only.",
+            "General");
 DEFINE_bool(replay_efficiency_cores, false,
             "Time captured invocations on the efficiency cores, where a phone "
             "runs most guest threads, rather than the performance cores.",
@@ -162,6 +167,8 @@ struct Row {
   // CPU samples the capture took in the function.
   double ns_per_invocation;
   uint32_t samples;
+  // Host instructions retired per captured invocation, 0 if not counted.
+  double instructions_per_invocation;
 };
 
 bool WriteRows(const std::filesystem::path& path,
@@ -174,19 +181,65 @@ bool WriteRows(const std::filesystem::path& path,
   fmt::print(file,
              "address,guest_instructions,host_bytes,host_instructions,"
              "stable_instructions,captured_stable_instructions,"
-             "ns_per_invocation,samples\n");
+             "ns_per_invocation,samples,instructions_per_invocation\n");
   for (const Row& row : rows) {
-    fmt::print(file, "{:08X},{},{},{},{},{},{:.1f},{}\n", row.address,
+    fmt::print(file, "{:08X},{},{},{},{},{},{:.1f},{},{:.1f}\n", row.address,
                row.guest_instructions, row.host_bytes, row.host_instructions,
                row.stable_instructions, row.captured_stable_instructions,
-               row.ns_per_invocation, row.samples);
+               row.ns_per_invocation, row.samples,
+               row.instructions_per_invocation);
   }
   fclose(file);
   return true;
 }
 
-// Stable instruction counts, and host time per captured invocation, against a
-// CSV from another build or cvar set.
+// Prints how a per-invocation measure of the functions measured in both moved,
+// in all weighted by samples, and the functions that moved the total the most.
+void CompareMeasure(const char* name, const char* unit, const char* more,
+                    const char* less, const std::vector<Row>& rows,
+                    const std::unordered_map<uint32_t, double>& baseline,
+                    double Row::* measure) {
+  struct Change {
+    uint32_t address;
+    double before;
+    double after;
+    double impact;
+  };
+  std::vector<Change> changes;
+  double weight = 0.0, weighted = 0.0;
+  for (const Row& row : rows) {
+    auto it = baseline.find(row.address);
+    if (it == baseline.end() || it->second <= 0.0 || row.*measure <= 0.0) {
+      continue;
+    }
+    const double ratio = row.*measure / it->second;
+    changes.push_back(
+        {row.address, it->second, row.*measure, row.samples * (ratio - 1.0)});
+    weight += row.samples;
+    weighted += row.samples * ratio;
+  }
+  if (changes.empty()) {
+    return;
+  }
+  std::sort(changes.begin(), changes.end(),
+            [](const auto& a, const auto& b) { return a.impact > b.impact; });
+  fmt::print(
+      "{:<9} {} functions measured in both: {:+.2f}% weighted by "
+      "samples\n",
+      name, changes.size(), (weighted / weight - 1.0) * 100.0);
+  for (size_t i = 0; i < changes.size(); ++i) {
+    const Change& c = changes[i];
+    const bool increased = c.after > c.before;
+    if (increased ? i < 10 : changes.size() - i <= 10) {
+      fmt::print("  {}  {:08X} {:+.2f}% ({:.0f} -> {:.0f} {})\n",
+                 increased ? more : less, c.address,
+                 (c.after / c.before - 1.0) * 100.0, c.before, c.after, unit);
+    }
+  }
+}
+
+// Stable instruction counts, and host time and instructions per captured
+// invocation, against a CSV from another build or cvar set.
 bool CompareRows(const std::filesystem::path& path,
                  const std::vector<Row>& rows) {
   FILE* file = xe::filesystem::OpenFile(path, "r");
@@ -194,15 +247,18 @@ bool CompareRows(const std::filesystem::path& path,
     fmt::print(stderr, "Unable to open {}\n", xe::path_to_utf8(path));
     return false;
   }
-  std::unordered_map<uint32_t, std::pair<uint64_t, double>> baseline;
+  std::unordered_map<uint32_t, uint64_t> baseline;
+  std::unordered_map<uint32_t, double> baseline_ns, baseline_instructions;
   char line[256];
-  unsigned int address;
-  unsigned long long stable;
-  double ns = 0.0;
   while (fgets(line, sizeof(line), file)) {
-    if (sscanf(line, "%X,%*u,%*u,%*u,%llu,%*u,%lf", &address, &stable, &ns) >=
-        2) {
-      baseline[address] = {stable, ns};
+    unsigned int address;
+    unsigned long long stable;
+    double ns = 0.0, instructions = 0.0;
+    if (sscanf(line, "%X,%*u,%*u,%*u,%llu,%*u,%lf,%*u,%lf", &address, &stable,
+               &ns, &instructions) >= 2) {
+      baseline[address] = stable;
+      baseline_ns[address] = ns;
+      baseline_instructions[address] = instructions;
     }
   }
   fclose(file);
@@ -214,34 +270,18 @@ bool CompareRows(const std::filesystem::path& path,
   };
   std::vector<Change> changes;
   uint64_t before = 0, after = 0, common = 0;
-  // Time, with how much each function moved the total weighted by samples.
-  struct Timing {
-    uint32_t address;
-    double before;
-    double after;
-    double impact;
-  };
-  std::vector<Timing> timings;
-  double weight = 0.0, weighted = 0.0;
   for (const Row& row : rows) {
     auto it = baseline.find(row.address);
     if (it == baseline.end()) {
       continue;
     }
-    const auto [base_stable, base_ns] = it->second;
+    const uint64_t base_stable = it->second;
     ++common;
     before += base_stable;
     after += row.stable_instructions;
     if (base_stable != row.stable_instructions) {
       changes.push_back({row.address, int64_t(base_stable),
                          int64_t(row.stable_instructions)});
-    }
-    if (base_ns > 0.0 && row.ns_per_invocation > 0.0) {
-      const double ratio = row.ns_per_invocation / base_ns;
-      timings.push_back({row.address, base_ns, row.ns_per_invocation,
-                         row.samples * (ratio - 1.0)});
-      weight += row.samples;
-      weighted += row.samples * ratio;
     }
   }
   std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) {
@@ -265,23 +305,10 @@ bool CompareRows(const std::filesystem::path& path,
     fmt::print("  better  {:08X} {:+} ({} -> {})\n", c.address,
                c.after - c.before, c.before, c.after);
   }
-  if (timings.empty()) {
-    return true;
-  }
-  std::sort(timings.begin(), timings.end(),
-            [](const auto& a, const auto& b) { return a.impact > b.impact; });
-  fmt::print(
-      "time      {} functions timed in both: {:+.2f}% weighted by samples\n",
-      timings.size(), (weighted / weight - 1.0) * 100.0);
-  for (size_t i = 0; i < timings.size(); ++i) {
-    const Timing& t = timings[i];
-    const bool slower = t.after > t.before;
-    if (slower ? i < 10 : timings.size() - i <= 10) {
-      fmt::print("  {}  {:08X} {:+.2f}% ({:.0f} -> {:.0f} ns)\n",
-                 slower ? "slower" : "faster", t.address,
-                 (t.after / t.before - 1.0) * 100.0, t.before, t.after);
-    }
-  }
+  CompareMeasure("time", "ns", "slower", "faster", rows, baseline_ns,
+                 &Row::ns_per_invocation);
+  CompareMeasure("retired", "instructions", "more", "fewer", rows,
+                 baseline_instructions, &Row::instructions_per_invocation);
   return true;
 }
 
@@ -432,6 +459,41 @@ bool ReplayInvocations(Processor* processor, const JitCorpus& corpus,
       covered_samples ? weighted / covered_samples : 0.0, timed.size(),
       cvars::replay_efficiency_cores ? "efficiency" : "performance",
       timed.empty() ? 0 : runs / timed.size());
+
+  if (cvars::replay_count_instructions) {
+    // Reading the counter is a system call, which retires thousands of
+    // instructions, a varying few dozen of them, and interrupts only add to a
+    // count. So each invocation is restored and run kCountRuns times between
+    // two reads, and restored as many times alone, which is the same work
+    // every time; the fewest of kCountBatches of each are taken.
+    constexpr uint32_t kCountRuns = 16;
+    constexpr size_t kCountBatches = 8;
+    double weighted_instructions = 0.0;
+    for (const auto& [address, samples] : timed) {
+      const auto& invocations = by_function[address];
+      double instructions = 0.0;
+      for (const JitCorpus::Invocation* invocation : invocations) {
+        uint64_t with_runs = UINT64_MAX, without = UINT64_MAX;
+        for (size_t batch = 0; batch < kCountBatches; ++batch) {
+          with_runs = std::min(with_runs, replay.CountInstructions(
+                                              *invocation, kCountRuns, true));
+          without = std::min(without, replay.CountInstructions(
+                                          *invocation, kCountRuns, false));
+        }
+        instructions +=
+            double(with_runs - std::min(with_runs, without)) / kCountRuns;
+      }
+      instructions /= double(invocations.size());
+      if (auto it = row_of.find(address); it != row_of.end()) {
+        it->second->instructions_per_invocation = instructions;
+      }
+      weighted_instructions += samples * instructions;
+    }
+    fmt::print(
+        "retired   {:.0f} host instructions per invocation weighted by "
+        "samples\n",
+        covered_samples ? weighted_instructions / covered_samples : 0.0);
+  }
   return mismatched.empty();
 }
 
@@ -560,7 +622,8 @@ int cpu_replay_main(const std::vector<std::string>& args) {
                stable,
                record.stable_instructions,
                0.0,
-               0};
+               0,
+               0.0};
     if (auto it = samples_of.find(record.address); it != samples_of.end()) {
       row.samples = it->second;
     }

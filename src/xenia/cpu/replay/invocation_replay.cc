@@ -12,6 +12,11 @@
 #include <algorithm>
 #include <cstring>
 
+#if XE_PLATFORM_MAC && TARGET_OS_OSX
+#include <libproc.h>
+#include <unistd.h>
+#endif  // XE_PLATFORM_MAC && TARGET_OS_OSX
+
 #include "fmt/format.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/math.h"
@@ -240,7 +245,7 @@ std::string InvocationReplay::Check(const JitCorpus::Invocation& invocation,
   return {};
 }
 
-uint64_t InvocationReplay::Time(const JitCorpus::Invocation& invocation) {
+Function* InvocationReplay::Prepare(const JitCorpus::Invocation& invocation) {
   for (const auto& [address, hash] : invocation.memory) {
     WritePage(address, hash);
   }
@@ -248,10 +253,41 @@ uint64_t InvocationReplay::Time(const JitCorpus::Invocation& invocation) {
   next_export_ = 0;
   std::memcpy(thread_state_->context(), invocation.entry_registers.data(),
               JitCorpus::kRegistersSize);
-  Function* function = processor_->ResolveFunction(invocation.function);
+  return processor_->ResolveFunction(invocation.function);
+}
+
+uint64_t InvocationReplay::Time(const JitCorpus::Invocation& invocation) {
+  Function* function = Prepare(invocation);
   const uint64_t start = Clock::host_tick_count_platform();
   function->Call(thread_state_.get(), invocation.return_address);
   return Clock::host_tick_count_platform() - start;
+}
+
+namespace {
+// The instructions the process has retired, 0 where the host does not count
+// them.
+uint64_t RetiredInstructions() {
+#if XE_PLATFORM_MAC && TARGET_OS_OSX
+  rusage_info_v4 usage;
+  if (!proc_pid_rusage(getpid(), RUSAGE_INFO_V4,
+                       reinterpret_cast<rusage_info_t*>(&usage))) {
+    return usage.ri_instructions;
+  }
+#endif  // XE_PLATFORM_MAC && TARGET_OS_OSX
+  return 0;
+}
+}  // namespace
+
+uint64_t InvocationReplay::CountInstructions(
+    const JitCorpus::Invocation& invocation, uint32_t runs, bool run) {
+  const uint64_t start = RetiredInstructions();
+  for (uint32_t i = 0; i < runs; ++i) {
+    Function* function = Prepare(invocation);
+    if (run) {
+      function->Call(thread_state_.get(), invocation.return_address);
+    }
+  }
+  return RetiredInstructions() - start;
 }
 
 void InvocationReplay::ExternHandler(ppc::PPCContext* context,
