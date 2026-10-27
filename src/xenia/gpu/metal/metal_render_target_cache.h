@@ -324,7 +324,12 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::ComputePipelineState* resolve_full_8bpp_pipeline_ = nullptr;
   MTL::ComputePipelineState* resolve_full_16bpp_pipeline_ = nullptr;
   MTL::ComputePipelineState* resolve_full_32bpp_pipeline_ = nullptr;
+  // The rgb10-4x copy reading the 4x render target directly.
+  MTL::ComputePipelineState* resolve_full_32bpp_rgb10_4x_direct_pipeline_ =
+      nullptr;
   MTL::ComputePipelineState* resolve_full_64bpp_pipeline_ = nullptr;
+  // One per kResolveSpecializations entry, in its order.
+  std::vector<MTL::ComputePipelineState*> resolve_specialized_pipelines_;
   MTL::ComputePipelineState* resolve_full_128bpp_pipeline_ = nullptr;
   MTL::ComputePipelineState* resolve_fast_32bpp_1x2xmsaa_pipeline_ = nullptr;
   MTL::ComputePipelineState* resolve_fast_32bpp_4xmsaa_pipeline_ = nullptr;
@@ -728,13 +733,17 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Writes contents of the host render targets within those same rectangles
   // straight into shared memory in the destination's guest texture layout,
   // skipping edram_buffer_ and the resolve copy that would read it back again.
-  // Returns false without encoding anything if it can't, leaving the caller to
-  // fall back to the round trip.
+  // A 2_10_10_10 four-sample average instead runs the rgb10-4x copy reading
+  // the samples from the one 4x render target owning the source, with the
+  // group counts of the copy. Returns false if it can't, leaving the caller to
+  // fall back to the round trip, which rewrites the whole destination.
   bool DirectResolveRenderTargets(
       const draw_util::ResolveInfo& resolve_info,
+      draw_util::ResolveCopyShaderIndex copy_shader,
       const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
       uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-      uint32_t dump_pitch, MTL::CommandBuffer* command_buffer);
+      uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
+      MTL::CommandBuffer* command_buffer);
 
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
