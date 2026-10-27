@@ -73,6 +73,7 @@ class MetalCommandProcessor : public CommandProcessor {
   void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) override;
   void RestoreEdramSnapshot(const void* snapshot) override;
   void InitializeTrace() override;
+  bool DumpEdramSnapshotToFile(const std::filesystem::path& path) override;
   void ClearCaches() override;
   void InvalidateGpuMemory() override;
   void ClearReadbackBuffers() override;
