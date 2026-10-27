@@ -35,6 +35,8 @@ namespace metal {
 class MetalCommandProcessor;
 
 class MetalRenderTargetCache final : public gpu::RenderTargetCache {
+  friend class MetalPairedClearTest;
+
  public:
   // Metal-specific render target - defined inside cache class to access
   // protected RenderTarget
@@ -667,6 +669,12 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // With active_render_encoder the transfers are encoded as draws into that
   // encoder's pass rather than into standalone passes of their own, which rules
   // out resolve clears, host depth stores and the blit fast path.
+  enum class PairedClearResult { kNotApplicable, kEncoded, kFailed };
+  PairedClearResult TryPerformPairedResolveClear(
+      uint32_t render_target_count, RenderTarget* const* render_targets,
+      const std::vector<Transfer>* transfers, const uint64_t* clear_values,
+      const Transfer::Rectangle& rectangle, MTL::CommandBuffer* cmd);
+
   bool PerformTransfersAndResolveClears(
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* render_target_transfers,
