@@ -532,7 +532,41 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kVertexFetchEndianBindingCount = 2;
   static constexpr uint32_t kFetchStateBoolConstantsBinding = 8;
   static constexpr uint32_t kFetchStateLoopConstantsBinding = 10;
-  static constexpr uint32_t kFetchStateBindingCount = 18;
+  static constexpr uint32_t kFetchStateFiniteMultiplyBinding = 18;
+  static constexpr uint32_t kFetchStateBindingCount = 19;
+  // Unknown includes computed overflow, interpolation, vertex data and
+  // dynamically addressed inputs. Only explicit finite proofs can clear it.
+  static constexpr uint64_t kFiniteMultiplyUnknown = UINT64_C(1);
+  static constexpr uint32_t kFiniteMultiplyTextureShift = 1;
+  static constexpr uint64_t kFiniteMultiplyTextures = UINT64_C(0x1FFFFFFFE);
+  static constexpr uint64_t kFiniteMultiplyFloatConstants = UINT64_C(1) << 33;
+  struct FiniteMultiplyOperands {
+    uint64_t vector[3][4];
+    uint64_t scalar[2][4];
+    uint64_t previous_scalar = kFiniteMultiplyUnknown;
+    bool recorded = false;
+    FiniteMultiplyOperands() {
+      for (auto& operand : vector) {
+        for (auto& component : operand) {
+          component = kFiniteMultiplyUnknown;
+        }
+      }
+      for (auto& operand : scalar) {
+        for (auto& component : operand) {
+          component = kFiniteMultiplyUnknown;
+        }
+      }
+    }
+  };
+  struct FiniteMultiplyAnalysis {
+    std::vector<FiniteMultiplyOperands> operands;
+    uint64_t dynamic_inputs = 0;
+    uint64_t direct_constants[4] = {};
+  };
+  // Local proofs are joined across predication and discarded at control-flow
+  // boundaries. Arithmetic is never assumed immune to finite-input overflow.
+  static void AnalyzeFiniteMultiplications(const Shader& shader,
+                                           FiniteMultiplyAnalysis& analysis);
 
   struct Features {
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
@@ -566,6 +600,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // Metal MSC maps descriptor set 9 to named function constants.
     bool fetch_state_function_constants = false;
     bool structured_vertex_control_flow = false;
+    bool optimize_finite_multiplication = false;
     bool allow_float_contraction = false;
   };
 
@@ -966,6 +1001,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Steps a sum or product of a and b rounded to nearest toward zero if its
   // exact error shows it rounded away, and saturates overflow.
   spv::Id RoundTowardZero(spv::Id rounded, spv::Id error, spv::Id a, spv::Id b);
+  bool CanUseFiniteProduct(uint64_t first, uint64_t second) const;
+  // guarded is rounded as AluMultiply rounds unless rounded_to_nearest.
+  spv::Id UseFiniteProduct(spv::Id guarded, spv::Id first, spv::Id second,
+                           uint64_t first_reasons, uint64_t second_reasons,
+                           bool rounded_to_nearest = false);
   // Pack/unpack two floats as Xbox 360 extended-range float16, where exponent
   // 31 is a large finite value (up to +-131008), not Inf/NaN.
   spv::Id PackFloat16x2ExtendedRange(spv::Id float2_value);
@@ -1219,6 +1259,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Is currently writing the empty depth-only pixel shader, such as for depth
   // and stencil testing with fragment shader interlock.
   bool is_depth_only_fragment_shader_ = false;
+  bool finite_multiply_enabled_ = false;
+  FiniteMultiplyAnalysis finite_multiply_analysis_;
+  FiniteMultiplyOperands current_finite_multiply_;
   bool is_viz_survey_fragment_shader_ = false;
 
   std::unique_ptr<SpirvBuilder> builder_;

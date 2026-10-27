@@ -513,6 +513,15 @@ void SpirvShaderTranslator::StartTranslation() {
       features_.spirv_version, (kSpirvMagicToolId << 16) | 1, nullptr);
   builder_->SetAllowContraction(features_.allow_float_contraction);
   builder_->SetNoContractionAll(cvars::spirv_no_contraction_all);
+  finite_multiply_enabled_ = features_.optimize_finite_multiplication &&
+                             !is_depth_only_fragment_shader_ &&
+                             (is_pixel_shader() || IsSpirvVertexShader()) &&
+                             !BisectTargetsCurrentShader();
+  finite_multiply_analysis_ = {};
+  current_finite_multiply_ = {};
+  if (finite_multiply_enabled_) {
+    AnalyzeFiniteMultiplications(current_shader(), finite_multiply_analysis_);
+  }
 
   builder_->addCapability(IsSpirvTessEvalShader() ? spv::CapabilityTessellation
                                                   : spv::CapabilityShader);
@@ -745,6 +754,9 @@ void SpirvShaderTranslator::StartTranslation() {
       loops &= ~(UINT32_C(1) << index);
       fetch_state_bindings |=
           UINT32_C(1) << (kFetchStateLoopConstantsBinding + (index >> 2));
+    }
+    if (finite_multiply_enabled_ && finite_multiply_analysis_.dynamic_inputs) {
+      fetch_state_bindings |= UINT32_C(1) << kFetchStateFiniteMultiplyBinding;
     }
     if (fetch_state_bindings) {
       id_vector_temp_.clear();

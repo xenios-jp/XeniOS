@@ -1192,6 +1192,10 @@ MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
       &states[SpirvShaderTranslator::kFetchStateLoopConstantsBinding * 4],
       request.description.vertex_loop_constants,
       sizeof(request.description.vertex_loop_constants));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateFiniteMultiplyBinding * 4],
+      request.description.vertex_finite_multiply_state,
+      sizeof(request.description.vertex_finite_multiply_state));
   return GetSpecializedFunction(
       request.vertex_library, request.vertex_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
@@ -1211,6 +1215,10 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
       &states[SpirvShaderTranslator::kFetchStateLoopConstantsBinding * 4],
       request.description.pixel_loop_constants,
       sizeof(request.description.pixel_loop_constants));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateFiniteMultiplyBinding * 4],
+      request.description.pixel_finite_multiply_state,
+      sizeof(request.description.pixel_finite_multiply_state));
   return GetSpecializedFunction(
       request.fragment_library, request.fragment_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
@@ -1234,10 +1242,116 @@ bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
     return false;
   }
   const auto& constants = translation->shader().constant_register_map();
-  return constants.loop_bitmap ||
+  return (spirv_translator_features_.optimize_finite_multiplication &&
+          GetFiniteMultiplyRequirements(translation->shader())) ||
+         constants.loop_bitmap ||
          std::any_of(std::begin(constants.bool_bitmap),
                      std::end(constants.bool_bitmap),
                      [](uint32_t bits) { return bits != 0; });
+}
+
+const MetalCommandProcessor::FiniteMultiplyInfo&
+MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
+  auto found = finite_multiply_requirements_.find(&shader);
+  if (found != finite_multiply_requirements_.end()) {
+    return found->second;
+  }
+  SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
+  SpirvShaderTranslator::AnalyzeFiniteMultiplications(shader, analysis);
+  FiniteMultiplyInfo info;
+  info.required = analysis.dynamic_inputs;
+  std::memcpy(info.direct_constants, analysis.direct_constants,
+              sizeof(info.direct_constants));
+  return finite_multiply_requirements_.emplace(&shader, info).first->second;
+}
+
+uint64_t MetalCommandProcessor::GetFiniteMultiplyRequirements(
+    const Shader& shader) const {
+  return spirv_translator_features_.optimize_finite_multiplication
+             ? GetFiniteMultiplyInfo(shader).required
+             : 0;
+}
+
+namespace {
+bool FiniteMultiplyTextureFormat(xenos::TextureFormat format) {
+  // These packed normalized/small-integer formats remain finite through
+  // bounded sign, gamma and exponent adjustments. Other formats are unknown.
+  switch (format) {
+    case xenos::TextureFormat::k_1_REVERSE:
+    case xenos::TextureFormat::k_1:
+    case xenos::TextureFormat::k_8:
+    case xenos::TextureFormat::k_1_5_5_5:
+    case xenos::TextureFormat::k_5_6_5:
+    case xenos::TextureFormat::k_6_5_5:
+    case xenos::TextureFormat::k_8_8_8_8:
+    case xenos::TextureFormat::k_2_10_10_10:
+    case xenos::TextureFormat::k_8_A:
+    case xenos::TextureFormat::k_8_B:
+    case xenos::TextureFormat::k_8_8:
+    case xenos::TextureFormat::k_8_8_8_8_A:
+    case xenos::TextureFormat::k_4_4_4_4:
+    case xenos::TextureFormat::k_DXT1:
+    case xenos::TextureFormat::k_DXT2_3:
+    case xenos::TextureFormat::k_DXT4_5:
+    case xenos::TextureFormat::k_16:
+    case xenos::TextureFormat::k_16_16:
+    case xenos::TextureFormat::k_16_16_16_16:
+    case xenos::TextureFormat::k_DXN:
+    case xenos::TextureFormat::k_8_8_8_8_AS_16_16_16_16:
+    case xenos::TextureFormat::k_DXT1_AS_16_16_16_16:
+    case xenos::TextureFormat::k_DXT2_3_AS_16_16_16_16:
+    case xenos::TextureFormat::k_DXT4_5_AS_16_16_16_16:
+    case xenos::TextureFormat::k_2_10_10_10_AS_16_16_16_16:
+    case xenos::TextureFormat::k_DXT3A:
+    case xenos::TextureFormat::k_DXT5A:
+    case xenos::TextureFormat::k_CTX1:
+    case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
+      return true;
+    default:
+      return false;
+  }
+}
+}  // namespace
+
+void MetalCommandProcessor::GetFiniteMultiplyState(
+    const Shader::Translation* translation, const RegisterFile& regs,
+    uint32_t* state) const {
+  const auto& info = GetFiniteMultiplyInfo(translation->shader());
+  uint64_t required = info.required;
+  uint32_t textures =
+      uint32_t((required & SpirvShaderTranslator::kFiniteMultiplyTextures) >>
+               SpirvShaderTranslator::kFiniteMultiplyTextureShift);
+  uint32_t index;
+  while (xe::bit_scan_forward(textures, &index)) {
+    textures &= ~(UINT32_C(1) << index);
+    const uint32_t* fetch =
+        &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + index * 6];
+    if ((fetch[0] & 3) != uint32_t(xenos::FetchConstantType::kTexture) ||
+        !FiniteMultiplyTextureFormat(xenos::TextureFormat(fetch[1] & 63))) {
+      state[0] |= UINT32_C(1) << index;
+    }
+  }
+  if (!(required & SpirvShaderTranslator::kFiniteMultiplyFloatConstants)) {
+    return;
+  }
+  const uint32_t* values =
+      &regs.values[translation->shader().type() == xenos::ShaderType::kPixel
+                       ? XE_GPU_REG_SHADER_CONSTANT_256_X
+                       : XE_GPU_REG_SHADER_CONSTANT_000_X];
+
+  for (uint32_t word = 0; word < 4; ++word) {
+    uint64_t used = info.direct_constants[word];
+    while (xe::bit_scan_forward(used, &index)) {
+      used &= ~(UINT64_C(1) << index);
+      for (uint32_t component = 0; component < 4; ++component) {
+        if ((values[(word * 64 + index) * 4 + component] &
+             UINT32_C(0x7F800000)) == UINT32_C(0x7F800000)) {
+          state[1] = 1;
+          return;
+        }
+      }
+    }
+  }
 }
 
 void MetalCommandProcessor::SetPipelineFunctionConstants(
@@ -2356,6 +2470,8 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   SpirvShaderTranslator::Features spirv_features(true);
   spirv_features.structured_vertex_control_flow = UseDxilPath();
   spirv_features.fetch_state_function_constants = UseDxilPath();
+  spirv_features.optimize_finite_multiplication =
+      UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
   // Barycentric interpolation not needed for current Metal path.
@@ -2560,6 +2676,7 @@ void MetalCommandProcessor::ShutdownContext() {
     tessellator_tables_buffer_->release();
     tessellator_tables_buffer_ = nullptr;
   }
+  finite_multiply_requirements_.clear();
   guest_shader_cache_.clear();
   memexport_format_profiles_.Clear();
   spirv_shader_translator_.reset();
@@ -2680,6 +2797,10 @@ void MetalCommandProcessor::CreateStoredPipelines(
 const char* MetalCommandProcessor::QueueStoredPipeline(
     const PipelineStoredDescription& stored, Shader*& vertex_shader_out) {
   const PipelineDescription& description = stored.description;
+  if (description.finite_multiply_enabled !=
+      spirv_translator_features_.optimize_finite_multiplication) {
+    return "belonging to another finite-multiply configuration";
+  }
   // A tessellation pipeline belongs to the path that recorded it, and its
   // shaders are the wrong subclass for the other one.
   if (IsTessellationPipelineKind(PipelineKind(description.kind)) &&
@@ -7660,6 +7781,8 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
       request.vertex_fetch_states_specialized;
   description.fragment_fetch_states_specialized =
       request.fragment_fetch_states_specialized;
+  description.finite_multiply_enabled =
+      spirv_translator_features_.optimize_finite_multiplication;
   auto get_bool_loop_constants = [&regs](const Shader::Translation* translation,
                                          uint32_t* bool_constants,
                                          uint32_t* loop_constants) {
@@ -7687,10 +7810,18 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     get_bool_loop_constants(vertex_translation,
                             description.vertex_bool_constants,
                             description.vertex_loop_constants);
+    if (spirv_translator_features_.optimize_finite_multiplication) {
+      GetFiniteMultiplyState(vertex_translation, regs,
+                             description.vertex_finite_multiply_state);
+    }
   }
   if (request.fragment_fetch_states_specialized) {
     get_bool_loop_constants(pixel_translation, description.pixel_bool_constants,
                             description.pixel_loop_constants);
+    if (spirv_translator_features_.optimize_finite_multiplication) {
+      GetFiniteMultiplyState(pixel_translation, regs,
+                             description.pixel_finite_multiply_state);
+    }
   }
   request.priority = pixel_translation ? 2 : 1;
   request.pipeline_key = description.GetHash();
