@@ -711,6 +711,64 @@ void SpirvShaderTranslator::StartTranslation() {
     main_interface_.push_back(uniform_system_constants_);
   }
 
+  // Load each specialized uint4 once in the entry block. MSC creates one
+  // named function constant per load from this descriptor set.
+  std::fill(std::begin(uniform_fetch_state_), std::end(uniform_fetch_state_),
+            spv::NoResult);
+  if (features_.fetch_state_function_constants &&
+      ((is_pixel_shader() && !is_depth_only_fragment_shader_) ||
+       IsSpirvVertexShader())) {
+    uint32_t fetch_state_bindings = 0;
+    if (!is_pixel_shader()) {
+      for (const Shader::VertexBinding& binding :
+           current_shader().vertex_bindings()) {
+        fetch_state_bindings |= UINT32_C(1) << (binding.fetch_constant >> 6);
+      }
+    }
+    const Shader::ConstantRegisterMap& constants =
+        current_shader().constant_register_map();
+    for (uint32_t i = 0; i < xe::countof(constants.bool_bitmap); ++i) {
+      if (constants.bool_bitmap[i]) {
+        fetch_state_bindings |= UINT32_C(1)
+                                << (kFetchStateBoolConstantsBinding + (i >> 2));
+      }
+    }
+    uint32_t loops = constants.loop_bitmap;
+    uint32_t index;
+    while (xe::bit_scan_forward(loops, &index)) {
+      loops &= ~(UINT32_C(1) << index);
+      fetch_state_bindings |=
+          UINT32_C(1) << (kFetchStateLoopConstantsBinding + (index >> 2));
+    }
+    if (fetch_state_bindings) {
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(type_uint4_);
+      spv::Id type_fetch_state =
+          builder_->makeStructType(id_vector_temp_, "XeFetchState");
+      builder_->addMemberName(type_fetch_state, 0, "fetch_states");
+      builder_->addMemberDecoration(type_fetch_state, 0, spv::DecorationOffset,
+                                    0);
+      builder_->addDecoration(type_fetch_state, spv::DecorationBlock);
+      uint32_t fetch_state_binding;
+      while (xe::bit_scan_forward(fetch_state_bindings, &fetch_state_binding)) {
+        fetch_state_bindings &= ~(UINT32_C(1) << fetch_state_binding);
+        spv::Id& uniform_fetch_state =
+            uniform_fetch_state_[fetch_state_binding];
+        uniform_fetch_state = builder_->createVariable(
+            spv::NoPrecision, spv::StorageClassUniform, type_fetch_state,
+            fmt::format("xe_fetch_state_{}", fetch_state_binding).c_str());
+        builder_->addDecoration(uniform_fetch_state,
+                                spv::DecorationDescriptorSet,
+                                int(kDescriptorSetFetchState));
+        builder_->addDecoration(uniform_fetch_state, spv::DecorationBinding,
+                                int(fetch_state_binding));
+        if (features_.spirv_version >= spv::Spv_1_4) {
+          main_interface_.push_back(uniform_fetch_state);
+        }
+      }
+    }
+  }
+
   bool memexport_used = IsMemoryExportUsed();
 
   if (!is_depth_only_fragment_shader_) {
@@ -875,6 +933,17 @@ void SpirvShaderTranslator::StartTranslation() {
       builder_->createAccessChain(spv::StorageClassUniform,
                                   uniform_system_constants_, id_vector_temp_),
       spv::NoPrecision);
+  for (uint32_t i = 0; i < kFetchStateBindingCount; ++i) {
+    main_fetch_state_[i] = spv::NoResult;
+    if (uniform_fetch_state_[i] != spv::NoResult) {
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(const_int_0_);
+      main_fetch_state_[i] = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassUniform,
+                                      uniform_fetch_state_[i], id_vector_temp_),
+          spv::NoPrecision);
+    }
+  }
 
   if (!is_depth_only_fragment_shader_) {
     // Begin ucode translation. Initialize everything, even without defined
@@ -1479,22 +1548,7 @@ void SpirvShaderTranslator::ProcessLoopStartInstruction(
 
   EnsureBuildPointAvailable();
 
-  id_vector_temp_.clear();
-  // Loop constants (member 1).
-  id_vector_temp_.push_back(builder_->makeIntConstant(1));
-  // 4-component vector.
-  id_vector_temp_.push_back(
-      builder_->makeIntConstant(int(instr.loop_constant_index >> 2)));
-  // Scalar within the vector.
-  id_vector_temp_.push_back(
-      builder_->makeIntConstant(int(instr.loop_constant_index & 3)));
-  // Count (unsigned) in bits 0:7 of the loop constant (struct member 1),
-  // initial aL (unsigned) in 8:15.
-  spv::Id loop_constant =
-      builder_->createLoad(builder_->createAccessChain(
-                               spv::StorageClassUniform,
-                               uniform_bool_loop_constants_, id_vector_temp_),
-                           spv::NoPrecision);
+  spv::Id loop_constant = LoadLoopConstant(instr.loop_constant_index);
 
   spv::Id const_int_8 = builder_->makeIntConstant(8);
 
@@ -1638,20 +1692,7 @@ void SpirvShaderTranslator::ProcessLoopEndInstruction(
                         var_main_loop_count_);
   // Extract the value to add to aL (signed, in bits 16:23 of the loop
   // constant).
-  id_vector_temp_.clear();
-  // Loop constants (member 1).
-  id_vector_temp_.push_back(builder_->makeIntConstant(1));
-  // 4-component vector.
-  id_vector_temp_.push_back(
-      builder_->makeIntConstant(int(instr.loop_constant_index >> 2)));
-  // Scalar within the vector.
-  id_vector_temp_.push_back(
-      builder_->makeIntConstant(int(instr.loop_constant_index & 3)));
-  spv::Id loop_constant =
-      builder_->createLoad(builder_->createAccessChain(
-                               spv::StorageClassUniform,
-                               uniform_bool_loop_constants_, id_vector_temp_),
-                           spv::NoPrecision);
+  spv::Id loop_constant = LoadLoopConstant(instr.loop_constant_index);
   spv::Id address_relative_old = builder_->createCompositeExtract(
       address_relative_stack_old, type_int_, 0);
   builder_->createStore(
@@ -4063,6 +4104,62 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
   }
 }
 
+spv::Id SpirvShaderTranslator::LoadLoopConstant(uint32_t loop_constant_index) {
+  spv::Id loop_constants_specialized =
+      main_fetch_state_[kFetchStateLoopConstantsBinding +
+                        (loop_constant_index >> 2)];
+  if (loop_constants_specialized != spv::NoResult) {
+    return builder_->createCompositeExtract(
+        loop_constants_specialized, type_uint_, loop_constant_index & 3);
+  }
+  id_vector_temp_.clear();
+  // Loop constants (member 1).
+  id_vector_temp_.push_back(builder_->makeIntConstant(1));
+  // 4-component vector.
+  id_vector_temp_.push_back(
+      builder_->makeIntConstant(int(loop_constant_index >> 2)));
+  // Scalar within the vector.
+  id_vector_temp_.push_back(
+      builder_->makeIntConstant(int(loop_constant_index & 3)));
+  return builder_->createLoad(
+      builder_->createAccessChain(spv::StorageClassUniform,
+                                  uniform_bool_loop_constants_,
+                                  id_vector_temp_),
+      spv::NoPrecision);
+}
+
+spv::Id SpirvShaderTranslator::LoadBoolConstant(uint32_t bool_constant_index) {
+  spv::Id bool_constant_scalar;
+  spv::Id bool_constants_specialized =
+      main_fetch_state_[kFetchStateBoolConstantsBinding +
+                        (bool_constant_index >> 7)];
+  if (bool_constants_specialized != spv::NoResult) {
+    bool_constant_scalar = builder_->createCompositeExtract(
+        bool_constants_specialized, type_uint_, (bool_constant_index >> 5) & 3);
+  } else {
+    id_vector_temp_.clear();
+    // Bool constants (member 0).
+    id_vector_temp_.push_back(const_int_0_);
+    // 128-bit vector.
+    id_vector_temp_.push_back(
+        builder_->makeIntConstant(int(bool_constant_index >> 7)));
+    // 32-bit scalar of a 128-bit vector.
+    id_vector_temp_.push_back(
+        builder_->makeIntConstant(int((bool_constant_index >> 5) & 3)));
+    bool_constant_scalar =
+        builder_->createLoad(builder_->createAccessChain(
+                                 spv::StorageClassUniform,
+                                 uniform_bool_loop_constants_, id_vector_temp_),
+                             spv::NoPrecision);
+  }
+  return builder_->createBinOp(
+      spv::OpINotEqual, type_bool_,
+      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, bool_constant_scalar,
+                            builder_->makeUintConstant(
+                                uint32_t(1) << (bool_constant_index & 31))),
+      const_uint_0_);
+}
+
 void SpirvShaderTranslator::UpdateExecConditionals(
     ParsedExecInstruction::Type type, uint32_t bool_constant_index,
     bool condition) {
@@ -4102,27 +4199,7 @@ void SpirvShaderTranslator::UpdateExecConditionals(
   EnsureBuildPointAvailable();
   spv::Id condition_id;
   if (type == ParsedExecInstruction::Type::kConditional) {
-    id_vector_temp_.clear();
-    // Bool constants (member 0).
-    id_vector_temp_.push_back(const_int_0_);
-    // 128-bit vector.
-    id_vector_temp_.push_back(
-        builder_->makeIntConstant(int(bool_constant_index >> 7)));
-    // 32-bit scalar of a 128-bit vector.
-    id_vector_temp_.push_back(
-        builder_->makeIntConstant(int((bool_constant_index >> 5) & 3)));
-    spv::Id bool_constant_scalar =
-        builder_->createLoad(builder_->createAccessChain(
-                                 spv::StorageClassUniform,
-                                 uniform_bool_loop_constants_, id_vector_temp_),
-                             spv::NoPrecision);
-    condition_id = builder_->createBinOp(
-        spv::OpINotEqual, type_bool_,
-        builder_->createBinOp(
-            spv::OpBitwiseAnd, type_uint_, bool_constant_scalar,
-            builder_->makeUintConstant(uint32_t(1)
-                                       << (bool_constant_index & 31))),
-        const_uint_0_);
+    condition_id = LoadBoolConstant(bool_constant_index);
     cf_exec_bool_constant_or_predicate_ = bool_constant_index;
   } else if (type == ParsedExecInstruction::Type::kPredicated) {
     condition_id = builder_->createLoad(var_main_predicate_, spv::NoPrecision);

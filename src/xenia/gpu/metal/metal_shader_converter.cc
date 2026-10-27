@@ -15,6 +15,7 @@
 #include "metal_irconverter.h"
 
 #include "xenia/base/logging.h"
+#include "xenia/gpu/spirv_shader_translator.h"
 
 namespace xe {
 namespace gpu {
@@ -618,6 +619,11 @@ MetalShaderConversionResult MetalShaderConverter::ConvertWithRootSignature(
   IRCompilerSetCompatibilityFlags(compiler,
                                   IRCompatibilityFlags(compatibility_flags));
   IRCompilerSetGlobalRootSignature(compiler, root_signature);
+  if (stage == MetalShaderStage::kFragment ||
+      (stage == MetalShaderStage::kVertex && !tessellation_emulation)) {
+    IRCompilerSetFunctionConstantResourceSpace(
+        compiler, SpirvShaderTranslator::kDescriptorSetFetchState);
+  }
   // Mesa embeds no root signature, but the flag also keeps MSC from inferring
   // one and disagreeing with ours.
   IRCompilerIgnoreRootSignature(compiler, true);
