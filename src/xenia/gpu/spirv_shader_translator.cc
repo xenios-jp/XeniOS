@@ -390,6 +390,12 @@ void SpirvShaderTranslator::Reset() {
   main_fbo_depth_unbiased_ = spv::NoResult;
   main_fbo_depth_derivatives_.fill(spv::NoResult);
 
+  cf_structured_ = false;
+  cf_structured_jumps_.clear();
+  cf_structured_merges_.clear();
+  cf_structured_jump_else_.clear();
+  cf_structured_loop_ends_.clear();
+  cf_structured_constructs_.clear();
   main_switch_op_.reset();
   main_switch_next_pc_phi_operands_.clear();
   main_rect_list_loop_header_ = nullptr;
@@ -1082,6 +1088,11 @@ void SpirvShaderTranslator::StartTranslation() {
         spv::NoPrecision));
   }
 
+  // Use structured selections and loops only if the whole guest CFG nests.
+  cf_structured_ =
+      !is_pixel_shader() && features_.structured_vertex_control_flow &&
+      !current_shader().label_addresses().empty() && StructurizeControlFlow();
+
   // Open the main loop.
   spv::Block& main_loop_pre_header = *builder_->getBuildPoint();
   main_loop_header_ = &builder_->makeNewBlock();
@@ -1095,9 +1106,9 @@ void SpirvShaderTranslator::StartTranslation() {
   main_loop_merge_ = new spv::Block(builder_->getUniqueId(), *function_main_);
   builder_->createBranch(main_loop_header_);
 
-  // If no jumps, don't create a switch, but still create a loop so exece can
-  // break.
-  bool has_main_switch = !current_shader().label_addresses().empty();
+  // Structured guest control flow needs no switch, but the main loop still
+  // lets exece end the shader.
+  bool has_main_switch = UsesMainSwitch();
 
   // Main loop header - based on whether it's the first iteration (entered from
   // the function or from the continuation), choose the program counter.
@@ -1150,9 +1161,13 @@ void SpirvShaderTranslator::StartTranslation() {
 
 std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
   if (!is_depth_only_fragment_shader_) {
-    // Close flow control within the last switch case.
+    // Close flow control within the final instruction range.
     CloseExecConditionals();
-    bool has_main_switch = !current_shader().label_addresses().empty();
+    if (cf_structured_) {
+      CloseStructuredSelections(uint32_t(cf_structured_jumps_.size()));
+      assert_true(cf_structured_constructs_.empty());
+    }
+    bool has_main_switch = UsesMainSwitch();
     // After the final exec (if it happened to be not exece, which would already
     // have a break branch), break from the switch if it exists, or from the
     // loop it doesn't.
@@ -1484,15 +1499,16 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
     return;
   }
 
-  // Writes after a label may reach it by jumping back. Writes skipped by
-  // jumping forward are already in main_interpolators_unmodified_.
-  main_interpolators_unmodified_ &=
-      ~current_shader().GetRegisterComponentsWrittenBeforeReentering(cf_index);
-
   assert_false(current_shader().label_addresses().empty());
 
   // Close flow control within the previous switch case.
   CloseExecConditionals();
+
+  if (cf_structured_) {
+    // No switch - structured constructs are entered and exited in
+    // ProcessControlFlowInstructionBegin.
+    return;
+  }
 
   spv::Function& function = builder_->getBuildPoint()->getParent();
   // Create the next switch case and fallthrough to it.
@@ -1518,6 +1534,43 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
   builder_->setBuildPoint(new_case);
 }
 
+void SpirvShaderTranslator::ProcessControlFlowInstructionBegin(
+    uint32_t cf_index) {
+  if (!cf_structured_) {
+    return;
+  }
+
+  // Leave the selections skipping to this instruction.
+  CloseStructuredSelections(cf_index);
+
+  // Enter the loop whose body starts at this instruction.
+  uint32_t loop_end = cf_structured_loop_ends_[cf_index];
+  if (loop_end == UINT32_MAX) {
+    return;
+  }
+  // Loop control is outside execs - actually close the last exec.
+  CloseExecConditionals();
+  EnsureBuildPointAvailable();
+  CfStructuredConstruct& loop = cf_structured_constructs_.emplace_back();
+  loop.end = loop_end;
+  loop.selection_else = nullptr;
+  loop.loop_header = &builder_->makeNewBlock();
+  spv::Block& loop_body = builder_->makeNewBlock();
+  // Added later because the body has nested control flow, but according to the
+  // specification:
+  // "The order of blocks in a function must satisfy the rule that blocks appear
+  //  before all blocks they dominate."
+  loop.loop_continue = new spv::Block(builder_->getUniqueId(), *function_main_);
+  loop.merge = new spv::Block(builder_->getUniqueId(), *function_main_);
+  builder_->createBranch(loop.loop_header);
+  builder_->setBuildPoint(loop.loop_header);
+  uint_vector_temp_.clear();
+  builder_->createLoopMerge(loop.merge, loop.loop_continue,
+                            spv::LoopControlDontUnrollMask, uint_vector_temp_);
+  builder_->createBranch(&loop_body);
+  builder_->setBuildPoint(&loop_body);
+}
+
 void SpirvShaderTranslator::ProcessExecInstructionBegin(
     const ParsedExecInstruction& instr) {
   UpdateExecConditionals(instr.type, instr.bool_constant_index,
@@ -1527,12 +1580,13 @@ void SpirvShaderTranslator::ProcessExecInstructionBegin(
 void SpirvShaderTranslator::ProcessExecInstructionEnd(
     const ParsedExecInstruction& instr) {
   if (instr.is_end) {
-    // Break out of the main switch (if exists) and the main loop.
+    // Break out of the main switch (if exists) and the main loop. Structured
+    // control flow ends the shader only outside guest loops, where the main
+    // loop is the innermost one.
     CloseInstructionPredication();
     if (!builder_->getBuildPoint()->isTerminated()) {
-      builder_->createBranch(current_shader().label_addresses().empty()
-                                 ? main_loop_merge_
-                                 : main_switch_merge_);
+      builder_->createBranch(UsesMainSwitch() ? main_switch_merge_
+                                              : main_loop_merge_);
     }
   }
   UpdateExecConditionals(instr.type, instr.bool_constant_index,
@@ -1548,6 +1602,8 @@ void SpirvShaderTranslator::ProcessLoopStartInstruction(
 
   EnsureBuildPointAvailable();
 
+  // Count (unsigned) in bits 0:7 of the loop constant, initial aL (unsigned)
+  // in 8:15.
   spv::Id loop_constant = LoadLoopConstant(instr.loop_constant_index);
 
   spv::Id const_int_8 = builder_->makeIntConstant(8);
@@ -1598,6 +1654,33 @@ void SpirvShaderTranslator::ProcessLoopStartInstruction(
   spv::Block& head_block = *builder_->getBuildPoint();
   spv::Id loop_count_zero = builder_->createBinOp(
       spv::OpIEqual, type_bool_, loop_count_new, const_uint_0_);
+  if (cf_structured_) {
+    // Skip to the merge of a selection containing the loop.
+    CfStructuredConstruct& selection = cf_structured_constructs_.emplace_back();
+    selection.end = cf_structured_merges_[instr.dword_index];
+    selection.merge = new spv::Block(builder_->getUniqueId(), *function_main_);
+    selection.selection_else = nullptr;
+    selection.loop_header = nullptr;
+    selection.loop_continue = nullptr;
+    spv::Block& body_block = builder_->makeNewBlock();
+    builder_->createSelectionMerge(selection.merge,
+                                   spv::SelectionControlMaskNone);
+    {
+      std::unique_ptr<spv::Instruction> branch_conditional_op =
+          std::make_unique<spv::Instruction>(spv::OpBranchConditional);
+      branch_conditional_op->addIdOperand(loop_count_zero);
+      branch_conditional_op->addIdOperand(selection.merge->getId());
+      branch_conditional_op->addIdOperand(body_block.getId());
+      // More likely to enter than to skip.
+      branch_conditional_op->addImmediateOperand(1);
+      branch_conditional_op->addImmediateOperand(2);
+      head_block.addInstruction(std::move(branch_conditional_op));
+    }
+    selection.merge->addPredecessor(&head_block);
+    body_block.addPredecessor(&head_block);
+    builder_->setBuildPoint(&body_block);
+    return;
+  }
   spv::Block& skip_block = builder_->makeNewBlock();
   spv::Block& body_block = builder_->makeNewBlock();
   builder_->createSelectionMerge(&body_block, spv::SelectionControlMaskNone);
@@ -1707,11 +1790,18 @@ void SpirvShaderTranslator::ProcessLoopEndInstruction(
           address_relative_stack_old, type_int4_, 0),
       var_main_loop_address_);
   // Jump back to the beginning of the loop body.
-  main_switch_next_pc_phi_operands_.push_back(
-      builder_->makeIntConstant(int(instr.loop_body_address)));
-  main_switch_next_pc_phi_operands_.push_back(
-      builder_->getBuildPoint()->getId());
-  builder_->createBranch(main_loop_continue_);
+  if (cf_structured_) {
+    assert_false(cf_structured_constructs_.empty());
+    assert_not_null(cf_structured_constructs_.back().loop_header);
+    assert_true(cf_structured_constructs_.back().end == instr.dword_index);
+    builder_->createBranch(cf_structured_constructs_.back().loop_continue);
+  } else {
+    main_switch_next_pc_phi_operands_.push_back(
+        builder_->makeIntConstant(int(instr.loop_body_address)));
+    main_switch_next_pc_phi_operands_.push_back(
+        builder_->getBuildPoint()->getId());
+    builder_->createBranch(main_loop_continue_);
+  }
 
   // Break case.
   builder_->setBuildPoint(&break_block);
@@ -1735,11 +1825,79 @@ void SpirvShaderTranslator::ProcessLoopEndInstruction(
   builder_->createStore(
       builder_->createCompositeConstruct(type_int4_, id_vector_temp_),
       var_main_loop_address_);
+
+  if (cf_structured_) {
+    // Leave the loop, and close it with its continue target, which only goes
+    // back to the header.
+    CfStructuredConstruct loop = cf_structured_constructs_.back();
+    cf_structured_constructs_.pop_back();
+    builder_->createBranch(loop.merge);
+    function_main_->addBlock(loop.loop_continue);
+    builder_->setBuildPoint(loop.loop_continue);
+    builder_->createBranch(loop.loop_header);
+    function_main_->addBlock(loop.merge);
+    builder_->setBuildPoint(loop.merge);
+  }
+
   // Now going to fall through to the next control flow instruction.
 }
 
 void SpirvShaderTranslator::ProcessJumpInstruction(
     const ParsedJumpInstruction& instr) {
+  if (cf_structured_) {
+    // The jump is on the control flow level, outside execs.
+    CloseExecConditionals();
+    switch (cf_structured_jumps_[instr.dword_index]) {
+      case CfStructuredJump::kIf: {
+        assert_true(instr.type != ParsedJumpInstruction::Type::kUnconditional);
+        EnsureBuildPointAvailable();
+        spv::Id condition_id =
+            instr.type == ParsedJumpInstruction::Type::kConditional
+                ? LoadBoolConstant(instr.bool_constant_index)
+                : builder_->createLoad(var_main_predicate_, spv::NoPrecision);
+        CfStructuredConstruct& selection =
+            cf_structured_constructs_.emplace_back();
+        selection.end = cf_structured_merges_[instr.dword_index];
+        selection.merge =
+            new spv::Block(builder_->getUniqueId(), *function_main_);
+        selection.selection_else =
+            cf_structured_jump_else_[instr.dword_index]
+                ? new spv::Block(builder_->getUniqueId(), *function_main_)
+                : nullptr;
+        selection.loop_header = nullptr;
+        selection.loop_continue = nullptr;
+        builder_->createSelectionMerge(selection.merge,
+                                       spv::SelectionControlDontFlattenMask);
+        // Not jumping executes the instructions until the target, jumping
+        // executes the else part if there is one.
+        spv::Block& then_block = builder_->makeNewBlock();
+        spv::Block* jump_block = selection.selection_else
+                                     ? selection.selection_else
+                                     : selection.merge;
+        builder_->createConditionalBranch(
+            condition_id, instr.condition ? jump_block : &then_block,
+            instr.condition ? &then_block : jump_block);
+        builder_->setBuildPoint(&then_block);
+      } break;
+      case CfStructuredJump::kElse: {
+        assert_false(cf_structured_constructs_.empty());
+        CfStructuredConstruct& selection = cf_structured_constructs_.back();
+        assert_null(selection.loop_header);
+        assert_not_null(selection.selection_else);
+        if (!builder_->getBuildPoint()->isTerminated()) {
+          builder_->createBranch(selection.merge);
+        }
+        function_main_->addBlock(selection.selection_else);
+        builder_->setBuildPoint(selection.selection_else);
+        selection.selection_else = nullptr;
+      } break;
+      default:
+        // A jump to the next instruction.
+        break;
+    }
+    return;
+  }
+
   // Treat like exec, merge with execs if possible, since it's an if too.
   ParsedExecInstruction::Type type;
   if (instr.type == ParsedJumpInstruction::Type::kConditional) {
@@ -4101,6 +4259,200 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
     builder_->createStore(param_gen, builder_->createAccessChain(
                                          spv::StorageClassFunction,
                                          var_main_registers_, id_vector_temp_));
+  }
+}
+
+bool SpirvShaderTranslator::StructurizeControlFlow() {
+  const Shader& shader = current_shader();
+  uint32_t cf_count = shader.cf_pair_index_bound() * 2;
+  const uint32_t* ucode_dwords = shader.ucode_data().data();
+  std::vector<ucode::ControlFlowInstruction> cf_instructions;
+  cf_instructions.reserve(cf_count);
+  for (uint32_t i = 0; i < shader.cf_pair_index_bound(); ++i) {
+    ucode::ControlFlowInstruction cf_ab[2];
+    ucode::UnpackControlFlowInstructions(ucode_dwords + i * 3, cf_ab);
+    cf_instructions.push_back(cf_ab[0]);
+    cf_instructions.push_back(cf_ab[1]);
+  }
+
+  cf_structured_jumps_.clear();
+  cf_structured_jumps_.resize(cf_count, CfStructuredJump::kNone);
+  cf_structured_merges_.clear();
+  cf_structured_merges_.resize(cf_count, UINT32_MAX);
+  cf_structured_jump_else_.clear();
+  cf_structured_jump_else_.resize(cf_count, false);
+  cf_structured_loop_ends_.clear();
+  cf_structured_loop_ends_.resize(cf_count, UINT32_MAX);
+
+  // A loop is the range from the instruction loop_end goes back to until the
+  // loop_end, independently of loop_start, which only pushes the loop state and
+  // skips over the loop. Only one loop may start at an instruction.
+  bool loops_structured = true;
+  for (uint32_t i = 0; i < cf_count; ++i) {
+    if (cf_instructions[i].opcode() != ucode::ControlFlowOpcode::kLoopEnd) {
+      continue;
+    }
+    uint32_t loop_body = cf_instructions[i].loop_end.address();
+    if (loop_body > i || cf_structured_loop_ends_[loop_body] != UINT32_MAX) {
+      loops_structured = false;
+      break;
+    }
+    cf_structured_loop_ends_[loop_body] = i;
+  }
+
+  if (!loops_structured ||
+      !StructurizeControlFlowRange(cf_instructions, 0, cf_count,
+                                   std::vector<uint32_t>(), false, false)) {
+    XELOGD(
+        "Shader {:016X}: control flow not structured, using the program "
+        "counter switch",
+        shader.ucode_data_hash());
+    return false;
+  }
+  return true;
+}
+
+bool SpirvShaderTranslator::StructurizeControlFlowRange(
+    const std::vector<ucode::ControlFlowInstruction>& cf_instructions,
+    uint32_t begin, uint32_t end, const std::vector<uint32_t>& end_aliases,
+    bool loop_body, bool in_loop) {
+  // Jumping to an alias of the end of the range is the same as going to the
+  // end of the range.
+  auto normalize_target = [&](uint32_t target) -> uint32_t {
+    return std::find(end_aliases.cbegin(), end_aliases.cend(), target) !=
+                   end_aliases.cend()
+               ? end
+               : target;
+  };
+  // The aliases of the end of a range within this one ending at `merge`.
+  auto merge_aliases = [&](uint32_t merge) -> std::vector<uint32_t> {
+    return merge == end ? end_aliases : std::vector<uint32_t>();
+  };
+  uint32_t cf_index = begin;
+  while (cf_index < end) {
+    // A loop whose body starts here, unless the range is that body itself.
+    if (!loop_body || cf_index != begin) {
+      uint32_t loop_end = cf_structured_loop_ends_[cf_index];
+      if (loop_end != UINT32_MAX) {
+        // The loop_end must be reached to leave the loop.
+        if (loop_end >= end ||
+            !StructurizeControlFlowRange(cf_instructions, cf_index, loop_end,
+                                         std::vector<uint32_t>(), true, true)) {
+          return false;
+        }
+        cf_index = loop_end + 1;
+        continue;
+      }
+    }
+
+    const ucode::ControlFlowInstruction& cf = cf_instructions[cf_index];
+    switch (cf.opcode()) {
+      case ucode::ControlFlowOpcode::kCondJmp: {
+        uint32_t target_raw = cf.cond_jmp.address();
+        uint32_t target = normalize_target(target_raw);
+        if (target <= cf_index || target > end) {
+          // Backward, or out of the enclosing construct.
+          return false;
+        }
+        if (target == cf_index + 1) {
+          // Nothing to skip.
+          break;
+        }
+        if (cf.cond_jmp.is_unconditional()) {
+          // Only an unconditional jump over an else part is structured.
+          return false;
+        }
+        cf_structured_jumps_[cf_index] = CfStructuredJump::kIf;
+        // If the instruction before the target jumps forward over more
+        // instructions, it ends the then part of an if-else.
+        uint32_t else_jump = target - 1;
+        const ucode::ControlFlowInstruction& else_jump_cf =
+            cf_instructions[else_jump];
+        if (target == target_raw &&
+            else_jump_cf.opcode() == ucode::ControlFlowOpcode::kCondJmp &&
+            else_jump_cf.cond_jmp.is_unconditional()) {
+          uint32_t merge_raw = else_jump_cf.cond_jmp.address();
+          uint32_t merge = normalize_target(merge_raw);
+          if (merge > target) {
+            if (merge > end) {
+              return false;
+            }
+            cf_structured_jumps_[else_jump] = CfStructuredJump::kElse;
+            cf_structured_merges_[cf_index] = merge;
+            cf_structured_jump_else_[cf_index] = true;
+            // Reaching the else jump is the same as going to the merge, and
+            // further if it's the end of this range.
+            std::vector<uint32_t> then_end_aliases = merge_aliases(merge);
+            then_end_aliases.push_back(merge_raw);
+            if (merge != merge_raw) {
+              then_end_aliases.push_back(merge);
+            }
+            if (!StructurizeControlFlowRange(cf_instructions, cf_index + 1,
+                                             else_jump, then_end_aliases, false,
+                                             in_loop) ||
+                !StructurizeControlFlowRange(cf_instructions, target, merge,
+                                             merge_aliases(merge), false,
+                                             in_loop)) {
+              return false;
+            }
+            cf_index = merge;
+            continue;
+          }
+        }
+        cf_structured_merges_[cf_index] = target;
+        if (!StructurizeControlFlowRange(cf_instructions, cf_index + 1, target,
+                                         merge_aliases(target), false,
+                                         in_loop)) {
+          return false;
+        }
+        cf_index = target;
+        continue;
+      }
+      case ucode::ControlFlowOpcode::kLoopStart: {
+        // Skipped with a selection containing the loop.
+        uint32_t skip = normalize_target(cf.loop_start.address());
+        if (skip <= cf_index || skip > end ||
+            !StructurizeControlFlowRange(cf_instructions, cf_index + 1, skip,
+                                         merge_aliases(skip), false, in_loop)) {
+          return false;
+        }
+        cf_structured_merges_[cf_index] = skip;
+        cf_index = skip;
+        continue;
+      }
+      case ucode::ControlFlowOpcode::kLoopEnd:
+        // Not the end of the loop being structurized.
+        return false;
+      case ucode::ControlFlowOpcode::kCondCall:
+      case ucode::ControlFlowOpcode::kReturn:
+        return false;
+      default:
+        // Breaking out of the main loop is only possible from outside guest
+        // loops.
+        if (in_loop && ucode::DoesControlFlowOpcodeEndShader(cf.opcode())) {
+          return false;
+        }
+        break;
+    }
+    ++cf_index;
+  }
+  return true;
+}
+
+void SpirvShaderTranslator::CloseStructuredSelections(uint32_t cf_index) {
+  while (!cf_structured_constructs_.empty()) {
+    CfStructuredConstruct& selection = cf_structured_constructs_.back();
+    if (selection.loop_header || selection.end != cf_index) {
+      break;
+    }
+    assert_null(selection.selection_else);
+    CloseExecConditionals();
+    if (!builder_->getBuildPoint()->isTerminated()) {
+      builder_->createBranch(selection.merge);
+    }
+    function_main_->addBlock(selection.merge);
+    builder_->setBuildPoint(selection.merge);
+    cf_structured_constructs_.pop_back();
   }
 }
 
