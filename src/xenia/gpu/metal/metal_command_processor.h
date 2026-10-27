@@ -974,6 +974,11 @@ class MetalCommandProcessor : public CommandProcessor {
   // submission apart from one still being recorded.
   bool CanHoldSignalsForMemexport() const { return false; }
   void EndSubmissionForMemexport() {}
+  // DXIL exports not yet separated from later GPU consumers by a pass boundary.
+  std::vector<draw_util::MemExportRange> render_encoder_memexport_ranges_;
+  bool DrawOverlapsPendingMemexport(
+      const Shader& vertex_shader, const Shader* pixel_shader,
+      const IndexBufferInfo* index_buffer_info) const;
   // Page tracking so a fence the guest reads can await export output. The
   // fragment's host/device routing half is unused - Metal has one buffer.
 #include "../command_processor_memexport.inc"

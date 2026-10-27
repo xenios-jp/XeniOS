@@ -1586,6 +1586,59 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
   copy_resolve_writes_pending_ = true;
 }
 
+bool MetalCommandProcessor::DrawOverlapsPendingMemexport(
+    const Shader& vertex_shader, const Shader* pixel_shader,
+    const IndexBufferInfo* index_buffer_info) const {
+  if (render_encoder_memexport_ranges_.empty()) {
+    return false;
+  }
+  auto overlaps = [&](uint32_t base, uint64_t length) {
+    if (!length) {
+      return false;
+    }
+    for (const auto& written : render_encoder_memexport_ranges_) {
+      uint64_t written_base = uint64_t(written.base_address_dwords) << 2;
+      if (uint64_t(base) < written_base + written.size_bytes &&
+          written_base < uint64_t(base) + length) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // Both shader stages can perform guest vertex fetches from shared memory.
+  auto fetches_overlap = [&](const Shader& shader) {
+    const auto& bitmap = shader.constant_register_map().vertex_fetch_bitmap;
+    for (uint32_t i = 0; i < xe::countof(bitmap); ++i) {
+      uint32_t bits = bitmap[i], bit;
+      while (xe::bit_scan_forward(bits, &bit)) {
+        bits &= ~(uint32_t(1) << bit);
+        const auto fetch = register_file_->GetVertexFetch(i * 32 + bit);
+        if (overlaps(xenos::CpuToGpu(fetch.address << 2), uint64_t(fetch.size)
+                                                              << 2)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  if (fetches_overlap(vertex_shader) ||
+      (pixel_shader && fetches_overlap(*pixel_shader))) {
+    return true;
+  }
+  if (index_buffer_info &&
+      overlaps(xenos::CpuToGpu(index_buffer_info->guest_base),
+               index_buffer_info->length)) {
+    return true;
+  }
+  // Overlapping exports also require ordering, including partial-word RMW.
+  for (const auto& written : memexport_ranges_) {
+    if (overlaps(written.base_address_dwords << 2, written.size_bytes)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void MetalCommandProcessor::ForceIssueSwap() {
   // Force a swap to push any pending render target to presenter
   // This is used by trace dumps to capture output when there's no explicit swap
@@ -1989,6 +2042,7 @@ void MetalCommandProcessor::WaitForPendingCompletionHandlers() {
 }
 
 void MetalCommandProcessor::ShutdownContext() {
+  render_encoder_memexport_ranges_.clear();
   // End any active render encoder before shutdown
   if (current_render_encoder_) {
     current_render_encoder_->endEncoding();
@@ -3013,6 +3067,12 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
   memexport_ranges_awaited_ =
       IsMemexportAwaited(memexport_used_vertex, memexport_used_pixel);
+  if (UseDxilPath() && current_render_encoder_ &&
+      DrawOverlapsPendingMemexport(*vertex_shader, pixel_shader,
+                                   index_buffer_info)) {
+    // Order the export before this draw's accesses by ending the pass.
+    EndRenderEncoder();
+  }
   // Primitive/index processing (like D3D12/Vulkan).
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
   if (!primitive_processor_) {
@@ -5079,6 +5139,9 @@ bool MetalCommandProcessor::IssueDrawDxil(
   }
 
   if (memexport_used) {
+    for (const draw_util::MemExportRange& range : memexport_ranges_) {
+      render_encoder_memexport_ranges_.push_back(range);
+    }
     NoteMemexportRangesWritten();
   }
 
@@ -5386,6 +5449,7 @@ void MetalCommandProcessor::ResetMslCrossEncoderReuseCaches() {
 
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
+  render_encoder_memexport_ranges_.clear();
   if (!current_render_encoder_) {
     if (current_render_pass_descriptor_) {
       current_render_pass_descriptor_->release();
