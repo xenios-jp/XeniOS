@@ -497,7 +497,8 @@ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   return UploadRanges(uploads, current_upload_range);
 }
 
-bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
+bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length,
+                                bool cpu_data_only) const {
   if (!length) {
     return true;
   }
@@ -518,7 +519,9 @@ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
     if (i == block_last && (page_last & 63) != 63) {
       valid_mask &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
     }
-    if ((system_page_flags_valid_[i] & valid_mask) != valid_mask) {
+    if ((system_page_flags_valid_[i] & valid_mask) != valid_mask ||
+        (cpu_data_only &&
+         (system_page_flags_valid_and_gpu_written_[i] & valid_mask))) {
       return false;
     }
   }
