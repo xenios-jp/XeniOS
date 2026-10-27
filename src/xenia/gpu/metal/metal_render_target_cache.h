@@ -139,15 +139,21 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // encoder already recording holds the attachments in tile memory instead.
   MTL::RenderPassDescriptor* GetRenderPassDescriptor(
       uint32_t expected_sample_count, bool render_encoder_pending);
+  // Whether an existing encoder's descriptor still binds the textures needed
+  // by the current guest render-target configuration.
+  bool IsRenderPassDescriptorCompatible(
+      MTL::RenderPassDescriptor* pass_descriptor,
+      uint32_t expected_sample_count) const;
+  // Marks first-use clears baked into this descriptor as executed. Call only
+  // after a render encoder has been created successfully from the descriptor.
+  void ConsumeRenderPassDescriptorClears(
+      MTL::RenderPassDescriptor* pass_descriptor);
 
   bool IsRenderPassDescriptorDirty() const {
     return render_pass_descriptor_dirty_;
   }
 
   // Get current render targets for capture
-  MTL::Texture* GetColorTarget(uint32_t index) const;
-  MTL::Texture* GetDepthTarget() const;
-  MTL::Texture* GetDummyColorTarget() const;
   MetalRenderTarget* GetColorRenderTarget(uint32_t index) const;
   // Get current render targets for pipeline attachment formats.
   MTL::Texture* GetColorTargetForDraw(uint32_t index) const;
@@ -473,6 +479,14 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::RenderPassDescriptor* cached_render_pass_descriptor_ = nullptr;
   bool render_pass_descriptor_dirty_ = true;
   uint32_t cached_render_pass_descriptor_sample_count_ = 0;
+  // First-use clears are not consumed until an encoder has actually been
+  // created from the cached descriptor. Index 0 is depth, 1 + i are colors.
+  std::array<MetalRenderTarget*, 1 + xenos::kMaxColorRenderTargets>
+      cached_render_pass_descriptor_pending_clears_ = {};
+  // Whether an encoder has already been created for the current render target
+  // set. A later one reopens attachments that encoder wrote, so their contents
+  // have to be loaded back rather than discarded.
+  bool render_pass_encoder_created_since_targets_changed_ = false;
 
   // Dummy render target for when no render targets are bound
   struct DummyColorTargetEntry {
