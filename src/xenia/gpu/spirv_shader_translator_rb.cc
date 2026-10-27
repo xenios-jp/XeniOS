@@ -427,6 +427,67 @@ spv::Id SpirvShaderTranslator::Depth20e4To32(SpirvBuilder& builder,
   return f32;
 }
 
+spv::Id SpirvShaderTranslator::AnchorFragmentDerivativeInput(spv::Id operand) {
+  if (features_.primitive_fragment_helpers && is_pixel_shader() &&
+      !edram_fragment_shader_interlock_) {
+    // Keep a primitive-specific input live where helper lanes evaluate
+    // derivatives. Metal can change those results when neighboring primitives
+    // are batched; include texture operations that derive their own LOD.
+    builder_->addExtension("SPV_KHR_fragment_shader_barycentric");
+    builder_->addCapability(spv::CapabilityFragmentBarycentricKHR);
+    if (input_barycentric_coord_no_persp_ == spv::NoResult) {
+      input_barycentric_coord_no_persp_ = builder_->createVariable(
+          spv::NoPrecision, spv::StorageClassInput, type_float3_,
+          "xe_primitive_helper_barycentrics");
+      builder_->addDecoration(input_barycentric_coord_no_persp_,
+                              spv::DecorationBuiltIn,
+                              int(spv::BuiltInBaryCoordNoPerspKHR));
+      main_interface_.push_back(input_barycentric_coord_no_persp_);
+    }
+    auto barycentrics = builder_->createUnaryOp(
+        spv::OpBitcast, type_uint3_,
+        builder_->createLoad(input_barycentric_coord_no_persp_,
+                             spv::NoPrecision));
+    auto bits = builder_->createBinOp(
+        spv::OpBitwiseXor, type_uint_,
+        builder_->createCompositeExtract(barycentrics, type_uint_, 0),
+        builder_->createCompositeExtract(barycentrics, type_uint_, 1));
+    bits = builder_->createBinOp(
+        spv::OpBitwiseXor, type_uint_, bits,
+        builder_->createCompositeExtract(barycentrics, type_uint_, 2));
+    // Load in the current function: polygon-offset helpers aren't emitted in
+    // main. The host reserves bit 31 as zero, but the compiler cannot fold it.
+    auto flags = builder_->createLoad(
+        builder_->createAccessChain(
+            spv::StorageClassUniform, uniform_system_constants_,
+            {builder_->makeIntConstant(kSystemConstantFlags)}),
+        spv::NoPrecision);
+    auto zero = builder_->createBinOp(spv::OpShiftRightLogical, type_uint_,
+                                      flags, builder_->makeUintConstant(31));
+    auto delta =
+        builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, bits, zero);
+    int components = builder_->getNumComponents(operand);
+    auto uint_type = components == 1
+                         ? type_uint_
+                         : builder_->makeVectorType(type_uint_, components);
+    if (components != 1) {
+      delta = builder_->createCompositeConstruct(
+          uint_type, std::vector<spv::Id>(components, delta));
+    }
+    auto value = builder_->createUnaryOp(spv::OpBitcast, uint_type, operand);
+    value = builder_->createBinOp(spv::OpBitwiseXor, uint_type, value, delta);
+    operand = builder_->createUnaryOp(spv::OpBitcast,
+                                      builder_->getTypeId(operand), value);
+  }
+  return operand;
+}
+
+spv::Id SpirvShaderTranslator::CreateDerivative(spv::Op op, spv::Id result_type,
+                                                spv::Id operand) {
+  return builder_->createUnaryOp(op, result_type,
+                                 AnchorFragmentDerivativeInput(operand));
+}
+
 void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
   BisectOverrideColorOutput();
 
@@ -2191,10 +2252,10 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(
                                  input_fragment_coordinates_, id_vector_temp_),
                              spv::NoPrecision);
     builder_->addCapability(spv::CapabilityDerivativeControl);
-    depth_dxy[0] = builder_->createUnaryOp(spv::OpDPdxCoarse, type_float_,
-                                           center_depth32_unbiased);
-    depth_dxy[1] = builder_->createUnaryOp(spv::OpDPdyCoarse, type_float_,
-                                           center_depth32_unbiased);
+    depth_dxy[0] = CreateDerivative(spv::OpDPdxCoarse, type_float_,
+                                    center_depth32_unbiased);
+    depth_dxy[1] = CreateDerivative(spv::OpDPdyCoarse, type_float_,
+                                    center_depth32_unbiased);
   }
 
   // Skip everything if potentially discarded all the samples previously in the

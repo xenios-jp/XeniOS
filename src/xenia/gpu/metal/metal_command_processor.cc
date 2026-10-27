@@ -2474,7 +2474,12 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
-  // Barycentric interpolation not needed for current Metal path.
+  // A live primitive-specific input prevents adjacent primitives from sharing
+  // fragment helper values on affected Apple drivers. Keep regular varying
+  // interpolation; the extra barycentrics only anchor helper execution.
+  spirv_features.primitive_fragment_helpers =
+      UseDxilPath() && device_->supportsFamily(MTL::GPUFamilyApple1) &&
+      device_->supportsShaderBarycentricCoordinates();
   spirv_features.fragment_shader_barycentric = false;
   // Metal fast-math doesn't guarantee IEEE NaN/Inf preservation.
   spirv_features.signed_zero_inf_nan_preserve_float32 = false;

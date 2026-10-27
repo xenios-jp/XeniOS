@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 23;
+    static constexpr uint32_t kVersion = 26;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -311,7 +311,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSysFlag_FSIDepthStencilEarlyWrite =
         1u << kSysFlag_FSIDepthStencilEarlyWrite_Shift,
   };
-  static_assert(kSysFlag_Count <= 32, "Too many flags in the system constants");
+  // Bit 31 stays zero and provides an opaque zero for the Metal
+  // primitive-helper workaround. Keep this invariant when adding system flags.
+  static_assert(kSysFlag_Count < 32, "Bit 31 must remain zero");
 
   // IF SYSTEM CONSTANTS ARE CHANGED OR ADDED, THE FOLLOWING MUST BE UPDATED:
   // - SystemConstantIndex enum.
@@ -602,6 +604,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
     bool structured_vertex_control_flow = false;
     bool optimize_finite_multiplication = false;
     bool allow_float_contraction = false;
+    // Keep fragment derivatives within their primitive on Metal drivers that
+    // otherwise reuse values from adjacent primitives in a merged quad.
+    bool primitive_fragment_helpers = false;
   };
 
   SpirvShaderTranslator(const Features& features,
@@ -879,6 +884,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   void StartFragmentShaderBeforeMain();
   void StartFragmentShaderInMain();
   void CompleteFragmentShaderInMain();
+  // Preserves every input bit while keeping derivative helper evaluation
+  // primitive-specific, including implicit texture-coordinate derivatives.
+  spv::Id AnchorFragmentDerivativeInput(spv::Id value);
+  spv::Id CreateDerivative(spv::Op op, spv::Id result_type, spv::Id operand);
 
   // Writes gl_FragDepth for FBO shaders that need explicit depth: guest oDepth,
   // float24 conversion, or the host RT decal bias path.
