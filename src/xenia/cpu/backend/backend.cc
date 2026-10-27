@@ -21,6 +21,11 @@
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/cpu/thread_state.h"
 
+DEFINE_bool(release_core_in_spin_waits, true,
+            "Release the host core from guest db16cyc spin-wait loops, "
+            "instead of spinning on it while the thread they wait on may "
+            "need it. Only the a64 backend does.",
+            "CPU");
 DEFINE_bool(debugprint_trap_log, false,
             "Log debugprint traps to the active debugger", "CPU");
 
@@ -41,6 +46,8 @@ void* Backend::AllocThreadData() { return nullptr; }
 void Backend::FreeThreadData(void* thread_data) {}
 
 void (*preempt_yield_handler)(void* raw_context) = nullptr;
+void (*spin_wait_release_handler)(void* raw_context,
+                                  uint64_t sleep_ns) = nullptr;
 
 uint64_t TrapDebugPrint(void* raw_context) {
   auto thread_state =

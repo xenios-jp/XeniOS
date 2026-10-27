@@ -259,6 +259,10 @@ struct ReservedStoreFaultSite {
 // generation last read, still odd if the claim outlasted the wait.
 uint32_t AwaitReserveGranule(const std::atomic<uint32_t>& granule);
 
+// Registered by the cooperative scheduler, null otherwise; without it the
+// backend sleeps the host thread for |sleep_ns|.
+extern void (*spin_wait_release_handler)(void* raw_context, uint64_t sleep_ns);
+
 }  // namespace backend
 }  // namespace cpu
 }  // namespace xe
