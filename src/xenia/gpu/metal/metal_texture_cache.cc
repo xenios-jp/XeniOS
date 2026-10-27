@@ -116,6 +116,40 @@ namespace gpu {
 namespace metal {
 namespace {
 
+// Formats whose cache textures' views never reinterpret the component layout,
+// from a conservative list, so private 2D cache images of them don't need
+// MTLTextureUsagePixelFormatView. Writable resolve refresh textures keep it
+// for their integer view regardless (CreateTexture2D).
+bool CanOmitCachePixelFormatView(xenos::TextureFormat format) {
+  switch (format) {
+    case xenos::TextureFormat::k_1_5_5_5:
+    case xenos::TextureFormat::k_5_6_5:
+    case xenos::TextureFormat::k_6_5_5:
+    case xenos::TextureFormat::k_4_4_4_4:
+    case xenos::TextureFormat::k_2_10_10_10:
+    case xenos::TextureFormat::k_10_11_11:
+    case xenos::TextureFormat::k_11_11_10:
+    case xenos::TextureFormat::k_16_EXPAND:
+    case xenos::TextureFormat::k_16_FLOAT:
+    case xenos::TextureFormat::k_16_16_EXPAND:
+    case xenos::TextureFormat::k_16_16_FLOAT:
+    case xenos::TextureFormat::k_16_16_16_16_EXPAND:
+    case xenos::TextureFormat::k_16_16_16_16_FLOAT:
+    case xenos::TextureFormat::k_DXT3A:
+    case xenos::TextureFormat::k_DXT5A:
+    case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
+    case xenos::TextureFormat::k_CTX1:
+    case xenos::TextureFormat::k_24_8:
+    case xenos::TextureFormat::k_24_8_FLOAT:
+    case xenos::TextureFormat::k_32_FLOAT:
+    case xenos::TextureFormat::k_32_32_FLOAT:
+    case xenos::TextureFormat::k_32_32_32_32_FLOAT:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Formats whose tiled 2D base level may be loaded straight into the texture
 // through its resolve refresh write view by a raw-word loader, rather than
 // through a scratch buffer and a blit. The texture already has that view, and
@@ -2381,7 +2415,7 @@ MTL::PixelFormat MetalTextureCache::ConvertXenosFormat(
 MTL::Texture* MetalTextureCache::CreateTexture2D(
     uint32_t width, uint32_t height, uint32_t array_length,
     MTL::PixelFormat format, MTL::TextureSwizzleChannels swizzle,
-    uint32_t mip_levels, bool shader_write) {
+    uint32_t mip_levels, bool shader_write, bool pixel_format_view) {
   MTL::Device* device = command_processor_->GetMetalDevice();
   if (!device) {
     XELOGE(
@@ -2404,8 +2438,10 @@ MTL::Texture* MetalTextureCache::CreateTexture2D(
   descriptor->setDepth(1);
   descriptor->setArrayLength(array_length);
   descriptor->setMipmapLevelCount(mip_levels);
-  MTL::TextureUsage usage =
-      MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
+  MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
+  if (pixel_format_view || shader_write) {
+    usage |= MTL::TextureUsagePixelFormatView;
+  }
   if (shader_write) {
     usage |= MTL::TextureUsageShaderWrite;
   }
@@ -3579,9 +3615,11 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
     }
     case xenos::DataDimension::k2DOrStacked: {
       const bool shader_write = IsResolveRefreshKey(key);
-      metal_texture = CreateTexture2D(width, height, key.GetDepthOrArraySize(),
-                                      metal_format, metal_swizzle,
-                                      key.mip_max_level + 1, shader_write);
+      metal_texture = CreateTexture2D(
+          width, height, key.GetDepthOrArraySize(), metal_format, metal_swizzle,
+          key.mip_max_level + 1, shader_write,
+          !(GetCacheTextureStorageMode() == MTL::StorageModePrivate &&
+            CanOmitCachePixelFormatView(key.format)));
       break;
     }
     case xenos::DataDimension::k3D: {
