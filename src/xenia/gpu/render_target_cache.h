@@ -721,10 +721,13 @@ class RenderTargetCache {
 
   // copy_shader is the one ResolveInfo::GetCopyShader picked for this resolve.
   // Both destination layouts are covered - the caller decides which by what it
-  // binds and by EdramDumpShaderKey::native_layout.
+  // binds and by EdramDumpShaderKey::native_layout. allow_full32_4x_average
+  // admits the unsigned 8_8_8_8 and 2_10_10_10 four-sample averages into the
+  // same format, for backends that can do those directly.
   DirectResolveEligibility GetDirectResolveEligibility(
       const draw_util::ResolveInfo& resolve_info,
-      draw_util::ResolveCopyShaderIndex copy_shader) const;
+      draw_util::ResolveCopyShaderIndex copy_shader,
+      bool allow_full32_4x_average = false) const;
 
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected

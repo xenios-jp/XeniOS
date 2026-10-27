@@ -903,8 +903,9 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
     }
 
-    // The sample this pixel resolves from. Eligibility guarantees a single
-    // selected sample, so XeResolveFirstSampleIndex is the raw field.
+    // The sample this pixel resolves from. Except for the keyed 4x average,
+    // eligibility guarantees a single selected sample, so
+    // XeResolveFirstSampleIndex is the raw field.
     spv::Id sample_select =
         extract(resolve_dest_coordinate_info,
                 kResolveDestCoordinateInfoSampleSelectShift, 3);
@@ -971,6 +972,54 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
     }
 
+    auto load_average_4x_rgba8 = [&](spv::Id pixel_x, spv::Id pixel_y,
+                                     spv::Id& packed_out) {
+      spv::Id type_float4 = builder.makeVectorType(type_float, 4);
+      spv::Id sum = spv::NoResult;
+      for (uint32_t sample = 0; sample < 4; ++sample) {
+        spv::Builder::TextureParameters source_texture_parameters = {};
+        source_texture_parameters.sampler =
+            builder.createLoad(source_texture, spv::NoPrecision);
+        id_vector_temp.clear();
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, pixel_x));
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, pixel_y));
+        source_texture_parameters.coords =
+            builder.createCompositeConstruct(type_int2, id_vector_temp);
+        source_texture_parameters.sample = builder.makeIntConstant(sample);
+        spv::Id value = builder.createTextureCall(
+            spv::NoPrecision, type_float4, false, true, false, false, false,
+            source_texture_parameters, spv::ImageOperandsMaskNone);
+        sum = sum == spv::NoResult
+                  ? value
+                  : builder.createBinOp(spv::OpFAdd, type_float4, sum, value);
+      }
+      spv::Id average =
+          builder.createBinOp(spv::OpVectorTimesScalar, type_float4, sum,
+                              builder.makeFloatConstant(0.25f));
+      spv::Id component_width = builder.makeUintConstant(8);
+      packed_out = spv::NoResult;
+      for (uint32_t component = 0; component < 4; ++component) {
+        spv::Id packed_component = builder.createUnaryOp(
+            spv::OpConvertFToU, type_uint,
+            builder.createBinOp(
+                spv::OpFAdd, type_float,
+                builder.createBinOp(spv::OpFMul, type_float,
+                                    builder.createCompositeExtract(
+                                        average, type_float, component),
+                                    builder.makeFloatConstant(255.0f)),
+                builder.makeFloatConstant(0.5f)));
+        packed_out =
+            component == 0
+                ? packed_component
+                : builder.createQuadOp(spv::OpBitFieldInsert, type_uint,
+                                       packed_out, packed_component,
+                                       builder.makeUintConstant(8 * component),
+                                       component_width);
+      }
+    };
+
     SpirvBuilder::IfBuilder if_write(write_condition,
                                      spv::SelectionControlMaskNone, builder);
 
@@ -989,7 +1038,11 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       if (source_native_in_scaled_dest) {
         pixel_x = divide_down(pixel_x, options.resolution_scale_x);
       }
-      load_and_pack(pixel_x, source_pixel_y, source_sample_id, pixel_packed);
+      if (key.direct_resolve_4x_average) {
+        load_average_4x_rgba8(pixel_x, source_pixel_y, pixel_packed[0]);
+      } else {
+        load_and_pack(pixel_x, source_pixel_y, source_sample_id, pixel_packed);
+      }
       for (uint32_t j = 0; j < dwords_per_pixel; ++j) {
         run_packed[i * dwords_per_pixel + j] = pixel_packed[j];
       }

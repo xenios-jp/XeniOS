@@ -53,6 +53,9 @@ union EdramDumpShaderKey {
     // is written in the group-packed layout, out of a windowed binding, so the
     // destination base push constant is unused there.
     uint32_t direct_resolve : 1;
+    // Average all four samples of an RGBA8 4x source while resolving directly.
+    // Only meaningful with direct_resolve.
+    uint32_t direct_resolve_4x_average : 1;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
