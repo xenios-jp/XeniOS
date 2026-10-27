@@ -34,6 +34,9 @@ MetalDxilBinder::~MetalDxilBinder() = default;
 
 void MetalDxilBinder::ResetUploadCaches() {
   gather_cache_valid_ = false;
+  for (auto& cache : constant_slices_) {
+    cache.Reset();
+  }
   descriptor_heap_slices_valid_ = false;
   cached_texture_heap_slice_ = {};
   cached_sampler_heap_slice_ = {};
@@ -220,7 +223,6 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     }
   }
 
-  constexpr size_t kConstantCount = 5;
   const struct {
     MetalRootParameter parameter;
     const ConstantBlock& block;
@@ -233,8 +235,12 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   };
   Slice constant_slices[kConstantCount];
   for (size_t i = 0; i < kConstantCount; ++i) {
-    if (!Upload(constant_bindings[i].block.data,
-                constant_bindings[i].block.size, constant_slices[i])) {
+    const ConstantBlock& block = constant_bindings[i].block;
+    auto upload = [&](Slice& out) {
+      return Upload(block.data, block.size, out);
+    };
+    if (!constant_slices_[i].GetOrUpload({block.size, block.revision}, upload,
+                                         constant_slices[i])) {
       XELOGE("MetalDxilBinder: failed to allocate a constant buffer");
       return false;
     }

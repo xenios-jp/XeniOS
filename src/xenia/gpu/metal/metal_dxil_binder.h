@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "xenia/gpu/metal/metal_shader_converter.h"
@@ -38,6 +39,7 @@ class MetalDxilBinder {
   struct ConstantBlock {
     const void* data = nullptr;
     uint32_t size = 0;
+    uint64_t revision = 0;
   };
   // The guest constant buffers. The runtime data buffer is not here: the guest
   // shaders never read it, so it gets a zeroed placeholder.
@@ -78,6 +80,11 @@ class MetalDxilBinder {
     MTL::Buffer* buffer = nullptr;
     NS::UInteger offset = 0;
   };
+  static constexpr uint32_t kConstantCount = 5;
+  // Keyed by the block size and the revision the command processor bumps
+  // whenever the contents change.
+  using ConstantKey = std::pair<uint32_t, uint64_t>;
+  std::array<UploadCache<Slice, ConstantKey>, kConstantCount> constant_slices_;
   bool descriptor_heap_slices_valid_ = false;
   std::vector<IRDescriptorTableEntry> cached_texture_heap_entries_;
   std::vector<IRDescriptorTableEntry> cached_sampler_heap_entries_;
