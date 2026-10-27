@@ -675,6 +675,7 @@ std::string MetalCommandProcessor::MakeTitleStateSuffix() const {
 }
 
 MetalCommandProcessor::~MetalCommandProcessor() {
+  render_encoder_shared_memory_hazards_.Abandon();
   // End any active render encoder before releasing
   // Note: Only call endEncoding if the encoder is still active
   // (not already ended by a committed command buffer)
@@ -1671,13 +1672,24 @@ void MetalCommandProcessor::EncodeDeferredShaderDoneFences() {
   if (encoder) {
     std::memcpy(static_cast<uint8_t*>(source->contents()) + source_offset,
                 pending_shader_done_fence_values_.data(), size);
-    for (size_t i = 0; i < pending_shader_done_fence_ranges_.size(); ++i) {
-      encoder->copyFromBuffer(
-          source, source_offset + i * sizeof(uint32_t),
-          shared_memory_->GetBuffer(),
-          pending_shader_done_fence_ranges_[i].base_address_dwords << 2,
-          sizeof(uint32_t));
+    MetalBufferHazards::Encoder hazards;
+    if (shared_memory_->hazards()) {
+      hazards.Begin(*shared_memory_->hazards(), current_command_buffer_,
+                    encoder);
+      // Keep shader-done publication ordered after all preceding buffer uses.
+      hazards.OrderPreviousAccesses();
     }
+    for (size_t i = 0; i < pending_shader_done_fence_ranges_.size(); ++i) {
+      const uint32_t address =
+          pending_shader_done_fence_ranges_[i].base_address_dwords << 2;
+      if (hazards.is_active()) {
+        hazards.Access(address, sizeof(uint32_t), true);
+      }
+      encoder->copyFromBuffer(source, source_offset + i * sizeof(uint32_t),
+                              shared_memory_->GetBuffer(), address,
+                              sizeof(uint32_t));
+    }
+    hazards.End();
     encoder->endEncoding();
   } else {
     // EndRenderEncoder has already cleared the active encoder. Submit and
@@ -2269,6 +2281,7 @@ void MetalCommandProcessor::ShutdownContext() {
          gpu_time_command_buffers_.load(std::memory_order_relaxed),
          kind_breakdown.empty() ? " none created" : kind_breakdown);
 
+  render_encoder_shared_memory_hazards_.Abandon();
   // Now safe to release encoder and command buffer
   if (current_render_encoder_) {
     current_render_encoder_->release();
@@ -2877,6 +2890,9 @@ void MetalCommandProcessor::DiscardAccountedCommandBuffer(
     MTL::CommandBuffer* command_buffer, CommandBufferKind kind) {
   if (command_buffer) {
     --command_buffer_kind_counts_[size_t(kind)];
+    if (shared_memory_ && shared_memory_->hazards()) {
+      shared_memory_->hazards()->Discard(command_buffer);
+    }
     pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
   }
 }
@@ -3392,6 +3408,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 bool MetalCommandProcessor::RequestDrawSharedMemoryRanges(
     const Shader& vertex_shader, const RegisterFile& regs) {
   SCOPE_profile_cpu_f("gpu");
+  draw_shared_memory_reads_.clear();
   if (!shared_memory_) {
     return true;
   }
@@ -3440,6 +3457,7 @@ bool MetalCommandProcessor::RequestDrawSharedMemoryRanges(
             buffer_offset, buffer_length);
         return false;
       }
+      draw_shared_memory_reads_.emplace_back(buffer_offset, buffer_length);
     }
   }
 
@@ -3455,6 +3473,65 @@ bool MetalCommandProcessor::RequestDrawSharedMemoryRanges(
   }
 
   return true;
+}
+
+void MetalCommandProcessor::OrderDrawSharedMemoryAccesses(
+    const Shader* pixel_shader,
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+    MTL::Buffer* index_buffer, uint64_t index_buffer_offset,
+    uint64_t index_buffer_size, const RegisterFile& regs) {
+  if (!render_encoder_shared_memory_hazards_.is_active()) {
+    return;
+  }
+  for (const std::pair<uint32_t, uint32_t>& range : draw_shared_memory_reads_) {
+    render_encoder_shared_memory_hazards_.Access(range.first, range.second,
+                                                 false);
+  }
+  // Vertex fetches in the pixel shader aren't requested with the vertex
+  // shader's ones, but they still read the buffer.
+  if (pixel_shader) {
+    const Shader::ConstantRegisterMap& constant_map_pixel =
+        pixel_shader->constant_register_map();
+    for (uint32_t i = 0;
+         i < xe::countof(constant_map_pixel.vertex_fetch_bitmap); ++i) {
+      uint32_t vfetch_bits_remaining =
+          constant_map_pixel.vertex_fetch_bitmap[i];
+      uint32_t j;
+      while (xe::bit_scan_forward(vfetch_bits_remaining, &j)) {
+        vfetch_bits_remaining &= ~(uint32_t(1) << j);
+        xenos::xe_gpu_vertex_fetch_t vfetch = regs.GetVertexFetch(i * 32 + j);
+        render_encoder_shared_memory_hazards_.Access(
+            xenos::CpuToGpu(vfetch.address << 2), vfetch.size << 2, false);
+      }
+    }
+  }
+  if (index_buffer && index_buffer == shared_memory_->GetBuffer() &&
+      index_buffer_size) {
+    render_encoder_shared_memory_hazards_.Access(
+        uint32_t(index_buffer_offset),
+        uint32_t(
+            std::min(index_buffer_size, uint64_t(SharedMemory::kBufferSize))),
+        false);
+  }
+  // Vertex shaders expanding primitives load the guest indices themselves.
+  if (primitive_processing_result.index_buffer_type ==
+      PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA) {
+    render_encoder_shared_memory_hazards_.Access(
+        primitive_processing_result.guest_index_base,
+        uint32_t(std::min(
+            uint64_t(primitive_processing_result.guest_draw_vertex_count) *
+                (regs.Get<reg::VGT_DRAW_INITIATOR>().index_size ==
+                         xenos::IndexFormat::kInt32
+                     ? sizeof(uint32_t)
+                     : sizeof(uint16_t)),
+            uint64_t(SharedMemory::kBufferSize))),
+        false);
+  }
+  // Ordering the exports within the pass is up to the draw's own checks.
+  for (const draw_util::MemExportRange& range : memexport_ranges_) {
+    render_encoder_shared_memory_hazards_.Access(range.base_address_dwords << 2,
+                                                 range.size_bytes, true);
+  }
 }
 
 void MetalCommandProcessor::ComputeDrawViewportInfo(
@@ -3980,6 +4057,11 @@ bool MetalCommandProcessor::IssueDrawMsl(
   if (!current_render_encoder_) {
     XELOGE("SPIRV-Cross: failed to resume render encoder after uploads");
     return false;
+  }
+  if (render_encoder_shared_memory_hazards_.is_active()) {
+    // Tessellation may read control points without a host index buffer.
+    render_encoder_shared_memory_hazards_.Access(0, SharedMemory::kBufferSize,
+                                                 memexport_used);
   }
 
   draw_util::ViewportInfo viewport_info;
@@ -5422,6 +5504,16 @@ bool MetalCommandProcessor::IssueDrawDxil(
     return false;
   }
 
+  OrderDrawSharedMemoryAccesses(
+      bind_pixel_shader, primitive_processing_result,
+      draw_index_buffer.indexed ? draw_index_buffer.buffer : nullptr,
+      draw_index_buffer.offset,
+      uint64_t(draw_index_buffer.index_count) *
+          (draw_index_buffer.index_type == MTL::IndexTypeUInt16
+               ? sizeof(uint16_t)
+               : sizeof(uint32_t)),
+      regs);
+
   // Resume a ZPD segment waiting on a render encoder so this draw is counted.
   OpenQuerySegment(false);
 
@@ -5933,6 +6025,7 @@ void MetalCommandProcessor::EndRenderEncoder() {
   if (GetZPDMode() != ZPDMode::kFake) {
     CloseQuerySegment();
   }
+  render_encoder_shared_memory_hazards_.End();
   current_render_encoder_->endEncoding();
   if (render_encoder_has_zpd_visibility_) {
     zpd_visibility_pool_->EndRenderPass(current_command_buffer_);
@@ -6093,6 +6186,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   if (!current_render_encoder_) {
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
+    render_encoder_shared_memory_hazards_.Abandon();
     ResetMslRenderEncoderStateCache();
     // Note: renderCommandEncoder() returns an autoreleased object, we must
     // retain it.
@@ -6103,6 +6197,11 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       return;
     }
     current_render_encoder_->retain();
+    if (shared_memory_ && shared_memory_->hazards()) {
+      render_encoder_shared_memory_hazards_.Begin(*shared_memory_->hazards(),
+                                                  current_command_buffer_,
+                                                  current_render_encoder_);
+    }
     // A non-null encoder will execute the descriptor's first-use clears when
     // the pass ends. Keep them pending across encoder-creation failures.
     if (render_target_cache_) {
@@ -6664,6 +6763,9 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;
     current_draw_index_ = 0;
+    if (shared_memory_ && shared_memory_->hazards()) {
+      shared_memory_->hazards()->Retire();
+    }
   }
   copy_resolve_writes_pending_ = false;
   DrainCommandBufferAutoreleasePool();

@@ -3460,6 +3460,13 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     return false;
   }
 
+  MetalBufferHazards::Encoder hazards;
+  if (shared->hazards()) {
+    hazards.Begin(*shared->hazards(), cmd, encoder);
+    hazards.Access(resolve_info.copy_dest_extent_start,
+                   resolve_info.copy_dest_extent_length, true);
+  }
+
   bool encode_failed = false;
   if (rgb10_4x_average) {
     // The kernel declares the origin binding as a writable device buffer, so
@@ -3664,6 +3671,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     }
   }
 
+  hazards.End();
   encoder->endEncoding();
   if (owns_command_buffer) {
     cmd->commit();
@@ -4642,6 +4650,13 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                            kRenderTargetResolve);
             }
           } else {
+            MetalBufferHazards::Encoder hazards;
+            if (shared && shared->hazards() &&
+                dest_buffer == shared->GetBuffer()) {
+              hazards.Begin(*shared->hazards(), cmd, encoder);
+              hazards.Access(resolve_info.copy_dest_extent_start,
+                             resolve_info.copy_dest_extent_length, true);
+            }
             encoder->setComputePipelineState(pipeline);
 
             // Buffer 0: push constants
@@ -4664,6 +4679,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                 MTL::Size::Make(group_count_x, group_count_y, 1),
                 MTL::Size::Make(8, 8, 1));
 
+            hazards.End();
             encoder->endEncoding();
             if (owns_command_buffer) {
               cmd->commit();
