@@ -3241,6 +3241,17 @@ MTL::ComputePipelineState* MetalRenderTargetCache::GetOrCreateDumpPipeline(
   if (spirv.empty()) {
     XELOGE("MetalRenderTargetCache: failed to emit the dump shader 0x{:08X}",
            key.key);
+  } else if (key.direct_resolve_texture) {
+    std::string error;
+    MTL::Function* function =
+        CompileResolveRefreshFunctionMsl(device_, spirv, &error);
+    if (function) {
+      NS::Error* pipeline_error = nullptr;
+      pipeline = device_->newComputePipelineState(function, &pipeline_error);
+      function->release();
+    } else {
+      XELOGE("Metal: resolve refresh compilation failed: {}", error);
+    }
   } else {
     std::vector<uint8_t> dxil = SpirvToDxilCompiler::Translate(
         spirv.data(), spirv.size(), SpirvToDxilCompiler::Stage::kCompute);
@@ -3282,7 +3293,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
-    MTL::CommandBuffer* command_buffer) {
+    MTL::CommandBuffer* command_buffer, MTL::Texture* refresh_texture) {
   SCOPE_profile_cpu_f("gpu");
   auto* shared = command_processor_.shared_memory();
   MTL::Buffer* dest_buffer = shared ? shared->GetBuffer() : nullptr;
@@ -3306,7 +3317,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   MTL::Texture* rgb10_source = nullptr;
   uint32_t rgb10_origin[2] = {};
   if (rgb10_4x_average) {
-    if (rectangles.size() != 1 || !rectangles[0].render_target ||
+    if (refresh_texture || rectangles.size() != 1 ||
+        !rectangles[0].render_target ||
         !resolve_full_32bpp_rgb10_4x_direct_pipeline_ || !group_count_x ||
         !group_count_y) {
       return false;
@@ -3368,6 +3380,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     shader_key.resource_format = rt_key.resource_format;
     shader_key.msaa_samples = rt_key.msaa_samples;
     shader_key.direct_resolve = 1;
+    shader_key.direct_resolve_texture = refresh_texture != nullptr;
     shader_key.direct_resolve_4x_average =
         IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
     Source source;
@@ -3472,6 +3485,14 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       copy_shader_constants.dest_base;
   push_constants[kEdramDumpShaderPushConstantResolveHeightDiv8] =
       resolve_info.height_div_8;
+  if (refresh_texture) {
+    push_constants[kEdramDumpShaderPushConstantResolveTextureWidth] =
+        uint32_t(refresh_texture->width());
+    push_constants[kEdramDumpShaderPushConstantResolveTextureHeight] =
+        uint32_t(refresh_texture->height());
+    encoder->setTexture(refresh_texture, 1);
+    encoder->useResource(refresh_texture, MTL::ResourceUsageWrite);
+  }
 
   for (size_t rectangle_index = 0;
        !rgb10_4x_average && rectangle_index < rectangles.size() &&
@@ -3485,27 +3506,36 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
 
     MTL::Buffer* heap_buffer = nullptr;
     NS::UInteger heap_offset = 0;
-    if (!command_processor_.AcquireSpirvArgumentBufferSlice(
+    if (!refresh_texture &&
+        !command_processor_.AcquireSpirvArgumentBufferSlice(
             sizeof(IRDescriptorTableEntry) * 2, kInternalComputeSliceAlignment,
             &heap_buffer, &heap_offset)) {
       encode_failed = true;
       break;
     }
-    auto* heap_entries = reinterpret_cast<IRDescriptorTableEntry*>(
-        static_cast<uint8_t*>(heap_buffer->contents()) + heap_offset);
-    std::memset(heap_entries, 0, sizeof(IRDescriptorTableEntry) * 2);
-    IRDescriptorTableSetTexture(&heap_entries[0], source_texture, 0.0f, 0);
-    if (stencil_texture) {
-      IRDescriptorTableSetTexture(&heap_entries[1], stencil_texture, 0.0f, 0);
+    if (!refresh_texture) {
+      auto* heap_entries = reinterpret_cast<IRDescriptorTableEntry*>(
+          static_cast<uint8_t*>(heap_buffer->contents()) + heap_offset);
+      std::memset(heap_entries, 0, sizeof(IRDescriptorTableEntry) * 2);
+      IRDescriptorTableSetTexture(&heap_entries[0], source_texture, 0.0f, 0);
+      if (stencil_texture) {
+        IRDescriptorTableSetTexture(&heap_entries[1], stencil_texture, 0.0f, 0);
+      }
     }
 
     encoder->setComputePipelineState(sources[rectangle_index].pipeline);
-    encoder->setBuffer(heap_buffer, heap_offset,
-                       NS::UInteger(kIRDescriptorHeapBindPoint));
+    if (!refresh_texture) {
+      encoder->setBuffer(heap_buffer, heap_offset,
+                         NS::UInteger(kIRDescriptorHeapBindPoint));
+    }
     // Nothing reached by GPU address is resident just from being written into
     // the argument buffer.
     encoder->useResource(dest_buffer, MTL::ResourceUsageWrite);
     encoder->useResource(source_texture, MTL::ResourceUsageRead);
+    if (refresh_texture) {
+      encoder->setTexture(source_texture, 0);
+      encoder->setBuffer(dest_buffer, 0, 1);
+    }
     if (stencil_texture) {
       encoder->useResource(stencil_texture, MTL::ResourceUsageRead);
     }
@@ -3558,10 +3588,11 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       if (!command_processor_.AcquireSpirvArgumentBufferSlice(
               sizeof(push_constants), kInternalComputeSliceAlignment,
               &push_constant_buffer, &push_constant_offset) ||
-          !command_processor_.AcquireSpirvArgumentBufferSlice(
-              converter.internal_compute_argument_buffer_size(),
-              kInternalComputeSliceAlignment, &argument_buffer,
-              &argument_buffer_offset)) {
+          (!refresh_texture &&
+           !command_processor_.AcquireSpirvArgumentBufferSlice(
+               converter.internal_compute_argument_buffer_size(),
+               kInternalComputeSliceAlignment, &argument_buffer,
+               &argument_buffer_offset))) {
         encode_failed = true;
         break;
       }
@@ -3569,27 +3600,31 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
                       push_constant_offset,
                   push_constants, sizeof(push_constants));
 
-      auto* argument_buffer_data =
-          static_cast<uint8_t*>(argument_buffer->contents()) +
-          argument_buffer_offset;
-      std::memset(argument_buffer_data, 0,
-                  converter.internal_compute_argument_buffer_size());
-      auto write_root_parameter =
-          [&](MetalInternalComputeRootParameter parameter, uint64_t address) {
-            std::memcpy(
-                argument_buffer_data +
-                    converter.internal_compute_root_parameter_offset(parameter),
-                &address, sizeof(address));
-          };
-      write_root_parameter(MetalInternalComputeRootParameter::kDestUav,
-                           uint64_t(dest_buffer->gpuAddress()));
-      write_root_parameter(MetalInternalComputeRootParameter::kSourceTable,
-                           uint64_t(heap_buffer->gpuAddress()) + heap_offset);
-      write_root_parameter(
-          MetalInternalComputeRootParameter::kPushConstants,
-          uint64_t(push_constant_buffer->gpuAddress()) + push_constant_offset);
-      encoder->setBuffer(argument_buffer, argument_buffer_offset,
-                         NS::UInteger(kIRArgumentBufferBindPoint));
+      if (refresh_texture) {
+        encoder->setBuffer(push_constant_buffer, push_constant_offset, 0);
+      } else {
+        auto* argument_buffer_data =
+            static_cast<uint8_t*>(argument_buffer->contents()) +
+            argument_buffer_offset;
+        std::memset(argument_buffer_data, 0,
+                    converter.internal_compute_argument_buffer_size());
+        auto write_root_parameter =
+            [&](MetalInternalComputeRootParameter parameter, uint64_t address) {
+              std::memcpy(argument_buffer_data +
+                              converter.internal_compute_root_parameter_offset(
+                                  parameter),
+                          &address, sizeof(address));
+            };
+        write_root_parameter(MetalInternalComputeRootParameter::kDestUav,
+                             uint64_t(dest_buffer->gpuAddress()));
+        write_root_parameter(MetalInternalComputeRootParameter::kSourceTable,
+                             uint64_t(heap_buffer->gpuAddress()) + heap_offset);
+        write_root_parameter(MetalInternalComputeRootParameter::kPushConstants,
+                             uint64_t(push_constant_buffer->gpuAddress()) +
+                                 push_constant_offset);
+        encoder->setBuffer(argument_buffer, argument_buffer_offset,
+                           NS::UInteger(kIRArgumentBufferBindPoint));
+      }
 
       uint32_t threads_x =
           (dispatch.width_tiles * tile_pixels_x + (pixels_per_thread - 1)) /
@@ -4335,13 +4370,34 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   // native 1x1 copy nor a binding of the resolution-scaled resolve buffer, so
   // anything under scaling takes the EDRAM round trip.
   bool resolved_directly = false;
+  MetalTextureCache::ResolveTextureRefreshTarget refresh_target;
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true) ==
           DirectResolveEligibility::kEligible) {
+    const auto& dest_info = resolve_info.copy_dest_info;
+    const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
+    auto* texture_cache = command_processor_.texture_cache();
+    if (texture_cache && !resolve_info.IsCopyingDepth() &&
+        !IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) &&
+        !dest_info.copy_dest_exp_bias &&
+        uint32_t(dest_info.copy_dest_endian) <=
+            uint32_t(xenos::Endian::k16in32) &&
+        !dest_coordinates.offset_x_div_8 && !dest_coordinates.offset_y_div_8) {
+      texture_cache->PrepareDirectResolveTextureRefresh(
+          dest_info.copy_dest_format, resolve_info.copy_dest_extent_start,
+          resolve_info.copy_dest_extent_length, resolve_info.copy_dest_base,
+          resolve_width, resolve_height,
+          dest_coordinates.pitch_aligned_div_32 << 5,
+          xenos::Endian(dest_info.copy_dest_endian), refresh_target);
+    }
+    // RequestRange may process completed submissions and evict the cache
+    // wrapper. Keep its writable view alive through encoding; publication
+    // separately checks that the wrapper is still in the cache.
+    auto refresh_texture = NS::RetainPtr(refresh_target.write_texture);
     resolved_directly = DirectResolveRenderTargets(
         resolve_info, copy_shader, copy_constants, dump_base,
         dump_row_length_used, dump_rows, dump_pitch, group_count_x,
-        group_count_y, command_buffer);
+        group_count_y, command_buffer, refresh_texture.get());
   }
 
   if (!resolved_directly) {
@@ -4366,11 +4422,12 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     written_address = resolve_info.copy_dest_extent_start;
     written_length = resolve_info.copy_dest_extent_length;
 
-    // Marks the range GPU-written in shared memory too, which invalidates the
-    // textures overlapping it so they reload the resolved data.
     if (auto* tex_cache = command_processor_.texture_cache()) {
       tex_cache->MarkRangeAsResolved(written_address, written_length,
                                      draw_resolution_scaled);
+      if (resolved_directly && refresh_target) {
+        tex_cache->PublishDirectResolveTextureRefresh(refresh_target);
+      }
     }
 
     return perform_resolve_clear();
