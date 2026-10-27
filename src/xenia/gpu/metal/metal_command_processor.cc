@@ -4076,30 +4076,35 @@ void MetalCommandProcessor::UpdateGuestConstantCaches(
   auto rebuild_packed_float_constants =
       [&](std::array<uint8_t, kCbvSizeBytes>& dst, const Shader* shader,
           uint32_t regs_base) {
-        std::memset(dst.data(), 0, kCbvSizeBytes);
-        if (!shader) {
-          return;
-        }
-        const Shader::ConstantRegisterMap& map =
-            shader->constant_register_map();
-        if (!map.float_count) {
-          return;
+        // The IR path binds only the shader's declared packed constants. The
+        // MSL path uploads the full block, including unused zero constants.
+        uint32_t bound_bytes = kCbvSizeBytes;
+        if (UseDxilPath()) {
+          const uint32_t float_count =
+              shader ? shader->constant_register_map().float_count : 0;
+          bound_bytes = std::min(float_count * 16u, uint32_t(kCbvSizeBytes));
         }
         uint8_t* out = dst.data();
-        for (uint32_t i = 0; i < 4; ++i) {
-          uint64_t bits = map.float_bitmap[i];
-          uint32_t constant_index;
-          while (xe::bit_scan_forward(bits, &constant_index)) {
-            bits &= ~(uint64_t(1) << constant_index);
-            if (out + 4 * sizeof(uint32_t) > dst.data() + kCbvSizeBytes) {
-              return;
+        uint8_t* const end = dst.data() + bound_bytes;
+        if (shader && shader->constant_register_map().float_count) {
+          const Shader::ConstantRegisterMap& map =
+              shader->constant_register_map();
+          for (uint32_t i = 0; i < 4; ++i) {
+            uint64_t bits = map.float_bitmap[i];
+            uint32_t constant_index;
+            while (out != end && xe::bit_scan_forward(bits, &constant_index)) {
+              bits &= ~(uint64_t(1) << constant_index);
+              std::memcpy(
+                  out,
+                  &regs.values[regs_base + (i << 8) + (constant_index << 2)],
+                  4 * sizeof(uint32_t));
+              out += 4 * sizeof(uint32_t);
             }
-            std::memcpy(
-                out, &regs.values[regs_base + (i << 8) + (constant_index << 2)],
-                4 * sizeof(uint32_t));
-            out += 4 * sizeof(uint32_t);
           }
         }
+        // Every gathered value replaces its previous contents. Only padding
+        // visible to this shader needs clearing after the gather.
+        std::memset(out, 0, size_t(end - out));
       };
   if (msl_float_constants_dirty_vertex_) {
     rebuild_packed_float_constants(msl_cached_float_constants_vertex_,
