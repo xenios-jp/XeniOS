@@ -238,7 +238,8 @@ class MetalTextureCache : public TextureCache {
                                 uint32_t array_length, MTL::PixelFormat format,
                                 MTL::TextureSwizzleChannels swizzle,
                                 uint32_t mip_levels = 1,
-                                bool shader_write = false);
+                                bool shader_write = false,
+                                bool pixel_format_view = true);
   MTL::Texture* CreateTexture3D(uint32_t width, uint32_t height, uint32_t depth,
                                 MTL::PixelFormat format,
                                 MTL::TextureSwizzleChannels swizzle,
