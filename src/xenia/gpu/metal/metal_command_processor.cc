@@ -1420,6 +1420,27 @@ void MetalCommandProcessor::InitializeTrace() {
   }
 }
 
+bool MetalCommandProcessor::DumpEdramSnapshotToFile(
+    const std::filesystem::path& path) {
+  if (!render_target_cache_) {
+    return false;
+  }
+  // Ownership already names the destinations of transfers queued for the next
+  // draw's pass, which a replay stopped mid-frame never encodes.
+  if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+    return false;
+  }
+  // As in InitializeTrace, the download reads what everything in flight wrote.
+  EndCommandBuffer();
+  if (submission_current_) {
+    AwaitSubmissionCompletion(submission_current_);
+  }
+  if (!render_target_cache_->InitializeTraceSubmitDownloads()) {
+    return false;
+  }
+  return render_target_cache_->WriteEdramSnapshotToFile(path);
+}
+
 void MetalCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
   // Restore the guest EDRAM snapshot captured in the trace into the Metal
   // render-target cache so that subsequent host render targets created from
