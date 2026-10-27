@@ -3349,7 +3349,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
     MTL::CommandBuffer* command_buffer, MTL::Texture* refresh_texture,
-    uint32_t refresh_offset_y, bool refresh_depth_float) {
+    uint32_t refresh_offset_y, bool refresh_depth_float,
+    uint32_t refresh_alias_count, MTL::Texture* const* refresh_aliases) {
   SCOPE_profile_cpu_f("gpu");
   auto* shared = command_processor_.shared_memory();
   MTL::Buffer* dest_buffer = shared ? shared->GetBuffer() : nullptr;
@@ -3468,6 +3469,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     shader_key.msaa_samples = rt_key.msaa_samples;
     shader_key.direct_resolve = 1;
     shader_key.direct_resolve_texture = refresh_texture != nullptr;
+    shader_key.direct_resolve_texture_aliases = refresh_alias_count;
     shader_key.direct_resolve_cross_depth_color =
         rt_key.is_depth != uint32_t(resolve_info.IsCopyingDepth());
     shader_key.direct_resolve_texture_depth_float =
@@ -3548,7 +3550,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         refresh_texture
             ? uint32_t(refresh_texture->width()) | (refresh_offset_y << 16)
             : 0,
-        refresh_texture ? uint32_t(refresh_texture->height()) : 0};
+        refresh_texture
+            ? uint32_t(refresh_texture->height()) | (refresh_alias_count << 16)
+            : 0};
     MTL::Buffer* origin_buffer = nullptr;
     NS::UInteger origin_offset = 0;
     if (command_processor_.AcquireSpirvArgumentBufferSlice(
@@ -3566,6 +3570,14 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       encoder->useResource(rgb10_source, MTL::ResourceUsageRead);
       if (refresh_texture) {
         encoder->setTexture(refresh_texture, 1);
+        // The Slang kernels declare all slots, even when their count is zero.
+        for (uint32_t i = 0;
+             i < MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases;
+             ++i) {
+          encoder->setTexture(
+              i < refresh_alias_count ? refresh_aliases[i] : refresh_texture,
+              2 + i);
+        }
       }
       encoder->dispatchThreadgroups(
           MTL::Size::Make(group_count_x, group_count_y, 1),
@@ -3601,6 +3613,15 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         uint32_t(refresh_texture->height());
     encoder->setTexture(refresh_texture, 1);
     encoder->useResource(refresh_texture, MTL::ResourceUsageWrite);
+    for (uint32_t i = 0; i < refresh_alias_count; ++i) {
+      encoder->useResource(refresh_aliases[i], MTL::ResourceUsageWrite);
+      // The Slang paths bound 2..4 above; generic refresh reserves 2 for
+      // stencil.
+      if (!copy_from_render_target) {
+        encoder->setTexture(refresh_aliases[i],
+                            kResolveRefreshMslFirstAliasTexture + i);
+      }
+    }
   }
 
   for (size_t rectangle_index = 0;
@@ -4510,6 +4531,16 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     // wrapper. Keep its writable view alive through encoding; publication
     // separately checks that the wrapper is still in the cache.
     auto refresh_texture = NS::RetainPtr(refresh_target.write_texture);
+    std::array<NS::SharedPtr<MTL::Texture>,
+               MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases>
+        alias_owners;
+    std::array<MTL::Texture*,
+               MetalTextureCache::ResolveTextureRefreshTarget::kMaxAliases>
+        alias_views{};
+    for (uint32_t i = 0; i < refresh_target.alias_count; ++i) {
+      alias_owners[i] = NS::RetainPtr(refresh_target.aliases[i].write_texture);
+      alias_views[i] = alias_owners[i].get();
+    }
     resolved_directly = DirectResolveRenderTargets(
         resolve_info, copy_shader, copy_constants, dump_base,
         dump_row_length_used, dump_rows, dump_pitch, group_count_x,
@@ -4517,7 +4548,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
         refresh_target.offset_y,
         refresh_target.transform ==
             MetalTextureCache::ResolveTextureRefreshTarget::Transform::
-                kDepthFloat24);
+                kDepthFloat24,
+        refresh_target.alias_count, alias_views.data());
   }
 
   if (!resolved_directly) {
@@ -4548,7 +4580,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       // CPU callbacks, including RangeWrittenByGpu's gap between its locks.
       // The global region is recursive, as required by the nested watch APIs.
       auto refresh_lock = xe::global_critical_region::AcquireDeferred();
-      if (resolved_directly && refresh_target && refresh_target.partial) {
+      if (resolved_directly && refresh_target && refresh_target.HasPartial()) {
         refresh_lock.lock();
       }
       tex_cache->MarkRangeAsResolved(written_address, written_length,

@@ -36,7 +36,9 @@ MTL::Function* CompileFunctionMsl(MTL::Device* device,
     options.argument_buffers = false;
     compiler.set_msl_options(options);
     for (uint32_t set = 0; set < kTransferDescriptorSetCount; ++set) {
-      for (uint32_t binding = 0; binding < kTransferBindingsPerSet; ++binding) {
+      const uint32_t binding_count =
+          resolve_refresh && set == 0 ? 5 : kTransferBindingsPerSet;
+      for (uint32_t binding = 0; binding < binding_count; ++binding) {
         spirv_cross::MSLResourceBinding resource_binding = {};
         resource_binding.stage = stage;
         resource_binding.desc_set = set;
@@ -45,8 +47,13 @@ MTL::Function* CompileFunctionMsl(MTL::Device* device,
         // descriptor set, so it is always set 0 binding 0.
         resource_binding.msl_buffer = kTransferMslHostDepthBufferIndex;
         resource_binding.msl_texture =
-            resolve_refresh ? (set == 1 ? (binding ? 2 : 0) : 1)
-                            : TransferMslTextureIndex(set, binding);
+            resolve_refresh
+                ? (set == 1
+                       ? (binding ? 2 : 0)
+                       : (binding <= 1 ? 1
+                                       : kResolveRefreshMslFirstAliasTexture +
+                                             binding - 2))
+                : TransferMslTextureIndex(set, binding);
         compiler.add_msl_resource_binding(resource_binding);
       }
     }
