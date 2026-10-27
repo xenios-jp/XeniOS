@@ -332,7 +332,7 @@ class MetalCommandProcessor : public CommandProcessor {
   SpirvShaderTranslator::Modification GetCurrentSpirvVertexShaderModification(
       const Shader& shader,
       Shader::HostVertexShaderType host_vertex_shader_type,
-      uint32_t interpolator_mask) const;
+      uint32_t interpolator_mask, bool ps_param_gen_used) const;
   SpirvShaderTranslator::Modification GetCurrentSpirvPixelShaderModification(
       const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
       reg::RB_DEPTHCONTROL normalized_depth_control,
@@ -596,14 +596,13 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t sample_count;
 
     PipelineKind kind : 2;                          // 2
-    uint32_t alpha_to_mask_enable : 1;              // 3
-    xenos::TessellationMode tessellation_mode : 2;  // 5
+    xenos::TessellationMode tessellation_mode : 2;  // 4
     Shader::HostVertexShaderType host_vertex_shader_type
-        : Shader::kHostVertexShaderTypeBitCount;  // 9
-    uint32_t padding : 23;                        // 32
+        : Shader::kHostVertexShaderTypeBitCount;  // 8
+    uint32_t padding : 24;                        // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20260830;
+    static constexpr uint32_t kVersion = 0x20260924;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }
