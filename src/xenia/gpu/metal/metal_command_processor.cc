@@ -5318,8 +5318,24 @@ bool MetalCommandProcessor::BuildDxilTessellationShaders(
        domain_spirv.size() / sizeof(uint32_t),
        SpirvToDxilCompiler::Stage::kTessellationEvaluation},
   };
-  std::vector<std::vector<uint8_t>> dxil =
-      SpirvToDxilCompiler::TranslateLinked(stages, /*lower_to_bindless=*/true);
+  using HVS = Shader::HostVertexShaderType;
+  bool is_quad = host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
+                 host_vertex_shader_type == HVS::kQuadDomainPatchIndexed;
+  bool is_control_point_indexed =
+      host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
+      host_vertex_shader_type == HVS::kTriangleDomainCPIndexed;
+  // Unsized hull input arrays use the maximum patch size in SPIR-V. Mesa
+  // needs the actual pipeline size to avoid grouping unrelated guest patches.
+  // Adaptive patches read a factor per corner; non-adaptive patch-indexed
+  // shaders receive one patch index rather than a vertex for each corner.
+  uint32_t input_control_point_count =
+      tessellation_mode == xenos::TessellationMode::kAdaptive ||
+              is_control_point_indexed
+          ? (is_quad ? 4u : 3u)
+          : 1u;
+  std::vector<std::vector<uint8_t>> dxil = SpirvToDxilCompiler::TranslateLinked(
+      stages, /*lower_to_bindless=*/true,
+      /*preserve_msc_fmad32=*/false, input_control_point_count);
   if (dxil.size() != 3 || dxil[0].empty() || dxil[1].empty() ||
       dxil[2].empty()) {
     XELOGE("DXIL: linked tessellation translation failed (domain {:016X})",
