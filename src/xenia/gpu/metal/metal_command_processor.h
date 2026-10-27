@@ -1109,6 +1109,10 @@ class MetalCommandProcessor : public CommandProcessor {
 
   bool gamma_ramp_256_entry_table_up_to_date_ = false;
   bool gamma_ramp_pwl_up_to_date_ = false;
+
+  // Separate from the generic MSL/tessellation depth-only fallback: this
+  // fragment applies polygon offset through the converter resource ABI.
+  MTL::Library* exact_float_depth_bias_library_ = nullptr;
 };
 
 }  // namespace metal
