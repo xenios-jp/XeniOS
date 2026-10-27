@@ -1971,23 +1971,25 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
                 spv::OpBitcast, type_int,
                 builder.createBinOp(
                     spv::OpIAdd, type_uint,
-                    builder.createBinOp(spv::OpIMul, type_uint,
-                                        builder.makeUintConstant(
-                                            dest_tile_width_samples >>
-                                            uint32_t(key.source_msaa_samples >=
-                                                     xenos::MsaaSamples::k4X)),
-                                        host_depth_source_tile_index_x),
+                    builder.createBinOp(
+                        spv::OpIMul, type_uint,
+                        builder.makeUintConstant(
+                            dest_tile_width_samples >>
+                            uint32_t(key.host_depth_source_msaa_samples >=
+                                     xenos::MsaaSamples::k4X)),
+                        host_depth_source_tile_index_x),
                     host_depth_source_tile_pixel_x));
             spv::Id host_depth_source_pixel_y_int = builder.createUnaryOp(
                 spv::OpBitcast, type_int,
                 builder.createBinOp(
                     spv::OpIAdd, type_uint,
-                    builder.createBinOp(spv::OpIMul, type_uint,
-                                        builder.makeUintConstant(
-                                            dest_tile_height_samples >>
-                                            uint32_t(key.source_msaa_samples >=
-                                                     xenos::MsaaSamples::k2X)),
-                                        host_depth_source_tile_index_y),
+                    builder.createBinOp(
+                        spv::OpIMul, type_uint,
+                        builder.makeUintConstant(
+                            dest_tile_height_samples >>
+                            uint32_t(key.host_depth_source_msaa_samples >=
+                                     xenos::MsaaSamples::k2X)),
+                        host_depth_source_tile_index_y),
                     host_depth_source_tile_pixel_y));
             // Load the host depth source.
             spv::Builder::TextureParameters
