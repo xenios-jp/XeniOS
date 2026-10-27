@@ -32,6 +32,11 @@ class MetalSharedMemory : public SharedMemory {
   void ClearCache() override;
 
   MTL::Buffer* GetBuffer() const { return buffer_; }
+  bool is_zero_copy() const { return use_zero_copy_; }
+  // Copies an immutable payload after preceding GPU accesses to aliased RAM.
+  // False guarantees that no destination write was encoded.
+  bool WriteGuestMemoryGpuOrdered(uint32_t start, const void* data,
+                                  uint32_t length);
   const uint8_t* GetXboxRamBase() const {
     return static_cast<const uint8_t*>(memory().TranslatePhysical(0));
   }
