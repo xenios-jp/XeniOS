@@ -439,6 +439,14 @@ class MetalCommandProcessor : public CommandProcessor {
       const Shader::Translation* translation) const;
   bool UsesPixelFetchStateFunctionConstants(
       const Shader::Translation* translation) const;
+  struct FiniteMultiplyInfo {
+    uint64_t required = 0;
+    uint64_t direct_constants[4] = {};
+  };
+  const FiniteMultiplyInfo& GetFiniteMultiplyInfo(const Shader& shader) const;
+  uint64_t GetFiniteMultiplyRequirements(const Shader& shader) const;
+  void GetFiniteMultiplyState(const Shader::Translation* translation,
+                              const RegisterFile& regs, uint32_t* state) const;
   void SetPipelineFunctionConstants(PipelineCompileRequest& request,
                                     const Shader::Translation* vertex,
                                     const Shader::Translation* pixel);
@@ -658,6 +666,9 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t blendcontrol[4];  // RB_BLENDCONTROL, zeroed for unwritten targets
     uint32_t normalized_color_mask;
     uint32_t sample_count;
+    // Potentially non-finite sampled textures and fixed float constants.
+    uint32_t vertex_finite_multiply_state[2];
+    uint32_t pixel_finite_multiply_state[2];
     // Only constants the shader reads contribute to its pipeline identity.
     // Texture arithmetic and system flags stay dynamic.
     uint32_t vertex_fetch_endians
@@ -673,10 +684,11 @@ class MetalCommandProcessor : public CommandProcessor {
         : Shader::kHostVertexShaderTypeBitCount;  // 8
     uint32_t vertex_fetch_states_specialized : 1;
     uint32_t fragment_fetch_states_specialized : 1;
-    uint32_t padding : 22;  // 32
+    uint32_t finite_multiply_enabled : 1;
+    uint32_t padding : 21;  // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20261016;
+    static constexpr uint32_t kVersion = 0x20261017;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }
@@ -740,6 +752,9 @@ class MetalCommandProcessor : public CommandProcessor {
     }
   };
   memexport_format_profile::ProfilePool memexport_format_profiles_;
+  // Accessed only while assembling requests on the command thread.
+  mutable std::unordered_map<const Shader*, FiniteMultiplyInfo>
+      finite_multiply_requirements_;
   std::mutex specialized_functions_mutex_;
   // Compare the complete specialization identity; a hash alone may collide.
   using SpecializedFunctionKey =
