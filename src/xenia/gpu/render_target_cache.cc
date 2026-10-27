@@ -1576,8 +1576,8 @@ bool RenderTargetCache::IsResolveSourceNativeOnly(uint32_t base,
 RenderTargetCache::DirectResolveEligibility
 RenderTargetCache::GetDirectResolveEligibility(
     const draw_util::ResolveInfo& resolve_info,
-    draw_util::ResolveCopyShaderIndex copy_shader,
-    bool allow_full32_4x_average) const {
+    draw_util::ResolveCopyShaderIndex copy_shader, bool allow_full32_4x_average,
+    bool allow_cross_depth_color) const {
   if (GetPath() != Path::kHostRenderTargets) {
     return DirectResolveEligibility::kNotHostRenderTargets;
   }
@@ -1636,9 +1636,13 @@ RenderTargetCache::GetDirectResolveEligibility(
     // reads them back in the resolve's, so only matching layouts can drop the
     // buffer in between. Formats within a layout may still differ - the fast
     // copy is bitwise and only picks a red/blue swap from the format.
-    if (rt_key.is_depth != uint32_t(is_depth) ||
-        rt_key.msaa_samples != edram_info.msaa_samples ||
+    if (rt_key.msaa_samples != edram_info.msaa_samples ||
         uint32_t(rt_key.Is64bpp()) != edram_info.format_is_64bpp) {
+      return DirectResolveEligibility::kSourceLayoutMismatch;
+    }
+    if (rt_key.is_depth != uint32_t(is_depth) &&
+        (!allow_cross_depth_color || rt_key.Is64bpp() ||
+         copy_shader == draw_util::ResolveCopyShaderIndex::kFull32bpp)) {
       return DirectResolveEligibility::kSourceLayoutMismatch;
     }
     owned_tiles += rectangle.GetTileCount(row_length_used);
