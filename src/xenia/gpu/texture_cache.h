@@ -26,7 +26,6 @@
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/shared_memory.h"
 #include "xenia/gpu/texture_util.h"
-#include "xenia/gpu/trace_writer.h"
 #include "xenia/gpu/xenos.h"
 
 namespace xe {
@@ -138,9 +137,6 @@ class TextureCache {
   }
 
   virtual void RequestTextures(uint32_t used_texture_mask);
-  // Writes the guest memory of every used texture into the trace, if one is
-  // being recorded.
-  void RecordUsedTexturesInTrace(uint32_t used_texture_mask);
   // Returns whether RequestTextures(used_texture_mask) may need to process
   // bindings or reload texture data from guest memory. Used as a cheap
   // pre-check to skip the full RequestTextures call when nothing changed.
@@ -563,7 +559,7 @@ class TextureCache {
   };
 
   explicit TextureCache(const RegisterFile& register_file,
-                        SharedMemory& shared_memory, TraceWriter* trace_writer,
+                        SharedMemory& shared_memory,
                         uint32_t draw_resolution_scale_x,
                         uint32_t draw_resolution_scale_y);
 
@@ -757,7 +753,6 @@ class TextureCache {
 
   const RegisterFile& register_file_;
   SharedMemory& shared_memory_;
-  TraceWriter* trace_writer_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
   divisors::MagicDiv draw_resolution_scale_x_divisor_;
