@@ -39,6 +39,71 @@ spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
       const_float_0_, value);
 }
 
+bool SpirvShaderTranslator::CanUseFiniteProduct(uint64_t first,
+                                                uint64_t second) const {
+  uint64_t reasons = first | second;
+  if (!finite_multiply_enabled_ ||
+      (reasons & ~(kFiniteMultiplyTextures | kFiniteMultiplyFloatConstants))) {
+    return false;
+  }
+  return !reasons ||
+         main_fetch_state_[kFetchStateFiniteMultiplyBinding] != spv::NoResult;
+}
+
+spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
+                                                spv::Id second,
+                                                uint64_t first_reasons,
+                                                uint64_t second_reasons,
+                                                bool rounded_to_nearest) {
+  if (!CanUseFiniteProduct(first_reasons, second_reasons)) {
+    return guarded;
+  }
+  uint64_t reasons = first_reasons | second_reasons;
+  spv::Id finite = spv::NoResult;
+  if (reasons) {
+    spv::Id flags = main_fetch_state_[kFetchStateFiniteMultiplyBinding];
+    spv::Id possible = const_uint_0_;
+    uint32_t textures = uint32_t((reasons & kFiniteMultiplyTextures) >>
+                                 kFiniteMultiplyTextureShift);
+    if (textures) {
+      possible = builder_->createBinOp(
+          spv::OpBitwiseAnd, type_uint_,
+          builder_->createCompositeExtract(flags, type_uint_, 0),
+          builder_->makeUintConstant(textures));
+    }
+    if (reasons & kFiniteMultiplyFloatConstants) {
+      auto constants = builder_->createCompositeExtract(flags, type_uint_, 1);
+      possible = builder_->createBinOp(spv::OpBitwiseOr, type_uint_, possible,
+                                       constants);
+    }
+    finite = builder_->createBinOp(spv::OpIEqual, type_bool_, possible,
+                                   const_uint_0_);
+  }
+  // A genuinely fused product plus +0 preserves the legacy +0 for zero
+  // operands and the original sign for negative underflow. Keep this operation
+  // free of nsz so neither compiler can discard the zero addend.
+  builder_->addCapability(spv::Capability::FloatControls2);
+  builder_->addExtension("SPV_KHR_float_controls2");
+  auto product = builder_->createTriBuiltinCall(
+      type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
+      const_float_0_);
+  builder_->addDecoration(product, spv::Decoration::FPFastMathMode, 0);
+  if (!rounded_to_nearest && RoundsTowardZero() &&
+      !RoundsTowardZeroInHardware()) {
+    // The fused product's exact error, also free of nsz.
+    auto error = builder_->createTriBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
+        builder_->createNoContractionUnaryOp(spv::OpFNegate, type_float_,
+                                             product));
+    builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
+    product = RoundTowardZero(product, error, first, second);
+  }
+  return finite == spv::NoResult
+             ? product
+             : builder_->createTriOp(spv::OpSelect, type_float_, finite,
+                                     product, guarded);
+}
+
 spv::Id SpirvShaderTranslator::ScalarEstimate(ScalarEstimateOp op,
                                               spv::Id value) {
   EnsureBuildPointAvailable();
@@ -634,6 +699,13 @@ void SpirvShaderTranslator::ProcessAluInstruction(
   if (BisectSkipsInstruction()) {
     return;
   }
+  current_finite_multiply_ = {};
+  if (finite_multiply_enabled_ &&
+      current_instruction_address() <
+          finite_multiply_analysis_.operands.size()) {
+    current_finite_multiply_ =
+        finite_multiply_analysis_.operands[current_instruction_address()];
+  }
   if (instr.IsNop()) {
     // Don't even disassemble or update predication.
     BisectSnapshotAfterInstruction();
@@ -890,6 +962,39 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
           result = different_result;
         }
       }
+      if (finite_multiply_enabled_) {
+        uint32_t index = 0;
+        for (uint32_t component = 0; component < 4; ++component) {
+          if (!(used_result_components & (1u << component))) {
+            continue;
+          }
+          uint64_t first_reason = current_finite_multiply_.vector[0][component];
+          uint64_t second_reason =
+              current_finite_multiply_.vector[1][component];
+          if ((multiplicands_different & (1u << component)) &&
+              CanUseFiniteProduct(first_reason, second_reason)) {
+            auto first = used_result_component_count == 1
+                             ? multiplicands[0]
+                             : builder_->createCompositeExtract(
+                                   multiplicands[0], type_float_, index);
+            auto second = used_result_component_count == 1
+                              ? multiplicands[1]
+                              : builder_->createCompositeExtract(
+                                    multiplicands[1], type_float_, index);
+            auto guarded = used_result_component_count == 1
+                               ? result
+                               : builder_->createCompositeExtract(
+                                     result, type_float_, index);
+            auto product = UseFiniteProduct(guarded, first, second,
+                                            first_reason, second_reason);
+            result = used_result_component_count == 1
+                         ? product
+                         : builder_->createCompositeInsert(product, result,
+                                                           result_type, index);
+          }
+          ++index;
+        }
+      }
       if (instr.vector_opcode == ucode::AluVectorOpcode::kMad) {
         // Not replacing true `0 + term` with conditional selection of the term
         // because +0 + -0 should result in +0, not -0.
@@ -1113,6 +1218,10 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
                                  instr.vector_operands[0]),
               GetAbsoluteOperand(operand_components[1],
                                  instr.vector_operands[1]));
+          product = UseFiniteProduct(
+              product, operand_components[0], operand_components[1],
+              current_finite_multiply_.vector[0][i],
+              current_finite_multiply_.vector[1][i], true);
         }
         if (!i) {
           result = product;
@@ -1440,6 +1549,9 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
               result_y,
               GetAbsoluteOperand(operands_y[0], instr.vector_operands[0]),
               GetAbsoluteOperand(operands_y[1], instr.vector_operands[1]));
+          result_y = UseFiniteProduct(result_y, operands_y[0], operands_y[1],
+                                      current_finite_multiply_.vector[0][1],
+                                      current_finite_multiply_.vector[1][1]);
         }
       }
       id_vector_temp_.clear();
@@ -1578,6 +1690,9 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
         result = ZeroIfAnyOperandIsZero(
             result, GetAbsoluteOperand(a, instr.scalar_operands[0]),
             GetAbsoluteOperand(b, instr.scalar_operands[0]));
+        result = UseFiniteProduct(result, a, b,
+                                  current_finite_multiply_.scalar[0][0],
+                                  current_finite_multiply_.scalar[0][1]);
       }
       return result;
     }
@@ -1588,10 +1703,13 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->createLoad(var_main_previous_scalar_, spv::NoPrecision);
       spv::Id result = AluMultiply(a, ps);
       // Shader Model 3: +0 or denormal * anything = +-0.
-      return ZeroIfAnyOperandIsZero(
+      result = ZeroIfAnyOperandIsZero(
           result, GetAbsoluteOperand(a, instr.scalar_operands[0]),
           builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
                                            GLSLstd450FAbs, ps));
+      return UseFiniteProduct(result, a, ps,
+                              current_finite_multiply_.scalar[0][0],
+                              current_finite_multiply_.previous_scalar);
     }
     case ucode::AluScalarOpcode::kMulsPrev2: {
       // Check if need to select the src0.a * ps case.
@@ -1933,6 +2051,9 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
         result = ZeroIfAnyOperandIsZero(
             result, GetAbsoluteOperand(operand_0, instr.scalar_operands[0]),
             GetAbsoluteOperand(operand_1, instr.scalar_operands[1]));
+        result = UseFiniteProduct(result, operand_0, operand_1,
+                                  current_finite_multiply_.scalar[0][0],
+                                  current_finite_multiply_.scalar[1][0]);
       }
       return result;
     }
