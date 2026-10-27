@@ -50,6 +50,11 @@ class MetalSharedMemory : public SharedMemory {
   void InitializeTraceCompleteDownloads();
 
  private:
+  // Copies into the buffer with a blit encoded into the current command buffer,
+  // after the work already encoded in it.
+  bool CopyToBufferGpuOrdered(uint32_t start, const void* data,
+                              uint32_t length);
+
   MetalCommandProcessor& command_processor_;
   TraceWriter& trace_writer_;
   MTL::Buffer* buffer_ = nullptr;

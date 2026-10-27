@@ -1246,6 +1246,7 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
     [copy_command_buffer encodeSignalEvent:(id<MTLSharedEvent>)shared_event_ value:submission_id];
   }
 
+
   // Cast dest_texture to proper Metal texture type
   id<MTLTexture> dest_metal_texture = (id<MTLTexture>)dest_texture;
 
