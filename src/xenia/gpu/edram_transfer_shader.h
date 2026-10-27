@@ -182,6 +182,19 @@ union EdramTransferShaderKey {
     uint32_t dest_scale_native : 1;
     uint32_t source_scale_native : 1;
 
+    // The layout facts below are proven by the backend on the CPU. Backends
+    // that don't prove them leave the bits zero.
+    // Equal EDRAM base and pitch, unscaled depth 1x <-> 4x transfer. The
+    // rasterized tile range must stay below kEdramTileCount relative to the
+    // base, so the sample permutation can use full-image coordinates.
+    uint32_t depth_identity_layout : 1;
+    // The source pitch is 16 tiles.
+    uint32_t source_pitch_16 : 1;
+    // Equal EDRAM base, pitch, sample count and 32bpp color layout, within one
+    // EDRAM period from the base. Source and destination texture coordinates
+    // are identical.
+    uint32_t color_identity_layout : 1;
+
     // Last bits because this affects the pipeline layout - after sorting,
     // only change it as fewer times as possible. Depth buffers have an
     // additional stencil texture.
@@ -296,6 +309,14 @@ struct EdramTransferShaderOptions {
   // the divide cannot be strength-reduced, and it costs a fragment each on GPUs
   // where integer division is slow.
   bool fast_pitch_divmod = false;
+
+  // Speculate the cheap D24S8 decode and select the preserved host value
+  // without control flow. D24FS8 retains its conditional conversion.
+  bool branchless_d24_host_depth = false;
+
+  // Opt-in exact integer address simplification. Keep false until the target
+  // backend's correctness and performance gates have passed.
+  bool optimize_integer_addressing = false;
 };
 
 // Returns the SPIR-V words of the transfer fragment shader for one key.

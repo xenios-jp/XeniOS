@@ -1529,8 +1529,8 @@ bool MetalRenderTargetCache::AcquireSpareDepthBacking(
     }
     const EdramTransferShaderKey depth_shader = GetTransferShaderKey(
         transfer.source->key(), dest_key,
-        transfer.host_depth_source ? &host_depth_key : nullptr, false, false,
-        0);
+        transfer.host_depth_source ? &host_depth_key : nullptr, false, false, 0,
+        transfer);
     if (!GetOrCreateTransferPipelines(depth_shader, depth_format, false, true,
                                       0, nullptr, depth_format, depth_format)) {
       return false;
@@ -2114,7 +2114,7 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
         EdramTransferShaderKey shader_key = GetTransferShaderKey(
             source_key, dest_key,
             (has_host_depth && !stencil_bit) ? &host_depth_key : nullptr, false,
-            stencil_bit != 0, color_attachment_index);
+            stencil_bit != 0, color_attachment_index, transfer);
         if (!GetOrCreateTransferPipelines(
                 shader_key, dest_format, dest_is_uint,
                 native_stencil_output && !stencil_bit, color_attachment_index,
@@ -4672,7 +4672,7 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
     RenderTargetKey source_key, RenderTargetKey dest_key,
     const RenderTargetKey* host_depth_source_key,
     bool host_depth_source_is_copy, bool stencil_bit,
-    uint32_t dest_color_rt_index) const {
+    uint32_t dest_color_rt_index, const Transfer& transfer) const {
   EdramTransferShaderKey shader_key;
   shader_key.source_msaa_samples = source_key.msaa_samples;
   shader_key.dest_msaa_samples = dest_key.msaa_samples;
@@ -4713,6 +4713,38 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
 
   shader_key.value_convert =
       IsTransferValueConverted7e3And8888(source_key, dest_key) ? 1 : 0;
+
+  // The identity layouts address the source at the destination's own sample
+  // coordinates, without the shader's relative tile wrapping. That needs the
+  // same EDRAM base and pitch, and the transfer within one EDRAM period from
+  // the base. GetRangeRectangles splits physical wrapping into separate
+  // ranges, so a transfer range never crosses the end of EDRAM. Targets in
+  // the next period use the generic addressing path.
+  const uint32_t relative_start = (transfer.start_tiles - dest_key.base_tiles) &
+                                  (xenos::kEdramTileCount - 1);
+  const bool same_layout_no_wrap =
+      !IsDrawResolutionScaled() && !source_key.next_period &&
+      !dest_key.next_period && source_key.base_tiles == dest_key.base_tiles &&
+      source_key.GetPitchTiles() == dest_key.GetPitchTiles() &&
+      relative_start + transfer.end_tiles - transfer.start_tiles <=
+          xenos::kEdramTileCount;
+  shader_key.depth_identity_layout =
+      same_layout_no_wrap &&
+      shader_key.mode == EdramTransferMode::kDepthToDepth &&
+      source_key.resource_format == dest_key.resource_format &&
+      ((source_key.msaa_samples == xenos::MsaaSamples::k1X &&
+        dest_key.msaa_samples == xenos::MsaaSamples::k4X) ||
+       (source_key.msaa_samples == xenos::MsaaSamples::k4X &&
+        dest_key.msaa_samples == xenos::MsaaSamples::k1X));
+  shader_key.color_identity_layout =
+      same_layout_no_wrap &&
+      shader_key.mode == EdramTransferMode::kColorToColor &&
+      !source_key.Is64bpp() && !dest_key.Is64bpp() &&
+      source_key.msaa_samples == dest_key.msaa_samples;
+  // The identity layouts don't divide by the source pitch.
+  shader_key.source_pitch_16 = !shader_key.depth_identity_layout &&
+                               !shader_key.color_identity_layout &&
+                               source_key.GetPitchTiles() == 16;
   return shader_key;
 }
 
@@ -5465,7 +5497,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               source_key, dest_key, host_depth_rt ? &host_depth_key : nullptr,
               host_depth_rt == dest_metal_rt &&
                   dest_metal_rt != renamed_depth_dest,
-              pass != 0, active_color_attachment_index);
+              pass != 0, active_color_attachment_index, transfer);
 
           transfer_invocations_.emplace_back(transfer, shader_key);
           if (pass) {
@@ -6427,6 +6459,8 @@ MTL::Function* MetalRenderTargetCache::GetOrCreateTransferFragmentFunction(
   options.no_discard_stencil =
       ::cvars::no_discard_stencil_in_transfer_pipelines;
   options.fast_pitch_divmod = ::cvars::metal_transfer_fast_divmod;
+  options.branchless_d24_host_depth = true;
+  options.optimize_integer_addressing = true;
 
   MTL::Function* function = nullptr;
   std::vector<uint32_t> spirv = BuildEdramTransferShaderSpirv(key, options);

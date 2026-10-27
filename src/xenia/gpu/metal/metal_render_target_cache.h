@@ -697,7 +697,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       RenderTargetKey source_key, RenderTargetKey dest_key,
       const RenderTargetKey* host_depth_source_key,
       bool host_depth_source_is_copy, bool stencil_bit,
-      uint32_t dest_color_rt_index) const;
+      uint32_t dest_color_rt_index, const Transfer& transfer) const;
   bool BuildTransferRectanglePlans(
       RenderTargetKey dest_key, const std::vector<Transfer>& transfers,
       const Transfer::Rectangle* cutout, bool require_all_rectangles,
