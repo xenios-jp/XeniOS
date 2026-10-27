@@ -68,6 +68,8 @@ class MetalCommandProcessor : public CommandProcessor {
                                  kernel::KernelState* kernel_state);
   ~MetalCommandProcessor();
 
+  void TracePlaybackWillWriteMemory(uint32_t base_ptr,
+                                    uint32_t length) override;
   void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) override;
   void RestoreEdramSnapshot(const void* snapshot) override;
   void InitializeTrace() override;
