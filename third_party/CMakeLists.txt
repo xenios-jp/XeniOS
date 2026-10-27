@@ -1315,6 +1315,9 @@ if(WIN32 OR APPLE)
   set(_xe_s2d_meson_args
     --default-library=static --buildtype=release
     -Dspirv-to-dxil=true
+    # Mesa enables its SPIR-V disassembly debug output when it finds
+    # SPIRV-Tools, but that library isn't part of the static link below.
+    -Dspirv-tools=disabled
     -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms=
     -Dglx=disabled -Degl=disabled -Dgbm=disabled
     -Dopengl=false -Dgles1=disabled -Dgles2=disabled
