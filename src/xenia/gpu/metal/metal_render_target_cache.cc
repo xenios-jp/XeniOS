@@ -4521,7 +4521,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
                                   /*allow_cross_depth_color=*/true,
-                                  /*allow_rgb10f_1x=*/true) ==
+                                  /*allow_full32_rgb10f_1x=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
