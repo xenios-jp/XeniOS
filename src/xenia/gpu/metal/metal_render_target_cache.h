@@ -83,6 +83,17 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     void SetTransferTexture(MTL::Texture* texture) {
       transfer_texture_ = texture;
     }
+    // The allocation the backing lives in: the texture itself, or for a color
+    // target aliased onto another key's allocation, that allocation.
+    MTL::Texture* storage_root() const {
+      return alias_storage_root_ ? alias_storage_root_.get() : texture_;
+    }
+    void SetAliasStorageRoot(MTL::Texture* root) {
+      alias_storage_root_ = NS::RetainPtr(root);
+    }
+    bool has_alias_storage_partner_candidates() const {
+      return !key().is_depth && key().msaa_samples == xenos::MsaaSamples::k4X;
+    }
     bool needs_initial_clear() const { return needs_initial_clear_; }
     void SetNeedsInitialClear(bool needs_initial_clear) {
       needs_initial_clear_ = needs_initial_clear;
@@ -105,6 +116,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     MTL::Texture* stencil_view_ = nullptr;
     MTL::Texture* spare_depth_texture_ = nullptr;
     MTL::Texture* spare_depth_stencil_view_ = nullptr;
+    NS::SharedPtr<MTL::Texture> alias_storage_root_;
     uint32_t temporary_sort_index_ = UINT32_MAX;
     uint64_t content_generation_ = 0;
     bool needs_initial_clear_ = true;
@@ -509,6 +521,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Drops the transfers of the last update whose result the destination's
   // backing already holds.
   void ElideRedundantTransfers();
+  // Drops color transfers into dest between two keys backed by one
+  // allocation.
+  void ElideAliasedStorageTransfers(MetalRenderTarget* dest,
+                                    std::vector<Transfer>& transfers);
+  MetalRenderTarget* FindUnorm32ColorStoragePartner(RenderTargetKey key,
+                                                    uint32_t width,
+                                                    uint32_t height) const;
   // Accounts for dest being written by these transfers (or a clear).
   void RecordPerformedTransfers(MetalRenderTarget* dest,
                                 const std::vector<Transfer>& transfers);

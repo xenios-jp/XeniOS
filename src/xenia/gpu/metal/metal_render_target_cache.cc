@@ -1202,7 +1202,79 @@ void MetalRenderTargetCache::ElideRedundantTransfers() {
                          static_cast<MetalRenderTarget*>(transfer.source));
       return true;
     });
+    ElideAliasedStorageTransfers(dest, transfers);
   }
+}
+
+namespace {
+bool IsUnorm32AliasColorFormat(xenos::ColorRenderTargetFormat format) {
+  // Host RGBA8Unorm / RGB10A2Unorm store their components in the order of the
+  // guest 8_8_8_8 / 2_10_10_10 EDRAM dword (R in the low bits), so the raw 32
+  // bits of a sample are the guest dword under either interpretation.
+  return format == xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
+         format == xenos::ColorRenderTargetFormat::k_2_10_10_10 ||
+         format == xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10;
+}
+}  // namespace
+
+MetalRenderTargetCache::MetalRenderTarget*
+MetalRenderTargetCache::FindUnorm32ColorStoragePartner(RenderTargetKey key,
+                                                       uint32_t width,
+                                                       uint32_t height) const {
+  if (key.is_depth || IsDrawResolutionScaled() ||
+      key.msaa_samples != xenos::MsaaSamples::k4X ||
+      !IsUnorm32AliasColorFormat(key.GetColorFormat())) {
+    return nullptr;
+  }
+  for (const auto& entry : render_target_map_) {
+    MetalRenderTarget* rt = entry.second;
+    if (!rt) {
+      continue;
+    }
+    RenderTargetKey rt_key = rt->key();
+    MTL::Texture* root = rt->storage_root();
+    if (rt_key == key || rt_key.is_depth ||
+        rt_key.base_tiles != key.base_tiles ||
+        rt_key.next_period != key.next_period ||
+        rt_key.scale_native != key.scale_native ||
+        rt_key.pitch_tiles_at_32bpp != key.pitch_tiles_at_32bpp ||
+        rt_key.msaa_samples != key.msaa_samples ||
+        !IsUnorm32AliasColorFormat(rt_key.GetColorFormat()) ||
+        rt->needs_initial_clear() || !root ||
+        !(root->usage() & MTL::TextureUsagePixelFormatView) ||
+        root->width() != width || root->height() != height ||
+        root->sampleCount() != 4) {
+      continue;
+    }
+    return rt;
+  }
+  return nullptr;
+}
+
+void MetalRenderTargetCache::ElideAliasedStorageTransfers(
+    MetalRenderTarget* dest, std::vector<Transfer>& transfers) {
+  MTL::Texture* dest_root = dest->storage_root();
+  if (!dest_root || !dest->has_alias_storage_partner_candidates()) {
+    return;
+  }
+  bool changed = false;
+  EraseTransfersIf(transfers, [&](const Transfer& transfer) {
+    auto* source = static_cast<MetalRenderTarget*>(transfer.source);
+    // Both keys have the same base, pitch and sample count (the alias
+    // condition), so the transfer would rewrite every sample with its own
+    // bits.
+    if (!source || source == dest || transfer.host_depth_source ||
+        source->storage_root() != dest_root || source->key().is_depth ||
+        dest->key().is_depth) {
+      return false;
+    }
+    if (!changed) {
+      MarkContentChanged(dest);
+      changed = true;
+    }
+    RecordTileTransfer(transfer.start_tiles, transfer.end_tiles, dest, source);
+    return true;
+  });
 }
 
 void MetalRenderTargetCache::RecordPerformedTransfers(
@@ -1659,6 +1731,12 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
           (rt && rt->draw_texture() == active_draw_texture)) {
         return true;
       }
+      // Distinct keys can share one allocation (color storage aliasing).
+      if (rt && rt->storage_root() && !rt->key().is_depth &&
+          !active_rt->key().is_depth &&
+          rt->storage_root() == active_rt->storage_root()) {
+        return true;
+      }
     }
     return false;
   };
@@ -2032,10 +2110,35 @@ RenderTargetCache::RenderTarget* MetalRenderTargetCache::CreateRenderTarget(
   MTL::Texture* texture = nullptr;
   uint32_t samples = 1 << uint32_t(key.msaa_samples);
 
-  if (key.is_depth) {
-    texture = CreateDepthTexture(width, height, key.GetDepthFormat(), samples);
-  } else {
-    texture = CreateColorTexture(width, height, key.GetColorFormat(), samples);
+  MetalRenderTarget* alias_partner =
+      key.is_depth ? nullptr
+                   : FindUnorm32ColorStoragePartner(key, width, height);
+  if (alias_partner) {
+    // Same allocation reinterpreted: RGBA8Unorm and RGB10A2Unorm are both
+    // 32-bit color formats (makeTextureView(pixelFormat:) compatibility
+    // group), and the root was created with MTLTextureUsagePixelFormatView.
+    MTL::Texture* root = alias_partner->storage_root();
+    texture =
+        root->newTextureView(GetColorResourcePixelFormat(key.GetColorFormat()));
+    if (texture) {
+      RecordRenderTargetViewCreated();
+      render_target->SetAliasStorageRoot(root);
+      // The shared allocation holds the partner's live tiles; a first-bind
+      // clear would erase them. Every tile this target uses is transferred
+      // (or aliased) in before it is read.
+      render_target->SetNeedsInitialClear(false);
+      XELOGD("MetalRenderTargetCache: {:08X} aliases the storage of {:08X}",
+             key.key, alias_partner->key().key);
+    }
+  }
+  if (!texture) {
+    if (key.is_depth) {
+      texture =
+          CreateDepthTexture(width, height, key.GetDepthFormat(), samples);
+    } else {
+      texture =
+          CreateColorTexture(width, height, key.GetColorFormat(), samples);
+    }
   }
 
   if (!texture) {
@@ -2203,6 +2306,11 @@ MTL::Texture* MetalRenderTargetCache::CreateColorTexture(
       GetColorOwnershipTransferPixelFormat(format, nullptr);
   bool needs_pixel_format_view =
       draw_format != resource_format || transfer_format != resource_format;
+  // 4x 8_8_8_8 and 2_10_10_10 render targets at the same EDRAM layout may
+  // share one allocation through views (FindUnorm32ColorStoragePartner).
+  needs_pixel_format_view |=
+      samples == 4 && (format == xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
+                       format == xenos::ColorRenderTargetFormat::k_2_10_10_10);
 
   MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
   desc->setWidth(width);
@@ -3908,6 +4016,11 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     if (PrepareHostRenderTargetsResolveClear(
             resolve_info, clear_rectangle, clear_targets[0], clear_transfers[0],
             clear_targets[1], clear_transfers[1])) {
+      if (clear_targets[1] && !clear_transfers[1].empty()) {
+        ElideAliasedStorageTransfers(
+            static_cast<MetalRenderTarget*>(clear_targets[1]),
+            clear_transfers[1]);
+      }
       uint64_t clear_values[2];
       clear_values[0] = resolve_info.rb_depth_clear;
       clear_values[1] = resolve_info.rb_color_clear |
