@@ -113,6 +113,9 @@ class MetalTextureCache : public TextureCache {
 
   // TextureCache virtual method overrides
   void RequestTextures(uint32_t used_texture_mask) override;
+  uint64_t binding_state_generation() const {
+    return binding_state_generation_;
+  }
 
   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
   bool IsScaledResolveSupportedForFormat(TextureKey key) const override;
@@ -243,6 +246,7 @@ class MetalTextureCache : public TextureCache {
   xenos::ClampMode NormalizeClampMode(xenos::ClampMode clamp_mode) const;
 
   MetalCommandProcessor* command_processor_;
+  uint64_t binding_state_generation_ = 1;
 
   // Pre-created null textures for invalid bindings (following existing
   // patterns)

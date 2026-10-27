@@ -32,6 +32,14 @@ MetalDxilBinder::MetalDxilBinder(MetalCommandProcessor& command_processor,
 
 MetalDxilBinder::~MetalDxilBinder() = default;
 
+void MetalDxilBinder::ResetUploadCaches() {
+  gather_cache_valid_ = false;
+  descriptor_heap_slices_valid_ = false;
+  cached_texture_heap_slice_ = {};
+  cached_sampler_heap_slice_ = {};
+  argument_buffer_slices_.Reset();
+}
+
 bool MetalDxilBinder::Upload(const void* data, uint32_t size,
                              Slice& slice_out) {
   uint32_t bytes = std::max(size, uint32_t(1));
@@ -128,31 +136,64 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     return false;
   }
 
-  texture_heap_entries_.clear();
-  sampler_heap_entries_.clear();
-  resident_textures_.clear();
-
   const SpirvShader* stage_shaders[kStageCount] = {};
   stage_shaders[kStageVertex] = vertex_shader;
   stage_shaders[kStagePixel] = pixel_shader;
   StageRange stage_ranges[kStageCount];
-  for (uint32_t stage = 0; stage < kStageCount; ++stage) {
-    if (!GatherStage(stage_shaders[stage], stage_ranges[stage])) {
-      return false;
+  const GatherKey gather_key = {
+      vertex_shader,
+      pixel_shader,
+      texture_cache->binding_state_generation(),
+  };
+  if (gather_cache_valid_ && gather_key == gather_cache_key_) {
+    std::copy(gather_cache_ranges_.begin(), gather_cache_ranges_.end(),
+              stage_ranges);
+  } else {
+    gather_cache_valid_ = false;
+    texture_heap_entries_.clear();
+    sampler_heap_entries_.clear();
+    resident_textures_.clear();
+    for (uint32_t stage = 0; stage < kStageCount; ++stage) {
+      if (!GatherStage(stage_shaders[stage], stage_ranges[stage])) {
+        return false;
+      }
     }
+    gather_cache_key_ = gather_key;
+    std::copy(stage_ranges, stage_ranges + kStageCount,
+              gather_cache_ranges_.begin());
+    gather_cache_valid_ = true;
   }
 
   Slice texture_heap, sampler_heap;
-  if (!Upload(texture_heap_entries_.data(),
-              uint32_t(texture_heap_entries_.size() *
-                       sizeof(IRDescriptorTableEntry)),
-              texture_heap) ||
-      !Upload(sampler_heap_entries_.data(),
-              uint32_t(sampler_heap_entries_.size() *
-                       sizeof(IRDescriptorTableEntry)),
-              sampler_heap)) {
-    XELOGE("MetalDxilBinder: failed to allocate the descriptor heaps");
-    return false;
+  auto entries_equal = [](const std::vector<IRDescriptorTableEntry>& a,
+                          const std::vector<IRDescriptorTableEntry>& b) {
+    return a.size() == b.size() &&
+           (a.empty() ||
+            std::memcmp(a.data(), b.data(),
+                        a.size() * sizeof(IRDescriptorTableEntry)) == 0);
+  };
+  if (descriptor_heap_slices_valid_ &&
+      entries_equal(texture_heap_entries_, cached_texture_heap_entries_) &&
+      entries_equal(sampler_heap_entries_, cached_sampler_heap_entries_)) {
+    texture_heap = cached_texture_heap_slice_;
+    sampler_heap = cached_sampler_heap_slice_;
+  } else {
+    if (!Upload(texture_heap_entries_.data(),
+                uint32_t(texture_heap_entries_.size() *
+                         sizeof(IRDescriptorTableEntry)),
+                texture_heap) ||
+        !Upload(sampler_heap_entries_.data(),
+                uint32_t(sampler_heap_entries_.size() *
+                         sizeof(IRDescriptorTableEntry)),
+                sampler_heap)) {
+      XELOGE("MetalDxilBinder: failed to allocate the descriptor heaps");
+      return false;
+    }
+    cached_texture_heap_entries_ = texture_heap_entries_;
+    cached_sampler_heap_entries_ = sampler_heap_entries_;
+    cached_texture_heap_slice_ = texture_heap;
+    cached_sampler_heap_slice_ = sampler_heap;
+    descriptor_heap_slices_valid_ = true;
   }
 
   // The layout the Mesa bindless lowering reads: one two-uint32 entry per
@@ -201,53 +242,54 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
 
   Slice argument_buffer;
   uint32_t argument_buffer_size = converter_.argument_buffer_size();
-  if (!Upload(nullptr, argument_buffer_size, argument_buffer)) {
-    XELOGE("MetalDxilBinder: failed to allocate the argument buffer");
-    return false;
-  }
-  uint8_t* argument_buffer_mapping =
-      static_cast<uint8_t*>(argument_buffer.buffer->contents()) +
-      argument_buffer.offset;
   auto slice_address = [](const Slice& slice) -> uint64_t {
     return uint64_t(slice.buffer->gpuAddress()) + uint64_t(slice.offset);
   };
-  // Initialize resolved every offset and checked it against the layout the
-  // shaders were compiled against, so each one is known to fit here.
-  auto write_root_parameter = [&](MetalRootParameter parameter,
-                                  uint64_t address) {
-    uint32_t offset = converter_.root_parameter_offset(parameter);
-    assert_true(offset != UINT32_MAX &&
-                offset + sizeof(address) <= argument_buffer_size);
-    std::memcpy(argument_buffer_mapping + offset, &address, sizeof(address));
+  ArgumentBufferKey argument_key{};
+  auto set_argument = [&](MetalRootParameter parameter, uint64_t address) {
+    argument_key[size_t(parameter)] = address;
   };
   for (size_t i = 0; i < kConstantCount; ++i) {
-    write_root_parameter(constant_bindings[i].parameter,
-                         slice_address(constant_slices[i]));
+    set_argument(constant_bindings[i].parameter,
+                 slice_address(constant_slices[i]));
   }
-  write_root_parameter(MetalRootParameter::kRuntimeData,
-                       uint64_t(runtime_data_buffer->gpuAddress()));
+  set_argument(MetalRootParameter::kRuntimeData,
+               uint64_t(runtime_data_buffer->gpuAddress()));
   uint64_t shared_memory_address = uint64_t(shared_memory_buffer->gpuAddress());
-  write_root_parameter(MetalRootParameter::kSharedMemorySrv,
-                       shared_memory_address);
-  write_root_parameter(MetalRootParameter::kSharedMemoryUav,
-                       shared_memory_address);
-  write_root_parameter(MetalRootParameter::kTextureIndicesVertex,
-                       slice_address(stage_index_buffers[kStageVertex]));
-  write_root_parameter(MetalRootParameter::kTextureIndicesPixel,
-                       slice_address(stage_index_buffers[kStagePixel]));
+  set_argument(MetalRootParameter::kSharedMemorySrv, shared_memory_address);
+  set_argument(MetalRootParameter::kSharedMemoryUav, shared_memory_address);
+  set_argument(MetalRootParameter::kTextureIndicesVertex,
+               slice_address(stage_index_buffers[kStageVertex]));
+  set_argument(MetalRootParameter::kTextureIndicesPixel,
+               slice_address(stage_index_buffers[kStagePixel]));
   // The lowered shader indexes the heaps directly and never dereferences these
   // tables, but their slots still have to be valid.
   uint64_t texture_heap_address = slice_address(texture_heap);
   uint64_t sampler_heap_address = slice_address(sampler_heap);
-  write_root_parameter(MetalRootParameter::kTextureRangeVertex,
-                       texture_heap_address);
-  write_root_parameter(MetalRootParameter::kTextureRangePixel,
-                       texture_heap_address);
-  write_root_parameter(MetalRootParameter::kSamplerRangeVertex,
-                       sampler_heap_address);
-  write_root_parameter(MetalRootParameter::kSamplerRangePixel,
-                       sampler_heap_address);
-
+  set_argument(MetalRootParameter::kTextureRangeVertex, texture_heap_address);
+  set_argument(MetalRootParameter::kTextureRangePixel, texture_heap_address);
+  set_argument(MetalRootParameter::kSamplerRangeVertex, sampler_heap_address);
+  set_argument(MetalRootParameter::kSamplerRangePixel, sampler_heap_address);
+  auto upload_argument_buffer = [&](Slice& out) {
+    if (!Upload(nullptr, argument_buffer_size, out)) {
+      return false;
+    }
+    uint8_t* mapping =
+        static_cast<uint8_t*>(out.buffer->contents()) + out.offset;
+    for (size_t i = 0; i < argument_key.size(); ++i) {
+      auto parameter = MetalRootParameter(i);
+      uint32_t offset = converter_.root_parameter_offset(parameter);
+      assert_true(offset != UINT32_MAX &&
+                  offset + sizeof(uint64_t) <= argument_buffer_size);
+      std::memcpy(mapping + offset, &argument_key[i], sizeof(uint64_t));
+    }
+    return true;
+  };
+  if (!argument_buffer_slices_.GetOrUpload(argument_key, upload_argument_buffer,
+                                           argument_buffer)) {
+    XELOGE("MetalDxilBinder: failed to allocate the argument buffer");
+    return false;
+  }
   // Tessellation emulation runs the hull stage as an object shader and the
   // tessellator as a mesh shader, so the pre-rasterization bindings go to those
   // stages instead of the vertex stage.
@@ -276,7 +318,6 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     encoder->setMeshBuffer(argument_buffer.buffer, argument_buffer.offset,
                            NS::UInteger(kIRArgumentBufferHullDomainBindPoint));
   }
-
   // Binding covers only the three buffers above; everything the shaders reach
   // through a GPU address has to be made resident explicitly.
   auto use_slice = [&](const Slice& slice) {
