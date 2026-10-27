@@ -368,6 +368,10 @@ class CommandProcessor {
   virtual void MakeCoherent();
   virtual void PrepareForWait();
   virtual void ReturnFromWait();
+  // Before the first poll of an unsatisfied short-delay WAIT_REG_MEM on
+  // memory, for backends that hold GPU work that may produce the value in an
+  // unsubmitted batch.
+  virtual void SubmitBeforeShortMemoryPoll() {}
 
   virtual void PollCompletedSubmission() {}
 
