@@ -10,11 +10,18 @@
 #include "xenia/gpu/metal/dxil_shader.h"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
+#include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/gpu/spirv_to_dxil_compiler.h"
+
+#include "spirv2air.h"
+
+DECLARE_string(metal_shader_compiler);
 
 namespace xe {
 namespace gpu {
@@ -42,22 +49,14 @@ DxilShader::DxilTranslation::~DxilTranslation() {
   }
 }
 
-bool DxilShader::DxilTranslation::CompileToAir(
-    MTL::Device* device, const MetalShaderConverter& converter) {
-  if (metal_function_) {
-    return true;
-  }
-  if (!device || !converter.is_available()) {
+bool DxilShader::DxilTranslation::CompileToAirWithConverter(
+    const MetalShaderConverter& converter,
+    MetalShaderConversionResult& conversion) const {
+  if (!converter.is_available()) {
+    XELOGE("DxilShader: Metal Shader Converter is unavailable");
     return false;
   }
-
   const std::vector<uint8_t>& spirv = translated_binary();
-  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
-    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
-           shader().ucode_data_hash());
-    return false;
-  }
-
   bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
   // Bindless matches the D3D12 guest path: every descriptor set resource
   // becomes a heap index the shader reads from its per-stage index buffer.
@@ -74,7 +73,7 @@ bool DxilShader::DxilTranslation::CompileToAir(
     return false;
   }
 
-  MetalShaderConversionResult conversion = converter.Convert(
+  conversion = converter.Convert(
       is_vertex ? MetalShaderStage::kVertex : MetalShaderStage::kFragment,
       dxil);
   if (!conversion.success) {
@@ -82,6 +81,60 @@ bool DxilShader::DxilTranslation::CompileToAir(
            shader().ucode_data_hash(), conversion.error_message);
     return false;
   }
+
+  return true;
+}
+
+bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
+    MetalShaderConversionResult& conversion) const {
+  const std::vector<uint8_t>& spirv = translated_binary();
+  spirv2air::Options options;
+  options.halfPackingRounding = spirv2air::HalfPackingRounding::TowardZero;
+  options.graphics.functionConstantSet =
+      SpirvShaderTranslator::kDescriptorSetFetchState;
+  spirv2air::Result result =
+      spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
+                           spirv.size() / sizeof(uint32_t), options);
+  if (!result.ok()) {
+    XELOGW(
+        "DxilShader: spirv2air can't translate {} shader {:016X} modification "
+        "{:016X} ({})",
+        shader().type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
+        shader().ucode_data_hash(), modification(), result.error);
+    return false;
+  }
+  conversion.success = true;
+  conversion.metallib = std::move(result.metallib);
+  conversion.entry_point_name = "main";
+  return true;
+}
+
+bool DxilShader::DxilTranslation::CompileToAir(
+    MTL::Device* device, const MetalShaderConverter& converter) {
+  if (metal_function_) {
+    return true;
+  }
+  if (!device) {
+    return false;
+  }
+
+  const std::vector<uint8_t>& spirv = translated_binary();
+  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
+    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
+           shader().ucode_data_hash());
+    return false;
+  }
+
+  bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
+  MetalShaderConversionResult conversion;
+  // Unsupported guest shaders retain the converter path.
+  const bool native_compiled =
+      cvars::metal_shader_compiler != "msc" &&
+      CompileToAirWithSpirv2air(conversion);
+  if (!native_compiled && !CompileToAirWithConverter(converter, conversion)) {
+    return false;
+  }
+  const char* compiler_name = native_compiled ? "spirv2air" : "msc";
 
   NS::Error* error = nullptr;
   dispatch_data_t metallib_data = dispatch_data_create(
@@ -109,10 +162,9 @@ bool DxilShader::DxilTranslation::CompileToAir(
   }
   entry_point_name_ = std::move(conversion.entry_point_name);
 
-  XELOGI(
-      "DxilShader: compiled {} shader {:016X} ({}B SPIR-V, {}B DXIL, {}B AIR)",
-      is_vertex ? "vertex" : "pixel", shader().ucode_data_hash(), spirv.size(),
-      dxil.size(), conversion.metallib.size());
+  XELOGI("DxilShader: compiled {} shader {:016X} with {} ({}B SPIR-V, {}B AIR)",
+         is_vertex ? "vertex" : "pixel", shader().ucode_data_hash(),
+         compiler_name, spirv.size(), conversion.metallib.size());
   return true;
 }
 
