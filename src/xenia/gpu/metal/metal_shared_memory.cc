@@ -208,6 +208,19 @@ bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
   return copied;
 }
 
+bool MetalSharedMemory::WriteGuestMemoryGpuOrdered(uint32_t start,
+                                                   const void* data,
+                                                   uint32_t length) {
+  if (!use_zero_copy_ || !buffer_ || !data || !length || start >= kBufferSize ||
+      length > kBufferSize - start || ((start | length) & 3) ||
+      !RequestRange(start, length) ||
+      !CopyToBufferGpuOrdered(start, data, length)) {
+    return false;
+  }
+  RangeWrittenByGpu(start, length);
+  return true;
+}
+
 bool MetalSharedMemory::InitializeTraceSubmitDownloads() {
   PrepareForTraceDownload();
   return trace_download_page_count() != 0;

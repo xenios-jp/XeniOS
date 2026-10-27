@@ -227,6 +227,11 @@ class CommandProcessor {
   // register write-back - by backends that must have submitted what the guest
   // may then touch (see command_processor_resolve_readwatch.inc).
   virtual void SubmitResolvesForGuestSync() {}
+  // Shadowed by backends that publish shader-done writes on the GPU timeline.
+  // False leaves publication to the existing CPU store below the packet hook.
+  bool TryWriteShaderDoneFence(uint32_t address, uint32_t value) {
+    return false;
+  }
 
   void RestoreRegisters(uint32_t first_register,
                         const uint32_t* register_values,
