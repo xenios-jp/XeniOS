@@ -2864,7 +2864,13 @@ void MetalCommandProcessor::PumpQueryResolves() {
       continue;
     }
 
-    uint64_t raw_samples = zpd_visibility_pool_->Read(resolve.index);
+    uint64_t raw_samples;
+    if (!zpd_visibility_pool_->Read(resolve.index, raw_samples)) {
+      // An unpreserved result isn't known to be zero. Count one visible sample,
+      // the same floor an abandoned report gets, so culling doesn't flash
+      // occluded.
+      raw_samples = 1;
+    }
     zpd_visibility_pool_->Release(resolve.index, resolve.generation);
     if (resolve.report_handle != kInvalidReportHandle) {
       // Metal has no in-shader counter path, so only ZPass is ever counted.
@@ -5392,6 +5398,9 @@ void MetalCommandProcessor::EndRenderEncoder() {
     CloseQuerySegment();
   }
   current_render_encoder_->endEncoding();
+  if (render_encoder_has_zpd_visibility_) {
+    zpd_visibility_pool_->EndRenderPass(current_command_buffer_);
+  }
   current_render_encoder_->release();
   current_render_encoder_ = nullptr;
   if (current_render_pass_descriptor_) {
@@ -5507,6 +5516,15 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   if (zpd_segment_pending && IsQueryPoolReady()) {
     pass_descriptor->setVisibilityResultBuffer(
         zpd_visibility_pool_->visibility_buffer());
+    // Slots from earlier passes may still await CPU readback. The accumulate
+    // result type keeps them across passes; otherwise the pool copies each
+    // pass's slots to readback storage when EndRenderEncoder ends the pass.
+    if (__builtin_available(macOS 26.0, iOS 26.0, *)) {
+      pass_descriptor->setVisibilityResultType(
+          zpd_visibility_pool_->uses_accumulation()
+              ? MTL::VisibilityResultTypeAccumulate
+              : MTL::VisibilityResultTypeReset);
+    }
   } else {
     pass_descriptor->setVisibilityResultBuffer(nullptr);
   }
