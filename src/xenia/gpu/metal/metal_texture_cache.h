@@ -64,7 +64,9 @@ class MetalTextureCache : public TextureCache {
   // pattern)
   MTL::Texture* GetNullTexture2D() const { return null_texture_2d_; }
   MTL::Texture* GetNullTexture3D() const { return null_texture_3d_; }
-  MTL::Texture* GetNullTextureCube() const { return null_texture_cube_; }
+  MTL::Texture* GetNullTextureCube(bool as_array = false) const {
+    return as_array ? null_texture_cube_array_ : null_texture_cube_;
+  }
 
   // Loads the 2D views of the 3D textures the shaders sample as 1D or 2D. Call
   // while the draw requests its textures: binding would otherwise load them
@@ -74,7 +76,8 @@ class MetalTextureCache : public TextureCache {
                        const SpirvShader* pixel_shader);
   MTL::Texture* GetTextureForBinding(uint32_t fetch_constant,
                                      xenos::FetchOpDimension dimension,
-                                     bool is_signed);
+                                     bool is_signed,
+                                     bool cube_as_array = false);
 
   MTL::Texture* RequestSwapTexture(uint32_t& width_scaled_out,
                                    uint32_t& height_scaled_out,
@@ -180,7 +183,7 @@ class MetalTextureCache : public TextureCache {
     MTL::Texture* metal_texture() const { return metal_texture_; }
     MTL::Texture* GetOrCreateView(uint32_t host_swizzle,
                                   xenos::FetchOpDimension dimension,
-                                  bool is_signed);
+                                  bool is_signed, bool cube_as_array = false);
     MTL::Texture* GetOrCreate3DAs2DView(uint32_t host_swizzle,
                                         xenos::FetchOpDimension dimension,
                                         bool is_signed);
@@ -246,6 +249,7 @@ class MetalTextureCache : public TextureCache {
   MTL::Texture* null_texture_2d_ = nullptr;
   MTL::Texture* null_texture_3d_ = nullptr;
   MTL::Texture* null_texture_cube_ = nullptr;
+  MTL::Texture* null_texture_cube_array_ = nullptr;
 
   Norm16Selection r16_selection_;
   Norm16Selection rg16_selection_;
