@@ -213,6 +213,9 @@ class CommandProcessor {
     return trace_state_ == TraceState::kStreaming;
   }
 
+  // Complete queued accesses before playback overwrites aliased guest RAM.
+  virtual void TracePlaybackWillWriteMemory(uint32_t base_ptr,
+                                            uint32_t length) {}
   virtual void TracePlaybackWroteMemory(uint32_t base_ptr, uint32_t length) = 0;
 
   // Shadowed by backends that route memory export through guest RAM (see
