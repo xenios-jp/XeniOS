@@ -182,6 +182,40 @@ void FastDivMod(SpirvBuilder& builder, spv::Id x, spv::Id w,
           remainder));
 }
 
+// Keep quotient and remainder coupled in the exact integer path. This avoids
+// asking downstream compilers to rediscover a shared divide for OpUDiv/OpUMod.
+// For a nonzero divisor q * w <= x, so the multiply cannot overflow uint32.
+void IntegerDivMod(SpirvBuilder& builder, spv::Id x, spv::Id w,
+                   spv::Id& quotient_out, spv::Id& remainder_out) {
+  spv::Id type_uint = builder.makeUintType(32);
+  quotient_out = builder.createBinOp(spv::OpUDiv, type_uint, x, w);
+  remainder_out = builder.createBinOp(
+      spv::OpISub, type_uint, x,
+      builder.createBinOp(spv::OpIMul, type_uint, quotient_out, w));
+}
+
+// Tile dimensions are known when emitting the shader. Express power-of-two
+// division directly, without floating-point estimates or bounded-input
+// assumptions. Non-power-of-two dimensions still use an exact integer divide.
+void ConstantDivMod(SpirvBuilder& builder, spv::Id x, uint32_t divisor,
+                    spv::Id& quotient_out, spv::Id& remainder_out) {
+  assert_true(divisor > 1);
+  if ((divisor & (divisor - 1)) == 0) {
+    uint32_t shift = 0;
+    for (uint32_t remaining = divisor; remaining > 1; remaining >>= 1) {
+      ++shift;
+    }
+    spv::Id type_uint = builder.makeUintType(32);
+    quotient_out = builder.createBinOp(spv::OpShiftRightLogical, type_uint, x,
+                                       builder.makeUintConstant(shift));
+    remainder_out = builder.createBinOp(spv::OpBitwiseAnd, type_uint, x,
+                                        builder.makeUintConstant(divisor - 1));
+    return;
+  }
+  IntegerDivMod(builder, x, builder.makeUintConstant(divisor), quotient_out,
+                remainder_out);
+}
+
 struct CanonicalSampleCoords {
   spv::Id u_guest;
   spv::Id v_guest;
@@ -792,23 +826,47 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
           uint_vector_temp));
   spv::Id dest_pixel_x =
       builder.createCompositeExtract(dest_pixel_coord, type_uint, 0);
-  spv::Id const_dest_tile_width_pixels = builder.makeUintConstant(
+  uint32_t dest_tile_width_pixels =
       dest_tile_width_samples >>
       (uint32_t(dest_is_64bpp) +
-       uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k4X)));
-  spv::Id dest_tile_index_x = builder.createBinOp(
-      spv::OpUDiv, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
-  spv::Id dest_tile_pixel_x = builder.createBinOp(
-      spv::OpUMod, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
+       uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k4X));
+  spv::Id const_dest_tile_width_pixels =
+      builder.makeUintConstant(dest_tile_width_pixels);
+  spv::Id dest_tile_index_x;
+  spv::Id dest_tile_pixel_x;
+  if (key.depth_identity_layout) {
+    dest_tile_index_x = builder.makeUintConstant(0);
+    dest_tile_pixel_x = dest_pixel_x;
+  } else if (options.optimize_integer_addressing) {
+    ConstantDivMod(builder, dest_pixel_x, dest_tile_width_pixels,
+                   dest_tile_index_x, dest_tile_pixel_x);
+  } else {
+    dest_tile_index_x = builder.createBinOp(
+        spv::OpUDiv, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
+    dest_tile_pixel_x = builder.createBinOp(
+        spv::OpUMod, type_uint, dest_pixel_x, const_dest_tile_width_pixels);
+  }
   spv::Id dest_pixel_y =
       builder.createCompositeExtract(dest_pixel_coord, type_uint, 1);
-  spv::Id const_dest_tile_height_pixels = builder.makeUintConstant(
+  uint32_t dest_tile_height_pixels =
       dest_tile_height_samples >>
-      uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k2X));
-  spv::Id dest_tile_index_y = builder.createBinOp(
-      spv::OpUDiv, type_uint, dest_pixel_y, const_dest_tile_height_pixels);
-  spv::Id dest_tile_pixel_y = builder.createBinOp(
-      spv::OpUMod, type_uint, dest_pixel_y, const_dest_tile_height_pixels);
+      uint32_t(key.dest_msaa_samples >= xenos::MsaaSamples::k2X);
+  spv::Id const_dest_tile_height_pixels =
+      builder.makeUintConstant(dest_tile_height_pixels);
+  spv::Id dest_tile_index_y;
+  spv::Id dest_tile_pixel_y;
+  if (key.depth_identity_layout) {
+    dest_tile_index_y = builder.makeUintConstant(0);
+    dest_tile_pixel_y = dest_pixel_y;
+  } else if (options.optimize_integer_addressing) {
+    ConstantDivMod(builder, dest_pixel_y, dest_tile_height_pixels,
+                   dest_tile_index_y, dest_tile_pixel_y);
+  } else {
+    dest_tile_index_y = builder.createBinOp(
+        spv::OpUDiv, type_uint, dest_pixel_y, const_dest_tile_height_pixels);
+    dest_tile_pixel_y = builder.createBinOp(
+        spv::OpUMod, type_uint, dest_pixel_y, const_dest_tile_height_pixels);
+  }
 
   assert_true(push_constants_member_address != UINT32_MAX);
   id_vector_temp.clear();
@@ -912,6 +970,20 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
   // The transfer remaps the destination sample to the source sample through
   // the canonical sample coordinates, the layout is described in
   // XeEdramOffsetBytes in edram.xesli.
+  if (key.depth_identity_layout) {
+    assert_true(key.mode == EdramTransferMode::kDepthToDepth);
+    assert_true(key.source_resource_format == key.dest_resource_format);
+    assert_true(source_scale_x == 1 && source_scale_y == 1 &&
+                dest_scale_x == 1 && dest_scale_y == 1);
+    assert_true((key.source_msaa_samples == xenos::MsaaSamples::k1X &&
+                 key.dest_msaa_samples == xenos::MsaaSamples::k4X) ||
+                (key.source_msaa_samples == xenos::MsaaSamples::k4X &&
+                 key.dest_msaa_samples == xenos::MsaaSamples::k1X));
+    // Tile widths / heights are multiples of the sample permutation period.
+    // With equal base and pitch and no relative tile wrap, doing the same
+    // permutation on global coordinates (dest_tile_pixel_x / y above) absorbs
+    // the tile-origin arithmetic.
+  }
   spv::Id source_sample_id = dest_sample_id;
   spv::Id source_tile_pixel_x = dest_tile_pixel_x;
   spv::Id source_tile_pixel_y = dest_tile_pixel_y;
@@ -984,67 +1056,90 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
                     -int32_t(source_32bpp_tile_half_pixels)))));
   }
 
-  // Transform the destination 32bpp tile index into the source, wrapped, the
-  // base difference is stored wrapped too. Sources in the next period hold
-  // their tiles a period of rows down.
-  spv::Id source_tile_index = builder.createBinOp(
-      spv::OpIAdd, type_uint,
-      builder.createBinOp(
-          spv::OpBitwiseAnd, type_uint,
-          builder.createBinOp(
-              spv::OpIAdd, type_uint, dest_tile_index,
-              builder.createTriOp(
-                  spv::OpBitFieldUExtract, type_uint, address_constant,
-                  builder.makeUintConstant(xenos::kEdramPitchTilesBits * 2),
-                  builder.makeUintConstant(xenos::kEdramBaseTilesBits))),
-          builder.makeUintConstant(xenos::kEdramTileCount - 1)),
-      builder.createBinOp(
-          spv::OpIMul, type_uint,
-          builder.createTriOp(
-              spv::OpBitFieldUExtract, type_uint, address_constant,
-              builder.makeUintConstant(xenos::kEdramPitchTilesBits * 2 +
-                                       xenos::kEdramBaseTilesBits),
-              builder.makeUintConstant(1)),
-          builder.makeUintConstant(xenos::kEdramTileCount)));
-  // Split the source 32bpp tile index into X and Y tile index within the source
-  // image.
-  spv::Id source_pitch_tiles = builder.createTriOp(
-      spv::OpBitFieldUExtract, type_uint, address_constant,
-      builder.makeUintConstant(xenos::kEdramPitchTilesBits),
-      builder.makeUintConstant(xenos::kEdramPitchTilesBits));
-  spv::Id source_tile_index_y = spv::NoResult;
-  spv::Id source_tile_index_x = spv::NoResult;
-  if (options.fast_pitch_divmod) {
-    FastDivMod(builder, source_tile_index, source_pitch_tiles,
-               source_tile_index_y, source_tile_index_x);
+  spv::Id source_pixel_x_int;
+  spv::Id source_pixel_y_int;
+  if (key.depth_identity_layout) {
+    source_pixel_x_int =
+        builder.createUnaryOp(spv::OpBitcast, type_int, source_tile_pixel_x);
+    source_pixel_y_int =
+        builder.createUnaryOp(spv::OpBitcast, type_int, source_tile_pixel_y);
+  } else if (key.color_identity_layout) {
+    assert_true(source_is_color && dest_is_color && !source_is_64bpp &&
+                !dest_is_64bpp);
+    assert_true(key.mode == EdramTransferMode::kColorToColor);
+    assert_true(key.source_msaa_samples == key.dest_msaa_samples);
+    assert_true(source_scale_x == 1 && source_scale_y == 1 &&
+                dest_scale_x == 1 && dest_scale_y == 1);
+    source_pixel_x_int =
+        builder.createUnaryOp(spv::OpBitcast, type_int, dest_pixel_x);
+    source_pixel_y_int =
+        builder.createUnaryOp(spv::OpBitcast, type_int, dest_pixel_y);
   } else {
-    source_tile_index_y = builder.createBinOp(
-        spv::OpUDiv, type_uint, source_tile_index, source_pitch_tiles);
-    source_tile_index_x = builder.createBinOp(
-        spv::OpUMod, type_uint, source_tile_index, source_pitch_tiles);
+    // Transform the destination 32bpp tile index into the source, wrapped, the
+    // base difference is stored wrapped too. Sources in the next period hold
+    // their tiles a period of rows down.
+    spv::Id source_tile_index = builder.createBinOp(
+        spv::OpIAdd, type_uint,
+        builder.createBinOp(
+            spv::OpBitwiseAnd, type_uint,
+            builder.createBinOp(
+                spv::OpIAdd, type_uint, dest_tile_index,
+                builder.createTriOp(
+                    spv::OpBitFieldUExtract, type_uint, address_constant,
+                    builder.makeUintConstant(xenos::kEdramPitchTilesBits * 2),
+                    builder.makeUintConstant(xenos::kEdramBaseTilesBits))),
+            builder.makeUintConstant(xenos::kEdramTileCount - 1)),
+        builder.createBinOp(
+            spv::OpIMul, type_uint,
+            builder.createTriOp(
+                spv::OpBitFieldUExtract, type_uint, address_constant,
+                builder.makeUintConstant(xenos::kEdramPitchTilesBits * 2 +
+                                         xenos::kEdramBaseTilesBits),
+                builder.makeUintConstant(1)),
+            builder.makeUintConstant(xenos::kEdramTileCount)));
+    // Split the source 32bpp tile index into X and Y tile index within the
+    // source image.
+    spv::Id source_pitch_tiles = builder.createTriOp(
+        spv::OpBitFieldUExtract, type_uint, address_constant,
+        builder.makeUintConstant(xenos::kEdramPitchTilesBits),
+        builder.makeUintConstant(xenos::kEdramPitchTilesBits));
+    spv::Id source_tile_index_y = spv::NoResult;
+    spv::Id source_tile_index_x = spv::NoResult;
+    if (key.source_pitch_16) {
+      ConstantDivMod(builder, source_tile_index, 16, source_tile_index_y,
+                     source_tile_index_x);
+    } else if (options.fast_pitch_divmod) {
+      FastDivMod(builder, source_tile_index, source_pitch_tiles,
+                 source_tile_index_y, source_tile_index_x);
+    } else {
+      source_tile_index_y = builder.createBinOp(
+          spv::OpUDiv, type_uint, source_tile_index, source_pitch_tiles);
+      source_tile_index_x = builder.createBinOp(
+          spv::OpUMod, type_uint, source_tile_index, source_pitch_tiles);
+    }
+    // Finally calculate the source texture coordinates.
+    source_pixel_x_int = builder.createUnaryOp(
+        spv::OpBitcast, type_int,
+        builder.createBinOp(
+            spv::OpIAdd, type_uint,
+            builder.createBinOp(
+                spv::OpIMul, type_uint,
+                builder.makeUintConstant(source_tile_width_samples >>
+                                         source_pixel_width_dwords_log2),
+                source_tile_index_x),
+            source_tile_pixel_x));
+    source_pixel_y_int = builder.createUnaryOp(
+        spv::OpBitcast, type_int,
+        builder.createBinOp(
+            spv::OpIAdd, type_uint,
+            builder.createBinOp(
+                spv::OpIMul, type_uint,
+                builder.makeUintConstant(source_tile_height_samples >>
+                                         uint32_t(key.source_msaa_samples >=
+                                                  xenos::MsaaSamples::k2X)),
+                source_tile_index_y),
+            source_tile_pixel_y));
   }
-  // Finally calculate the source texture coordinates.
-  spv::Id source_pixel_x_int = builder.createUnaryOp(
-      spv::OpBitcast, type_int,
-      builder.createBinOp(
-          spv::OpIAdd, type_uint,
-          builder.createBinOp(
-              spv::OpIMul, type_uint,
-              builder.makeUintConstant(source_tile_width_samples >>
-                                       source_pixel_width_dwords_log2),
-              source_tile_index_x),
-          source_tile_pixel_x));
-  spv::Id source_pixel_y_int = builder.createUnaryOp(
-      spv::OpBitcast, type_int,
-      builder.createBinOp(
-          spv::OpIAdd, type_uint,
-          builder.createBinOp(
-              spv::OpIMul, type_uint,
-              builder.makeUintConstant(
-                  source_tile_height_samples >>
-                  uint32_t(key.source_msaa_samples >= xenos::MsaaSamples::k2X)),
-              source_tile_index_y),
-          source_tile_pixel_y));
 
   // Load the source.
 
@@ -2079,10 +2174,13 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
                                               id_vector_temp),
                     spv::NoPrecision));
           }
+          const bool branchless_host_depth =
+              options.branchless_d24_host_depth &&
+              dest_depth_format == xenos::DepthRenderTargetFormat::kD24S8;
           spv::Block* depth24_to_depth32_header = builder.getBuildPoint();
-          spv::Id depth24_to_depth32_convert_id = spv::NoResult;
           spv::Block* depth24_to_depth32_merge = nullptr;
           spv::Id host_depth24 = spv::NoResult;
+          spv::Id host_depth_outdated = spv::NoResult;
           if (host_depth32 != spv::NoResult) {
             // Convert the host depth value to the guest format and check if it
             // matches the value in the currently owning guest render target.
@@ -2111,21 +2209,23 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
             // Update the header block pointer after the conversion (to avoid
             // assuming that the conversion doesn't branch).
             depth24_to_depth32_header = builder.getBuildPoint();
-            spv::Id host_depth_outdated = builder.createBinOp(
+            host_depth_outdated = builder.createBinOp(
                 spv::OpINotEqual, type_bool, guest_depth24, host_depth24);
-            spv::Block& depth24_to_depth32_convert_entry =
-                builder.makeNewBlock();
-            {
-              spv::Block& depth24_to_depth32_merge_block =
+            if (!branchless_host_depth) {
+              spv::Block& depth24_to_depth32_convert_entry =
                   builder.makeNewBlock();
-              depth24_to_depth32_merge = &depth24_to_depth32_merge_block;
+              {
+                spv::Block& depth24_to_depth32_merge_block =
+                    builder.makeNewBlock();
+                depth24_to_depth32_merge = &depth24_to_depth32_merge_block;
+              }
+              builder.createSelectionMerge(depth24_to_depth32_merge,
+                                           spv::SelectionControlMaskNone);
+              builder.createConditionalBranch(host_depth_outdated,
+                                              &depth24_to_depth32_convert_entry,
+                                              depth24_to_depth32_merge);
+              builder.setBuildPoint(&depth24_to_depth32_convert_entry);
             }
-            builder.createSelectionMerge(depth24_to_depth32_merge,
-                                         spv::SelectionControlMaskNone);
-            builder.createConditionalBranch(host_depth_outdated,
-                                            &depth24_to_depth32_convert_entry,
-                                            depth24_to_depth32_merge);
-            builder.setBuildPoint(&depth24_to_depth32_convert_entry);
           }
           // Convert the guest 24-bit depth to float32 (in an open conditional
           // if the host depth is also loaded).
@@ -2158,18 +2258,27 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
           assert_true(guest_depth32 != spv::NoResult);
           spv::Id fragment_depth32 = guest_depth32;
           if (host_depth32 != spv::NoResult) {
-            assert_not_null(depth24_to_depth32_merge);
-            spv::Id depth24_to_depth32_result_block_id =
-                builder.getBuildPoint()->getId();
-            builder.createBranch(depth24_to_depth32_merge);
-            builder.setBuildPoint(depth24_to_depth32_merge);
-            id_vector_temp.clear();
-            id_vector_temp.push_back(guest_depth32);
-            id_vector_temp.push_back(depth24_to_depth32_result_block_id);
-            id_vector_temp.push_back(host_depth32);
-            id_vector_temp.push_back(depth24_to_depth32_header->getId());
-            fragment_depth32 =
-                builder.createOp(spv::OpPhi, type_float, id_vector_temp);
+            if (branchless_host_depth) {
+              // D24S8 conversion is four ALU operations with no side effects.
+              // Select, rather than interpolate, to preserve the host float's
+              // exact bits when its quantized depth still matches the owner.
+              fragment_depth32 = builder.createTriOp(
+                  spv::OpSelect, type_float, host_depth_outdated, guest_depth32,
+                  host_depth32);
+            } else {
+              assert_not_null(depth24_to_depth32_merge);
+              spv::Id depth24_to_depth32_result_block_id =
+                  builder.getBuildPoint()->getId();
+              builder.createBranch(depth24_to_depth32_merge);
+              builder.setBuildPoint(depth24_to_depth32_merge);
+              id_vector_temp.clear();
+              id_vector_temp.push_back(guest_depth32);
+              id_vector_temp.push_back(depth24_to_depth32_result_block_id);
+              id_vector_temp.push_back(host_depth32);
+              id_vector_temp.push_back(depth24_to_depth32_header->getId());
+              fragment_depth32 =
+                  builder.createOp(spv::OpPhi, type_float, id_vector_temp);
+            }
           }
           builder.createStore(fragment_depth32, output_fragment_depth);
           // Unpack the stencil into the stencil reference output if needed and
