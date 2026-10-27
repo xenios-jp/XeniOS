@@ -826,6 +826,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // Each ring-table slot tracks the last source version copied into it so
   // draws can skip per-draw memcmp/copy churn for unchanged constants.
   uint64_t msl_system_constants_version_ = 1;
+  // Packed vertex/pixel floats, bool/loop, and fetch upload revisions.
+  std::array<uint64_t, 4> dxil_guest_constant_versions_{};
   MTL::Buffer* msl_constants_versioned_uniform_buffer_ = nullptr;
   std::vector<uint64_t> msl_system_constants_written_vertex_versions_;
   std::vector<uint64_t> msl_system_constants_written_pixel_versions_;
