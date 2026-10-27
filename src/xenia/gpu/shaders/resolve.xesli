@@ -786,6 +786,31 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
 
     uint4_xe XeResolveColorCopySource4SampleAddressesBytes(
         XeResolveInfo resolve_info, uint2_xe pixel_index, uint sample_index) {
+#ifndef XE_RESOLVE_RESOLUTION_SCALED
+      // All callers process four pixels starting at an X coordinate aligned to
+      // four. Such a group can't cross an EDRAM tile. Calculate the first
+      // address once and apply the within-tile sample layout to the other
+      // three pixels rather than repeating the complete tile calculation.
+      uint address = XeResolveColorCopySourceSampleAddressBytes(
+          resolve_info, pixel_index, sample_index);
+      uint sample_stride_bytes = 4u << resolve_info.edram_format_ints_log2;
+      if (resolve_info.edram_msaa_samples >= kXenosMsaaSamples_4X) {
+        return address + uint4_xe(0u, sample_stride_bytes,
+                                  sample_stride_bytes << 2u,
+                                  sample_stride_bytes * 5u);
+      }
+      if (resolve_info.edram_msaa_samples == kXenosMsaaSamples_2X) {
+        // The second pair is two canonical sample rows below the first. A
+        // canonical EDRAM row is always 320 bytes for both 32bpp and 64bpp.
+        const uint second_pair_offset_bytes = 640u;
+        return address +
+               uint4_xe(0u, sample_stride_bytes, second_pair_offset_bytes,
+                        second_pair_offset_bytes + sample_stride_bytes);
+      }
+      return address +
+             uint4_xe(0u, sample_stride_bytes, sample_stride_bytes << 1u,
+                      sample_stride_bytes * 3u);
+#else
       return uint4_xe(
           XeResolveColorCopySourceSampleAddressBytes(resolve_info, pixel_index,
                                                      sample_index),
@@ -795,6 +820,7 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
               resolve_info, pixel_index + uint2_xe(2u, 0u), sample_index),
           XeResolveColorCopySourceSampleAddressBytes(
               resolve_info, pixel_index + uint2_xe(3u, 0u), sample_index));
+#endif
     }
 
     void XeResolveLoad4RGBAColors(
