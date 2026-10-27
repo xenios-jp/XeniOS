@@ -2417,16 +2417,10 @@ MetalCommandProcessor::CreateSpirvShaderTranslator() const {
 }
 
 bool MetalCommandProcessor::InitializeShaderTranslation() {
-  // Initialize DXBC shader translator (use Apple vendor ID for Metal)
-  // Must query render_target_cache_ for actual runtime parameters.
-  // Metal doesn't use ROV (rasterizer ordered views) path.
-  bool edram_rov_used = false;
-
-  // gamma_render_target_as_unorm8: When true, shaders include code to convert
-  // linear -> gamma for 8-bit gamma render targets. When false, we use 16-bit
-  // UNORM format where hardware handles gamma implicitly.
-  bool gamma_render_target_as_unorm8 = !(
-      edram_rov_used || render_target_cache_->gamma_render_target_as_unorm16());
+  // RGBA8 targets need shader gamma encoding. RGBA16 targets store linear
+  // values and encode them when packing the render target into EDRAM.
+  const bool gamma_render_target_as_unorm8 =
+      !render_target_cache_->gamma_render_target_as_unorm16();
 
   XELOGI("Shader translator init: gamma_as_unorm8={}, msaa_2x={}, scale={}x{}",
          gamma_render_target_as_unorm8,
