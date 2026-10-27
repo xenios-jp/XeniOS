@@ -216,7 +216,6 @@ void LogMetalErrorDetails(const char* label, NS::Error* error) {
 
 constexpr int64_t kAsyncCompileLogIntervalNs =
     int64_t(std::chrono::nanoseconds(std::chrono::seconds(1)).count());
-constexpr size_t kResolvedMemoryRangesMax = 8192;
 
 // Indexed by CommandBufferKind, for the shutdown summary. Submission kinds
 // name what ended the previous submission.
@@ -1482,9 +1481,6 @@ void MetalCommandProcessor::RestoreEdramSnapshot(const void* snapshot) {
         "cache initialization");
     return;
   }
-  // Trace playback frame boundary: drop resolve-write tracking from previous
-  // frame before restoring a new snapshot.
-  ClearResolvedMemory();
   // Restoring the snapshot also dumps its bootstrap render target. The dump's
   // descriptor allocations require a live submission, just like capture.
   if (!EnsureCommandBuffer()) {
@@ -1523,110 +1519,6 @@ uint64_t MetalCommandProcessor::GetCompletedSubmission() const {
   return completed_command_buffers_.load(std::memory_order_acquire);
 }
 
-void MetalCommandProcessor::MarkResolvedMemory(uint32_t base_ptr,
-                                               uint32_t length) {
-  if (length == 0) {
-    return;
-  }
-  constexpr uint64_t kAddressLimit =
-      uint64_t(std::numeric_limits<uint32_t>::max()) + 1ull;
-  uint64_t merged_base = base_ptr;
-  uint64_t merged_end =
-      std::min<uint64_t>(merged_base + uint64_t(length), kAddressLimit);
-  if (merged_end <= merged_base) {
-    return;
-  }
-
-  for (size_t i = 0; i < resolved_memory_ranges_.size();) {
-    const auto& range = resolved_memory_ranges_[i];
-    const uint64_t range_base = range.base;
-    const uint64_t range_end =
-        std::min<uint64_t>(range_base + uint64_t(range.length), kAddressLimit);
-    // Merge overlapping or adjacent ranges.
-    if (merged_end + 1 < range_base || range_end + 1 < merged_base) {
-      ++i;
-      continue;
-    }
-    merged_base = std::min(merged_base, range_base);
-    merged_end = std::max(merged_end, range_end);
-    resolved_memory_ranges_.erase(resolved_memory_ranges_.begin() + i);
-  }
-
-  const uint64_t merged_length_64 =
-      std::min<uint64_t>(merged_end - merged_base, kAddressLimit - merged_base);
-  if (!merged_length_64) {
-    return;
-  }
-  ResolvedRange merged_range = {uint32_t(merged_base),
-                                uint32_t(merged_length_64)};
-  auto insert_it = std::lower_bound(
-      resolved_memory_ranges_.begin(), resolved_memory_ranges_.end(),
-      merged_range, [](const ResolvedRange& lhs, const ResolvedRange& rhs) {
-        return lhs.base < rhs.base;
-      });
-  resolved_memory_ranges_.insert(insert_it, merged_range);
-
-  if (resolved_memory_ranges_.size() <= kResolvedMemoryRangesMax) {
-    return;
-  }
-
-  std::sort(resolved_memory_ranges_.begin(), resolved_memory_ranges_.end(),
-            [](const ResolvedRange& lhs, const ResolvedRange& rhs) {
-              return lhs.base < rhs.base;
-            });
-  while (resolved_memory_ranges_.size() > kResolvedMemoryRangesMax) {
-    size_t best_index = std::numeric_limits<size_t>::max();
-    uint64_t best_gap = std::numeric_limits<uint64_t>::max();
-    for (size_t i = 0; i + 1 < resolved_memory_ranges_.size(); ++i) {
-      const auto& left = resolved_memory_ranges_[i];
-      const auto& right = resolved_memory_ranges_[i + 1];
-      const uint64_t left_end = uint64_t(left.base) + uint64_t(left.length);
-      const uint64_t right_base = uint64_t(right.base);
-      const uint64_t gap = right_base > left_end ? right_base - left_end : 0;
-      if (gap < best_gap) {
-        best_gap = gap;
-        best_index = i;
-        if (!gap) {
-          break;
-        }
-      }
-    }
-    if (best_index == std::numeric_limits<size_t>::max()) {
-      break;
-    }
-    auto& left = resolved_memory_ranges_[best_index];
-    const auto& right = resolved_memory_ranges_[best_index + 1];
-    const uint64_t merged_base_64 =
-        std::min<uint64_t>(left.base, uint64_t(right.base));
-    const uint64_t merged_end_64 =
-        std::max<uint64_t>(uint64_t(left.base) + uint64_t(left.length),
-                           uint64_t(right.base) + uint64_t(right.length));
-    const uint64_t merged_len_64 = std::min<uint64_t>(
-        merged_end_64 - merged_base_64, kAddressLimit - merged_base_64);
-    left.base = uint32_t(merged_base_64);
-    left.length = uint32_t(std::max<uint64_t>(1, merged_len_64));
-    resolved_memory_ranges_.erase(resolved_memory_ranges_.begin() + best_index +
-                                  1);
-  }
-}
-
-bool MetalCommandProcessor::IsResolvedMemory(uint32_t base_ptr,
-                                             uint32_t length) const {
-  const uint64_t end_ptr = uint64_t(base_ptr) + uint64_t(length);
-  for (const auto& range : resolved_memory_ranges_) {
-    const uint64_t range_end = uint64_t(range.base) + uint64_t(range.length);
-    // Check if ranges overlap
-    if (uint64_t(base_ptr) < range_end && end_ptr > uint64_t(range.base)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void MetalCommandProcessor::ClearResolvedMemory() {
-  resolved_memory_ranges_.clear();
-}
-
 void MetalCommandProcessor::NoteMemexportRangesWritten() {
   if (!shared_memory_ || memexport_ranges_.empty()) {
     return;
@@ -1636,9 +1528,6 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
     shared_memory_->RangeWrittenByGpu(base_bytes, memexport_range.size_bytes);
     MarkMemexportPagesWritten(base_bytes, memexport_range.size_bytes,
                               memexport_ranges_awaited_);
-    // Written from the still-open command buffer, so a later draw sampling it
-    // as a texture needs the same split a resolve gets.
-    MarkResolvedMemory(base_bytes, memexport_range.size_bytes);
   }
   copy_resolve_writes_pending_ = true;
 }
@@ -2146,7 +2035,6 @@ void MetalCommandProcessor::ShutdownContext() {
     primitive_processor_.reset();
   }
   frame_open_ = false;
-  ClearResolvedMemory();
   ResetMemexportPages();
 
   ShutdownAsyncCompilation();
@@ -2518,9 +2406,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
     ++frame_current_;
     frame_open_ = false;
   }
-  // Frame boundary reached - resolved memory tracking is only needed within a
-  // frame when trace playback writes memory.
-  ClearResolvedMemory();
   if (shared_memory_ && ::cvars::clear_memory_page_state) {
     shared_memory_->SetSystemPageBlocksValidWithGpuDataWritten();
   }
@@ -3150,9 +3035,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   if (UseDxilPath()) {
-    return IssueDrawDxil(vertex_shader, pixel_shader,
-                         primitive_processing_result, primitive_polygonal,
-                         memexport_used, normalized_color_mask, regs);
+    bool ok = IssueDrawDxil(vertex_shader, pixel_shader,
+                            primitive_processing_result, primitive_polygonal,
+                            memexport_used, normalized_color_mask, regs);
+    return ok;
   }
 
   if (!EnsureSpirvUniformBufferCapacity()) {
@@ -3230,6 +3116,7 @@ bool MetalCommandProcessor::RequestDrawSharedMemoryRanges(
       return false;
     }
   }
+
   return true;
 }
 
@@ -3321,58 +3208,6 @@ void MetalCommandProcessor::ApplyViewportAndScissor(
 bool MetalCommandProcessor::PrepareDrawTextures(uint32_t used_texture_mask,
                                                 const RegisterFile& regs) {
   SCOPE_profile_cpu_f("gpu");
-  if (copy_resolve_writes_pending_ && used_texture_mask) {
-    auto overlaps_resolved_texture_ranges = [&](uint32_t texture_fetch_mask) {
-      uint32_t remaining_fetch_bits = texture_fetch_mask;
-      uint32_t fetch_index = 0;
-      while (xe::bit_scan_forward(remaining_fetch_bits, &fetch_index)) {
-        remaining_fetch_bits &= ~(uint32_t(1) << fetch_index);
-        xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(fetch_index);
-        uint32_t width_minus_1 = 0;
-        uint32_t height_minus_1 = 0;
-        uint32_t depth_or_array_size_minus_1 = 0;
-        uint32_t base_page = 0;
-        uint32_t mip_page = 0;
-        uint32_t mip_max_level = 0;
-        texture_util::GetSubresourcesFromFetchConstant(
-            fetch, &width_minus_1, &height_minus_1,
-            &depth_or_array_size_minus_1, &base_page, &mip_page, nullptr,
-            &mip_max_level);
-        if (!base_page && !mip_page) {
-          continue;
-        }
-        auto layout = texture_util::GetGuestTextureLayout(
-            fetch.dimension, fetch.pitch, width_minus_1 + 1, height_minus_1 + 1,
-            depth_or_array_size_minus_1 + 1, fetch.tiled, fetch.format,
-            fetch.packed_mips, true, mip_max_level);
-        const uint32_t base_size = layout.base.level_data_extent_bytes;
-        const uint32_t mip_size = layout.mips_total_extent_bytes;
-        if (base_page && base_size &&
-            IsResolvedMemory(base_page << 12, base_size)) {
-          return true;
-        }
-        if (mip_page && mip_size &&
-            IsResolvedMemory(mip_page << 12, mip_size)) {
-          return true;
-        }
-      }
-      return false;
-    };
-    if (overlaps_resolved_texture_ranges(used_texture_mask)) {
-      EndCommandBuffer(CommandBufferKind::kSubmissionCopyToDrawSync);
-      BeginCommandBuffer();
-      // The split put every resolve behind a queue boundary, discharging all
-      // of them - not just the range this draw hit.
-      ClearResolvedMemory();
-      if (!current_command_buffer_ || !current_render_encoder_) {
-        XELOGE(
-            "Metal: failed to re-begin command buffer for copy->draw sync "
-            "split");
-        return false;
-      }
-    }
-  }
-
   if (texture_cache_ && used_texture_mask &&
       texture_cache_->AnyUsedTextureRequestWorkPending(used_texture_mask)) {
     texture_cache_->RequestTextures(used_texture_mask);
@@ -3502,22 +3337,18 @@ bool MetalCommandProcessor::ResolveDrawIndexBuffer(
       return false;
   }
 
-  auto request_guest_index_range = [&](uint64_t index_base,
-                                       uint32_t index_count,
-                                       MTL::IndexType index_type) -> bool {
-    if (!shared_memory_) {
-      return false;
-    }
+  // PrimitiveProcessor::Process already requested the guest index range, before
+  // the draw's render encoder was resumed. Requesting it again here could
+  // encode an upload into the command buffer after the draw's state was bound.
+  auto guest_index_range_in_bounds = [&](uint64_t index_base,
+                                         uint32_t index_count,
+                                         MTL::IndexType index_type) -> bool {
     uint32_t index_stride = (index_type == MTL::IndexTypeUInt16)
                                 ? sizeof(uint16_t)
                                 : sizeof(uint32_t);
     uint64_t index_length = uint64_t(index_count) * index_stride;
-    if (index_base > SharedMemory::kBufferSize ||
-        SharedMemory::kBufferSize - index_base < index_length) {
-      return false;
-    }
-    return shared_memory_->RequestRange(static_cast<uint32_t>(index_base),
-                                        static_cast<uint32_t>(index_length));
+    return shared_memory_ && index_base <= SharedMemory::kBufferSize &&
+           SharedMemory::kBufferSize - index_base >= index_length;
   };
 
   bool use_expansion_triangle_list_fallback = false;
@@ -3565,9 +3396,9 @@ bool MetalCommandProcessor::ResolveDrawIndexBuffer(
       index_buffer_out.buffer =
           shared_memory_ ? shared_memory_->GetBuffer() : nullptr;
       index_buffer_out.offset = primitive_processing_result.guest_index_base;
-      if (!request_guest_index_range(index_buffer_out.offset,
-                                     index_buffer_out.index_count,
-                                     index_buffer_out.index_type)) {
+      if (!guest_index_range_in_bounds(index_buffer_out.offset,
+                                       index_buffer_out.index_count,
+                                       index_buffer_out.index_type)) {
         XELOGE("Metal: Failed to validate guest index buffer range");
         return false;
       }
@@ -3760,8 +3591,18 @@ bool MetalCommandProcessor::IssueDrawMsl(
   if (!PrepareDrawTextures(used_texture_mask, regs)) {
     return true;
   }
+  if (texture_cache_) {
+    texture_cache_->Load3DAs2DViews(*msl_vertex_shader, bind_pixel_shader);
+  }
 
   if (!RequestDrawSharedMemoryRanges(*msl_vertex_shader, regs)) {
+    return false;
+  }
+  // A texture load may have ended the render encoder to be ordered after the
+  // earlier draws in the command buffer.
+  BeginCommandBuffer();
+  if (!current_render_encoder_) {
+    XELOGE("SPIRV-Cross: failed to resume render encoder after uploads");
     return false;
   }
 
@@ -5044,8 +4885,18 @@ bool MetalCommandProcessor::IssueDrawDxil(
   if (!PrepareDrawTextures(used_texture_mask, regs)) {
     return true;
   }
+  if (texture_cache_) {
+    texture_cache_->Load3DAs2DViews(*dxil_vertex_shader, bind_pixel_shader);
+  }
 
   if (!RequestDrawSharedMemoryRanges(*dxil_vertex_shader, regs)) {
+    return false;
+  }
+  // A texture load may have ended the render encoder to be ordered after the
+  // earlier draws in the command buffer.
+  BeginCommandBuffer();
+  if (!current_render_encoder_) {
+    XELOGE("DXIL: failed to resume render encoder after uploads");
     return false;
   }
 
@@ -5200,29 +5051,14 @@ bool MetalCommandProcessor::IssueCopy() {
     return true;
   }
 
-  // Track this region so a later draw sampling it as a texture is split off the
-  // command buffer that wrote it.
-  MarkResolvedMemory(written_address, written_length);
   // The resolve overwrote any export output here, so no fence need await it.
   ClearMemexportPages(written_address, written_length);
 
-  // Keep copy-only resolve bursts open so multiple resolves can be coalesced,
-  // but commit draw-containing submissions so subsequent work observes the
-  // resolved guest memory immediately.
-  if (current_draw_index_ == 0) {
-    copy_resolve_writes_pending_ = true;
-    return true;
-  }
-
-  // Resolve touched guest memory in a draw-containing submission; commit now
-  // so following packets don't observe stale resolve results.
-  ScheduleSpirvUniformBufferRelease(copy_command_buffer);
-  copy_command_buffer->commit();
-  copy_command_buffer->release();
-  current_command_buffer_ = nullptr;
-  current_draw_index_ = 0;
-  copy_resolve_writes_pending_ = false;
-
+  // Later work in the submission that reads the output (draws, texture loads
+  // encoded into the same command buffer) is ordered after the resolve on the
+  // GPU, so the submission stays open. The pending output only makes the end
+  // of the primary buffer commit it.
+  copy_resolve_writes_pending_ = true;
   return true;
 }
 

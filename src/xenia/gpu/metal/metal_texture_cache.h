@@ -63,6 +63,12 @@ class MetalTextureCache : public TextureCache {
   MTL::Texture* GetNullTexture3D() const { return null_texture_3d_; }
   MTL::Texture* GetNullTextureCube() const { return null_texture_cube_; }
 
+  // Loads the 2D views of the 3D textures the shaders sample as 1D or 2D. Call
+  // while the draw requests its textures: binding would otherwise load them
+  // with the draw's render pass open, in a command buffer committed ahead of
+  // the submission and its earlier resolves.
+  void Load3DAs2DViews(const SpirvShader& vertex_shader,
+                       const SpirvShader* pixel_shader);
   MTL::Texture* GetTextureForBinding(uint32_t fetch_constant,
                                      xenos::FetchOpDimension dimension,
                                      bool is_signed);
