@@ -63,6 +63,14 @@ enum CacheControlType {
   CACHE_CONTROL_TYPE_DATA_STORE_AND_FLUSH,
 };
 
+// DENORMAL_QUIRK: the operand in that slot is proven never to be a double
+// denormal. Whether it is finite still counts.
+enum DenormalQuirkFlags {
+  DENORMAL_QUIRK_SRC1_NEVER_DENORMAL = (1 << 0),
+  DENORMAL_QUIRK_SRC2_NEVER_DENORMAL = (1 << 1),
+  DENORMAL_QUIRK_SRC3_NEVER_DENORMAL = (1 << 2),
+};
+
 enum ArithmeticFlags {
   ARITHMETIC_UNSIGNED = (1 << 2),
   ARITHMETIC_SATURATE = (1 << 3),
