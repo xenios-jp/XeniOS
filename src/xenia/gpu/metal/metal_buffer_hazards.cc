@@ -104,6 +104,16 @@ void MetalBufferHazards::Encoder::Wait(MTL::Fence* fence) {
   }
 }
 
+bool MetalBufferHazards::Encoder::HasAccess(uint32_t start,
+                                            uint32_t length) const {
+  if (!hazards_ || !length || start >= hazards_->buffer_size_) {
+    return false;
+  }
+  uint32_t end = uint32_t(
+      std::min(uint64_t(start) + length, uint64_t(hazards_->buffer_size_)));
+  return Overlaps(reads_, start, end) || Overlaps(writes_, start, end);
+}
+
 bool MetalBufferHazards::Encoder::Access(uint32_t start, uint32_t length,
                                          bool write) {
   assert_not_null(hazards_);
@@ -236,6 +246,36 @@ MetalBufferHazards::~MetalBufferHazards() {
     fence->release();
   }
   free_fences_.clear();
+}
+
+bool MetalBufferHazards::HasPendingAccess(uint32_t start,
+                                          uint32_t length) const {
+  if (!length || start >= buffer_size_) {
+    return false;
+  }
+  uint32_t end =
+      uint32_t(std::min(uint64_t(start) + length, uint64_t(buffer_size_)));
+  if (!AnyBlock(read_blocks_, start, end) &&
+      !AnyBlock(write_blocks_, start, end)) {
+    return false;
+  }
+  for (const auto& group : groups_) {
+    auto status = group->command_buffer->status();
+    if (status == MTL::CommandBufferStatusCompleted ||
+        status == MTL::CommandBufferStatusError) {
+      continue;
+    }
+    auto overlaps = [start, end](const std::vector<Record>& records) {
+      return std::any_of(records.begin(), records.end(),
+                         [start, end](const Record& record) {
+                           return record.start < end && record.end > start;
+                         });
+    };
+    if (overlaps(group->reads) || overlaps(group->writes)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 MetalBufferHazards::Group& MetalBufferHazards::GetGroup(
