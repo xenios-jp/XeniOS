@@ -66,7 +66,8 @@ bool DxilShader::DxilTranslation::CompileToAir(
       spirv.size() / sizeof(uint32_t),
       is_vertex ? SpirvToDxilCompiler::Stage::kVertex
                 : SpirvToDxilCompiler::Stage::kPixel,
-      /*lower_to_bindless=*/true);
+      /*lower_to_bindless=*/true, /*input_clip_size=*/0,
+      /*preserve_msc_fmad32=*/SpirvToDxilCompiler::SupportsMscFmad32());
   if (dxil.empty()) {
     XELOGE("DxilShader: SPIR-V to DXIL failed for shader {:016X}",
            shader().ucode_data_hash());
