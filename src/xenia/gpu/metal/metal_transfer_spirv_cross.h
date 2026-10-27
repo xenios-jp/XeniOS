@@ -38,6 +38,8 @@ constexpr uint32_t kTransferMslPushConstantBufferIndex = 0;
 constexpr uint32_t kTransferMslHostDepthBufferIndex = 1;
 constexpr uint32_t kTransferMslTextureCount =
     kTransferDescriptorSetCount * kTransferBindingsPerSet;
+// Resolve refresh uses source 0, output 1, source stencil 2, aliases 3..5.
+constexpr uint32_t kResolveRefreshMslFirstAliasTexture = 3;
 constexpr uint32_t TransferMslTextureIndex(uint32_t set, uint32_t binding) {
   return set * kTransferBindingsPerSet + binding;
 }

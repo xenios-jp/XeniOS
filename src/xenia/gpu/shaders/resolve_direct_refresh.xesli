@@ -10,13 +10,27 @@
 #ifndef XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
 #define XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
 
-// Cache images are single-layer arrays, matching the generic refresh emitter.
-// Write the same logical dword the normal texture loader would read, before
-// the guest-memory endian transform.
+// The texture-cache image of a direct resolve's destination, written with what
+// the loader would copy from the resolved memory: the texels before the endian
+// swap. Up to three aliases - images of the same size loaded from the same
+// memory with the same texel bits - get the same texels at the same
+// coordinates.
 RWTexture2DArray<uint> xe_resolve_refresh_texture : register(u4);
+RWTexture2DArray<uint> xe_resolve_refresh_alias_0 : register(u5);
+RWTexture2DArray<uint> xe_resolve_refresh_alias_1 : register(u6);
+RWTexture2DArray<uint> xe_resolve_refresh_alias_2 : register(u7);
 
-void XeResolveDirectRefreshWrite(uint2_xe texel, uint value) {
+void XeResolveDirectRefreshWrite(uint2_xe texel, uint value, uint alias_count) {
   xe_resolve_refresh_texture[uint3(texel, 0u)] = value;
+  if (alias_count >= 1u) {
+    xe_resolve_refresh_alias_0[uint3(texel, 0u)] = value;
+  }
+  if (alias_count >= 2u) {
+    xe_resolve_refresh_alias_1[uint3(texel, 0u)] = value;
+  }
+  if (alias_count >= 3u) {
+    xe_resolve_refresh_alias_2[uint3(texel, 0u)] = value;
+  }
 }
 
 #endif  // XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_
