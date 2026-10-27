@@ -183,6 +183,14 @@ void VulkanCommandProcessor::ClearReadbackBuffers() {
   }
 }
 
+void VulkanCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
+                                                          uint32_t length) {
+  if (shared_memory_->is_zero_copy() && length) {
+    // Recorded RAM versions must outlive GPU accesses to the aliased memory.
+    AwaitAllQueueOperationsCompletion();
+  }
+}
+
 void VulkanCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
                                                       uint32_t length) {
   shared_memory_->MemoryInvalidationCallback(base_ptr, length, true);
