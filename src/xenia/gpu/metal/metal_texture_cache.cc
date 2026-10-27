@@ -537,21 +537,27 @@ bool MetalTextureCache::IsResolveRefreshKey(const TextureKey& key) const {
   if (key.dimension != xenos::DataDimension::k2DOrStacked ||
       key.GetDepthOrArraySize() != 1 || !key.tiled || key.packed_mips ||
       key.mip_page || key.mip_max_level || key.signed_separate ||
-      key.scaled_resolve ||
-      FormatInfo::Get(key.format)->type != FormatType::kResolvable) {
+      key.scaled_resolve) {
     return false;
   }
   // The resolve writes its texels as raw dwords, so only loaders that copy
-  // them unchanged into the image qualify.
+  // them unchanged into the image qualify, along with the supported depth
+  // conversions performed by the resolve shader itself.
   const LoadShaderIndex load_shader = GetLoadShaderIndexForKey(key);
-  return load_shader == kLoadShaderIndex32bpb ||
-         load_shader == kLoadShaderIndex64bpb;
+  if (load_shader == kLoadShaderIndexDepthUnorm ||
+      load_shader == kLoadShaderIndexDepthFloat) {
+    return true;
+  }
+  return FormatInfo::Get(key.format)->type == FormatType::kResolvable &&
+         (load_shader == kLoadShaderIndex32bpb ||
+          load_shader == kLoadShaderIndex64bpb);
 }
 
 void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
     uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
-    xenos::Endian endianness, ResolveTextureRefreshTarget& target_out) {
+    xenos::Endian endianness, bool depth,
+    ResolveTextureRefreshTarget& target_out) {
   target_out = {};
   const xenos::TextureFormat format = ColorFormatToTextureFormat(dest_format);
   if (IsDrawResolutionScaled() || !length || address != base_address ||
@@ -561,25 +567,59 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
 
   // The inventory only holds keys that passed IsResolveRefreshKey.
   MetalTexture* match = nullptr;
+  ResolveTextureRefreshTarget candidate;
   for (MetalTexture* texture = resolve_refresh_first_; texture;
        texture = texture->resolve_refresh_next_) {
     const TextureKey& key = texture->key();
-    if (!key.is_valid || key.format != format ||
-        (key.base_page << 12) != base_address || key.endianness != endianness ||
-        (key.pitch << 5) != pitch ||
-        xe::align(key.GetWidth(), uint32_t(8)) != width ||
-        xe::align(key.GetHeight(), uint32_t(8)) != height) {
+    using Transform = ResolveTextureRefreshTarget::Transform;
+    Transform transform = Transform::kNone;
+    const auto loader = GetLoadShaderIndexForKey(key);
+    if (loader == kLoadShaderIndexDepthUnorm) {
+      transform = Transform::kDepthUnorm24;
+    } else if (loader == kLoadShaderIndexDepthFloat) {
+      transform = Transform::kDepthFloat24;
+    }
+    const uint32_t texture_base = key.base_page << 12;
+    const uint32_t aligned_width = xe::align(key.GetWidth(), uint32_t(8));
+    if (!key.is_valid || (transform != Transform::kNone) != depth ||
+        (!depth && key.format != format) || texture_base > base_address ||
+        key.endianness != endianness || (key.pitch << 5) != pitch ||
+        width > aligned_width || key.GetWidth() > UINT16_MAX) {
       continue;
     }
-    // The resolve must write exactly the range the texture is loaded from.
-    if (xe::align(texture->GetGuestBaseSize(), UINT32_C(16)) != length) {
-      continue;
+    const uint32_t texture_length =
+        xe::align(texture->GetGuestBaseSize(), UINT32_C(16));
+    ResolveTextureRefreshTarget current;
+    current.transform = transform;
+    if (texture_base != base_address || width != aligned_width ||
+        xe::align(key.GetHeight(), uint32_t(8)) != height ||
+        texture_length != length) {
+      // Tiled rows are contiguous only at 32-row tile-row boundaries. Keep
+      // all texels outside this rectangle, and require them current now.
+      const uint64_t row_bytes =
+          uint64_t(pitch) * FormatInfo::Get(key.format)->bytes_per_block();
+      const uint64_t delta = base_address - texture_base;
+      if (!row_bytes || delta % (row_bytes * 32) ||
+          delta / row_bytes > UINT16_MAX ||
+          delta / row_bytes + height > key.GetHeight() ||
+          delta + length > texture_length) {
+        continue;
+      }
+      auto global_lock = xe::global_critical_region::Acquire();
+      if (texture->base_outdated(global_lock)) {
+        continue;
+      }
+      current.partial = true;
+      current.offset_y = uint32_t(delta / row_bytes);
+      current.invalidation_count =
+          texture->base_invalidation_count(global_lock);
     }
     // Two interpretations of the same resolve range are not interchangeable.
     if (match) {
       return;
     }
     match = texture;
+    candidate = current;
   }
   if (!match) {
     return;
@@ -593,6 +633,7 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
   }
 
   match->MarkAsUsed();
+  target_out = candidate;
   target_out.write_texture = write_view;
   target_out.cache_texture = match;
   target_out.length = length;
@@ -625,6 +666,11 @@ void MetalTextureCache::PublishDirectResolveTextureRefresh(
   // Publishing installs the ordinary watch under the same lock, so later writes
   // take the normal path.
   auto global_lock = xe::global_critical_region::Acquire();
+  if (target.partial && (texture->base_invalidation_count(global_lock) !=
+                             target.invalidation_count + 1 ||
+                         !texture->base_last_invalidated_by_gpu(global_lock))) {
+    return;
+  }
   if (texture->base_outdated(global_lock)) {
     texture->MakeUpToDateAndWatch(global_lock);
   }
@@ -3772,12 +3818,17 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateResolveWriteView() {
     case kLoadShaderIndex64bpb:
       view_format = MTL::PixelFormatRG32Uint;
       break;
+    case kLoadShaderIndexDepthUnorm:
+    case kLoadShaderIndexDepthFloat:
+      view_format = MTL::PixelFormatR32Float;
+      break;
     default:
       return nullptr;
   }
   if (metal_texture_->textureType() != MTL::TextureType2DArray ||
       !(metal_texture_->usage() & MTL::TextureUsageShaderWrite) ||
-      !(metal_texture_->usage() & MTL::TextureUsagePixelFormatView)) {
+      (view_format != metal_texture_->pixelFormat() &&
+       !(metal_texture_->usage() & MTL::TextureUsagePixelFormatView))) {
     return nullptr;
   }
   resolve_write_view_ = metal_texture_->newTextureView(view_format);

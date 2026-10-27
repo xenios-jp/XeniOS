@@ -3315,7 +3315,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
-    MTL::CommandBuffer* command_buffer, MTL::Texture* refresh_texture) {
+    MTL::CommandBuffer* command_buffer, MTL::Texture* refresh_texture,
+    uint32_t refresh_offset_y, bool refresh_depth_float) {
   SCOPE_profile_cpu_f("gpu");
   auto* shared = command_processor_.shared_memory();
   MTL::Buffer* dest_buffer = shared ? shared->GetBuffer() : nullptr;
@@ -3403,6 +3404,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     shader_key.msaa_samples = rt_key.msaa_samples;
     shader_key.direct_resolve = 1;
     shader_key.direct_resolve_texture = refresh_texture != nullptr;
+    shader_key.direct_resolve_texture_depth_float =
+        refresh_texture && rt_key.is_depth && refresh_depth_float;
     shader_key.direct_resolve_4x_average =
         IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
     Source source;
@@ -3516,7 +3519,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       resolve_info.height_div_8;
   if (refresh_texture) {
     push_constants[kEdramDumpShaderPushConstantResolveTextureWidth] =
-        uint32_t(refresh_texture->width());
+        uint32_t(refresh_texture->width()) | (refresh_offset_y << 16);
     push_constants[kEdramDumpShaderPushConstantResolveTextureHeight] =
         uint32_t(refresh_texture->height());
     encoder->setTexture(refresh_texture, 1);
@@ -3563,6 +3566,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     encoder->useResource(source_texture, MTL::ResourceUsageRead);
     if (refresh_texture) {
       encoder->setTexture(source_texture, 0);
+      if (stencil_texture) {
+        encoder->setTexture(stencil_texture, 2);
+      }
       encoder->setBuffer(dest_buffer, 0, 1);
     }
     if (stencil_texture) {
@@ -4407,7 +4413,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
     auto* texture_cache = command_processor_.texture_cache();
-    if (texture_cache && !resolve_info.IsCopyingDepth() &&
+    if (texture_cache &&
         !IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) &&
         !dest_info.copy_dest_exp_bias &&
         uint32_t(dest_info.copy_dest_endian) <=
@@ -4418,7 +4424,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
           resolve_info.copy_dest_extent_length, resolve_info.copy_dest_base,
           resolve_width, resolve_height,
           dest_coordinates.pitch_aligned_div_32 << 5,
-          xenos::Endian(dest_info.copy_dest_endian), refresh_target);
+          xenos::Endian(dest_info.copy_dest_endian), is_depth, refresh_target);
     }
     // RequestRange may process completed submissions and evict the cache
     // wrapper. Keep its writable view alive through encoding; publication
@@ -4427,7 +4433,11 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     resolved_directly = DirectResolveRenderTargets(
         resolve_info, copy_shader, copy_constants, dump_base,
         dump_row_length_used, dump_rows, dump_pitch, group_count_x,
-        group_count_y, command_buffer, refresh_texture.get());
+        group_count_y, command_buffer, refresh_texture.get(),
+        refresh_target.offset_y,
+        refresh_target.transform ==
+            MetalTextureCache::ResolveTextureRefreshTarget::Transform::
+                kDepthFloat24);
   }
 
   if (!resolved_directly) {
@@ -4453,6 +4463,14 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     written_length = resolve_info.copy_dest_extent_length;
 
     if (auto* tex_cache = command_processor_.texture_cache()) {
+      // Partial refreshes preserve texels outside the resolve rectangle.
+      // Keep invalidation, page-validity updates and publication atomic with
+      // CPU callbacks, including RangeWrittenByGpu's gap between its locks.
+      // The global region is recursive, as required by the nested watch APIs.
+      auto refresh_lock = xe::global_critical_region::AcquireDeferred();
+      if (resolved_directly && refresh_target && refresh_target.partial) {
+        refresh_lock.lock();
+      }
       tex_cache->MarkRangeAsResolved(written_address, written_length,
                                      draw_resolution_scaled);
       if (resolved_directly && refresh_target) {

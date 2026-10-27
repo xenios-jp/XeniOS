@@ -97,6 +97,29 @@ constexpr uint32_t ResolutionScaledGroupBlocksYLog2(
 
 }  // namespace
 
+uint32_t EmitResolveRefreshDepthTexel(SpirvBuilder& builder, uint32_t packed,
+                                      bool depth_float,
+                                      uint32_t ext_inst_glsl_std_450) {
+  if (depth_float) {
+    return SpirvShaderTranslator::Depth20e4To32(builder, packed, 8, false,
+                                                false, ext_inst_glsl_std_450);
+  }
+  auto type_uint = builder.makeUintType(32);
+  auto type_float = builder.makeFloatType(32);
+  auto depth = builder.createBinOp(spv::OpShiftRightLogical, type_uint, packed,
+                                   builder.makeUintConstant(8));
+  // Match XeUNorm24To32 exactly rather than dividing by 2^24 - 1.
+  return builder.createBinOp(
+      spv::OpFMul, type_float,
+      builder.createUnaryOp(
+          spv::OpConvertUToF, type_float,
+          builder.createBinOp(
+              spv::OpIAdd, type_uint, depth,
+              builder.createBinOp(spv::OpShiftRightLogical, type_uint, depth,
+                                  builder.makeUintConstant(23)))),
+      builder.makeFloatConstant(1.0f / 16777216.0f));
+}
+
 std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     EdramDumpShaderKey key, const EdramDumpShaderOptions& options) {
   bool draw_resolution_scaled =
@@ -166,12 +189,14 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   // the guest-memory destination buffer at binding 0.
   spv::Id resolve_texture = spv::NoResult;
   if (key.direct_resolve_texture) {
-    assert_false(key.is_depth);
     resolve_texture = builder.createVariable(
         spv::NoPrecision, spv::StorageClassUniformConstant,
-        builder.makeImageType(type_uint, spv::Dim2D, false, true, false, 2,
-                              format_is_64bpp ? spv::ImageFormat::Rg32ui
-                                              : spv::ImageFormat::R32ui),
+        builder.makeImageType(
+            key.is_depth ? type_float : type_uint, spv::Dim2D, false, true,
+            false, 2,
+            key.is_depth ? spv::ImageFormat::R32f
+                         : (format_is_64bpp ? spv::ImageFormat::Rg32ui
+                                            : spv::ImageFormat::R32ui)),
         "xe_resolve_texture");
     builder.addDecoration(resolve_texture, spv::DecorationDescriptorSet,
                           options.descriptor_set_dest);
@@ -1129,10 +1154,13 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
 
     spv::Id texture_width = spv::NoResult;
     spv::Id texture_height = spv::NoResult;
+    spv::Id texture_y = spv::NoResult;
     spv::Id loaded_resolve_texture = spv::NoResult;
     if (key.direct_resolve_texture) {
-      texture_width =
+      auto width_and_offset_y =
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureWidth);
+      texture_width = bitwise_and(width_and_offset_y, 0xFFFF);
+      texture_y = add(dest_y, shift_right(width_and_offset_y, 16));
       texture_height =
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureHeight);
       loaded_resolve_texture =
@@ -1180,21 +1208,30 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
                                 builder.createBinOp(spv::OpULessThan, type_bool,
                                                     texture_x, texture_width),
                                 builder.createBinOp(spv::OpULessThan, type_bool,
-                                                    dest_y, texture_height));
+                                                    texture_y, texture_height));
         SpirvBuilder::IfBuilder if_texture_write(
             texture_write_condition, spv::SelectionControlMaskNone, builder);
-        id_vector_temp.clear();
-        id_vector_temp.push_back(pixel[0]);
-        id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
-        id_vector_temp.push_back(const_uint_0);
-        id_vector_temp.push_back(const_uint_0);
-        spv::Id texel =
-            builder.createCompositeConstruct(type_uint4, id_vector_temp);
+        spv::Id texel;
+        if (key.is_depth) {
+          auto depth = EmitResolveRefreshDepthTexel(
+              builder, pixel[0], key.direct_resolve_texture_depth_float,
+              ext_inst_glsl_std_450);
+          auto zero = builder.makeFloatConstant(0.0f);
+          texel = builder.createCompositeConstruct(
+              builder.makeVectorType(type_float, 4), {depth, zero, zero, zero});
+        } else {
+          id_vector_temp.clear();
+          id_vector_temp.push_back(pixel[0]);
+          id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
+          id_vector_temp.push_back(const_uint_0);
+          id_vector_temp.push_back(const_uint_0);
+          texel = builder.createCompositeConstruct(type_uint4, id_vector_temp);
+        }
         id_vector_temp.clear();
         id_vector_temp.push_back(
             builder.createUnaryOp(spv::OpBitcast, type_int, texture_x));
         id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, dest_y));
+            builder.createUnaryOp(spv::OpBitcast, type_int, texture_y));
         id_vector_temp.push_back(builder.makeIntConstant(0));
         spv::Id coordinates =
             builder.createCompositeConstruct(type_int3, id_vector_temp);
