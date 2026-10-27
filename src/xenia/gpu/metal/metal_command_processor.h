@@ -102,6 +102,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // The frame being recorded, or the next one between frames.
   uint64_t GetCurrentFrame() const { return frame_current_; }
   uint64_t GetCompletedFrame() const { return frame_completed_; }
+  bool TryWriteShaderDoneFence(uint32_t address, uint32_t value);
   // What a command buffer was created for, to attribute the per-frame count.
   // Submission kinds name what ended the previous one, since that is what
   // forced a new submission to be started.
@@ -983,10 +984,18 @@ class MetalCommandProcessor : public CommandProcessor {
   // memexport_ranges_, narrowed for a pure memexport draw to what its vertex
   // indices can reach.
   std::vector<draw_util::MemExportRange> memexport_ordering_ranges_;
-  bool DrawOverlapsPendingMemexport(
+  // Whether the draw's shared memory reads or exports overlap writes not yet
+  // ordered before it.
+  bool DrawOverlapsPendingWrites(
+      const std::vector<draw_util::MemExportRange>& pending_writes,
       const Shader& vertex_shader, const Shader* pixel_shader,
       const IndexBufferInfo* index_buffer_info,
       const draw_util::VertexIndexRange* vertex_indices) const;
+  // Shader-done fence writes made while a render pass was open, encoded in
+  // order when it ends.
+  std::vector<draw_util::MemExportRange> pending_shader_done_fence_ranges_;
+  std::vector<uint32_t> pending_shader_done_fence_values_;
+  void EncodeDeferredShaderDoneFences();
   // Page tracking so a fence the guest reads can await export output. The
   // fragment's host/device routing half is unused - Metal has one buffer.
 #include "../command_processor_memexport.inc"

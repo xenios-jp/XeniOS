@@ -1173,6 +1173,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
       write_physical_address = writeback_offset;
     }
   }
+  // Metal can publish the fence on the GPU timeline, after the work ahead of
+  // it, export output included.
+  if (COMMAND_PROCESSOR::TryWriteShaderDoneFence(
+          CpuToGpu(write_physical_address), data_value)) {
+    return true;
+  }
   // The guest treats this fence as "the GPU is done", export output ahead of it
   // included.
   COMMAND_PROCESSOR::WriteGuestFence(write_destination, write_physical_address,
