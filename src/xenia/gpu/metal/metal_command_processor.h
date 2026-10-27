@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -31,6 +32,7 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/draw_util.h"
+#include "xenia/gpu/memexport_format_profile.h"
 #include "xenia/gpu/metal/dxil_shader.h"
 #include "xenia/gpu/metal/metal_dxil_binder.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
@@ -449,7 +451,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // too, instead of on the draw thread.
   Shader::Translation* GetOrCreateHostTranslation(
       SpirvShader& shader, uint64_t modification, bool allow_async,
-      ShaderCompileStatus* compile_status_out);
+      ShaderCompileStatus* compile_status_out,
+      std::shared_ptr<const Shader::Specialization> specialization = {});
 
   // One MSC stage of a tessellated draw.
   struct DxilTessellationStage {
@@ -686,6 +689,7 @@ class MetalCommandProcessor : public CommandProcessor {
       return a.priority < b.priority;
     }
   };
+  memexport_format_profile::ProfilePool memexport_format_profiles_;
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
                       ShaderCompileRequestCompare>
       async_shader_queue_;
