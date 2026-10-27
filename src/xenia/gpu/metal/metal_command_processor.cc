@@ -4838,6 +4838,9 @@ bool MetalCommandProcessor::IssueDrawMsl(
     }
   }
 
+  if (render_target_cache_) {
+    render_target_cache_->NoteDrawWrites();
+  }
   if (memexport_used) {
     NoteMemexportRangesWritten();
   }
@@ -5386,6 +5389,9 @@ bool MetalCommandProcessor::IssueDrawDxil(
   }
   render_encoder_memexport_draws_are_pure_ &= pure_memexport_draw;
 
+  if (render_target_cache_) {
+    render_target_cache_->NoteDrawWrites();
+  }
   ++current_draw_index_;
   return true;
 }
