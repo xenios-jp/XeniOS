@@ -59,8 +59,11 @@ union EdramDumpShaderKey {
     // Also store the logical texels - after the resolve's red/blue swap,
     // before its endian transform - as raw dwords in an existing,
     // correctly-sized texture-cache image viewed as R32Uint for 32bpp sources
-    // or RG32Uint for 64bpp ones. Color sources only.
+    // or RG32Uint for 64bpp ones. Depth outputs use R32Float with the same
+    // conversion as the texture loader.
     uint32_t direct_resolve_texture : 1;
+    // Decode packed 20e4 rather than unorm24 when refreshing depth.
+    uint32_t direct_resolve_texture_depth_float : 1;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -137,6 +140,7 @@ enum EdramDumpShaderPushConstant : uint32_t {
   // threads can place themselves without dividing the linear index back out.
   kEdramDumpShaderPushConstantResolveDispatchTile,
   // Logical consumer dimensions, not the resolve's 8-pixel-aligned extent.
+  // The upper 16 bits of width are the first output texture row.
   kEdramDumpShaderPushConstantResolveTextureWidth,
   kEdramDumpShaderPushConstantResolveTextureHeight,
 
@@ -232,6 +236,12 @@ struct EdramDumpShaderOptions {
 
 // Returns the SPIR-V words of the dump shader for one key, or an empty vector
 // if the key's format is not dumpable.
+class SpirvBuilder;
+// Decode the upper 24 bits exactly as the depth texture loader does.
+uint32_t EmitResolveRefreshDepthTexel(SpirvBuilder& builder, uint32_t packed,
+                                      bool depth_float,
+                                      uint32_t ext_inst_glsl_std_450);
+
 std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     EdramDumpShaderKey key, const EdramDumpShaderOptions& options);
 

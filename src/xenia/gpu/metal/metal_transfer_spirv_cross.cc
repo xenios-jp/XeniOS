@@ -45,7 +45,7 @@ MTL::Function* CompileFunctionMsl(MTL::Device* device,
         // descriptor set, so it is always set 0 binding 0.
         resource_binding.msl_buffer = kTransferMslHostDepthBufferIndex;
         resource_binding.msl_texture =
-            resolve_refresh ? (set == 1 ? 0 : 1)
+            resolve_refresh ? (set == 1 ? (binding ? 2 : 0) : 1)
                             : TransferMslTextureIndex(set, binding);
         compiler.add_msl_resource_binding(resource_binding);
       }

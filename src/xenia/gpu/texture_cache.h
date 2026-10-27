@@ -301,6 +301,14 @@ class TextureCache {
     bool base_outdated(const global_unique_lock_type& global_lock) const {
       return base_outdated_;
     }
+    uint64_t base_invalidation_count(
+        const global_unique_lock_type& global_lock) const {
+      return base_invalidation_count_;
+    }
+    bool base_last_invalidated_by_gpu(
+        const global_unique_lock_type& global_lock) const {
+      return base_last_invalidated_by_gpu_;
+    }
     bool mips_outdated(const global_unique_lock_type& global_lock) const {
       return mips_outdated_;
     }
@@ -311,7 +319,8 @@ class TextureCache {
     bool mips_outdated_lockless() const { return mips_outdated_; }
     bool MakeUpToDateAndWatch(const global_unique_lock_type& global_lock);
 
-    void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip);
+    void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip,
+                       bool invalidated_by_gpu);
 
     // For LRU caching - updates the last usage frame and moves the texture to
     // the end of the usage queue. Must be called any time the texture is
@@ -359,6 +368,8 @@ class TextureCache {
     // with shared memory.
     // Whether the recent base level data needs reloading from the memory.
     bool base_outdated_ = false;
+    uint64_t base_invalidation_count_ = 0;
+    bool base_last_invalidated_by_gpu_ = false;
     // Whether the recent mip data needs reloading from the memory.
     bool mips_outdated_ = false;
     // Watch handles for the memory ranges.
