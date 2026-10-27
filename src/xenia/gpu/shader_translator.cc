@@ -9,7 +9,10 @@
 
 #include "xenia/gpu/shader_translator.h"
 
+#include <algorithm>
 #include <cstdarg>
+#include <cstring>
+#include <optional>
 
 #include "xenia/base/logging.h"
 #include "xenia/gpu/gpu_flags.h"
@@ -381,6 +384,7 @@ void Shader::AnalyzeUcode(StringBuffer& ucode_disasm_buffer) {
   if (type() == xenos::ShaderType::kVertex) {
     GatherAluRoundingSensitivity();
   }
+  AnalyzeVertexIndexing();
 
   is_ucode_analyzed_ = true;
 
@@ -409,6 +413,334 @@ uint32_t Shader::GetInterpolatorInputMask(reg::SQ_PROGRAM_CNTL sq_program_cntl,
     param_gen_pos_out = UINT32_MAX;
   }
   return interpolator_mask;
+}
+
+void Shader::AnalyzeVertexIndexing() {
+  // Only draws of vertex shaders that export memory narrow their accesses.
+  if (type() != xenos::ShaderType::kVertex || !memexport_eM_written_ ||
+      uses_subroutine_calls_) {
+    return;
+  }
+  // A read of r0.x sees the vertex index if no instruction writes r0.x before
+  // it in control flow order and it runs at most once, after only instructions
+  // earlier in that order: before the first label, or after the last backward
+  // branch. Subroutines, which may be anywhere, are excluded above.
+  uint32_t cf_index_bound = cf_pair_index_bound_ * 2;
+  uint32_t first_label =
+      label_addresses_.empty() ? UINT32_MAX : *label_addresses_.begin();
+  uint32_t backward_branch_end = 0;
+  for (uint32_t cf_index = 0; cf_index < cf_index_bound; ++cf_index) {
+    ControlFlowInstruction cf_ab[2];
+    UnpackControlFlowInstructions(ucode_data_.data() + (cf_index >> 1) * 3,
+                                  cf_ab);
+    const ControlFlowInstruction& cf = cf_ab[cf_index & 1];
+    if (cf.opcode() == ControlFlowOpcode::kLoopEnd ||
+        (cf.opcode() == ControlFlowOpcode::kCondJmp &&
+         cf.cond_jmp.address() <= cf_index)) {
+      backward_branch_end = cf_index + 1;
+    }
+  }
+  auto runs_once = [&](uint32_t cf_index) {
+    return cf_index < first_label || cf_index >= backward_branch_end;
+  };
+  auto is_plain = [](const InstructionOperand& operand,
+                     InstructionStorageSource source) {
+    return operand.storage_source == source &&
+           operand.storage_addressing_mode ==
+               InstructionStorageAddressingMode::kAbsolute &&
+           !operand.is_negated && !operand.is_absolute_value;
+  };
+  // Register components holding mad(vertex index, c[scale], c[offset]), valid
+  // only along straight-line code.
+  struct Affine {
+    uint32_t reg;
+    uint32_t component;
+    VertexIndexedMemExport value;
+  };
+  std::vector<Affine> affine;
+  auto find = [&](const InstructionOperand& operand,
+                  uint32_t component) -> const Affine* {
+    SwizzleSource source = operand.GetComponent(component);
+    if (!is_plain(operand, InstructionStorageSource::kRegister) ||
+        source > SwizzleSource::kW) {
+      return nullptr;
+    }
+    for (const Affine& entry : affine) {
+      if (entry.reg == operand.storage_index &&
+          entry.component == uint32_t(source)) {
+        return &entry;
+      }
+    }
+    return nullptr;
+  };
+  bool r0x_written = false;
+  auto write = [&](const InstructionResult& result) {
+    uint32_t mask = result.GetUsedWriteMask();
+    if (result.storage_target != InstructionStorageTarget::kRegister || !mask) {
+      return false;
+    }
+    if (result.storage_addressing_mode !=
+        InstructionStorageAddressingMode::kAbsolute) {
+      affine.clear();
+      r0x_written = true;
+      return true;
+    }
+    r0x_written |= !result.storage_index && (mask & 1);
+    affine.erase(std::remove_if(affine.begin(), affine.end(),
+                                [&](const Affine& entry) {
+                                  return entry.reg == result.storage_index &&
+                                         ((mask >> entry.component) & 1);
+                                }),
+                 affine.end());
+    return false;
+  };
+  auto assign = [&](const InstructionResult& result,
+                    const VertexIndexedMemExport& value) {
+    uint32_t mask = result.GetUsedWriteMask();
+    for (uint32_t i = 0; i < 4; ++i) {
+      if ((mask >> i) & 1) {
+        affine.push_back({result.storage_index, i, value});
+      }
+    }
+  };
+
+  bool exports_proven = true;
+  std::vector<VertexIndexedMemExport> exports;
+  auto address_may_be_exported = [&](uint32_t cf_index) {
+    // Address-only allocations do not access memory. Ignore their eA writes
+    // only if no data is pending or written before the address is reset or
+    // execution ends. Branches retain the conservative fallback.
+    if (cf_memexport_info_[cf_index].eM_potentially_written_before) {
+      return true;
+    }
+    for (uint32_t i = cf_index; i < cf_index_bound; ++i) {
+      ControlFlowInstruction cf_ab[2];
+      UnpackControlFlowInstructions(ucode_data_.data() + (i >> 1) * 3, cf_ab);
+      const ControlFlowInstruction& cf = cf_ab[i & 1];
+      if (cf.opcode() == ControlFlowOpcode::kAlloc &&
+          cf.alloc.alloc_type() == AllocType::kMemory) {
+        return false;
+      }
+      if (cf_memexport_info_[i].eM_potentially_written_by_exec) {
+        return true;
+      }
+      if (cf.opcode() == ControlFlowOpcode::kExecEnd) {
+        return false;
+      }
+      if (!IsControlFlowOpcodeExec(cf.opcode()) &&
+          cf.opcode() != ControlFlowOpcode::kNop &&
+          cf.opcode() != ControlFlowOpcode::kAlloc &&
+          cf.opcode() != ControlFlowOpcode::kMarkVsFetchDone) {
+        return true;
+      }
+    }
+    return false;
+  };
+  bool fetches_proven = true;
+  std::vector<VertexFetchStride> fetch_strides;
+  int32_t fetch_min_offset = INT32_MAX, fetch_end_offset = INT32_MIN;
+  VertexFetchInstruction previous_vfetch_full;
+  std::memset(&previous_vfetch_full, 0, sizeof(previous_vfetch_full));
+  for (uint32_t cf_index = 0; cf_index < cf_index_bound; ++cf_index) {
+    if (label_addresses_.count(cf_index)) {
+      affine.clear();
+    }
+    ControlFlowInstruction cf_ab[2];
+    UnpackControlFlowInstructions(ucode_data_.data() + (cf_index >> 1) * 3,
+                                  cf_ab);
+    const ControlFlowInstruction& cf = cf_ab[cf_index & 1];
+    ParsedExecInstruction exec;
+    bool exec_conditional = true;
+    switch (cf.opcode()) {
+      case ControlFlowOpcode::kExec:
+      case ControlFlowOpcode::kExecEnd:
+        ParseControlFlowExec(cf.exec, cf_index, exec);
+        exec_conditional = false;
+        break;
+      case ControlFlowOpcode::kCondExec:
+      case ControlFlowOpcode::kCondExecEnd:
+      case ControlFlowOpcode::kCondExecPredClean:
+      case ControlFlowOpcode::kCondExecPredCleanEnd:
+        ParseControlFlowCondExec(cf.cond_exec, cf_index, exec);
+        break;
+      case ControlFlowOpcode::kCondExecPred:
+      case ControlFlowOpcode::kCondExecPredEnd:
+        ParseControlFlowCondExecPred(cf.cond_exec_pred, cf_index, exec);
+        break;
+      case ControlFlowOpcode::kNop:
+      case ControlFlowOpcode::kAlloc:
+      case ControlFlowOpcode::kMarkVsFetchDone:
+        continue;
+      default:
+        affine.clear();
+        continue;
+    }
+    bool r0x_readable = runs_once(cf_index);
+    uint32_t sequence = exec.sequence;
+    for (uint32_t address = exec.instruction_address;
+         address < exec.instruction_address + exec.instruction_count;
+         ++address, sequence >>= 2) {
+      const uint32_t* op_ptr = ucode_data_.data() + address * 3;
+      if (sequence & 0b01) {
+        auto& op = *reinterpret_cast<const FetchInstruction*>(op_ptr);
+        if (op.opcode() != FetchOpcode::kVertexFetch) {
+          ParsedTextureFetchInstruction fetch;
+          ParseTextureFetchInstruction(op.texture_fetch(), fetch);
+          write(fetch.result);
+          continue;
+        }
+        ParsedVertexFetchInstruction fetch;
+        if (ParseVertexFetchInstruction(op.vertex_fetch(), previous_vfetch_full,
+                                        fetch)) {
+          previous_vfetch_full = op.vertex_fetch();
+        }
+        if (fetch.is_mini_fetch) {
+          // A vfetch_mini reuses the address of the last vfetch_full.
+          fetches_proven &= !fetch_strides.empty();
+        } else {
+          const InstructionOperand& index = fetch.operands[0];
+          if (fetch.attributes.stride &&
+              (r0x_written || !r0x_readable ||
+               !is_plain(index, InstructionStorageSource::kRegister) ||
+               index.storage_index ||
+               index.GetComponent(0) != SwizzleSource::kX)) {
+            fetches_proven = false;
+          }
+          VertexFetchStride stride = {op.vertex_fetch().fetch_constant_index(),
+                                      fetch.attributes.stride};
+          if (std::none_of(fetch_strides.begin(), fetch_strides.end(),
+                           [&](const VertexFetchStride& other) {
+                             return other.fetch_constant ==
+                                        stride.fetch_constant &&
+                                    other.stride_words == stride.stride_words;
+                           })) {
+            fetch_strides.push_back(stride);
+          }
+        }
+        uint32_t words = xenos::GetVertexFormatNeededWords(
+            fetch.attributes.data_format, 0b1111);
+        if (words && fetch.result.GetUsedResultComponents()) {
+          fetch_min_offset =
+              std::min(fetch_min_offset, fetch.attributes.offset);
+          fetch_end_offset =
+              std::max(fetch_end_offset, fetch.attributes.offset +
+                                             int32_t(32 - xe::lzcnt(words)));
+        }
+        write(fetch.result);
+        continue;
+      }
+      ParsedAluInstruction instr;
+      ParseAluInstruction(*reinterpret_cast<const AluInstruction*>(op_ptr),
+                          type(), instr);
+      bool conditional = exec_conditional || instr.is_predicated;
+      const InstructionResult& vector_result = instr.vector_and_constant_result;
+      if (vector_result.storage_target ==
+              InstructionStorageTarget::kExportAddress &&
+          (vector_result.GetUsedWriteMask() ||
+           instr.scalar_result.GetUsedWriteMask()) &&
+          address_may_be_exported(cf_index)) {
+        // The export uses eA as last written, so a conditional site only keeps
+        // an earlier site's address or the invalid zero.
+        std::optional<VertexIndexedMemExport> site;
+        if (instr.GetMemExportStreamConstant() != UINT32_MAX &&
+            !instr.scalar_result.GetUsedWriteMask()) {
+          for (uint32_t i = 0; i < 2 && !site; ++i) {
+            const InstructionOperand& multiplier = instr.vector_operands[i ^ 1];
+            const Affine* index = find(instr.vector_operands[i], 1);
+            if (index && is_plain(multiplier,
+                                  InstructionStorageSource::kConstantFloat)) {
+              site = index->value;
+              site->stream_constant = instr.GetMemExportStreamConstant();
+              site->multiplier_constant = multiplier.storage_index;
+              for (uint32_t j = 0; j < 4; ++j) {
+                site->multiplier_components[j] = multiplier.GetComponent(j);
+              }
+            }
+          }
+        }
+        if (site) {
+          exports.push_back(*site);
+        } else {
+          exports_proven = false;
+        }
+      }
+      // Values this instruction assigns, from the registers before it writes.
+      std::optional<VertexIndexedMemExport> vector_value, scalar_value;
+      if (!conditional && instr.vector_opcode == ucode::AluVectorOpcode::kMad &&
+          vector_result.storage_target == InstructionStorageTarget::kRegister &&
+          !vector_result.is_clamped && !r0x_written && r0x_readable &&
+          is_plain(instr.vector_operands[0],
+                   InstructionStorageSource::kRegister) &&
+          !instr.vector_operands[0].storage_index &&
+          is_plain(instr.vector_operands[1],
+                   InstructionStorageSource::kConstantFloat) &&
+          is_plain(instr.vector_operands[2],
+                   InstructionStorageSource::kConstantFloat)) {
+        // All written components must take the same terms.
+        uint32_t mask = vector_result.GetUsedWriteMask();
+        for (uint32_t i = 0; i < 4; ++i) {
+          if (!((mask >> i) & 1)) {
+            continue;
+          }
+          VertexIndexedMemExport value = {};
+          value.scale_constant = instr.vector_operands[1].storage_index;
+          value.scale_component = instr.vector_operands[1].GetComponent(i);
+          value.offset_constant = instr.vector_operands[2].storage_index;
+          value.offset_component = instr.vector_operands[2].GetComponent(i);
+          if (instr.vector_operands[0].GetComponent(i) != SwizzleSource::kX ||
+              (vector_value &&
+               (vector_value->scale_component != value.scale_component ||
+                vector_value->offset_component != value.offset_component))) {
+            vector_value.reset();
+            break;
+          }
+          vector_value = value;
+        }
+      }
+      if (!conditional &&
+          (instr.scalar_opcode == ucode::AluScalarOpcode::kTruncs ||
+           instr.scalar_opcode == ucode::AluScalarOpcode::kFloors) &&
+          instr.scalar_result.storage_target ==
+              InstructionStorageTarget::kRegister &&
+          !instr.scalar_result.is_clamped) {
+        // Identity on the integers the draw requires the terms to produce.
+        if (const Affine* source = find(instr.scalar_operands[0], 0)) {
+          scalar_value = source->value;
+        }
+      }
+      // Co-issued writes to the same components have no single value.
+      if (vector_result.storage_target == instr.scalar_result.storage_target &&
+          vector_result.storage_index == instr.scalar_result.storage_index &&
+          (vector_result.GetUsedWriteMask() &
+           instr.scalar_result.GetUsedWriteMask())) {
+        vector_value.reset();
+        scalar_value.reset();
+      }
+      const bool vector_relative = write(vector_result);
+      const bool scalar_relative = write(instr.scalar_result);
+      // A relative destination may alias either result. Do not reintroduce
+      // proofs invalidated by either co-issued write.
+      if (!vector_relative && !scalar_relative) {
+        if (vector_value) {
+          assign(vector_result, *vector_value);
+        }
+        if (scalar_value) {
+          assign(instr.scalar_result, *scalar_value);
+        }
+      }
+    }
+  }
+  if (exports_proven) {
+    vertex_indexed_memexports_ = std::move(exports);
+  }
+  if (fetches_proven) {
+    vertex_fetches_vertex_indexed_ = true;
+    vertex_fetch_strides_ = std::move(fetch_strides);
+    if (fetch_min_offset <= fetch_end_offset) {
+      vertex_fetch_min_word_offset_ = fetch_min_offset;
+      vertex_fetch_end_word_offset_ = fetch_end_offset;
+    }
+  }
 }
 
 void Shader::GatherExecInformation(
