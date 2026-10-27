@@ -808,6 +808,31 @@ class Shader {
     uint8_t eM_potentially_written_by_exec = 0;
   };
 
+  // Immutable facts proven from effective draw state before translation.
+  // Translators may replace only the exact instruction values described here;
+  // all unspecified behavior remains generic.
+  struct Specialization {
+    struct MemExportFormat {
+      uint32_t instruction_address;
+      uint32_t format_word;
+      bool operator==(const MemExportFormat&) const = default;
+    };
+    std::vector<MemExportFormat> memexport_formats;
+
+    bool operator==(const Specialization&) const = default;
+
+    bool GetMemExportFormat(uint32_t instruction_address,
+                            uint32_t& format_word_out) const {
+      for (const auto& format : memexport_formats) {
+        if (format.instruction_address == instruction_address) {
+          format_word_out = format.format_word;
+          return true;
+        }
+      }
+      return false;
+    }
+  };
+
   class Translation {
    public:
     virtual ~Translation() {}
@@ -816,6 +841,9 @@ class Shader {
 
     // Translator-specific modification bits.
     uint64_t modification() const { return modification_; }
+    const Specialization* specialization() const {
+      return specialization_.get();
+    }
 
     // True if the shader was translated and prepared without error.
     bool is_valid() const { return is_valid_.load(std::memory_order_acquire); }
@@ -877,6 +905,7 @@ class Shader {
 
     Shader& shader_;
     uint64_t modification_;
+    std::shared_ptr<const Specialization> specialization_;
 
     std::atomic<bool> is_valid_{false};
     std::atomic<bool> is_translated_{false};
@@ -983,6 +1012,41 @@ class Shader {
   // c# registers used as the addend in MAD operations to eA.
   const std::set<uint32_t>& memexport_stream_constants() const {
     return memexport_stream_constants_;
+  }
+
+  // How the export address is constructed at one memexport site - one
+  // `mad eA, ..., c#` writing the stream descriptor c#. Recorded during ucode
+  // analysis, which is independent of the translation modification, so the
+  // command processor can consult it for any draw.
+  struct MemExportStream {
+    // ALU instruction address in three-dword instruction units.
+    uint32_t instruction_address = 0;
+    // Stream descriptor constant register, as an index within the float
+    // constant bank before the SQ_VS_CONST / SQ_PS_CONST base is added.
+    uint32_t stream_constant = 0;
+    // How the multiplicand of the export address's format lane (eA.z) can be
+    // evaluated on the CPU. eA.z receives component 2 of the stream
+    // descriptor's dword_2, which holds the format, because the descriptor
+    // operand is required to have a standard swizzle.
+    enum class Scale : uint8_t {
+      // Not provably evaluable without running the shader - never specialize.
+      kUnknown,
+      // The multiplicand lane is the literal 0.0, so the product is always +0.
+      kLiteralZero,
+      // Read the constant float register `scale_constant`, component
+      // `scale_component`, from the draw's register file.
+      kConstantRegister,
+    };
+    Scale scale = Scale::kUnknown;
+    uint32_t scale_constant = 0;
+    uint8_t scale_component = 0;
+    // A second constant multiplicand can independently prove a zero product.
+    bool has_alternate_scale = false;
+    uint32_t alternate_scale_constant = 0;
+    uint8_t alternate_scale_component = 0;
+  };
+  const std::vector<MemExportStream>& memexport_streams() const {
+    return memexport_streams_;
   }
 
   // Labels that jumps (explicit or from loops) can be done to.
@@ -1105,8 +1169,9 @@ class Shader {
     }
     return nullptr;
   }
-  Translation* GetOrCreateTranslation(uint64_t modification,
-                                      bool* is_new = nullptr);
+  Translation* GetOrCreateTranslation(
+      uint64_t modification, bool* is_new = nullptr,
+      std::shared_ptr<const Specialization> specialization = {});
   // For shader storage loading, to remove a modification in case of translation
   // failure. Not thread-safe.
   void DestroyTranslation(uint64_t modification);
@@ -1200,6 +1265,9 @@ class Shader {
   // multiple predecessor chains exporting to memory).
   uint8_t memexport_eM_potentially_written_before_end_ = 0;
   std::set<uint32_t> memexport_stream_constants_;
+  // One entry per memexport site, in analysis order. Site order is stable for a
+  // given shader because analysis runs once and walks the ucode in order.
+  std::vector<MemExportStream> memexport_streams_;
   // Set during analysis if the shader contains any cond_call.
   bool uses_subroutine_calls_ = false;
   std::vector<VertexIndexedMemExport> vertex_indexed_memexports_;
@@ -1231,6 +1299,7 @@ class Shader {
                                      StringBuffer& ucode_disasm_buffer);
   void GatherAluInstructionInformation(const ucode::AluInstruction& op,
                                        uint32_t exec_cf_index,
+                                       uint32_t instruction_address,
                                        StringBuffer& ucode_disasm_buffer);
   void GatherOperandInformation(const InstructionOperand& operand);
   void GatherFetchResultInformation(const InstructionResult& result,

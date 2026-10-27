@@ -681,6 +681,31 @@ void SpirvShaderTranslator::ProcessAluInstruction(
     }
   }
 
+  // If this translation carries a proven memexport format for this exact ALU
+  // instruction, replace the format lane (component 2) of the export address
+  // with the constant the guest computation produces for this draw - see
+  // memexport_format_profile.h for why eA.z equals the stream descriptor's
+  // dword_2 exactly when the profile was selected.
+  //
+  // Only the value this one instruction computes is changed. The exporter, the
+  // address validation, bounds, packing, endianness and NaN conversion are
+  // untouched; making this lane literal just lets the normal compiler chain
+  // remove the format cases that can no longer be reached.
+  const Shader::Specialization* specialization =
+      current_translation().specialization();
+  if (vector_result != spv::NoResult && is_vertex_shader() && specialization &&
+      instr.vector_and_constant_result.storage_target ==
+          InstructionStorageTarget::kExportAddress &&
+      builder_->getNumComponents(vector_result) == 4) {
+    uint32_t format_word = 0;
+    if (specialization->GetMemExportFormat(instruction_address, format_word)) {
+      vector_result = builder_->createCompositeInsert(
+          builder_->createUnaryOp(spv::OpBitcast, type_float_,
+                                  builder_->makeUintConstant(format_word)),
+          vector_result, type_float4_, 2);
+    }
+  }
+
   StoreResult(instr.vector_and_constant_result, vector_result);
   StoreResult(instr.scalar_result, scalar_result);
 

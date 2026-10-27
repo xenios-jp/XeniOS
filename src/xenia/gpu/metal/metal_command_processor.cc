@@ -978,15 +978,16 @@ bool MetalCommandProcessor::EnqueuePipelineCompilation(
 
 Shader::Translation* MetalCommandProcessor::GetOrCreateHostTranslation(
     SpirvShader& shader, uint64_t modification, bool allow_async,
-    ShaderCompileStatus* compile_status_out) {
+    ShaderCompileStatus* compile_status_out,
+    std::shared_ptr<const Shader::Specialization> specialization) {
   constexpr bool kIsIos =
 #if XE_PLATFORM_IOS
       true;
 #else
       false;
 #endif
-  Shader::Translation* translation =
-      shader.GetOrCreateTranslation(modification);
+  Shader::Translation* translation = shader.GetOrCreateTranslation(
+      modification, nullptr, std::move(specialization));
   ShaderCompileStatus status = GetShaderCompileStatus(translation);
   if (status == ShaderCompileStatus::kNotQueued) {
     // Vertex shaders go first: the placeholder a pending pixel shader draws
@@ -2316,6 +2317,7 @@ void MetalCommandProcessor::ShutdownContext() {
     tessellator_tables_buffer_ = nullptr;
   }
   guest_shader_cache_.clear();
+  memexport_format_profiles_.Clear();
   spirv_shader_translator_.reset();
 
   uniforms_buffer_ = nullptr;
@@ -5106,6 +5108,19 @@ bool MetalCommandProcessor::IssueDrawDxil(
       GetCurrentSpirvVertexShaderModification(
           *dxil_vertex_shader, host_vertex_shader_type, interpolator_mask,
           ps_param_gen_pos != UINT32_MAX);
+  std::shared_ptr<const Shader::Specialization> vertex_specialization;
+  const bool is_tessellated = primitive_processing_result.IsTessellated();
+  // Specialize eligible streams only on non-tessellated export-only draws.
+  // Tessellation uses a separate compilation path without profile retry.
+  // Excluding pixel shaders also guarantees the synchronous pipeline fallback
+  // has no pending pixel translation to consume.
+  if (!dxil_pixel_shader && !is_tessellated) {
+    const uint32_t slot = memexport_format_profile::SelectSlot(
+        memexport_format_profiles_, dxil_vertex_shader, regs,
+        vertex_specialization);
+    vertex_shader_modification.vertex.memexport_format_specialized = slot != 0;
+    vertex_shader_modification.vertex.memexport_format_slot = slot;
+  }
   SpirvShaderTranslator::Modification pixel_shader_modification =
       dxil_pixel_shader
           ? GetCurrentSpirvPixelShaderModification(
@@ -5113,11 +5128,9 @@ bool MetalCommandProcessor::IssueDrawDxil(
                 normalized_depth_control, normalized_color_mask)
           : SpirvShaderTranslator::Modification(0);
 
-  const bool is_tessellated = primitive_processing_result.IsTessellated();
-
-  // Memory exports are guest-visible writes. A pending generic pipeline must
-  // never skip the export draw. Counted draws also require the guest's exact
-  // kills and alpha test.
+  // Memory exports are guest-visible writes. A pending generic pipeline,
+  // including after a profile guard miss, must never skip the export draw.
+  // Counted draws also require the guest's exact kills and alpha test.
   const bool exact_shaders_required =
       memexport_used ||
       (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
@@ -5204,13 +5217,29 @@ bool MetalCommandProcessor::IssueDrawDxil(
         static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
             *dxil_vertex_shader, vertex_shader_modification.value,
             !exact_shaders_required && cvars::async_shader_skip_draws,
-            &compile_status));
+            &compile_status, vertex_specialization));
     // Nothing can stand in for the vertex shader, so its draws wait.
     if (compile_status == ShaderCompileStatus::kPending) {
       LogShaderCompilePending(vertex_translation, "vertex");
       return true;
     }
-    if (compile_status != ShaderCompileStatus::kReady) {
+    // A memory export format profile is speculative. If the compiler rejects
+    // the specialized translation, or its pipeline fails to link, use the
+    // generic translation, which always exists, rather than failing this draw
+    // on every frame for the rest of the session or handing it to a
+    // placeholder that cannot export.
+    auto use_generic_vertex_translation = [&]() {
+      vertex_shader_modification.vertex.memexport_format_specialized = 0;
+      vertex_shader_modification.vertex.memexport_format_slot = 0;
+      vertex_translation =
+          static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
+              *dxil_vertex_shader, vertex_shader_modification.value,
+              /*allow_async=*/false, &compile_status));
+      return compile_status == ShaderCompileStatus::kReady;
+    };
+    if (compile_status != ShaderCompileStatus::kReady &&
+        (!vertex_shader_modification.vertex.memexport_format_specialized ||
+         !use_generic_vertex_translation())) {
       return false;
     }
     PipelineCompileStatus pipeline_compile_status =
@@ -5219,6 +5248,21 @@ bool MetalCommandProcessor::IssueDrawDxil(
       pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
                                           regs, &pipeline_compile_status);
       if (!pipeline && exact_shaders_required &&
+          pipeline_compile_status == PipelineCompileStatus::kPending) {
+        AwaitAsyncCompiles();
+        pipeline =
+            GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                     regs, &pipeline_compile_status);
+      }
+    }
+    if (!pipeline && pixel_status == ShaderCompileStatus::kReady &&
+        vertex_shader_modification.vertex.memexport_format_specialized) {
+      if (!use_generic_vertex_translation()) {
+        return false;
+      }
+      pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                          regs, &pipeline_compile_status);
+      if (!pipeline &&
           pipeline_compile_status == PipelineCompileStatus::kPending) {
         AwaitAsyncCompiles();
         pipeline =
@@ -7282,7 +7326,15 @@ MTL::RenderPipelineState* MetalCommandProcessor::AcquirePipelineState(
     if (it == async_pipeline_cache_.end() && !replaying_stored_pipelines_ &&
         async_pipeline_pending_.find(key) == async_pipeline_pending_.end() &&
         async_pipeline_failed_.find(key) == async_pipeline_failed_.end() &&
-        storage_writer_.is_active()) {
+        storage_writer_.is_active() &&
+        // A memexport format profile slot is a bounded, session-scoped pool
+        // index. Persisting it would let the next launch replay this
+        // modification with no guard that the slot still denotes the same
+        // format words, and translations are never evicted once created. Guest
+        // microcode is still stored, so these pipelines rebuild normally.
+        !SpirvShaderTranslator::Modification(
+             request.description.vertex_shader_modification)
+             .vertex.memexport_format_specialized) {
       // Recorded before creation, so one that fails on this driver is still
       // described for another. Replay would re-record what it just read.
       PipelineStoredDescription stored;
