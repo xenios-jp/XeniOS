@@ -3081,6 +3081,10 @@ struct SELECT_F32
 struct SELECT_F64
     : Sequence<SELECT_F64, I<OPCODE_SELECT, F64Op, I8Op, F64Op, F64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (e.ConsumeFusedQuirkSelect(i.instr)) {
+      // DENORMAL_QUIRK already wrote the result.
+      return;
+    }
     WReg cond = i.src1.is_constant ? e.w0 : WReg(i.src1.reg().getIdx());
     if (i.src1.is_constant) {
       e.mov(e.w0, static_cast<uint64_t>(i.src1.constant() & 0xFF));
@@ -3491,95 +3495,172 @@ EMITTER_OPCODE_TABLE(OPCODE_MAX, MAX_F32, MAX_F64, MAX_V128);
 // OPCODE_DENORMAL_QUIRK
 // ============================================================================
 // quirk = (any operand denormal) && (all operands finite), as i8 0/1.
+//
+// Only a denormal takes the tail, which applies the finite test to every
+// operand, so the inline test reads just the operands the HIR could not prove
+// never are one. The select that applies the quirk to a result, when it is the
+// quirk's only reader and comes right after it, fuses with it: the tail writes
+// the select's result, and the select emits nothing.
 struct DENORMAL_QUIRK
     : Sequence<DENORMAL_QUIRK,
                I<OPCODE_DENORMAL_QUIRK, I8Op, F64Op, F64Op, F64Op>> {
+  struct Operand {
+    // -1 for a constant.
+    int reg;
+    uint64_t bits;
+    bool tested;
+  };
+
+  static bool IsDenormal(uint64_t bits) {
+    return !(bits & 0x7FF0000000000000ull) &&
+           (bits & 0x000FFFFFFFFFFFFFull) != 0;
+  }
+
   template <typename SRC>
-  static int CollectOperands(A64Emitter& e, const SRC& s1, const SRC& s2,
-                             const SRC& s3, DReg* out) {
-    const SRC* srcs[3] = {&s1, &s2, &s3};
-    uint64_t const_bits[3];
-    int reg_idx[3];
-    int n = 0;
-    int next_scratch = 0;
-    for (int k = 0; k < 3; ++k) {
-      uint64_t bits = 0;
-      int idx = -1;
-      if (srcs[k]->is_constant) {
-        double d = srcs[k]->constant();
-        std::memcpy(&bits, &d, sizeof(bits));
+  static void AddOperand(const SRC& src, bool tested, Operand* ops, int* n) {
+    Operand op = {-1, 0, tested};
+    if (src.is_constant) {
+      double d = src.constant();
+      std::memcpy(&op.bits, &d, sizeof(op.bits));
+    } else {
+      op.reg = src.reg().getIdx();
+    }
+    for (int m = 0; m < *n; ++m) {
+      if (op.reg >= 0 ? ops[m].reg == op.reg
+                      : (ops[m].reg < 0 && ops[m].bits == op.bits)) {
+        ops[m].tested |= tested;
+        return;
+      }
+    }
+    ops[(*n)++] = op;
+  }
+
+  // NZCV LO when all n operands are finite. Clobbers x0 and x2.
+  static void EmitFiniteTest(A64Emitter& e, const Operand* ops, int n) {
+    for (int k = 0; k < n; ++k) {
+      const XReg bits = k ? e.x0 : e.x2;
+      if (ops[k].reg >= 0) {
+        e.fmov(bits, DReg(ops[k].reg));
       } else {
-        idx = srcs[k]->reg().getIdx();
+        e.mov(bits, ops[k].bits);
       }
-      bool dup = false;
-      for (int m = 0; m < n; ++m) {
-        if (idx >= 0 ? reg_idx[m] == idx
-                     : (reg_idx[m] < 0 && const_bits[m] == bits)) {
-          dup = true;
-          break;
-        }
+      e.and_(bits, bits, 0x7FFFFFFFFFFFFFFFull);
+      if (k) {
+        e.cmp(e.x2, e.x0);
+        e.csel(e.x2, e.x2, e.x0, HI);
       }
-      if (dup) {
+    }
+    e.mov(e.x0, 0x7FF0000000000000ull);
+    e.cmp(e.x2, e.x0);
+  }
+
+  // The select reading only this quirk, right after it, as dest = quirk ?
+  // constant : register.
+  static const hir::Instr* FusableSelect(const hir::Instr* instr) {
+    const hir::Instr* select = instr->next;
+    const hir::Value* quirk = instr->dest;
+    if (!select || select->GetOpcodeNum() != hir::OPCODE_SELECT ||
+        select->src1.value != quirk || !quirk->use_head ||
+        quirk->use_head->next || quirk->use_head->instr != select ||
+        select->dest->type != hir::FLOAT64_TYPE ||
+        !select->src2.value->IsConstant() || select->src3.value->IsConstant()) {
+      return nullptr;
+    }
+    return select;
+  }
+
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    Operand ops[3];
+    int n = 0;
+    const uint16_t flags = i.instr->flags;
+    AddOperand(i.src1, !(flags & hir::DENORMAL_QUIRK_SRC1_NEVER_DENORMAL), ops,
+               &n);
+    AddOperand(i.src2, !(flags & hir::DENORMAL_QUIRK_SRC2_NEVER_DENORMAL), ops,
+               &n);
+    AddOperand(i.src3, !(flags & hir::DENORMAL_QUIRK_SRC3_NEVER_DENORMAL), ops,
+               &n);
+
+    const hir::Instr* select = FusableSelect(i.instr);
+    DReg select_dest = DReg(0);
+    DReg select_value = DReg(0);
+    uint64_t select_constant = 0;
+    if (select) {
+      A64Emitter::SetupReg(select->dest, select_dest);
+      A64Emitter::SetupReg(select->src3.value, select_value);
+      std::memcpy(&select_constant, &select->src2.value->constant.f64,
+                  sizeof(select_constant));
+      e.MarkFusedQuirkSelect(select);
+    }
+    const WReg dest = i.dest;
+    // The quirk's result when no operand is denormal.
+    const auto emit_clear = [select, select_dest, select_value,
+                             dest](A64Emitter& e) {
+      if (!select) {
+        // movz form: mov(dest, WReg(31)) would assemble as the SP-alias ADD.
+        e.mov(dest, uint64_t(0));
+      } else if (select_dest.getIdx() != select_value.getIdx()) {
+        e.fmov(select_dest, select_value);
+      }
+    };
+
+    // A denormal is a nonzero value below 2^52 once the sign is shifted out,
+    // so (2^53 - 2) - (bits << 1) is below 2^53 - 2 exactly for one: the
+    // shifted value is even, and a zero lands on the bound itself. Once LO,
+    // ccmp writes NZCV = 0 (still LO), so the verdict sticks.
+    constexpr uint64_t kBound = 0x001FFFFFFFFFFFFEull;
+    bool always = false;
+    int tests = 0;
+    for (int k = 0; k < n; ++k) {
+      if (!ops[k].tested) {
         continue;
       }
-      reg_idx[n] = idx;
-      const_bits[n] = bits;
-      if (idx >= 0) {
-        out[n] = DReg(idx);
-      } else {
-        const DReg scratch = DReg(next_scratch++);
-        e.mov(e.x0, bits);
-        e.fmov(scratch, e.x0);
-        out[n] = scratch;
+      if (ops[k].reg < 0) {
+        always |= IsDenormal(ops[k].bits);
+        continue;
       }
-      ++n;
-    }
-    return n;
-  }
-  static void Emit(A64Emitter& e, const EmitArgType& i) {
-    DReg ops[3] = {DReg(0), DReg(0), DReg(0)};
-    const int n = CollectOperands(e, i.src1, i.src2, i.src3, ops);
-
-    auto& done = e.NewCachedLabel();
-    const WReg dest = i.dest;
-    // Captured by value: the tail runs after this frame is gone.
-    auto emit_finite_check = [ops, n, dest, &done](A64Emitter& e) {
-      for (int k = 0; k < n; ++k) {
-        e.fmov(e.x0, ops[k]);
-        if (k == 0) {
-          e.and_(e.x2, e.x0, 0x7FFFFFFFFFFFFFFFull);
-        } else {
-          e.and_(e.x0, e.x0, 0x7FFFFFFFFFFFFFFFull);
-          e.cmp(e.x2, e.x0);
-          e.csel(e.x2, e.x2, e.x0, HI);
-        }
+      if (!tests) {
+        e.mov(e.x1, kBound);
       }
-      e.mov(e.x0, 0x7FF0000000000000ull);
-      e.cmp(e.x2, e.x0);
-      e.cset(dest, LO);
-      e.b(done);
-    };
-    auto& slow_path =
-        e.AddToTail([emit_finite_check](A64Emitter& e, Xbyak_aarch64::Label&) {
-          emit_finite_check(e);
-        });
-
-    // Once LO, ccmp writes NZCV = 0 (still LO), so the verdict sticks.
-    e.mov(e.x1, 0x000FFFFFFFFFFFFFull);
-    for (int k = 0; k < n; ++k) {
-      e.fmov(e.x0, ops[k]);
-      e.and_(e.x0, e.x0, 0x7FFFFFFFFFFFFFFFull);
-      e.sub(e.x0, e.x0, 1);
-      if (k == 0) {
+      e.fmov(e.x0, DReg(ops[k].reg));
+      e.sub(e.x0, e.x1, e.x0, LSL, 1);
+      if (!tests) {
         e.cmp(e.x0, e.x1);
       } else {
         e.ccmp(e.x0, e.x1, 0, HS);
       }
+      ++tests;
     }
-    // The tail can sit beyond b.cond's reach; b() emits the range-safe form.
-    e.b(LO, slow_path);
-    // movz form: mov(dest, WReg(31)) would assemble as the SP-alias ADD.
-    e.mov(i.dest, uint64_t(0));
+    if (!tests && !always) {
+      emit_clear(e);
+      return;
+    }
+
+    auto& done = e.NewCachedLabel();
+    auto& slow_path = e.AddToTail(
+        [ops, n, select, select_dest, select_value, select_constant, dest,
+         emit_clear, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
+          EmitFiniteTest(e, ops, n);
+          if (!select) {
+            e.cset(dest, LO);
+            e.b(done);
+            return;
+          }
+          auto& not_quirk = e.NewCachedLabel();
+          e.b(HS, not_quirk);
+          e.mov(e.x0, select_constant);
+          e.fmov(select_dest, e.x0);
+          e.b(done);
+          e.L(not_quirk);
+          emit_clear(e);
+          e.b(done);
+        });
+    if (always) {
+      e.b(slow_path);
+    } else {
+      // The tail can sit beyond b.cond's reach; b() emits the range-safe form.
+      e.b(LO, slow_path);
+      emit_clear(e);
+    }
     e.LKeepingRemapBound(done);
   }
 };
