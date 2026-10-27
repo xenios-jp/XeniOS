@@ -16,6 +16,7 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "xenia/gpu/edram_dump_shader.h"
 #include "xenia/gpu/edram_transfer_shader.h"
@@ -50,6 +51,19 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     }
     MTL::Texture* stencil_view() const { return stencil_view_; }
     void SetStencilView(MTL::Texture* view) { stencil_view_ = view; }
+    MTL::Texture* spare_depth_texture() const { return spare_depth_texture_; }
+    void SetSpareDepthTexture(MTL::Texture* texture) {
+      assert_null(spare_depth_texture_);
+      spare_depth_texture_ = texture;
+    }
+    void SwapDepthBackings() {
+      assert_not_null(texture_);
+      assert_not_null(spare_depth_texture_);
+      assert_null(draw_texture_);
+      assert_null(transfer_texture_);
+      std::swap(texture_, spare_depth_texture_);
+      std::swap(stencil_view_, spare_depth_stencil_view_);
+    }
 
     void SetTemporarySortIndex(uint32_t index) {
       temporary_sort_index_ = index;
@@ -89,6 +103,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     MTL::Texture* draw_texture_ = nullptr;
     MTL::Texture* transfer_texture_ = nullptr;
     MTL::Texture* stencil_view_ = nullptr;
+    MTL::Texture* spare_depth_texture_ = nullptr;
+    MTL::Texture* spare_depth_stencil_view_ = nullptr;
     uint32_t temporary_sort_index_ = UINT32_MAX;
     uint64_t content_generation_ = 0;
     bool needs_initial_clear_ = true;
@@ -636,6 +652,22 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       MTL::RenderCommandEncoder* active_render_encoder = nullptr,
       MTL::RenderPassDescriptor* active_render_pass_descriptor = nullptr,
       DrawPassTransferEncoderMutationMask* mutations_out = nullptr);
+
+  // Whether the depth destination's self-sourced host depth can be preserved
+  // by rotating its backings (render the transfer into a spare backing that
+  // then becomes active) instead of copying it into the snapshot buffer. The
+  // transfers must be unscaled SPIR-V Cross draws with native stencil output
+  // covering every tile the destination owns, and nothing else in this update,
+  // including transfers already queued for the draw pass, may read the
+  // destination.
+  bool CanRotateHostDepth(uint32_t render_target_count,
+                          RenderTarget* const* render_targets,
+                          const std::vector<Transfer>* transfers,
+                          bool resolve_clear) const;
+  // Ensures the transfer pipelines and a matching spare depth backing exist
+  // for the rotation; false keeps the snapshot path.
+  bool AcquireSpareDepthBacking(MetalRenderTarget* dest,
+                                const std::vector<Transfer>& transfers);
 
   EdramTransferShaderKey GetTransferShaderKey(
       RenderTargetKey source_key, RenderTargetKey dest_key,

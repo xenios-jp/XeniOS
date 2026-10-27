@@ -2225,6 +2225,30 @@ bool RenderTargetCache::IsHostDepthCurrent(RenderTargetKey depth_target,
          is_current_in_extent(0, end_tiles & (xenos::kEdramTileCount - 1));
 }
 
+bool RenderTargetCache::IsRenderTargetOwnershipFullyCoveredByTransfer(
+    RenderTargetKey key, uint32_t transfer_start_tiles,
+    uint32_t transfer_end_tiles) const {
+  if (key.IsEmpty() || transfer_start_tiles >= transfer_end_tiles ||
+      transfer_end_tiles > xenos::kEdramTileCount) {
+    return false;
+  }
+  bool has_owned_tiles = false;
+  for (const auto& ownership_range_pair : ownership_ranges_) {
+    const OwnershipRange& range = ownership_range_pair.second;
+    if (range.render_target != key && range.depth_bits_target != key &&
+        range.host_depth_render_target_unorm24 != key &&
+        range.host_depth_render_target_float24 != key) {
+      continue;
+    }
+    has_owned_tiles = true;
+    if (ownership_range_pair.first < transfer_start_tiles ||
+        range.end_tiles > transfer_end_tiles) {
+      return false;
+    }
+  }
+  return has_owned_tiles;
+}
+
 void RenderTargetCache::ChangeOwnership(
     RenderTargetKey dest, uint32_t start_tiles_base_relative,
     uint32_t length_tiles, std::vector<Transfer>* transfers_append_out,
