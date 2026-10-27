@@ -1692,6 +1692,7 @@ bool A64Backend::Initialize(Processor* processor) {
 
   // Set up machine info for the register allocator.
   machine_info_.supports_extended_load_store = true;
+  machine_info_.supports_spin_wait_release = true;
   // GPR set: x22-x28 (7 registers; x19=backend ctx, x20=context, x21=membase)
   auto& gpr_set = machine_info_.register_sets[0];
   gpr_set.id = 0;
