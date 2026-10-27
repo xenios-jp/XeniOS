@@ -43,6 +43,21 @@ bool SpirvShaderTranslator::IsGuestPixelCenterFetchNeeded() const {
           GetModificationInterpolatorMask());
 }
 
+spv::Id SpirvShaderTranslator::GetVertexFetchEndian(
+    uint32_t vertex_fetch_constant_index) {
+  if (!IsSpirvVertexShader() ||
+      main_fetch_state_[vertex_fetch_constant_index >> 6] == spv::NoResult) {
+    return spv::NoResult;
+  }
+  return builder_->createTriOp(
+      spv::OpBitFieldUExtract, type_uint_,
+      builder_->createCompositeExtract(
+          main_fetch_state_[vertex_fetch_constant_index >> 6], type_uint_,
+          (vertex_fetch_constant_index >> 4) & 3),
+      builder_->makeUintConstant(2 * (vertex_fetch_constant_index & 15)),
+      builder_->makeUintConstant(2));
+}
+
 void SpirvShaderTranslator::ProcessVertexFetchInstruction(
     const ParsedVertexFetchInstruction& instr) {
   if (BisectSkipsInstruction()) {
@@ -210,12 +225,13 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
     words = word_composite_constituents[0];
   }
 
-  // Endian swap the words, getting the endianness from bits 0:1 of the second
-  // fetch constant word (loaded above).
-  words = EndianSwap32Uint(
-      words, builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
+  spv::Id endian = GetVertexFetchEndian(instr.operands[1].storage_index);
+  if (endian == spv::NoResult) {
+    endian = builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
                                    fetch_constant_word_1,
-                                   builder_->makeUintConstant(0b11)));
+                                   builder_->makeUintConstant(0b11));
+  }
+  words = EndianSwap32Uint(words, endian);
 
   spv::Id result = spv::NoResult;
 

@@ -526,6 +526,14 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // https://github.com/KhronosGroup/SPIRV-Headers/blob/c43a43c7cc3af55910b9bec2a71e3e8a622443cf/include/spirv/spir-v.xml#L79
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
+  // Vertex endianness uses bindings 0-1; bool and loop constants use 8-17.
+  // Leave texture arithmetic and system flags in runtime uniform buffers.
+  static constexpr uint32_t kDescriptorSetFetchState = 9;
+  static constexpr uint32_t kVertexFetchEndianBindingCount = 2;
+  static constexpr uint32_t kFetchStateBoolConstantsBinding = 8;
+  static constexpr uint32_t kFetchStateLoopConstantsBinding = 10;
+  static constexpr uint32_t kFetchStateBindingCount = 18;
+
   struct Features {
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
     explicit Features(bool all = false);
@@ -555,6 +563,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
 
     bool fragment_shader_barycentric;
 
+    // Metal MSC maps descriptor set 9 to named function constants.
+    bool fetch_state_function_constants = false;
     bool allow_float_contraction = false;
   };
 
@@ -842,6 +852,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // However, if the condition is not different, the instruction-level predicate
   // conditional also won't be closed - this must be checked separately if
   // needed (for example, in jumps).
+  spv::Id LoadLoopConstant(uint32_t loop_constant_index);
+  spv::Id LoadBoolConstant(uint32_t bool_constant_index);
+  spv::Id GetVertexFetchEndian(uint32_t vertex_fetch_constant_index);
+
   void UpdateExecConditionals(ParsedExecInstruction::Type type,
                               uint32_t bool_constant_index, bool condition);
   // Opens or reopens the predicate check conditional for the instruction.
@@ -1304,6 +1318,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantTextureIntegerScaleBits,
     kSystemConstantParamGenWindowOffset,
   };
+  spv::Id uniform_fetch_state_[kFetchStateBindingCount] = {};
+  spv::Id main_fetch_state_[kFetchStateBindingCount] = {};
   spv::Id uniform_system_constants_;
   spv::Id uniform_float_constants_;
   spv::Id uniform_bool_loop_constants_;
