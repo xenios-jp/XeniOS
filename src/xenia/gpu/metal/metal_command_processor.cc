@@ -2354,6 +2354,7 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   // Both guest shader paths consume this translator's SPIR-V. Enable all
   // features as a baseline, then disable what Metal doesn't need.
   SpirvShaderTranslator::Features spirv_features(true);
+  spirv_features.structured_vertex_control_flow = UseDxilPath();
   spirv_features.fetch_state_function_constants = UseDxilPath();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
