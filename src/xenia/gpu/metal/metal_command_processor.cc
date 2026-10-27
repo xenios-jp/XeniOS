@@ -1380,6 +1380,17 @@ MetalCommandProcessor::SpirvArgumentBufferPage::~SpirvArgumentBufferPage() {
   }
 }
 
+void MetalCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
+                                                         uint32_t length) {
+  if (!shared_memory_ || !length) {
+    return;
+  }
+  // Submission alone does not keep the GPU from seeing a later CPU restore.
+  // Without range tracking, consume all recorded work before overwriting
+  // guest RAM that GPU accesses may alias.
+  AwaitAllQueueOperationsCompletion();
+}
+
 void MetalCommandProcessor::TracePlaybackWroteMemory(uint32_t base_ptr,
                                                      uint32_t length) {
   if (shared_memory_) {
