@@ -1111,11 +1111,16 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                          : nullptr;
   bool use_upload_batch =
       use_blit_upload && upload_batch_depth_ && command_processor_;
-  // Reuse the current command buffer whenever no render pass encoder is active.
-  // This keeps copy/resolve and texture-upload ordering within one submission.
+  // Encode into the current command buffer if no render pass is open, or,
+  // while a draw requests its textures (upload_batch_depth_), after ending the
+  // pass, which the draw reopens after its requests. The earlier draws in it
+  // then sample the old contents, and resolves earlier in it are ordered
+  // before the load. A separate command buffer would be committed ahead of the
+  // whole submission. Other loads during a pass (a 3D texture's 2D view created
+  // while binding) keep the separate command buffer.
   bool use_current_command_buffer =
       use_blit_upload && command_processor_ && current_command_buffer &&
-      !command_processor_->HasActiveRenderEncoder();
+      (upload_batch_depth_ || !command_processor_->HasActiveRenderEncoder());
   if (use_upload_batch && texture_resolution_scaled) {
     bool needs_base_scaled_range = false;
     bool needs_mips_scaled_range = false;
@@ -1183,6 +1188,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   };
 
+  command_processor_->EndEncodersForCommandBuffer(cmd);
   MTL::ComputeCommandEncoder* encoder = nullptr;
   {
     SCOPE_profile_cpu_i("gpu", "MetalTextureCache::ComputeEncoderCreate");
@@ -2440,6 +2446,34 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
 
   // Intentionally no Metal-specific per-fetch logging here - invalid fetch
   // constants are already reported by the shared TextureCache logic.
+}
+
+void MetalTextureCache::Load3DAs2DViews(const SpirvShader& vertex_shader,
+                                        const SpirvShader* pixel_shader) {
+  if (!::cvars::gpu_3d_to_2d_texture) {
+    return;
+  }
+  BeginUploadCommandBufferBatch();
+  for (const SpirvShader* shader : {&vertex_shader, pixel_shader}) {
+    if (!shader) {
+      continue;
+    }
+    for (const SpirvShader::TextureBinding& shader_binding :
+         shader->GetTextureBindingsAfterTranslation()) {
+      if (shader_binding.dimension != xenos::FetchOpDimension::k1D &&
+          shader_binding.dimension != xenos::FetchOpDimension::k2D) {
+        continue;
+      }
+      const TextureBinding* binding =
+          GetValidTextureBinding(shader_binding.fetch_constant);
+      if (binding && binding->key.dimension == xenos::DataDimension::k3D) {
+        GetTextureForBinding(shader_binding.fetch_constant,
+                             shader_binding.dimension,
+                             shader_binding.is_signed != 0);
+      }
+    }
+  }
+  EndUploadCommandBufferBatch();
 }
 
 MTL::Texture* MetalTextureCache::GetTextureForBinding(

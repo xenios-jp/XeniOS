@@ -78,12 +78,6 @@ class MetalCommandProcessor : public CommandProcessor {
   void InvalidateGpuMemory() override;
   void ClearReadbackBuffers() override;
 
-  // Guest memory a resolve or memexport draw wrote from the still-open command
-  // buffer. Cleared once a split puts the writes behind a queue boundary.
-  void MarkResolvedMemory(uint32_t base_ptr, uint32_t length);
-  bool IsResolvedMemory(uint32_t base_ptr, uint32_t length) const;
-  void ClearResolvedMemory();
-
   ui::metal::MetalProvider& GetMetalProvider() const;
 
   // Get the Metal device and command queue
@@ -94,6 +88,13 @@ class MetalCommandProcessor : public CommandProcessor {
   }
   bool HasActiveRenderEncoder() const {
     return current_render_encoder_ != nullptr;
+  }
+  // Ends the encoders the command processor keeps open on the command buffer if
+  // it's the current one, so the caller can encode its own work after them.
+  void EndEncodersForCommandBuffer(MTL::CommandBuffer* command_buffer) {
+    if (command_buffer && command_buffer == current_command_buffer_) {
+      EndRenderEncoder();
+    }
   }
   uint32_t current_draw_index() const { return current_draw_index_; }
   uint64_t GetCurrentSubmission() const;
@@ -946,6 +947,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // Each draw uses a different region of the descriptor heap to avoid
   // overwriting previous draws' descriptors before GPU execution
   uint32_t current_draw_index_ = 0;
+  // Resolve or memexport output written by the open submission.
   bool copy_resolve_writes_pending_ = false;
 
   // Host viewport of the previous draw, reused while the inputs it was derived
@@ -978,12 +980,6 @@ class MetalCommandProcessor : public CommandProcessor {
 
   bool gamma_ramp_256_entry_table_up_to_date_ = false;
   bool gamma_ramp_pwl_up_to_date_ = false;
-
-  struct ResolvedRange {
-    uint32_t base;
-    uint32_t length;
-  };
-  std::vector<ResolvedRange> resolved_memory_ranges_;
 };
 
 }  // namespace metal

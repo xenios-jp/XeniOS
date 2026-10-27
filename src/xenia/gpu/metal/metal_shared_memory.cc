@@ -9,6 +9,9 @@
 
 #include "xenia/gpu/metal/metal_shared_memory.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
@@ -100,7 +103,6 @@ bool MetalSharedMemory::UploadRanges(
     return true;
   }
 
-  uint8_t* buffer_data = nullptr;
   uint8_t* xbox_data = nullptr;
   if (!use_zero_copy_) {
     void* xbox_ram = memory().TranslatePhysical(0);
@@ -108,7 +110,6 @@ bool MetalSharedMemory::UploadRanges(
       XELOGE("MetalSharedMemory::UploadRanges: Xbox RAM is null");
       return false;
     }
-    buffer_data = static_cast<uint8_t*>(buffer_->contents());
     xbox_data = static_cast<uint8_t*>(xbox_ram);
   }
 
@@ -118,15 +119,19 @@ bool MetalSharedMemory::UploadRanges(
   uint32_t merged_end = 0;
   bool have_merged = false;
 
-  auto flush_merged_range = [&](uint32_t start, uint32_t end) {
+  auto flush_merged_range = [&](uint32_t start, uint32_t end) -> bool {
     if (end <= start) {
-      return;
+      return true;
     }
     uint32_t length = end - start;
-    MakeRangeValid(start, length, false);
-    if (!use_zero_copy_) {
-      memcpy(buffer_data + start, xbox_data + start, length);
+    // Draws already encoded in the open command buffer may still read the old
+    // contents, so the copy is encoded after them instead of made on the CPU.
+    if (!use_zero_copy_ &&
+        !CopyToBufferGpuOrdered(start, xbox_data + start, length)) {
+      return false;
     }
+    MakeRangeValid(start, length, false);
+    return true;
   };
 
   for (uint32_t i = 0; i < num_upload_ranges; ++i) {
@@ -154,17 +159,53 @@ bool MetalSharedMemory::UploadRanges(
         merged_end = end;
       }
     } else {
-      flush_merged_range(merged_start, merged_end);
+      if (!flush_merged_range(merged_start, merged_end)) {
+        return false;
+      }
       merged_start = start;
       merged_end = end;
     }
   }
 
-  if (have_merged) {
-    flush_merged_range(merged_start, merged_end);
-  }
+  return !have_merged || flush_merged_range(merged_start, merged_end);
+}
 
-  return true;
+bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
+                                               uint32_t length) {
+  MTL::CommandBuffer* command_buffer = command_processor_.EnsureCommandBuffer();
+  if (!command_buffer) {
+    return false;
+  }
+  command_processor_.EndEncodersForCommandBuffer(command_buffer);
+  MTL::BlitCommandEncoder* encoder = command_buffer->blitCommandEncoder();
+  if (!encoder) {
+    return false;
+  }
+  // The source is in the command buffer's argument buffer pages, which are
+  // recycled only after the command buffer completes.
+  constexpr uint32_t kMaxCopyLength = UINT32_C(1) << 20;
+  const uint8_t* source = static_cast<const uint8_t*>(data);
+  bool copied = true;
+  while (length) {
+    uint32_t copy_length = std::min(length, kMaxCopyLength);
+    MTL::Buffer* source_buffer = nullptr;
+    NS::UInteger source_offset = 0;
+    if (!command_processor_.AcquireSpirvArgumentBufferSlice(
+            copy_length, 16, &source_buffer, &source_offset)) {
+      copied = false;
+      break;
+    }
+    std::memcpy(
+        static_cast<uint8_t*>(source_buffer->contents()) + source_offset,
+        source, copy_length);
+    encoder->copyFromBuffer(source_buffer, source_offset, buffer_, start,
+                            copy_length);
+    start += copy_length;
+    source += copy_length;
+    length -= copy_length;
+  }
+  encoder->endEncoding();
+  return copied;
 }
 
 bool MetalSharedMemory::InitializeTraceSubmitDownloads() {
