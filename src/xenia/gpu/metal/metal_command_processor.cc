@@ -33,6 +33,7 @@
 #include "third_party/metal-cpp/Metal/MTLEvent.hpp"
 
 #include "metal_irconverter_runtime.h"
+#include "spirv2air.h"
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
@@ -98,6 +99,36 @@ namespace gpu {
 namespace metal {
 
 namespace {
+
+// Float24 polygon offsets are absolute, not host floating-depth ULP counts.
+bool NeedsExactFloatDepthBias(const RegisterFile& regs) {
+  auto initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+  // Limit this path to host-depth configurations with validated fragment
+  // interpolation. MSAA needs per-sample depth, and tessellation has separate
+  // pipeline assembly. Those paths retain their existing hardware bias.
+  if (!cvars::metal_use_dxil || cvars::depth_float24_convert_in_pixel_shader ||
+      regs.Get<reg::RB_SURFACE_INFO>().msaa_samples !=
+          xenos::MsaaSamples::k1X ||
+      (xenos::IsMajorModeExplicit(initiator.major_mode, initiator.prim_type) &&
+       regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
+           xenos::VGTOutputPath::kTessellationEnable)) {
+    return false;
+  }
+
+  if (!draw_util::IsPrimitivePolygonal(regs) ||
+      !regs.Get<reg::RB_DEPTHCONTROL>().z_enable ||
+      regs.Get<reg::RB_DEPTH_INFO>().depth_format !=
+          xenos::DepthRenderTargetFormat::kD24FS8) {
+    return false;
+  }
+  auto mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  return (mode.poly_offset_front_enable &&
+          (regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE) ||
+           regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET))) ||
+         (mode.poly_offset_back_enable &&
+          (regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE) ||
+           regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET)));
+}
 
 // A draw that only exports memory from the vertex shader: non-rasterizing,
 // auto-indexed (a host builtin index buffer may be used for the expansion, but
@@ -2624,6 +2655,10 @@ void MetalCommandProcessor::ShutdownContext() {
 
   ShutdownAsyncCompilation();
   storage_writer_.ShutdownShaderStorage();
+  if (exact_float_depth_bias_library_) {
+    exact_float_depth_bias_library_->release();
+    exact_float_depth_bias_library_ = nullptr;
+  }
 
   ShutdownMslTessellation();
   for (auto& [key, pso] : async_pipeline_cache_) {
@@ -7305,6 +7340,9 @@ void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
       polygon_offset_scale * xenos::kPolygonOffsetScaleSubpixelUnit *
       float(std::max(render_target_cache_->draw_resolution_scale_x(),
                      render_target_cache_->draw_resolution_scale_y()));
+  if (NeedsExactFloatDepthBias(regs)) {
+    depth_bias_constant = depth_bias_slope = 0.0f;
+  }
   current_render_encoder_->setDepthBias(depth_bias_constant, depth_bias_slope,
                                         0.0f);
 
@@ -7566,10 +7604,12 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
 
   using DepthStencilMode =
       SpirvShaderTranslator::Modification::DepthStencilMode;
-  if (::cvars::depth_float24_convert_in_pixel_shader &&
-      normalized_depth_control.z_enable &&
-      regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
-          xenos::DepthRenderTargetFormat::kD24FS8) {
+  if (NeedsExactFloatDepthBias(regs) && !shader.writes_depth()) {
+    modification.pixel.depth_stencil_mode = DepthStencilMode::kPolygonOffset;
+  } else if (::cvars::depth_float24_convert_in_pixel_shader &&
+             normalized_depth_control.z_enable &&
+             regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
+                 xenos::DepthRenderTargetFormat::kD24FS8) {
     modification.pixel.depth_stencil_mode =
         ::cvars::depth_float24_round ? DepthStencilMode::kFloat24Rounding
                                      : DepthStencilMode::kFloat24Truncating;
@@ -7831,10 +7871,55 @@ MTL::RenderPipelineState* MetalCommandProcessor::GetOrCreatePipelineState(
                                  request);
   request.vertex_function = vertex_function;
   request.fragment_function = GetHostShaderFunction(pixel_translation);
+  MTL::Function* exact_depth_function = nullptr;
+  if (UseDxilPath() && !pixel_translation && NeedsExactFloatDepthBias(regs)) {
+    if (!exact_float_depth_bias_library_) {
+      auto translator = CreateSpirvShaderTranslator();
+      auto spirv = translator->CreateDepthOnlyFragmentShader(
+          SpirvShaderTranslator::Modification::DepthStencilMode::
+              kPolygonOffset);
+      spirv2air::Options options;
+      options.halfPackingRounding = spirv2air::HalfPackingRounding::TowardZero;
+      options.graphics.functionConstantSet =
+          SpirvShaderTranslator::kDescriptorSetFetchState;
+      auto converted =
+          spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
+                               spirv.size() / sizeof(uint32_t), options);
+      if (!converted.ok()) {
+        XELOGE("Depth-only bias conversion: {}", converted.error);
+        return nullptr;
+      }
+      NS::Error* error = nullptr;
+      auto data = dispatch_data_create(converted.metallib.data(),
+                                       converted.metallib.size(), nullptr,
+                                       DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+      exact_float_depth_bias_library_ = device_->newLibrary(data, &error);
+      dispatch_release(data);
+      if (!exact_float_depth_bias_library_) {
+        XELOGE("Depth-only bias library failed");
+        return nullptr;
+      }
+    }
+    exact_depth_function = exact_float_depth_bias_library_->newFunction(
+        NS::String::string("main", NS::UTF8StringEncoding));
+    if (!exact_depth_function) {
+      return nullptr;
+    }
+    request.fragment_function = exact_depth_function;
+    SpirvShaderTranslator::Modification depth_modification;
+    depth_modification.pixel.depth_stencil_mode =
+        SpirvShaderTranslator::Modification::DepthStencilMode::kPolygonOffset;
+    request.description.pixel_shader_modification = depth_modification.value;
+    request.pipeline_key = request.description.GetHash();
+  }
   // A pipeline with no pixel shader is quick to link and is what a placeholder
   // draw waits on, so it is built here rather than queued.
-  return AcquirePipelineState(request, pixel_translation != nullptr,
-                              compile_status_out);
+  auto* result = AcquirePipelineState(request, pixel_translation != nullptr,
+                                      compile_status_out);
+  if (exact_depth_function) {
+    exact_depth_function->release();
+  }
+  return result;
 }
 
 MTL::RenderPipelineState* MetalCommandProcessor::AcquirePipelineState(
@@ -7853,6 +7938,10 @@ MTL::RenderPipelineState* MetalCommandProcessor::AcquirePipelineState(
         async_pipeline_pending_.find(key) == async_pipeline_pending_.end() &&
         async_pipeline_failed_.find(key) == async_pipeline_failed_.end() &&
         storage_writer_.is_active() &&
+        // This synthetic fragment has no guest microcode to reconstruct at
+        // cache warm-up. Keep its PSO in memory and rebuild it on demand.
+        (request.description.pixel_shader_hash ||
+         !request.description.pixel_shader_modification) &&
         // A memexport format profile slot is a bounded, session-scoped pool
         // index. Persisting it would let the next launch replay this
         // modification with no guard that the slot still denotes the same
@@ -7967,6 +8056,26 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
 
   auto& consts = spirv_system_constants_;
   std::memset(&consts, 0, sizeof(consts));
+
+  if (NeedsExactFloatDepthBias(regs)) {
+    auto mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+    float scale =
+        xenos::kPolygonOffsetScaleSubpixelUnit *
+        float(std::max(render_target_cache_->draw_resolution_scale_x(),
+                       render_target_cache_->draw_resolution_scale_y()));
+    if (mode.poly_offset_front_enable) {
+      consts.edram_poly_offset_front_scale =
+          regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE) * scale;
+      consts.edram_poly_offset_front_offset =
+          regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET) * 0.5f;
+    }
+    if (mode.poly_offset_back_enable) {
+      consts.edram_poly_offset_back_scale =
+          regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE) * scale;
+      consts.edram_poly_offset_back_offset =
+          regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET) * 0.5f;
+    }
+  }
 
   // Build flags (matching Vulkan backend's SpirvShaderTranslator kSysFlag_*).
   uint32_t flags = 0;
