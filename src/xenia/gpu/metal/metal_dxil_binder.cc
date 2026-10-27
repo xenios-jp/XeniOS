@@ -61,14 +61,15 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
   for (const SpirvShader::TextureBinding& binding :
        shader->GetTextureBindingsAfterTranslation()) {
     MTL::Texture* texture = texture_cache->GetTextureForBinding(
-        binding.fetch_constant, binding.dimension, binding.is_signed != 0);
+        binding.fetch_constant, binding.dimension, binding.is_signed != 0,
+        /*cube_as_array=*/true);
     if (!texture) {
       switch (binding.dimension) {
         case xenos::FetchOpDimension::k3DOrStacked:
           texture = texture_cache->GetNullTexture3D();
           break;
         case xenos::FetchOpDimension::kCube:
-          texture = texture_cache->GetNullTextureCube();
+          texture = texture_cache->GetNullTextureCube(/*as_array=*/true);
           break;
         default:
           texture = texture_cache->GetNullTexture2D();
