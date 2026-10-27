@@ -4962,11 +4962,13 @@ bool MetalCommandProcessor::IssueDrawDxil(
 
   const bool is_tessellated = primitive_processing_result.IsTessellated();
 
-  // A counted draw needs the guest's own shaders. The placeholder has no pixel
-  // kills or alpha test and overcounts, and a skipped draw counts nothing.
+  // Memory exports are guest-visible writes. A pending generic pipeline must
+  // never skip the export draw. Counted draws also require the guest's exact
+  // kills and alpha test.
   const bool exact_shaders_required =
-      GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
-      zpd_current_report_.handle != kInvalidReportHandle;
+      memexport_used ||
+      (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
+       zpd_current_report_.handle != kInvalidReportHandle);
 
   ShaderCompileStatus compile_status = ShaderCompileStatus::kReady;
   ShaderCompileStatus pixel_status = ShaderCompileStatus::kReady;
