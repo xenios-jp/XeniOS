@@ -2444,19 +2444,11 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   last_swap_width_ = frontbuffer_width;
   last_swap_height_ = frontbuffer_height;
 
-  // End any active render encoder
-  EndRenderEncoder();
-
-  // Submit and wait for command buffer
-  if (current_command_buffer_) {
-    ScheduleSpirvUniformBufferRelease(current_command_buffer_);
-    ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
-    current_command_buffer_->commit();
-    current_command_buffer_->release();
-    current_command_buffer_ = nullptr;
-    current_draw_index_ = 0;
-    copy_resolve_writes_pending_ = false;
-  }
+  // Submit the frame the way every other submission ends, including the
+  // argument-buffer reuse cache reset (the cached slices belong to this
+  // submission's pages, which may be recycled once it retires) and the
+  // autorelease pool drain.
+  EndCommandBuffer();
 
   if (primitive_processor_ && frame_open_) {
     primitive_processor_->EndFrame();
