@@ -38,6 +38,8 @@ class TraceDump {
 
   virtual void BeginHostCapture() = 0;
   virtual void EndHostCapture() = 0;
+  // Makes the guest memory the replayed GPU work wrote visible to the host.
+  virtual void AwaitGuestMemoryWrites() {}
 
   std::unique_ptr<Emulator> emulator_;
   GraphicsSystem* graphics_system_ = nullptr;
