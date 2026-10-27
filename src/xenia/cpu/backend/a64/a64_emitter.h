@@ -355,6 +355,20 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     return true;
   }
 
+  // A denormal quirk whose only reader is the select right after it writes
+  // that select's result. Cleared on read; the select must take it, or Emit
+  // fails the function.
+  void MarkFusedQuirkSelect(const hir::Instr* select) {
+    fused_quirk_select_ = select;
+  }
+  bool ConsumeFusedQuirkSelect(const hir::Instr* select) {
+    if (!select || fused_quirk_select_ != select) {
+      return false;
+    }
+    fused_quirk_select_ = nullptr;
+    return true;
+  }
+
   // SOURCE_OFFSET, CONTEXT_BARRIER and NOP emit no code that touches NZCV
   // or a register a required handoff names (SOURCE_OFFSET's coverage
   // counter uses add, not adds, and only x0/x1). COMMENT does not pass: it
@@ -545,16 +559,19 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   void ResetSequenceHandoffs() {
     fused_addr_mask_dest_reg_ = -1;
     fused_cmp_branch_reg_ = -1;
+    fused_quirk_select_ = nullptr;
     x0_constant_reader_ = nullptr;
   }
   bool sequence_handoff_pending() const {
-    return fused_addr_mask_dest_reg_ >= 0 || fused_cmp_branch_reg_ >= 0;
+    return fused_addr_mask_dest_reg_ >= 0 || fused_cmp_branch_reg_ >= 0 ||
+           fused_quirk_select_;
   }
   int fused_addr_mask_dest_reg_ = -1;
   int fused_addr_mask_src_reg_ = -1;
   uint32_t fused_addr_mask_imm_ = 0;
   int fused_cmp_branch_reg_ = -1;
   Xbyak_aarch64::Cond fused_cmp_branch_cond_ = Xbyak_aarch64::EQ;
+  const hir::Instr* fused_quirk_select_ = nullptr;
   const hir::Instr* x0_constant_reader_ = nullptr;
   uint64_t x0_constant_ = 0;
   bool synchronize_stack_on_next_instruction_ = false;

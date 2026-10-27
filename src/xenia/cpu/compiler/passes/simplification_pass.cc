@@ -1613,11 +1613,25 @@ bool SimplificationPass::SimplifyBasicArith(hir::Instr* i,
       return SimplifySHLArith(i, builder);
     }
     case OPCODE_DENORMAL_QUIRK: {
-      if (IsNeverF64Denormal(i->src1.value, 4) &&
-          IsNeverF64Denormal(i->src2.value, 4) &&
-          IsNeverF64Denormal(i->src3.value, 4)) {
+      // An operand proven never denormal still decides through being finite
+      // whether another one's denormal makes the quirk, so only its own
+      // denormal test can go.
+      uint16_t never = 0;
+      Value* srcs[3] = {i->src1.value, i->src2.value, i->src3.value};
+      for (int k = 0; k < 3; ++k) {
+        if (IsNeverF64Denormal(srcs[k], 4)) {
+          never |= DENORMAL_QUIRK_SRC1_NEVER_DENORMAL << k;
+        }
+      }
+      if (never == (DENORMAL_QUIRK_SRC1_NEVER_DENORMAL |
+                    DENORMAL_QUIRK_SRC2_NEVER_DENORMAL |
+                    DENORMAL_QUIRK_SRC3_NEVER_DENORMAL)) {
         i->Replace(&OPCODE_ASSIGN_info, 0);
         i->set_src1(builder->LoadZeroInt8());
+        return true;
+      }
+      if ((i->flags | never) != i->flags) {
+        i->flags |= never;
         return true;
       }
       return false;
