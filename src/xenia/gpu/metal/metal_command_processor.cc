@@ -203,76 +203,31 @@ IRRuntimeTessellationPipelineConfig BuildTessellationPipelineConfig(
   return config;
 }
 
-bool GetTextureSize(MTL::Texture* texture, uint32_t& width_out,
-                    uint32_t& height_out) {
-  if (!texture) {
-    return false;
-  }
-  width_out = std::max(static_cast<uint32_t>(texture->width()), uint32_t(1));
-  height_out = std::max(static_cast<uint32_t>(texture->height()), uint32_t(1));
-  return true;
-}
-
-bool GetRenderPassDescriptorSize(MTL::RenderPassDescriptor* pass_descriptor,
-                                 uint32_t& width_out, uint32_t& height_out) {
-  if (!pass_descriptor) {
-    return false;
-  }
-
-  uint32_t constrained_width =
-      static_cast<uint32_t>(pass_descriptor->renderTargetWidth());
-  uint32_t constrained_height =
-      static_cast<uint32_t>(pass_descriptor->renderTargetHeight());
-  if (constrained_width && constrained_height) {
-    width_out = constrained_width;
-    height_out = constrained_height;
-    return true;
-  }
-
-  // Passes bind at most the guest's color targets, and a stencil attachment
-  // only on the depth texture.
-  auto* color_attachments = pass_descriptor->colorAttachments();
-  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
-    if (GetTextureSize(color_attachments->object(i)->texture(), width_out,
-                       height_out)) {
-      return true;
+void GetRenderPassSize(MTL::RenderPassDescriptor* pass_descriptor,
+                       uint32_t fallback_width, uint32_t fallback_height,
+                       uint32_t& width_out, uint32_t& height_out) {
+  uint32_t width = uint32_t(pass_descriptor->renderTargetWidth());
+  uint32_t height = uint32_t(pass_descriptor->renderTargetHeight());
+  // The encoded pass is constrained by every attached mip level, as well as
+  // any explicit render target dimensions. The cache may bind different
+  // targets by the time a later draw reuses this encoder.
+  auto constrain = [&](MTL::RenderPassAttachmentDescriptor* attachment) {
+    if (MTL::Texture* texture = attachment->texture()) {
+      uint32_t attachment_width =
+          std::max(uint32_t(texture->width() >> attachment->level()), 1u);
+      uint32_t attachment_height =
+          std::max(uint32_t(texture->height() >> attachment->level()), 1u);
+      width = width ? std::min(width, attachment_width) : attachment_width;
+      height = height ? std::min(height, attachment_height) : attachment_height;
     }
-  }
-  return GetTextureSize(pass_descriptor->depthAttachment()->texture(),
-                        width_out, height_out);
-}
-
-void GetBoundRenderTargetSize(const MetalRenderTargetCache* render_target_cache,
-                              uint32_t fallback_width, uint32_t fallback_height,
-                              uint32_t& width_out, uint32_t& height_out) {
-  width_out = std::max(fallback_width, uint32_t(1));
-  height_out = std::max(fallback_height, uint32_t(1));
-  if (!render_target_cache) {
-    return;
-  }
+  };
   for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
-    if (GetTextureSize(render_target_cache->GetColorTargetForDraw(i), width_out,
-                       height_out)) {
-      return;
-    }
+    constrain(pass_descriptor->colorAttachments()->object(i));
   }
-  if (GetTextureSize(render_target_cache->GetDepthTargetForDraw(), width_out,
-                     height_out)) {
-    return;
-  }
-  GetTextureSize(render_target_cache->GetDummyColorTargetForDraw(), width_out,
-                 height_out);
-}
-
-void GetActiveRenderTargetSize(
-    MTL::RenderPassDescriptor* pass_descriptor,
-    const MetalRenderTargetCache* render_target_cache, uint32_t fallback_width,
-    uint32_t fallback_height, uint32_t& width_out, uint32_t& height_out) {
-  if (GetRenderPassDescriptorSize(pass_descriptor, width_out, height_out)) {
-    return;
-  }
-  GetBoundRenderTargetSize(render_target_cache, fallback_width, fallback_height,
-                           width_out, height_out);
+  constrain(pass_descriptor->depthAttachment());
+  constrain(pass_descriptor->stencilAttachment());
+  width_out = std::max(width ? width : fallback_width, 1u);
+  height_out = std::max(height ? height : fallback_height, 1u);
 }
 
 void ClampScissorToBounds(draw_util::Scissor& scissor, uint32_t width,
@@ -3958,12 +3913,7 @@ void MetalCommandProcessor::ApplyViewportAndScissor(
   scissor.extent[1] *= draw_resolution_scale_y;
 
   // Clamp scissor to actual render target bounds (Metal requires this).
-  uint32_t rt_width = 1;
-  uint32_t rt_height = 1;
-  GetActiveRenderTargetSize(current_render_pass_descriptor_,
-                            render_target_cache_.get(), render_target_width_,
-                            render_target_height_, rt_width, rt_height);
-  ClampScissorToBounds(scissor, rt_width, rt_height);
+  ClampScissorToBounds(scissor, render_encoder_width_, render_encoder_height_);
   // Draws that don't rasterize (memexport-only) still run the vertex shader,
   // but must not touch the retained attachments or contribute samples.
   if (!draw_util::IsRasterizationPotentiallyDone(
@@ -6602,9 +6552,10 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     // scissor over this before it runs.
     uint32_t rt_width = 1;
     uint32_t rt_height = 1;
-    GetActiveRenderTargetSize(pass_descriptor, render_target_cache_.get(),
-                              render_target_width_, render_target_height_,
-                              rt_width, rt_height);
+    GetRenderPassSize(pass_descriptor, render_target_width_,
+                      render_target_height_, rt_width, rt_height);
+    render_encoder_width_ = rt_width;
+    render_encoder_height_ = rt_height;
     MTL::Viewport viewport = {
         0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
         0.0, 1.0};
