@@ -1214,6 +1214,7 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock,
       ctx->TranslateVirtualGPR<X_KPCR*>(our_pcr)->prcb_data.current_cpu;
 
   // Lock.
+  uint32_t contended_yields = 0;
   while (
       !xe::atomic_cas(0, xe::byte_swap(our_pcr), &lock->prcb_of_owner.value)) {
     // Under the cooperative scheduler the holder may be a fiber queued behind
@@ -1265,6 +1266,13 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock,
         xe::threading::Sleep(std::chrono::milliseconds(0));
         continue;
       }
+    }
+    // A yield keeps the spinner on a core if nothing else is runnable, so once
+    // the holder is clearly not about to release (descheduled mid-hold), sleep
+    // briefly to free the core for it rather than spin hot.
+    if (++contended_yields > 64) {
+      xe::threading::NanoSleep(20000);
+      continue;
     }
     xe::threading::MaybeYield();
   }

@@ -38,6 +38,7 @@
 #if XE_PLATFORM_MAC
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach/thread_switch.h>
 #include <pthread/qos.h>
 #endif
 
@@ -208,7 +209,16 @@ uint32_t current_thread_system_id() {
 }
 
 void MaybeYield() {
+#if XE_PLATFORM_MAC
+  // sched_yield on Darwin is swtch_pri, which drops the caller to the lowest
+  // priority until it runs again or a scheduler quantum (10 ms) passes, so with
+  // any other thread runnable each yield of a guest polling loop can cost
+  // milliseconds. thread_switch without an option yields the same way, but
+  // keeps the priority.
+  thread_switch(MACH_PORT_NULL, SWITCH_OPTION_NONE, 0);
+#else
   sched_yield();
+#endif
   __sync_synchronize();
 }
 
@@ -655,7 +665,7 @@ class PosixConditionBase {
       // If we couldn't acquire all locks, release what we have and retry.
       if (!all_locked) {
         locks.clear();
-        std::this_thread::yield();
+        MaybeYield();
         continue;
       }
 
