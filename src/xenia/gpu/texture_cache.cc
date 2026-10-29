@@ -903,6 +903,32 @@ uint32_t TextureCache::GetIntegerScaleBits(
   return scale_bits;
 }
 
+uint32_t TextureCache::GetFetchIntegerScaleBits(
+    uint32_t fetch_constant_index) const {
+  xenos::xe_gpu_texture_fetch_t fetch =
+      register_file().GetTextureFetch(fetch_constant_index);
+  TextureKey key;
+  uint8_t swizzled_signs;
+  BindingInfoFromFetchConstant(fetch, key, &swizzled_signs);
+  if (!key.is_valid) {
+    return 0;
+  }
+  return GetIntegerScaleBits(fetch, swizzled_signs);
+}
+
+uint32_t TextureCache::GetFetchDecodeBits(
+    uint32_t fetch_constant_index) const {
+  xenos::xe_gpu_texture_fetch_t fetch =
+      register_file().GetTextureFetch(fetch_constant_index);
+  TextureKey key;
+  uint8_t swizzled_signs;
+  BindingInfoFromFetchConstant(fetch, key, &swizzled_signs);
+  if (!key.is_valid) {
+    swizzled_signs = kSwizzledSignsUnsigned;
+  }
+  return uint32_t(swizzled_signs) | ((uint32_t(fetch.exp_adjust) & 0x3F) << 8);
+}
+
 void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
   SCOPE_profile_cpu_f("gpu");
   assert_true(n_textures <= 64);

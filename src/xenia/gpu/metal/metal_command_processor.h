@@ -676,13 +676,22 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t vertex_finite_multiply_state[2];
     uint32_t pixel_finite_multiply_state[2];
     // Only constants the shader reads contribute to its pipeline identity.
-    // Texture arithmetic and system flags stay dynamic.
+    // Texture arithmetic other than the fetch constant decoding and system
+    // flags stay dynamic.
     uint32_t vertex_fetch_endians
         [SpirvShaderTranslator::kVertexFetchEndianBindingCount * 4];
     uint32_t vertex_bool_constants[256 / 32];
     uint32_t pixel_bool_constants[256 / 32];
     uint32_t vertex_loop_constants[32];
     uint32_t pixel_loop_constants[32];
+    // TextureCache::GetIntegerScaleBits of the fetch constants the shader
+    // samples, selecting the fetch conversions it needs.
+    uint32_t vertex_texture_scale_bits[32];
+    uint32_t pixel_texture_scale_bits[32];
+    // TextureCache::GetFetchDecodeBits of the fetch constants the shader
+    // samples: the signednesses and the exponent bias.
+    uint32_t vertex_texture_decode_bits[32];
+    uint32_t pixel_texture_decode_bits[32];
 
     PipelineKind kind : 2;                          // 2
     xenos::TessellationMode tessellation_mode : 2;  // 4
@@ -694,7 +703,7 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t padding : 21;  // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20261017;
+    static constexpr uint32_t kVersion = 0x20261029;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }
