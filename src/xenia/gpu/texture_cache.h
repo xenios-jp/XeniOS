@@ -154,6 +154,12 @@ class TextureCache {
         GetValidTextureBinding(fetch_constant_index);
     return binding ? binding->swizzled_signs : kSwizzledSignsUnsigned;
   }
+  // GetActiveIntegerScaleBits of the current fetch constant, before
+  // RequestTextures binds it.
+  uint32_t GetFetchIntegerScaleBits(uint32_t fetch_constant_index) const;
+  // GetActiveTextureSwizzledSigns (bits 0:7) and exp_adjust (bits 8:13) of the
+  // current fetch constant, before RequestTextures binds it.
+  uint32_t GetFetchDecodeBits(uint32_t fetch_constant_index) const;
   uint32_t GetActiveIntegerScaleBits(uint32_t fetch_constant_index) const {
     const TextureBinding* binding =
         GetValidTextureBinding(fetch_constant_index);
