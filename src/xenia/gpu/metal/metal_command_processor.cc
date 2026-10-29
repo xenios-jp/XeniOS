@@ -1196,6 +1196,14 @@ MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
       &states[SpirvShaderTranslator::kFetchStateFiniteMultiplyBinding * 4],
       request.description.vertex_finite_multiply_state,
       sizeof(request.description.vertex_finite_multiply_state));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateTextureScaleBinding * 4],
+      request.description.vertex_texture_scale_bits,
+      sizeof(request.description.vertex_texture_scale_bits));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateTextureDecodeBinding * 4],
+      request.description.vertex_texture_decode_bits,
+      sizeof(request.description.vertex_texture_decode_bits));
   return GetSpecializedFunction(
       request.vertex_library, request.vertex_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
@@ -1219,6 +1227,14 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
       &states[SpirvShaderTranslator::kFetchStateFiniteMultiplyBinding * 4],
       request.description.pixel_finite_multiply_state,
       sizeof(request.description.pixel_finite_multiply_state));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateTextureScaleBinding * 4],
+      request.description.pixel_texture_scale_bits,
+      sizeof(request.description.pixel_texture_scale_bits));
+  std::memcpy(
+      &states[SpirvShaderTranslator::kFetchStateTextureDecodeBinding * 4],
+      request.description.pixel_texture_decode_bits,
+      sizeof(request.description.pixel_texture_decode_bits));
   return GetSpecializedFunction(
       request.fragment_library, request.fragment_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
@@ -1244,6 +1260,7 @@ bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
   const auto& constants = translation->shader().constant_register_map();
   return (spirv_translator_features_.optimize_finite_multiplication &&
           GetFiniteMultiplyRequirements(translation->shader())) ||
+         !translation->shader().texture_bindings().empty() ||
          constants.loop_bitmap ||
          std::any_of(std::begin(constants.bool_bitmap),
                      std::end(constants.bool_bitmap),
@@ -7821,6 +7838,13 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     get_bool_loop_constants(vertex_translation,
                             description.vertex_bool_constants,
                             description.vertex_loop_constants);
+    for (const Shader::TextureBinding& binding :
+         vertex_translation->shader().texture_bindings()) {
+      description.vertex_texture_scale_bits[binding.fetch_constant] =
+          texture_cache_->GetFetchIntegerScaleBits(binding.fetch_constant);
+      description.vertex_texture_decode_bits[binding.fetch_constant] =
+          texture_cache_->GetFetchDecodeBits(binding.fetch_constant);
+    }
     if (spirv_translator_features_.optimize_finite_multiplication) {
       GetFiniteMultiplyState(vertex_translation, regs,
                              description.vertex_finite_multiply_state);
@@ -7829,6 +7853,13 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
   if (request.fragment_fetch_states_specialized) {
     get_bool_loop_constants(pixel_translation, description.pixel_bool_constants,
                             description.pixel_loop_constants);
+    for (const Shader::TextureBinding& binding :
+         pixel_translation->shader().texture_bindings()) {
+      description.pixel_texture_scale_bits[binding.fetch_constant] =
+          texture_cache_->GetFetchIntegerScaleBits(binding.fetch_constant);
+      description.pixel_texture_decode_bits[binding.fetch_constant] =
+          texture_cache_->GetFetchDecodeBits(binding.fetch_constant);
+    }
     if (spirv_translator_features_.optimize_finite_multiplication) {
       GetFiniteMultiplyState(pixel_translation, regs,
                              description.pixel_finite_multiply_state);

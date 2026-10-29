@@ -528,14 +528,20 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // https://github.com/KhronosGroup/SPIRV-Headers/blob/c43a43c7cc3af55910b9bec2a71e3e8a622443cf/include/spirv/spir-v.xml#L79
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
-  // Vertex endianness uses bindings 0-1; bool and loop constants use 8-17.
-  // Leave texture arithmetic and system flags in runtime uniform buffers.
+  // Vertex endianness uses bindings 0-1; bool and loop constants use 8-17;
+  // texture fetch constant decoding uses 19-34. Leave the rest of texture
+  // arithmetic and system flags in runtime uniform buffers.
   static constexpr uint32_t kDescriptorSetFetchState = 9;
   static constexpr uint32_t kVertexFetchEndianBindingCount = 2;
   static constexpr uint32_t kFetchStateBoolConstantsBinding = 8;
   static constexpr uint32_t kFetchStateLoopConstantsBinding = 10;
   static constexpr uint32_t kFetchStateFiniteMultiplyBinding = 18;
-  static constexpr uint32_t kFetchStateBindingCount = 19;
+  // The integer scale bits of 4 texture fetch constants each.
+  static constexpr uint32_t kFetchStateTextureScaleBinding = 19;
+  // The swizzled signs (bits 0:7) and exponent bias (bits 8:13) of 4 texture
+  // fetch constants each.
+  static constexpr uint32_t kFetchStateTextureDecodeBinding = 27;
+  static constexpr uint32_t kFetchStateBindingCount = 35;
   // Unknown includes computed overflow, interpolation, vertex data and
   // dynamically addressed inputs. Only explicit finite proofs can clear it.
   static constexpr uint64_t kFiniteMultiplyUnknown = UINT64_C(1);

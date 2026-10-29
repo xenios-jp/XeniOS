@@ -733,18 +733,18 @@ void SpirvShaderTranslator::StartTranslation() {
   if (features_.fetch_state_function_constants &&
       ((is_pixel_shader() && !is_depth_only_fragment_shader_) ||
        IsSpirvVertexShader())) {
-    uint32_t fetch_state_bindings = 0;
+    uint64_t fetch_state_bindings = 0;
     if (!is_pixel_shader()) {
       for (const Shader::VertexBinding& binding :
            current_shader().vertex_bindings()) {
-        fetch_state_bindings |= UINT32_C(1) << (binding.fetch_constant >> 6);
+        fetch_state_bindings |= UINT64_C(1) << (binding.fetch_constant >> 6);
       }
     }
     const Shader::ConstantRegisterMap& constants =
         current_shader().constant_register_map();
     for (uint32_t i = 0; i < xe::countof(constants.bool_bitmap); ++i) {
       if (constants.bool_bitmap[i]) {
-        fetch_state_bindings |= UINT32_C(1)
+        fetch_state_bindings |= UINT64_C(1)
                                 << (kFetchStateBoolConstantsBinding + (i >> 2));
       }
     }
@@ -753,10 +753,18 @@ void SpirvShaderTranslator::StartTranslation() {
     while (xe::bit_scan_forward(loops, &index)) {
       loops &= ~(UINT32_C(1) << index);
       fetch_state_bindings |=
-          UINT32_C(1) << (kFetchStateLoopConstantsBinding + (index >> 2));
+          UINT64_C(1) << (kFetchStateLoopConstantsBinding + (index >> 2));
     }
     if (finite_multiply_enabled_ && finite_multiply_analysis_.dynamic_inputs) {
-      fetch_state_bindings |= UINT32_C(1) << kFetchStateFiniteMultiplyBinding;
+      fetch_state_bindings |= UINT64_C(1) << kFetchStateFiniteMultiplyBinding;
+    }
+    for (const Shader::TextureBinding& binding :
+         current_shader().texture_bindings()) {
+      fetch_state_bindings |=
+          (UINT64_C(1) << (kFetchStateTextureScaleBinding +
+                           (binding.fetch_constant >> 2))) |
+          (UINT64_C(1) << (kFetchStateTextureDecodeBinding +
+                           (binding.fetch_constant >> 2)));
     }
     if (fetch_state_bindings) {
       id_vector_temp_.clear();
@@ -769,7 +777,7 @@ void SpirvShaderTranslator::StartTranslation() {
       builder_->addDecoration(type_fetch_state, spv::DecorationBlock);
       uint32_t fetch_state_binding;
       while (xe::bit_scan_forward(fetch_state_bindings, &fetch_state_binding)) {
-        fetch_state_bindings &= ~(UINT32_C(1) << fetch_state_binding);
+        fetch_state_bindings &= ~(UINT64_C(1) << fetch_state_binding);
         spv::Id& uniform_fetch_state =
             uniform_fetch_state_[fetch_state_binding];
         uniform_fetch_state = builder_->createVariable(

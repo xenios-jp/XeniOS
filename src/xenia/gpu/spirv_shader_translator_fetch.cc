@@ -1762,22 +1762,37 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         }
       }
 
-      id_vector_temp_.clear();
-      id_vector_temp_.push_back(
-          builder_->makeIntConstant(kSystemConstantTextureSwizzledSigns));
-      id_vector_temp_.push_back(
-          builder_->makeIntConstant(fetch_constant_index >> 4));
-      id_vector_temp_.push_back(
-          builder_->makeIntConstant((fetch_constant_index >> 2) & 3));
-      // All 32 bits containing the values for 4 fetch constants (use
-      // OpBitFieldUExtract to get the signednesses for the specific components
-      // of this texture).
-      spv::Id swizzled_signs_word =
-          builder_->createLoad(builder_->createAccessChain(
-                                   spv::StorageClassUniform,
-                                   uniform_system_constants_, id_vector_temp_),
-                               spv::NoPrecision);
-      uint32_t swizzled_signs_word_offset = 8 * (fetch_constant_index & 3);
+      // Specialized where possible, so the signednesses and the exponent bias
+      // the texture doesn't need are compiled out.
+      spv::Id texture_decode_state =
+          main_fetch_state_[kFetchStateTextureDecodeBinding +
+                            (fetch_constant_index >> 2)];
+      spv::Id texture_decode_word = spv::NoResult;
+      spv::Id swizzled_signs_word;
+      uint32_t swizzled_signs_word_offset;
+      if (texture_decode_state != spv::NoResult) {
+        texture_decode_word = builder_->createCompositeExtract(
+            texture_decode_state, type_uint_, fetch_constant_index & 3);
+        swizzled_signs_word = texture_decode_word;
+        swizzled_signs_word_offset = 0;
+      } else {
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(kSystemConstantTextureSwizzledSigns));
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(fetch_constant_index >> 4));
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant((fetch_constant_index >> 2) & 3));
+        // All 32 bits containing the values for 4 fetch constants (use
+        // OpBitFieldUExtract to get the signednesses for the specific
+        // components of this texture).
+        swizzled_signs_word = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassUniform,
+                                        uniform_system_constants_,
+                                        id_vector_temp_),
+            spv::NoPrecision);
+        swizzled_signs_word_offset = 8 * (fetch_constant_index & 3);
+      }
 
       spv::Builder::TextureParameters texture_parameters = {};
 
@@ -1898,20 +1913,30 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         spv::Id is_any_unsigned = builder_->createUnaryOp(
             spv::OpLogicalNot, type_bool_, is_all_signed);
 
-        // Load the fetch constant word 3, needed for result exponent biasing.
-        // exp_adjust is in word 3, bits 13:18 (6-bit signed).
-        id_vector_temp_.clear();
-        id_vector_temp_.push_back(const_int_0_);
-        id_vector_temp_.push_back(builder_->makeIntConstant(
-            int((fetch_constant_word_0_index + 3) >> 2)));
-        id_vector_temp_.push_back(builder_->makeIntConstant(
-            int((fetch_constant_word_0_index + 3) & 3)));
-        spv::Id fetch_constant_word_3_signed = builder_->createUnaryOp(
-            spv::OpBitcast, type_int_,
-            builder_->createLoad(builder_->createAccessChain(
-                                     spv::StorageClassUniform,
-                                     uniform_fetch_constants_, id_vector_temp_),
-                                 spv::NoPrecision));
+        // The exponent bias, exp_adjust, is in the fetch constant word 3, bits
+        // 13:18 (6-bit signed), or the specialized decode word, bits 8:13.
+        spv::Id exp_adjust_word_signed;
+        uint32_t exp_adjust_offset;
+        if (texture_decode_word != spv::NoResult) {
+          exp_adjust_word_signed = builder_->createUnaryOp(
+              spv::OpBitcast, type_int_, texture_decode_word);
+          exp_adjust_offset = 8;
+        } else {
+          id_vector_temp_.clear();
+          id_vector_temp_.push_back(const_int_0_);
+          id_vector_temp_.push_back(builder_->makeIntConstant(
+              int((fetch_constant_word_0_index + 3) >> 2)));
+          id_vector_temp_.push_back(builder_->makeIntConstant(
+              int((fetch_constant_word_0_index + 3) & 3)));
+          exp_adjust_word_signed = builder_->createUnaryOp(
+              spv::OpBitcast, type_int_,
+              builder_->createLoad(
+                  builder_->createAccessChain(spv::StorageClassUniform,
+                                              uniform_fetch_constants_,
+                                              id_vector_temp_),
+                  spv::NoPrecision));
+          exp_adjust_offset = 13;
+        }
 
         // Load the fetch constant word 4, needed unconditionally for LOD
         // biasing, and conditionally for stacked texture filtering.
@@ -2159,11 +2184,21 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
             builder_->makeIntConstant(int32_t(fetch_constant_index >> 2)));
         id_vector_temp_.push_back(
             builder_->makeIntConstant(int32_t(fetch_constant_index & 3)));
-        spv::Id integer_scale_bits_packed = builder_->createLoad(
-            builder_->createAccessChain(spv::StorageClassUniform,
-                                        uniform_system_constants_,
-                                        id_vector_temp_),
-            spv::NoPrecision);
+        // Specialized where possible, so the conversions the texture doesn't
+        // need are compiled out.
+        spv::Id integer_scale_state =
+            main_fetch_state_[kFetchStateTextureScaleBinding +
+                              (fetch_constant_index >> 2)];
+        spv::Id integer_scale_bits_packed =
+            integer_scale_state != spv::NoResult
+                ? builder_->createCompositeExtract(integer_scale_state,
+                                                   type_uint_,
+                                                   fetch_constant_index & 3)
+                : builder_->createLoad(
+                      builder_->createAccessChain(spv::StorageClassUniform,
+                                                  uniform_system_constants_,
+                                                  id_vector_temp_),
+                      spv::NoPrecision);
         if (point_snap) {
           // Point sampled fetch constant uses the texel center in host texels
           // for a resolution scaled texture (the size already is) instead of
@@ -3048,14 +3083,13 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
               integer_scale_result, type_float_, result_component_index);
         }
 
-        // Apply the exponent bias from the bits 13:18 of the fetch constant
-        // word 3.
+        // Apply the exponent bias.
         spv::Id result_exponent_bias = builder_->createBinBuiltinCall(
             type_float_, ext_inst_glsl_std_450_, GLSLstd450Ldexp,
             const_float_1_,
             builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
-                                  fetch_constant_word_3_signed,
-                                  builder_->makeUintConstant(13),
+                                  exp_adjust_word_signed,
+                                  builder_->makeUintConstant(exp_adjust_offset),
                                   builder_->makeUintConstant(6)));
         {
           uint32_t result_remaining_components = used_result_nonzero_components;
