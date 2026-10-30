@@ -1577,7 +1577,8 @@ RenderTargetCache::DirectResolveEligibility
 RenderTargetCache::GetDirectResolveEligibility(
     const draw_util::ResolveInfo& resolve_info,
     draw_util::ResolveCopyShaderIndex copy_shader, bool allow_full32_4x_average,
-    bool allow_cross_depth_color, bool allow_full32_rgb10f_1x) const {
+    bool allow_cross_depth_color, bool allow_full32_rgb10f_1x,
+    bool allow_full64_rgba16_1x) const {
   if (GetPath() != Path::kHostRenderTargets) {
     return DirectResolveEligibility::kNotHostRenderTargets;
   }
@@ -1624,6 +1625,21 @@ RenderTargetCache::GetDirectResolveEligibility(
                                 k_2_10_10_10_FLOAT_AS_16_16_16_16) &&
           dest_format == xenos::ColorFormat::k_2_10_10_10;
       if (!full32_4x_average && !full32_rgb10f_1x) {
+        return DirectResolveEligibility::kConvertingCopyShader;
+      }
+    } break;
+    case draw_util::ResolveCopyShaderIndex::kFull64bpp: {
+      // The single-sample conversion of a 16_16_16_16 source into a
+      // 16_16_16_16 destination, exponent bias and number format included.
+      if (!allow_full64_rgba16_1x || resolve_info.IsCopyingDepth() ||
+          xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format) !=
+              xenos::ColorRenderTargetFormat::k_16_16_16_16 ||
+          resolve_info.color_edram_info.msaa_samples !=
+              xenos::MsaaSamples::k1X ||
+          resolve_info.copy_dest_coordinate_info.copy_sample_select !=
+              xenos::CopySampleSelect::k0 ||
+          resolve_info.copy_dest_info.copy_dest_format !=
+              xenos::ColorFormat::k_16_16_16_16) {
         return DirectResolveEligibility::kConvertingCopyShader;
       }
     } break;
