@@ -1219,6 +1219,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
             builder.createLoad(resolve_texture_aliases[i], spv::NoPrecision);
       }
     }
+    std::vector<spv::Id> refresh_texels(pixels_per_thread, spv::NoResult);
     for (uint32_t i = 0; i < pixels_per_thread; ++i) {
       spv::Id* pixel = &run_packed[i * dwords_per_pixel];
       if (!format_is_64bpp) {
@@ -1254,23 +1255,12 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
         // The texture-cache image holds what the ordinary loader would copy
         // from the resolved memory: the swapped, not yet endian-transformed
         // texels, as raw dwords.
-        spv::Id texture_x =
-            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
-        spv::Id texture_write_condition =
-            builder.createBinOp(spv::OpLogicalAnd, type_bool,
-                                builder.createBinOp(spv::OpULessThan, type_bool,
-                                                    texture_x, texture_width),
-                                builder.createBinOp(spv::OpULessThan, type_bool,
-                                                    texture_y, texture_height));
-        SpirvBuilder::IfBuilder if_texture_write(
-            texture_write_condition, spv::SelectionControlMaskNone, builder);
-        spv::Id texel;
         if (copy_is_depth) {
           auto depth = EmitResolveRefreshDepthTexel(
               builder, pixel[0], key.direct_resolve_texture_depth_float,
               ext_inst_glsl_std_450);
           auto zero = builder.makeFloatConstant(0.0f);
-          texel = builder.createCompositeConstruct(
+          refresh_texels[i] = builder.createCompositeConstruct(
               builder.makeVectorType(type_float, 4), {depth, zero, zero, zero});
         } else {
           id_vector_temp.clear();
@@ -1278,24 +1268,9 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
           id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
           id_vector_temp.push_back(const_uint_0);
           id_vector_temp.push_back(const_uint_0);
-          texel = builder.createCompositeConstruct(type_uint4, id_vector_temp);
+          refresh_texels[i] =
+              builder.createCompositeConstruct(type_uint4, id_vector_temp);
         }
-        id_vector_temp.clear();
-        id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, texture_x));
-        id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, texture_y));
-        id_vector_temp.push_back(builder.makeIntConstant(0));
-        spv::Id coordinates =
-            builder.createCompositeConstruct(type_int3, id_vector_temp);
-        builder.createNoResultOp(spv::OpImageWrite,
-                                 {loaded_resolve_texture, coordinates, texel});
-        for (uint32_t j = 0; j < resolve_texture_alias_count; ++j) {
-          builder.createNoResultOp(
-              spv::OpImageWrite,
-              {loaded_resolve_texture_aliases[j], coordinates, texel});
-        }
-        if_texture_write.makeEndIf();
       }
       if (format_is_64bpp) {
         // The 8in64 dword exchange, before the 32-bit swaps below.
@@ -1318,6 +1293,59 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
             bitwise_or(shift_left(value, 16), shift_right(value, 16)), value);
         pixel[j] = value;
       }
+    }
+    if (key.direct_resolve_texture) {
+      // Writing the run's texels under one check when all of them are inside
+      // the texture, rather than one check per texel, lets the writes go out
+      // together: per-texel conditions made them most of the kernel's time.
+      auto write_texel = [&](uint32_t i) {
+        spv::Id texture_x =
+            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
+        id_vector_temp.clear();
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, texture_x));
+        id_vector_temp.push_back(
+            builder.createUnaryOp(spv::OpBitcast, type_int, texture_y));
+        id_vector_temp.push_back(builder.makeIntConstant(0));
+        spv::Id coordinates =
+            builder.createCompositeConstruct(type_int3, id_vector_temp);
+        builder.createNoResultOp(
+            spv::OpImageWrite,
+            {loaded_resolve_texture, coordinates, refresh_texels[i]});
+        for (uint32_t j = 0; j < resolve_texture_alias_count; ++j) {
+          builder.createNoResultOp(
+              spv::OpImageWrite,
+              {loaded_resolve_texture_aliases[j], coordinates,
+               refresh_texels[i]});
+        }
+      };
+      spv::Id texture_y_inside = builder.createBinOp(
+          spv::OpULessThan, type_bool, texture_y, texture_height);
+      spv::Id run_inside = builder.createBinOp(
+          spv::OpLogicalAnd, type_bool, texture_y_inside,
+          builder.createBinOp(
+              spv::OpULessThan, type_bool,
+              add(dest_x, builder.makeUintConstant(pixels_per_thread - 1)),
+              texture_width));
+      SpirvBuilder::IfBuilder if_run_inside(
+          run_inside, spv::SelectionControlMaskNone, builder);
+      for (uint32_t i = 0; i < pixels_per_thread; ++i) {
+        write_texel(i);
+      }
+      if_run_inside.makeBeginElse();
+      for (uint32_t i = 0; i < pixels_per_thread; ++i) {
+        spv::Id texture_x =
+            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
+        SpirvBuilder::IfBuilder if_texture_write(
+            builder.createBinOp(
+                spv::OpLogicalAnd, type_bool, texture_y_inside,
+                builder.createBinOp(spv::OpULessThan, type_bool, texture_x,
+                                    texture_width)),
+            spv::SelectionControlMaskNone, builder);
+        write_texel(i);
+        if_texture_write.makeEndIf();
+      }
+      if_run_inside.makeEndIf();
     }
 
     // XeResolveDestPixelAddress for the start of the run, then
