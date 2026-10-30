@@ -695,7 +695,11 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     target_out.destinations[target_out.count++] = std::move(current);
   }
   for (const auto& destination : target_out.textures()) {
-    static_cast<MetalTexture*>(destination.cache_texture)->MarkAsUsed();
+    auto* destination_texture =
+        static_cast<MetalTexture*>(destination.cache_texture);
+    destination_texture->MarkAsUsed();
+    destination_texture->used_submission_ =
+        command_processor_->GetCurrentSubmission();
   }
 }
 
@@ -964,40 +968,53 @@ void MetalTextureCache::FlushDeferredLoads(DeferredLoads& deferred) {
   } else {
     // The command buffer was submitted while the request was recorded. A
     // command buffer committed now still runs before the one the draw is in.
-    MTL::CommandBuffer* private_cmd =
-        command_processor_->CreateAccountedCommandBuffer(
-            MetalCommandProcessor::CommandBufferKind::kTextureUploadPrivate);
-    if (private_cmd) {
-      if (!EncodeLoadCommands(private_cmd, deferred.commands)) {
-        XELOGE("MetalTextureCache: failed to encode deferred texture loads");
-      }
-      private_cmd->retain();
-      private_cmd->addCompletedHandler(^(MTL::CommandBuffer* cb) {
-        cb->release();
-      });
-      private_cmd->commit();
-    } else {
-      XELOGE("MetalTextureCache: no command buffer for deferred texture loads");
-      // Nothing uses the buffers anymore.
-      std::shared_ptr<UploadBufferPool> buffer_pool;
-      {
-        std::lock_guard<std::mutex> lock(upload_buffer_pool_mutex_);
-        buffer_pool = upload_buffer_pool_;
-      }
-      for (MTL::Buffer* buffer : deferred.commands.buffers) {
-        if (buffer_pool) {
-          buffer_pool->ReleaseImmediate(buffer);
-        } else {
-          buffer->release();
-        }
-      }
-      for (MTL::Texture* texture : deferred.commands.textures) {
-        texture->release();
-      }
-      deferred.commands = LoadCommands();
-    }
+    EncodeLoadCommandsAlone(deferred.commands);
   }
   cmd->release();
+}
+
+void MetalTextureCache::EncodeLoadCommandsAlone(LoadCommands& commands) {
+  MTL::CommandBuffer* private_cmd =
+      command_processor_->CreateAccountedCommandBuffer(
+          MetalCommandProcessor::CommandBufferKind::kTextureUploadPrivate);
+  if (private_cmd) {
+    if (!EncodeLoadCommands(private_cmd, commands)) {
+      XELOGE("MetalTextureCache: failed to encode texture loads");
+    }
+    private_cmd->retain();
+    private_cmd->addCompletedHandler(^(MTL::CommandBuffer* cb) {
+      cb->release();
+    });
+    private_cmd->commit();
+  } else {
+    XELOGE("MetalTextureCache: no command buffer for texture loads");
+    // Nothing uses the buffers anymore.
+    std::shared_ptr<UploadBufferPool> buffer_pool;
+    {
+      std::lock_guard<std::mutex> lock(upload_buffer_pool_mutex_);
+      buffer_pool = upload_buffer_pool_;
+    }
+    for (MTL::Buffer* buffer : commands.buffers) {
+      if (buffer_pool) {
+        buffer_pool->ReleaseImmediate(buffer);
+      } else {
+        buffer->release();
+      }
+    }
+    for (MTL::Texture* texture : commands.textures) {
+      texture->release();
+    }
+    commands = LoadCommands();
+  }
+}
+
+void MetalTextureCache::CommitLoadsAhead() {
+  if (loads_ahead_.empty()) {
+    return;
+  }
+  ++loads_ahead_generation_;
+  ScopedAutoreleasePool autorelease_pool;
+  EncodeLoadCommandsAlone(loads_ahead_);
 }
 
 bool MetalTextureCache::IsDecompressionNeededForKey(TextureKey key) const {
@@ -1624,6 +1641,34 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   }
 
+  // Loading into the current command buffer while a draw requests its
+  // textures ends the render pass, which the draw has to reopen. A load that
+  // needs nothing from the current command buffer is recorded instead for a
+  // command buffer committed right before it, one per submission: nothing
+  // earlier in it uses the texture, and the load reads only guest memory
+  // copied now, not shared memory.
+  const uint64_t current_submission =
+      command_processor_ ? command_processor_->GetCurrentSubmission() : 0;
+  bool load_ahead = use_current_command_buffer && upload_batch_depth_ &&
+                    !use_direct_raw && !texture_resolution_scaled &&
+                    metal_texture->used_submission_ != current_submission;
+  for (uint32_t part = 0; part < 2 && load_ahead; ++part) {
+    if ((part ? load_mips : load_base) && !snapshot_length[part]) {
+      load_ahead = false;
+    }
+  }
+  if (load_ahead) {
+    metal_texture->loads_ahead_generation_ = loads_ahead_generation_;
+  } else {
+    if (use_current_command_buffer) {
+      metal_texture->used_submission_ = current_submission;
+    } else if (metal_texture->loads_ahead_generation_ ==
+               loads_ahead_generation_) {
+      // A separate command buffer would run before the recorded load ahead.
+      CommitLoadsAhead();
+    }
+  }
+
   ScopedAutoreleasePool autorelease_pool;
   MTL::CommandBuffer* cmd = nullptr;
   // The current command buffer first - it needs no extra buffer at all. The
@@ -1831,17 +1876,21 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       commands.buffers.push_back(dest_buffer);
     }
     if (defer_load) {
-      DeferredLoads& deferred_loads =
-          use_upload_batch ? deferred_batch_loads_ : deferred_loads_;
-      if (deferred_loads.command_buffer != cmd) {
-        FlushDeferredLoads(deferred_loads);
-        cmd->retain();
-        deferred_loads.command_buffer = cmd;
+      LoadCommands* deferred_commands = &loads_ahead_;
+      if (!load_ahead) {
+        DeferredLoads& deferred_loads =
+            use_upload_batch ? deferred_batch_loads_ : deferred_loads_;
+        if (deferred_loads.command_buffer != cmd) {
+          FlushDeferredLoads(deferred_loads);
+          cmd->retain();
+          deferred_loads.command_buffer = cmd;
+        }
+        if (use_upload_batch) {
+          upload_batch_command_buffer_has_work_ = true;
+        }
+        deferred_commands = &deferred_loads.commands;
       }
-      if (use_upload_batch) {
-        upload_batch_command_buffer_has_work_ = true;
-      }
-      LoadCommands& deferred = deferred_loads.commands;
+      LoadCommands& deferred = *deferred_commands;
       deferred.dispatches.insert(deferred.dispatches.end(),
                                  commands.dispatches.begin(),
                                  commands.dispatches.end());
@@ -2024,6 +2073,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
 
     return finish_gpu_upload();
   } else {
+    CommitLoadsAhead();
     FlushDeferredLoads();
     if (!EncodeLoadCommands(cmd, commands)) {
       handle_upload_failure(true);
@@ -2563,7 +2613,6 @@ void MetalTextureCache::Shutdown() {
     shared_memory().UnregisterGlobalWatch(refresh_fire_watch_handle_);
     refresh_fire_watch_handle_ = nullptr;
   }
-
   AbortUploadCommandBufferBatch(false);
 
   ClearCache();
@@ -3170,6 +3219,7 @@ MTL::Texture* MetalTextureCache::GetTextureForBinding(
 
   texture->MarkAsUsed();
   auto* metal_texture = static_cast<MetalTexture*>(texture);
+  metal_texture->used_submission_ = command_processor_->GetCurrentSubmission();
   MTL::Texture* result = nullptr;
   const bool use_3d_as_2d =
       binding->key.dimension == xenos::DataDimension::k3D &&
@@ -3306,6 +3356,8 @@ MTL::Texture* MetalTextureCache::RequestSwapTexture(
   }
 
   texture->MarkAsUsed();
+  static_cast<MetalTexture*>(texture)->used_submission_ =
+      command_processor_->GetCurrentSubmission();
   key = texture->key();
   width_scaled_out =
       key.GetWidth() * (key.scaled_resolve ? draw_resolution_scale_x() : 1);
