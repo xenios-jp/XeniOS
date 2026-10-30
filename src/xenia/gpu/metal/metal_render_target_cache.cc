@@ -55,6 +55,7 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgba8_4x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_as_rgba16_rgba16f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_cs.h"
@@ -241,6 +242,19 @@ bool IsFull32RGB10FloatOneSample(
   const ResolveCopyKey key = GetResolveCopyKey(constants);
   return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
          key.dest == (7u << 7) && key.sample == 0;
+}
+
+// A one-sample 2_10_10_10_FLOAT (or 2_10_10_10_FLOAT_AS_16_16_16_16) copy into
+// 16_16_16_16, with any exponent bias and number format.
+bool IsFull64RGB10FloatToRGBA16OneSample(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull64bpp) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
+         (key.dest & 0x1F80u) == (26u << 7) && key.sample == 0;
 }
 
 // A one-sample 16_16_16_16 copy into 16_16_16_16, with any exponent bias and
@@ -993,6 +1007,11 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
           device_, resolve_full_64bpp_rgba16_1x_direct_cs_metallib,
           sizeof(resolve_full_64bpp_rgba16_1x_direct_cs_metallib),
           "resolve_full_64bpp_rgba16_1x_direct");
+  resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs_metallib,
+          sizeof(resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs_metallib),
+          "resolve_full_64bpp_rgb10f_rgba16_1x_direct");
   resolve_specialized_pipelines_.clear();
   for (const ResolveSpecialization& specialization : kResolveSpecializations) {
     resolve_specialized_pipelines_.push_back(
@@ -1165,6 +1184,10 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_) {
     resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_->release();
     resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
+  }
+  if (resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_) {
+    resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_->release();
+    resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_ = nullptr;
   }
   if (resolve_full_64bpp_rgba16_1x_direct_pipeline_) {
     resolve_full_64bpp_rgba16_1x_direct_pipeline_->release();
@@ -3368,9 +3391,14 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   // through the dump shader.
   const bool rgb10_4x_average =
       IsFull32RGB10FourSampleAverage(copy_shader, copy_shader_constants);
+  // The same 2_10_10_10_FLOAT pixels also go into 16_16_16_16 with the
+  // arithmetic of the generic 64bpp copy.
+  const bool rgb10f_rgba16_1x = IsFull64RGB10FloatToRGBA16OneSample(
+      copy_shader, copy_shader_constants);
   const bool rgb10f_1x =
       !rgb10_4x_average &&
-      IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants);
+      (rgb10f_rgba16_1x ||
+       IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants));
   // So is the 16_16_16_16 to 16_16_16_16 conversion, with that of the generic
   // 64bpp copy, from the render target's integer ownership transfer view.
   const bool rgba16_1x =
@@ -3379,18 +3407,20 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       rgb10_4x_average || rgb10f_1x || rgba16_1x;
   // The dump shader's direct resolve only copies bits.
   if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull64bpp &&
-      !rgba16_1x) {
+      !rgba16_1x && !rgb10f_rgba16_1x) {
     return false;
   }
   MTL::ComputePipelineState* rgb10_pipeline = nullptr;
   MTL::Texture* rgb10_source = nullptr;
   uint32_t rgb10_origin[2] = {};
   if (copy_from_render_target) {
-    if (rgba16_1x) {
+    if (rgba16_1x || rgb10f_rgba16_1x) {
       // No texture-cache refresh for 64bpp destinations.
-      rgb10_pipeline = refresh_texture
-                           ? nullptr
-                           : resolve_full_64bpp_rgba16_1x_direct_pipeline_;
+      if (!refresh_texture) {
+        rgb10_pipeline =
+            rgba16_1x ? resolve_full_64bpp_rgba16_1x_direct_pipeline_
+                      : resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_;
+      }
     } else if (rgb10_4x_average) {
       rgb10_pipeline =
           refresh_texture ? resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_
@@ -4523,14 +4553,16 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
                                   /*allow_cross_depth_color=*/true,
                                   /*allow_full32_rgb10f_1x=*/true,
-                                  /*allow_full64_rgba16_1x=*/true) ==
+                                  /*allow_full64_rgba16_1x=*/true,
+                                  /*allow_full64_rgb10f_rgba16_1x=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
     auto* texture_cache = command_processor_.texture_cache();
     if (texture_cache &&
-        // The 64bpp copy has no refresh variant.
+        // The 64bpp copies have no refresh variant.
         !IsFull64RGBA16OneSample(copy_shader, copy_constants) &&
+        !IsFull64RGB10FloatToRGBA16OneSample(copy_shader, copy_constants) &&
         // Four-sample cache reuse exposes helper-lane derivative differences
         // unless guest fragments keep their helpers within each primitive.
         (!IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) ||

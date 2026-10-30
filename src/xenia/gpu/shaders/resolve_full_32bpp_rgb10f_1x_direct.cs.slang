@@ -23,44 +23,7 @@ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, 1, 0, u0, space0, 1)
 #define LOCAL_SIZE_Y_XE 8
 #define LOCAL_SIZE_Z_XE 1
 
-// The dump's 7e3 packing of a host color component (UnclampedFloat32To7e3):
-// NClamp to [0, 31.875], then PreClampedFloat32To7e3, rounding to the nearest
-// even. Done on the bits so fast math can't change the clamp: as unsigned,
-// everything above +infinity is a NaN or has the sign bit set, -0.0 included,
-// and those all become 0. Above 0, the order of the bits is that of the values.
-uint XeResolveDirectFloat32To7e3(float value) {
-  uint f32 = float_bits_to_uint_xe(value);
-  if (f32 > 0x7F800000u) {
-    f32 = 0u;
-  }
-  // 31.875.
-  f32 = min(f32, 0x41FF0000u);
-  uint biased_f32;
-  if (f32 < 0x3E800000u) {
-    // Denormal 7e3, below 0.25. The shift is at least 1 here.
-    biased_f32 = ((f32 & 0x7FFFFFu) | 0x800000u) >>
-                 min(125u - (f32 >> 23u), 24u);
-  } else {
-    biased_f32 = f32 - (124u << 23u);
-  }
-  return ((biased_f32 + 0x7FFFu + ((biased_f32 >> 16u) & 1u)) >> 16u) &
-         0x3FFu;
-}
-
-// The dump's 2_10_10_10_FLOAT packing of a host RGBA16Float sample: 7e3 RGB,
-// and alpha NClamped to [0, 1] (with the same handling of NaN and the sign) as
-// a 2-bit unsigned fraction.
-uint XeResolveDirectPackRGB10A2Float(float4_xe sample) {
-  uint alpha_bits = float_bits_to_uint_xe(sample.a);
-  if (alpha_bits > 0x7F800000u) {
-    alpha_bits = 0u;
-  }
-  float alpha = uint_bits_to_float_xe(min(alpha_bits, 0x3F800000u));
-  return XeResolveDirectFloat32To7e3(sample.r) |
-         (XeResolveDirectFloat32To7e3(sample.g) << 10u) |
-         (XeResolveDirectFloat32To7e3(sample.b) << 20u) |
-         (uint(alpha * 3.0f + 0.5f) << 30u);
-}
+#include "resolve_direct_rgb10f.xesli"
 
 entry_bindings_begin_compute_xe
   XE_RESOLVE_PUSH_CONST_BINDING
