@@ -24,6 +24,35 @@
 // II JJ KK LL
 // MM NN OO PP
 
+// The four R8G8 colors of a CTX1 block for its codes 0 to 3, codes 0 and 1 in
+// x, 2 and 3 in y, 16 bits each. Codes 2 and 3 weigh the endpoints 2:1 and 1:2,
+// rounding down like XeCTX1TwoBlocksRowToR8G8, dividing by 3 as * 683 >> 11
+// (exact up to 3 * 255).
+uint2_xe XeCTX1Palette(uint endpoints) {
+  // 0x00g000r0 and 0x00G100R1.
+  uint end_0 = ((endpoints >> 8u) & 0xFFu) | ((endpoints & 0xFFu) << 16u);
+  uint end_1 = (endpoints >> 24u) | (endpoints & 0xFF0000u);
+  uint2_xe mix_3x = uint2_xe(2u * end_0 + end_1, end_0 + 2u * end_1);
+  uint2_xe mix = (((mix_3x & 0xFFFFu) * 683u) >> 11u) |
+                 ((((mix_3x >> 16u) * 683u) >> 11u) << 8u);
+  // 0xRRGGrrgg in memory order (g0 r0 g1 r1) to r0 g0 r1 g1.
+  return uint2_xe(((endpoints >> 8u) & 0x00FF00FFu) |
+                      ((endpoints << 8u) & 0xFF00FF00u),
+                  mix.x | (mix.y << 16u));
+}
+
+// One row of four texels of a CTX1 block as R8G8, from its palette and the
+// row's 8 bits of codes.
+uint2_xe XeCTX1RowToR8G8(uint2_xe palette, uint codes) {
+  uint4_xe texel_codes = (uint_x4_xe(codes) >> uint4_xe(0u, 2u, 4u, 6u)) & 3u;
+  uint4_xe texels =
+      (select_xe((texel_codes & 2u) != uint_x4_xe(0u), palette.yyyy,
+                 palette.xxxx) >>
+       ((texel_codes & 1u) << 4u)) &
+      0xFFFFu;
+  return texels.xz | (texels.yw << 16u);
+}
+
 XE_TEXTURE_LOAD_ENTRY(16)
 {
   // 1 thread = 4 CTX1 blocks to 16x4 R8G8 texels.
@@ -53,29 +82,29 @@ XE_TEXTURE_LOAD_ENTRY(16)
         byte_buffer_align16_load16_xe(xe_texture_load_source,
                                       block_offset_guest),
         load_info.endian_32);
-    // Unpack the endpoints as 0x00g000r0 0x00G000R0 0x00g100r1 0x00G100R1 so
-    // they can be multiplied by their weights allowing overflow.
-    uint4_xe end_8in16;
-    end_8in16.xz = ((blocks.xz >> 8u) & 0xFFu) | ((blocks.xz & 0xFFu) << 16u);
-    end_8in16.yw = (blocks.xz >> 24u) | (blocks.xz & 0xFF0000u);
-    uint2_xe weights_high = XeDXTHighColorWeights(blocks.yw);
+    uint2_xe palette_0 = XeCTX1Palette(blocks.x);
+    uint2_xe palette_1 = XeCTX1Palette(blocks.z);
     byte_buffer_align16_store16_xe(
         xe_texture_load_dest, block_offset_host,
-        XeCTX1TwoBlocksRowToR8G8(end_8in16, weights_high));
+        uint4_xe(XeCTX1RowToR8G8(palette_0, blocks.y),
+                 XeCTX1RowToR8G8(palette_1, blocks.w)));
     dont_flatten_xe if (texel_index_host.y + 1u < load_info.height_texels) {
       byte_buffer_align16_store16_xe(
           xe_texture_load_dest, block_offset_host + load_info.host_pitch,
-          XeCTX1TwoBlocksRowToR8G8(end_8in16, weights_high >> 8u));
+          uint4_xe(XeCTX1RowToR8G8(palette_0, blocks.y >> 8u),
+                   XeCTX1RowToR8G8(palette_1, blocks.w >> 8u)));
       dont_flatten_xe if (texel_index_host.y + 2u < load_info.height_texels) {
         byte_buffer_align16_store16_xe(
             xe_texture_load_dest, block_offset_host + 2u * load_info.host_pitch,
-            XeCTX1TwoBlocksRowToR8G8(end_8in16, weights_high >> 16u));
+            uint4_xe(XeCTX1RowToR8G8(palette_0, blocks.y >> 16u),
+                     XeCTX1RowToR8G8(palette_1, blocks.w >> 16u)));
         dont_flatten_xe
         if (texel_index_host.y + 3u < load_info.height_texels) {
           byte_buffer_align16_store16_xe(
               xe_texture_load_dest,
               block_offset_host + 3u * load_info.host_pitch,
-              XeCTX1TwoBlocksRowToR8G8(end_8in16, weights_high >> 24u));
+              uint4_xe(XeCTX1RowToR8G8(palette_0, blocks.y >> 24u),
+                       XeCTX1RowToR8G8(palette_1, blocks.w >> 24u)));
         }
       }
     }
