@@ -20,7 +20,7 @@
 // libgcc/libunwind APIs for registering DWARF .eh_frame unwind info.
 // libgcc takes a pointer to a [CIE | FDEs | terminator] section and walks it.
 // Apple/LLVM libunwind takes a single FDE pointer and must be called once
-// per FDE, so on XE_PLATFORM_MAC we walk the buffer ourselves.
+// per FDE, so on XE_PLATFORM_APPLE we walk the buffer ourselves.
 extern "C" void __register_frame(void*);
 extern "C" void __deregister_frame(void*);
 
@@ -167,7 +167,7 @@ void PosixA64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
   uint8_t* unwind_execute_address = unwind_reservation.entry_address -
                                     generated_code_write_base_ +
                                     generated_code_execute_base_;
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   // Walk [CIE | FDE | terminator] and register each FDE individually.
   const uint8_t* p = unwind_reservation.entry_address;
   uint8_t* p_execute = unwind_execute_address;

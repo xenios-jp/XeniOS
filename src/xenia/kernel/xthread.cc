@@ -9,7 +9,7 @@
 
 #include "xenia/kernel/xthread.h"
 
-#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC
+#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE
 #include <pthread.h>
 #endif
 #if !XE_PLATFORM_WIN32
@@ -503,7 +503,7 @@ X_STATUS XThread::Create() {
       cpu::ThreadState::Bind(this->thread_state());
       running_ = true;
 
-#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC
+#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE
       pthread_cleanup_push(HostThreadExitCleanupThunk, this);
       Execute();
       pthread_cleanup_pop(1);
@@ -616,13 +616,13 @@ X_STATUS XThread::Exit(int exit_code) {
   }
 
   // NOTE: unless PlatformExit fails, expect it to never return!
-#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC)
+#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE)
   current_xthread_tls_ = nullptr;
   current_thread_ = nullptr;
   xe::Profiler::ThreadExit();
 #endif
   running_ = false;
-#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC)
+#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE)
   ReleaseHandle();
 #endif
 
@@ -685,13 +685,13 @@ X_STATUS XThread::Terminate(int exit_code) {
       scheduler->NotifyThreadExited(this);
       scheduler->YieldToScheduler();  // never returns
     }
-#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC)
+#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE)
     ReleaseHandle();
 #endif
     xe::threading::Thread::Exit(exit_code);
   } else if (thread_) {
     thread_->Terminate(exit_code);
-#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC)
+#if !(XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE)
     ReleaseHandle();
 #endif
   } else {
@@ -1577,7 +1577,7 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
       // Execute user code.
       thread->running_ = true;
 
-#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_MAC
+#if XE_PLATFORM_LINUX || XE_PLATFORM_ANDROID || XE_PLATFORM_APPLE
       pthread_cleanup_push(HostThreadExitCleanupThunk, thread);
       uint32_t pc = state.context.pc;
       thread->kernel_state_->processor()->ExecuteRaw(thread->thread_state_, pc);

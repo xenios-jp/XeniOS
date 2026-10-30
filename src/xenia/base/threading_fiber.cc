@@ -260,7 +260,7 @@ class FcontextFiber : public Fiber {
       pthread_attr_getstack(&attr, &stack_.base, &stack_.usable);
       pthread_attr_destroy(&attr);
     }
-#elif XE_PLATFORM_MAC
+#elif XE_PLATFORM_APPLE
     stack_.usable = pthread_get_stacksize_np(pthread_self());
     stack_.base = static_cast<char*>(pthread_get_stackaddr_np(pthread_self())) -
                   stack_.usable;

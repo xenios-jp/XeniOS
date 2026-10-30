@@ -23,7 +23,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <cstring>
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 #include <limits.h>
 #include <mach-o/dyld.h>
 #endif
@@ -47,7 +47,7 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   char path[PATH_MAX];
   uint32_t size = sizeof(path);
   if (_NSGetExecutablePath(path, &size) == 0) {

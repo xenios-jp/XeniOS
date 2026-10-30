@@ -223,11 +223,11 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                     last_frame_time += target_duration_ticks;
                   }
                   MarkVblank();
-#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
                   // Sleep for 90% of the period, spin for the rest.
                   const uint64_t sleep_ns = static_cast<uint64_t>(
                       900000000.0 / (vblank_hz * Clock::guest_time_scalar()));
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
                   threading::NanoSleepPrecise(sleep_ns);
 #else
                   threading::NanoSleep(sleep_ns);

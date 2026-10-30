@@ -4,7 +4,7 @@ target_link_libraries(xenia-patcher PUBLIC xenia-base)
 xe_target_defaults(xenia-patcher)
 
 xe_embed_compressed_bundle(xenia-patcher
-    "${PROJECT_SOURCE_DIR}/build/data_repos/game-patches/patches" patches)
+    "${XENIA_DATA_REPOS_DIR}/game-patches/patches" patches)
 # Editing one of edge's patches re-runs configure, which rebuilds the bundle.
 file(GLOB _xe_edge_patches "${PROJECT_SOURCE_DIR}/assets/patches/*")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS

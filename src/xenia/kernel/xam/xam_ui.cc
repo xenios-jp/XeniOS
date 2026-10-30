@@ -18,6 +18,9 @@
 #include <vector>
 
 #include "third_party/utfcpp/source/utf8.h"
+#if XE_PLATFORM_IOS
+#include "xenia/kernel/xam/xam_ui_ios.h"
+#endif
 #include "xenia/app/emulator_window.h"
 #include "xenia/base/png_utils.h"
 #include "xenia/base/string.h"
@@ -378,6 +381,24 @@ static dword_result_t XamShowMessageBoxUi(
     buttons.push_back("OK");
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    if (!result_ptr) {
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    if (flags & (XMBox_PASSCODEMODE | XMBox_VERIFYPASSCODEMODE)) {
+      XELOGW("iOS: game passcode message boxes are not implemented");
+      return X_ERROR_FUNCTION_FAILED;
+    }
+    return ios::ShowMessageBox(
+        title, text, buttons, active_button,
+        [result_ptr](uint32_t choice) -> X_RESULT {
+          result_ptr->ButtonPressed = choice;
+          return X_ERROR_SUCCESS;
+        }, overlapped);
+  }
+#endif
+
   X_RESULT result;
   switch (flags & 0xF) {
     case XMBox_NOICON: {
@@ -490,6 +511,13 @@ dword_result_t XNotifyQueueUI_entry(dword_t exnq, dword_t dwUserIndex,
 
   XELOGI("XNotifyQueueUI: {}", displayText);
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    ios::Notify(displayText, dwUserIndex, position_id);
+    return X_ERROR_SUCCESS;
+  }
+#endif
+
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
@@ -512,6 +540,21 @@ dword_result_t XamShowKeyboardUI_entry(
   }
 
   assert_not_null(overlapped);
+
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    if (!buffer_length) {
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    return ios::ShowKeyboard(
+        user_index, title ? xe::to_utf8(title.value()) : "",
+        description ? xe::to_utf8(description.value()) : "",
+        default_text ? xe::to_utf8(default_text.value()) : "",
+        [buffer, buffer_length](const std::u16string& text) {
+          string_util::copy_and_swap_truncating(buffer, text, buffer_length);
+        }, overlapped);
+  }
+#endif
 
   auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
                                        uint32_t& extended_error,
@@ -599,6 +642,25 @@ dword_result_t XamShowDeviceSelectorUI_entry(
         overlapped);
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    std::vector<std::string> choices;
+    for (const auto* device : devices) {
+      choices.push_back(to_utf8(device->name));
+    }
+    choices.push_back("Cancel");
+    return ios::ShowMessageBox(
+        "Select storage device", "", std::move(choices), 0,
+        [device_id_ptr, devices](uint32_t choice) -> X_RESULT {
+          if (choice >= devices.size()) {
+            return X_ERROR_CANCELLED;
+          }
+          *device_id_ptr = uint32_t(devices[choice]->device_id);
+          return X_ERROR_SUCCESS;
+        }, overlapped);
+  }
+#endif
+
   auto close = [device_id_ptr, devices](MessageBoxDialog* dialog) -> X_RESULT {
     uint32_t button = dialog->chosen_button();
     if (button >= devices.size()) {
@@ -658,6 +720,15 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index,
                                    const ppc_context_t& context) {
   XELOGE("XamShowDirtyDiscErrorUI: title reported a disc read error, lr {:08X}",
          uint32_t(context->lr));
+
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    ios::ShowMessageBox(kDiscReadErrorTitle, kDiscReadErrorDescription, {"OK"},
+                        0, {});
+    kernel_state()->ExitToDashboard();
+    return;
+  }
+#endif
 
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
@@ -832,6 +903,21 @@ dword_result_t XamShowMarketplaceUIEx_entry(dword_t user_index, dword_t ui_type,
       break;
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowMessageBox(
+        title, desc, buttons, 0,
+        [ui_type, is_xbla_unlock_offer](uint32_t choice) -> X_RESULT {
+          if (ui_type == 1 && is_xbla_unlock_offer && choice == 0) {
+            cvars::license_mask = 1;
+            kernel_state()->BroadcastNotification(
+                kXNotificationLiveContentInstalled, 0);
+          }
+          return X_ERROR_SUCCESS;
+        }, 0, true);
+  }
+#endif
+
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
   xe::hid::InputSystem* input_system = emulator->input_system();
@@ -906,6 +992,19 @@ dword_result_t XamShowMarketplaceDownloadItemsUI_entry(
       "\n\nNote that since Xenia cannot access Xbox Marketplace, any DLC "
       "must "
       "be installed manually using File -> Install Content.";
+
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowMessageBox(
+        title, desc, buttons, 0,
+        [hresult_ptr](uint32_t) -> X_RESULT {
+          if (hresult_ptr) {
+            *hresult_ptr = X_E_SUCCESS;
+          }
+          return X_ERROR_SUCCESS;
+        }, overlapped, true);
+  }
+#endif
 
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
@@ -1082,6 +1181,12 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
     return X_ERROR_INVALID_PARAMETER;
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowSignIn(user_index, users_needed);
+  }
+#endif
+
   if (kernel_state()->xam_state()->IsUIActive()) {
     return X_ERROR_ACCESS_DENIED;
   }
@@ -1130,6 +1235,12 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
                                     char* unkn2_ptr) {
   Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+#if XE_PLATFORM_IOS
+  if (!imgui_drawer) {
+    return ios::ShowSignIn(user_index, 1);
+  }
+#endif
 
   if (kernel_state()->xam_state()->IsUIActive()) {
     return X_ERROR_ACCESS_DENIED;
@@ -1210,6 +1321,12 @@ dword_result_t XamShowAchievementsUI_entry(dword_t user_index,
     return X_ERROR_NO_SUCH_USER;
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowAchievements(user_index, proper_title_id);
+  }
+#endif
+
   xe::ui::ImGuiDrawer* imgui_drawer =
       kernel_state()->emulator()->imgui_drawer();
   xe::hid::InputSystem* input_system =
@@ -1229,6 +1346,13 @@ dword_result_t XamShowGamerCardUI_entry(dword_t user_index) {
     return X_ERROR_ACCESS_DENIED;
   }
 
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowMessageBox(
+        "Gamer Card", "Gamer card UI is not implemented yet in the iOS build.", {"OK"}, 0, {});
+  }
+#endif
+
   xe::ui::ImGuiDrawer* imgui_drawer =
       kernel_state()->emulator()->imgui_drawer();
 
@@ -1245,6 +1369,13 @@ dword_result_t XamShowEditProfileUI_entry(dword_t user_index) {
   if (!user) {
     return X_ERROR_ACCESS_DENIED;
   }
+
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowMessageBox(
+        "Edit Profile", "Profile editing UI is not implemented yet in the iOS build.", {"OK"}, 0, {});
+  }
+#endif
 
   xe::ui::ImGuiDrawer* imgui_drawer =
       kernel_state()->emulator()->imgui_drawer();

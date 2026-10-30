@@ -34,6 +34,10 @@
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/function.h"
 
+#if XE_PLATFORM_IOS
+#include "xenia/cpu/backend/jit_memory_ios.h"
+#endif
+
 #if XE_PLATFORM_MAC && XE_ARCH_ARM64
 #include <pthread.h>
 #endif
@@ -145,6 +149,9 @@ class CodeCacheBase : public CodeCache {
       pthread_jit_write_protect_np(0);
     }
 #endif
+#if XE_PLATFORM_IOS
+    IOSJitWriteScope write_scope(ios_jit_memory_, write_address, size);
+#endif
     std::copy_n(static_cast<const uint8_t*>(data), size, write_address);
 #if XE_PLATFORM_MAC && XE_ARCH_ARM64
     if (jit_write_toggle) {
@@ -200,6 +207,7 @@ class CodeCacheBase : public CodeCache {
   virtual bool Initialize() {
     file_name_ =
         fmt::format("xenia_code_cache_{}", Clock::QueryHostTickCount());
+#if !XE_PLATFORM_IOS
     mapping_ = xe::memory::CreateFileMappingHandle(
         file_name_, kGeneratedCodeSize,
         xe::memory::PageAccess::kExecuteReadWrite, false);
@@ -208,6 +216,8 @@ class CodeCacheBase : public CodeCache {
       return false;
     }
 
+#endif
+
     const bool wx_preferred = xe::memory::IsWritableExecutableMemoryPreferred();
 
     // Fast path: fixed-VA table + code cache, slots hold raw 32-bit targets.
@@ -215,7 +225,7 @@ class CodeCacheBase : public CodeCache {
     // succeed but the page isn't actually executable. The encoded path
     // uses an anonymous MAP_JIT mapping which works.
     bool try_fast_indirection = allow_fast_indirection_;
-#if XE_PLATFORM_MAC && XE_ARCH_AMD64
+#if XE_PLATFORM_IOS || (XE_PLATFORM_MAC && XE_ARCH_AMD64)
     try_fast_indirection = false;
 #endif
     if (try_fast_indirection) {
@@ -281,6 +291,13 @@ class CodeCacheBase : public CodeCache {
     }
     external_indirection_target_count_.store(0, std::memory_order_relaxed);
 
+#if XE_PLATFORM_IOS
+    if (!ios_jit_memory_.Initialize(kGeneratedCodeSize,
+                                    generated_code_execute_base_,
+                                    generated_code_write_base_)) {
+      return false;
+    }
+#else
     // Try the preferred fixed address first; fall back to OS-chosen on fail.
     if (wx_preferred) {
 #if XE_PLATFORM_MAC
@@ -323,6 +340,7 @@ class CodeCacheBase : public CodeCache {
           xe::memory::MapFileView(mapping_, nullptr, kGeneratedCodeSize,
                                   xe::memory::PageAccess::kReadWrite, 0));
     }
+#endif
     if (!generated_code_execute_base_ || !generated_code_write_base_) {
       XELOGE("Unable to allocate code cache generated code storage");
       return false;
@@ -492,6 +510,9 @@ class CodeCacheBase : public CodeCache {
     {
       auto global_lock = global_critical_region_.Acquire();
 
+#if XE_PLATFORM_IOS
+      generated_code_offset_ = ios_jit_memory_.AlignOffset(generated_code_offset_);
+#endif
       code_execute_address =
           generated_code_execute_base_ + generated_code_offset_;
       code_execute_address_out = code_execute_address;
@@ -521,6 +542,11 @@ class CodeCacheBase : public CodeCache {
 
       // Commit memory if needed.
       EnsureCommitted(high_mark);
+#if XE_PLATFORM_IOS
+      IOSJitWriteScope write_scope(
+          ios_jit_memory_, code_write_address,
+          static_cast<size_t>(end_write_address - code_write_address));
+#endif
 
 #if XE_PLATFORM_MAC && XE_ARCH_ARM64
       // Toggle the per-thread MAP_JIT write gate around writes. Only needed
@@ -617,7 +643,13 @@ class CodeCacheBase : public CodeCache {
       kIndirectionChunkSize;
   // Encoded slots and x64 rel32 need offsets below 2GB, fast-path slots need
   // the cache below 4GB.
+#if XE_PLATFORM_IOS
+  // Small enough for the debugger-prepared region to fit low in the address
+  // space (see jit_memory_ios.cc), like Dolphin's on iOS.
+  static constexpr size_t kGeneratedCodeSize = 0x1FFFFFFF;
+#else
   static constexpr size_t kGeneratedCodeSize = 0x3FFFFFFF;
+#endif  // XE_PLATFORM_IOS
   static constexpr uintptr_t kGeneratedCodeExecuteBase = 0xA0000000;
   static_assert(kGeneratedCodeSize < 0x80000000);
   static_assert(kGeneratedCodeExecuteBase + kGeneratedCodeSize <
@@ -659,6 +691,10 @@ class CodeCacheBase : public CodeCache {
   std::mutex external_indirection_mutex_;
 
  private:
+#if XE_PLATFORM_IOS
+  IOSJitMemory ios_jit_memory_;
+#endif
+
   Derived& self() { return static_cast<Derived&>(*this); }
 
   static void CheckCapacity(size_t high_mark) {
@@ -715,6 +751,13 @@ class CodeCacheBase : public CodeCache {
   }
 
   void EnsureCommitted(size_t high_mark) {
+#if XE_PLATFORM_IOS
+    // iOS maps the entire cache at initialization; write scopes manage W^X.
+    if (high_mark > kGeneratedCodeSize) {
+      xe::FatalError("iOS JIT code cache exhausted.");
+    }
+    return;
+#endif
     using namespace xe::literals;
     size_t old_commit_mark, new_commit_mark;
     do {
