@@ -52,9 +52,14 @@ class MetalTextureCache : public TextureCache {
   // Settle standalone upload tickets before the command processor joins
   // callbacks.
   void FinishPendingUploads() {
+    CommitLoadsAhead();
     FlushDeferredLoads();
     AbortUploadCommandBufferBatch();
   }
+  // Commits the loads recorded to run ahead of the current command buffer in
+  // a command buffer of their own. The command processor calls it right
+  // before committing the current command buffer.
+  void CommitLoadsAhead();
   void ClearCache() override;
   void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
 
@@ -272,8 +277,15 @@ class MetalTextureCache : public TextureCache {
     FlushDeferredLoads(deferred_batch_loads_);
     FlushDeferredLoads(deferred_loads_);
   }
+  // Encodes the commands into a command buffer of their own and commits it.
+  void EncodeLoadCommandsAlone(LoadCommands& commands);
   // Loads into the current command buffer.
   DeferredLoads deferred_loads_;
+  // Loads that need nothing from the current command buffer, for
+  // CommitLoadsAhead. Recording them there would end the render pass.
+  LoadCommands loads_ahead_;
+  // Incremented when loads_ahead_ is committed.
+  uint64_t loads_ahead_generation_ = 1;
   // Loads into the upload batch command buffer, committed ahead of the current
   // one.
   DeferredLoads deferred_batch_loads_;
@@ -329,6 +341,10 @@ class MetalTextureCache : public TextureCache {
     MetalTexture* resolve_refresh_previous_ = nullptr;
     MetalTexture* resolve_refresh_next_ = nullptr;
     bool resolve_refresh_registered_ = false;
+    // The last submission whose command buffer accesses the texture.
+    uint64_t used_submission_ = 0;
+    // The loads_ahead_generation_ in which a load ahead was recorded.
+    uint64_t loads_ahead_generation_ = 0;
   };
 
  private:

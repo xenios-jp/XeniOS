@@ -2580,6 +2580,9 @@ void MetalCommandProcessor::ShutdownContext() {
       current_command_buffer_->encodeSignalEvent(wait_shared_event_,
                                                  wait_value);
     }
+    if (texture_cache_) {
+      texture_cache_->CommitLoadsAhead();
+    }
     ScheduleSpirvUniformBufferRelease(current_command_buffer_);
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
     current_command_buffer_->commit();
@@ -7158,6 +7161,10 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
   ResetMslCrossEncoderReuseCaches();
 
   if (current_command_buffer_) {
+    // Texture loads that need nothing from this command buffer run before it.
+    if (texture_cache_) {
+      texture_cache_->CommitLoadsAhead();
+    }
     ScheduleSpirvUniformBufferRelease(current_command_buffer_);
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
     current_command_buffer_->commit();
