@@ -727,14 +727,16 @@ class RenderTargetCache {
   // allow_cross_depth_color permits bitwise 32bpp copies from the other kind
   // of source when the backend compensates for the depth tile-column swap.
   // allow_full64_rgba16_1x admits the single-sample copy of a 16_16_16_16
-  // source into a 16_16_16_16 destination.
+  // source into a 16_16_16_16 destination, allow_full64_rgb10f_rgba16_1x that
+  // of a 2_10_10_10_FLOAT source.
   DirectResolveEligibility GetDirectResolveEligibility(
       const draw_util::ResolveInfo& resolve_info,
       draw_util::ResolveCopyShaderIndex copy_shader,
       bool allow_full32_4x_average = false,
       bool allow_cross_depth_color = false,
       bool allow_full32_rgb10f_1x = false,
-      bool allow_full64_rgba16_1x = false) const;
+      bool allow_full64_rgba16_1x = false,
+      bool allow_full64_rgb10f_rgba16_1x = false) const;
 
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected
