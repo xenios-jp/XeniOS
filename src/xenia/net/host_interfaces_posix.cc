@@ -21,7 +21,7 @@
 
 #include "xenia/base/platform.h"
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 #include <net/if_dl.h>
 #else
 #include <netpacket/packet.h>
@@ -32,7 +32,7 @@ namespace {
 
 uint32_t Ipv4(const sockaddr* address) {
   sockaddr_in full{};
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   // BSD trims trailing zero bytes off a netmask so it can end early.
   std::memcpy(&full, address, std::min<size_t>(address->sa_len, sizeof(full)));
 #else
@@ -43,7 +43,7 @@ uint32_t Ipv4(const sockaddr* address) {
 
 // The link layer address of an interface comes as an entry of its own.
 bool LinkAddress(const sockaddr* address, std::array<uint8_t, 6>& mac) {
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   if (address->sa_family != AF_LINK) {
     return false;
   }

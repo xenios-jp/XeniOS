@@ -5,5 +5,5 @@ xe_target_defaults(xenia-hid-sdl)
 
 # Bake the bundled controller mappings.
 xe_embed_compressed_bundle(xenia-hid-sdl
-    "${PROJECT_SOURCE_DIR}/build/data_repos/SDL_GameControllerDB/gamecontrollerdb.txt"
+    "${XENIA_DATA_REPOS_DIR}/SDL_GameControllerDB/gamecontrollerdb.txt"
     gamecontrollerdb)

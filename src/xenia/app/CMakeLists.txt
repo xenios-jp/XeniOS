@@ -1,3 +1,8 @@
+if(XE_PLATFORM_IOS)
+  include(${PROJECT_SOURCE_DIR}/cmake/ios/App.cmake)
+  return()
+endif()
+
 if(WIN32)
   add_executable(xenia-app WIN32)
 elseif(APPLE)

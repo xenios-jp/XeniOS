@@ -22,6 +22,8 @@
 // xcrun metal/metallib to a metallib, emitted as `const uint8_t
 // <id>_metallib[]` (matches the existing --msl format).
 //
+// --ios <min-version> selects the iPhoneOS SDK for Metal output.
+//
 // --depfile writes a Make-style dependency file listing every source the
 // compile transitively read, so CMake/Ninja can trigger rebuilds when a
 // cross-directory include (e.g. ui/shaders/xesl.xesli) changes.
@@ -403,6 +405,11 @@ const char* SlangStageName(const std::string& stage_key) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef XE_SHADER_CC_METAL
+  std::string metal_sdk = "macosx";
+  std::string metal_std = "-std=macos-metal2.3";
+  std::string metal_min_os = "-mmacosx-version-min=" XE_METAL_MIN_OS;
+#endif
   bool msl_mode = false;
   bool slang_dxil_mode = false;
   bool slang_spirv_mode = false;
@@ -433,6 +440,19 @@ int main(int argc, char** argv) {
 #endif
       slang_msl_mode = true;
       ++arg_idx;
+#ifdef XE_SHADER_CC_METAL
+    } else if (std::strcmp(argv[arg_idx], "--ios") == 0) {
+      if (++arg_idx >= argc ||
+          std::strspn(argv[arg_idx], "0123456789.") !=
+              std::strlen(argv[arg_idx]) ||
+          !argv[arg_idx][0]) {
+        std::fprintf(stderr, "--ios requires a deployment version\n");
+        return 1;
+      }
+      metal_sdk = "iphoneos";
+      metal_std = "-std=ios-metal2.3";
+      metal_min_os = "-mios-version-min=" + std::string(argv[arg_idx++]);
+#endif
     } else if (std::strcmp(argv[arg_idx], "--depfile") == 0) {
       if (arg_idx + 1 >= argc) {
         std::fprintf(stderr, "--depfile requires a path\n");
@@ -448,7 +468,8 @@ int main(int argc, char** argv) {
   if (argc - arg_idx != 2) {
     std::fprintf(stderr,
                  "Usage: %s [--msl | --slang-dxil | --slang-spirv | "
-                 "--slang-msl] [--depfile <path>] <input> <output>\n",
+                 "--slang-msl] [--ios <min-version>] [--depfile <path>] "
+                 "<input> <output>\n",
                  argv[0]);
     return 1;
   }
@@ -478,16 +499,8 @@ int main(int argc, char** argv) {
     };
 
     std::vector<std::string> metal_cmd = {
-        "xcrun",
-        "-sdk",
-        "macosx",
-        "metal",
-        "-x",
-        "metal",
-        "-std=macos-metal2.3",
-        "-mmacosx-version-min=" XE_METAL_MIN_OS,
-        "-D",
-        "SHADING_LANGUAGE_MSL_XE=1",
+        "xcrun", "-sdk",    metal_sdk,    "metal", "-x",
+        "metal", metal_std, metal_min_os, "-D",    "SHADING_LANGUAGE_MSL_XE=1",
         "-w",
     };
     std::string input_dir = input_path.parent_path().string();
@@ -515,7 +528,7 @@ int main(int argc, char** argv) {
       cleanup();
       return 1;
     }
-    if (RunCommand({"xcrun", "-sdk", "macosx", "metallib", air_path.string(),
+    if (RunCommand({"xcrun", "-sdk", metal_sdk, "metallib", air_path.string(),
                     "-o", lib_path.string()}) != 0) {
       std::fprintf(stderr, "metallib failed for %s\n",
                    input_path.string().c_str());
@@ -783,9 +796,8 @@ int main(int argc, char** argv) {
     // carries XE_METAL_MIN_OS. Without this, the macOS 26 SDK stamps the
     // SDK-default target into the library (deployment target 0x00020008),
     // which the loader rejects on older OSes. Mirrors the --msl path above.
-    if (RunCommand({"xcrun", "-sdk", "macosx", "metal", "-x", "metal",
-                    "-std=macos-metal2.3",
-                    "-mmacosx-version-min=" XE_METAL_MIN_OS, "-w", "-c",
+    if (RunCommand({"xcrun", "-sdk", metal_sdk, "metal", "-x", "metal",
+                    metal_std, metal_min_os, "-w", "-c",
                     slang_out.string(), "-o", air_path.string()}) != 0) {
       std::fprintf(stderr, "metal failed for %s\n",
                    input_path.string().c_str());
@@ -793,7 +805,7 @@ int main(int argc, char** argv) {
       cleanup_metal();
       return 1;
     }
-    if (RunCommand({"xcrun", "-sdk", "macosx", "metallib", air_path.string(),
+    if (RunCommand({"xcrun", "-sdk", metal_sdk, "metallib", air_path.string(),
                     "-o", lib_path.string()}) != 0) {
       std::fprintf(stderr, "metallib failed for %s\n",
                    input_path.string().c_str());

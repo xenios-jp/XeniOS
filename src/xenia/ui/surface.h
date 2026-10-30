@@ -34,6 +34,7 @@ class Surface {
     kTypeIndex_XcbWindow,
     // macOS.
     kTypeIndex_MacNSView,
+    kTypeIndex_iOSUIView,
     // Windows.
     kTypeIndex_Win32Hwnd,
   };
@@ -44,6 +45,7 @@ class Surface {
     kTypeFlag_WaylandWindow = TypeFlags(1) << kTypeIndex_WaylandWindow,
     kTypeFlag_XcbWindow = TypeFlags(1) << kTypeIndex_XcbWindow,
     kTypeFlag_MacNSView = TypeFlags(1) << kTypeIndex_MacNSView,
+    kTypeFlag_iOSUIView = TypeFlags(1) << kTypeIndex_iOSUIView,
     kTypeFlag_Win32Hwnd = TypeFlags(1) << kTypeIndex_Win32Hwnd,
   };
 

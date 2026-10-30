@@ -874,7 +874,7 @@ class Memory {
                                          void* context);
 
  private:
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   int MapViewsMac(uint8_t* mapping_base);
 #endif
   int MapViews(uint8_t* mapping_base);

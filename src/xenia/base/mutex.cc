@@ -15,14 +15,14 @@
 #include <pthread.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#elif XE_PLATFORM_MAC == 1
+#elif XE_PLATFORM_APPLE == 1
 #include <os/lock.h>
 #include <pthread.h>
 #endif
 
 namespace xe {
 
-#if XE_PLATFORM_LINUX == 1 || XE_PLATFORM_MAC == 1
+#if XE_PLATFORM_LINUX == 1 || XE_PLATFORM_APPLE == 1
 namespace {
 // Cheap, stable per-thread identity. pthread_self() reads thread-local storage
 // with no syscall and is unique among live threads. It is only ever compared
@@ -265,7 +265,7 @@ bool xe_fast_mutex::try_lock() {
                                         std::memory_order_relaxed);
 }
 
-#elif XE_PLATFORM_MAC == 1 && XE_ENABLE_FAST_APPLE_MUTEX == 1
+#elif XE_PLATFORM_APPLE == 1 && XE_ENABLE_FAST_APPLE_MUTEX == 1
 
 // xe_global_mutex implementation (recursive, built on os_unfair_lock).
 // os_unfair_lock is non-recursive, so the owner thread and recursion depth are

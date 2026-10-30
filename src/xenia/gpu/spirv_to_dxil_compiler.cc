@@ -13,7 +13,7 @@
 
 // Mesa is only built where a backend consumes DXIL: D3D12 on Windows, and the
 // Metal Shader Converter path on macOS (see third_party/CMakeLists.txt).
-#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
 
 #include <cstring>
 #include <string>
@@ -402,7 +402,7 @@ std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
 }  // namespace gpu
 }  // namespace xe
 
-#endif  // XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
 
 namespace xe::gpu {
 bool SpirvToDxilCompiler::SupportsMscFmad32() {

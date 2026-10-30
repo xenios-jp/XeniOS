@@ -62,6 +62,12 @@ foreach(_spirv_shaders_dep
     add_dependencies(xenia-gpu-metal ${_spirv_shaders_dep})
   endif()
 endforeach()
+if(XE_PLATFORM_IOS)
+  # Metal tessellation consumes SPIR-V even without the Vulkan backend.
+  xe_shader_rules_spirv(xenia-gpu-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders)
+  xe_shader_rules_slang(xenia-gpu-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
+                        TARGET spirv)
+endif()
 xe_shader_rules_metal(xenia-gpu-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders)
 xe_shader_rules_slang(xenia-gpu-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
                       TARGET msl)

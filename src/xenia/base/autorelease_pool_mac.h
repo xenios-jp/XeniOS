@@ -16,7 +16,7 @@
 
 #include "xenia/base/platform.h"
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 
 namespace xe {
 
@@ -94,13 +94,13 @@ class ScopedAutoreleasePool {
 #define XE_SCOPED_AUTORELEASE_POOL(name) \
   xe::ScopedAutoreleasePool _autorelease_pool_##__LINE__(name)
 
-#else  // !XE_PLATFORM_MAC
+#else  // !XE_PLATFORM_APPLE
 
 #define XE_AUTORELEASE_POOL_PUSH(location) nullptr
 #define XE_AUTORELEASE_POOL_POP(pool, location) (void)0
 #define XE_AUTORELEASE_POOL_CHECK_LEAKS() (void)0
 #define XE_SCOPED_AUTORELEASE_POOL(name) (void)0
 
-#endif  // XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_APPLE
 
 #endif  // XENIA_BASE_AUTORELEASE_POOL_MAC_H_

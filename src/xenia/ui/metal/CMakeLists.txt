@@ -20,8 +20,12 @@ target_link_libraries(xenia-ui-metal PUBLIC
   "-framework MetalKit"
   "-framework MetalFX"
   "-framework QuartzCore"
-  "-framework AppKit"
+  "$<$<NOT:$<BOOL:${XE_PLATFORM_IOS}>>:-framework AppKit>"
 )
+if(XE_PLATFORM_IOS)
+  target_sources(xenia-ui-metal PRIVATE
+    ../ios/game/metal_presenter_surface_ios.mm)
+endif()
 xe_shader_rules_metal(xenia-ui-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders)
 xe_shader_rules_slang(xenia-ui-metal ${CMAKE_CURRENT_SOURCE_DIR}/../shaders
                       TARGET msl)

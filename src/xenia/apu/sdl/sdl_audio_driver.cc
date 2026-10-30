@@ -54,6 +54,7 @@ bool SDLAudioDriver::Initialize() {
     return false;
   }
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    XELOGE("SDL_InitSubSystem(SDL_INIT_AUDIO) failed: {}", SDL_GetError());
     return false;
   }
   sdl_initialized_ = true;

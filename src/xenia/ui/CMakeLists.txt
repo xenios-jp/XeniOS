@@ -1,3 +1,8 @@
+if(XE_PLATFORM_IOS)
+  include(${PROJECT_SOURCE_DIR}/cmake/ios/UI.cmake)
+  return()
+endif()
+
 add_library(xenia-ui STATIC)
 xe_platform_sources(xenia-ui ${CMAKE_CURRENT_SOURCE_DIR})
 # Demo files are standalone executables in XENIA_BUILD_MISC; windowed_app_main_*

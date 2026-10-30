@@ -32,6 +32,9 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#if XE_PLATFORM_IOS
+#include "xenia/base/memory_ios.h"
+#endif
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 
@@ -129,7 +132,9 @@ PageAccess ToXeniaProtectFlags(const char* protection) {
   return PageAccess::kNoAccess;
 }
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_IOS
+bool IsWritableExecutableMemorySupported() { return false; }
+#elif XE_PLATFORM_MAC
 bool IsWritableExecutableMemorySupported() {
   // macOS allows RWX only on anonymous MAP_JIT regions. Callers that see
   // true must allocate via AllocFixed (which sets MAP_JIT) and toggle
@@ -354,6 +359,9 @@ bool Protect(void* base_address, size_t length, PageAccess access,
 }
 
 bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+#if XE_PLATFORM_IOS
+  return QueryProtectIOS(base_address, length, access_out);
+#else
   access_out = PageAccess::kNoAccess;
   length = 0;
 #if XE_PLATFORM_MAC
@@ -443,12 +451,15 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
   memory_maps.close();
   return false;
 #endif  // XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_IOS
 }
 
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
                                           size_t length, PageAccess access,
                                           bool commit) {
-#if XE_PLATFORM_ANDROID
+#if XE_PLATFORM_IOS
+  return CreateFileMappingHandleIOS(length);
+#elif XE_PLATFORM_ANDROID
   // TODO(Triang3l): Check if memfd can be used instead on API 30+.
   if (android_ASharedMemory_create_) {
     int sharedmem_fd = android_ASharedMemory_create_(path.c_str(), length);
@@ -619,7 +630,7 @@ bool UnmapFileView(FileMappingHandle handle, void* base_address,
 
   std::lock_guard guard(g_mapped_file_ranges_mutex);
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   uintptr_t unmap_begin = reinterpret_cast<uintptr_t>(base_address);
   uintptr_t unmap_end = unmap_begin + length;
 
@@ -658,7 +669,7 @@ bool UnmapFileView(FileMappingHandle handle, void* base_address,
   // TODO: Implement partial file unmapping.
   assert_always("Error: Partial unmapping of files not yet supported.");
   return munmap(base_address, length) == 0;
-#endif  // XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_APPLE
 }
 
 bool ReserveFileViewPages(void* base_address, size_t length) {
