@@ -66,6 +66,18 @@ MTL::Function* CompileFunctionMsl(MTL::Device* device,
       compiler.add_msl_resource_binding(resource_binding);
     }
     msl_source = compiler.compile();
+    // SPIRV-Cross keeps NoContraction operations apart from their neighbors by
+    // calling them through [[clang::optnone]] fma helpers. Metal never inlines
+    // those, and the calls took about half of a 2_10_10_10_FLOAT refresh
+    // kernel's time. Inlined, the helpers' fma calls still aren't contracted
+    // with other operations: the kernel's output is bit-identical for every
+    // half-precision input.
+    static const std::string kOptnone = "[[clang::optnone]] ";
+    for (size_t position = msl_source.find(kOptnone);
+         position != std::string::npos;
+         position = msl_source.find(kOptnone, position)) {
+      msl_source.erase(position, kOptnone.size());
+    }
     entry_point_name = compiler.get_cleansed_entry_point_name("main", stage);
   } catch (const std::exception& e) {
     *error_out = std::string("SPIRV-Cross: ") + e.what();
