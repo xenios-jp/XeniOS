@@ -51,7 +51,10 @@ class MetalTextureCache : public TextureCache {
   void Shutdown();
   // Settle standalone upload tickets before the command processor joins
   // callbacks.
-  void FinishPendingUploads() { AbortUploadCommandBufferBatch(); }
+  void FinishPendingUploads() {
+    FlushDeferredLoads();
+    AbortUploadCommandBufferBatch();
+  }
   void ClearCache() override;
   void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
 
@@ -212,6 +215,68 @@ class MetalTextureCache : public TextureCache {
   MTL::CommandBuffer* EnsureUploadCommandBufferBatch();
   void EndUploadCommandBufferBatch();
   void AbortUploadCommandBufferBatch(bool commit_if_has_work = true);
+
+  // The GPU commands of texture loads, recorded so the loads of a whole
+  // texture request (a draw's textures) share one compute encoder and one blit
+  // encoder rather than taking two each.
+  struct LoadDispatch {
+    MTL::ComputePipelineState* pipeline;
+    MTL::Buffer* constants;
+    size_t constants_offset;
+    // Null when the pipeline writes dest_texture instead.
+    MTL::Buffer* dest;
+    size_t dest_offset;
+    MTL::Texture* dest_texture;
+    MTL::Buffer* source;
+    size_t source_offset;
+    MTL::Size threadgroups;
+    MTL::Size threads_per_group;
+  };
+  struct LoadCopy {
+    MTL::Buffer* source;
+    size_t source_offset;
+    // To dest_texture, or, if it's null, source_bytes_per_row bytes to
+    // dest_buffer.
+    size_t source_bytes_per_row;
+    size_t source_bytes_per_image;
+    MTL::Size size;
+    MTL::Texture* dest_texture;
+    uint32_t dest_slice;
+    uint32_t dest_level;
+    MTL::Buffer* dest_buffer;
+    size_t dest_offset;
+  };
+  struct LoadCommands {
+    std::vector<LoadDispatch> dispatches;
+    // Shared memory ranges (start, length) the dispatches read.
+    std::vector<std::pair<uint32_t, uint32_t>> shared_memory_reads;
+    std::vector<LoadCopy> copies;
+    // Upload pool buffers to release once the command buffer completes.
+    std::vector<MTL::Buffer*> buffers;
+    // Retained until encoded.
+    std::vector<MTL::Texture*> textures;
+    bool empty() const { return dispatches.empty() && copies.empty(); }
+  };
+  // Encodes the dispatches in one compute encoder, then the copies in one blit
+  // encoder, releases the buffers after cmd and the textures, and clears
+  // commands.
+  bool EncodeLoadCommands(MTL::CommandBuffer* cmd, LoadCommands& commands);
+  struct DeferredLoads {
+    LoadCommands commands;
+    // The command buffer the loads were recorded for, retained.
+    MTL::CommandBuffer* command_buffer = nullptr;
+  };
+  // Encodes the loads deferred during the current texture request.
+  void FlushDeferredLoads(DeferredLoads& deferred);
+  void FlushDeferredLoads() {
+    FlushDeferredLoads(deferred_batch_loads_);
+    FlushDeferredLoads(deferred_loads_);
+  }
+  // Loads into the current command buffer.
+  DeferredLoads deferred_loads_;
+  // Loads into the upload batch command buffer, committed ahead of the current
+  // one.
+  DeferredLoads deferred_batch_loads_;
 
   // Format / load shader mapping for Metal texture loading.
   bool IsDecompressionNeededForKey(TextureKey key) const;

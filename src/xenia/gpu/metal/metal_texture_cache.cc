@@ -805,6 +805,7 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
   if (upload_batch_depth_ != 0) {
     return;
   }
+  FlushDeferredLoads();
   MTL::CommandBuffer* cmd = upload_batch_command_buffer_;
   upload_batch_command_buffer_ = nullptr;
   bool has_work = upload_batch_command_buffer_has_work_;
@@ -825,6 +826,11 @@ void MetalTextureCache::EndUploadCommandBufferBatch() {
 }
 
 void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
+  // Encoded into the batch while it's still open, or, if the batch is
+  // discarded, into a command buffer of their own.
+  if (commit_if_has_work) {
+    FlushDeferredLoads(deferred_batch_loads_);
+  }
   MTL::CommandBuffer* cmd = upload_batch_command_buffer_;
   upload_batch_command_buffer_ = nullptr;
   bool has_work = upload_batch_command_buffer_has_work_;
@@ -836,12 +842,161 @@ void MetalTextureCache::AbortUploadCommandBufferBatch(bool commit_if_has_work) {
     command_processor_->DiscardAccountedCommandBuffer(
         cmd, MetalCommandProcessor::CommandBufferKind::kTextureUploadBatch);
     cmd->release();
+    FlushDeferredLoads(deferred_batch_loads_);
     return;
   }
   cmd->addCompletedHandler(^(MTL::CommandBuffer* completed_cmd) {
     completed_cmd->release();
   });
   cmd->commit();
+}
+
+bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
+                                           LoadCommands& commands) {
+  SCOPE_profile_cpu_f("gpu");
+  bool encoded = true;
+  command_processor_->EndEncodersForCommandBuffer(cmd);
+  if (!commands.dispatches.empty()) {
+    MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+    if (encoder) {
+      MetalSharedMemory& metal_shared_memory =
+          static_cast<MetalSharedMemory&>(shared_memory());
+      MetalBufferHazards::Encoder hazards;
+      if (metal_shared_memory.hazards()) {
+        hazards.Begin(*metal_shared_memory.hazards(), cmd, encoder);
+        for (const std::pair<uint32_t, uint32_t>& read :
+             commands.shared_memory_reads) {
+          hazards.Access(read.first, read.second, false);
+        }
+      }
+      MTL::ComputePipelineState* bound_pipeline = nullptr;
+      MTL::Buffer* bound_source = nullptr;
+      size_t bound_source_offset = 0;
+      for (const LoadDispatch& dispatch : commands.dispatches) {
+        if (dispatch.pipeline != bound_pipeline) {
+          encoder->setComputePipelineState(dispatch.pipeline);
+          bound_pipeline = dispatch.pipeline;
+        }
+        if (dispatch.source != bound_source ||
+            dispatch.source_offset != bound_source_offset) {
+          encoder->setBuffer(dispatch.source, dispatch.source_offset, 2);
+          bound_source = dispatch.source;
+          bound_source_offset = dispatch.source_offset;
+        }
+        encoder->setBuffer(dispatch.constants, dispatch.constants_offset, 0);
+        if (dispatch.dest) {
+          encoder->setBuffer(dispatch.dest, dispatch.dest_offset, 1);
+        } else {
+          // Slang packs Metal texture arguments separately from HLSL
+          // registers.
+          encoder->setTexture(dispatch.dest_texture, 0);
+        }
+        encoder->dispatchThreadgroups(dispatch.threadgroups,
+                                      dispatch.threads_per_group);
+      }
+      hazards.End();
+      encoder->endEncoding();
+    } else {
+      encoded = false;
+    }
+  }
+  if (encoded && !commands.copies.empty()) {
+    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    if (blit) {
+      for (const LoadCopy& copy : commands.copies) {
+        if (copy.dest_texture) {
+          blit->copyFromBuffer(copy.source, copy.source_offset,
+                               copy.source_bytes_per_row,
+                               copy.source_bytes_per_image, copy.size,
+                               copy.dest_texture, copy.dest_slice,
+                               copy.dest_level, MTL::Origin::Make(0, 0, 0));
+        } else {
+          blit->copyFromBuffer(copy.source, copy.source_offset,
+                               copy.dest_buffer, copy.dest_offset,
+                               copy.source_bytes_per_row);
+        }
+      }
+      blit->endEncoding();
+    } else {
+      encoded = false;
+    }
+  }
+  // The buffers may be in use by what was encoded, so they wait for cmd even
+  // if encoding failed.
+  std::shared_ptr<UploadBufferPool> buffer_pool;
+  {
+    std::lock_guard<std::mutex> lock(upload_buffer_pool_mutex_);
+    buffer_pool = upload_buffer_pool_;
+  }
+  for (MTL::Buffer* buffer : commands.buffers) {
+    if (buffer_pool) {
+      buffer_pool->ReleaseAfter(cmd, buffer);
+    } else {
+      cmd->addCompletedHandler(^(MTL::CommandBuffer*) {
+        buffer->release();
+      });
+    }
+  }
+  for (MTL::Texture* texture : commands.textures) {
+    texture->release();
+  }
+  commands.dispatches.clear();
+  commands.shared_memory_reads.clear();
+  commands.copies.clear();
+  commands.buffers.clear();
+  commands.textures.clear();
+  return encoded;
+}
+
+void MetalTextureCache::FlushDeferredLoads(DeferredLoads& deferred) {
+  MTL::CommandBuffer* cmd = deferred.command_buffer;
+  if (!cmd) {
+    return;
+  }
+  deferred.command_buffer = nullptr;
+  ScopedAutoreleasePool autorelease_pool;
+  if (cmd == command_processor_->GetCurrentCommandBuffer() ||
+      cmd == upload_batch_command_buffer_) {
+    if (!EncodeLoadCommands(cmd, deferred.commands)) {
+      XELOGE("MetalTextureCache: failed to encode deferred texture loads");
+    }
+  } else {
+    // The command buffer was submitted while the request was recorded. A
+    // command buffer committed now still runs before the one the draw is in.
+    MTL::CommandBuffer* private_cmd =
+        command_processor_->CreateAccountedCommandBuffer(
+            MetalCommandProcessor::CommandBufferKind::kTextureUploadPrivate);
+    if (private_cmd) {
+      if (!EncodeLoadCommands(private_cmd, deferred.commands)) {
+        XELOGE("MetalTextureCache: failed to encode deferred texture loads");
+      }
+      private_cmd->retain();
+      private_cmd->addCompletedHandler(^(MTL::CommandBuffer* cb) {
+        cb->release();
+      });
+      private_cmd->commit();
+    } else {
+      XELOGE("MetalTextureCache: no command buffer for deferred texture loads");
+      // Nothing uses the buffers anymore.
+      std::shared_ptr<UploadBufferPool> buffer_pool;
+      {
+        std::lock_guard<std::mutex> lock(upload_buffer_pool_mutex_);
+        buffer_pool = upload_buffer_pool_;
+      }
+      for (MTL::Buffer* buffer : deferred.commands.buffers) {
+        if (buffer_pool) {
+          buffer_pool->ReleaseImmediate(buffer);
+        } else {
+          buffer->release();
+        }
+      }
+      for (MTL::Texture* texture : deferred.commands.textures) {
+        texture->release();
+      }
+      deferred.commands = LoadCommands();
+    }
+  }
+  cmd->release();
 }
 
 bool MetalTextureCache::IsDecompressionNeededForKey(TextureKey key) const {
@@ -1506,39 +1661,27 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   };
 
-  command_processor_->EndEncodersForCommandBuffer(cmd);
-  MTL::ComputeCommandEncoder* encoder = nullptr;
-  {
-    SCOPE_profile_cpu_i("gpu", "MetalTextureCache::ComputeEncoderCreate");
-    encoder = cmd->computeCommandEncoder();
-  }
-  if (!encoder) {
-    handle_upload_failure(true);
-    return false;
-  }
-  encoder->setComputePipelineState(use_direct_raw ? direct_raw_pipeline
-                                                  : pipeline);
-  MetalBufferHazards::Encoder hazards;
-  if (metal_shared_memory.hazards()) {
-    hazards.Begin(*metal_shared_memory.hazards(), cmd, encoder);
-    if (!texture_resolution_scaled) {
-      for (uint32_t part = 0; part < 2; ++part) {
-        if (!(part ? load_mips : load_base) || snapshot_length[part]) {
-          continue;
-        }
-        // A final 16-byte fetch may extend past the part.
-        hazards.Access(part_guest_address[part],
-                       xe::align(part ? texture.GetGuestMipsSize()
-                                      : texture.GetGuestBaseSize(),
-                                 UINT32_C(16)) +
-                           16,
-                       false);
+  // While a draw requests its textures, its loads are recorded and encoded
+  // together when the request ends. A load writing the texture directly, or
+  // one into the separate command buffers, is encoded at once, after the
+  // recorded ones, so loads stay in order.
+  const bool defer_load = (use_current_command_buffer || use_upload_batch) &&
+                          upload_batch_depth_ && !use_direct_raw &&
+                          !texture_resolution_scaled;
+  LoadCommands commands;
+  if (!texture_resolution_scaled) {
+    for (uint32_t part = 0; part < 2; ++part) {
+      if (!(part ? load_mips : load_base) || snapshot_length[part]) {
+        continue;
       }
+      // A final 16-byte fetch may extend past the part.
+      commands.shared_memory_reads.emplace_back(
+          part_guest_address[part],
+          xe::align(part ? texture.GetGuestMipsSize()
+                         : texture.GetGuestBaseSize(),
+                    UINT32_C(16)) +
+              16);
     }
-  }
-  if (use_direct_raw) {
-    // Slang packs Metal texture arguments separately from HLSL registers.
-    encoder->setTexture(direct_raw_view, 0);
   }
 
   uint32_t guest_x_blocks_per_group_log2 =
@@ -1571,14 +1714,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                                          4) ||
           !GetCurrentScaledResolveBuffer(source_buffer, source_buffer_offset,
                                          source_buffer_length)) {
-        // cmd is shared with the rest of the batch (or is the draw command
-        // buffer), so it must be left without an open encoder.
-        hazards.End();
-        encoder->endEncoding();
         handle_upload_failure(false);
         return false;
       }
-      encoder->setBuffer(source_buffer, source_buffer_offset, 2);
       if (!is_base_storage) {
         scaled_mips_source_set_up = true;
       }
@@ -1595,12 +1733,8 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       } else {
         level_guest_offset = part_guest_address[part];
       }
-      if (part_source_buffer != source_buffer ||
-          part_source_offset != source_buffer_offset) {
-        encoder->setBuffer(part_source_buffer, part_source_offset, 2);
-        source_buffer = part_source_buffer;
-        source_buffer_offset = part_source_offset;
-      }
+      source_buffer = part_source_buffer;
+      source_buffer_offset = part_source_offset;
     }
     if (!is_base_storage) {
       uint32_t mip_offset = guest_layout.mip_offsets_bytes[stored_level.level];
@@ -1662,30 +1796,62 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           dispatch_index * constants_size;
       std::memcpy(constants_ptr, &constants, sizeof(constants));
 
-      encoder->setBuffer(constants_buffer, dispatch_index * constants_size, 0);
-      if (!use_direct_raw) {
-        encoder->setBuffer(dest_buffer,
-                           stored_level.dest_offset_bytes +
-                               slice * stored_level.slice_size_bytes,
-                           1);
-      }
-      encoder->dispatchThreadgroups(threadgroups, threads_per_group);
-      command_buffer_has_work = true;
+      LoadDispatch& dispatch = commands.dispatches.emplace_back();
+      dispatch.pipeline = use_direct_raw ? direct_raw_pipeline : pipeline;
+      dispatch.constants = constants_buffer;
+      dispatch.constants_offset = dispatch_index * constants_size;
+      dispatch.dest = use_direct_raw ? nullptr : dest_buffer;
+      dispatch.dest_offset =
+          use_direct_raw ? 0
+                         : stored_level.dest_offset_bytes +
+                               slice * stored_level.slice_size_bytes;
+      dispatch.dest_texture = use_direct_raw ? direct_raw_view : nullptr;
+      dispatch.source = source_buffer;
+      dispatch.source_offset = source_buffer_offset;
+      dispatch.threadgroups = threadgroups;
+      dispatch.threads_per_group = threads_per_group;
       ++dispatch_index;
     }
   }
 
-  {
-    SCOPE_profile_cpu_i("gpu", "MetalTextureCache::ComputeEncoderEnd");
-    hazards.End();
-    encoder->endEncoding();
-  }
-
-  // The end of a GPU upload: the buffers are released once cmd completes, and
-  // a standalone command buffer is committed.
-  auto finish_gpu_upload = [&]() {
-    release_buffer_after(cmd, constants_buffer, constants_buffer_size);
-    release_buffer_after(cmd, dest_buffer, size_t(dest_buffer_size));
+  // The end of a GPU upload: encodes the commands unless they are deferred,
+  // the buffers are released once the command buffer completes, and a
+  // standalone command buffer is committed.
+  auto finish_gpu_upload = [&]() -> bool {
+    commands.buffers.push_back(constants_buffer);
+    if (dest_buffer) {
+      commands.buffers.push_back(dest_buffer);
+    }
+    if (defer_load) {
+      DeferredLoads& deferred_loads =
+          use_upload_batch ? deferred_batch_loads_ : deferred_loads_;
+      if (deferred_loads.command_buffer != cmd) {
+        FlushDeferredLoads(deferred_loads);
+        cmd->retain();
+        deferred_loads.command_buffer = cmd;
+      }
+      if (use_upload_batch) {
+        upload_batch_command_buffer_has_work_ = true;
+      }
+      LoadCommands& deferred = deferred_loads.commands;
+      deferred.dispatches.insert(deferred.dispatches.end(),
+                                 commands.dispatches.begin(),
+                                 commands.dispatches.end());
+      deferred.shared_memory_reads.insert(
+          deferred.shared_memory_reads.end(),
+          commands.shared_memory_reads.begin(),
+          commands.shared_memory_reads.end());
+      deferred.copies.insert(deferred.copies.end(), commands.copies.begin(),
+                             commands.copies.end());
+      deferred.buffers.insert(deferred.buffers.end(), commands.buffers.begin(),
+                              commands.buffers.end());
+      deferred.textures.insert(deferred.textures.end(),
+                               commands.textures.begin(),
+                               commands.textures.end());
+      return true;
+    }
+    FlushDeferredLoads();
+    bool encoded = EncodeLoadCommands(cmd, commands);
     if (use_upload_batch) {
       upload_batch_command_buffer_has_work_ = true;
     } else if (!use_current_command_buffer) {
@@ -1695,26 +1861,21 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       });
       cmd->commit();
     }
+    return encoded;
   };
   if (use_direct_raw) {
-    finish_gpu_upload();
-    return true;
+    direct_raw_view->retain();
+    commands.textures.push_back(direct_raw_view);
+    return finish_gpu_upload();
   }
 
   MTL::Texture* mtl_texture = metal_texture->metal_texture();
   if (use_blit_upload) {
-    SCOPE_profile_cpu_i("gpu", "MetalTextureCache::EncodeUploadBlits");
-    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
-    if (!blit) {
-      handle_upload_failure(true);
-      return false;
-    }
+    mtl_texture->retain();
+    commands.textures.push_back(mtl_texture);
 
     uint32_t bytes_per_host_block = load_shader_info.bytes_per_host_block;
     const uint32_t blit_alignment = 256;
-    // Levels that need staging share one staging buffer, grown as needed.
-    MTL::Buffer* reusable_staging_buffer = nullptr;
-    size_t reusable_staging_size = 0;
 
     for (uint32_t level = level_first; level <= level_last; ++level) {
       uint32_t stored_level = std::min(level, level_packed);
@@ -1788,61 +1949,78 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           }
         }
 
-        bool requires_staging = (source_offset_bytes % blit_alignment) != 0;
+        // A buffer-to-texture copy needs its source offset aligned only to
+        // the texel or compressed block size, which packed mip offsets are
+        // (whole blocks into rows of whole blocks). Staging each row to a
+        // 256-byte boundary cost a blit command per row.
+        bool requires_staging =
+            (source_offset_bytes % bytes_per_host_block) != 0;
         if (requires_staging) {
           SCOPE_profile_cpu_i("gpu", "MetalTextureCache::StagingRowCopy");
           size_t staging_size = blit_bytes_per_image * level_depth;
-          if (staging_size > reusable_staging_size) {
-            MTL::Buffer* staging_buffer = acquire_buffer(staging_size);
-            if (!staging_buffer) {
-              release_buffer_after(cmd, reusable_staging_buffer,
-                                   reusable_staging_size);
-              blit->endEncoding();
-              handle_upload_failure(true);
-              return false;
+          MTL::Buffer* staging_buffer = acquire_buffer(staging_size);
+          if (!staging_buffer) {
+            for (MTL::Texture* commands_texture : commands.textures) {
+              commands_texture->release();
             }
-            release_buffer_after(cmd, reusable_staging_buffer,
-                                 reusable_staging_size);
-            reusable_staging_buffer = staging_buffer;
-            reusable_staging_size = staging_size;
+            for (MTL::Buffer* commands_buffer : commands.buffers) {
+              release_buffer_immediate(commands_buffer, 0);
+            }
+            handle_upload_failure(true);
+            return false;
           }
-          MTL::Buffer* staging_buffer = reusable_staging_buffer;
+          commands.buffers.push_back(staging_buffer);
 
           for (uint32_t z = 0; z < level_depth; ++z) {
             size_t src_z_offset =
                 source_offset_bytes + size_t(z) * bytes_per_image;
             size_t dst_z_offset = size_t(z) * blit_bytes_per_image;
             for (uint32_t y = 0; y < upload_row_count; ++y) {
-              size_t src_row_offset =
+              LoadCopy& copy = commands.copies.emplace_back();
+              copy.source = dest_buffer;
+              copy.source_offset =
                   src_z_offset + size_t(y) * stored_layout->row_pitch_bytes;
-              size_t dst_row_offset = dst_z_offset + size_t(y) * blit_row_pitch;
-              blit->copyFromBuffer(dest_buffer, src_row_offset, staging_buffer,
-                                   dst_row_offset, upload_row_bytes);
+              copy.source_bytes_per_row = upload_row_bytes;
+              copy.dest_texture = nullptr;
+              copy.dest_buffer = staging_buffer;
+              copy.dest_offset = dst_z_offset + size_t(y) * blit_row_pitch;
             }
           }
 
-          blit->copyFromBuffer(
-              staging_buffer, 0, blit_row_pitch, blit_bytes_per_image,
-              MTL::Size::Make(upload_width_texels, upload_height_texels,
-                              level_depth),
-              mtl_texture, is_3d ? 0 : slice, level,
-              MTL::Origin::Make(0, 0, 0));
+          LoadCopy& copy = commands.copies.emplace_back();
+          copy.source = staging_buffer;
+          copy.source_offset = 0;
+          copy.source_bytes_per_row = blit_row_pitch;
+          copy.source_bytes_per_image = blit_bytes_per_image;
+          copy.size = MTL::Size::Make(upload_width_texels, upload_height_texels,
+                                      level_depth);
+          copy.dest_texture = mtl_texture;
+          copy.dest_slice = is_3d ? 0 : slice;
+          copy.dest_level = level;
+          copy.dest_buffer = nullptr;
         } else {
-          blit->copyFromBuffer(
-              dest_buffer, source_offset_bytes, stored_layout->row_pitch_bytes,
-              bytes_per_image,
-              MTL::Size::Make(upload_width_texels, upload_height_texels,
-                              level_depth),
-              mtl_texture, is_3d ? 0 : slice, level,
-              MTL::Origin::Make(0, 0, 0));
+          LoadCopy& copy = commands.copies.emplace_back();
+          copy.source = dest_buffer;
+          copy.source_offset = source_offset_bytes;
+          copy.source_bytes_per_row = stored_layout->row_pitch_bytes;
+          copy.source_bytes_per_image = bytes_per_image;
+          copy.size = MTL::Size::Make(upload_width_texels, upload_height_texels,
+                                      level_depth);
+          copy.dest_texture = mtl_texture;
+          copy.dest_slice = is_3d ? 0 : slice;
+          copy.dest_level = level;
+          copy.dest_buffer = nullptr;
         }
       }
     }
 
-    release_buffer_after(cmd, reusable_staging_buffer, reusable_staging_size);
-    blit->endEncoding();
-    finish_gpu_upload();
+    return finish_gpu_upload();
   } else {
+    FlushDeferredLoads();
+    if (!EncodeLoadCommands(cmd, commands)) {
+      handle_upload_failure(true);
+      return false;
+    }
     cmd->commit();
     cmd->waitUntilCompleted();
 
