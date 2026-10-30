@@ -55,6 +55,7 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgba8_4x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_as_rgba16_rgba16f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16f_1x_cs.h"
@@ -240,6 +241,20 @@ bool IsFull32RGB10FloatOneSample(
   const ResolveCopyKey key = GetResolveCopyKey(constants);
   return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
          key.dest == (7u << 7) && key.sample == 0;
+}
+
+// A one-sample 16_16_16_16 copy into 16_16_16_16, with any exponent bias and
+// number format.
+bool IsFull64RGBA16OneSample(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull64bpp) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  // 16_16_16_16, 64bpp, one sample per pixel.
+  return key.edram == 0x15000000u && (key.dest & 0x1F80u) == (26u << 7) &&
+         key.sample == 0;
 }
 
 MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
@@ -973,6 +988,11 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
   resolve_full_64bpp_pipeline_ = CreateComputePipelineFromEmbeddedLibrary(
       device_, resolve_full_64bpp_cs_metallib,
       sizeof(resolve_full_64bpp_cs_metallib), "resolve_full_64bpp");
+  resolve_full_64bpp_rgba16_1x_direct_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_64bpp_rgba16_1x_direct_cs_metallib,
+          sizeof(resolve_full_64bpp_rgba16_1x_direct_cs_metallib),
+          "resolve_full_64bpp_rgba16_1x_direct");
   resolve_specialized_pipelines_.clear();
   for (const ResolveSpecialization& specialization : kResolveSpecializations) {
     resolve_specialized_pipelines_.push_back(
@@ -1145,6 +1165,10 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_) {
     resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_->release();
     resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
+  }
+  if (resolve_full_64bpp_rgba16_1x_direct_pipeline_) {
+    resolve_full_64bpp_rgba16_1x_direct_pipeline_->release();
+    resolve_full_64bpp_rgba16_1x_direct_pipeline_ = nullptr;
   }
   if (resolve_full_64bpp_pipeline_) {
     resolve_full_64bpp_pipeline_->release();
@@ -3347,12 +3371,27 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   const bool rgb10f_1x =
       !rgb10_4x_average &&
       IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants);
-  const bool copy_from_render_target = rgb10_4x_average || rgb10f_1x;
+  // So is the 16_16_16_16 to 16_16_16_16 conversion, with that of the generic
+  // 64bpp copy, from the render target's integer ownership transfer view.
+  const bool rgba16_1x =
+      IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
+  const bool copy_from_render_target =
+      rgb10_4x_average || rgb10f_1x || rgba16_1x;
+  // The dump shader's direct resolve only copies bits.
+  if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull64bpp &&
+      !rgba16_1x) {
+    return false;
+  }
   MTL::ComputePipelineState* rgb10_pipeline = nullptr;
   MTL::Texture* rgb10_source = nullptr;
   uint32_t rgb10_origin[2] = {};
   if (copy_from_render_target) {
-    if (rgb10_4x_average) {
+    if (rgba16_1x) {
+      // No texture-cache refresh for 64bpp destinations.
+      rgb10_pipeline = refresh_texture
+                           ? nullptr
+                           : resolve_full_64bpp_rgba16_1x_direct_pipeline_;
+    } else if (rgb10_4x_average) {
       rgb10_pipeline =
           refresh_texture ? resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_
                           : resolve_full_32bpp_rgb10_4x_direct_pipeline_;
@@ -3368,7 +3407,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     }
     auto* rt = static_cast<MetalRenderTarget*>(rectangles[0].render_target);
     const RenderTargetKey rt_key = rt->key();
-    rgb10_source = rt->texture();
+    rgb10_source = rgba16_1x ? rt->transfer_texture() : rt->texture();
     const draw_util::ResolveEdramInfo& edram_info =
         resolve_info.color_edram_info;
     // The shader reads resolve pixel p at render target texel p + origin,
@@ -3380,10 +3419,12 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     const xenos::MsaaSamples source_msaa_samples =
         rgb10_4x_average ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
     const MTL::PixelFormat source_pixel_format =
-        rgb10_4x_average ? MTL::PixelFormatRGB10A2Unorm
-                         : MTL::PixelFormatRGBA16Float;
+        rgba16_1x          ? MTL::PixelFormatRGBA16Uint
+        : rgb10_4x_average ? MTL::PixelFormatRGB10A2Unorm
+                           : MTL::PixelFormatRGBA16Float;
     if (!rgb10_source || rt_key.is_depth ||
-        rt_key.msaa_samples != source_msaa_samples || rt_key.Is64bpp() ||
+        rt_key.msaa_samples != source_msaa_samples ||
+        rt_key.Is64bpp() != rgba16_1x ||
         rgb10_source->pixelFormat() != source_pixel_format ||
         rgb10_source->sampleCount() != (rgb10_4x_average ? 4 : 1) ||
         (rgb10f_1x &&
@@ -3391,13 +3432,16 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
              xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT &&
          rt_key.GetColorFormat() != xenos::ColorRenderTargetFormat::
                                         k_2_10_10_10_FLOAT_AS_16_16_16_16) ||
+        (rgba16_1x && rt_key.GetColorFormat() !=
+                          xenos::ColorRenderTargetFormat::k_16_16_16_16) ||
         !edram_info.pitch_tiles ||
         rt_key.GetPitchTiles() != edram_info.pitch_tiles ||
         edram_info.base_tiles < rt_key.base_tiles) {
       return false;
     }
-    const uint32_t tile_width =
-        xenos::kEdramTileWidthSamples >> uint32_t(rgb10_4x_average);
+    // 64bpp tiles are half as wide in pixels.
+    const uint32_t tile_width = xenos::kEdramTileWidthSamples >>
+                                uint32_t(rgb10_4x_average || rgba16_1x);
     const uint32_t tile_height =
         xenos::kEdramTileHeightSamples >> uint32_t(rgb10_4x_average);
     const uint32_t base_delta = edram_info.base_tiles - rt_key.base_tiles;
@@ -4478,12 +4522,15 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
                                   /*allow_cross_depth_color=*/true,
-                                  /*allow_full32_rgb10f_1x=*/true) ==
+                                  /*allow_full32_rgb10f_1x=*/true,
+                                  /*allow_full64_rgba16_1x=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
     auto* texture_cache = command_processor_.texture_cache();
     if (texture_cache &&
+        // The 64bpp copy has no refresh variant.
+        !IsFull64RGBA16OneSample(copy_shader, copy_constants) &&
         // Four-sample cache reuse exposes helper-lane derivative differences
         // unless guest fragments keep their helpers within each primitive.
         (!IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) ||
