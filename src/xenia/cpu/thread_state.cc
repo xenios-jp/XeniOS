@@ -9,12 +9,14 @@
 
 #include "xenia/cpu/thread_state.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/context_allocation.h"
 #include "xenia/cpu/processor.h"
 
 #include "xenia/xbox.h"
@@ -24,34 +26,32 @@ namespace cpu {
 thread_local ThreadState* thread_state_ = nullptr;
 
 static void* AllocateContext() {
-  size_t granularity = xe::memory::allocation_granularity();
-  for (unsigned pos32 = 0x40; pos32 < 8192; ++pos32) {
-    /*
-        we want our register which points to the context to have 0xE0000000 in
-       the low 32 bits, for checking for whether we need the 4k offset, but also
-       if we allocate starting from the page before we allow backends to index
-       negatively to get to their own backend specific data, which makes full
-        use of int8 displacement
-
-
-        the downside is we waste most of one granula and probably a fair bit of
-       the one starting at 0xE0 by using a direct virtual memory allocation
-       instead of malloc
-    */
-    uintptr_t context_pre =
-        ((static_cast<uint64_t>(pos32) << 32) | 0xE0000000) - granularity;
-
-    void* p = memory::AllocFixed(
-        (void*)context_pre, granularity + sizeof(ppc::PPCContext),
-        memory::AllocationType::kReserveCommit, memory::PageAccess::kReadWrite);
-    if (p) {
-      return reinterpret_cast<char*>(p) +
-             granularity;  // now we have a ctx ptr with the e0 constant in low,
-                           // and one page allocated before it
+  // iOS may refuse the preferred high virtual addresses even while ordinary
+  // mappings remain available. A64 uses literal guest-address bounds, unlike
+  // backends that require the context's low bits to contain 0xE0000000.
+#if XE_PLATFORM_IOS && XE_ARCH_ARM64
+  constexpr bool allow_fallback = true;
+#else
+  constexpr bool allow_fallback = false;
+#endif
+  const auto allocation = detail::AllocateContext(
+      sizeof(ppc::PPCContext), memory::allocation_granularity(), allow_fallback,
+      [](void* base, size_t size) {
+        return memory::AllocFixed(base, size,
+                                  memory::AllocationType::kReserveCommit,
+                                  memory::PageAccess::kReadWrite);
+      });
+  if (!allocation.context) {
+    xe::FatalError("Unable to allocate PPC thread context memory.");
+  }
+  if (allocation.used_fallback) {
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed)) {
+      XELOGW("PPC context: fixed-address reservations failed; using an "
+             "OS-chosen mapping at {:p}", allocation.context);
     }
   }
-
-  xe::FatalError("Unable to allocate PPC thread context memory.");
+  return allocation.context;
 }
 
 static void FreeContext(void* ctx) {

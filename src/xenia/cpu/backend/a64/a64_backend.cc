@@ -1638,6 +1638,9 @@ static void BuildGuestTrampoline(uint8_t* buf, void* proc, void* userdata1,
 A64Backend::A64Backend() {
   code_cache_ = A64CodeCache::Create();
 
+#if XE_PLATFORM_IOS
+  guest_trampoline_code_ios_.resize(MAX_GUEST_TRAMPOLINES, nullptr);
+#else
   // Prefer a sub-2GB slot so fast indirection (rel32) is usable; fall back
   // to an OS-chosen address if none is available. macOS rejects fixed
   // PROT_EXEC mappings in this range, so skip the scan entirely there.
@@ -1664,6 +1667,7 @@ A64Backend::A64Backend() {
   xenia_assert(buf);
   guest_trampoline_memory_ = reinterpret_cast<uint8_t*>(buf);
   guest_trampolines_sub4gb_ = reinterpret_cast<uintptr_t>(buf) < 0x100000000ull;
+#endif
   guest_trampoline_address_bitmap_.Resize(MAX_GUEST_TRAMPOLINES);
 }
 
@@ -2242,6 +2246,25 @@ uint32_t A64Backend::CreateGuestTrampoline(GuestTrampolineProc proc,
   }
   xenia_assert(new_index != static_cast<size_t>(-1));
 
+#if XE_PLATFORM_IOS
+  // Reuse the code cache's iOS mapping and write gate for trampolines too.
+  // Their instruction encoding and guest slot allocation remain shared.
+  alignas(16) uint8_t code[kGuestTrampolineSize];
+  BuildGuestTrampoline(code, reinterpret_cast<void*>(proc), userdata1,
+                       userdata2, reinterpret_cast<void*>(guest_to_host_thunk_));
+  void*& execute = guest_trampoline_code_ios_[new_index];
+  if (execute) {
+    if (!code_cache_->PatchCode(execute, code, sizeof(code))) {
+      xe::FatalError("Unable to update iOS guest trampoline.");
+    }
+  } else {
+    EmitFunctionInfo info{};
+    info.code_size.body = info.code_size.total = sizeof(code);
+    void* write = nullptr;
+    code_cache_->PlaceHostCode(0, code, info, execute, write);
+  }
+  auto* write_pos = static_cast<uint8_t*>(execute);
+#else
   uint8_t* write_pos =
       &guest_trampoline_memory_[kGuestTrampolineSize * new_index];
 
@@ -2262,6 +2285,8 @@ uint32_t A64Backend::CreateGuestTrampoline(GuestTrampolineProc proc,
   __builtin___clear_cache(
       reinterpret_cast<char*>(write_pos),
       reinterpret_cast<char*>(write_pos + kGuestTrampolineSize));
+#endif
+
 #endif
 
   uint32_t indirection_guest_addr =

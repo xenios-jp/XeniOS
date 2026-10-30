@@ -490,7 +490,7 @@ void CommandProcessor::ThrottlePresentation() {
     if (sleep_ns > 0) {
       xe::threading::NanoSleep(sleep_ns);
     }
-#elif XE_PLATFORM_MAC
+#elif XE_PLATFORM_APPLE
     // Darwin's nanosleep oversleeps by 100-500us; NanoSleepPrecise spins the
     // tail so 60Hz targets don't miss their frame budget.
     const uint64_t sleep_ns = static_cast<uint64_t>(remaining_ms * 1000000.0);

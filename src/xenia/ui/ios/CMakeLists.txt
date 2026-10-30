@@ -1,0 +1,187 @@
+add_library(xenia-ui-ios STATIC)
+
+target_sources(xenia-ui-ios PRIVATE
+  app/ios_controller_navigation_coordinator.h
+  app/ios_controller_navigation_coordinator.mm
+  app/ios_app_delegate.h
+  app/ios_app_delegate.mm
+  app/ios_in_game_menu_overlay.h
+  app/ios_in_game_menu_overlay.mm
+  app/ios_landscape_navigation_controller.h
+  app/ios_landscape_navigation_controller.mm
+  app/ios_main_view_controller.h
+  app/ios_main_view_controller.mm
+  app/ios_pause_dashboard_view_controller.h
+  app/ios_pause_dashboard_view_controller.mm
+  app/ios_pause_workspace_view_controller.h
+  app/ios_pause_workspace_view_controller.mm
+  app/ios_display_settings_view_controller.h
+  app/ios_display_settings_view_controller.mm
+  app/ios_window_layout.h
+  app/ios_window_layout.mm
+  app/ios_window_position_overlay.h
+  app/ios_window_position_overlay.mm
+  app/windowed_app_context_ios.h
+  app/windowed_app_context_ios.mm
+  game/file_picker_ios.mm
+  game/ios_achievement_notification_presenter.h
+  game/ios_achievement_notification_presenter.mm
+  game/ios_achievements_view_controller.h
+  game/ios_achievements_view_controller.mm
+  game/ios_metal_view.h
+  game/ios_metal_view.mm
+  game/surface_ios.h
+  game/surface_ios.mm
+  game/window_ios.h
+  game/window_ios.mm
+  launcher/ios_compat_data.h
+  launcher/ios_compat_data.mm
+  launcher/ios_compat_cache.h
+  launcher/ios_compat_cache.mm
+  launcher/ios_compat_fetch.h
+  launcher/ios_compat_fetch.mm
+  launcher/ios_compat_formatting.h
+  launcher/ios_compat_formatting.mm
+  launcher/ios_compat_report_cells.h
+  launcher/ios_compat_report_cells.mm
+  launcher/ios_compat_report_submission.h
+  launcher/ios_compat_report_submission.mm
+  launcher/ios_compat_report_view_controller.h
+  launcher/ios_compat_report_view_controller.mm
+  launcher/ios_compat_summary.h
+  launcher/ios_compat_summary.mm
+  launcher/ios_content_management.h
+  launcher/ios_content_management.mm
+  launcher/ios_document_import_coordinator.h
+  launcher/ios_document_import_coordinator.mm
+  launcher/ios_external_folders_view_controller.h
+  launcher/ios_external_folders_view_controller.mm
+  launcher/ios_external_url.h
+  launcher/ios_external_url.mm
+  launcher/ios_game_art.h
+  launcher/ios_game_art.mm
+  launcher/ios_game_compatibility_cells.h
+  launcher/ios_game_compatibility_cells.mm
+  launcher/ios_game_compatibility_discussion_controller.h
+  launcher/ios_game_compatibility_discussion_controller.mm
+  launcher/ios_game_compatibility_hero_view.h
+  launcher/ios_game_compatibility_hero_view.mm
+  launcher/ios_game_compatibility_view_controller.h
+  launcher/ios_game_compatibility_view_controller.mm
+  launcher/ios_game_actions_view_controller.h
+  launcher/ios_game_actions_view_controller.mm
+  launcher/ios_game_picker_view_controller.h
+  launcher/ios_game_picker_view_controller.mm
+  launcher/ios_game_content_view_controller.h
+  launcher/ios_game_content_view_controller.mm
+  launcher/ios_game_disc_view_controller.h
+  launcher/ios_game_disc_view_controller.mm
+  launcher/ios_game_library.h
+  launcher/ios_game_library.mm
+  launcher/ios_game_library_store.h
+  launcher/ios_game_library_store.mm
+  launcher/ios_game_patches_view_controller.h
+  launcher/ios_game_patches_view_controller.mm
+  launcher/ios_game_tile_cell.h
+  launcher/ios_game_tile_cell.mm
+  launcher/ios_launcher_overlay_view.h
+  launcher/ios_launcher_overlay_view.mm
+  launcher/zar_converter.h
+  launcher/zar_converter.cc
+  launcher/ios_zar_conversion_coordinator.h
+  launcher/ios_zar_conversion_coordinator.mm
+  settings/ios_choice_list_view_controller.h
+  settings/ios_choice_list_view_controller.mm
+  settings/ios_config_builder.h
+  settings/ios_config_builder.mm
+  settings/ios_config_catalog.h
+  settings/ios_config_catalog.mm
+  settings/ios_config_models.h
+  settings/ios_config_storage.h
+  settings/ios_config_storage.mm
+  settings/ios_config_view_controller.h
+  settings/ios_config_view_controller.mm
+  settings/ios_debug_settings_view_controller.h
+  settings/ios_debug_settings_view_controller.mm
+  settings/ios_quick_settings_view_controller.h
+  settings/ios_quick_settings_view_controller.mm
+  settings/ios_log_view_controller.h
+  settings/ios_log_view_controller.mm
+  settings/ios_profile_view_controller.h
+  settings/ios_profile_view_controller.mm
+  settings/ios_settings_hub_view_controller.h
+  settings/ios_settings_hub_view_controller.mm
+  shared/apple_theme_tokens.cc
+  shared/apple_theme_tokens.h
+  shared/apple_ui_navigation.cc
+  shared/apple_ui_navigation.h
+  shared/ios_edge_adapter.h
+  shared/ios_edge_adapter.cc
+  shared/ios_system_utils.h
+  shared/ios_system_utils.mm
+  shared/ios_status_toast.h
+  shared/ios_status_toast.mm
+  shared/ios_update_check.h
+  shared/ios_update_check.mm
+  shared/ios_hero_glow_palette.h
+  shared/ios_hero_glow_palette.mm
+  shared/ios_theme.h
+  shared/ios_theme.mm
+  shared/ios_theme_controls.h
+  shared/ios_theme_controls.mm
+  shared/ios_view_helpers.h
+  shared/ios_view_helpers.mm
+  touch/touch_control_shell_view_ios.h
+  touch/touch_control_shell_view_ios.mm
+  touch/touch_controls_overlay_ios.h
+  touch/touch_controls_overlay_helpers_ios.h
+  touch/touch_controls_overlay_helpers_ios.mm
+  touch/touch_controls_overlay_ios.mm
+  touch/touch_edit_command_bar_ios.h
+  touch/touch_edit_command_bar_ios.mm
+  touch/touch_edit_panel_ios.h
+  touch/touch_edit_panel_ios.mm
+  touch/touch_layout_library_controller_ios.h
+  touch/touch_layout_library_controller_ios.mm
+  touch/touch_layout_library_ios.h
+  touch/touch_layout_library_ios.mm
+  touch/touch_layout_library_view_ios.h
+  touch/touch_layout_library_view_ios.mm
+  touch/touch_layout_editor_view_controller_ios.h
+  touch/touch_layout_editor_view_controller_ios.mm
+  touch/touch_layout_store_ios.h
+  touch/touch_layout_store_ios.mm
+  touch/touch_layout_ui_coordinator_ios.h
+  touch/touch_layout_ui_coordinator_ios.mm
+  touch/touch_overlay_edit_chrome_ios.h
+  touch/touch_overlay_edit_chrome_ios.mm
+  touch/touch_overlay_edit_history_ios.h
+  touch/touch_overlay_edit_history_ios.mm
+  touch/touch_overlay_geometry_ios.h
+  touch/touch_overlay_geometry_ios.mm
+  touch/touch_overlay_style_ios.h
+  touch/touch_overlay_style_ios.mm
+)
+
+target_compile_options(xenia-ui-ios PRIVATE
+  $<$<COMPILE_LANGUAGE:OBJCXX>:-Wno-nullability-completeness>
+)
+
+target_link_libraries(xenia-ui-ios PUBLIC
+  xenia-base
+  xenia-hid-touch-model
+  xenia-ui
+  "-framework AVFoundation"
+  "-framework AudioToolbox"
+  "-framework Foundation"
+  "-framework GameController"
+  "-framework Metal"
+  "-framework MetalKit"
+  "-framework PhotosUI"
+  "-framework QuartzCore"
+  "-framework UIKit"
+  "-framework UniformTypeIdentifiers"
+)
+target_link_libraries(xenia-ui-ios PRIVATE zarchive zstd)
+
+xe_target_defaults(xenia-ui-ios)
