@@ -1642,14 +1642,17 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
 
   // Loading into the current command buffer while a draw requests its
-  // textures ends the render pass, which the draw has to reopen. A load that
-  // needs nothing from the current command buffer is recorded instead for a
-  // command buffer committed right before it, one per submission: nothing
+  // textures ends the open render pass, which the draw has to reopen. A load
+  // that needs nothing from the current command buffer is recorded instead for
+  // a command buffer committed right before it, one per submission: nothing
   // earlier in it uses the texture, and the load reads only guest memory
-  // copied now, not shared memory.
+  // copied now, not shared memory. Without an open pass, loading into the
+  // current command buffer splits nothing, and the GPU can overlap the load
+  // with the work around it.
   const uint64_t current_submission =
       command_processor_ ? command_processor_->GetCurrentSubmission() : 0;
   bool load_ahead = use_current_command_buffer && upload_batch_depth_ &&
+                    command_processor_->HasActiveRenderEncoder() &&
                     !use_direct_raw && !texture_resolution_scaled &&
                     metal_texture->used_submission_ != current_submission;
   for (uint32_t part = 0; part < 2 && load_ahead; ++part) {
