@@ -470,7 +470,7 @@ bool MMIOHandler::HandleAccessViolation(Exception* ex) {
     // clears the watch we just hit).
     // Do this under the lock so we don't introduce another race condition.
     auto lock = global_critical_region_.Acquire();
-#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+#if XE_PLATFORM_LINUX || XE_PLATFORM_APPLE
     // POSIX exception handling runs inside a signal handler (SIGSEGV / SIGBUS).
     // QueryProtect is not async-signal-safe on either platform: Linux reads
     // /proc/self/maps via std::ifstream, and macOS issues a mach_msg via

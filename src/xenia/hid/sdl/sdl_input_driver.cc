@@ -32,6 +32,40 @@
 
 #include "embedded_bundle_gamecontrollerdb.h"
 
+#if XE_PLATFORM_IOS
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+
+namespace {
+// SDL's iOS gamepad init and quit add and remove a game controller interaction
+// on every UIKit window, which only the main thread may touch. The main
+// thread is free when a game starts, so init waits for it. Quit doesn't, as
+// the main thread may be the one destroying the driver; the main queue still
+// runs it before a later init.
+bool InitSDLGamepadOnMainThread() {
+  bool result;
+  auto init = [](void* context) {
+    *static_cast<bool*>(context) = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+  };
+  if (pthread_main_np()) {
+    init(&result);
+  } else {
+    dispatch_sync_f(dispatch_get_main_queue(), &result, init);
+  }
+  return result;
+}
+
+void QuitSDLGamepadOnMainThread() {
+  auto quit = [](void*) { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); };
+  if (pthread_main_np()) {
+    quit(nullptr);
+  } else {
+    dispatch_async_f(dispatch_get_main_queue(), nullptr, quit);
+  }
+}
+}  // namespace
+#endif  // XE_PLATFORM_IOS
+
 // TODO(joellinn) make this path relative to the config folder.
 DEFINE_path(mappings_file, "",
             "Filename of a database with custom game controller mappings. "
@@ -204,7 +238,11 @@ void SDLInputDriver::SDLEventThread(std::promise<X_STATUS> init_result) {
       },
       this);
 
+#if XE_PLATFORM_IOS
+  if (!InitSDLGamepadOnMainThread()) {
+#else
   if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+#endif  // XE_PLATFORM_IOS
     SDL_QuitSubSystem(SDL_INIT_EVENTS);
     sdl_events_initialized_ = false;
     init_result.set_value(X_STATUS_UNSUCCESSFUL);
@@ -228,7 +266,11 @@ void SDLInputDriver::SDLEventThread(std::promise<X_STATUS> init_result) {
       controllers_.at(i) = {};
     }
   }
+#if XE_PLATFORM_IOS
+  QuitSDLGamepadOnMainThread();
+#else
   SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+#endif  // XE_PLATFORM_IOS
   sdl_gamepad_initialized_ = false;
   SDL_QuitSubSystem(SDL_INIT_EVENTS);
   sdl_events_initialized_ = false;

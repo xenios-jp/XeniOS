@@ -3,7 +3,7 @@
 include(CMakeParseArguments)
 
 set(XE_PLATFORM_SUFFIXES
-  _win _linux _posix _gnulinux _x11 _gtk _android _mac _amd64 _x64 _arm64
+  _win _linux _posix _gnulinux _x11 _gtk _android _mac _ios _amd64 _x64 _arm64
 )
 
 # xe_platform_sources(target base_path [RECURSIVE])
@@ -55,6 +55,13 @@ function(xe_platform_sources target base_path)
       "${base_path}/*_win.h"
       "${base_path}/*_win.cc"
     )
+  elseif(XE_PLATFORM_IOS)
+    file(${glob_mode} _plat_sources
+      "${base_path}/*_posix.h"
+      "${base_path}/*_posix.cc"
+      "${base_path}/*_ios.h"
+      "${base_path}/*_ios.cc"
+    )
   elseif(APPLE)
     file(${glob_mode} _plat_sources
       "${base_path}/*_posix.h"
@@ -99,6 +106,9 @@ endfunction()
 # directories and warnings-as-errors. GCC is excluded from -Werror because
 # it's too noisy to keep clean across the codebase.
 function(xe_target_defaults target)
+  if(XE_PLATFORM_IOS)
+    xe_ios_target_defaults(${target})
+  endif()
   target_include_directories(${target} PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${PROJECT_SOURCE_DIR}/src
@@ -291,6 +301,10 @@ function(xe_shader_rules_metal target shader_dir)
   if(NOT APPLE)
     return()
   endif()
+  set(_metal_platform_args)
+  if(XE_PLATFORM_IOS)
+    set(_metal_platform_args --ios "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  endif()
   get_filename_component(shader_dir "${shader_dir}" ABSOLUTE)
   file(GLOB _sources "${shader_dir}/*.xesl" "${shader_dir}/*.xesli")
   file(RELATIVE_PATH _rel_dir "${PROJECT_SOURCE_DIR}/src" "${shader_dir}")
@@ -320,7 +334,7 @@ function(xe_shader_rules_metal target shader_dir)
     list(APPEND _outputs "${_out}")
     add_custom_command(
       OUTPUT "${_out}"
-      COMMAND $<TARGET_FILE:xenia-shader-cc> --msl --depfile "${_dep}"
+      COMMAND $<TARGET_FILE:xenia-shader-cc> --msl ${_metal_platform_args} --depfile "${_dep}"
               "${src}" "${_out}"
       DEPENDS "${src}" xenia-shader-cc
       DEPFILE "${_dep}"
@@ -363,6 +377,9 @@ function(xe_shader_rules_slang target shader_dir)
     endif()
     set(_subdir "metal")
     set(_flag "--slang-msl")
+    if(XE_PLATFORM_IOS)
+      list(APPEND _flag --ios "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    endif()
     set(_label "Metal")
   else()
     message(FATAL_ERROR

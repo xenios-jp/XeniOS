@@ -16,7 +16,7 @@
 #include <random>
 #include <type_traits>
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 #include <sys/mman.h>
 #endif
 
@@ -137,7 +137,7 @@ static inline bool ShouldSkipHostCommit(const BaseHeap& heap) {
   if (heap.skip_host_protect()) {
     return true;
   }
-#if XE_PLATFORM_MAC || XE_PLATFORM_LINUX
+#if XE_PLATFORM_APPLE || XE_PLATFORM_LINUX
   // The parent physical heap is committed read/write in one shot by
   // Memory::Initialize and is only reached through physical_membase_, which
   // carries no guest protection - the virtual aliases hold that. Re-protecting
@@ -246,7 +246,7 @@ bool Memory::Initialize() {
   mapping_base_ = 0;
   for (size_t n = 32; n < 64; n++) {
     auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
     if (!MapViewsMac(mapping_base)) {
 #else
     if (!MapViews(mapping_base)) {
@@ -255,7 +255,7 @@ bool Memory::Initialize() {
       break;
     }
   }
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   // Last resort, with x86_64's shrunk __PAGEZERO an OS-chosen base can take
   // the sub-2GB range PlaceConstData needs.
   if (!mapping_base_ && !MapViewsMac(nullptr)) {
@@ -454,7 +454,7 @@ static const struct {
         0x0000000100000000ull,
     },
 };
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 int Memory::MapViewsMac(uint8_t* mapping_base) {
   assert_true(xe::countof(map_info) == xe::countof(views_.all_views));
 
@@ -506,7 +506,7 @@ int Memory::MapViewsMac(uint8_t* mapping_base) {
 
   return 0;
 }
-#endif  // XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_APPLE
 
 int Memory::MapViews(uint8_t* mapping_base) {
   assert_true(xe::countof(map_info) == xe::countof(views_.all_views));
@@ -3021,7 +3021,7 @@ bool BaseHeap::ApplyHostProtect(uint32_t start_page_number,
   if (old_protect) {
     *old_protect = page_table_[start_page_number].current_protect;
   }
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   return true;
 #else
   return false;

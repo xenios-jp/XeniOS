@@ -140,6 +140,11 @@ DEFINE_bool(allow_game_relative_writes, false,
 #define GPU_OPTIONS "[d3d12, vulkan, null]"
 DEFINE_string(apu, "xaudio2", "Audio system. Use: " APU_OPTIONS, "APU");
 DEFINE_string(gpu, "d3d12", "Graphics system. Use: " GPU_OPTIONS, "GPU");
+#elif XE_PLATFORM_IOS
+#define APU_OPTIONS "[phase, sdl, nop]"
+#define GPU_OPTIONS "[metal]"
+DEFINE_string(apu, "phase", "Audio system. Use: " APU_OPTIONS, "APU");
+DEFINE_string(gpu, "metal", "Graphics system. Use: " GPU_OPTIONS, "GPU");
 #elif XE_PLATFORM_MAC
 #define APU_OPTIONS "[sdl, nop]"
 #define GPU_OPTIONS "[metal, vulkan, null]"

@@ -339,6 +339,9 @@ class A64Backend : public Backend {
   xe::global_critical_region global_critical_region_;
   std::vector<void*> backend_contexts_;
   BitMap guest_trampoline_address_bitmap_;
+#if XE_PLATFORM_IOS
+  std::vector<void*> guest_trampoline_code_ios_;
+#endif
   uint8_t* guest_trampoline_memory_ = nullptr;
   bool guest_trampolines_sub4gb_ = false;
   // The first instruction of each hooked function, which the hook replaced.

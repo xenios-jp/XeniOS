@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 set(CMAKE_TRY_COMPILE_CONFIGURATION Release)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(XE_PLATFORM_IOS TRUE)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "18.0" CACHE STRING "Minimum iOS version")
+endif()
+
 # Must be set before project() so the toolchain bakes -mmacosx-version-min
 # into every compile/link; setting it later only updates the variable.
-if(APPLE)
+if(APPLE AND NOT XE_PLATFORM_IOS)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version")
 endif()
 
@@ -16,7 +21,7 @@ if(APPLE)
   set(CMAKE_OBJCXX_ARCHIVE_FINISH "<CMAKE_RANLIB> -no_warning_for_no_symbols <TARGET>")
 endif()
 
-if(APPLE)
+if(APPLE OR XE_PLATFORM_IOS)
   # OBJC needed for SDL3's .m sources (Cocoa, CoreAudio, MFi joystick).
   project(xenia LANGUAGES C CXX OBJC OBJCXX)
   set(CMAKE_OBJCXX_STANDARD 20)
@@ -119,6 +124,8 @@ set(CMAKE_STATIC_LINKER_FLAGS_CHECKED "${CMAKE_STATIC_LINKER_FLAGS_DEBUG}" CACHE
 
 if(WIN32)
   set(XE_PLATFORM_NAME "Windows")
+elseif(XE_PLATFORM_IOS)
+  set(XE_PLATFORM_NAME "iOS")
 elseif(APPLE)
   set(XE_PLATFORM_NAME "macOS")
 else()
@@ -163,6 +170,8 @@ foreach(_tgt IN LISTS _imported_targets)
 endforeach()
 
 include(cmake/XeniaHelpers.cmake)
+set(XENIA_DATA_REPOS_DIR "${PROJECT_SOURCE_DIR}/build/data_repos" CACHE PATH
+    "Existing game patch and controller mapping data repositories")
 
 include_directories(
   ${PROJECT_SOURCE_DIR}
@@ -357,7 +366,7 @@ else()
     link_libraries(
       "-framework CoreFoundation"
       "-framework Foundation"
-      "-framework IOKit"
+      "$<$<NOT:$<BOOL:${XE_PLATFORM_IOS}>>:-framework IOKit>"
       dl
       pthread
     )
@@ -456,6 +465,10 @@ endif()
 # ==============================================================================
 # Subdirectories
 # ==============================================================================
+
+if(XE_PLATFORM_IOS)
+  include(cmake/ios/Platform.cmake)
+endif()
 
 add_subdirectory(third_party)
 

@@ -8,6 +8,9 @@
  */
 
 #include "xenia/kernel/xam/achievement_manager.h"
+#if XE_PLATFORM_IOS
+#include "xenia/kernel/xam/xam_ui_ios.h"
+#endif
 #include "xenia/emulator.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
@@ -88,7 +91,11 @@ void AchievementManager::EarnAchievement(const uint64_t xuid,
     // Something went really wrong!
     return;
   }
+#if XE_PLATFORM_IOS
+  ios::NotifyAchievement(kernel_state(), xuid, title_id, achievement.value());
+#else
   ShowAchievementEarnedNotification(&achievement.value());
+#endif
 }
 
 void AchievementManager::LoadTitleAchievements(const uint64_t xuid) const {

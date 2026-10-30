@@ -180,8 +180,8 @@ target_include_directories(glslang-spirv PUBLIC glslang)
 # (Windows-on-ARM runs x64 fine via Prism, and macOS handles its own
 # x86_64↔arm64 via Rosetta — both directions are unaffected).
 set(_xe_use_host_shader_cc FALSE)
-if(WIN32 AND CMAKE_CROSSCOMPILING AND XE_TARGET_AARCH64
-    AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+if(XE_PLATFORM_IOS OR (WIN32 AND CMAKE_CROSSCOMPILING AND XE_TARGET_AARCH64
+    AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64"))
   set(_xe_use_host_shader_cc TRUE)
 endif()
 
@@ -304,7 +304,7 @@ endif()
 # own copies via CPM.cmake. The SPIRV-Cross and cereal submodules are pinned to
 # the revisions MoltenVK expects (see MoltenVK/ExternalRevisions/*) so the
 # spirv_msl ABI and pipeline-cache serialization format match.
-if(APPLE)
+if(APPLE AND NOT XE_PLATFORM_IOS)
   # Record the MoltenVK submodule revision for MVKDevice's identification
   # string (MoltenVK's own CMake runs `git rev-parse` here; we just shell
   # out once at configure time and bake the string into a generated header).
@@ -419,6 +419,8 @@ if(MSVC)
   target_compile_options(xenia-shader-cc PRIVATE /EHsc)
 endif()
 
+elseif(XE_PLATFORM_IOS)
+  include(${PROJECT_SOURCE_DIR}/cmake/ios/ShaderCompiler.cmake)
 else()  # _xe_use_host_shader_cc: x64→ARM64 cross-compile, use native build's binary
 
 # Native x64 build lives at <repo>/build/ (xenia-build.py: get_build_dir(None)).
@@ -753,7 +755,7 @@ set(SDL_LIBTHAI OFF CACHE INTERNAL "")
 # .gitmodules marks SDL3 as ignore=dirty so the in-tree edit doesn't pollute
 # git status. Same pattern as snappy and zlib-ng.
 set(_sdl3_cmd "${CMAKE_CURRENT_SOURCE_DIR}/SDL3/cmake/sdlcommands.cmake")
-if(EXISTS "${_sdl3_cmd}")
+if(NOT XE_PLATFORM_IOS AND EXISTS "${_sdl3_cmd}")
   file(READ "${_sdl3_cmd}" _sdl3_cmd_content)
   string(REPLACE " CONFIGURE_DEPENDS " " " _sdl3_cmd_patched "${_sdl3_cmd_content}")
   if(NOT "${_sdl3_cmd_patched}" STREQUAL "${_sdl3_cmd_content}")
@@ -1098,7 +1100,7 @@ ffmpeg_common(libavformat)
 # ==============================================================================
 # wxWidgets
 # ==============================================================================
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
+if(NOT XE_PLATFORM_IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
     # Build from vendored source — matches what we ship on Windows/macOS, and
     # on Linux gives us a known-good 3.3 (system 3.2 has GTK3/Wayland issues).
     # Strip the directory-level /W0 (or -w) so wxWidgets's own /W3 doesn't
@@ -1240,7 +1242,9 @@ endif()
 # Built on WIN32 and APPLE. The Windows build runs release with /MD to match
 # xenia's CRT under an MSVC environment so meson detects cl. Verify the archive
 # paths below against the real build output if Mesa is restructured.
-if(WIN32 OR APPLE)
+if(XE_PLATFORM_IOS)
+  include(${PROJECT_SOURCE_DIR}/cmake/ios/Mesa.cmake)
+elseif(WIN32 OR APPLE)
   # Mesa source tree built for spirv_to_dxil. Defaults to the third_party/mesa
   # submodule (our fork with the barycentric, linking, keep_io_vars and FSI->ROV
   # changes). Repoint this cache variable to build a different Mesa checkout.
@@ -1484,7 +1488,9 @@ endif()
 # headers are vendored here; the dylib is mirrored as a release asset and
 # fetched by `./xenia-build.py msc` into .metal-shader-converter/, because
 # Apple's own download requires a developer login.
-if(APPLE)
+if(XE_PLATFORM_IOS)
+  include(${PROJECT_SOURCE_DIR}/cmake/ios/ShaderConverter.cmake)
+elseif(APPLE)
   set(_xe_msc_root "${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter")
   file(GLOB _xe_msc_found
        "${PROJECT_SOURCE_DIR}/.metal-shader-converter/*/libmetalirconverter.dylib")

@@ -24,9 +24,13 @@
 #include "xenia/ui/shaders/bytecode/metal/guest_output_bilinear_dither_ps.h"
 #include "xenia/ui/shaders/bytecode/metal/guest_output_bilinear_ps.h"
 #include "xenia/ui/shaders/bytecode/metal/guest_output_triangle_strip_rect_vs.h"
+#if !XE_PLATFORM_IOS
 #include "xenia/ui/surface_mac.h"
+#endif
 
+#if !XE_PLATFORM_IOS
 #import <Cocoa/Cocoa.h>
+#endif
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -190,9 +194,12 @@ void MetalPresenter::Shutdown() {
   XELOGD("Metal presenter shut down");
 }
 
+#if !XE_PLATFORM_IOS
 Surface::TypeFlags MetalPresenter::GetSupportedSurfaceTypes() const {
   return Surface::kTypeFlag_MacNSView;
 }
+
+#endif  // !XE_PLATFORM_IOS
 
 bool MetalPresenter::CaptureGuestOutput(RawImage& image_out) {
   uint32_t guest_output_mailbox_index;
@@ -651,6 +658,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
   return PaintResult::kPresented;
 }
 
+#if !XE_PLATFORM_IOS
 Presenter::SurfacePaintConnectResult
 MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_surface,
                                                                 uint32_t new_surface_width,
@@ -720,6 +728,8 @@ MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
          uint32_t(metal_layer.drawableSize.width), uint32_t(metal_layer.drawableSize.height));
   return SurfacePaintConnectResult::kSuccess;
 }
+
+#endif  // !XE_PLATFORM_IOS
 
 void MetalPresenter::DisconnectPaintingFromSurfaceFromUIThreadImpl() {
   if (metal_layer_) {
