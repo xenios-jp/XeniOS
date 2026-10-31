@@ -85,6 +85,11 @@ DEFINE_string(
     "can't translate.\n"
     " msc: SPIR-V -> DXIL -> AIR with Apple's Metal Shader Converter.",
     "Metal");
+DEFINE_bool(
+    metal_finite_multiply, true,
+    "Skip the Xenos 0 * x = 0 guard on multiplications whose operands are "
+    "proven finite (DXIL path with MSC multiply-add support only).",
+    "Metal");
 DEFINE_int32(
     metal_pipeline_creation_threads, -1,
     "Number of threads used for SPIRV-Cross shader and render pipeline "
@@ -2491,6 +2496,7 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   spirv_features.structured_vertex_control_flow = UseDxilPath();
   spirv_features.fetch_state_function_constants = UseDxilPath();
   spirv_features.optimize_finite_multiplication =
+      cvars::metal_finite_multiply &&
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
