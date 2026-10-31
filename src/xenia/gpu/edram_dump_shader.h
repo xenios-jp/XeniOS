@@ -53,9 +53,9 @@ union EdramDumpShaderKey {
     // is written in the group-packed layout, out of a windowed binding, so the
     // destination base push constant is unused there.
     uint32_t direct_resolve : 1;
-    // Average all four samples of an RGBA8 4x source while resolving directly.
-    // Only meaningful with direct_resolve.
-    uint32_t direct_resolve_4x_average : 1;
+    // Average all samples of an RGBA8 2x or 4x source while resolving
+    // directly. Only meaningful with direct_resolve.
+    uint32_t direct_resolve_average : 1;
     // Also store the logical texels - after the resolve's red/blue swap,
     // before its endian transform - as raw dwords in an existing,
     // correctly-sized texture-cache image viewed as R32Uint for 32bpp sources

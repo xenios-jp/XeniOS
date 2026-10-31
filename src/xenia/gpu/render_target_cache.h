@@ -723,7 +723,8 @@ class RenderTargetCache {
   // Both destination layouts are covered - the caller decides which by what it
   // binds and by EdramDumpShaderKey::native_layout. allow_full32_4x_average
   // admits the unsigned 8_8_8_8 and 2_10_10_10 four-sample averages into the
-  // same format, for backends that can do those directly.
+  // same format, and the 8_8_8_8 two-sample one, for backends that can do
+  // those directly.
   // allow_cross_depth_color permits bitwise 32bpp copies from the other kind
   // of source when the backend compensates for the depth tile-column swap.
   // allow_full64_rgba16_1x admits the single-sample copy of a 16_16_16_16
