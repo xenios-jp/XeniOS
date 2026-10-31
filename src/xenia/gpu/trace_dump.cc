@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/trace_dump.h"
 
+#include <algorithm>
 #include <cstdio>
 
 #include "third_party/stb/stb_image_write.h"
@@ -73,8 +74,14 @@ DEFINE_int32(trace_dump_trace_frame, -1,
 
 DEFINE_int32(trace_dump_capture_frame, -1,
              "Wrap the RenderDoc host capture around just this frame "
-             "instead of the whole replay. -1 keeps the whole replay.",
+             "instead of the whole replay. -1 keeps the whole replay. With "
+             "trace_dump_passes, frames count on across passes.",
              "GPU.Debug");
+
+DEFINE_uint32(trace_dump_passes, 1,
+              "Replay the whole trace this many times, so the frames of later "
+              "passes run with warm caches, even in a one-frame trace.",
+              "GPU.Debug");
 
 DEFINE_int32(trace_dump_memory_frame, -1,
              "After replaying this frame, write guest physical memory to "
@@ -218,8 +225,15 @@ int TraceDump::Run() {
   }
   // State accumulates across frames, so every frame has to run in order.
   int frame_count = player_->frame_count();
+  int passes = std::max(int(cvars::trace_dump_passes), 1);
   XELOGI("TraceDump: replaying {} frames", frame_count);
-  for (int i = 0; i < frame_count; ++i) {
+  for (int n = 0; n < frame_count * passes; ++n) {
+    int pass = n / frame_count;
+    int i = n % frame_count;
+    if (pass && !i) {
+      AwaitGuestMemoryWrites(0, 0);
+      XELOGI("TraceDump: pass {}", pass);
+    }
     // Seeking an empty frame starts no playback, so the wait never ends.
     int last_command = static_cast<int>(player_->frame(i)->commands.size()) - 1;
     if (last_command < 0) {
@@ -227,7 +241,7 @@ int TraceDump::Run() {
     }
     XELOGI("TraceDump: frame {}/{} ({} commands)", i, frame_count,
            last_command + 1);
-    if (i == capture_frame) {
+    if (n == capture_frame) {
       BeginHostCapture();
     }
     if (i == cvars::trace_dump_trace_frame) {
@@ -238,11 +252,15 @@ int TraceDump::Run() {
                       cvars::trace_dump_stop_command < last_command;
     if (stop_early) {
       player_->PlayFramePrefix(i, cvars::trace_dump_stop_command);
+    } else if (pass) {
+      // Seeking back to an already played frame plays nothing.
+      player_->PlayFramePrefix(i, last_command);
     } else {
       player_->SeekFrame(i);
       player_->SeekCommand(last_command);
     }
     player_->WaitOnPlayback();
+    EndFrame(pass, i);
     if (i == cvars::trace_dump_edram_frame) {
       std::filesystem::path edram_path = base_output_path_;
       edram_path.replace_filename(edram_path.stem().concat("_edram.bin"));
@@ -261,7 +279,7 @@ int TraceDump::Run() {
                i, stop_early ? cvars::trace_dump_stop_command : last_command);
       }
     }
-    if (i == capture_frame) {
+    if (n == capture_frame) {
       EndHostCapture();
     }
     if (i == cvars::trace_dump_memory_frame) {
@@ -307,6 +325,7 @@ int TraceDump::Run() {
   if (capture_frame < 0) {
     EndHostCapture();
   }
+  EndReplay(base_output_path_);
 
   // Capture.
   int result =
