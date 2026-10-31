@@ -88,6 +88,8 @@ option(XENIA_ENABLE_ITRACE "Enable JIT per-instruction tracing to the log (slow)
 option(XENIA_ENABLE_DTRACE "Enable JIT per-operation data tracing to the log (very slow)" OFF)
 option(XENIA_ENABLE_FTRACE "Enable JIT per-function-call tracing to the log" OFF)
 option(XENIA_ENABLE_GPU_TRACE "Enable GPU trace capture in Release" OFF)
+option(XENIA_BUILD_IOS_TRACE_APP
+       "Build the iOS Metal trace replay app (Xenia Trace Bench)" OFF)
 
 if(XENIA_ENABLE_PROFILER)
   # UI is Debug-only — shutdown dump spams the log otherwise.
