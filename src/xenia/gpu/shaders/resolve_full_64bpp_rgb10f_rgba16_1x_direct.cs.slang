@@ -1,10 +1,12 @@
-// Exact format-3/12 source, one sample, 16_16_16_16 destination, read straight
-// from the 1x host render target instead of the EDRAM buffer.
+// Exact format-3/12 source, one sample, 16_16_16_16 or 16_16_16_16_FLOAT
+// destination, read straight from the 1x host render target instead of the
+// EDRAM buffer.
 // XE_MSL_ONLY
 // Each pixel is packed into the dword the EDRAM dump would store for it, then
 // the copy is the generic 64bpp one specialized for this case (the resolve info
-// fixed as for resolve_full_64bpp_rgb10f_rgba16_1x, the number format and
-// exponent bias left to the constants), with the same unpack, exponent bias
+// fixed as for resolve_full_64bpp_rgb10f_rgba16_1x and
+// resolve_full_64bpp_rgb10f_rgba16f_1x, the destination format, number format
+// and exponent bias left to the constants), with the same unpack, exponent bias
 // and pack code.
 #include "endian.xesli"
 #include "pixel_formats.xesli"
@@ -40,7 +42,6 @@ entry_inputs_end_code_begin_compute_xe
   resolve_info.edram_msaa_samples = 0u;
   resolve_info.edram_is_depth = false;
   resolve_info.decode_pwl_gamma = false;
-  resolve_info.dest_format = 26u;
   resolve_info.sample_select = 0u;
 
   uint2_xe pixel_index = in_global_thread_id_xe.xy << uint2_xe(2u, 0u);
