@@ -1603,17 +1603,23 @@ RenderTargetCache::GetDirectResolveEligibility(
       xenos::CopySampleSelect sample_select =
           resolve_info.copy_dest_coordinate_info.copy_sample_select;
       // The four-sample average of an unsigned normalized 8_8_8_8 or
-      // 2_10_10_10 source into a destination of the same layout.
+      // 2_10_10_10 source into a destination of the same layout, or the
+      // two-sample one of an 8_8_8_8 source.
       bool full32_4x_average =
-          allow_full32_4x_average && msaa_samples == xenos::MsaaSamples::k4X &&
+          allow_full32_4x_average &&
           !resolve_info.copy_dest_info.copy_dest_exp_bias &&
-          sample_select == xenos::CopySampleSelect::k0123 &&
-          ((source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 &&
-            dest_format == xenos::ColorFormat::k_8_8_8_8) ||
-           ((source_format == xenos::ColorRenderTargetFormat::k_2_10_10_10 ||
-             source_format ==
-                 xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10) &&
-            dest_format == xenos::ColorFormat::k_2_10_10_10));
+          ((msaa_samples == xenos::MsaaSamples::k4X &&
+            sample_select == xenos::CopySampleSelect::k0123 &&
+            ((source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 &&
+              dest_format == xenos::ColorFormat::k_8_8_8_8) ||
+             ((source_format == xenos::ColorRenderTargetFormat::k_2_10_10_10 ||
+               source_format == xenos::ColorRenderTargetFormat::
+                                    k_2_10_10_10_AS_10_10_10_10) &&
+              dest_format == xenos::ColorFormat::k_2_10_10_10))) ||
+           (msaa_samples == xenos::MsaaSamples::k2X &&
+            sample_select == xenos::CopySampleSelect::k01 &&
+            source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8 &&
+            dest_format == xenos::ColorFormat::k_8_8_8_8));
       // The single-sample conversion of a 2_10_10_10_FLOAT source into an
       // unsigned normalized 2_10_10_10 destination, exponent bias included.
       bool full32_rgb10f_1x =
