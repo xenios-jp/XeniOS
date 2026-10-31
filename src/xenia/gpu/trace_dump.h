@@ -41,6 +41,10 @@ class TraceDump {
   // Makes the guest memory the replayed GPU work wrote in [base, base + size)
   // visible to the host.
   virtual void AwaitGuestMemoryWrites(uint32_t base, uint32_t size) {}
+  // Called after each replayed frame's playback, and once after the last one,
+  // with the root path for output files.
+  virtual void EndFrame(int pass, int frame) {}
+  virtual void EndReplay(const std::filesystem::path& base_output_path) {}
 
   std::unique_ptr<Emulator> emulator_;
   GraphicsSystem* graphics_system_ = nullptr;
