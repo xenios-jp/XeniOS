@@ -3316,6 +3316,14 @@ void MetalCommandProcessor::AwaitAllQueueOperationsCompletion() {
   AwaitSubmissionCompletion(submission_current_);
 }
 
+uint64_t MetalCommandProcessor::AwaitCompletedGpuTimeNs(
+    uint64_t* command_buffers) {
+  AwaitAllQueueOperationsCompletion();
+  WaitForPendingCompletionHandlers();
+  *command_buffers = gpu_time_command_buffers_.load(std::memory_order_acquire);
+  return completed_gpu_time_ns_.load(std::memory_order_acquire);
+}
+
 // ============================================================================
 // ZPD (occlusion query) backend overrides.
 // ============================================================================

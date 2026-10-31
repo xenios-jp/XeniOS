@@ -165,6 +165,9 @@ class MetalCommandProcessor : public CommandProcessor {
   bool HasSeenSwap() const { return saw_swap_; }
   // Commits the open submission, then blocks until every submission completes.
   void AwaitAllQueueOperationsCompletion();
+  // Blocks until every command buffer has completed and run its handlers, then
+  // returns the GPU time (GPUEndTime - GPUStartTime) summed over all of them.
+  uint64_t AwaitCompletedGpuTimeNs(uint64_t* command_buffers);
   void SetSwapDestSwap(uint32_t dest_base, bool swap);
   bool ConsumeSwapDestSwap(uint32_t dest_base, bool* swap_out);
 
