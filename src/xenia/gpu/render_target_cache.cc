@@ -1629,8 +1629,9 @@ RenderTargetCache::GetDirectResolveEligibility(
       }
     } break;
     case draw_util::ResolveCopyShaderIndex::kFull64bpp: {
-      // The single-sample conversion of a 16_16_16_16 or 2_10_10_10_FLOAT
-      // source into a 16_16_16_16 destination, exponent bias and number format
+      // The single-sample conversion of a 16_16_16_16 source into a
+      // 16_16_16_16 destination, or of a 2_10_10_10_FLOAT source into a
+      // 16_16_16_16 or 16_16_16_16_FLOAT one, exponent bias and number format
       // included.
       auto source_format =
           xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format);
@@ -1648,8 +1649,10 @@ RenderTargetCache::GetDirectResolveEligibility(
               xenos::MsaaSamples::k1X ||
           resolve_info.copy_dest_coordinate_info.copy_sample_select !=
               xenos::CopySampleSelect::k0 ||
-          resolve_info.copy_dest_info.copy_dest_format !=
-              xenos::ColorFormat::k_16_16_16_16) {
+          (resolve_info.copy_dest_info.copy_dest_format !=
+               xenos::ColorFormat::k_16_16_16_16 &&
+           (!rgb10f || resolve_info.copy_dest_info.copy_dest_format !=
+                           xenos::ColorFormat::k_16_16_16_16_FLOAT))) {
         return DirectResolveEligibility::kConvertingCopyShader;
       }
     } break;
