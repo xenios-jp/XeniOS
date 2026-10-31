@@ -1035,11 +1035,19 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
     }
 
-    auto load_average_4x_rgba8 = [&](spv::Id pixel_x, spv::Id pixel_y,
-                                     spv::Id& packed_out) {
+    // All the source's samples are averaged: 0123 at 4x, 01 at 2x.
+    auto load_average_rgba8 = [&](spv::Id pixel_x, spv::Id pixel_y,
+                                  spv::Id& packed_out) {
       spv::Id type_float4 = builder.makeVectorType(type_float, 4);
       spv::Id sum = spv::NoResult;
-      for (uint32_t sample = 0; sample < 4; ++sample) {
+      bool average_4x = key.msaa_samples >= xenos::MsaaSamples::k4X;
+      uint32_t sample_count = average_4x ? 4 : 2;
+      for (uint32_t guest_sample = 0; guest_sample < sample_count;
+           ++guest_sample) {
+        uint32_t sample =
+            average_4x ? guest_sample
+                       : draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+                             guest_sample, options.msaa_2x_attachments_supported);
         spv::Id value;
         if (key.GetColorFormat() != xenos::ColorRenderTargetFormat::k_8_8_8_8) {
           // The resolve interprets EDRAM as RGBA8, but its owner may store a
@@ -1073,7 +1081,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
       spv::Id average =
           builder.createBinOp(spv::OpVectorTimesScalar, type_float4, sum,
-                              builder.makeFloatConstant(0.25f));
+                              builder.makeFloatConstant(1.0f / sample_count));
       spv::Id component_width = builder.makeUintConstant(8);
       packed_out = spv::NoResult;
       for (uint32_t component = 0; component < 4; ++component) {
@@ -1130,8 +1138,8 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       if (source_native_in_scaled_dest) {
         pixel_x = divide_down(pixel_x, options.resolution_scale_x);
       }
-      if (key.direct_resolve_4x_average) {
-        load_average_4x_rgba8(pixel_x, source_pixel_y, pixel_packed[0]);
+      if (key.direct_resolve_average) {
+        load_average_rgba8(pixel_x, source_pixel_y, pixel_packed[0]);
       } else {
         load_and_pack(pixel_x, source_pixel_y, source_sample_id, pixel_packed);
       }
