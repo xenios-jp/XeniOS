@@ -218,6 +218,18 @@ bool IsFull32RGBA8FourSampleAverage(
   return key.edram == 0x00000800u && key.dest == (6u << 7) && key.sample == 6;
 }
 
+// An 8_8_8_8 two-sample average into 8_8_8_8, which the direct resolve does
+// like the four-sample one.
+bool IsFull32RGBA8TwoSampleAverage(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull32bpp) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  return key.edram == 0x00000400u && key.dest == (6u << 7) && key.sample == 4;
+}
+
 // A 2_10_10_10 (or 2_10_10_10_AS_10_10_10_10) four-sample average into
 // 2_10_10_10 as an unsigned fraction without exponent bias.
 bool IsFull32RGB10FourSampleAverage(
@@ -3520,8 +3532,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         rt_key.is_depth != uint32_t(resolve_info.IsCopyingDepth());
     shader_key.direct_resolve_texture_depth_float =
         refresh_texture && resolve_info.IsCopyingDepth() && refresh_depth_float;
-    shader_key.direct_resolve_4x_average =
-        IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
+    shader_key.direct_resolve_average =
+        IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants) ||
+        IsFull32RGBA8TwoSampleAverage(copy_shader, copy_shader_constants);
     Source source;
     source.pipeline = GetOrCreateDumpPipeline(shader_key);
     // The source is the ownership transfer view, whose format the shader was
