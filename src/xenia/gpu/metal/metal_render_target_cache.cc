@@ -245,7 +245,7 @@ bool IsFull32RGB10FloatOneSample(
 }
 
 // A one-sample 2_10_10_10_FLOAT (or 2_10_10_10_FLOAT_AS_16_16_16_16) copy into
-// 16_16_16_16, with any exponent bias and number format.
+// 16_16_16_16 or 16_16_16_16_FLOAT, with any exponent bias and number format.
 bool IsFull64RGB10FloatToRGBA16OneSample(
     draw_util::ResolveCopyShaderIndex copy_shader,
     const draw_util::ResolveCopyShaderConstants& constants) {
@@ -254,7 +254,9 @@ bool IsFull64RGB10FloatToRGBA16OneSample(
   }
   const ResolveCopyKey key = GetResolveCopyKey(constants);
   return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
-         (key.dest & 0x1F80u) == (26u << 7) && key.sample == 0;
+         ((key.dest & 0x1F80u) == (26u << 7) ||
+          (key.dest & 0x1F80u) == (32u << 7)) &&
+         key.sample == 0;
 }
 
 // A one-sample 16_16_16_16 copy into 16_16_16_16, with any exponent bias and
