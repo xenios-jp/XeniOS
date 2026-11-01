@@ -309,6 +309,9 @@ class MetalTextureCache : public TextureCache {
   // resolution-scaled variants), indexed by TextureCache::LoadShaderIndex.
   MTL::ComputePipelineState* load_pipelines_[kLoadShaderCount] = {};
   MTL::ComputePipelineState* load_pipelines_scaled_[kLoadShaderCount] = {};
+  // Loaders writing a level of the texture through an integer view rather than
+  // a buffer to copy from, for keys IsDirectImageLoadKey accepts.
+  MTL::ComputePipelineState* load_image_pipelines_[kLoadShaderCount] = {};
   MTL::ComputePipelineState* load_direct_raw32_pipeline_ = nullptr;
   MTL::ComputePipelineState* load_direct_raw64_pipeline_ = nullptr;
 
@@ -330,6 +333,10 @@ class MetalTextureCache : public TextureCache {
     void Invalidate3DAs2DView() { texture_3d_as_2d_.reset(); }
     // Integer reinterpretation of the image for the resolve refresh write.
     MTL::Texture* GetOrCreateResolveWriteView();
+    // Integer reinterpretation of one level of the image, with texels of
+    // block_bytes, for a load shader writing it directly.
+    MTL::Texture* GetOrCreateLevelWriteView(uint32_t level,
+                                            uint32_t block_bytes);
 
    private:
     friend class MetalTextureCache;
@@ -340,6 +347,7 @@ class MetalTextureCache : public TextureCache {
     MTL::TextureType metal_texture_type_ = MTL::TextureType2D;
     std::unique_ptr<MetalTexture> texture_3d_as_2d_;
     MTL::Texture* resolve_write_view_ = nullptr;
+    std::array<MTL::Texture*, 16> level_write_views_ = {};
     std::unordered_map<uint64_t, MTL::Texture*> swizzled_view_cache_;
     MetalTexture* resolve_refresh_previous_ = nullptr;
     MetalTexture* resolve_refresh_next_ = nullptr;
@@ -439,6 +447,10 @@ class MetalTextureCache : public TextureCache {
   // resolve refresh destination: an enabled format in the exact tiled 2D
   // single-level shape a 1x resolve can write.
   bool IsResolveRefreshKey(const TextureKey& key) const;
+  // Whether the levels of a texture of the key may be loaded directly into the
+  // texture by its load_image_pipelines_ loader, which needs shader write
+  // usage on the texture.
+  bool IsDirectImageLoadKey(const TextureKey& key) const;
   ResolveRefreshWatchLog refresh_fire_log_;
   SharedMemory::GlobalWatchHandle refresh_fire_watch_handle_ = nullptr;
   static void RefreshFireGlobalWatchCallbackThunk(
