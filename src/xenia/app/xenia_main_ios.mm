@@ -674,7 +674,7 @@ bool EmulatorAppIOS::OnInitialize() {
         }
         xe::ui::EnsureDiscoveredGameDiscList(&game);
         for (const auto& disc : game.discs) {
-          discs.push_back({disc.label, disc.path, disc.disc_number});
+          discs.push_back({disc.label, disc.path});
         }
       }
     }
