@@ -100,6 +100,11 @@ DEFINE_int32(
     "explicitly (up to the number of logical CPU cores), 0 to disable "
     "multithreaded compilation.",
     "Metal");
+DEFINE_bool(
+    metal_log_frame_gpu_waits, false,
+    "Log, at every swap, the time the CPU spent waiting for the GPU in the "
+    "frame by reason, and the command buffers it created by kind.",
+    "Metal");
 
 namespace xe {
 namespace gpu {
@@ -333,6 +338,17 @@ const char* const kCommandBufferKindNames[] = {
 static_assert(std::size(kCommandBufferKindNames) ==
                   size_t(MetalCommandProcessor::CommandBufferKind::kCount),
               "Command buffer kind names must match the enum");
+
+// Indexed by GpuWaitReason.
+const char* const kGpuWaitReasonNames[] = {
+    "memexport",      "zpd_query",           "shader_done_fence",
+    "trace_playback", "uniforms",            "resolve",
+    "texture_upload", "scaled_resolve_copy", "snapshot",
+    "dump",
+};
+static_assert(std::size(kGpuWaitReasonNames) ==
+                  size_t(MetalCommandProcessor::GpuWaitReason::kCount),
+              "GPU wait reason names must match the enum");
 
 int64_t GetSteadyTimeNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1906,7 +1922,9 @@ void MetalCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
       hazards->HasPendingAccess(base_ptr, length)) {
     // Submission alone does not keep the GPU from seeing a later CPU restore.
     // Consume this recorded version before overwriting aliased guest RAM.
+    int64_t wait_start_ns = GetSteadyTimeNs();
     AwaitAllQueueOperationsCompletion();
+    NoteGpuWait(GpuWaitReason::kTracePlayback, wait_start_ns);
   }
 }
 
@@ -2070,7 +2088,9 @@ bool MetalCommandProcessor::TryWriteShaderDoneFence(uint32_t address,
   }
   // Trace records read guest RAM immediately. Allocation failure also needs a
   // safe CPU fallback: never report completion while the GPU still uses RAM.
+  int64_t wait_start_ns = GetSteadyTimeNs();
   AwaitAllQueueOperationsCompletion();
+  NoteGpuWait(GpuWaitReason::kShaderDoneFence, wait_start_ns);
   return false;
 }
 
@@ -2114,7 +2134,9 @@ void MetalCommandProcessor::EncodeDeferredShaderDoneFences() {
     // submission end cannot re-enter fence encoding without an active encoder.
     XELOGE("Metal: couldn't encode shader-done fence writes, waiting for GPU");
     assert_null(current_render_encoder_);
+    int64_t wait_start_ns = GetSteadyTimeNs();
     AwaitAllQueueOperationsCompletion();
+    NoteGpuWait(GpuWaitReason::kShaderDoneFence, wait_start_ns);
     for (size_t i = 0; i < pending_shader_done_fence_ranges_.size(); ++i) {
       std::memcpy(
           memory_->TranslatePhysical(
@@ -3174,6 +3196,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   SCOPE_profile_cpu_f("gpu");
   EndZPDFrame();
   ProcessCompletedSubmissions();
+  LogFrameGpuWaits();
 
   // Completion handlers land a frame or two behind, which a window this wide
   // absorbs.
@@ -3709,6 +3732,65 @@ void MetalCommandProcessor::AwaitSubmissionCompletion(uint64_t submission) {
                                   std::memory_order_relaxed);
 }
 
+void MetalCommandProcessor::NoteGpuWait(GpuWaitReason reason,
+                                        int64_t wait_start_ns) {
+  frame_gpu_wait_ns_[size_t(reason)] += GetSteadyTimeNs() - wait_start_ns;
+  ++frame_gpu_wait_counts_[size_t(reason)];
+}
+
+void MetalCommandProcessor::CommitAndAwait(MTL::CommandBuffer* command_buffer,
+                                            GpuWaitReason reason) {
+  command_buffer->commit();
+  int64_t wait_start_ns = GetSteadyTimeNs();
+  command_buffer->waitUntilCompleted();
+  NoteGpuWait(reason, wait_start_ns);
+}
+
+void MetalCommandProcessor::LogFrameGpuWaits() {
+  int64_t now_ns = GetSteadyTimeNs();
+  if (cvars::metal_log_frame_gpu_waits) {
+    uint64_t wait_ns = 0;
+    std::string waits;
+    for (size_t i = 0; i < kGpuWaitReasonCount; ++i) {
+      wait_ns += frame_gpu_wait_ns_[i];
+      if (frame_gpu_wait_counts_[i]) {
+        waits += fmt::format(" {}={:.2f}ms/{}", kGpuWaitReasonNames[i],
+                             frame_gpu_wait_ns_[i] * 1e-6,
+                             frame_gpu_wait_counts_[i]);
+      }
+    }
+    uint64_t command_buffers = 0;
+    std::string kinds;
+    for (size_t i = 0; i < kCommandBufferKindCount; ++i) {
+      uint64_t count =
+          command_buffer_kind_counts_[i] - command_buffer_kind_frame_start_[i];
+      command_buffers += count;
+      if (count) {
+        kinds += fmt::format(" {}={}", kCommandBufferKindNames[i], count);
+      }
+    }
+    XELOGI(
+        "Metal: frame {}: {:.2f} ms, {:.2f} ms waiting for the GPU{}; {} "
+        "command buffer(s){}",
+        frame_current_,
+        frame_log_start_ns_ ? (now_ns - frame_log_start_ns_) * 1e-6 : 0.0,
+        wait_ns * 1e-6, waits, command_buffers, kinds);
+  }
+  std::fill(std::begin(frame_gpu_wait_ns_), std::end(frame_gpu_wait_ns_), 0);
+  std::fill(std::begin(frame_gpu_wait_counts_),
+            std::end(frame_gpu_wait_counts_), 0);
+  std::copy(std::begin(command_buffer_kind_counts_),
+            std::end(command_buffer_kind_counts_),
+            command_buffer_kind_frame_start_);
+  frame_log_start_ns_ = now_ns;
+}
+
+void MetalCommandProcessor::AwaitMemexportSubmission(uint64_t submission) {
+  int64_t wait_start_ns = GetSteadyTimeNs();
+  AwaitAllQueueOperationsCompletion();
+  NoteGpuWait(GpuWaitReason::kMemexport, wait_start_ns);
+}
+
 void MetalCommandProcessor::AwaitAllQueueOperationsCompletion() {
   // Ending first, so a memexport draw that is still only recorded gets
   // submitted rather than waited past.
@@ -3805,7 +3887,9 @@ CommandProcessor::QueryOpenResult MetalCommandProcessor::OpenQuery(
         XELOGI("ZPD: Stall awaiting submission={} completed_before={}",
                wait_for, completed_submission);
       }
+      int64_t wait_start_ns = GetSteadyTimeNs();
       AwaitSubmissionCompletion(wait_for);
+      NoteGpuWait(GpuWaitReason::kZpdQuery, wait_start_ns);
       waited_for_submission = true;
       PumpQueryResolves();
       is_pool_exhausted = !zpd_visibility_pool_->has_free_indices();
@@ -3935,7 +4019,9 @@ bool MetalCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
   }
 
   if (wait_for_submission > GetCompletedSubmission()) {
+    int64_t wait_start_ns = GetSteadyTimeNs();
     AwaitSubmissionCompletion(wait_for_submission);
+    NoteGpuWait(GpuWaitReason::kZpdQuery, wait_start_ns);
   }
 
   PumpQueryResolves();
@@ -7434,8 +7520,10 @@ bool MetalCommandProcessor::EnsureSpirvUniformBuffer() {
       } else {
         ++suppressed_wait_logs;
       }
+      int64_t wait_start_ns = GetSteadyTimeNs();
       dispatch_semaphore_wait(spirv_uniforms_available_semaphore_,
                               DISPATCH_TIME_FOREVER);
+      NoteGpuWait(GpuWaitReason::kUniforms, wait_start_ns);
     }
   }
 
