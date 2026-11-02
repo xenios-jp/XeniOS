@@ -309,18 +309,19 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   // Tessellation emulation runs the hull stage as an object shader and the
   // tessellator as a mesh shader, so the pre-rasterization bindings go to those
   // stages instead of the vertex stage.
+  using Stage = MetalCommandProcessor::RenderEncoderStage;
+  auto bind = [&](Stage stage, const Slice& slice, uint64_t bind_point) {
+    command_processor_.SetRenderEncoderBuffer(stage, slice.buffer, slice.offset,
+                                              NS::UInteger(bind_point));
+  };
   auto bind_all_stages = [&](const Slice& slice, uint64_t bind_point) {
     if (tessellated) {
-      encoder->setObjectBuffer(slice.buffer, slice.offset,
-                               NS::UInteger(bind_point));
-      encoder->setMeshBuffer(slice.buffer, slice.offset,
-                             NS::UInteger(bind_point));
+      bind(Stage::kObject, slice, bind_point);
+      bind(Stage::kMesh, slice, bind_point);
     } else {
-      encoder->setVertexBuffer(slice.buffer, slice.offset,
-                               NS::UInteger(bind_point));
+      bind(Stage::kVertex, slice, bind_point);
     }
-    encoder->setFragmentBuffer(slice.buffer, slice.offset,
-                               NS::UInteger(bind_point));
+    bind(Stage::kFragment, slice, bind_point);
   };
   bind_all_stages(texture_heap, kIRDescriptorHeapBindPoint);
   bind_all_stages(sampler_heap, kIRSamplerHeapBindPoint);
@@ -328,11 +329,8 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   if (tessellated) {
     // The hull and domain stages read the same root parameters from their own
     // bind point.
-    encoder->setObjectBuffer(
-        argument_buffer.buffer, argument_buffer.offset,
-        NS::UInteger(kIRArgumentBufferHullDomainBindPoint));
-    encoder->setMeshBuffer(argument_buffer.buffer, argument_buffer.offset,
-                           NS::UInteger(kIRArgumentBufferHullDomainBindPoint));
+    bind(Stage::kObject, argument_buffer, kIRArgumentBufferHullDomainBindPoint);
+    bind(Stage::kMesh, argument_buffer, kIRArgumentBufferHullDomainBindPoint);
   }
   // Binding covers only the three buffers above; everything the shaders reach
   // through a GPU address has to be made resident explicitly.
