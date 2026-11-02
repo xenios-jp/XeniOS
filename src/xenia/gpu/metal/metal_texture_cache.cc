@@ -95,7 +95,8 @@
 #include "xenia/gpu/xenos.h"
 
 DEFINE_bool(metal_force_bc_decompress, false,
-            "Force BC1/2/3/5/DXN decompression to RGBA8/RG8 (debug).", "Metal");
+            "Force BC1/2/3/4/5 decompression to RGBA8/R8/RG8 (debug).",
+            "Metal");
 DEFINE_bool(metal_texture_cache_use_private, true,
             "Use MTLStorageModePrivate for Metal texture cache textures when "
             "GPU upload paths support it.",
@@ -1004,6 +1005,7 @@ bool MetalTextureCache::IsDecompressionNeededForKey(TextureKey key) const {
     case xenos::TextureFormat::k_DXT1:
     case xenos::TextureFormat::k_DXT2_3:
     case xenos::TextureFormat::k_DXT4_5:
+    case xenos::TextureFormat::k_DXT5A:
     case xenos::TextureFormat::k_DXN: {
       if (::cvars::metal_force_bc_decompress) {
         return true;
@@ -1070,6 +1072,9 @@ TextureCache::LoadShaderIndex MetalTextureCache::GetLoadShaderIndexForKey(
     case xenos::TextureFormat::k_DXT3A:
       return kLoadShaderIndexDXT3A;
     case xenos::TextureFormat::k_DXT5A:
+      if (!decompress) {
+        return kLoadShaderIndex64bpb;
+      }
       return kLoadShaderIndexDXT5AToR8;
     case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
       return kLoadShaderIndexDXT3AAs1111ToARGB4;
@@ -1210,8 +1215,10 @@ MTL::PixelFormat MetalTextureCache::GetPixelFormatForKey(TextureKey key) const {
     case xenos::TextureFormat::k_DXN:
       return decompress ? MTL::PixelFormatRG8Unorm
                         : MTL::PixelFormatBC5_RGUnorm;
-    case xenos::TextureFormat::k_DXT3A:
     case xenos::TextureFormat::k_DXT5A:
+      return decompress ? MTL::PixelFormatR8Unorm
+                        : MTL::PixelFormatBC4_RUnorm;
+    case xenos::TextureFormat::k_DXT3A:
       return MTL::PixelFormatR8Unorm;
     case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
       // Metal's only 4444 format. It reads the DXT3AAs1111ToARGB4 load shader
@@ -1313,6 +1320,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       key.format == xenos::TextureFormat::k_DXT1 ||
       key.format == xenos::TextureFormat::k_DXT2_3 ||
       key.format == xenos::TextureFormat::k_DXT4_5 ||
+      key.format == xenos::TextureFormat::k_DXT5A ||
       key.format == xenos::TextureFormat::k_DXN;
   bool host_block_compressed = is_block_compressed_format && !decompress;
   uint32_t host_block_width = host_block_compressed ? block_width : 1;
