@@ -545,6 +545,12 @@ spv::Id SpirvShaderTranslator::ScalarEstimate(ScalarEstimateOp op,
   return builder_->createUnaryOp(spv::OpBitcast, type_float_, result);
 }
 
+// TODO(alu-exact): for a product below about 2^-79, the exact error passed in
+// is itself below 2^-126 and flushes, so the product isn't stepped and comes
+// out one ulp too large where the console rounds toward zero. The fix,
+// verified on the console but parked for its cost, is on
+// park/metal-rtz-tiny-product; see ~/xenia/tools/PARKED.md, "RTZ tiny-product
+// fix".
 spv::Id SpirvShaderTranslator::RoundTowardZero(spv::Id rounded, spv::Id error,
                                                spv::Id a, spv::Id b) {
   spv::Id type = builder_->getTypeId(rounded);
