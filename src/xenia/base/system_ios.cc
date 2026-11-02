@@ -28,6 +28,9 @@ bool SetProcessPriorityClass(const uint32_t priority_class) {
 
 bool IsUseNexusForGameBarEnabled() { return false; }
 
+// iOS has no readable hardware UUID.
+std::string GetMachineId() { return {}; }
+
 void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
   static_cast<void>(type);
   XELOGW("ShowSimpleMessageBox is not supported on iOS: {}", message);
