@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <thread>
+#include <unordered_set>
+#include <vector>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
@@ -1213,9 +1215,39 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
     function_main_->addBlock(main_loop_continue_);
     builder_->setBuildPoint(main_loop_continue_);
     if (has_main_switch) {
+      // Drop the program counters coming from blocks that aren't reachable
+      // from the entry, such as code after an unconditional jump falling
+      // through to the next label. Such blocks are not written to the module,
+      // so an OpPhi parent referring to one would be an undefined ID.
+      {
+        std::unordered_set<spv::Id> reachable_blocks;
+        std::vector<spv::Block*> blocks_to_visit;
+        blocks_to_visit.push_back(function_main_->getEntryBlock());
+        while (!blocks_to_visit.empty()) {
+          spv::Block* block = blocks_to_visit.back();
+          blocks_to_visit.pop_back();
+          if (reachable_blocks.insert(block->getId()).second) {
+            blocks_to_visit.insert(blocks_to_visit.end(),
+                                   block->getSuccessors().cbegin(),
+                                   block->getSuccessors().cend());
+          }
+        }
+        size_t operands_kept = 0;
+        for (size_t i = 0; i + 1 < main_switch_next_pc_phi_operands_.size();
+             i += 2) {
+          spv::Id parent = main_switch_next_pc_phi_operands_[i + 1];
+          if (reachable_blocks.count(parent)) {
+            main_switch_next_pc_phi_operands_[operands_kept++] =
+                main_switch_next_pc_phi_operands_[i];
+            main_switch_next_pc_phi_operands_[operands_kept++] = parent;
+          }
+        }
+        main_switch_next_pc_phi_operands_.resize(operands_kept);
+      }
       // OpPhi, if added, must be the first in the block.
       // If labels were added, but not jumps (for example, due to the call
-      // instruction not being implemented as of October 18, 2020), send an
+      // instruction not being implemented as of October 18, 2020), or the
+      // continue block is reached only from unreachable blocks, send an
       // impossible program counter value (-1) to the OpPhi at the next
       // iteration.
       if (main_switch_next_pc_phi_operands_.empty()) {
