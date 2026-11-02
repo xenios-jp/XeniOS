@@ -689,7 +689,8 @@ bool EmulatorAppIOS::OnInitialize() {
   emulator_->set_on_launch_new_title([this](const std::string& host_path,
                                             const std::string& launch_module, uint32_t launch_flags,
                                             const std::string& launch_data_hex,
-                                            const std::string& /*xbox_disc*/) {
+                                            const std::string& /*xbox_disc*/,
+                                            const std::string& /*package*/) {
     if (shutting_down_.load(std::memory_order_acquire)) {
       XELOGW("iOS: Ignoring title relaunch request while shutting down");
       return;
