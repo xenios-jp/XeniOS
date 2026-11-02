@@ -206,6 +206,17 @@ class MetalCommandProcessor : public CommandProcessor {
   // Whether the open pass used a view of the same texture as any of these.
   bool RenderEncoderUsesAnyTexture(
       std::span<MTL::Texture* const> textures) const;
+  enum class RenderEncoderStage : uint32_t {
+    kVertex,
+    kFragment,
+    kObject,
+    kMesh,
+    kCount,
+  };
+  // Binds a buffer to a stage of the current render encoder unless it's already
+  // bound there at this offset.
+  void SetRenderEncoderBuffer(RenderEncoderStage stage, MTL::Buffer* buffer,
+                              NS::UInteger offset, NS::UInteger index);
   void EnsureCommandBufferAutoreleasePool();
   void DrainCommandBufferAutoreleasePool();
   // Sub-allocates from a command-buffer scoped pool, recycled once the GPU is
@@ -1244,6 +1255,18 @@ class MetalCommandProcessor : public CommandProcessor {
   MTL::DepthStencilState* msl_depth_stencil_state_ = nullptr;
   bool msl_stencil_reference_valid_ = false;
   uint32_t msl_stencil_reference_ = 0;
+  // The buffers SetRenderEncoderBuffer bound to the low indices of each stage
+  // of the current render encoder, where the Metal Shader Converter binding
+  // model puts its descriptor heaps and argument buffers.
+  struct RenderEncoderBuffer {
+    MTL::Buffer* buffer = nullptr;
+    NS::UInteger offset = 0;
+    bool valid = false;
+  };
+  static constexpr size_t kRenderEncoderTrackedBufferCount = 4;
+  std::array<std::array<RenderEncoderBuffer, kRenderEncoderTrackedBufferCount>,
+             size_t(RenderEncoderStage::kCount)>
+      render_encoder_buffers_{};
 
   // Fixed-function dynamic state cached per render encoder.
   float ff_blend_factor_[4] = {0.0f, 0.0f, 0.0f, 0.0f};

@@ -6935,6 +6935,7 @@ void MetalCommandProcessor::ResetMslRenderEncoderStateCache() {
   msl_depth_stencil_state_ = nullptr;
   msl_stencil_reference_valid_ = false;
   msl_stencil_reference_ = 0;
+  render_encoder_buffers_ = {};
   ff_blend_factor_valid_ = false;
   ResetRenderEncoderResourceUsage();
 }
@@ -6963,10 +6964,13 @@ void MetalCommandProcessor::InvalidateRenderEncoderStateAfterDrawPassTransfers(
   if (mutations & RTC::kDrawPassTransferEncoderMutationRasterizer) {
     msl_rasterizer_state_valid_ = false;
   }
-  // The DXIL binder rebinds its own buffer slots on every draw, so only the
-  // MSL path's bindings need dropping: shared memory sits at buffer slot 0 and
-  // the constant buffers from slot 1, both stages, and its textures start at
-  // fragment texture 0.
+  // Transfer draws through the DXIL path bind their own descriptor heap and
+  // argument buffer at the Metal Shader Converter's bind points, which the mask
+  // doesn't name.
+  render_encoder_buffers_ = {};
+  // For the MSL path, shared memory sits at buffer slot 0 and the constant
+  // buffers from slot 1, both stages, and its textures start at fragment
+  // texture 0.
   if (mutations & (RTC::kDrawPassTransferEncoderMutationVertexSlot0 |
                    RTC::kDrawPassTransferEncoderMutationFragmentSlot0)) {
     msl_bound_shared_memory_buffer_ = nullptr;
@@ -7094,6 +7098,57 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
   }
   declared_usage_bits |= usage_bits;
   current_render_encoder_->useResource(resource, usage);
+}
+
+void MetalCommandProcessor::SetRenderEncoderBuffer(RenderEncoderStage stage,
+                                                   MTL::Buffer* buffer,
+                                                   NS::UInteger offset,
+                                                   NS::UInteger index) {
+  bool offset_only = false;
+  if (index < kRenderEncoderTrackedBufferCount) {
+    RenderEncoderBuffer& bound = render_encoder_buffers_[size_t(stage)][index];
+    if (bound.valid && bound.buffer == buffer) {
+      if (bound.offset == offset) {
+        return;
+      }
+      offset_only = true;
+    }
+    bound.buffer = buffer;
+    bound.offset = offset;
+    bound.valid = true;
+  }
+  switch (stage) {
+    case RenderEncoderStage::kVertex:
+      if (offset_only) {
+        current_render_encoder_->setVertexBufferOffset(offset, index);
+      } else {
+        current_render_encoder_->setVertexBuffer(buffer, offset, index);
+      }
+      break;
+    case RenderEncoderStage::kFragment:
+      if (offset_only) {
+        current_render_encoder_->setFragmentBufferOffset(offset, index);
+      } else {
+        current_render_encoder_->setFragmentBuffer(buffer, offset, index);
+      }
+      break;
+    case RenderEncoderStage::kObject:
+      if (offset_only) {
+        current_render_encoder_->setObjectBufferOffset(offset, index);
+      } else {
+        current_render_encoder_->setObjectBuffer(buffer, offset, index);
+      }
+      break;
+    case RenderEncoderStage::kMesh:
+      if (offset_only) {
+        current_render_encoder_->setMeshBufferOffset(offset, index);
+      } else {
+        current_render_encoder_->setMeshBuffer(buffer, offset, index);
+      }
+      break;
+    default:
+      assert_unhandled_case(stage);
+  }
 }
 
 void MetalCommandProcessor::BeginCommandBuffer() {
@@ -7949,7 +8004,10 @@ void MetalCommandProcessor::ApplyDepthStencilState(
     depth_stencil_state_cache_.emplace(key, state);
   }
 
-  current_render_encoder_->setDepthStencilState(state);
+  if (state != msl_depth_stencil_state_) {
+    current_render_encoder_->setDepthStencilState(state);
+    msl_depth_stencil_state_ = state;
+  }
 
   if (depth_control.stencil_enable) {
     uint32_t ref_front = stencil_ref_mask_front.stencilref;
@@ -7980,11 +8038,8 @@ void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
       cull_mode = MTL::CullModeBack;
     }
   }
-  current_render_encoder_->setCullMode(cull_mode);
-
-  current_render_encoder_->setFrontFacingWinding(
-      pa_su_sc_mode_cntl.face ? MTL::WindingClockwise
-                              : MTL::WindingCounterClockwise);
+  MTL::Winding winding = pa_su_sc_mode_cntl.face ? MTL::WindingClockwise
+                                                 : MTL::WindingCounterClockwise;
 
   MTL::TriangleFillMode fill_mode = MTL::TriangleFillModeFill;
   if (primitive_polygonal &&
@@ -8002,7 +8057,6 @@ void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
       fill_mode = MTL::TriangleFillModeLines;
     }
   }
-  current_render_encoder_->setTriangleFillMode(fill_mode);
 
   float polygon_offset_scale = 0.0f;
   float polygon_offset = 0.0f;
@@ -8018,15 +8072,41 @@ void MetalCommandProcessor::ApplyRasterizerState(bool primitive_polygonal) {
   if (NeedsExactFloatDepthBias(regs)) {
     depth_bias_constant = depth_bias_slope = 0.0f;
   }
-  current_render_encoder_->setDepthBias(depth_bias_constant, depth_bias_slope,
-                                        0.0f);
 
   // With force_depth_clamp, use the host viewport clamp instead of near and far
   // Z plane clipping. X/Y/W clipping is unchanged.
-  current_render_encoder_->setDepthClipMode(
+  MTL::DepthClipMode depth_clip_mode =
       (pa_cl_clip_cntl.clip_disable || cvars::force_depth_clamp)
           ? MTL::DepthClipModeClamp
-          : MTL::DepthClipModeClip);
+          : MTL::DepthClipModeClip;
+
+  // Encoder state persists until changed, so only what differs from the last
+  // draw in this encoder is set.
+  bool all = !msl_rasterizer_state_valid_;
+  if (all || cull_mode != msl_cull_mode_) {
+    current_render_encoder_->setCullMode(cull_mode);
+  }
+  if (all || winding != msl_winding_) {
+    current_render_encoder_->setFrontFacingWinding(winding);
+  }
+  if (all || fill_mode != msl_fill_mode_) {
+    current_render_encoder_->setTriangleFillMode(fill_mode);
+  }
+  if (all || depth_bias_constant != msl_depth_bias_constant_ ||
+      depth_bias_slope != msl_depth_bias_slope_) {
+    current_render_encoder_->setDepthBias(depth_bias_constant, depth_bias_slope,
+                                          0.0f);
+  }
+  if (all || depth_clip_mode != msl_depth_clip_mode_) {
+    current_render_encoder_->setDepthClipMode(depth_clip_mode);
+  }
+  msl_rasterizer_state_valid_ = true;
+  msl_cull_mode_ = cull_mode;
+  msl_winding_ = winding;
+  msl_fill_mode_ = fill_mode;
+  msl_depth_bias_constant_ = depth_bias_constant;
+  msl_depth_bias_slope_ = depth_bias_slope;
+  msl_depth_clip_mode_ = depth_clip_mode;
 }
 
 MTL::RenderPassDescriptor*
