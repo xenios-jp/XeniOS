@@ -2151,8 +2151,8 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       handle_upload_failure(true);
       return false;
     }
-    cmd->commit();
-    cmd->waitUntilCompleted();
+    command_processor_->CommitAndAwait(
+        cmd, MetalCommandProcessor::GpuWaitReason::kTextureUpload);
 
     uint8_t* dest_data = static_cast<uint8_t*>(dest_buffer->contents());
     if (!dest_data) {
@@ -2313,8 +2313,8 @@ void MetalTextureCache::DumpTextureToFile(MTL::Texture* texture,
                         MTL::Size::Make(width, height, 1), readback, 0,
                         bytes_per_row, 0);
   blit->endEncoding();
-  cmd->commit();
-  cmd->waitUntilCompleted();
+  command_processor_->CommitAndAwait(
+      cmd, MetalCommandProcessor::GpuWaitReason::kDump);
 
   // Allocate buffer for packed texture data (tightly packed rows).
   std::vector<uint8_t> data(bytes_per_row_unaligned * height);
@@ -4047,8 +4047,8 @@ bool MetalTextureCache::EnsureScaledResolveBufferRange(uint64_t start_scaled,
 
     blit->endEncoding();
     if (cmd != current_cmd) {
-      cmd->commit();
-      cmd->waitUntilCompleted();
+      command_processor_->CommitAndAwait(
+          cmd, MetalCommandProcessor::GpuWaitReason::kScaledResolveCopy);
     }
   }
 

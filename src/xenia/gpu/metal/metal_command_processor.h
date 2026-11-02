@@ -131,12 +131,30 @@ class MetalCommandProcessor : public CommandProcessor {
     kSubmissionPassLimit,
     kCount,
   };
+  // What the CPU waited for the GPU for, to attribute the per-frame wait time.
+  enum class GpuWaitReason : uint32_t {
+    kMemexport,
+    kZpdQuery,
+    kShaderDoneFence,
+    kTracePlayback,
+    kUniforms,
+    kResolve,
+    kTextureUpload,
+    kScaledResolveCopy,
+    kSnapshot,
+    kDump,
+    kCount,
+  };
 
   MTL::CommandBuffer* EnsureCommandBuffer();
   // Creates a command buffer with GPU time accounting attached. Every command
   // buffer the backend commits outside the submission one has to come from
   // here, or its work is missing from gpu_busy_us_per_frame.
   MTL::CommandBuffer* CreateAccountedCommandBuffer(CommandBufferKind kind);
+  // Commits a command buffer of its own whose results the CPU needs right
+  // away, and waits for it, counting the wait as reason.
+  void CommitAndAwait(MTL::CommandBuffer* command_buffer,
+                      GpuWaitReason reason);
   // For one released without ever being committed - its completion handler
   // will never run, so the accounting has to be released by hand.
   void DiscardAccountedCommandBuffer(MTL::CommandBuffer* command_buffer,
@@ -337,6 +355,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Blocks until the given submission's command buffer has completed. The
   // submission must already be committed.
   void AwaitSubmissionCompletion(uint64_t submission);
+  // Adds a wait that started at wait_start_ns to the frame's wait time.
+  void NoteGpuWait(GpuWaitReason reason, int64_t wait_start_ns);
+  void LogFrameGpuWaits();
   void AddGpuTimeHandler(MTL::CommandBuffer* command_buffer);
   // Counts a command buffer that didn't complete, logging the first of each kind.
   void LogCommandBufferFailure(MTL::CommandBuffer* command_buffer,
@@ -1251,6 +1272,14 @@ class MetalCommandProcessor : public CommandProcessor {
   uint64_t command_buffer_kind_counts_[kCommandBufferKindCount] = {};
   uint64_t command_buffer_kind_window_start_[kCommandBufferKindCount] = {};
   CommandBufferKind next_submission_kind_ = CommandBufferKind::kSubmissionOther;
+  // Time the CPU spent waiting for the GPU in the frame being recorded, and the
+  // command buffers created in it, logged by IssueSwap with
+  // metal_log_frame_gpu_waits.
+  static constexpr size_t kGpuWaitReasonCount = size_t(GpuWaitReason::kCount);
+  uint64_t frame_gpu_wait_ns_[kGpuWaitReasonCount] = {};
+  uint32_t frame_gpu_wait_counts_[kGpuWaitReasonCount] = {};
+  uint64_t command_buffer_kind_frame_start_[kCommandBufferKindCount] = {};
+  int64_t frame_log_start_ns_ = 0;
   // Each render encoder is a tile store plus an attachment reload on a TBDR
   // GPU, so the count per frame is comparable against Vulkan's render passes.
   uint64_t render_passes_total_ = 0;
@@ -1314,9 +1343,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // Export output lands in guest RAM through the shared buffer, so nothing is
   // ever staged for readback.
   void FlushMemexportStagingReadback() {}
-  void AwaitMemexportSubmission(uint64_t submission) {
-    AwaitAllQueueOperationsCompletion();
-  }
+  void AwaitMemexportSubmission(uint64_t submission);
   // Fences wait for export output.
   // TODO(has207): hold them back as D3D12 and Vulkan do, as waiting stalls at
   // every fence after a vertex shader export. submission_current_ is the
