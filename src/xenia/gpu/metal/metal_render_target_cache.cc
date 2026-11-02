@@ -2644,8 +2644,8 @@ void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
                        MTL::Size::Make(kWidth, kHeight, 1), texture, 0, 0,
                        MTL::Origin::Make(0, 0, 0));
   blit->endEncoding();
-  cmd->commit();
-  cmd->waitUntilCompleted();
+  command_processor_.CommitAndAwait(
+      cmd, MetalCommandProcessor::GpuWaitReason::kSnapshot);
   // cmd is autoreleased from commandBuffer() - do not release
   staging->release();
   if (metal_rt->needs_initial_clear()) {
@@ -4117,8 +4117,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   hazards.End();
   encoder->endEncoding();
   if (owns_command_buffer) {
-    cmd->commit();
-    cmd->waitUntilCompleted();
+    command_processor_.CommitAndAwait(
+        cmd, MetalCommandProcessor::GpuWaitReason::kResolve);
   }
   // cmd is autoreleased from commandBuffer() - do not release
   if (encode_failed) {
@@ -4915,8 +4915,8 @@ bool MetalRenderTargetCache::BeginEdramSnapshotReadback() {
   blit->copyFromBuffer(edram_buffer_, 0, edram_snapshot_download_buffer_, 0,
                        xenos::kEdramSizeBytes);
   blit->endEncoding();
-  cmd->commit();
-  cmd->waitUntilCompleted();
+  command_processor_.CommitAndAwait(
+      cmd, MetalCommandProcessor::GpuWaitReason::kSnapshot);
   return true;
 }
 
@@ -5201,8 +5201,8 @@ void MetalRenderTargetCache::DumpRenderTargets(
 
   encoder->endEncoding();
   if (owns_command_buffer) {
-    cmd->commit();
-    cmd->waitUntilCompleted();
+    command_processor_.CommitAndAwait(
+        cmd, MetalCommandProcessor::GpuWaitReason::kDump);
   }
   // cmd is autoreleased from commandBuffer() - do not release
 }
@@ -5990,8 +5990,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
             hazards.End();
             encoder->endEncoding();
             if (owns_command_buffer) {
-              cmd->commit();
-              cmd->waitUntilCompleted();
+              command_processor_.CommitAndAwait(
+                  cmd, MetalCommandProcessor::GpuWaitReason::kResolve);
             }
             // cmd is autoreleased from commandBuffer() - do not release
 
