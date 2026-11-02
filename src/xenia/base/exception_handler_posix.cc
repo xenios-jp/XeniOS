@@ -9,6 +9,7 @@
 
 #include "xenia/base/exception_handler.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
 #include <atomic>
@@ -57,8 +58,53 @@ XE_NOINLINE void ResumeHostContext(const HostThreadContext* context) {
 }
 #endif  // XE_ARCH_ARM64
 
+// How deeply the handler is nested on this thread. A handler faulting on guest
+// memory it protects itself nests once, but a handler that faults in its own
+// code (on a host fault it can't handle) would nest until the signal stack is
+// exhausted, and the kernel would then kill the process with a different
+// signal than the original one. A pthread key, not thread_local: the first
+// thread_local access on a thread may allocate, which can deadlock in a handler
+// interrupting malloc, while a key created in Install is a slot read.
+static pthread_key_t exception_handler_depth_key;
+constexpr uintptr_t kMaxExceptionHandlerDepth = 16;
+
+static void RestoreOriginalSignalHandlers() {
+  sigaction(SIGILL, &original_sigill_handler_, nullptr);
+  sigaction(SIGSEGV, &original_sigsegv_handler_, nullptr);
+  sigaction(SIGBUS, &original_sigbus_handler_, nullptr);
+  sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
+}
+
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
+  struct DepthScope {
+    uintptr_t depth;
+    DepthScope()
+        : depth(reinterpret_cast<uintptr_t>(
+                    pthread_getspecific(exception_handler_depth_key)) +
+                1) {
+      pthread_setspecific(exception_handler_depth_key,
+                          reinterpret_cast<void*>(depth));
+    }
+    ~DepthScope() {
+      pthread_setspecific(exception_handler_depth_key,
+                          reinterpret_cast<void*>(depth - 1));
+    }
+  } depth_scope;
+  if (depth_scope.depth > kMaxExceptionHandlerDepth) {
+    // Crash-safe diagnostic. Returning re-executes the faulting instruction,
+    // which now gets the original disposition with its own signal.
+    char buf[128];
+    int n = std::snprintf(
+        buf, sizeof(buf),
+        "Exception handler nested %u times: signal %d at %p, giving up\n",
+        unsigned(depth_scope.depth), signal_number, signal_info->si_addr);
+    if (n > 0) {
+      (void)::write(STDERR_FILENO, buf, static_cast<size_t>(n));
+    }
+    RestoreOriginalSignalHandlers();
+    return;
+  }
   // The faulting thread may hold the guest's FP control. Returning from the
   // signal restores the interrupted value from the signal context.
   SetHostDefaultFpControl();
@@ -506,6 +552,9 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
 
 void ExceptionHandler::Install(Handler fn, void* data) {
   if (!signal_handlers_installed_) {
+    if (pthread_key_create(&exception_handler_depth_key, nullptr) != 0) {
+      assert_always("Failed to create the exception handler depth key");
+    }
     struct sigaction signal_handler;
 
     std::memset(&signal_handler, 0, sizeof(signal_handler));
