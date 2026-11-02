@@ -3788,7 +3788,12 @@ void MetalCommandProcessor::LogFrameGpuWaits() {
 
 void MetalCommandProcessor::AwaitMemexportSubmission(uint64_t submission) {
   int64_t wait_start_ns = GetSteadyTimeNs();
-  AwaitAllQueueOperationsCompletion();
+  // submission_current_ is committed once there's no command buffer open, and
+  // completions arrive in order.
+  if (submission >= submission_current_ && current_command_buffer_) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionWait);
+  }
+  AwaitSubmissionCompletion(submission);
   NoteGpuWait(GpuWaitReason::kMemexport, wait_start_ns);
 }
 

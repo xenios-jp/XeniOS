@@ -1367,14 +1367,14 @@ class MetalCommandProcessor : public CommandProcessor {
   // ever staged for readback.
   void FlushMemexportStagingReadback() {}
   void AwaitMemexportSubmission(uint64_t submission);
-  // Fences wait for export output.
-  // TODO(has207): hold them back as D3D12 and Vulkan do, as waiting stalls at
-  // every fence after a vertex shader export. submission_current_ is the
-  // command buffer being recorded and completions arrive in order. Missing are
-  // EndSubmissionForMemexport ending that command buffer and telling an ended
-  // submission apart from one still being recorded.
-  bool CanHoldSignalsForMemexport() const { return false; }
-  void EndSubmissionForMemexport() {}
+  // With zero-copy, export output is in guest RAM as soon as its submission
+  // completes, so a fence can be held back until then instead of waiting.
+  bool CanHoldSignalsForMemexport() const {
+    return shared_memory_->is_zero_copy();
+  }
+  void EndSubmissionForMemexport() {
+    EndCommandBuffer(CommandBufferKind::kSubmissionWait);
+  }
   // DXIL exports not yet separated from later GPU consumers by a pass boundary.
   std::vector<draw_util::MemExportRange> render_encoder_memexport_ranges_;
   // Guest memory written by tile resolves kept in the open pass: another tile
