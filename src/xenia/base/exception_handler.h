@@ -286,6 +286,15 @@ class ExceptionHandler {
 
   // Uninstalls a previously-installed exception handler.
   static void Uninstall(Handler fn, void* data);
+
+#if !XE_PLATFORM_WIN32
+  // Called on the faulting thread for a fault no handler claimed, just before
+  // the original disposition takes it (usually the end of the process). From a
+  // signal handler: async-signal-safe work only. nullptr removes it.
+  typedef void (*UnhandledObserver)(int signal_number, uint64_t fault_address,
+                                    const HostThreadContext* context);
+  static void SetUnhandledObserver(UnhandledObserver observer);
+#endif  // !XE_PLATFORM_WIN32
 };
 
 }  // namespace xe
