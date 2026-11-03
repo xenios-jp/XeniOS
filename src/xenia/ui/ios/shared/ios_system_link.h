@@ -34,9 +34,12 @@ NSURL* xe_ios_system_link_invite_url(uint32_t title_id, NSString* code);
 // The room code an invite names, or nil for any other URL. Any app or web page
 // can open one, so the room is only set once the player agrees to the launch.
 NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out);
-// A sentence for the launch prompt naming the room the invite sets.
-NSString* xe_ios_system_link_invite_note(NSString* code);
-// Sets the room an invite named, and tells the player when Online features are off.
+// Sentences for the launch prompt: the room the invite uses for this launch only, who sees the
+// player's IP address, that it needs Online Features, and, when |restarts| is set, that the
+// running game restarts.
+NSString* xe_ios_system_link_invite_note(NSString* code, BOOL restarts);
+// Makes the room an invite named the room of the game's next launch only, leaving the saved room
+// alone, and tells the player when Online features are off.
 void xe_ios_join_system_link_room(uint32_t title_id, NSString* code);
 
 // Whether System Link is set to play through the relay.

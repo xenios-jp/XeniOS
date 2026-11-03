@@ -3120,7 +3120,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                          display_name];
   }
   if (invite_room) {
-    message = [message stringByAppendingFormat:@" %@", xe_ios_system_link_invite_note(invite_room)];
+    const BOOL restarts = replaces_game && active_game_title_id_ == invite_title_id;
+    message = [message
+        stringByAppendingFormat:@" %@", xe_ios_system_link_invite_note(invite_room, restarts)];
   }
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:replaces_game
