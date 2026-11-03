@@ -141,6 +141,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_hero_glow_palette.mm
   shared/ios_idle_timer.h
   shared/ios_idle_timer.mm
+  shared/ios_resource_pressure.h
+  shared/ios_resource_pressure.mm
   shared/ios_online_features.h
   shared/ios_online_features.mm
   shared/ios_theme.h
