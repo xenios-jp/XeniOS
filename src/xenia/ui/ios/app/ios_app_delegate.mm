@@ -163,7 +163,8 @@ DECLARE_path(log_file);
       });
   app_context_->set_keyboard_prompt_callback(
       [vc](const std::string& title, const std::string& description,
-           const std::string& default_text, std::string* text_out, bool* cancelled_out) {
+           const std::string& default_text, size_t max_length, std::string* text_out,
+           bool* cancelled_out) {
         if ([NSThread isMainThread]) {
           if (cancelled_out) {
             *cancelled_out = true;
@@ -177,6 +178,7 @@ DECLARE_path(log_file);
           [vc presentSystemKeyboardPromptWithTitle:ToNSString(title)
                                        description:ToNSString(description)
                                        defaultText:ToNSString(default_text)
+                                         maxLength:max_length
                                         completion:^(BOOL prompt_cancelled, NSString* prompt_text) {
                                           cancelled = prompt_cancelled;
                                           typed_text = [(prompt_text ?: @"") copy];

@@ -76,6 +76,7 @@
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
+#import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -1769,6 +1770,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     while (presenter.presentedViewController) {
       presenter = presenter.presentedViewController;
     }
+    XeniaAlertMarkGuestPrompt(create_alert);
     [presenter presentViewController:create_alert animated:YES completion:nil];
   };
 
@@ -1827,6 +1829,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   while (presenter.presentedViewController) {
     presenter = presenter.presentedViewController;
   }
+  XeniaAlertMarkGuestPrompt(sheet);
   [presenter presentViewController:sheet animated:YES completion:nil];
 }
 
@@ -1867,6 +1870,18 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                  description:(NSString*)description
                                  defaultText:(NSString*)default_text
                                   completion:(void (^)(BOOL cancelled, NSString* text))completion {
+  [self presentSystemKeyboardPromptWithTitle:title
+                                 description:description
+                                 defaultText:default_text
+                                   maxLength:0
+                                  completion:completion];
+}
+
+- (void)presentSystemKeyboardPromptWithTitle:(NSString*)title
+                                 description:(NSString*)description
+                                 defaultText:(NSString*)default_text
+                                   maxLength:(NSUInteger)max_length
+                                  completion:(void (^)(BOOL cancelled, NSString* text))completion {
   __block UIAlertController* alert =
       [UIAlertController alertControllerWithTitle:title.length ? title : @"Input Required"
                                           message:description
@@ -1876,6 +1891,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     text_field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     text_field.autocorrectionType = UITextAutocorrectionTypeNo;
     text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    if (max_length) {
+      XeniaLimitTextFieldLength(text_field, max_length);
+    }
   }];
 
   [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
@@ -1885,20 +1903,25 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                               completion(YES, @"");
                                             }
                                           }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            UITextField* text_field = alert.textFields.firstObject;
-                                            NSString* text = text_field.text ?: @"";
-                                            if (completion) {
-                                              completion(NO, text);
-                                            }
-                                          }]];
+  UIAlertAction* ok_action =
+      [UIAlertAction actionWithTitle:@"OK"
+                               style:UIAlertActionStyleDefault
+                             handler:^(__unused UIAlertAction* action) {
+                               UITextField* text_field = alert.textFields.firstObject;
+                               NSString* text = text_field.text ?: @"";
+                               if (completion) {
+                                 completion(NO, text);
+                               }
+                             }];
+  [alert addAction:ok_action];
+  // So Return submits.
+  alert.preferredAction = ok_action;
 
   UIViewController* presenter = self;
   while (presenter.presentedViewController) {
     presenter = presenter.presentedViewController;
   }
+  XeniaAlertMarkGuestPrompt(alert);
   [presenter presentViewController:alert animated:YES completion:nil];
 }
 

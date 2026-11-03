@@ -158,8 +158,25 @@ X_RESULT ShowMessageBox(std::string title, std::string text,
       overlapped, already_active);
 }
 
+int ChooseOption(std::string title, std::string text,
+                 std::vector<std::string> options) {
+  auto* context = GetContext(kernel_state());
+  if (!context || context->IsInUIThread() || options.empty()) {
+    XELOGW("iOS prompt: no UI to ask \"{}\" on", title);
+    return -1;
+  }
+  uint32_t choice = 0;
+  bool chosen = false;
+  RunPrompt([&]() {
+    chosen = context->PromptMessageBoxUI(title, text, options, 0, &choice);
+    return X_ERROR_SUCCESS;
+  });
+  return chosen && choice < options.size() ? int(choice) : -1;
+}
+
 X_RESULT ShowKeyboard(uint32_t user_index, std::string title,
                       std::string description, std::string default_text,
+                      size_t max_length,
                       std::function<void(const std::u16string&)> write_text,
                       uint32_t overlapped) {
   auto* state = kernel_state();
@@ -168,20 +185,11 @@ X_RESULT ShowKeyboard(uint32_t user_index, std::string title,
     return context ? X_ERROR_ACCESS_DENIED : X_ERROR_FUNCTION_FAILED;
   }
   XELOGI("iOS XAM: native keyboard requested (overlapped={:08X})", overlapped);
-  if (default_text.empty()) {
-    auto* profiles = state->xam_state()->profile_manager();
-    auto* profile = profiles->GetProfile(static_cast<uint8_t>(user_index));
-    if (!profile) {
-      profile = profiles->GetProfile(uint8_t(0));
-    }
-    if (profile) {
-      default_text = profile->name();
-    }
-  }
   return DispatchWithoutDialogEx(
       [state, context, title = std::move(title),
        description = std::move(description),
-       default_text = std::move(default_text), write_text = std::move(write_text)](
+       default_text = std::move(default_text), max_length,
+       write_text = std::move(write_text)](
           uint32_t& extended_error, uint32_t& length) {
         DialogCompletion completion{state};
         extended_error = X_ERROR_CANCELLED;
@@ -189,7 +197,8 @@ X_RESULT ShowKeyboard(uint32_t user_index, std::string title,
         return RunPrompt([&]() -> X_RESULT {
           std::string text;
           bool cancelled = true;
-          if (!context->PromptKeyboardUI(title, description, default_text, &text,
+          if (!context->PromptKeyboardUI(title, description, default_text,
+                                          max_length, &text,
                                           &cancelled)) {
             return X_ERROR_FUNCTION_FAILED;
           }

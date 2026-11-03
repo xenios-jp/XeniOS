@@ -55,6 +55,12 @@ class IOSWindowedAppContext;
                                  description:(NSString*)description
                                  defaultText:(NSString*)default_text
                                   completion:(void (^)(BOOL cancelled, NSString* text))completion;
+// The text is at most maxLength UTF-16 units, 0 for no limit.
+- (void)presentSystemKeyboardPromptWithTitle:(NSString*)title
+                                 description:(NSString*)description
+                                 defaultText:(NSString*)default_text
+                                   maxLength:(NSUInteger)max_length
+                                  completion:(void (^)(BOOL cancelled, NSString* text))completion;
 - (BOOL)handleExternalLaunchURL:(NSURL*)url;
 - (void)evaluateAutomaticStikDebugJITHandoffIfNeeded;
 
