@@ -1524,7 +1524,7 @@ void EmulatorAppIOS::BeginEmulationPauseSession() {
     pause_game_running_ = true;
   }
   ScheduleEmulationPauseReconcile();
-  // Debug: XENIA_PAUSE_STRESS_MS=N toggles the in-game-menu pause reason at random
+  // Debug: XENIA_PAUSE_STRESS_MS=N toggles the user pause reason at random
   // 20..N ms intervals until the session ends, logging each cycle.
   if (const char* stress = std::getenv("XENIA_PAUSE_STRESS_MS")) {
     const int max_ms = std::max(40, std::atoi(stress));
@@ -1540,9 +1540,9 @@ void EmulatorAppIOS::BeginEmulationPauseSession() {
       uint64_t cycle = 0;
       while (!pause_stress_stop_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(next_ms()));
-        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, true);
+        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kUser, true);
         std::this_thread::sleep_for(std::chrono::milliseconds(next_ms()));
-        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, false);
+        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kUser, false);
         XELOGI("iOS: pause stress cycle {}", cycle++);
       }
     });
@@ -1814,8 +1814,8 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     std::string reason = failure_reason ? failure_reason : "";
     app_context().CallInUIThread([this, reason]() {
       auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
-      // A menu left up by the game that just ended must not pause the next one.
-      SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, false);
+      // A pause left on by the game that just ended must not pause the next one.
+      SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kUser, false);
       // The exit first: it shows the library and dismisses sheets, which would take the alert
       // with them.
       ios_context.NotifyGameExited();

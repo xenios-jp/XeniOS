@@ -21,6 +21,8 @@
              compact:(BOOL)compact
               resume:(BOOL)resume;
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact;
+- (NSString*)pauseEmulatorTitle;
+- (NSString*)pauseEmulatorHint;
 @end
 
 @implementation XeniaIOSInGameMenuOverlay {
@@ -32,6 +34,7 @@
   UIStackView* _rowOneStack;
   UIStackView* _rowTwoStack;
   UIStackView* _rowThreeStack;
+  UIStackView* _footerStack;
   UIButton* _resumeButton;
   UIButton* _editControlsButton;
   UIButton* _achievementsButton;
@@ -39,6 +42,7 @@
   UIButton* _settingsButton;
   UIButton* _graphicsButton;
   UIButton* _liveLogButton;
+  UIButton* _pauseEmulatorButton;
   UIButton* _exitButton;
   UIMenu* _displayMenu;
   NSLayoutConstraint* _panelWidthConstraint;
@@ -55,6 +59,7 @@
   BOOL _controllerNavigationEnabled;
   XeniaIOSInGameMenuAction _focusedAction;
   void (^_graphicsHandler)(void);
+  BOOL _emulatorPaused;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -162,6 +167,15 @@
                                  menuAction:XeniaIOSInGameMenuActionLiveLog
                                      action:@selector(liveLogPressed:)];
 
+  // The menu leaves the game running, so a System Link game keeps going for the other
+  // players. This pauses it until the user resumes it or closes the menu.
+  _pauseEmulatorButton = [self newButtonWithTitle:[self pauseEmulatorTitle]
+                                        imageName:@"pause.fill"
+                                  backgroundColor:[XeniaTheme bgSurface2]
+                                  foregroundColor:[XeniaTheme textPrimary]
+                                       menuAction:XeniaIOSInGameMenuActionPauseEmulator
+                                           action:@selector(pauseEmulatorPressed:)];
+
   _exitButton = [self newButtonWithTitle:NSLocalizedString(@"Exit To Library",
                                                            @"In-game menu button, leaves the game")
                                imageName:@"rectangle.portrait.and.arrow.right"
@@ -182,6 +196,10 @@
     _achievementsButton,
     _exitButton,
   ]];
+  _footerStack = [self newMenuRowWithButtons:@[
+    _pauseEmulatorButton,
+    _liveLogButton,
+  ]];
 
   _contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[
     _titleLabel,
@@ -191,7 +209,7 @@
     _rowOneStack,
     _rowTwoStack,
     _rowThreeStack,
-    _liveLogButton,
+    _footerStack,
   ]];
   _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
   _contentStack.axis = UILayoutConstraintAxisVertical;
@@ -270,6 +288,7 @@
   [_liveLogHandler release];
   [_exitHandler release];
   [_graphicsHandler release];
+  [_pauseEmulatorHandler release];
   [_displayMenu release];
   [_panelWidthConstraint release];
   [_resumeHeightConstraint release];
@@ -281,6 +300,7 @@
   [_rowOneStack release];
   [_rowTwoStack release];
   [_rowThreeStack release];
+  [_footerStack release];
   [_titleLabel release];
   [_subtitleLabel release];
   [_panel release];
@@ -291,6 +311,7 @@
   [_settingsButton release];
   [_graphicsButton release];
   [_liveLogButton release];
+  [_pauseEmulatorButton release];
   [_exitButton release];
   [super dealloc];
 }
@@ -360,6 +381,9 @@
       button.accessibilityHint = NSLocalizedString(@"Stops the game and returns to the library.",
                                                    @"VoiceOver hint for the Exit button");
       break;
+    case XeniaIOSInGameMenuActionPauseEmulator:
+      button.accessibilityHint = [self pauseEmulatorHint];
+      break;
     case XeniaIOSInGameMenuActionNone:
     default:
       break;
@@ -415,6 +439,7 @@
   _rowOneStack.spacing = compact ? 8.0 : 10.0;
   _rowTwoStack.spacing = compact ? 8.0 : 10.0;
   _rowThreeStack.spacing = compact ? 8.0 : 10.0;
+  _footerStack.spacing = compact ? 8.0 : 10.0;
   _resumeHeightConstraint.constant = compact ? 42.0 : 52.0;
   _rowOneHeightConstraint.constant = compact ? 42.0 : 50.0;
   _rowTwoHeightConstraint.constant = compact ? 42.0 : 50.0;
@@ -454,6 +479,46 @@
   [self updateButton:_exitButton title:exit_title compact:compact resume:NO];
   NSString* live_log_title = NSLocalizedString(@"Live Log", @"In-game menu button");
   [self updateButton:_liveLogButton title:live_log_title compact:compact resume:NO];
+  [self updateButton:_pauseEmulatorButton
+               title:[self pauseEmulatorTitle]
+             compact:compact
+              resume:NO];
+}
+
+- (NSString*)pauseEmulatorTitle {
+  return _emulatorPaused
+             ? NSLocalizedString(@"Resume Emulator",
+                                 @"In-game menu button, runs the game again after a pause")
+             : NSLocalizedString(@"Pause Emulator",
+                                 @"In-game menu button, stops the game while the menu is open");
+}
+
+- (NSString*)pauseEmulatorHint {
+  return _emulatorPaused
+             ? NSLocalizedString(@"Lets the game run again.",
+                                 @"VoiceOver hint for the Resume Emulator button")
+             : NSLocalizedString(@"Stops the game until you resume it or close the menu.",
+                                 @"VoiceOver hint for the Pause Emulator button");
+}
+
+- (BOOL)emulatorPaused {
+  return _emulatorPaused;
+}
+
+- (void)setEmulatorPaused:(BOOL)emulatorPaused {
+  if (_emulatorPaused == emulatorPaused) {
+    return;
+  }
+  _emulatorPaused = emulatorPaused;
+  UIButtonConfiguration* config = _pauseEmulatorButton.configuration;
+  config.image = [UIImage systemImageNamed:emulatorPaused ? @"play.fill" : @"pause.fill"];
+  _pauseEmulatorButton.configuration = config;
+  [self updateButton:_pauseEmulatorButton
+               title:[self pauseEmulatorTitle]
+             compact:_appliedCompactLandscape
+              resume:NO];
+  _pauseEmulatorButton.accessibilityLabel = [self pauseEmulatorTitle];
+  _pauseEmulatorButton.accessibilityHint = [self pauseEmulatorHint];
 }
 
 - (void)setDisplayMenu:(UIMenu*)displayMenu {
@@ -501,6 +566,8 @@
       return _exitButton;
     case XeniaIOSInGameMenuActionGraphics:
       return _graphicsButton;
+    case XeniaIOSInGameMenuActionPauseEmulator:
+      return _pauseEmulatorButton;
     case XeniaIOSInGameMenuActionNone:
     default:
       return nil;
@@ -566,6 +633,9 @@
   [self setButton:_exitButton
       controllerFocused:_controllerNavigationEnabled &&
                         _focusedAction == XeniaIOSInGameMenuActionExit];
+  [self setButton:_pauseEmulatorButton
+      controllerFocused:_controllerNavigationEnabled &&
+                        _focusedAction == XeniaIOSInGameMenuActionPauseEmulator];
 }
 
 - (void)setOverlayVisible:(BOOL)visible
@@ -701,6 +771,12 @@
 - (void)graphicsPressed:(UIButton*)__unused sender {
   if (_graphicsHandler) {
     _graphicsHandler();
+  }
+}
+
+- (void)pauseEmulatorPressed:(UIButton*)__unused sender {
+  if (_pauseEmulatorHandler) {
+    _pauseEmulatorHandler();
   }
 }
 

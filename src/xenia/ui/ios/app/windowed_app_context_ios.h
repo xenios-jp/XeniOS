@@ -437,8 +437,9 @@ class IOSWindowedAppContext final : public WindowedAppContext {
 
   // Why the running game is paused. It runs only while no reason is active.
   enum class EmulationPauseReason : uint32_t {
-    // The in-game menu, or a sheet presented over the game, is up.
-    kInGameMenu = 1u << 0,
+    // The user paused the game from the in-game menu. The menu and the sheets over the game
+    // don't pause it by themselves, so a System Link game keeps going for the other players.
+    kUser = 1u << 0,
     // The scene resigned active (Control Center, Slide Over, an alert from the system).
     kInactive = 1u << 1,
     // The scene is in the background.
