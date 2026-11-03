@@ -69,6 +69,10 @@ union EdramDumpShaderKey {
     uint32_t direct_resolve_cross_depth_color : 1;
     // Up to three compatible destination images, following binding 1.
     uint32_t direct_resolve_texture_aliases : 2;
+    // A 1x resolve of a 4x source: the resolve reads each EDRAM sample as a
+    // pixel, so a tile holds as many resolve pixels as source samples. Only
+    // meaningful with direct_resolve and a 4x msaa_samples.
+    uint32_t direct_resolve_samples_as_pixels : 1;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
