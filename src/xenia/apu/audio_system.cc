@@ -20,6 +20,7 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/ring_buffer.h"
 #include "xenia/base/string_buffer.h"
@@ -45,6 +46,10 @@ DEFINE_uint32(apu_max_queued_frames, 8,
               "Value range: [4-64]",
               "APU");
 UPDATE_from_uint32(apu_max_queued_frames, 2024, 8, 31, 20, 64);
+#if XE_PLATFORM_IOS
+// The iOS default.
+UPDATE_from_uint32(apu_max_queued_frames, 2026, 11, 3, 14, 32);
+#endif  // XE_PLATFORM_IOS
 
 namespace xe {
 namespace apu {
