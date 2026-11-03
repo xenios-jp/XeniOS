@@ -1987,7 +1987,7 @@ TEST_CASE("Relay transport leaves while it isn't allowed online", "[relay]") {
   REQUIRE(pump(
       [&] {
         stopped = hooks.Reported(0, [](const RelayStatus& status) {
-          return status.state == State::kStopped;
+          return status.state == State::kPaused;
         });
         return stopped.has_value();
       },
@@ -2199,6 +2199,38 @@ TEST_CASE("Relay transport stays out of the lobby until System Link plays",
     }
     CHECK(wait_for_lobby(*transport) == 1);
   }
+}
+
+TEST_CASE("Relay transport says when it is paused", "[relay]") {
+  Hooks hooks;
+  FakeLobby lobby;
+  UseLobby(lobby);
+  RelayConfig config = Config(1, PrivateRoom(NewRoomCode()));
+  config.lobby = std::string(kLobbyUrl);
+  std::atomic<bool> allowed{true};
+  config.allowed = [&] { return allowed.load(); };
+  std::string error;
+  auto transport = secure::OpenRelayTransport(kMacA, config, error);
+  REQUIRE(transport);
+  std::vector<uint8_t> frame;
+  auto pump = [&](State state) {
+    for (int i = 0; i < 100; ++i) {
+      transport->Receive(frame, 50);
+      if (hooks.Reported(0, [&](const RelayStatus& status) {
+                return status.state == state;
+              })) {
+        return true;
+      }
+    }
+    return false;
+  };
+  REQUIRE(pump(State::kOnline));
+  allowed = false;
+  // Not the Stopped that ends System Link for the game.
+  CHECK(pump(State::kPaused));
+  CHECK(!hooks.Reported(0, [](const RelayStatus& status) {
+    return status.state == State::kStopped;
+  }));
 }
 
 #if XE_PLATFORM_APPLE

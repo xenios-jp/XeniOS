@@ -32,14 +32,17 @@ bool SystemLinkEnabled();
 
 // Lets an app keep the relay behind its own consent and pick each title's
 // room. |allowed| false turns System Link off while the transport is the
-// relay. |room| gives a private room's code for a title, or empty for its
-// public lobby, in place of systemlink_room. Both are optional and are called
-// on emulator threads.
+// relay. It is read when the policy is set and when SystemLinkAllowedChanged
+// is called, not on every use. |room| gives a private room's code for a title,
+// or empty for its public lobby, in place of systemlink_room. Both are
+// optional and are called on emulator threads.
 struct SystemLinkRelayPolicy {
   std::function<bool()> allowed;
   std::function<std::string(uint32_t title_id)> room;
 };
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy);
+// What the policy's |allowed| says may have changed.
+void SystemLinkAllowedChanged();
 // The policy's room for a title may have changed. A running title moves to it
 // within about a second, leaving the players in its old room.
 void SystemLinkRoomChanged();
