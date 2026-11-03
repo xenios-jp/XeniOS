@@ -543,9 +543,9 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
   XELOGI("XamLoaderGetLaunchData: buffer_size={} copied={} data={}",
          uint32_t(buffer_size), copy_size,
          HexBytes(loader_data.launch_data, kLaunchDataLogBytes));
-  // Launch data is handed out once so it can't reach the next title.
-  loader_data.launch_data_present = false;
-  loader_data.launch_data.clear();
+  // Kept for the life of the title, as on a console: every module may read it.
+  // The next title gets a fresh xam module on desktop, and the iOS app sets it
+  // again before each launch.
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetLaunchData, kNone, kSketchy);
