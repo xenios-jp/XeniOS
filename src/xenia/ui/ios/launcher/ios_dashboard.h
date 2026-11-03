@@ -24,6 +24,8 @@
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
 
+@class XeniaIOSExternalLibraryAccess;
+
 // Posted on the main thread when the system software is installed or removed.
 extern NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification;
 // Posted on the main thread before a title the emulator queued itself starts,
@@ -68,6 +70,12 @@ bool RemoveIOSSystemSoftware();
 // it shows. Takes a copy, and does the work on a queue of its own.
 void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games);
 std::vector<Emulator::LibraryTitle> IOSDashboardLibraryTitles();
+
+#ifdef __OBJC__
+// Starts access to every linked library folder, which the dashboard's games
+// are in, for as long as the dashboard runs.
+NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess();
+#endif  // __OBJC__
 
 }  // namespace ui
 }  // namespace xe

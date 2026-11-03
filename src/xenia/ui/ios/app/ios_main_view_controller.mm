@@ -658,7 +658,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 // A title the emulator starts itself, like a game the dashboard launches, gets
 // what a launch from the library sets up: its touch layout and access to the
-// folder it is in.
+// folder it is in (to every linked folder, for the dashboard).
 - (void)onTitleWillStart:(NSNotification*)note {
   NSString* path_ns = note.userInfo[XeniaIOSTitlePathKey];
   if (![path_ns isKindOfClass:[NSString class]] || !path_ns.length) {
@@ -670,6 +670,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (XeniaIOSExternalLibraryAccess* access = xe::ui::StartIOSExternalLibraryAccessForPath(
           path, &matched_external_location, nil)) {
     [accesses addObject:access];
+  }
+  if (xe::ui::IsIOSInstalledDashboardPath(path)) {
+    [accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
   }
   active_game_title_id_ = [self titleIDForGamePath:path];
   [self appendLinkedContentAccessesForTitleID:active_game_title_id_
@@ -3111,6 +3114,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* launch_external_accesses = [NSMutableArray array];
   if (external_access) {
     [launch_external_accesses addObject:external_access];
+  }
+  // The dashboard reads and starts the games in every linked folder.
+  if (xe::ui::IsIOSInstalledDashboardPath(launch_path)) {
+    [launch_external_accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
   }
   NSString* linked_content_access_error = nil;
   if (![self appendLinkedContentAccessesForTitleID:launch_title_id
