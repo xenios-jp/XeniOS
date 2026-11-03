@@ -182,8 +182,10 @@ resolve_release_build_number() {
   fi
 
   build_number="$(git rev-list --count HEAD)"
+  # A rerun of a build-only workflow gets its own number so the artifacts can be told
+  # apart. A publish keeps one number for every attempt: it is the release tag.
   local run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
-  if [ -n "$run_attempt" ] && [ "$run_attempt" != "1" ]; then
+  if [ "${XENIOS_PUBLISH_RUN:-}" != "true" ] && [ -n "$run_attempt" ] && [ "$run_attempt" != "1" ]; then
     build_number="${build_number}.${run_attempt}"
   fi
   validate_build_number "$build_number" || die "invalid derived build number: $build_number"
