@@ -1802,6 +1802,7 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
       {
         std::lock_guard<std::mutex> lock(async_compile_mutex_);
         async_pipeline_pending_.erase(pipeline_request.pipeline_key);
+        NoteStoredPipelineDoneLocked(pipeline_request.pipeline_key);
         if (compiled) {
           auto insert_result = async_pipeline_cache_.emplace(
               pipeline_request.pipeline_key, pipeline);
@@ -2970,6 +2971,14 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
   if (pipeline_status == PipelineCompileStatus::kFailed) {
     return "pipeline failed";
   }
+  {
+    // Still compiling: the rebuild record waits for it.
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    if (storage_stats_pending_ &&
+        async_pipeline_pending_.count(request.pipeline_key)) {
+      storage_stats_keys_.insert(request.pipeline_key);
+    }
+  }
   vertex_shader_out = vertex_it->second.get();
   return nullptr;
 }
@@ -3065,7 +3074,10 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_pending_ = !stored_descriptions.empty();
-    storage_stats_boosted_ = async_compile_hold_boost_;
+    storage_stats_boosted_ =
+        async_compile_hold_boost_ || async_compile_awaiters_;
+    storage_stats_keys_.clear();
+    storage_stats_queued_all_ = false;
     storage_stats_start_ticks_ = start_ticks;
     storage_stats_stored_ = stored_descriptions.size();
     storage_stats_version_ = config.version;
@@ -3085,9 +3097,8 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     // Everything may already be done, with no later finish to notice it.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
-    if (storage_stats_pending_ &&
-        compile_activity.finished.load(std::memory_order_relaxed) >=
-            storage_queued_end) {
+    storage_stats_queued_all_ = true;
+    if (storage_stats_pending_ && storage_stats_keys_.empty()) {
       RecordStorageRebuildStatsLocked();
     }
   }
@@ -3355,6 +3366,7 @@ bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
 
 void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
   storage_stats_pending_ = false;
+  storage_stats_keys_.clear();
   if (storage_stats_boosted_) {
     return;
   }
@@ -3369,14 +3381,14 @@ void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
 }
 
 void MetalCommandProcessor::CountAsyncCompileTaskFinishedLocked() {
-  uint64_t finished =
-      compile_activity.finished.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (storage_stats_pending_) {
-    uint64_t queued_end =
-        compile_activity.storage_queued_end.load(std::memory_order_relaxed);
-    if (queued_end && finished >= queued_end) {
-      RecordStorageRebuildStatsLocked();
-    }
+  compile_activity.finished.fetch_add(1, std::memory_order_relaxed);
+}
+
+void MetalCommandProcessor::NoteStoredPipelineDoneLocked(
+    uint64_t pipeline_key) {
+  if (storage_stats_pending_ && storage_stats_keys_.erase(pipeline_key) &&
+      storage_stats_queued_all_ && storage_stats_keys_.empty()) {
+    RecordStorageRebuildStatsLocked();
   }
 }
 
@@ -3447,6 +3459,7 @@ bool MetalCommandProcessor::TakeQueuedPipelineLocked(uint64_t key) {
   async_pipeline_queue_.erase(queue_it);
   async_pipeline_queued_.erase(queued_it);
   async_pipeline_pending_.erase(key);
+  NoteStoredPipelineDoneLocked(key);
   CountAsyncCompileTaskFinishedLocked();
   if (IsAsyncCompileIdleLocked()) {
     async_compile_idle_cv_.notify_all();
@@ -3482,6 +3495,10 @@ void MetalCommandProcessor::AwaitAsyncCompilesUntil(const Done& done) {
       return;
     }
     ++async_compile_awaiters_;
+    if (storage_stats_pending_) {
+      // Every core compiling would forecast the next rebuild short.
+      storage_stats_boosted_ = true;
+    }
     UpdateCompileThreadLimitLocked();
     async_compile_idle_cv_.wait(lock, done);
     --async_compile_awaiters_;
