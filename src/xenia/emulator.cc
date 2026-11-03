@@ -916,24 +916,32 @@ void Emulator::ChangeDisc() {
   }
   // The fiber parks while the picker is up, so the guest threads sharing its
   // CPU keep running.
-  std::filesystem::path path;
-  xe::threading::Fence fence;
 #if XE_PLATFORM_IOS
   // iOS can't wait for a sheet on the UI thread. Its picker presents one there
-  // and waits on a thread of its own, as IOSFilePicker does.
-  std::thread([this, &path, &fence]() {
-    path = disc_picker_();
-    fence.Signal();
+  // and waits on a thread of its own, as IOSFilePicker does. The sheet can
+  // outlive the title, so the thread owns its answer and the fence.
+  struct DiscPick {
+    std::filesystem::path path;
+    xe::threading::Fence fence;
+  };
+  auto pick = std::make_shared<DiscPick>();
+  std::thread([picker = disc_picker_, pick]() {
+    pick->path = picker();
+    pick->fence.Signal();
   }).detach();
+  kernel::GuestScheduler::WaitOnFence(pick->fence);
+  const std::filesystem::path path = pick->path;
 #else
+  std::filesystem::path path;
+  xe::threading::Fence fence;
   if (!display_window_->app_context().CallInUIThread([this, &path, &fence]() {
         path = disc_picker_();
         fence.Signal();
       })) {
     return;
   }
-#endif  // XE_PLATFORM_IOS
   kernel::GuestScheduler::WaitOnFence(fence);
+#endif  // XE_PLATFORM_IOS
   if (!path.empty()) {
     InsertDisc(path);
   }
