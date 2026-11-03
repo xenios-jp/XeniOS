@@ -46,6 +46,15 @@
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
+/* online view controller: summary row detail, after \"3 Players Online\"; %1$ld players, %2$ld games */
+"%1$ld of them are in %2$ld games." = "%1$ld of them are in %2$ld games.";
+
+/* online view controller: summary row detail, after \"3 Players Online\"; %1$ld and %2$ld are how many */
+"%1$ld of them are in public lobbies, %2$ld in private rooms." = "%1$ld of them are in public lobbies, %2$ld in private rooms.";
+
+/* In-game menu: System Link card; %1$lu and %2$lu are counts */
+"%1$lu other players, %2$lu not connected yet" = "%1$lu other players, %2$lu not connected yet";
+
 /* zar conversion coordinator: detail text */
 "%1$u file(s), %2$@ packed before cancellation." = "%1$u file(s), %2$@ packed before cancellation.";
 
@@ -76,11 +85,41 @@
 /* system software view controller: install progress */
 "%d%% done" = "%d%% done";
 
+/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+"%ld of them are in 1 game." = "%ld of them are in 1 game.";
+
+/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+"%ld of them are in private rooms." = "%ld of them are in private rooms.";
+
+/* Game library: Online button, with how many players are in public System Link lobbies */
+"%ld Online" = "%ld Online";
+
+/* Game library: players in the game's public System Link lobby; %ld is how many */
+"%ld online" = "%ld online";
+
+/* system link view controller: players in a game's public lobby */
+"%ld players" = "%ld players";
+
+/* system link view controller: room row detail, after \"Everyone playing this game.\"; %ld is how many */
+"%ld players are there now." = "%ld players are there now.";
+
+/* system link status view controller: footer; %ld is how many */
+"%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed." = "%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed.";
+
+/* online view controller: summary row; %ld is how many */
+"%ld Players Online" = "%ld Players Online";
+
+/* Game library, VoiceOver: players in the game's public System Link lobby */
+"%ld players online" = "%ld players online";
+
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
 
 /* document import coordinator: message */
 "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete." = "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete.";
+
+/* In-game menu: System Link card; %lu is a count */
+"%lu other players, all connected" = "%lu other players, all connected";
 
 /* Gamerscore of one achievement; %u is the score */
 "%u G" = "%u G";
@@ -102,6 +141,30 @@
 
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
+
+/* online view controller: summary row detail, after \"3 Players Online\" */
+"1 of them is in a game." = "1 of them is in a game.";
+
+/* online view controller: summary row detail, after \"3 Players Online\" */
+"1 of them is in a private room." = "1 of them is in a private room.";
+
+/* In-game menu: System Link card */
+"1 other player, connected directly" = "1 other player, connected directly";
+
+/* In-game menu: System Link card */
+"1 other player, connected through the relay" = "1 other player, connected through the relay";
+
+/* In-game menu: System Link card */
+"1 other player, not connected yet" = "1 other player, not connected yet";
+
+/* system link view controller: players in a game's public lobby */
+"1 player" = "1 player";
+
+/* online view controller: summary row */
+"1 Player Online" = "1 Player Online";
+
+/* Game library, VoiceOver: one player in the game's public System Link lobby */
+"1 player online" = "1 player online";
 
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
@@ -135,6 +198,12 @@
 
 /* Fallback version text in the update notice */
 "a new version" = "a new version";
+
+/* System Link toast: someone entered the room */
+"A player joined System Link." = "A player joined System Link.";
+
+/* System Link toast: someone left the room */
+"A player left System Link." = "A player left System Link.";
 
 /* settings hub view controller: title */
 "About" = "About";
@@ -241,6 +310,12 @@
 
 /* Touch control type */
 "Analog Stick" = "Analog Stick";
+
+/* System Link toast: title versions differ */
+"Another player in the room runs a different version of this game. Games usually only see players on the same version." = "Another player in the room runs a different version of this game. Games usually only see players on the same version.";
+
+/* system link status view controller: row detail */
+"Another player runs a different version of this game. Games usually only see players on the same version." = "Another player runs a different version of this game. Games usually only see players on the same version.";
 
 /* settings hub view controller: title */
 "App" = "App";
@@ -387,6 +462,9 @@
 /* Alert title: a link failed */
 "Can't Open Link" = "Can't Open Link";
 
+/* system link status view controller: state */
+"Can't Reach the Server" = "Can't Reach the Server";
+
 /* Action sheet button: cancel
    Alert button: cancel
    config view controller: title
@@ -396,6 +474,7 @@
    game content view controller: title
    Launch screen button: stop a slow launch
    profile view controller: title
+   system link view controller: button
    zar conversion coordinator: title */
 "Cancel" = "Cancel";
 
@@ -420,6 +499,12 @@
 /* config view controller: title */
 "Changes apply immediately for this session" = "Changes apply immediately for this session";
 
+/* system link status view controller: footer */
+"Changing rooms takes a few seconds." = "Changing rooms takes a few seconds.";
+
+/* system link status view controller: footer */
+"Changing rooms takes a few seconds. The players in this room lose their connection to you." = "Changing rooms takes a few seconds. The players in this room lose their connection to you.";
+
 /* settings hub view controller: label text */
 "Check for Updates" = "Check for Updates";
 
@@ -432,11 +517,20 @@
 /* game content view controller: message */
 "Checking the package..." = "Checking the package...";
 
+/* online view controller: summary row */
+"Checking Who's Online…" = "Checking Who's Online…";
+
 /* system software view controller: status */
 "Checking…" = "Checking…";
 
 /* dashboard setup: button, picks the update in Files */
 "Choose a Downloaded Update" = "Choose a Downloaded Update";
+
+/* online game picker: title */
+"Choose a Game" = "Choose a Game";
+
+/* online view controller: footer */
+"Choose a game to play it in its public lobby or a private room." = "Choose a game to play it in its public lobby or a private room.";
 
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
@@ -452,6 +546,9 @@
 
 /* game disc view controller: user-visible text */
 "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID." = "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID.";
+
+/* online view controller: footer */
+"Choose the game, then share the code with the players you want. Everyone needs the game." = "Choose the game, then share the code with the players you want. Everyone needs the game.";
 
 /* Name of a touch control shape */
 "Circle" = "Circle";
@@ -511,6 +608,18 @@
 
 /* settings hub view controller: title */
 "Connect a controller before or during gameplay; XeniOS binds it automatically." = "Connect a controller before or during gameplay; XeniOS binds it automatically.";
+
+/* system link status view controller: row */
+"Connected Directly" = "Connected Directly";
+
+/* system link status view controller: row */
+"Connected Through the Relay" = "Connected Through the Relay";
+
+/* system link status view controller: state detail */
+"Connected to the System Link server." = "Connected to the System Link server.";
+
+/* system link status view controller: state */
+"Connecting…" = "Connecting…";
 
 /* content management: user-visible text */
 "Content" = "Content";
@@ -711,6 +820,12 @@
 /* profile view controller: user-visible text */
 "Create and sign in profiles used by Xbox Live emulation." = "Create and sign in profiles used by Xbox Live emulation.";
 
+/* system link view controller: button row */
+"Create Private Room" = "Create Private Room";
+
+/* online view controller: button row */
+"Create Private Room…" = "Create Private Room…";
+
 /* Action sheet button: create a profile
    Alert title: create a profile
    profile view controller: label text
@@ -905,6 +1020,12 @@
 /* Slider label in the touch analog tuning screen */
 "Diagonal" = "Diagonal";
 
+/* In-game menu: System Link card, another player runs another version of the game */
+"Different game version" = "Different game version";
+
+/* system link status view controller: row */
+"Different Game Version" = "Different Game Version";
+
 /* game patches view controller: accessibility value */
 "Disabled" = "Disabled";
 
@@ -1035,6 +1156,9 @@
 /* Prompt text: rename a layout */
 "Enter a new name for the saved local layout." = "Enter a new name for the saved local layout.";
 
+/* system link view controller: alert message */
+"Enter the 6-character code you were sent." = "Enter the 6-character code you were sent.";
+
 /* compat report view controller: user-visible text */
 "Environment" = "Environment";
 
@@ -1062,6 +1186,12 @@
 
 /* config view controller: message */
 "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards.";
+
+/* system link view controller: room row detail */
+"Everyone playing this game." = "Everyone playing this game.";
+
+/* online view controller: footer */
+"Everyone with XeniOS open and Online features on, in the library or in a game. Games list their public lobbies; private rooms are only counted. To join one, ask for its code." = "Everyone with XeniOS open and Online features on, in the library or in a game. Games list their public lobbies; private rooms are only counted. To join one, ask for its code.";
 
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
@@ -1260,6 +1390,9 @@
    zar conversion coordinator: user-visible text */
 "Game" = "Game";
 
+/* system link view controller: a game with no name; %@ is its title ID */
+"Game %@" = "Game %@";
+
 /* game actions view controller: title */
 "Game Actions" = "Game Actions";
 
@@ -1416,6 +1549,9 @@
    Layout library button that imports a layout file */
 "Import" = "Import";
 
+/* online view controller: footer */
+"Import a game to play in a private room." = "Import a game to play in a private room.";
+
 /* Alert message: no games for the touch layout picker */
 "Import a game with a title ID before editing a per-game touch layout." = "Import a game with a title ID before editing a per-game touch layout.";
 
@@ -1480,6 +1616,12 @@
 
 /* document import coordinator: title */
 "Importing" = "Importing";
+
+/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+"In %ld games." = "In %ld games.";
+
+/* online view controller: summary row detail, after \"3 Players Online\" */
+"In 1 game." = "In 1 game.";
 
 /* Title of the in-game pause menu */
 "In-Game Menu" = "In-Game Menu";
@@ -1570,6 +1712,9 @@
 /* Switch label in the touch analog tuning screen */
 "Invert Vertical" = "Invert Vertical";
 
+/* Launch prompt for an invite link; %@ is the room code */
+"It also sets System Link for this game to room %@." = "It also sets System Link for this game to room %@.";
+
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
 
@@ -1604,6 +1749,18 @@
 
 /* Launcher status: JIT is unavailable */
 "JIT unavailable. Open StikDebug, then restart polling." = "JIT unavailable. Open StikDebug, then restart polling.";
+
+/* system link view controller: button */
+"Join" = "Join";
+
+/* system link view controller: alert title */
+"Join a Private Room" = "Join a Private Room";
+
+/* system link status view controller: button row */
+"Join Another Room…" = "Join Another Room…";
+
+/* system link view controller: button row */
+"Join with Code…" = "Join with Code…";
 
 /* config view controller: title */
 "Keep Editing" = "Keep Editing";
@@ -1817,6 +1974,9 @@
 /* Shader preparation sheet in Low Power Mode */
 "Low Power Mode makes this slower." = "Low Power Mode makes this slower.";
 
+/* system link view controller: button row */
+"Make a Private Room" = "Make a Private Room";
+
 /* game actions view controller: user-visible text
    game content view controller: title
    launcher overlay view: title */
@@ -1982,6 +2142,30 @@
 /* game content view controller: user-visible text */
 "No title updates or DLC are installed for this title." = "No title updates or DLC are installed for this title.";
 
+/* online view controller: summary row detail, after \"3 Players Online\" */
+"Nobody is in a game yet." = "Nobody is in a game yet.";
+
+/* system link view controller: row */
+"Nobody is in a public lobby right now." = "Nobody is in a public lobby right now.";
+
+/* system link status view controller: row detail */
+"Nobody is in its public lobby." = "Nobody is in its public lobby.";
+
+/* online view controller: summary row */
+"Nobody Is Online Right Now" = "Nobody Is Online Right Now";
+
+/* online view controller: row */
+"Nobody is playing your games online right now." = "Nobody is playing your games online right now.";
+
+/* system link view controller: room row detail, after \"Everyone playing this game.\" */
+"Nobody is there now." = "Nobody is there now.";
+
+/* system link view controller: alert title */
+"Not a Room Code" = "Not a Room Code";
+
+/* system link status view controller: row */
+"Not Connected Yet" = "Not Connected Yet";
+
 /* file transfer: user-visible text */
 "Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying." = "Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying.";
 
@@ -1991,6 +2175,9 @@
 /* Alert button: dismiss without enabling */
 "Not Now" = "Not Now";
 
+/* online view controller: summary row */
+"Not Playing over the Internet" = "Not Playing over the Internet";
+
 /* choice list view controller: accessibility value */
 "Not selected" = "Not selected";
 
@@ -1999,6 +2186,9 @@
 
 /* profile view controller: detail text */
 "Not signed in" = "Not signed in";
+
+/* system link status view controller: state */
+"Not Started" = "Not Started";
 
 /* zar conversion coordinator: detail text */
 "Not started. Cancelled before reaching this item." = "Not started. Cancelled before reaching this item.";
@@ -2041,6 +2231,14 @@
    config view controller: accessibility value */
 "On" = "On";
 
+/* system link view controller: room row detail, after \"Everyone playing this game.\" */
+"One player is there now." = "One player is there now.";
+
+/* Game library: Online button
+   online view controller: title
+   system link status view controller: state */
+"Online" = "Online";
+
 /* Alert title: first-run online features notice
    settings hub view controller: label text */
 "Online Features" = "Online Features";
@@ -2054,6 +2252,12 @@
 
 /* settings hub view controller: detail text */
 "Online features off" = "Online features off";
+
+/* system link view controller: room row detail */
+"Only players with the code." = "Only players with the code.";
+
+/* online view controller: summary row */
+"Only You Are Online" = "Only You Are Online";
 
 /* Row title in the touch control edit panel */
 "Opacity" = "Opacity";
@@ -2149,6 +2353,12 @@
 /* compat report cells: label text */
 "OS Version" = "OS Version";
 
+/* online view controller: section header */
+"Other Games" = "Other Games";
+
+/* online view controller: summary row detail */
+"Others show up here when they open XeniOS with Online features on." = "Others show up here when they open XeniOS with Online features on.";
+
 /* settings hub view controller: title */
 "Output and decoder preferences." = "Output and decoder preferences.";
 
@@ -2238,11 +2448,42 @@
 "PLATFORM" = "PLATFORM";
 
 /* game actions view controller: user-visible text
-   launcher overlay view: title */
+   launcher overlay view: title
+   system link view controller: button */
 "Play" = "Play";
+
+/* System Link invite text; %1$@ is the game, %2$@ the room code */
+"Play %1$@ with me over System Link in XeniOS. Room code: %2$@" = "Play %1$@ with me over System Link in XeniOS. Room code: %2$@";
+
+/* system link status view controller: button row */
+"Play in the Public Lobby" = "Play in the Public Lobby";
 
 /* Button that starts the game while shaders keep building */
 "Play now" = "Play now";
+
+/* game actions view controller: user-visible text */
+"Play with others over the internet, in the public lobby or a private room." = "Play with others over the internet, in the public lobby or a private room.";
+
+/* system link view controller: footer */
+"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address.";
+
+/* system link view controller: footer */
+"Players in each game's public lobby, updated every minute. Private rooms aren't counted." = "Players in each game's public lobby, updated every minute. Private rooms aren't counted.";
+
+/* system link status view controller: section header */
+"Players in This Room" = "Players in This Room";
+
+/* system link status view controller: footer */
+"Players in your room can see your IP address." = "Players in your room can see your IP address.";
+
+/* online view controller: summary row detail */
+"Players show up here while they have XeniOS open with Online features on." = "Players show up here while they have XeniOS open with Online features on.";
+
+/* online view controller: summary row detail */
+"Players show up here while they're in a game's public lobby." = "Players show up here while they're in a game's public lobby.";
+
+/* system link view controller: section header */
+"Playing Online Now" = "Playing Online Now";
 
 /* compat report view controller: message */
 "Please add a short note about your experience." = "Please add a short note about your experience.";
@@ -2305,6 +2546,12 @@
 /* settings hub view controller: user-visible text */
 "Privacy" = "Privacy";
 
+/* system link view controller: section header */
+"Private Room" = "Private Room";
+
+/* system link view controller: room row; %@ is the room code */
+"Private Room %@" = "Private Room %@";
+
 /* launcher overlay view: user-visible text
    Pause menu row
    settings hub view controller: title */
@@ -2322,6 +2569,9 @@
 
 /* profile view controller: title */
 "Profiles" = "Profiles";
+
+/* system link view controller: room row */
+"Public Lobby" = "Public Lobby";
 
 /* VoiceOver hint for a disc in the disc tray */
 "Puts this disc in the drive." = "Puts this disc in the drive.";
@@ -2477,6 +2727,15 @@
 /* VoiceOver hint for the Resume button */
 "Returns to the game." = "Returns to the game.";
 
+/* system link view controller: section header */
+"Room" = "Room";
+
+/* System Link: names a private room; %@ is its code */
+"room %@" = "room %@";
+
+/* system link view controller: alert message */
+"Room codes have 6 letters and digits." = "Room codes have 6 letters and digits.";
+
 /* Name of a touch control shape */
 "Round" = "Round";
 
@@ -2578,6 +2837,9 @@
 /* Name shown for a hidden achievement */
 "Secret Achievement" = "Secret Achievement";
 
+/* online view controller: footer */
+"Seeing who's online, and System Link over the internet, need Online features." = "Seeing who's online, and System Link over the internet, need Online features.";
+
 /* Placeholder shown in the pause workspace before a choice is made */
 "Select an option" = "Select an option";
 
@@ -2670,8 +2932,14 @@
 /* Alert title: another app asks for the game library */
 "Share Game Library?" = "Share Game Library?";
 
+/* system link view controller: button row */
+"Share Invite…" = "Share Invite…";
+
 /* Alert button: shares the log file */
 "Share Log" = "Share Log";
+
+/* system link view controller: footer */
+"Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you." = "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you.";
 
 /* settings hub view controller: title */
 "Share the layout currently loaded in the running game." = "Share the layout currently loaded in the running game.";
@@ -2710,8 +2978,14 @@
 /* VoiceOver hint for the Achievements button */
 "Shows achievements for the current game." = "Shows achievements for the current game.";
 
+/* Game library, VoiceOver: Online button hint */
+"Shows how many players are in each game's public System Link lobby." = "Shows how many players are in each game's public System Link lobby.";
+
 /* acknowledgements view controller: accessibility hint */
 "Shows the license." = "Shows the license.";
+
+/* In-game menu, VoiceOver: System Link card hint */
+"Shows the System Link room, its players and who's online." = "Shows the System Link room, its players and who's online.";
 
 /* profile view controller: user-visible text
    Toast; %@ is the gamertag */
@@ -2737,6 +3011,9 @@
 
 /* config view controller: message */
 "Some title-specific overrides could not be saved. Check xenia.log." = "Some title-specific overrides could not be saved. Check xenia.log.";
+
+/* System Link toast: another player has the same console identity */
+"Someone in this System Link room uses the same profile. Switch profiles to join." = "Someone in this System Link room uses the same profile. Switch profiles to join.";
 
 /* Alert title: a game or link failed */
 "Something Went Wrong" = "Something Went Wrong";
@@ -2784,6 +3061,12 @@
 /* Alert message: StikDebug is unavailable */
 "StikDebug is not installed or unavailable." = "StikDebug is not installed or unavailable.";
 
+/* In-game menu: System Link card, the server doesn't answer */
+"Still trying." = "Still trying.";
+
+/* system link status view controller: state detail */
+"Still trying. Check your internet connection." = "Still trying. Check your internet connection.";
+
 /* system update page: button, cancels the download */
 "Stop Download" = "Stop Download";
 
@@ -2830,6 +3113,53 @@
 
 /* launcher overlay view: accessibility hint */
 "Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
+
+/* game actions view controller: user-visible text
+   In-game menu: System Link card
+   system link view controller: title */
+"System Link" = "System Link";
+
+/* System Link toast: the relay doesn't answer */
+"System Link can't reach its server. Still trying." = "System Link can't reach its server. Still trying.";
+
+/* System Link toast: the relay answers again */
+"System Link is back online." = "System Link is back online.";
+
+/* System Link toast; %1$@ names the room, %2$lu is the number of other players */
+"System Link is online in %1$@ with %2$lu other players." = "System Link is online in %1$@ with %2$lu other players.";
+
+/* System Link toast; %@ names the room */
+"System Link is online in %@ with one other player." = "System Link is online in %@ with one other player.";
+
+/* System Link toast; %@ names the room */
+"System Link is online in %@. Waiting for players." = "System Link is online in %@. Waiting for players.";
+
+/* online view controller: footer; %@ is the systemlink_transport setting */
+"System Link is set to “%@” in Settings, so it doesn't play over the internet." = "System Link is set to “%@” in Settings, so it doesn't play over the internet.";
+
+/* system link view controller: footer; %@ is the systemlink_transport setting */
+"System Link is set to “%@” in Settings, so these rooms aren't used." = "System Link is set to “%@” in Settings, so these rooms aren't used.";
+
+/* System Link toast: an invite arrived while online features are off */
+"System Link needs Online features." = "System Link needs Online features.";
+
+/* system link view controller: footer */
+"System Link plays over the internet, so it needs Online features." = "System Link plays over the internet, so it needs Online features.";
+
+/* system link status view controller: state detail */
+"System Link starts when the game looks for other players." = "System Link starts when the game looks for other players.";
+
+/* In-game menu: System Link card */
+"System Link · Can't Reach the Server" = "System Link · Can't Reach the Server";
+
+/* In-game menu: System Link card */
+"System Link · Connecting…" = "System Link · Connecting…";
+
+/* In-game menu: System Link card */
+"System Link · Online" = "System Link · Online";
+
+/* In-game menu: System Link card */
+"System Link · Turned Away" = "System Link · Turned Away";
 
 /* launcher overlay view: menu action */
 "System Software" = "System Software";
@@ -2921,6 +3251,9 @@
 /* system software view controller: install error */
 "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again." = "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again.";
 
+/* System Link: names the game's public room */
+"the public lobby" = "the public lobby";
+
 /* compat report submission: user-visible text */
 "The report server is having trouble right now. Please try again later." = "The report server is having trouble right now. Please try again later.";
 
@@ -2932,6 +3265,12 @@
 
 /* Placeholder for the host name of a layout download source */
 "the source" = "the source";
+
+/* System Link toast: the relay speaks a newer protocol */
+"The System Link server needs a newer version of XeniOS." = "The System Link server needs a newer version of XeniOS.";
+
+/* System Link toast: the relay refused for another reason */
+"The System Link server turned this player away." = "The System Link server turned this player away.";
 
 /* system software view controller: install error */
 "The system software couldn't be written. Check that there is enough free space." = "The system software couldn't be written. Check that there is enough free space.";
@@ -2962,6 +3301,9 @@
 
 /* Row title in the touch control edit panel */
 "Then drag" = "Then drag";
+
+/* system link status view controller: row detail */
+"They show up here when they start this game in the same room." = "They show up here when they start this game in the same room.";
 
 /* Fallback for the current version text in the update notice */
 "this build" = "this build";
@@ -3031,6 +3373,9 @@
 
 /* Alert message: confirm deleting a layout */
 "This removes the saved local layout file." = "This removes the saved local layout file.";
+
+/* System Link toast: the room has no space */
+"This System Link room is full." = "This System Link room is full.";
 
 /* Empty state message in the achievements screen */
 "This title has not published achievement metadata to the profile." = "This title has not published achievement metadata to the profile.";
@@ -3126,6 +3471,13 @@
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
 
+/* online view controller: button row
+   system link view controller: button row */
+"Turn On Online Features" = "Turn On Online Features";
+
+/* system link status view controller: state */
+"Turned Away" = "Turned Away";
+
 /* compat report submission: message */
 "Unable to serialize the report payload." = "Unable to serialize the report payload.";
 
@@ -3217,7 +3569,7 @@
 "Update available: %@" = "Update available: %@";
 
 /* settings hub view controller: user-visible text */
-"Update checks, compatibility data, cover art, and compatibility discussions and reports. Turn this off and XeniOS does none of these. Games are not affected." = "Update checks, compatibility data, cover art, and compatibility discussions and reports. Turn this off and XeniOS does none of these. Games are not affected.";
+"Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link." = "Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link.";
 
 /* settings hub view controller: label text
    settings hub view controller: user-visible text */
@@ -3284,6 +3636,12 @@
 /* launcher overlay view: label text */
 "Waiting for JIT..." = "Waiting for JIT...";
 
+/* system link status view controller: row */
+"Waiting for Players" = "Waiting for Players";
+
+/* In-game menu: System Link card, nobody else is in the room */
+"Waiting for players" = "Waiting for players";
+
 /* Launch screen status: the JIT tool is preparing memory */
 "Waiting for StikDebug to enable JIT…" = "Waiting for StikDebug to enable JIT…";
 
@@ -3293,6 +3651,9 @@
 /* config view controller: section footer
    settings hub view controller: title */
 "Website" = "Website";
+
+/* online game picker: header */
+"Which game is the room for?" = "Which game is the room for?";
 
 /* zar conversion coordinator: title */
 "Write .zar archives beside the source games and keep the originals." = "Write .zar archives beside the source games and keep the originals.";
@@ -3331,7 +3692,7 @@
 "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it." = "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it.";
 
 /* Alert message: first-run online features notice */
-"XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
 
 /* zar conversion coordinator: user-visible text */
 "XeniOS could not access the linked external folder for in-place conversion." = "XeniOS could not access the linked external folder for in-place conversion.";
@@ -3391,6 +3752,9 @@
 
 /* Shader preparation sheet while the device is hot */
 "Your device is warm. This will take longer." = "Your device is warm. This will take longer.";
+
+/* online view controller: section header */
+"Your Games" = "Your Games";
 
 /* zar conversion coordinator: title */
 "ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";

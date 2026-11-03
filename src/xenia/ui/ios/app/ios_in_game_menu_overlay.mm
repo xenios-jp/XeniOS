@@ -11,6 +11,7 @@
 
 #import <GameController/GameController.h>
 
+#import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -32,6 +33,7 @@
   UILabel* _titleLabel;
   UILabel* _subtitleLabel;
   UILabel* _thermalLabel;
+  UIView* _systemLinkLabel;
   UIStackView* _contentStack;
   UIStackView* _rowOneStack;
   UIStackView* _rowTwoStack;
@@ -112,6 +114,7 @@
   _thermalLabel.textAlignment = NSTextAlignmentCenter;
   xe_apply_label_font(_thermalLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   _thermalLabel.hidden = YES;
+  _systemLinkLabel = xe_ios_new_system_link_status_view();
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(thermalStateChanged:)
                                                name:NSProcessInfoThermalStateDidChangeNotification
@@ -206,6 +209,7 @@
     _titleLabel,
     _subtitleLabel,
     _thermalLabel,
+    _systemLinkLabel,
     _resumeButton,
     _rowOneStack,
     _rowTwoStack,
@@ -282,6 +286,7 @@
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_thermalLabel release];
+  [_systemLinkLabel release];
   [_resumeHandler release];
   [_editControlsHandler release];
   [_achievementsHandler release];
