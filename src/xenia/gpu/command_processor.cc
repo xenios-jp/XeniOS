@@ -448,7 +448,9 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
   if (cached_zpd_mode_ == mode) {
     return;
   }
-  ApplyZPDMode(mode);
+  // Applying walks the reports and touches guest memory, so it belongs to the
+  // worker like ReloadZPDMode, not to this (often UI) thread.
+  CallInThread([this, mode]() { ApplyZPDMode(mode); });
   const char* mode_str = "fake";
   switch (mode) {
     case ZPDMode::kFast:
