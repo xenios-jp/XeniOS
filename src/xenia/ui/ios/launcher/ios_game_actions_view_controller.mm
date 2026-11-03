@@ -71,6 +71,12 @@ struct XeniaIOSGameActionRow {
        NSLocalizedString(@"Launch the selected title.",
                          @"game actions view controller: user-visible text"),
        @"play.fill", YES},
+      {XeniaIOSGameActionSystemLink,
+       NSLocalizedString(@"System Link", @"game actions view controller: user-visible text"),
+       NSLocalizedString(@"Play with others over the internet, in the public lobby or a "
+                         @"private room.",
+                         @"game actions view controller: user-visible text"),
+       @"network", title_id_ != 0},
       {XeniaIOSGameActionGameSettings,
        NSLocalizedString(@"Game Settings", @"game actions view controller: user-visible text"),
        NSLocalizedString(@"Save display, compatibility, and cvar overrides for this title.",

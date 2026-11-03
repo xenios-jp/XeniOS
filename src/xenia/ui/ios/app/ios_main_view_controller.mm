@@ -71,6 +71,7 @@
 #import "xenia/ui/ios/launcher/ios_game_picker_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_tile_cell.h"
 #import "xenia/ui/ios/launcher/ios_launcher_overlay_view.h"
+#import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_zar_conversion_coordinator.h"
 #import "xenia/ui/ios/settings/ios_choice_list_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_builder.h"
@@ -86,6 +87,7 @@
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_resource_pressure.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
+#import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
@@ -491,6 +493,36 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       ^(NSString* message) {
         [resource_pressure_owner showStatusToast:message style:XeniaIOSStatusToastStyleWarning];
       });
+  __unsafe_unretained XeniaViewController* system_link_owner = self;
+  xe_ios_system_link_install(^(NSString* message, XeniaIOSStatusToastStyle style) {
+    [system_link_owner showStatusToast:message style:style];
+  });
+  xe_ios_system_link_watch_online(
+      ^BOOL {
+        return !system_link_owner.gameRunning && system_link_owner.launcherOverlayView &&
+               !system_link_owner.launcherOverlayView.hidden;
+      },
+      ^{
+        [system_link_owner.launcherOverlayView reloadGames];
+      });
+  xe_ios_system_link_set_online_menu(^{
+    std::vector<XeniaIOSOnlineLibraryGame> library;
+    for (const IOSDiscoveredGame& game : system_link_owner->discovered_games_) {
+      library.push_back({game.title_id, ToNSString(game.title),
+                         game.icon_data.empty() ? nil
+                                                : [NSData dataWithBytes:game.icon_data.data()
+                                                                 length:game.icon_data.size()]});
+    }
+    xe_ios_present_online_sheet(system_link_owner, library, ^(uint32_t title_id) {
+      const std::vector<IOSDiscoveredGame>& games = system_link_owner->discovered_games_;
+      for (size_t i = 0; i < games.size(); ++i) {
+        if (games[i].title_id == title_id) {
+          [system_link_owner performGameAction:XeniaIOSGameActionSystemLink forIndex:i];
+          return;
+        }
+      }
+    });
+  });
   // Create the Metal-backed rendering view. The frame is set explicitly via
   // -applyMetalViewLayout in -viewDidLayoutSubviews so the user-chosen
   // window scaling mode (Fit / Stretch / Zoom) and portrait position offset
@@ -797,9 +829,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                  @"Alert title: first-run online features notice")
                        message:
                            NSLocalizedString(
-                               @"XeniOS checks for updates and downloads compatibility information "
-                               @"and cover art. Compatibility reports you submit are "
-                               @"public.\n\nYou can change this in Settings > About > Privacy.",
+                               @"XeniOS checks for updates, downloads compatibility information "
+                               @"and cover art, and links System Link games with other players "
+                               @"over the internet, who can see your IP address. Compatibility "
+                               @"reports you submit are public.\n\nYou can change this in "
+                               @"Settings > About > Privacy.",
                                @"Alert message: first-run online features notice")
                 preferredStyle:UIAlertControllerStyleAlert];
   void (^answer)(BOOL) = ^(BOOL enabled) {
@@ -2941,17 +2975,26 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return YES;
   }
 
+  // A System Link invite launches its game by title ID. Its room is set only once the
+  // player agrees to the launch.
+  uint32_t invite_title_id = 0;
+  NSString* invite_room = xe_ios_system_link_invite_room(url, &invite_title_id);
+  NSURL* launch_url =
+      invite_room ? [NSURL URLWithString:xe_launch_url_for_title_id(
+                                             invite_title_id, xe::ui::IOSGameSystem::kXbox360)]
+                  : url;
+
   std::filesystem::path launch_path;
   NSString* display_name = nil;
   uint32_t title_id = 0;
   xe::ui::IOSGameSystem title_system = xe::ui::IOSGameSystem::kXbox360;
   bool title_system_present = false;
-  if (ExtractLaunchPathFromExternalURL(url, &launch_path) && !launch_path.empty()) {
+  if (ExtractLaunchPathFromExternalURL(launch_url, &launch_path) && !launch_path.empty()) {
     display_name = [self displayNameForGamePath:launch_path];
     if (!display_name || display_name.length == 0) {
       display_name = ToNSString(launch_path.filename().string());
     }
-  } else if (ExtractLaunchTitleIDFromExternalURL(url, &title_id, &title_system,
+  } else if (ExtractLaunchTitleIDFromExternalURL(launch_url, &title_id, &title_system,
                                                  &title_system_present) &&
              title_id) {
     if (![self findDiscoveredGameWithTitleID:title_id
@@ -3018,6 +3061,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                            @"Alert message; %@ is the game to launch"),
                          display_name];
   }
+  if (invite_room) {
+    message = [message stringByAppendingFormat:@" %@", xe_ios_system_link_invite_note(invite_room)];
+  }
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:replaces_game
                                    ? NSLocalizedString(
@@ -3046,6 +3092,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                   : UIAlertActionStyleDefault
                             handler:^(__unused UIAlertAction* action) {
                               [self clearURLConfirmation];
+                              if (invite_room) {
+                                xe_ios_join_system_link_room(invite_title_id, invite_room);
+                              }
                               [self proceedWithExternalLaunchPath:confirmed_path
                                                       displayName:display_name];
                             }]];
@@ -3370,6 +3419,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     case XeniaIOSGameActionCopyLaunchURL:
       [self copyLaunchURLForGameAtIndex:game_index];
       break;
+    case XeniaIOSGameActionSystemLink: {
+      const IOSDiscoveredGame& game = discovered_games_[game_index];
+      const std::filesystem::path game_path = game.path;
+      NSString* display_name = ToNSString(game.title);
+      xe_ios_present_system_link_sheet(self, display_name, game.title_id, ^{
+        [self launchGameAtPath:game_path displayName:display_name];
+      });
+    } break;
   }
 }
 

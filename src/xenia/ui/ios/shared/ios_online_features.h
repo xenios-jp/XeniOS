@@ -12,18 +12,19 @@
 
 #import <Foundation/Foundation.h>
 
-// The one switch for everything XeniOS itself fetches or sends over the network:
-// the update check, compatibility data, cover art, compatibility discussions and
-// compatibility reports. It does not affect what a game does. Stored in
-// NSUserDefaults; the default is a single constant in ios_online_features.mm.
+// The one switch for everything XeniOS fetches or sends over the network: the
+// update check, compatibility data, cover art, compatibility discussions and
+// reports, and System Link over the internet. Stored in NSUserDefaults; the
+// default is a single constant in ios_online_features.mm.
 BOOL xe_ios_online_features_enabled(void);
 void xe_ios_set_online_features_enabled(BOOL enabled);
 
 // Short text for the unavailable state of a feature, e.g. in an alert.
 NSString* xe_ios_online_features_off_message(void);
 
-// YES until the first-launch notice about online features has been answered. Nothing
-// is fetched at launch while it is pending.
+// YES until the notice about online features has been answered, on first launch and
+// again once when online features gain something new. Nothing is fetched at launch
+// while it is pending.
 BOOL xe_ios_online_features_notice_pending(void);
 void xe_ios_set_online_features_notice_answered(void);
 
