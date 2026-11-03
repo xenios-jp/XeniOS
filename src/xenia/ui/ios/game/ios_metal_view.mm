@@ -21,6 +21,8 @@
   self = [super initWithFrame:frame];
   if (self) {
     _xeniaDrawableAspectRatio = 16.0 / 9.0;
+    // MetricKit's Metal frame rate (iOS 27) reports per layer, by this name.
+    self.layer.name = @"XeniOSGame";
   }
   return self;
 }

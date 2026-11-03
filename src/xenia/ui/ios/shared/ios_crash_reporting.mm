@@ -21,6 +21,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/system_ios.h"
+#include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 
 #if __has_include(<MetricKit/MetricKit.h>)
@@ -34,7 +35,8 @@ DECLARE_path(log_file);
 
 #if XE_IOS_HAS_METRICKIT
 // Crash and hang diagnostics arrive from MetricKit on a later launch. Saved
-// next to the session state so Share Log can attach them.
+// next to the session state so Share Log can attach them, and their crashes
+// sent as diagnostics.
 @interface XeniaMetricSubscriber : NSObject <MXMetricManagerSubscriber>
 @end
 #endif
@@ -46,6 +48,8 @@ constexpr NSTimeInterval kFatalAlertTimeoutSeconds = 300.0;
 // showing the box before giving up (the main thread may be waiting on it).
 constexpr int64_t kFatalAlertStartTimeoutSeconds = 5;
 constexpr size_t kMaxSavedDiagnostics = 5;
+constexpr NSUInteger kMaxMetricKitFrames = 64;
+constexpr NSUInteger kMaxTerminationReasonChars = 300;
 constexpr size_t kMaxNoteChars = 600;
 
 // States of the previous/current session.
@@ -590,6 +594,77 @@ void PresentShare(UIViewController* presenter, UIView* source_view,
 }  // namespace
 
 #if XE_IOS_HAS_METRICKIT
+namespace {
+
+// The crashing thread's frames, top first, as crash records carry them:
+// [{image, offset}], with binaryUUID on XeniOS's own frames for symbolication.
+// The other threads stay on the device.
+NSArray* MetricKitFrames(MXCallStackTree* tree) {
+  NSData* json = [tree JSONRepresentation];
+  id root = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;
+  NSArray* stacks = [root isKindOfClass:[NSDictionary class]] ? root[@"callStacks"] : nil;
+  if (![stacks isKindOfClass:[NSArray class]]) {
+    return @[];
+  }
+  NSDictionary* stack = nil;
+  for (id candidate in stacks) {
+    if ([candidate isKindOfClass:[NSDictionary class]] &&
+        (!stack || [candidate[@"threadAttributed"] boolValue])) {
+      stack = candidate;
+      if ([candidate[@"threadAttributed"] boolValue]) {
+        break;
+      }
+    }
+  }
+  NSMutableArray* frames = [NSMutableArray array];
+  id level = stack[@"callStackRootFrames"];
+  while ([level isKindOfClass:[NSArray class]] && [level count] &&
+         frames.count < kMaxMetricKitFrames) {
+    NSDictionary* frame = [level firstObject];
+    if (![frame isKindOfClass:[NSDictionary class]]) {
+      break;
+    }
+    NSString* image = frame[@"binaryName"];
+    image = [image isKindOfClass:[NSString class]] ? image : @"unknown";
+    NSMutableDictionary* out = [NSMutableDictionary dictionary];
+    out[@"image"] = image;
+    out[@"offset"] = [NSString
+        stringWithFormat:@"0x%llx", [frame[@"offsetIntoBinaryTextSegment"] unsignedLongLongValue]];
+    if ([image isEqualToString:@"XeniOS"] && [frame[@"binaryUUID"] isKindOfClass:[NSString class]]) {
+      out[@"binaryUUID"] = frame[@"binaryUUID"];
+    }
+    [frames addObject:out];
+    level = frame[@"subFrames"];
+  }
+  return frames;
+}
+
+NSDictionary* MetricKitCrashBody(MXCrashDiagnostic* crash) {
+  NSMutableDictionary* body = [NSMutableDictionary dictionary];
+  body[@"source"] = @"metrickit";
+  body[@"type"] = @"exception";
+  if (crash.signal) {
+    body[@"signal"] = crash.signal;
+  }
+  if (crash.exceptionType) {
+    body[@"exceptionType"] = crash.exceptionType;
+  }
+  if (crash.exceptionCode) {
+    body[@"exceptionCodes"] = @[ [NSString
+        stringWithFormat:@"0x%llx", crash.exceptionCode.unsignedLongLongValue] ];
+  }
+  // Why the system ended the app, such as a watchdog's 0x8badf00d.
+  if (NSString* reason = crash.terminationReason; reason.length) {
+    body[@"terminationReason"] = reason.length > kMaxTerminationReasonChars
+                                     ? [reason substringToIndex:kMaxTerminationReasonChars]
+                                     : reason;
+  }
+  body[@"frames"] = MetricKitFrames(crash.callStackTree);
+  return body;
+}
+
+}  // namespace
+
 @implementation XeniaMetricSubscriber
 
 - (void)didReceiveDiagnosticPayloads:(NSArray<MXDiagnosticPayload*>*)payloads {
@@ -603,6 +678,10 @@ void PresentShare(UIViewController* presenter, UIView* source_view,
     NSString* stamp = [formatter stringFromDate:[NSDate date]];
     NSUInteger index = 0;
     for (MXDiagnosticPayload* payload in payloads) {
+      for (MXCrashDiagnostic* crash in payload.crashDiagnostics) {
+        xe_ios_diagnostics_note_metrickit_crash(MetricKitCrashBody(crash), payload.timeStampBegin,
+                                                payload.timeStampEnd);
+      }
       NSData* json = [payload JSONRepresentation];
       if (!json.length) {
         continue;
@@ -730,10 +809,12 @@ void xe_ios_begin_session_log(const std::filesystem::path& log_path) {
     // Held for the life of the process.
     [[MXMetricManager sharedManager] addSubscriber:[[XeniaMetricSubscriber alloc] init]];
 #endif
+    xe_ios_diagnostics_start(previous);
   }
 }
 
 void xe_ios_session_note_game_running(BOOL running) {
+  xe_ios_diagnostics_note_game_running(running);
   std::lock_guard<std::mutex> lock(StateMutex());
   if (!g_state || [g_state[@"game"] boolValue] == running ||
       [g_state[@"state"] isEqualToString:kStateFatal]) {
