@@ -38,10 +38,6 @@ bool IOSConfigIsHiddenKey(const std::string& key);
 bool IOSConfigValidateIntegerValue(const std::string& key, int64_t value, std::string* message);
 bool IOSConfigValidateDoubleValue(const std::string& key, double value, std::string* message);
 
-// Hidden developer mode: unlocks Advanced Debug and All Config. Off by default.
-extern NSString* const kXeniaDeveloperModeChangedNotification;
-bool IOSDeveloperModeEnabled(void);
-void IOSSetDeveloperModeEnabled(bool enabled);
 // Reads a title's saved overrides from disk. Only file I/O, no cvar access, so it may run off the
 // main thread; hand the result to OverlayIOSConfigSectionsFromGameConfig on the main thread.
 std::shared_ptr<void> LoadIOSGameConfigSnapshot(uint32_t title_id);

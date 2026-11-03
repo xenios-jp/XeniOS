@@ -14,7 +14,7 @@
 
 #include "xenia/ui/ios/settings/ios_config_view_controller.h"
 
-// Config controller for the Advanced Debug and Developer: All Config pages (searchable, like
+// Config controller for the Advanced Debug and All Config pages (searchable, like
 // every page that supports search in XeniaConfigViewController).
 @interface XeniaIOSDebugSettingsViewController : XeniaConfigViewController
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind

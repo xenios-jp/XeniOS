@@ -35,11 +35,6 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  // The raw debug overrides are for the hidden developer mode (About -> Version).
-  if (!IOSDeveloperModeEnabled()) {
-    return;
-  }
-
   UIView* footer = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 56)] autorelease];
   footer.backgroundColor = [UIColor clearColor];
 

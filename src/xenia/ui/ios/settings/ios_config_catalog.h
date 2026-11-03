@@ -37,8 +37,7 @@ bool IOSConfigItemIsDefault(const IOSConfigItem& item);
 bool IOSConfigResetItemToDefault(IOSConfigItem* item);
 
 // One searchable setting. The index lists every curated setting once (de-duplicated by key), then
-// the Advanced Debug and raw cvar settings that have no curated row (|advanced|, which need
-// developer mode to edit).
+// the Advanced Debug and raw cvar settings that have no curated row (|advanced|).
 struct IOSConfigSearchEntry {
   std::string key;  // Empty for actions, which are found by |title|.
   std::string title;

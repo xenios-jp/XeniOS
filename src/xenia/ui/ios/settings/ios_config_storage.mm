@@ -85,23 +85,6 @@ bool IOSConfigIsHiddenKey(const std::string& key) {
          key == "log_file";
 }
 
-NSString* const kXeniaDeveloperModeChangedNotification = @"XeniaDeveloperModeChanged";
-static NSString* const kXeniaDeveloperModePreferenceKey = @"ios_developer_mode";
-
-bool IOSDeveloperModeEnabled(void) {
-  return GetUserDefaultBool(kXeniaDeveloperModePreferenceKey, false);
-}
-
-void IOSSetDeveloperModeEnabled(bool enabled) {
-  if (enabled == IOSDeveloperModeEnabled()) {
-    return;
-  }
-  SetUserDefaultBool(kXeniaDeveloperModePreferenceKey, enabled);
-  [[NSNotificationCenter defaultCenter]
-      postNotificationName:kXeniaDeveloperModeChangedNotification
-                    object:nil];
-}
-
 std::string StripTomlQuotes(std::string value) {
   value = TrimAscii(std::move(value));
   if (value.size() >= 6 &&

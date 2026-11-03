@@ -16,7 +16,6 @@
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
-#import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
@@ -836,23 +835,16 @@ typedef NS_ENUM(NSInteger, XeniaAboutSection) {
   XeniaAboutSectionUpdates,
   XeniaAboutSectionPrivacy,
   XeniaAboutSectionLinks,
-  XeniaAboutSectionDeveloper,  // Only while developer mode is on.
+  XeniaAboutSectionCount,
 };
 
-constexpr NSInteger kAboutVersionRow = 1;
 constexpr NSInteger kAboutAcknowledgementsRow = 4;  // After the four links.
-constexpr NSInteger kDeveloperModeTapCount = 7;
-constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
 
 }  // namespace
 
 @implementation XeniaSettingsAboutViewController {
   XeniaUpdateInfo* update_info_;
   BOOL update_checking_;
-  NSInteger version_tap_count_;
-  BOOL version_hint_shown_;
-  NSTimeInterval last_version_tap_time_;
-  XeniaIOSStatusToastPresenter* toast_presenter_;
 }
 
 - (instancetype)init {
@@ -864,8 +856,6 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
 }
 
 - (void)dealloc {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
-  [toast_presenter_ release];
   [update_info_ release];
   [super dealloc];
 }
@@ -873,31 +863,7 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
-  toast_presenter_ = [[XeniaIOSStatusToastPresenter alloc] init];
-  // Another path (the switch below) can change developer mode.
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(developerModeChanged:)
-                                               name:kXeniaDeveloperModeChangedNotification
-                                             object:nil];
   [self refreshUpdateStatusForced:NO];
-}
-
-- (void)developerModeChanged:(NSNotification*)__unused notification {
-  // The Developer section appears or disappears; the Build footer (the tap hint) follows.
-  const NSInteger wanted = [self sectionCount];
-  const NSInteger shown = self.tableView.numberOfSections;
-  NSIndexSet* developer_section = [NSIndexSet indexSetWithIndex:XeniaAboutSectionDeveloper];
-  if (wanted > shown) {
-    [self.tableView insertSections:developer_section withRowAnimation:UITableViewRowAnimationFade];
-  } else if (wanted < shown) {
-    [self.tableView deleteSections:developer_section withRowAnimation:UITableViewRowAnimationFade];
-  }
-  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaAboutSectionBuild]
-                withRowAnimation:UITableViewRowAnimationNone];
-}
-
-- (NSInteger)sectionCount {
-  return IOSDeveloperModeEnabled() ? 5 : 4;
 }
 
 - (void)refreshUpdateStatusForced:(BOOL)forced {
@@ -927,7 +893,7 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return [self sectionCount];
+  return XeniaAboutSectionCount;
 }
 
 - (NSInteger)tableView:(UITableView* __unused)tableView
@@ -937,7 +903,6 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
       return 3;
     case XeniaAboutSectionUpdates:
     case XeniaAboutSectionPrivacy:
-    case XeniaAboutSectionDeveloper:
       return 1;
     default:
       return 5;  // Four links and Acknowledgements.
@@ -953,8 +918,6 @@ titleForHeaderInSection:(NSInteger)section {
       return NSLocalizedString(@"Updates", @"settings hub view controller: user-visible text");
     case XeniaAboutSectionPrivacy:
       return NSLocalizedString(@"Privacy", @"settings hub view controller: user-visible text");
-    case XeniaAboutSectionDeveloper:
-      return NSLocalizedString(@"Developer", @"settings hub view controller: user-visible text");
     default:
       return NSLocalizedString(@"Links", @"settings hub view controller: user-visible text");
   }
@@ -967,16 +930,6 @@ titleForFooterInSection:(NSInteger)section {
         @"Update checks, compatibility data, cover art, and compatibility discussions and "
         @"reports. Turn this off and XeniOS does none of these. Games are not affected.",
         @"settings hub view controller: user-visible text");
-  }
-  if (section == XeniaAboutSectionDeveloper) {
-    return NSLocalizedString(
-        @"Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets "
-        @"search find raw config settings. These change emulator internals and can break games.",
-        @"settings hub view controller: user-visible text");
-  }
-  if (section == XeniaAboutSectionBuild && !IOSDeveloperModeEnabled()) {
-    return NSLocalizedString(@"Tap Version seven times to show developer options.",
-                             @"settings hub view controller: user-visible text");
   }
   return nil;
 }
@@ -992,16 +945,9 @@ titleForFooterInSection:(NSInteger)section {
     cell.detailTextLabel.isAccessibilityElement = NO;
     return cell;
   }
-  const BOOL version_row = indexPath.section == XeniaAboutSectionBuild &&
-                           indexPath.row == kAboutVersionRow && version_hint_shown_;
-  const BOOL actionable = version_row || cell.selectionStyle != UITableViewCellSelectionStyleNone;
+  const BOOL actionable = cell.selectionStyle != UITableViewCellSelectionStyleNone;
   NSString* value = cell.detailTextLabel.text.length ? cell.detailTextLabel.text : nil;
-  // Once the Version row has been tapped, tell VoiceOver users it counts taps.
-  NSString* hint = version_row
-                       ? NSLocalizedString(@"Tap seven times to show developer options.",
-                                           @"settings hub view controller: accessibility hint")
-                       : nil;
-  XEApplyAccessibility(cell, cell.textLabel.text, value, hint,
+  XEApplyAccessibility(cell, cell.textLabel.text, value, nil,
                        actionable ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText);
   cell.isAccessibilityElement = YES;
   return cell;
@@ -1046,19 +992,15 @@ titleForFooterInSection:(NSInteger)section {
     return cell;
   }
 
-  if (indexPath.section == XeniaAboutSectionPrivacy ||
-      indexPath.section == XeniaAboutSectionDeveloper) {
-    const BOOL privacy = indexPath.section == XeniaAboutSectionPrivacy;
+  if (indexPath.section == XeniaAboutSectionPrivacy) {
     cell.textLabel.text =
-        privacy ? NSLocalizedString(@"Online Features", @"settings hub view controller: label text")
-                : NSLocalizedString(@"Developer Mode", @"settings hub view controller: label text");
+        NSLocalizedString(@"Online Features", @"settings hub view controller: label text");
     cell.detailTextLabel.text = @"";
     UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
-    toggle.on = privacy ? xe_ios_online_features_enabled() : IOSDeveloperModeEnabled();
+    toggle.on = xe_ios_online_features_enabled();
     toggle.accessibilityLabel = cell.textLabel.text;
     [toggle addTarget:self
-                  action:privacy ? @selector(onlineFeaturesSwitchChanged:)
-                                 : @selector(developerModeSwitchChanged:)
+                  action:@selector(onlineFeaturesSwitchChanged:)
         forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = toggle;
     return cell;
@@ -1137,52 +1079,9 @@ titleForFooterInSection:(NSInteger)section {
   }
 }
 
-- (void)developerModeSwitchChanged:(UISwitch*)sender {
-  IOSSetDeveloperModeEnabled(sender.isOn);
-}
-
-// Seven quick taps on the Version row switch developer mode on.
-- (void)registerVersionTap {
-  const NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-  if (now - last_version_tap_time_ > kDeveloperModeTapWindowSeconds) {
-    version_tap_count_ = 0;
-  }
-  last_version_tap_time_ = now;
-  ++version_tap_count_;
-  if (!version_hint_shown_) {
-    version_hint_shown_ = YES;
-    [self.tableView
-        reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:kAboutVersionRow
-                                                     inSection:XeniaAboutSectionBuild] ]
-              withRowAnimation:UITableViewRowAnimationNone];
-  }
-  if (version_tap_count_ < kDeveloperModeTapCount) {
-    return;
-  }
-  version_tap_count_ = 0;
-  if (IOSDeveloperModeEnabled()) {
-    [toast_presenter_ presentMessage:NSLocalizedString(@"Developer mode is already on.",
-                                                       @"settings hub view controller: message")
-                               style:XeniaIOSStatusToastStyleInfo
-                              inView:self.view];
-    return;
-  }
-  IOSSetDeveloperModeEnabled(true);
-  [toast_presenter_
-      presentMessage:NSLocalizedString(
-                         @"Developer mode is on. You can turn it off at the bottom of "
-                         @"this page.",
-                         @"settings hub view controller: message")
-               style:XeniaIOSStatusToastStyleSuccess
-              inView:self.view];
-}
-
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   if (indexPath.section == XeniaAboutSectionBuild) {
-    if (indexPath.row == kAboutVersionRow) {
-      [self registerVersionTap];
-    }
     return;
   }
   if (indexPath.section == XeniaAboutSectionUpdates) {
@@ -1273,25 +1172,11 @@ titleForFooterInSection:(NSInteger)section {
     all_sections_ = [[self buildSections] retain];
     sections_ = [all_sections_ retain];
     self.title = NSLocalizedString(@"Settings", @"settings hub view controller: title");
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(developerModeChanged:)
-                                                 name:kXeniaDeveloperModeChangedNotification
-                                               object:nil];
   }
   return self;
 }
 
-- (void)developerModeChanged:(NSNotification*)__unused notification {
-  search_index_valid_ = NO;
-  [all_sections_ release];
-  all_sections_ = [[self buildSections] retain];
-  if (!search_controller_.active) {
-    [self replaceVisibleSections:all_sections_];
-  }
-}
-
 - (void)dealloc {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [on_status_ release];
   [action_handler_ release];
   [all_sections_ release];
@@ -1483,12 +1368,6 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:gray],
                  ]];
 
-  // Advanced Debug and Developer: All Config edit emulator internals; they appear only in
-  // developer mode (About > Version, seven taps). Search finds the settings either way.
-  if (!IOSDeveloperModeEnabled()) {
-    return @[ all_settings, account, gameplay, graphics_performance, games, compatibility, app ];
-  }
-
   XeniaSettingsHubSection* advanced = [XeniaSettingsHubSection
       sectionWithTitle:NSLocalizedString(@"Advanced", @"settings hub view controller: title")
                  items:@[
@@ -1503,7 +1382,7 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:purple],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAllCvars
-                              title:NSLocalizedString(@"Developer: All Config",
+                              title:NSLocalizedString(@"All Config",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(@"Search and edit every registered cvar.",
                                                       @"settings hub view controller: title")
@@ -1751,8 +1630,8 @@ titleForFooterInSection:(NSInteger)section {
   [self appendTouchLayoutSearchResults:setting_results query:query];
   [self appendLibrarySearchResults:setting_results query:query];
 
-  // Every curated setting, by title, description, key, page, section and current value. Settings
-  // that exist only as raw config are listed in developer mode and counted otherwise.
+  // Every curated setting, by title, description, key, page, section and current value, then the
+  // settings that exist only as raw config.
   if (!search_index_valid_) {
     search_index_ = BuildIOSConfigSearchIndex();
     search_index_valid_ = YES;
@@ -1775,37 +1654,12 @@ titleForFooterInSection:(NSInteger)section {
                                                          @"settings hub view controller: title")
                                  items:setting_results]];
   }
-  if (advanced_results.count && IOSDeveloperModeEnabled()) {
+  if (advanced_results.count) {
     [filtered_sections
         addObject:[XeniaSettingsHubSection
                       sectionWithTitle:NSLocalizedString(@"Advanced (cvars)",
                                                          @"settings hub view controller: title")
                                  items:advanced_results]];
-  } else if (advanced_results.count) {
-    // Say that the setting exists instead of showing nothing; About holds the switch.
-    const NSUInteger count = advanced_results.count;
-    XeniaSettingsHubItem* pointer = [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindAbout
-               title:count == 1
-                         ? NSLocalizedString(@"1 more advanced result",
-                                             @"settings hub view controller: search pointer row")
-                         : [NSString
-                               stringWithFormat:
-                                   NSLocalizedString(@"%1$lu more advanced results",
-                                                     @"settings hub view controller: search "
-                                                     @"pointer row, count of raw config matches"),
-                                   static_cast<unsigned long>(count)]
-            subtitle:NSLocalizedString(@"Turn on Developer Mode in About to edit them.",
-                                       @"settings hub view controller: search pointer row")
-          symbolName:@"lock.fill"
-           tintColor:[XeniaTheme sectionIconGray]];
-    pointer.hintText = NSLocalizedString(@"Opens About, where Developer Mode is turned on.",
-                                         @"settings hub view controller: hint of the pointer row");
-    [filtered_sections
-        addObject:[XeniaSettingsHubSection
-                      sectionWithTitle:NSLocalizedString(@"Advanced",
-                                                         @"settings hub view controller: title")
-                                 items:@[ pointer ]]];
   }
 
   [self replaceVisibleSections:filtered_sections];
