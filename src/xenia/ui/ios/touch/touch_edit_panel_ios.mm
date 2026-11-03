@@ -101,7 +101,9 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   self = [super initWithFrame:frame];
   if (self) {
     label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    label_.font = [UIFont systemFontOfSize:12.0f weight:UIFontWeightSemibold];
+    xe_apply_label_font(label_, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
+    label_.adjustsFontSizeToFitWidth = YES;
+    label_.minimumScaleFactor = 0.72f;
     label_.textColor = SecondaryText();
     [self addSubview:label_];
   }
@@ -157,11 +159,15 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   self = [super initWithFrame:frame];
   if (self) {
     title_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    title_label_.font = [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
+    xe_apply_label_font(title_label_, UIFontTextStyleBody, 15.0, UIFontWeightSemibold);
+    title_label_.adjustsFontSizeToFitWidth = YES;
+    title_label_.minimumScaleFactor = 0.72f;
     title_label_.textColor = PrimaryText();
     [self addSubview:title_label_];
     value_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    value_label_.font = [UIFont systemFontOfSize:15.0f weight:UIFontWeightRegular];
+    xe_apply_label_font(value_label_, UIFontTextStyleBody, 15.0, UIFontWeightRegular);
+    value_label_.adjustsFontSizeToFitWidth = YES;
+    value_label_.minimumScaleFactor = 0.72f;
     value_label_.textColor = SecondaryText();
     value_label_.textAlignment = NSTextAlignmentRight;
     [self addSubview:value_label_];
@@ -265,7 +271,9 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   self = [super initWithFrame:frame];
   if (self) {
     title_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    title_label_.font = [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
+    xe_apply_label_font(title_label_, UIFontTextStyleBody, 15.0, UIFontWeightSemibold);
+    title_label_.adjustsFontSizeToFitWidth = YES;
+    title_label_.minimumScaleFactor = 0.72f;
     title_label_.textColor = PrimaryText();
     [self addSubview:title_label_];
     swatches_ = [[NSMutableArray alloc] init];
@@ -341,11 +349,15 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   self = [super initWithFrame:frame];
   if (self) {
     title_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    title_label_.font = [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
+    xe_apply_label_font(title_label_, UIFontTextStyleBody, 15.0, UIFontWeightSemibold);
+    title_label_.adjustsFontSizeToFitWidth = YES;
+    title_label_.minimumScaleFactor = 0.72f;
     title_label_.textColor = PrimaryText();
     [self addSubview:title_label_];
     subtitle_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-    subtitle_label_.font = [UIFont systemFontOfSize:12.0f weight:UIFontWeightRegular];
+    xe_apply_label_font(subtitle_label_, UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
+    subtitle_label_.adjustsFontSizeToFitWidth = YES;
+    subtitle_label_.minimumScaleFactor = 0.72f;
     subtitle_label_.textColor = SecondaryText();
     [self addSubview:subtitle_label_];
     chip_button_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
@@ -446,7 +458,9 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   header_ = [[UIView alloc] initWithFrame:CGRectZero];
   [self addSubview:header_];
   header_title_ = [[UILabel alloc] initWithFrame:CGRectZero];
-  header_title_.font = [UIFont systemFontOfSize:15.0f weight:UIFontWeightBold];
+  xe_apply_label_font(header_title_, UIFontTextStyleBody, 15.0, UIFontWeightBold);
+  header_title_.adjustsFontSizeToFitWidth = YES;
+  header_title_.minimumScaleFactor = 0.72f;
   header_title_.textColor = PrimaryText();
   [header_ addSubview:header_title_];
   primary_binding_button_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
@@ -468,7 +482,7 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   primary_binding_button_.hidden = YES;
   [header_ addSubview:primary_binding_button_];
   header_subtitle_ = [[UILabel alloc] initWithFrame:CGRectZero];
-  header_subtitle_.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightRegular];
+  xe_apply_label_font(header_subtitle_, UIFontTextStyleCaption2, 10.5, UIFontWeightRegular);
   header_subtitle_.textColor = SecondaryText();
   header_subtitle_.adjustsFontSizeToFitWidth = YES;
   header_subtitle_.minimumScaleFactor = 0.72f;

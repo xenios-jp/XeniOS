@@ -429,16 +429,14 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   tuning_section_control_.backgroundColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySubtle]];
   tuning_section_control_.tintColor = [XeniaTheme touchTintAmber];
-  if (@available(iOS 13.0, *)) {
-    tuning_section_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
-    [tuning_section_control_ setTitleTextAttributes:@{
-      NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]
-    }
-                                           forState:UIControlStateNormal];
-    [tuning_section_control_
-        setTitleTextAttributes:@{NSForegroundColorAttributeName : [UIColor blackColor]}
-                      forState:UIControlStateSelected];
+  tuning_section_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
+  [tuning_section_control_ setTitleTextAttributes:@{
+    NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]
   }
+                                         forState:UIControlStateNormal];
+  [tuning_section_control_
+      setTitleTextAttributes:@{NSForegroundColorAttributeName : [UIColor blackColor]}
+                    forState:UIControlStateSelected];
   [tuning_section_control_ addTarget:self
                               action:@selector(tuningSectionChanged:)
                     forControlEvents:UIControlEventValueChanged];
@@ -4332,6 +4330,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
     runtime_model_->StoreResolvedState(state);
     [self applyCaptureVisualState];
+    [self updateDisplayLinkPausedState];
     return;
   }
 
@@ -4568,6 +4567,53 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
   runtime_model_->StoreResolvedState(state);
   [self applyCaptureVisualState];
+  [self updateDisplayLinkPausedState];
+}
+
+// The display link only has work while a finger is down or a tap/look hold
+// tail is still decaying. Every touch event publishes synchronously, so the
+// first touch is still published in its own frame; the link is only needed to
+// let the time-based tails run out.
+- (BOOL)needsDisplayLinkTicks {
+  if (!gameplay_overlay_active_ || editing_controls_enabled_ || !runtime_model_) {
+    return NO;
+  }
+  if (!active_captures_.empty()) {
+    return YES;
+  }
+  const CFTimeInterval current_time = CACurrentMediaTime();
+  const float button_tap_hold_seconds = TouchButtonTapHoldSeconds();
+  const float look_hold_seconds = TouchLookHoldSeconds();
+  auto any_within = [current_time](const std::vector<CFTimeInterval>& times, float window) {
+    for (const CFTimeInterval time : times) {
+      if (time > 0.0 && (current_time - time) < window) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (any_within(recent_action_press_times_, button_tap_hold_seconds) ||
+      any_within(recent_secondary_press_times_, button_tap_hold_seconds) ||
+      any_within(recent_look_motion_times_, look_hold_seconds) ||
+      any_within(recent_move_motion_times_, look_hold_seconds)) {
+    return YES;
+  }
+  for (const CFTimeInterval until : recent_action_suppressed_until_times_) {
+    if (current_time < until) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+- (void)updateDisplayLinkPausedState {
+  if (!display_link_) {
+    return;
+  }
+  const BOOL paused = ![self needsDisplayLinkTicks];
+  if (display_link_.paused != paused) {
+    display_link_.paused = paused;
+  }
 }
 
 - (void)setGameplayOverlayVisible:(BOOL)visible animated:(BOOL)animated {
@@ -4579,7 +4625,6 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
     }
     self.hidden = NO;
     self.userInteractionEnabled = YES;
-    display_link_.paused = NO;
     [self publishResolvedState];
     if (!animated) {
       self.alpha = 1.0;

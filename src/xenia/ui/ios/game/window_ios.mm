@@ -247,6 +247,11 @@ void iOSWindow::ApplyDisplayLinkFrameRateRangeFromUIThread() {
 @interface XeniaDisplayLinkTarget : NSObject {
   xe::ui::iOSWindow* _window;
   CADisplayLink* _displayLink;
+  // Set only when the background transition is what paused the link, so
+  // becoming active again never resumes a link something else paused (the
+  // emulation pause itself runs at the GPU worker and guest scheduler, see
+  // xenia_main_ios.mm, and leaves the link alone).
+  BOOL _pausedForBackground;
 }
 - (instancetype)initWithWindow:(xe::ui::iOSWindow*)window;
 - (void)displayLinkFired:(CADisplayLink*)link;
@@ -260,6 +265,7 @@ void iOSWindow::ApplyDisplayLinkFrameRateRangeFromUIThread() {
   if (self = [super init]) {
     _window = window;
     _displayLink = nil;
+    _pausedForBackground = NO;
   }
   return self;
 }
@@ -305,9 +311,10 @@ void iOSWindow::ApplyDisplayLinkFrameRateRangeFromUIThread() {
 
 - (void)appDidBecomeActive:(NSNotification*)notification {
   // Resume the display link when the app returns to foreground.
-  if (_displayLink) {
+  if (_displayLink && _pausedForBackground) {
     _displayLink.paused = NO;
   }
+  _pausedForBackground = NO;
   // Notify the window of potential size changes (e.g. split-view transitions).
   if (_window) {
     _window->HandleSizeChange();
@@ -317,8 +324,9 @@ void iOSWindow::ApplyDisplayLinkFrameRateRangeFromUIThread() {
 
 - (void)appDidEnterBackground:(NSNotification*)notification {
   // Pause rendering only once the app is actually backgrounded.
-  if (_displayLink) {
+  if (_displayLink && !_displayLink.paused) {
     _displayLink.paused = YES;
+    _pausedForBackground = YES;
   }
   XELOGI("iOS lifecycle: display link paused (app entered background)");
 }
