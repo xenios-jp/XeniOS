@@ -1185,7 +1185,13 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
   }
 
 #if XE_PLATFORM_IOS
-  if (!kernel_state()->emulator()->imgui_drawer()) {
+  // The dashboard completing its own sign-in has no picker to show, so that
+  // goes on to the completion below.
+  const bool completes_sign_in =
+      (flags & static_cast<uint32_t>(SigninUiFlags::CompleteSignIn)) &&
+      user_index < XUserMaxUserCount &&
+      kernel_state()->xam_state()->IsUserSignedIn(user_index);
+  if (!kernel_state()->emulator()->imgui_drawer() && !completes_sign_in) {
     return ios::ShowSignIn(user_index, users_needed);
   }
 #endif
