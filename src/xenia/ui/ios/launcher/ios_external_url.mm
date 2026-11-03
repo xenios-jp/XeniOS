@@ -169,10 +169,14 @@ bool IsPathUnderIOSLibraryRoots(const std::filesystem::path& path) {
   if (path.empty() || !path.is_absolute()) {
     return false;
   }
+  // Outside the container (a linked folder) the system may refuse to resolve symlinks without
+  // the folder's security scope; then the lexically normalized path is compared instead. It is
+  // still checked against the library roots only, and ".." is already gone from it.
   std::error_code ec;
   std::filesystem::path resolved = std::filesystem::weakly_canonical(path, ec);
   if (ec) {
-    return false;
+    ec.clear();
+    resolved = path.lexically_normal();
   }
   std::vector<std::filesystem::path> roots;
   roots.push_back(xe_get_ios_documents_path());
@@ -185,7 +189,7 @@ bool IsPathUnderIOSLibraryRoots(const std::filesystem::path& path) {
     std::filesystem::path resolved_root = std::filesystem::weakly_canonical(root, ec);
     if (ec) {
       ec.clear();
-      continue;
+      resolved_root = root.lexically_normal();
     }
     // A root itself is not a game; require something below it.
     if (resolved != resolved_root && PathIsUnderRoot(resolved, resolved_root)) {
