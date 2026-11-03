@@ -76,6 +76,10 @@ DEFINE_int32(
     log_level, 2,
     "Maximum level to be logged. (0=error, 1=warning, 2=info, 3=debug)",
     "Logging");
+#if XE_PLATFORM_IOS
+// XeniOS 2.0.1's iOS default.
+UPDATE_from_int32(log_level, 2026, 11, 3, 14, 1);
+#endif  // XE_PLATFORM_IOS
 
 namespace dp = disruptorplus;
 using namespace xe::literals;

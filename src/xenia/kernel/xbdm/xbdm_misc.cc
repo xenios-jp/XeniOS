@@ -27,6 +27,7 @@ DEFINE_int32(
     console_type, -1,
     "Console Type Identifier: -1 - Retail, 0 - Development Kit, 1 - Test Kit",
     "Kernel");
+UPDATE_from_int32(console_type, 2026, 11, 3, 14, 0);
 
 namespace xe {
 namespace kernel {
