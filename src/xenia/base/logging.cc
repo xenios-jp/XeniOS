@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -31,6 +33,9 @@
 #include "xenia/base/ring_buffer.h"
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
+#if XE_PLATFORM_IOS
+#include "xenia/base/system_ios.h"
+#endif
 #include "xenia/base/threading.h"
 #include "xenia/base/utf8.h"
 
@@ -97,6 +102,94 @@ struct LogLine {
 
 thread_local char thread_log_buffer_[64_KiB];
 
+#if XE_PLATFORM_IOS
+// $USER is "mobile" or empty on iOS, so redact the app container instead:
+// replace its path (in both the /var and /private/var spellings) with "~" and
+// UUID path components (containers, app groups, File Provider storage) with
+// a placeholder. File names are kept, support needs them.
+static bool IsHexChar(char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
+}
+
+static bool IsUuidAt(std::string_view text, size_t pos) {
+  if (text.size() < pos || text.size() - pos < 36) {
+    return false;
+  }
+  for (size_t i = 0; i < 36; ++i) {
+    const char c = text[pos + i];
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (c != '-') {
+        return false;
+      }
+    } else if (!IsHexChar(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static const std::vector<std::string>& IOSHomePrefixes() {
+  // Leaked as threads still logging at exit may strip text.
+  static const std::vector<std::string>& prefixes = *[] {
+    auto* result = new std::vector<std::string>();
+    const char* home = std::getenv("HOME");
+    if (home && std::strlen(home) > 1) {
+      std::string path = home;
+      while (path.size() > 1 && path.back() == '/') {
+        path.pop_back();
+      }
+      const std::string private_prefix = "/private";
+      if (path.compare(0, private_prefix.size(), private_prefix) == 0) {
+        result->push_back(path.substr(private_prefix.size()));
+      } else {
+        result->push_back(private_prefix + path);
+      }
+      result->push_back(std::move(path));
+    }
+    return result;
+  }();
+  return prefixes;
+}
+
+static std::string StripIOSPaths(const std::string_view text) {
+  if (text.find('/') == std::string_view::npos) {
+    return std::string(text);
+  }
+  const std::vector<std::string>& prefixes = IOSHomePrefixes();
+  std::string stripped;
+  stripped.reserve(text.size());
+  for (size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (c == '/') {
+      bool replaced = false;
+      for (const std::string& prefix : prefixes) {
+        const size_t end = i + prefix.size();
+        if (text.compare(i, prefix.size(), prefix) == 0 &&
+            (end >= text.size() ||
+             !(std::isalnum(static_cast<unsigned char>(text[end])) ||
+               text[end] == '-' || text[end] == '_' || text[end] == '.'))) {
+          stripped += '~';
+          i = end - 1;
+          replaced = true;
+          break;
+        }
+      }
+      if (replaced) {
+        continue;
+      }
+      if (IsUuidAt(text, i + 1) &&
+          (i + 37 >= text.size() || !IsHexChar(text[i + 37]))) {
+        stripped += "/<uuid>";
+        i += 36;
+        continue;
+      }
+    }
+    stripped += c;
+  }
+  return stripped;
+}
+#else
 static std::string FindUserName() {
 #if XE_PLATFORM_WIN32
   const wchar_t* name = _wgetenv(L"USERNAME");
@@ -105,8 +198,12 @@ static std::string FindUserName() {
 #endif  // XE_PLATFORM_WIN32
   return name ? xe::path_to_utf8(name) : std::string();
 }
+#endif  // XE_PLATFORM_IOS
 
 std::string strip_pii(const std::string_view text) {
+#if XE_PLATFORM_IOS
+  return StripIOSPaths(text);
+#else
   // Leaked as threads still logging at exit may strip text.
   static const std::string& user_name = *new std::string(FindUserName());
   if (user_name.empty()) {
@@ -135,6 +232,7 @@ std::string strip_pii(const std::string_view text) {
     start = end + 1;
   }
   return stripped;
+#endif  // XE_PLATFORM_IOS
 }
 
 FileLogSink::~FileLogSink() {
@@ -614,9 +712,16 @@ void logging::AppendLogLine(LogLevel log_level, const char prefix_char,
 void FatalError(const std::string_view str) {
   logging::AppendLogLine(LogLevel::Error, 'x', str);
 
+#if XE_PLATFORM_IOS
+  // JIT means a debugger is attached (and has_console_attached may then be
+  // true), but the user still needs to see why the app is closing.
+  IOSNoteFatalError(str);
+  ShowSimpleMessageBox(SimpleMessageBoxType::Error, str);
+#else
   if (!xe::has_console_attached()) {
     ShowSimpleMessageBox(SimpleMessageBoxType::Error, str);
   }
+#endif  // XE_PLATFORM_IOS
 
   ShutdownLogging();
 

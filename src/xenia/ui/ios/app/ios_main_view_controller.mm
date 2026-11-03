@@ -77,6 +77,7 @@
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
+#import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -606,6 +607,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   xe_request_current_orientation(self);
   [self presentPendingTouchLayoutInstallIfReady];
   [self.zarConversionCoordinator checkPendingConversionOnLaunch];
+  xe_ios_offer_previous_session_report_if_needed(self);
 }
 
 - (void)startUpdateCheckIfNeeded {
