@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <sstream>
 #include <unordered_set>
@@ -856,6 +857,7 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_tess_shaders_failed_.clear();
   async_compile_busy_ = 0;
   async_compile_shutdown_ = false;
+  storage_stats_pending_ = false;
   // The dropped requests count as finished, so the backlog reads empty.
   compile_activity.finished.store(
       compile_activity.queued.load(std::memory_order_relaxed),
@@ -2952,6 +2954,8 @@ void MetalCommandProcessor::InitializeShaderStorage(
   compile_activity.storage_finished_begin =
       compile_activity.finished.load(std::memory_order_relaxed);
   compile_activity.storage_empty = false;
+  compile_activity.storage_total = 0;
+  compile_activity.storage_seed_us_per_stored = 0;
   compile_activity.storage_loading = true;
   ++compile_activity.storage_generation;
 
@@ -2992,7 +2996,39 @@ void MetalCommandProcessor::InitializeShaderStorage(
     return;
   }
 
+  // How long the last complete rebuild took, to forecast this one before the
+  // compile threads have measured anything. A record from another pipeline
+  // version says little about this one.
+  const std::filesystem::path stats_path =
+      GetShaderStorageLocalRoot(cache_root) / "metal" /
+      fmt::format("{:08X}", title_id) / "rebuild_stats.txt";
+  uint64_t seed_us_per_stored = 0;
+  {
+    std::ifstream stats_file(stats_path);
+    std::string tag;
+    uint64_t stats_version = 0, stats_stored = 0, stats_us = 0;
+    if (stats_file >> tag >> stats_version >> stats_stored >> stats_us &&
+        tag == "xrebuild1" && stats_version == config.version &&
+        stats_stored) {
+      seed_us_per_stored = stats_us / stats_stored;
+    }
+  }
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(stats_path.parent_path(), ec);
+  }
+  compile_activity.storage_seed_us_per_stored = seed_us_per_stored;
+  compile_activity.storage_total = stored_descriptions.size();
+
   uint64_t start_ticks = xe::Clock::QueryHostTickCount();
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    storage_stats_pending_ = !stored_descriptions.empty();
+    storage_stats_start_ticks_ = start_ticks;
+    storage_stats_stored_ = stored_descriptions.size();
+    storage_stats_version_ = config.version;
+    storage_stats_path_ = stats_path;
+  }
   CreateStoredPipelines(stored_descriptions);
   compile_activity.storage_empty = stored_descriptions.empty();
   uint64_t storage_queued_end =
@@ -3003,6 +3039,15 @@ void MetalCommandProcessor::InitializeShaderStorage(
   // not read as "not known yet".
   if (storage_queued_end == compile_activity.storage_queued_begin) {
     compile_activity.storage_loading = false;
+  }
+  {
+    // Everything may already be done, with no later finish to notice it.
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    if (storage_stats_pending_ &&
+        compile_activity.finished.load(std::memory_order_relaxed) >=
+            storage_queued_end) {
+      RecordStorageRebuildStatsLocked();
+    }
   }
   if (blocking) {
     // The caller is waiting on this, so finish rather than leaving the compile
@@ -3265,8 +3310,28 @@ bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
          async_tess_shaders_pending_.empty();
 }
 
+void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
+  storage_stats_pending_ = false;
+  uint64_t elapsed_us = (xe::Clock::QueryHostTickCount() -
+                         storage_stats_start_ticks_) *
+                        1000000 / xe::Clock::QueryHostTickFrequency();
+  std::ofstream stats_file(storage_stats_path_, std::ios::trunc);
+  if (stats_file) {
+    stats_file << "xrebuild1 " << storage_stats_version_ << ' '
+               << storage_stats_stored_ << ' ' << elapsed_us << '\n';
+  }
+}
+
 void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
-  compile_activity.finished.fetch_add(1, std::memory_order_relaxed);
+  uint64_t finished =
+      compile_activity.finished.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (storage_stats_pending_) {
+    uint64_t queued_end =
+        compile_activity.storage_queued_end.load(std::memory_order_relaxed);
+    if (queued_end && finished >= queued_end) {
+      RecordStorageRebuildStatsLocked();
+    }
+  }
   if (async_compile_busy_) {
     --async_compile_busy_;
   }

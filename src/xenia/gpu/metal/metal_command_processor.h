@@ -435,6 +435,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Both require async_compile_mutex_ held.
   bool IsAsyncCompileIdleLocked() const;
   void FinishAsyncCompileTaskLocked();
+  // Writes how long the stored pipelines took to rebuild, once, when the last of
+  // them has finished. Under async_compile_mutex_.
+  void RecordStorageRebuildStatsLocked();
   // Formats, write masks and blend state, shared by the render and mesh
   // pipeline descriptors.
   static void ApplyColorAttachmentState(
@@ -809,6 +812,13 @@ class MetalCommandProcessor : public CommandProcessor {
   std::atomic<int64_t> async_pipeline_pending_last_log_ns_{0};
   std::atomic<int64_t> async_placeholder_last_log_ns_{0};
   std::atomic<int64_t> async_compile_drain_last_log_ns_{0};
+  // The stored-pipeline rebuild timing record (see InitializeShaderStorage and
+  // RecordStorageRebuildStatsLocked). Guarded by async_compile_mutex_.
+  bool storage_stats_pending_ = false;
+  uint64_t storage_stats_start_ticks_ = 0;
+  uint64_t storage_stats_stored_ = 0;
+  uint32_t storage_stats_version_ = 0;
+  std::filesystem::path storage_stats_path_;
   // Guest ucode (.xsh, shared with the other backends) and this backend's
   // pipeline descriptions (.metal.xpso), replayed at startup.
   ShaderStorageWriter<PipelineStoredDescription> storage_writer_;
