@@ -69,7 +69,8 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 }
 
 - (void)dealloc {
-  [dismissal_handler_ release];
+  // Never leave a guest waiting on this sheet.
+  [self runDismissalHandlerOnce];
   [super dealloc];
 }
 
@@ -200,14 +201,24 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 - (void)closeTapped:(id)sender {
   (void)sender;
   UIViewController* dismiss_target = self.navigationController ?: self;
-  void (^dismissal_handler)(void) = [dismissal_handler_ copy];
-  [dismiss_target dismissViewControllerAnimated:YES
-                                     completion:^{
-                                       if (dismissal_handler) {
-                                         dismissal_handler();
-                                       }
-                                       [dismissal_handler release];
-                                     }];
+  [dismiss_target dismissViewControllerAnimated:YES completion:nil];
+}
+
+// The sheet can close through Close, a swipe down or a controller button; each ends here.
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (self.isBeingDismissed || self.navigationController.isBeingDismissed) {
+    [self runDismissalHandlerOnce];
+  }
+}
+
+- (void)runDismissalHandlerOnce {
+  void (^dismissal_handler)(void) = dismissal_handler_;
+  dismissal_handler_ = nil;
+  if (dismissal_handler) {
+    dismissal_handler();
+    [dismissal_handler release];
+  }
 }
 
 - (void)toggleHiddenInfo:(id)sender {

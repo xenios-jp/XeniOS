@@ -1850,26 +1850,25 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                         userIndex:user_index
                                                           titleID:title_id];
   __block XeniaViewController* unsafe_self = self;
-  achievements_vc.dismissalHandler = ^{
-    [unsafe_self updateTouchControlsOverlayVisibilityAnimated:YES];
-  };
-  // A guest thread waits for the sheet to show, so answer it once whether or
-  // not UIKit shows it.
+  // A guest showing the achievements UI waits until the player closes it. Answer it once: when
+  // the sheet closes, or as failed if UIKit never shows it.
   __block BOOL answered = NO;
-  void (^answer)(BOOL) = [[^(BOOL shown) {
+  void (^answer)(BOOL) = [[^(BOOL closed) {
     if (!answered) {
       answered = YES;
       if (completion) {
-        completion(shown);
+        completion(closed);
       }
     }
   } copy] autorelease];
+  achievements_vc.dismissalHandler = ^{
+    [unsafe_self updateTouchControlsOverlayVisibilityAnimated:YES];
+    answer(YES);
+  };
   UINavigationController* nav = [self presentPauseSheetWithRootController:achievements_vc
                                                             preferredSize:CGSizeMake(560.0, 620.0)
                                               preventInteractiveDismissal:NO
-                                                               completion:^{
-                                                                 answer(YES);
-                                                               }];
+                                                               completion:nil];
   [achievements_vc release];
   [nav retain];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(1.5 * NSEC_PER_SEC)),
