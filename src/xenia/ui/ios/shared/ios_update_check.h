@@ -42,9 +42,9 @@ NSString* xe_current_app_version_string(void);  // CFBundleShortVersionString
 long long xe_current_app_build_number(void);    // CFBundleVersion as integer
 NSString* xe_current_app_version_text(void);    // "2.0 (9712)"
 
-// YES for a build that isn't a release: unstamped (build <= 1) or built from a
-// commit with no release tag (version 0.0.0, see tools/build/stamp_ios_version.py).
-// Such builds skip the update prompt entirely.
+// YES when the bundle carries the CMake placeholder version (build <= 1), i.e.
+// it was not stamped by tools/build_apple_release.sh. Such builds skip the
+// update prompt entirely.
 BOOL xe_is_development_build(void);
 
 // Compares two (version, build) pairs. Version strings are compared
