@@ -745,8 +745,10 @@ void ProfileManager::UpdateConfig(const uint64_t xuid, const uint8_t slot) {
       break;
   }
 
-  // Save config immediately to persist login/logout changes
-  config::SaveConfig();
+  // Save the slot immediately to persist login/logout changes, leaving any other
+  // key as the file has it.
+  config::SaveConfigValues(
+      {fmt::format("logged_profile_slot_{}_xuid", static_cast<uint32_t>(slot))});
   return;
 }
 
