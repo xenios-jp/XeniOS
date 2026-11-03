@@ -7,6 +7,27 @@ name: Apple Publish
 #
 # Pushes to ci/** branches, and manual runs with "publish" off, build the IPA
 # and stop: the IPA is a workflow artifact, nothing is published.
+#
+# Publishing:
+# - Publish from the Actions tab or `gh workflow run apple-publish.yml --ref xenios
+#   -f notes="$(cat notes.md)"`. The notes are the release body, with the build
+#   details appended. Release notes live on the release page only, never in the repo.
+# - A push to `xenios` (or `preview`) publishes at once, without notes: the body is
+#   just the build details. Prefer the dispatch above for a real release.
+# - The release is created as a draft, the IPA is uploaded, and only then is it
+#   published, so what the Discord webhook announces is complete. Tags are never
+#   a trigger: create them by hand if wanted.
+# - Every push and every published release on xenios-jp/XeniOS posts to Discord,
+#   including the tag a publish creates and pre-releases from the preview channel.
+#
+# Rerunning:
+# - "Re-run failed jobs" continues the same release: it finishes an unpublished
+#   draft, or retries the xenios.jp manifest update after the release went out.
+# - "Re-run all jobs" is refused once the release is published with its IPA (the
+#   tag is the same on every attempt). To ship another build, push a new commit or
+#   dispatch with a build_number override.
+# - Publishes are serialized and never cancelled halfway; build-only runs on the
+#   same ref still cancel each other.
 
 "on":
   workflow_dispatch:
@@ -37,6 +58,10 @@ name: Apple Publish
         description: "Build number override (optional)"
         required: false
         type: string
+      notes:
+        description: "Release notes in Markdown (optional; replaces the body of an existing release)"
+        required: false
+        type: string
       publish:
         description: "Publish the GitHub release and the xenios.jp manifests (off: build the IPA only)"
         required: true
@@ -47,16 +72,17 @@ name: Apple Publish
       - "preview"
       - "xenios"
       - "ci/**"
-    tags:
-      - "v*"
-      - "release-*"
 
 permissions:
   contents: write
 
+# Every publish shares one group and is never cancelled: two publishes would
+# otherwise race on the release and on xenios.jp's manifests, and cancelling one
+# halfway can leave a release without its manifest entry. Only build-only runs
+# (ci/** pushes, publish off) are per ref and cancel-in-progress.
 concurrency:
-  group: "apple-publish-${{ github.ref }}"
-  cancel-in-progress: true
+  group: "${{ ((github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/ci/')) || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'apple-publish-publish' || format('apple-publish-build-{0}', github.ref) }}"
+  cancel-in-progress: "${{ !((github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/ci/')) || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}"
 
 env:
   # Apple's Metal Shader Converter for iPhoneOS. Apple's download needs a developer
@@ -103,7 +129,7 @@ jobs:
           }
 
           is_release_ref() {
-            [[ "${1}" == "refs/heads/xenios" || "${1}" == refs/tags/v* || "${1}" == refs/tags/release-* ]]
+            [[ "${1}" == "refs/heads/xenios" ]]
           }
 
           publish="true"
@@ -118,7 +144,7 @@ jobs:
               }
             elif [[ "${channel}" == "release" ]]; then
               is_release_ref "${GITHUB_REF}" || {
-                echo "::error::Manual release publishes must run from refs/heads/xenios or release tags (got ${GITHUB_REF})"
+                echo "::error::Manual release publishes must run from refs/heads/xenios (got ${GITHUB_REF})"
                 exit 1
               }
             fi
@@ -152,6 +178,9 @@ jobs:
           VERSION_OVERRIDE: "${{ inputs.version }}"
           BUILD_NUMBER_OVERRIDE: "${{ inputs.build_number }}"
           STAGE_OVERRIDE: "${{ inputs.stage }}"
+          # A publish keeps the build number the same on every attempt (see
+          # resolve_release_build_number), so a rerun cannot make a second release.
+          XENIOS_PUBLISH_RUN: "${{ steps.channel.outputs.publish }}"
         run: |
           set -euo pipefail
           args=(--channel "${CHANNEL}")
@@ -191,9 +220,7 @@ jobs:
             stage_suffix="-${STAGE}"
           fi
 
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            release_tag="${GITHUB_REF_NAME}"
-          elif [[ "${CHANNEL}" == "preview" ]]; then
+          if [[ "${CHANNEL}" == "preview" ]]; then
             release_tag="preview-v${VERSION}-build-${BUILD_NUMBER}${stage_suffix}"
           else
             release_tag="release-v${VERSION}-build-${BUILD_NUMBER}${stage_suffix}"
@@ -207,6 +234,62 @@ jobs:
 
           echo "tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      # Everything a publish needs is checked here, before the hours-long build and
+      # before anything is created, so a bad token or a repeat can't leave a half
+      # published release behind.
+      - name: Preflight the publish
+        if: "${{ steps.channel.outputs.publish == 'true' }}"
+        shell: bash
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          WEBSITE_TOKEN: "${{ secrets.XENIOS_WEBSITE_PAT }}"
+          HAS_ATTESTATION_KEY: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY != '' }}"
+          CHANNEL: "${{ steps.channel.outputs.channel }}"
+          STAGE: "${{ steps.metadata.outputs.stage }}"
+          BUILD_NUMBER: "${{ steps.metadata.outputs.build_number }}"
+          RELEASE_TAG: "${{ steps.release.outputs.tag }}"
+        run: |
+          set -euo pipefail
+
+          if [ "${HAS_ATTESTATION_KEY}" != "true" ]; then
+            echo "::error::XENIOS_BUILD_ATTESTATION_KEY is not configured"
+            exit 1
+          fi
+
+          # The site's release slot holds stable builds only; the manifest updater
+          # would refuse the entry after the release was already public.
+          if [[ "${CHANNEL}" == "release" && "${STAGE}" != "stable" ]]; then
+            echo "::error::Stage ${STAGE} can't be published on the release channel; use the preview channel"
+            exit 1
+          fi
+
+          # The same build is never published twice. A release that is public
+          # without its IPA, or still a draft, is an unfinished one and may continue.
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null)" &&
+             [[ "$(jq -r '.draft' <<<"${release_json}")" == "false" ]] &&
+             [[ -n "$(jq -r '.assets[] | select(.name == "xenios_ios_iphone_ipad.ipa") | .name' <<<"${release_json}")" ]]; then
+            echo "::error::${RELEASE_TAG} is already published with its IPA. Use \"Re-run failed jobs\" to retry the manifest update, or push a new commit (or set build_number) for another build."
+            exit 1
+          fi
+
+          # The site token must work, and the site must not already be ahead.
+          website_json="$(GH_TOKEN="${WEBSITE_TOKEN}" gh api "repos/xenios-jp/xenios.jp")" || {
+            echo "::error::XENIOS_WEBSITE_PAT is missing or cannot read xenios-jp/xenios.jp"
+            exit 1
+          }
+          if [[ "$(jq -r '.permissions.push' <<<"${website_json}")" == "false" ]]; then
+            echo "::error::XENIOS_WEBSITE_PAT has no push access to xenios-jp/xenios.jp"
+            exit 1
+          fi
+          current="$(GH_TOKEN="${WEBSITE_TOKEN}" gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/xenios-jp/xenios.jp/contents/data/release-builds.json?ref=main" 2>/dev/null \
+            | jq -r --arg channel "${CHANNEL}" '.platforms.ios[$channel].buildNumber // empty' || true)"
+          if [ -n "${current}" ] &&
+             [ "$(printf '%s\n%s\n' "${current}" "${BUILD_NUMBER}" | sort -V | tail -n 1)" != "${BUILD_NUMBER}" ]; then
+            echo "::error::xenios.jp already lists build ${current} on the ${CHANNEL} channel, newer than ${BUILD_NUMBER}"
+            exit 1
+          fi
 
       - name: Upload publish metadata
         uses: actions/upload-artifact@v4
@@ -461,13 +544,23 @@ jobs:
           PUBLISHED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
           RELEASE_TAG: "${{ needs.resolve-metadata.outputs.release_tag }}"
           PRERELEASE: "${{ needs.resolve-metadata.outputs.prerelease }}"
+          NOTES: "${{ inputs.notes }}"
         run: |
           set -euo pipefail
+          ipa="artifacts/ios/xenios_ios_iphone_ipad.ipa"
+          ipa_name="$(basename "${ipa}")"
+          repo_api="repos/${GITHUB_REPOSITORY}"
 
-          # Release notes are written on the release page. A new release starts
-          # with the build details, and a rerun keeps the text written there.
+          # Release notes are written on the release page or passed as the notes
+          # input. With notes the body is the notes plus the build details; without,
+          # a new release starts with the build details alone. A rerun keeps the
+          # body on the release page unless notes are given.
           {
-            printf '# %s\n\n' "${DISPLAY_LABEL}"
+            if [ -n "${NOTES}" ]; then
+              printf '%s\n\n## Build details\n\n' "${NOTES}"
+            else
+              printf '# %s\n\n' "${DISPLAY_LABEL}"
+            fi
             printf -- '- Channel: %s\n' "${CHANNEL}"
             printf -- '- Stage: %s\n' "${STAGE}"
             printf -- '- Version: %s\n' "${VERSION}"
@@ -481,45 +574,78 @@ jobs:
             --arg tag "${RELEASE_TAG}" \
             --arg target "${GITHUB_SHA}" \
             --arg name "${DISPLAY_LABEL}" \
-            --arg body "$(cat release-notes.md)" \
+            --rawfile body release-notes.md \
             --argjson prerelease "${PRERELEASE}" \
             '{
               tag_name: $tag,
               target_commitish: $target,
               name: $name,
               body: $body,
-              draft: false,
               prerelease: $prerelease
-            } + (if $prerelease then {} else {make_latest: "true"} end)' \
+            }' \
             > release-payload.json
 
-          release_id=""
-          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null)"; then
-            release_id="$(jq -r '.id // empty' <<<"${release_json}")"
-          fi
+          # The tag endpoint doesn't return drafts, so list the releases instead.
+          release_json="$(gh api --paginate "${repo_api}/releases?per_page=100" \
+            | jq -s --arg tag "${RELEASE_TAG}" 'add | map(select(.tag_name == $tag)) | first // empty')"
+          release_id="$(jq -r '.id // empty' <<<"${release_json:-null}")"
           if [ -n "${release_id}" ] && ! [[ "${release_id}" =~ ^[0-9]+$ ]]; then
             echo "::error::Unexpected release id payload for ${RELEASE_TAG}: ${release_id}"
             exit 1
           fi
 
+          # 1. A draft (or the existing release, body untouched unless notes were
+          #    given), so nothing is announced before the IPA is attached.
           if [ -n "${release_id}" ]; then
-            jq 'del(.body)' release-payload.json \
-              | gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-                  --method PATCH \
-                  --input - \
-                  >/dev/null
+            if [ -n "${NOTES}" ]; then
+              cat release-payload.json
+            else
+              jq 'del(.body)' release-payload.json
+            fi | gh api "${repo_api}/releases/${release_id}" --method PATCH --input - >/dev/null
           else
-            gh api "repos/${GITHUB_REPOSITORY}/releases" \
-              --method POST \
-              --input release-payload.json \
-              >/dev/null
+            release_id="$(jq '. + {draft: true}' release-payload.json \
+              | gh api "${repo_api}/releases" --method POST --input - --jq '.id')"
+            [[ "${release_id}" =~ ^[0-9]+$ ]] || {
+              echo "::error::Unexpected release id after creating ${RELEASE_TAG}: ${release_id}"
+              exit 1
+            }
           fi
 
-          gh release upload "${RELEASE_TAG}" \
-            artifacts/ios/xenios_ios_iphone_ipad.ipa \
-            --clobber
+          # 2. The IPA. An identical asset from an earlier attempt is kept; anything
+          #    else with that name is replaced. (gh release upload can't see drafts.)
+          ipa_size="$(wc -c < "${ipa}" | tr -d ' ')"
+          release_json="$(gh api "${repo_api}/releases/${release_id}")"
+          asset_id="$(jq -r --arg name "${ipa_name}" --argjson size "${ipa_size}" \
+            '.assets[] | select(.name == $name and .state == "uploaded" and .size == $size) | .id' \
+            <<<"${release_json}")"
+          if [ -z "${asset_id}" ]; then
+            jq -r --arg name "${ipa_name}" '.assets[] | select(.name == $name) | .id' <<<"${release_json}" \
+              | while read -r stale_id; do
+                  gh api "${repo_api}/releases/assets/${stale_id}" --method DELETE
+                done
+            gh api "https://uploads.github.com/${repo_api}/releases/${release_id}/assets?name=${ipa_name}" \
+              --method POST \
+              -H "Content-Type: application/octet-stream" \
+              --input "${ipa}" \
+              >/dev/null
+          fi
+          uploaded="$(gh api "${repo_api}/releases/${release_id}" \
+            --jq ".assets[] | select(.name == \"${ipa_name}\" and .state == \"uploaded\" and .size == ${ipa_size}) | .id")"
+          if [ -z "${uploaded}" ]; then
+            echo "::error::${ipa_name} is not attached to ${RELEASE_TAG} as an uploaded asset of ${ipa_size} bytes"
+            exit 1
+          fi
 
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+          # 3. Publish. Only now does the release become public (and Latest), with
+          #    the IPA already on it.
+          if [ "${PRERELEASE}" = "true" ]; then
+            publish_payload='{"draft": false, "prerelease": true}'
+          else
+            publish_payload='{"draft": false, "prerelease": false, "make_latest": "true"}'
+          fi
+          gh api "${repo_api}/releases/${release_id}" --method PATCH --input - <<<"${publish_payload}" >/dev/null
+
+          gh api "${repo_api}/releases/${release_id}" > release.json
 
           html_url="$(jq -r '.html_url' release.json)"
           ios_download_url="$(jq -r '.assets[] | select(.name == "xenios_ios_iphone_ipad.ipa") | .browser_download_url' release.json)"
@@ -531,23 +657,15 @@ jobs:
               exit 1
             fi
           done
+          if [ "$(jq -r '.draft' release.json)" != "false" ]; then
+            echo "::error::${RELEASE_TAG} is still a draft after publishing"
+            exit 1
+          fi
 
           {
             echo "html_url=${html_url}"
             echo "ios_download_url=${ios_download_url}"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Validate xenios.jp credentials
-        shell: bash
-        env:
-          GH_TOKEN: "${{ secrets.XENIOS_WEBSITE_PAT }}"
-        run: |
-          set -euo pipefail
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::XENIOS_WEBSITE_PAT is not configured"
-            exit 1
-          fi
-          gh api "repos/xenios-jp/xenios.jp" >/dev/null
 
       - name: Check out xenios.jp
         uses: actions/checkout@v4
@@ -558,35 +676,45 @@ jobs:
           token: "${{ secrets.XENIOS_WEBSITE_PAT }}"
           fetch-depth: 0
 
-      - name: Update xenios.jp build manifests
+      # Runs only after the release is public. xenios.jp's main takes bot commits
+      # often, so a rejected push is retried on a fresh main with the updater run
+      # again (it only touches the two manifests).
+      - name: Update and push xenios.jp build manifests
         shell: bash
         env:
           CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          DISPLAY_LABEL: "${{ needs.resolve-metadata.outputs.display_label }}"
           RELEASE_URL: "${{ steps.github_release.outputs.html_url }}"
           IOS_DOWNLOAD_URL: "${{ steps.github_release.outputs.ios_download_url }}"
-        run: |
-          set -euo pipefail
-          python3 tools/update_website_build_manifests.py \
-            --website-repo "${GITHUB_WORKSPACE}/xenios-website" \
-            --metadata-file build-metadata.env \
-            --channel "${CHANNEL}" \
-            --release-url "${RELEASE_URL}" \
-            --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa" \
-            --ios-download-url "${IOS_DOWNLOAD_URL}"
-
-      - name: Commit xenios.jp build manifests
-        shell: bash
-        env:
-          DISPLAY_LABEL: "${{ needs.resolve-metadata.outputs.display_label }}"
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/xenios-website"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/release-builds.json data/builds-history.json
-          if git diff --staged --quiet; then
-            echo "No xenios.jp manifest changes"
-            exit 0
-          fi
-          git commit -m "builds: publish ${DISPLAY_LABEL}"
-          git push origin HEAD:main
+
+          for attempt in 1 2 3; do
+            python3 "${GITHUB_WORKSPACE}/tools/update_website_build_manifests.py" \
+              --website-repo "${GITHUB_WORKSPACE}/xenios-website" \
+              --metadata-file "${GITHUB_WORKSPACE}/build-metadata.env" \
+              --channel "${CHANNEL}" \
+              --release-url "${RELEASE_URL}" \
+              --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa" \
+              --ios-download-url "${IOS_DOWNLOAD_URL}"
+
+            git add data/release-builds.json data/builds-history.json
+            if git diff --staged --quiet; then
+              echo "No xenios.jp manifest changes"
+              exit 0
+            fi
+            git commit -m "builds: publish ${DISPLAY_LABEL}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+
+            echo "::warning::Push attempt ${attempt} was rejected; retrying on the latest main"
+            git fetch origin main
+            git reset --hard origin/main
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push the xenios.jp manifests after 3 attempts"
+          exit 1
