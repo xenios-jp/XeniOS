@@ -33,12 +33,14 @@
 #include "xenia/base/string.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
+#include "xenia/cpu/backend/jit_memory_ios.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/ui/ios/app/ios_lifecycle_audio_session.h"
 #include "xenia/ui/ios/app/ios_window_layout.h"
 #include "xenia/ui/ios/app/windowed_app_context_ios.h"
+#include "xenia/ui/ios/game/ios_launch_status.h"
 #include "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #include "xenia/ui/ios/game/window_ios.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
@@ -908,6 +910,15 @@ bool EmulatorAppIOS::OnInitialize() {
       [this]() { return RequestGameStop("TerminateCurrentGame"); });
 
   pause_queue_ = dispatch_queue_create("xenia.emulation-pause", DISPATCH_QUEUE_SERIAL);
+  // The JIT tool stops the app while it prepares the code region: put that on the launch screen
+  // first, so a tool that never answers leaves the screen saying what it waits for.
+  cpu::backend::IOSJitMemory::SetExternalPrepareHook([](bool preparing) {
+    if (preparing) {
+      ui::ios::SetLaunchStageAndWaitUntilShown(ui::ios::LaunchStage::kJit, 400);
+    } else {
+      ui::ios::SetLaunchStage(ui::ios::LaunchStage::kPreparing);
+    }
+  });
   ios_context.set_emulation_pause_callback(
       [this](ui::IOSWindowedAppContext::EmulationPauseReason reason, bool paused) {
         SetEmulationPaused(reason, paused);
@@ -1757,7 +1768,18 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
   pthread_set_qos_class_self_np(qos, 0);
   const bool launched_with_game = !game_path.empty();
 
+  // The launch screen follows the launch from here to the game's first frame.
+  struct LaunchStatusScope {
+    bool open = false;
+    ~LaunchStatusScope() {
+      if (open) {
+        ui::ios::EndLaunchStatus();
+      }
+    }
+  } launch_status;
   if (launched_with_game) {
+    ui::ios::BeginLaunchStatus();
+    launch_status.open = true;
     XELOGI("iOS: Loading game config for: {}", xe::strip_pii(xe::path_to_utf8(game_path)));
     config::LoadGameConfigForFile(game_path);
     app_context().CallInUIThread([this]() {
@@ -1974,6 +1996,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     // Pauses (a covered or backgrounded scene) apply from here on, not only once the title is up:
     // LaunchPath starts the guest threads and the GPU.
     BeginEmulationPauseSession();
+    ui::ios::SetLaunchStage(ui::ios::LaunchStage::kLoading);
     X_STATUS launch_result = emulator_->LaunchPath(abs_path);
     cvars::launch_module = "";
     cvars::launch_flags = 0;
@@ -1996,6 +2019,12 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     }
 
     XELOGI("iOS: Game launched successfully");
+    if (g_graphics_is_metal.load(std::memory_order_acquire)) {
+      // Until the first frame, which only the Metal backend reports.
+      ui::ios::SetLaunchStage(ui::ios::LaunchStage::kStarting);
+    } else {
+      ui::ios::EndLaunchStatus();
+    }
     // Hold the main thread object while waiting. Both user stop requests and
     // guest dashboard requests are serviced here, on a non-guest thread.
     auto main_thread = emulator_->kernel_state()->GetThreadByID(emulator_->main_thread_id());

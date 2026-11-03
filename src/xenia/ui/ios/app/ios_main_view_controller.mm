@@ -50,6 +50,7 @@
 #import "xenia/ui/ios/game/ios_achievement_notification_presenter.h"
 #import "xenia/ui/ios/game/ios_achievements_view_controller.h"
 #import "xenia/ui/ios/game/ios_metal_view.h"
+#import "xenia/ui/ios/game/ios_launch_status.h"
 #import "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_view_controller.h"
@@ -284,6 +285,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 @property(nonatomic, strong) XeniaIOSStatusToastPresenter* statusToastPresenter;
 @property(nonatomic, strong) XeniaTouchControlsOverlayView* touchControlsOverlay;
 @property(nonatomic, strong) XeniaShaderCompileIndicator* shaderCompileIndicator;
+@property(nonatomic, strong) XeniaLaunchStatusView* launchStatusView;
 @property(nonatomic, assign) BOOL gameRunning;
 @property(nonatomic, assign) BOOL gameStopInProgress;
 @property(nonatomic, strong) NSTimer* jitPollTimer;
@@ -561,6 +563,16 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   };
   [self.view addSubview:self.touchControlsOverlay];
   [touch_overlay release];
+
+  // Covers the game and its touch controls from a launch until the first frame.
+  XeniaLaunchStatusView* launch_status =
+      [[[XeniaLaunchStatusView alloc] initWithFrame:self.view.bounds] autorelease];
+  launch_status.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  launch_status.cancelHandler = ^{
+    [block_self exitGameTapped:nil];
+  };
+  self.launchStatusView = launch_status;
+  [self.view addSubview:launch_status];
 
   // Create the launcher overlay UI immediately. When JIT is missing, keep
   // settings/navigation available but gate game launch with status.
@@ -3052,6 +3064,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (self.gameStopInProgress || self.gameRunning) {
     if (self.appContext) {
       self.gameRunning = YES;
+      [self.launchStatusView beginLaunchWithTitle:display_name];
       if (self.gameStopInProgress) {
         [self dismissStatusToast];
       }
@@ -3078,6 +3091,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   self.gameRunning = YES;
+  [self.launchStatusView beginLaunchWithTitle:display_name];
   active_game_title_id_ = launch_title_id;
   [self applyTouchLayoutModelForTitleID:active_game_title_id_];
 
@@ -4230,6 +4244,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   _gameRunning = gameRunning;
   self.shaderCompileIndicator.active = gameRunning;
+  self.launchStatusView.active = gameRunning;
   if (gameRunning) {
     xe_ios_resource_pressure_game_started();
   }
@@ -4336,6 +4351,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_windowPositionOverlay release];
   [_touchControlsOverlay release];
   [_shaderCompileIndicator release];
+  [_launchStatusView release];
   [_achievementNotificationPresenter release];
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];

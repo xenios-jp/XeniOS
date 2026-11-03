@@ -388,6 +388,7 @@
    external folders view controller: title
    file transfer: title
    game content view controller: title
+   Launch screen button: stop a slow launch
    profile view controller: title
    zar conversion coordinator: title */
 "Cancel" = "Cancel";
@@ -1717,6 +1718,9 @@
 /* game compatibility cells: label text */
 "Loading discussion..." = "Loading discussion...";
 
+/* Launch screen status: reading the game's files */
+"Loading game data…" = "Loading game data…";
+
 /* profile view controller: user-visible text */
 "Loading profiles..." = "Loading profiles...";
 
@@ -2193,6 +2197,12 @@
    Shader preparation sheet title */
 "Preparing shaders" = "Preparing shaders";
 
+/* Launch screen status: compiling the game's shaders */
+"Preparing shaders…" = "Preparing shaders…";
+
+/* Launch screen status with a percentage done */
+"Preparing shaders… %@" = "Preparing shaders… %@";
+
 /* Title of the Presentation submenu */
 "Presentation" = "Presentation";
 
@@ -2491,6 +2501,9 @@
 /* Toast; %1$lu is the number of games, %2$@ the receiving app */
 "Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
 
+/* Launch screen status: the emulator is being set up */
+"Setting up…" = "Setting up…";
+
 /* In-game menu button
    launcher overlay view: user-visible text
    settings hub view controller: title */
@@ -2595,6 +2608,9 @@
 /* Row subtitle in the touch control edit panel */
 "Slide while holding" = "Slide while holding";
 
+/* Launch screen note: a game is slow to show its first frame */
+"Some games take a while to show their first screen." = "Some games take a while to show their first screen.";
+
 /* config view controller: user-visible text */
 "Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game." = "Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game.";
 
@@ -2618,6 +2634,9 @@
 
 /* Name of a controller button in a touch control preview */
 "Start" = "Start";
+
+/* Launch screen status: the game runs, nothing shown yet */
+"Starting the game…" = "Starting the game…";
 
 /* game compatibility cells: detail text */
 "STATUS" = "STATUS";
@@ -2791,6 +2810,9 @@
 
 /* Alert message: install link payload cannot be decoded */
 "This install link's payload could not be decoded." = "This install link's payload could not be decoded.";
+
+/* Launch screen note: a launch step is slow */
+"This is taking longer than usual." = "This is taking longer than usual.";
 
 /* Alert message: touch layout needs a title ID */
 "This item does not expose a title ID, so a title-specific touch layout cannot be saved." = "This item does not expose a title ID, so a title-specific touch layout cannot be saved.";
@@ -3078,6 +3100,9 @@
 
 /* launcher overlay view: label text */
 "Waiting for JIT..." = "Waiting for JIT...";
+
+/* Launch screen status: the JIT tool is preparing memory */
+"Waiting for StikDebug to enable JIT…" = "Waiting for StikDebug to enable JIT…";
 
 /* Wait button once the user chose to wait */
 "Waiting…" = "Waiting…";

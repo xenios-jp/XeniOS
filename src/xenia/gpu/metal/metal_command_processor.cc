@@ -3288,6 +3288,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
       bool use_pwl_gamma_ramp_copy = use_pwl_gamma_ramp;
       uint32_t color_space = swap_color_space_;
       auto aspect = graphics_system_->GetScaledAspectRatio();
+      guest_frames_presented.fetch_add(1, std::memory_order_relaxed);
       presenter->RefreshGuestOutput(
           output_width, output_height, aspect.first, aspect.second,
           [source_texture, metal_presenter, source_width, source_height,
