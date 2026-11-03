@@ -46,9 +46,6 @@
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
-/* settings hub view controller: search pointer row, count of raw config matches */
-"%1$lu more advanced results" = "%1$lu more advanced results";
-
 /* zar conversion coordinator: detail text */
 "%1$u file(s), %2$@ packed before cancellation." = "%1$u file(s), %2$@ packed before cancellation.";
 
@@ -102,9 +99,6 @@
 
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
-
-/* settings hub view controller: search pointer row */
-"1 more advanced result" = "1 more advanced result";
 
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
@@ -211,6 +205,9 @@
 
 /* Feedback while dragging; %@ is the name of the other control */
 "Aligned with %@" = "Aligned with %@";
+
+/* settings hub view controller: title */
+"All Config" = "All Config";
 
 /* Swipe action in the layout library: use for all games */
 "All Games" = "All Games";
@@ -860,21 +857,6 @@
 
 /* compat formatting: user-visible text */
 "Dev build %@" = "Dev build %@";
-
-/* settings hub view controller: user-visible text */
-"Developer" = "Developer";
-
-/* settings hub view controller: label text */
-"Developer Mode" = "Developer Mode";
-
-/* settings hub view controller: message */
-"Developer mode is already on." = "Developer mode is already on.";
-
-/* settings hub view controller: message */
-"Developer mode is on. You can turn it off at the bottom of this page." = "Developer mode is on. You can turn it off at the bottom of this page.";
-
-/* settings hub view controller: title */
-"Developer: All Config" = "Developer: All Config";
 
 /* settings hub view controller: build name shown when no version is available
    Version text of a development build */
@@ -2016,9 +1998,6 @@
 /* settings hub view controller: hint of a search result (page, then section) */
 "Opens %1$@, %2$@." = "Opens %1$@, %2$@.";
 
-/* settings hub view controller: hint of the pointer row */
-"Opens About, where Developer Mode is turned on." = "Opens About, where Developer Mode is turned on.";
-
 /* config view controller: user-visible text */
 "Opens another settings page." = "Opens another settings page.";
 
@@ -2589,9 +2568,6 @@
 /* VoiceOver hint for the Achievements button */
 "Shows achievements for the current game." = "Shows achievements for the current game.";
 
-/* settings hub view controller: user-visible text */
-"Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets search find raw config settings. These change emulator internals and can break games." = "Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets search find raw config settings. These change emulator internals and can break games.";
-
 /* acknowledgements view controller: accessibility hint */
 "Shows the license." = "Shows the license.";
 
@@ -2697,14 +2673,8 @@
 /* Subtitle of the in-game menu */
 "Tap anywhere to close" = "Tap anywhere to close";
 
-/* settings hub view controller: accessibility hint */
-"Tap seven times to show developer options." = "Tap seven times to show developer options.";
-
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
-
-/* settings hub view controller: user-visible text */
-"Tap Version seven times to show developer options." = "Tap Version seven times to show developer options.";
 
 /* Feedback while snapping; %@ is the name of the matched control */
 "target" = "target";
@@ -2943,9 +2913,6 @@
 
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
-
-/* settings hub view controller: search pointer row */
-"Turn on Developer Mode in About to edit them." = "Turn on Developer Mode in About to edit them.";
 
 /* compat report submission: message */
 "Unable to serialize the report payload." = "Unable to serialize the report payload.";
