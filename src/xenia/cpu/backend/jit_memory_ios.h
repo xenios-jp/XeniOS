@@ -25,6 +25,11 @@ class IOSJitMemory {
   IOSJitMemory(const IOSJitMemory&) = delete;
   IOSJitMemory& operator=(const IOSJitMemory&) = delete;
 
+  // How much address space below 8 GB is held for the code region while the
+  // process loads (see jit_memory_ios.cc). The code cache's generated-code size,
+  // page rounded, must fit.
+  static constexpr size_t kExecuteRegionReserveSize = size_t(1) << 29;
+
   bool Initialize(size_t size, uint8_t*& execute_base, uint8_t*& write_base);
 
   // Called with true just before the app asks the JIT tool to prepare the code

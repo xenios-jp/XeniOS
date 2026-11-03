@@ -40,8 +40,9 @@ namespace {
 // there. Below 8 GB the address survives.
 constexpr uintptr_t kExecuteRegionLimit = uintptr_t(1) << 33;
 // The code region's size on iOS: CodeCacheBase::kGeneratedCodeSize, page
-// rounded.
-constexpr size_t kExecuteRegionReserveSize = size_t(1) << 29;
+// rounded (code_cache_base.h asserts that it fits).
+constexpr size_t kExecuteRegionReserveSize =
+    IOSJitMemory::kExecuteRegionReserveSize;
 
 // Finds room below kExecuteRegionLimit, with hints only so nothing already
 // mapped is replaced.
@@ -118,14 +119,19 @@ struct IOSJitMemory::Impl {
         return reservation;
       }
       munmap(reservation, kExecuteRegionReserveSize);
+      if (size > kExecuteRegionReserveSize) {
+        XELOGW(
+            "iOS JIT: the code region (0x{:X}) is larger than the 0x{:X} "
+            "held for it",
+            size, kExecuteRegionReserveSize);
+      }
     }
     if (uint8_t* mapping =
             MapBelowExecuteRegionLimit(size, PROT_READ | PROT_EXEC)) {
       return mapping;
     }
-    XELOGW(
-        "iOS JIT: no room for the code region below 8 GB, an external "
-        "debugger may prepare the wrong memory");
+    // The external prepare refuses this region (see RequestExternalJitPrepare).
+    XELOGW("iOS JIT: no room for the code region below 8 GB");
     return static_cast<uint8_t*>(mmap(nullptr, size, PROT_READ | PROT_EXEC,
                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
   }
@@ -585,6 +591,14 @@ struct IOSJitMemory::Impl {
                                           aligned_length) ||
         !aligned_length) {
       return true;
+    }
+    if (aligned_start + aligned_length > kExecuteRegionLimit) {
+      // The tool would prepare the low alias of this address instead and zero
+      // whatever heap pages are there.
+      xe::FatalError(
+          "Xenia couldn't find room for its JIT memory in the part of the "
+          "address space the JIT tool can prepare. Close other apps, restart "
+          "Xenia and try again.");
     }
     if (!IsDebuggerAttached()) {
       xe::FatalError(
