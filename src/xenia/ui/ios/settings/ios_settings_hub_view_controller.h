@@ -52,6 +52,9 @@ typedef void (^XeniaSettingsHubActionHandler)(XeniaSettingsHubAction action);
 @property(nonatomic, copy) void (^dismissalHandler)(void);
 @property(nonatomic, copy) XeniaSettingsHubActionHandler actionHandler;
 @property(nonatomic, assign) BOOL showsCloseButton;
+// YES when no game is running (settings opened from the launcher): the touch layout actions that
+// act on the running game are then left out. Defaults to NO, which lists them.
+@property(nonatomic, assign) BOOL noGameRunning;
 
 - (instancetype)initWithAppContext:(xe::ui::IOSWindowedAppContext*)app_context
                           onStatus:(XeniaSettingsStatusHandler)on_status;
@@ -70,6 +73,8 @@ typedef void (^XeniaSettingsHubActionHandler)(XeniaSettingsHubAction action);
 @interface XeniaSettingsWorkspaceViewController : UISplitViewController
 @property(nonatomic, copy) void (^dismissalHandler)(void);
 @property(nonatomic, copy) XeniaSettingsHubActionHandler actionHandler;
+// See XeniaSettingsHubViewController.noGameRunning.
+@property(nonatomic, assign) BOOL noGameRunning;
 
 - (instancetype)initWithAppContext:(xe::ui::IOSWindowedAppContext*)app_context
                           onStatus:(XeniaSettingsStatusHandler)on_status;
