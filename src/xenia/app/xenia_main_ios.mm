@@ -916,6 +916,21 @@ bool EmulatorAppIOS::OnInitialize() {
   xe_ios_set_shader_wait_handler(^(BOOL waiting) {
     SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kShaderPreparation,
                        waiting ? true : false);
+    // The held game leaves the CPU to the shader compile threads: let them use every core.
+    dispatch_async(pause_queue_, ^{
+      {
+        std::lock_guard<std::mutex> lock(pause_state_mutex_);
+        if (!pause_game_running_) {
+          return;
+        }
+      }
+      Emulator* emulator = emulator_.get();
+      gpu::GraphicsSystem* graphics = emulator ? emulator->graphics_system() : nullptr;
+      if (graphics && g_graphics_is_metal.load(std::memory_order_acquire)) {
+        gpu::metal::MetalGraphicsSystem::SetShaderWaitCompileBoost(graphics->command_processor(),
+                                                                   waiting ? true : false);
+      }
+    });
   });
   ios_context.set_live_settings_apply_callback(
       [this](const std::function<void()>& apply) { ApplyLiveSettings(apply); });

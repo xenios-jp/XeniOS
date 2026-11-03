@@ -165,6 +165,10 @@ class MetalCommandProcessor : public CommandProcessor {
   bool HasSeenSwap() const { return saw_swap_; }
   // Commits the open submission, then blocks until every submission completes.
   void AwaitAllQueueOperationsCompletion();
+  // While the guest is held waiting for a shader rebuild, the compile threads
+  // may use every core; off returns to the configured count once the extra
+  // threads finish what they hold. Any thread.
+  void SetCompileThreadBoost(bool boost);
   // Blocks until every command buffer has completed and run its handlers, then
   // returns the GPU time (GPUEndTime - GPUStartTime) summed over all of them.
   uint64_t AwaitCompletedGpuTimeNs(uint64_t* command_buffers);
@@ -804,6 +808,14 @@ class MetalCommandProcessor : public CommandProcessor {
   // Signalled when the last in-flight task finishes, for AwaitAsyncCompiles.
   std::condition_variable async_compile_idle_cv_;
   std::vector<std::thread> async_compile_threads_;
+  // Threads past the configured count, started by SetCompileThreadBoost. They
+  // park on their own condition variable while the limit excludes them, so they
+  // never take a wakeup meant for a thread that may work. The limit is the
+  // number of threads that may take work. All guarded by async_compile_mutex_.
+  std::vector<std::thread> async_compile_boost_threads_;
+  std::condition_variable async_compile_boost_cv_;
+  size_t async_compile_base_thread_count_ = 0;
+  size_t async_compile_thread_limit_ = 0;
   size_t async_compile_busy_ = 0;
   bool async_compile_shutdown_ = false;
   std::atomic<int64_t> async_shader_failure_last_log_ns_{0};
@@ -818,6 +830,9 @@ class MetalCommandProcessor : public CommandProcessor {
   uint64_t storage_stats_start_ticks_ = 0;
   uint64_t storage_stats_stored_ = 0;
   uint32_t storage_stats_version_ = 0;
+  // The rebuild ran boosted for a while, so its time would forecast the next
+  // one short. Not recorded then.
+  bool storage_stats_boosted_ = false;
   std::filesystem::path storage_stats_path_;
   // Guest ucode (.xsh, shared with the other backends) and this backend's
   // pipeline descriptions (.metal.xpso), replayed at startup.

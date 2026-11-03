@@ -29,6 +29,10 @@ class MetalGraphicsSystem : public GraphicsSystem {
   // buffer has completed. Call only on |command_processor|'s worker thread (from
   // CallInThread). Used to drain the GPU before the app backgrounds.
   static void AwaitGpuIdleOnWorkerThread(CommandProcessor* command_processor);
+  // Lets the compile threads use every core while the guest is held waiting for
+  // a shader rebuild. Any thread.
+  static void SetShaderWaitCompileBoost(CommandProcessor* command_processor,
+                                        bool waiting);
 
   std::string name() const override;
 
