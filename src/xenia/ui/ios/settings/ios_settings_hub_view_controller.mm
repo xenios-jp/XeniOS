@@ -929,8 +929,9 @@ titleForHeaderInSection:(NSInteger)section {
 titleForFooterInSection:(NSInteger)section {
   if (section == XeniaAboutSectionPrivacy) {
     return NSLocalizedString(
-        @"Update checks, compatibility data, cover art, and compatibility discussions and "
-        @"reports. Turn this off and XeniOS does none of these. Games are not affected.",
+        @"Update checks, compatibility data, cover art, compatibility discussions and "
+        @"reports, and System Link over the internet. Turn this off and XeniOS does none of "
+        @"these. Games still run, without System Link.",
         @"settings hub view controller: user-visible text");
   }
   return nil;

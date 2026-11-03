@@ -102,6 +102,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_game_tile_cell.mm
   launcher/ios_launcher_overlay_view.h
   launcher/ios_launcher_overlay_view.mm
+  launcher/ios_system_link_view_controller.h
+  launcher/ios_system_link_view_controller.mm
   launcher/zar_converter.h
   launcher/zar_converter.cc
   launcher/ios_system_update_page_view_controller.h
@@ -145,6 +147,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_system_utils.mm
   shared/ios_status_toast.h
   shared/ios_status_toast.mm
+  shared/ios_system_link.h
+  shared/ios_system_link.mm
   shared/ios_update_check.h
   shared/ios_update_check.mm
   shared/ios_crash_reporting.h

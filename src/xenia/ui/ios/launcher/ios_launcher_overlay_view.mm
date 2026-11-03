@@ -14,6 +14,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/launcher/ios_game_tile_cell.h"
+#import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -461,8 +462,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                         @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
 
-  UIStackView* libraryActionsStack =
-      [[UIStackView alloc] initWithArrangedSubviews:@[ _convertLibraryButton, _openGameButton ]];
+  UIStackView* libraryActionsStack = [[UIStackView alloc] initWithArrangedSubviews:@[
+    xe_ios_new_system_link_online_button(), _convertLibraryButton, _openGameButton
+  ]];
   libraryActionsStack.axis = UILayoutConstraintAxisHorizontal;
   libraryActionsStack.alignment = UIStackViewAlignmentCenter;
   libraryActionsStack.spacing = 4.0;
@@ -1273,6 +1275,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                                 forIndexPath:indexPath];
   if ([self isDashboardItem:indexPath.item]) {
     [self configureDashboardCell:cell];
+    xe_ios_system_link_show_online_label(cell.compatPill.superview, 0);
     return cell;
   }
   XeniaIOSLauncherGameSnapshot* game = [self gameAtItem:indexPath.item];
@@ -1286,6 +1289,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     cell.controllerFocused = NO;
     cell.accessibilityLabel = nil;
     cell.accessibilityValue = nil;
+    xe_ios_system_link_show_online_label(cell.compatPill.superview, 0);
     return cell;
   }
 
@@ -1316,6 +1320,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (game.hasCompatInfo) {
     [accessibility_values addObject:xe_compat_status_label(game.compatStatus)];
   }
+  if (NSString* online = xe_ios_system_link_online_description(game.titleId)) {
+    [accessibility_values addObject:online];
+  }
   cell.accessibilityLabel =
       game.title.length
           ? game.title
@@ -1326,6 +1333,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   cell.accessibilityTraits = UIAccessibilityTraitButton;
 
   cell.representedTitleId = game.titleId;
+  xe_ios_system_link_show_online_label(cell.compatPill.superview, game.titleId);
   UIImage* cover = game.supportsRemoteArt ? xe_cached_game_art_thumbnail(game.titleId) : nil;
   if (cover) {
     cell.iconView.image = cover;
