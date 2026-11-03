@@ -11,7 +11,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <map>
+#include <mutex>
 #include <string>
+#include <utility>
 
 #include "xenia/base/cvar.h"
 #include "xenia/kernel/xam/xam_system_link.h"
@@ -45,6 +48,27 @@ bool g_told_offline = false;
 // The room the running game asked for, and the game.
 NSString* g_room_code = nil;
 uint32_t g_title_id = 0;
+
+// Rooms from invite links, for the next launch of each game only. The saved room stays as it
+// was, so one stranger's link doesn't decide every later launch.
+constexpr NSTimeInterval kInviteLifetime = 5 * 60.0;
+std::mutex g_invite_mutex;
+std::map<uint32_t, std::pair<std::string, NSTimeInterval>> g_invites;
+
+// The invited room of |title_id|'s launch, nil if there is none or it went stale.
+NSString* TakeInviteRoom(uint32_t title_id) {
+  std::lock_guard lock(g_invite_mutex);
+  auto found = g_invites.find(title_id);
+  if (found == g_invites.end()) {
+    return nil;
+  }
+  const auto invite = std::move(found->second);
+  g_invites.erase(found);
+  if ([NSProcessInfo processInfo].systemUptime - invite.second > kInviteLifetime) {
+    return nil;
+  }
+  return [NSString stringWithUTF8String:invite.first.c_str()];
+}
 
 NSString* TitleKey(uint32_t title_id) { return [NSString stringWithFormat:@"%08X", title_id]; }
 
@@ -444,8 +468,11 @@ void xe_ios_set_system_link_room(uint32_t title_id, NSString* code) {
     [rooms removeObjectForKey:TitleKey(title_id)];
   }
   [defaults setObject:rooms forKey:kRoomsKey];
-  // A game that's running moves to the new room.
-  xe::kernel::xam::SystemLinkRoomChanged();
+  // A game that's running moves to its new room. Another game's room doesn't concern it, and
+  // asking it again would drop the room an invite gave this launch.
+  if (!g_title_id || g_title_id == title_id) {
+    xe::kernel::xam::SystemLinkRoomChanged();
+  }
 }
 
 NSString* xe_ios_new_system_link_room_code(void) {
@@ -493,15 +520,27 @@ NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out) {
   return code;
 }
 
-NSString* xe_ios_system_link_invite_note(NSString* code) {
-  return [NSString
-      stringWithFormat:NSLocalizedString(@"It also sets System Link for this game to room %@.",
+NSString* xe_ios_system_link_invite_note(NSString* code, BOOL restarts) {
+  NSString* note = [NSString
+      stringWithFormat:NSLocalizedString(@"This launch joins System Link room %@, once. Players in "
+                                         @"the room can see your IP address and a profile ID. "
+                                         @"System Link needs Online Features to be on.",
                                          @"Launch prompt for an invite link; %@ is the room code"),
                        code];
+  if (restarts) {
+    note = [note stringByAppendingFormat:@" %@",
+                                         NSLocalizedString(@"The running game restarts to join.",
+                                                           @"Launch prompt for an invite link to "
+                                                           @"the game that is already running")];
+  }
+  return note;
 }
 
 void xe_ios_join_system_link_room(uint32_t title_id, NSString* code) {
-  xe_ios_set_system_link_room(title_id, code);
+  if (NSString* normalized = xe_ios_normalize_system_link_room_code(code)) {
+    std::lock_guard lock(g_invite_mutex);
+    g_invites[title_id] = {normalized.UTF8String, [NSProcessInfo processInfo].systemUptime};
+  }
   if (!xe_ios_online_features_enabled()) {
     Toast([NSString stringWithFormat:@"%@ %@",
                                      NSLocalizedString(@"System Link needs Online features.",
@@ -522,7 +561,7 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
         [] { return bool(xe_ios_online_features_enabled()); },
         [](uint32_t title_id) {
           @autoreleasepool {
-            NSString* code = xe_ios_system_link_room(title_id);
+            NSString* code = TakeInviteRoom(title_id) ?: xe_ios_system_link_room(title_id);
             dispatch_async(dispatch_get_main_queue(), ^{
               [g_room_code release];
               g_room_code = [code copy];
