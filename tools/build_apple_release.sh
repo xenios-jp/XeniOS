@@ -727,7 +727,9 @@ app_bundle="$(find_first_app "$ios_dir")" || die "iOS app not found in $ios_dir"
 
 stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
 stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
-compile_bundle_icon_assets "$app_bundle" "iphoneos" "$ios_min"
+# Not compile_bundle_icon_assets: in this tree the CMake build already compiled the whole
+# asset catalog (alternate icons, launch color, settings images) into the bundle, and
+# recompiling only the app icon would drop the rest.
 stamp_bundle_attestation "$app_bundle" "ios" "$build_channel" "$release_version" \
   "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
 # Ad-hoc sign to embed entitlements (increased-memory-limit).
