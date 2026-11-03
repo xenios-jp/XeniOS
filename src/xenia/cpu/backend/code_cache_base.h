@@ -647,6 +647,10 @@ class CodeCacheBase : public CodeCache {
   // Small enough for the debugger-prepared region to fit low in the address
   // space (see jit_memory_ios.cc), like Dolphin's on iOS.
   static constexpr size_t kGeneratedCodeSize = 0x1FFFFFFF;
+  // The region held for it at load, with iOS's 16 KB pages.
+  static_assert(((kGeneratedCodeSize + 0x3FFF) & ~size_t(0x3FFF)) ==
+                    IOSJitMemory::kExecuteRegionReserveSize,
+                "The held JIT region must match the code cache size");
 #else
   static constexpr size_t kGeneratedCodeSize = 0x3FFFFFFF;
 #endif  // XE_PLATFORM_IOS
