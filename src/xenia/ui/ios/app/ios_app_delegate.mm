@@ -19,6 +19,7 @@
 #import "xenia/ui/ios/app/windowed_app_context_ios.h"
 #import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/app/ios_main_view_controller.h"
+#import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -214,10 +215,18 @@ DECLARE_path(log_file);
   if (cvars::log_file.empty()) {
     cvars::log_file = xe_get_ios_documents_path() / "xenia.log";
   }
+  // Keeps the previous session's log and notes how that session ended, so a crash can be
+  // reported on this launch. Must run before the log file is opened.
+  xe_ios_begin_session_log(cvars::log_file);
   xe::InitializeLogging(app_->GetName());
 
   if (!app_->OnInitialize()) {
     XELOGE("iOS: App initialization failed");
+    // After the scene's window is on screen.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      xe_ios_present_init_failure_alert(
+          vc, @"The emulator could not be initialized. Sharing the log helps find out why.");
+    });
     return NO;
   }
 
