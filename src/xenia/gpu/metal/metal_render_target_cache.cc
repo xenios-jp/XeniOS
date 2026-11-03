@@ -94,6 +94,15 @@ DEFINE_bool(metal_transfer_in_draw_pass, true,
             "Encode render target ownership transfers at the head of the "
             "guest's own render pass instead of in passes of their own",
             "Metal");
+DEFINE_bool(metal_defer_resolve_clears, true,
+            "Leave a resolve clear of a whole render target to the next pass "
+            "that binds it, as its clear load action, rather than clearing "
+            "it in a pass of its own",
+            "Metal");
+DEFINE_bool(metal_resolve_store_dontcare, true,
+            "Don't store the attachments of a render pass ended by a resolve "
+            "that clears them whole without reading them",
+            "Metal");
 DEFINE_int32(metal_memory_log_rate, 0,
              "Log Metal render target/pipeline/instance buffer sizes every N "
              "frames (0 to disable)",
@@ -1387,6 +1396,10 @@ bool MetalRenderTargetCache::CanReuseRenderTarget(
   if (HasPendingDrawPassTransfers()) {
     return false;
   }
+  // A deferred resolve clear is looked up by the key it was deferred at.
+  if (static_cast<const MetalRenderTarget&>(render_target).clear_deferred()) {
+    return false;
+  }
   for (uint32_t i = 0; i < 4; ++i) {
     if (current_color_targets_[i] == &render_target ||
         last_real_color_targets_[i] == &render_target) {
@@ -1842,10 +1855,13 @@ bool MetalRenderTargetCache::Update(
         pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
       }
       // The transfer draws supersede the clear the descriptor would have done,
-      // matching what the standalone path does with the flag.
+      // matching what the standalone path does with the flag. A deferred
+      // resolve clear still covers what they don't, so the pass keeps it as
+      // its load action and draws the transfers over it.
       auto* dest_metal_rt =
           static_cast<MetalRenderTarget*>(accumulated_targets[i]);
-      if (dest_metal_rt->needs_initial_clear()) {
+      if (dest_metal_rt->needs_initial_clear() &&
+          !dest_metal_rt->clear_deferred()) {
         dest_metal_rt->SetNeedsInitialClear(false);
         render_pass_descriptor_dirty_ = true;
       }
@@ -2047,6 +2063,12 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
     }
     auto* source_rt = static_cast<MetalRenderTarget*>(transfer.source);
     if (source_rt == dest_metal_rt) {
+      return false;
+    }
+    // A deferred clear of a source has to be encoded before the pass that
+    // reads it, which the standalone path does.
+    if (AnyDeferredClear(source_rt) ||
+        AnyDeferredClear(transfer.host_depth_source)) {
       return false;
     }
     RenderTargetKey source_key = source_rt->key();
@@ -2827,6 +2849,12 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
   // contents into tile memory pointless, but only for the pass that actually
   // encodes them - ClearPendingDrawPassTransfers restores this if it doesn't.
   pending_draw_pass_load_dontcare_mask_ = GetPendingDrawPassLoadDontCareMask();
+  // The store actions are chosen when the pass ends, in
+  // FinalizeRenderPassStoreActions, once it's known whether anything still
+  // needs the contents.
+  const MTL::StoreAction draw_pass_store_action =
+      ::cvars::metal_resolve_store_dontcare ? MTL::StoreActionUnknown
+                                            : MTL::StoreActionStore;
   auto pending_load_dontcare = [this](uint32_t pending_index) {
     return (pending_draw_pass_load_dontcare_mask_ &
             (uint32_t(1) << pending_index)) != 0;
@@ -2851,13 +2879,13 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     bool depth_load_dontcare = pending_load_dontcare(0);
     if (depth_needs_clear) {
       depth_attachment->setLoadAction(MTL::LoadActionClear);
-      depth_attachment->setClearDepth(1.0);
+      depth_attachment->setClearDepth(current_depth_target_->clear_depth());
       cached_render_pass_descriptor_pending_clears_[0] = current_depth_target_;
     } else {
       depth_attachment->setLoadAction(
           depth_load_dontcare ? MTL::LoadActionDontCare : MTL::LoadActionLoad);
     }
-    depth_attachment->setStoreAction(MTL::StoreActionStore);
+    depth_attachment->setStoreAction(draw_pass_store_action);
 
     // If the depth texture includes stencil, bind the same texture to the
     // stencil attachment too (Metal requires explicit stencil attachment
@@ -2872,7 +2900,8 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
       stencil_attachment->setTexture(current_depth_target_->texture());
       if (depth_needs_clear) {
         stencil_attachment->setLoadAction(MTL::LoadActionClear);
-        stencil_attachment->setClearStencil(0);
+        stencil_attachment->setClearStencil(
+            current_depth_target_->clear_stencil());
       } else {
         // The queued depth transfers clear and rewrite stencil over the same
         // rectangles they cover.
@@ -2880,7 +2909,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
                                               ? MTL::LoadActionDontCare
                                               : MTL::LoadActionLoad);
       }
-      stencil_attachment->setStoreAction(MTL::StoreActionStore);
+      stencil_attachment->setStoreAction(draw_pass_store_action);
     }
 
     has_any_render_target = true;
@@ -2914,7 +2943,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
       if (color_needs_clear) {
         color_attachment->setLoadAction(MTL::LoadActionClear);
         color_attachment->setClearColor(
-            MTL::ClearColor::Make(0.0, 0.0, 0.0, 0.0));
+            current_color_targets_[i]->clear_color());
         cached_render_pass_descriptor_pending_clears_[1 + i] =
             current_color_targets_[i];
       } else {
@@ -2922,7 +2951,7 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
                                             ? MTL::LoadActionDontCare
                                             : MTL::LoadActionLoad);
       }
-      color_attachment->setStoreAction(MTL::StoreActionStore);
+      color_attachment->setStoreAction(draw_pass_store_action);
 
       has_any_render_target = true;
       has_any_color_target = true;
@@ -4048,6 +4077,8 @@ void MetalRenderTargetCache::DumpRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, MTL::CommandBuffer* command_buffer) {
   SCOPE_profile_cpu_f("gpu");
+  // The dump reads the backings.
+  PerformDeferredClears(command_buffer);
   std::vector<ResolveCopyDumpRectangle> rectangles;
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
                                  dump_pitch, rectangles);
@@ -4600,12 +4631,6 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                      uint32_t& written_length,
                                      MTL::CommandBuffer* command_buffer) {
   SCOPE_profile_cpu_f("gpu");
-  // Resolving reads the render targets, so anything still queued for a draw
-  // pass has to have been applied to them first.
-  if (!FlushPendingDrawPassTransfers()) {
-    return false;
-  }
-
   written_address = 0;
   written_length = 0;
   const RegisterFile& regs = register_file();
@@ -4615,18 +4640,36 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   bool fixed_rg16_trunc = IsFixedRG16TruncatedToMinus1To1();
   bool fixed_rgba16_trunc = IsFixedRGBA16TruncatedToMinus1To1();
 
+  bool resolve_info_valid =
+      trace_writer_ &&
+      draw_util::GetResolveInfo(regs, memory, *trace_writer_,
+                                draw_resolution_scale_x(),
+                                draw_resolution_scale_y(), fixed_rg16_trunc,
+                                fixed_rgba16_trunc, resolve_info);
+  // The guest's pass before the resolve is still open. With what the resolve
+  // will read and clear known, it can drop stores nothing will read.
+  if (resolve_info_valid) {
+    PlanResolveStoreActions(resolve_info);
+  }
+  command_processor_.EndRenderEncoder();
+  // With no pass open, the plan applies to none.
+  dead_store_render_targets_.clear();
   if (!trace_writer_) {
     XELOGE("MetalRenderTargetCache::Resolve: trace_writer_ is null");
     return false;
   }
-
-  if (!draw_util::GetResolveInfo(regs, memory, *trace_writer_,
-                                 draw_resolution_scale_x(),
-                                 draw_resolution_scale_y(), fixed_rg16_trunc,
-                                 fixed_rgba16_trunc, resolve_info)) {
+  if (!resolve_info_valid) {
     XELOGE("MetalRenderTargetCache::Resolve: GetResolveInfo failed");
     return false;
   }
+
+  // Resolving reads the render targets, so anything still queued for a draw
+  // pass has to have been applied to them first.
+  if (!FlushPendingDrawPassTransfers()) {
+    return false;
+  }
+  // So do the clears deferred to the passes that would bind them.
+  PerformDeferredClears(command_buffer);
 
   // Nothing to do.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
@@ -5167,8 +5210,15 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   if (!clear_width || !clear_height) {
     return PairedClearResult::kNotApplicable;
   }
-  const bool full_clear = !clear_x && !clear_y && clear_width == target_width &&
-                          clear_height == target_height;
+  // Clearing the whole attachments also covers a smaller rectangle outside
+  // which neither holds EDRAM data, unless another key views the color
+  // allocation.
+  const bool full_clear =
+      (!clear_x && !clear_y && clear_width == target_width &&
+       clear_height == target_height) ||
+      (IsRenderTargetDataOnlyInRectangle(depth_key, false, rectangle) &&
+       IsRenderTargetDataOnlyInRectangle(color_key, false, rectangle) &&
+       !IsColorStorageShared(color));
 
   // A partial clear preserves pixels outside the rectangle. Do not pair a
   // first-use target whose preserved contents have not been initialized.
@@ -5185,6 +5235,23 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   const uint32_t stencil_value = uint32_t(clear_values[0]) & 0xFFu;
   TransferClearColorFloatConstants color_constants = {};
   GetResolveClearColor8888(clear_values[1], color_constants.color);
+
+  // A whole-attachment clear needs no pass of its own: the next pass that
+  // binds the targets performs it as its clear load action, and that pass
+  // doesn't load the old contents either. A color target whose allocation
+  // other keys view stays immediate, since their passes would not see it.
+  if (full_clear && ::cvars::metal_defer_resolve_clears) {
+    if (!IsColorStorageShared(color)) {
+      depth->DeferDepthClear(clear_depth, stencil_value);
+      color->DeferColorClear(color_constants.color);
+      deferred_clear_targets_.push_back(depth_key);
+      deferred_clear_targets_.push_back(color_key);
+      MarkContentChanged(depth);
+      MarkContentChanged(color);
+      render_pass_descriptor_dirty_ = true;
+      return PairedClearResult::kEncoded;
+    }
+  }
 
   MTL::RenderPipelineState* clear_pipeline = nullptr;
   MTL::DepthStencilState* depth_state = nullptr;
@@ -5256,6 +5323,206 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   color->SetNeedsInitialClear(false);
   render_pass_descriptor_dirty_ = true;
   return PairedClearResult::kEncoded;
+}
+
+void MetalRenderTargetCache::PerformDeferredClears(MTL::CommandBuffer* cmd) {
+  if (deferred_clear_targets_.empty()) {
+    return;
+  }
+  std::vector<RenderTargetKey> keys;
+  keys.swap(deferred_clear_targets_);
+  for (RenderTargetKey key : keys) {
+    auto it = render_target_map_.find(key.key);
+    if (it == render_target_map_.end() || !it->second) {
+      continue;
+    }
+    MetalRenderTarget* rt = it->second;
+    // Already performed by a pass that bound it, or listed twice.
+    if (!rt->clear_deferred()) {
+      continue;
+    }
+    MTL::Texture* texture = rt->texture();
+    if (!texture) {
+      continue;
+    }
+    if (!cmd) {
+      cmd = command_processor_.EnsureCommandBuffer();
+      if (!cmd) {
+        XELOGE(
+            "MetalRenderTargetCache::PerformDeferredClears: no command buffer");
+        return;
+      }
+    }
+    command_processor_.EndRenderEncoder();
+    auto* rp = MTL::RenderPassDescriptor::renderPassDescriptor();
+    if (key.is_depth) {
+      auto* da = rp->depthAttachment();
+      da->setTexture(texture);
+      da->setLoadAction(MTL::LoadActionClear);
+      da->setStoreAction(MTL::StoreActionStore);
+      da->setClearDepth(rt->clear_depth());
+      MTL::PixelFormat format = texture->pixelFormat();
+      if (format == MTL::PixelFormatDepth32Float_Stencil8 ||
+          format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+        auto* sa = rp->stencilAttachment();
+        sa->setTexture(texture);
+        sa->setLoadAction(MTL::LoadActionClear);
+        sa->setStoreAction(MTL::StoreActionStore);
+        sa->setClearStencil(rt->clear_stencil());
+      }
+    } else {
+      auto* ca = rp->colorAttachments()->object(0);
+      ca->setTexture(texture);
+      ca->setLoadAction(MTL::LoadActionClear);
+      ca->setStoreAction(MTL::StoreActionStore);
+      ca->setClearColor(rt->clear_color());
+    }
+    auto* encoder = cmd->renderCommandEncoder(rp);
+    if (!encoder) {
+      XELOGE(
+          "MetalRenderTargetCache::PerformDeferredClears: failed to create "
+          "the clear encoder");
+      continue;
+    }
+    encoder->endEncoding();
+    rt->SetNeedsInitialClear(false);
+    render_pass_descriptor_dirty_ = true;
+  }
+}
+
+bool MetalRenderTargetCache::IsColorStorageShared(
+    const MetalRenderTarget* render_target) const {
+  for (const auto& entry : render_target_map_) {
+    const MetalRenderTarget* other = entry.second;
+    if (other && other != render_target && !other->key().is_depth &&
+        other->storage_root() == render_target->storage_root()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void MetalRenderTargetCache::PlanResolveStoreActions(
+    const draw_util::ResolveInfo& resolve_info) {
+  dead_store_render_targets_.clear();
+  if (!::cvars::metal_resolve_store_dontcare || IsDrawResolutionScaled() ||
+      (!resolve_info.IsClearingDepth() && !resolve_info.IsClearingColor()) ||
+      HasPendingDrawPassTransfers()) {
+    return;
+  }
+  ResolveClearPlan plan;
+  if (!GetHostRenderTargetsResolveClearPlan(resolve_info, plan)) {
+    return;
+  }
+  // The render targets the copy reads, through the dump or directly.
+  std::vector<ResolveCopyDumpRectangle> read_rectangles;
+  if (resolve_info.copy_dest_extent_length &&
+      resolve_info.rb_copy_control.copy_command !=
+          xenos::CopyCommand::kConvertTo1111) {
+    uint32_t base, row_length_used, rows, pitch;
+    resolve_info.GetCopyEdramTileSpan(base, row_length_used, rows, pitch);
+    GetResolveCopyRectanglesToDump(base, row_length_used, rows, pitch,
+                                   read_rectangles);
+  }
+  const Transfer::Rectangle& rect = plan.clear_rectangle;
+  // The clear has to rewrite everything in the backing that holds EDRAM data,
+  // what the target owns now and what the clear gives it, and nothing before
+  // it may read the old contents.
+  auto plan_dead = [&](MetalRenderTarget* rt, RenderTargetKey cleared_key,
+                       uint32_t cleared_start_tiles_base_relative,
+                       uint32_t cleared_length_tiles) {
+    if (!rt || !cleared_length_tiles || rt->key() != cleared_key ||
+        rt->clear_deferred() || !rt->texture()) {
+      return;
+    }
+    const bool is_64bpp = cleared_key.Is64bpp();
+    if (!IsRenderTargetDataOnlyInRectangle(cleared_key, is_64bpp, rect)) {
+      return;
+    }
+    // The cleared range, split where the EDRAM addressing wraps.
+    Transfer::Rectangle outside[Transfer::kMaxRectanglesWithCutout];
+    const uint32_t start_tiles =
+        cleared_key.base_tiles + cleared_start_tiles_base_relative;
+    const uint32_t first_start_tiles = start_tiles % xenos::kEdramTileCount;
+    const uint32_t first_end_tiles =
+        std::min(first_start_tiles + cleared_length_tiles,
+                 xenos::kEdramTileCount);
+    const uint32_t wrapped_length_tiles =
+        cleared_length_tiles - (first_end_tiles - first_start_tiles);
+    if (Transfer::GetRangeRectangles(first_start_tiles, first_end_tiles,
+                                     cleared_key, is_64bpp, outside, &rect) ||
+        (wrapped_length_tiles &&
+         Transfer::GetRangeRectangles(0, wrapped_length_tiles, cleared_key,
+                                      is_64bpp, outside, &rect))) {
+      return;
+    }
+    for (const ResolveCopyDumpRectangle& read : read_rectangles) {
+      if (read.render_target == rt) {
+        return;
+      }
+    }
+    if (!cleared_key.is_depth && IsColorStorageShared(rt)) {
+      return;
+    }
+    dead_store_render_targets_.push_back(rt);
+  };
+  plan_dead(current_depth_target_, plan.depth_render_target_key,
+            plan.depth_clear_start_tiles_base_relative,
+            plan.depth_clear_length_tiles);
+  for (MetalRenderTarget* color : current_color_targets_) {
+    plan_dead(color, plan.color_render_target_key,
+              plan.color_clear_start_tiles_base_relative,
+              plan.color_clear_length_tiles);
+  }
+}
+
+void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
+    MTL::RenderCommandEncoder* encoder,
+    MTL::RenderPassDescriptor* pass_descriptor) {
+  if (!encoder || !pass_descriptor) {
+    dead_store_render_targets_.clear();
+    return;
+  }
+  // Returns whether the contents of the texture are dead, and if so, notes
+  // that the backing no longer holds what the round-trip records say.
+  auto is_dead = [&](MTL::Texture* texture) {
+    for (MetalRenderTarget* rt : dead_store_render_targets_) {
+      if (texture && rt->texture() == texture) {
+        return true;
+      }
+    }
+    return false;
+  };
+  auto* depth_attachment = pass_descriptor->depthAttachment();
+  if (depth_attachment &&
+      depth_attachment->storeAction() == MTL::StoreActionUnknown) {
+    encoder->setDepthStoreAction(is_dead(depth_attachment->texture())
+                                     ? MTL::StoreActionDontCare
+                                     : MTL::StoreActionStore);
+  }
+  auto* stencil_attachment = pass_descriptor->stencilAttachment();
+  if (stencil_attachment &&
+      stencil_attachment->storeAction() == MTL::StoreActionUnknown) {
+    encoder->setStencilStoreAction(is_dead(stencil_attachment->texture())
+                                       ? MTL::StoreActionDontCare
+                                       : MTL::StoreActionStore);
+  }
+  auto* color_attachments = pass_descriptor->colorAttachments();
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    auto* color_attachment =
+        color_attachments ? color_attachments->object(i) : nullptr;
+    if (color_attachment &&
+        color_attachment->storeAction() == MTL::StoreActionUnknown) {
+      encoder->setColorStoreAction(is_dead(color_attachment->texture())
+                                       ? MTL::StoreActionDontCare
+                                       : MTL::StoreActionStore,
+                                   i);
+    }
+  }
+  for (MetalRenderTarget* rt : dead_store_render_targets_) {
+    MarkContentChanged(rt);
+  }
+  dead_store_render_targets_.clear();
 }
 
 bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
@@ -5343,6 +5610,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       return false;
     }
     command_processor_.EndRenderEncoder();
+    // The passes below read and partially write the backings.
+    PerformDeferredClears(cmd);
   }
 
   if (resolve_clear_needed && !use_active_render_encoder) {
@@ -5764,8 +6033,16 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
     bool resolve_clear_fully_overwrites_target = false;
     if (resolve_clear_needed && resolve_clear_rectangle) {
+      // A render target is as tall as the EDRAM. Clearing all of it also
+      // covers a smaller rectangle when nothing outside it holds EDRAM data
+      // and no other key views the allocation.
       resolve_clear_fully_overwrites_target =
-          is_full_target_rectangle(*resolve_clear_rectangle);
+          is_full_target_rectangle(*resolve_clear_rectangle) ||
+          (transfers_for_shaders.empty() && draw_resolution_scale_x() == 1 &&
+           draw_resolution_scale_y() == 1 &&
+           (dest_is_depth || !IsColorStorageShared(dest_metal_rt)) &&
+           IsRenderTargetDataOnlyInRectangle(dest_key, dest_key.Is64bpp(),
+                                             *resolve_clear_rectangle));
     }
 
     bool resolve_clear_via_load_action = false;
@@ -5875,6 +6152,27 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       transfer_load_action = MTL::LoadActionClear;
     } else if (transfer_pass_load_dontcare) {
       transfer_load_action = MTL::LoadActionDontCare;
+    }
+
+    // A clear the load action performs, with nothing else to draw into the
+    // destination, needs no pass of its own: the next pass that binds it
+    // performs it as its clear load action, and that pass doesn't load the old
+    // contents either.
+    if (resolve_clear_via_load_action && transfers_for_shaders.empty() &&
+        !use_active_render_encoder && ::cvars::metal_defer_resolve_clears &&
+        (dest_is_depth || !IsColorStorageShared(dest_metal_rt))) {
+      if (dest_is_depth) {
+        dest_metal_rt->DeferDepthClear(float(resolve_clear_depth),
+                                       resolve_clear_stencil);
+      } else {
+        const float color[4] = {
+            float(resolve_clear_color.red), float(resolve_clear_color.green),
+            float(resolve_clear_color.blue), float(resolve_clear_color.alpha)};
+        dest_metal_rt->DeferColorClear(color);
+      }
+      deferred_clear_targets_.push_back(dest_key);
+      render_pass_descriptor_dirty_ = true;
+      continue;
     }
 
     MTL::RenderCommandEncoder* transfer_encoder = nullptr;
