@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <thread>
 #include <utility>
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
@@ -942,25 +943,34 @@ void Emulator::ChangeDisc() {
     kernel_state_->smc()->SetTrayState(X_DVD_TRAY_STATE::CLOSED);
     picking_disc_ = false;
   };
-  if (!disc_picker_ || !display_window_ ||
-      !display_window_->app_context().CallInUIThread(
-          [this, close_tray, launch]() {
-            const std::filesystem::path path = disc_picker_();
-            // The pick is dropped for a title launched meanwhile. A launch
-            // under way holds the lock while it waits on this thread.
-            std::unique_lock<std::recursive_mutex> lock(launch_mutex_,
-                                                        std::try_to_lock);
-            if (!lock.owns_lock() || relaunch_requests_.load() != launch) {
-              picking_disc_ = false;
-              return;
-            }
-            if (!path.empty()) {
-              InsertDisc(path);
-            }
-            close_tray();
-          })) {
+  const auto pick = [this, close_tray, launch]() {
+    const std::filesystem::path path = disc_picker_();
+    // The pick is dropped for a title launched meanwhile. A launch under way
+    // holds the lock while it waits on this thread.
+    std::unique_lock<std::recursive_mutex> lock(launch_mutex_,
+                                                std::try_to_lock);
+    if (!lock.owns_lock() || relaunch_requests_.load() != launch) {
+      picking_disc_ = false;
+      return;
+    }
+    if (!path.empty()) {
+      InsertDisc(path);
+    }
+    close_tray();
+  };
+  if (!disc_picker_ || !display_window_) {
+    close_tray();
+    return;
+  }
+#if XE_PLATFORM_IOS
+  // iOS can't wait for a sheet on the UI thread. Its picker presents one there
+  // and waits on a thread of its own, as IOSFilePicker does.
+  std::thread(pick).detach();
+#else
+  if (!display_window_->app_context().CallInUIThread(pick)) {
     close_tray();
   }
+#endif  // XE_PLATFORM_IOS
 }
 
 void Emulator::EjectDisc() {
