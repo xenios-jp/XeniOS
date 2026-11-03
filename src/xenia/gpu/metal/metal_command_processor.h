@@ -282,6 +282,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // submission must already be committed.
   void AwaitSubmissionCompletion(uint64_t submission);
   void AddGpuTimeHandler(MTL::CommandBuffer* command_buffer);
+  // Counts a command buffer that didn't complete, logging the first of each kind.
+  void LogCommandBufferFailure(MTL::CommandBuffer* command_buffer,
+                               MTL::CommandBufferStatus status);
   void WaitForPendingCompletionHandlers();
   void ProcessCompletedSubmissions();
   bool EnsureDrawRingCapacity();
@@ -1015,6 +1018,11 @@ class MetalCommandProcessor : public CommandProcessor {
 
   std::atomic<uint64_t> completed_command_buffers_{0};
   std::atomic<uint32_t> pending_completion_handlers_{0};
+  // Command buffers that finished with anything but Completed, and the kinds
+  // already logged (bits 0-31: error codes, 32-63: other statuses), so each
+  // kind is logged once and the rest only counted.
+  std::atomic<uint64_t> failed_command_buffers_{0};
+  std::atomic<uint64_t> logged_command_buffer_failures_{0};
   // Summed GPU busy time of the completed command buffers, from Metal's own
   // timestamps rather than the wall clock, so it isn't confounded by whatever
   // the CPU is doing. Published as a rolling per-frame mean by IssueSwap.
