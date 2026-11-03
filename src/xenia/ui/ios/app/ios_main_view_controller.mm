@@ -80,6 +80,7 @@
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
+#import "xenia/ui/ios/shared/ios_resource_pressure.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -465,6 +466,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   XeniaIOSStatusToastPresenter* status_toasts = [[XeniaIOSStatusToastPresenter alloc] init];
   self.statusToastPresenter = status_toasts;
   [status_toasts release];
+  // The controller lives for the whole app run, so the blocks may hold it unretained.
+  __unsafe_unretained XeniaViewController* resource_pressure_owner = self;
+  xe_ios_resource_pressure_install(
+      ^BOOL {
+        return resource_pressure_owner.gameRunning;
+      },
+      ^(NSString* message) {
+        [resource_pressure_owner showStatusToast:message style:XeniaIOSStatusToastStyleWarning];
+      });
   // Create the Metal-backed rendering view. The frame is set explicitly via
   // -applyMetalViewLayout in -viewDidLayoutSubviews so the user-chosen
   // window scaling mode (Fit / Stretch / Zoom) and portrait position offset
@@ -3865,6 +3875,9 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   _gameRunning = gameRunning;
   self.shaderCompileIndicator.active = gameRunning;
+  if (gameRunning) {
+    xe_ios_resource_pressure_game_started();
+  }
   [self setNeedsUpdateOfHomeIndicatorAutoHidden];
   [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
 }
