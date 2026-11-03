@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "xenia/ui/ios/launcher/ios_file_transfer.h"
 #include "xenia/xbox.h"
 
 // Title-update / DLC discovery and installation utilities.
@@ -68,9 +69,20 @@ bool xe_read_selected_content_package(const std::filesystem::path& path,
 bool xe_copy_directory_recursive(const std::filesystem::path& source,
                                  const std::filesystem::path& destination,
                                  std::string* error_message_out);
+// Blocking: call from a background queue with the source's security scope
+// open. Copies through ".part" files (see ios_file_transfer.h) so a failed or
+// cancelled copy leaves nothing behind, and keeps the package folder out of
+// iCloud backup. Failure text goes to error_message_out; a cancel is reported
+// as "Cancelled.".
 bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
+                                       XeniaIOSFileTransfer* transfer,
+                                       XeniaIOSFileTransferProgress progress,
                                        std::string* error_message_out);
+// Excludes the title-update ("000B0000") and DLC ("00000002") package folders
+// of every title from iCloud backup; saves and profiles stay in backup.
+// Idempotent and thread-safe.
+void xe_exclude_installed_content_from_backup();
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        const std::filesystem::path& source_relative_path,

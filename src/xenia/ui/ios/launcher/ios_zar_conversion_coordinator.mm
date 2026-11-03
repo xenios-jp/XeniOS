@@ -30,7 +30,10 @@
 #include "xenia/base/logging.h"
 #include "xenia/ui/ios/launcher/zar_converter.h"
 
+#import "xenia/ui/ios/launcher/ios_file_transfer.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
+#import "xenia/ui/ios/shared/ios_idle_timer.h"
+#import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -366,7 +369,7 @@ void XEZarRefreshConversionRequestEstimate(XeniaIOSZarConversionRequest* request
 
   XELOGI("iOS ZAR: estimating source='{}' output='{}' kind={} external={} "
          "in_place={}",
-         request->source_path.string(), request->output_path.string(),
+         xe::strip_pii(request->source_path.string()), xe::strip_pii(request->output_path.string()),
          XEZarSourceKindForLog(request->source_path),
          XEZarBoolString(request->likely_source_external),
          XEZarBoolString(request->output_in_place));
@@ -377,7 +380,7 @@ void XEZarRefreshConversionRequestEstimate(XeniaIOSZarConversionRequest* request
   if (matched_external_location && !external_access) {
     XELOGI("iOS ZAR: estimate failed, external access unavailable source='{}' "
            "error='{}'",
-           request->source_path.string(),
+           xe::strip_pii(request->source_path.string()),
            external_access_error.localizedDescription
                ? [external_access_error.localizedDescription UTF8String]
                : "unknown");
@@ -397,7 +400,8 @@ void XEZarRefreshConversionRequestEstimate(XeniaIOSZarConversionRequest* request
   XELOGI("iOS ZAR: estimate result source='{}' success={} source_bytes={} "
          "input_bytes={} estimated_output_bytes={} sampled_input_bytes={} "
          "sampled_output_bytes={} files_seen={} error='{}'",
-         request->source_path.string(), XEZarBoolString(estimate.success), request->source_bytes,
+         xe::strip_pii(request->source_path.string()), XEZarBoolString(estimate.success),
+         request->source_bytes,
          request->estimated_input_bytes, request->estimated_zar_bytes, estimate.sampled_input_bytes,
          estimate.sampled_output_bytes, estimate.files_seen, estimate.error_message);
   [external_access release];
@@ -584,11 +588,11 @@ bool XEZarAddConversionRequest(const std::filesystem::path& source_path,
     return false;
   }
   if (xe::ui::IsZarPath(source_path)) {
-    XELOGI("iOS ZAR: skipped existing ZAR source='{}'", source_path.string());
+    XELOGI("iOS ZAR: skipped existing ZAR source='{}'", xe::strip_pii(source_path.string()));
     return false;
   }
   if (XEZarRequestAlreadyIncludesSource(*requests, source_path)) {
-    XELOGI("iOS ZAR: skipped duplicate source='{}'", source_path.string());
+    XELOGI("iOS ZAR: skipped duplicate source='{}'", xe::strip_pii(source_path.string()));
     return false;
   }
 
@@ -604,7 +608,7 @@ bool XEZarAddConversionRequest(const std::filesystem::path& source_path,
     if (likely_source_external && (!matched_external_location || !external_access)) {
       XELOGI("iOS ZAR: skipped in-place request source='{}' likely_external={} "
              "matched_external={} access_granted={} error='{}'",
-             source_path.string(), XEZarBoolString(likely_source_external),
+             xe::strip_pii(source_path.string()), XEZarBoolString(likely_source_external),
              XEZarBoolString(matched_external_location), XEZarBoolString(external_access != nil),
              access_error.localizedDescription ? [access_error.localizedDescription UTF8String]
                                                : "none");
@@ -624,7 +628,8 @@ bool XEZarAddConversionRequest(const std::filesystem::path& source_path,
          "display='{}' source='{}' output='{}'",
          XEZarSourceKindForLog(request.source_path),
          XEZarBoolString(request.likely_source_external), XEZarBoolString(request.output_in_place),
-         request.display_name, request.source_path.string(), request.output_path.string());
+         request.display_name, xe::strip_pii(request.source_path.string()),
+         xe::strip_pii(request.output_path.string()));
   requests->push_back(std::move(request));
   return true;
 }
@@ -633,7 +638,8 @@ std::vector<XeniaIOSZarConversionRequest> XEZarSingleConversionRequest(
     const IOSDiscoveredGame& game, bool output_in_place = false) {
   XELOGI("iOS ZAR: planning single conversion title='{}' title_id={:08X} "
          "path='{}' kind={} external={} discs={} in_place={}",
-         game.title, game.title_id, game.path.string(), XEZarSourceKindForLog(game.path),
+         game.title, game.title_id, xe::strip_pii(game.path.string()),
+         XEZarSourceKindForLog(game.path),
          XEZarBoolString(game.is_external), game.discs.size(), XEZarBoolString(output_in_place));
   std::vector<XeniaIOSZarConversionRequest> requests;
   std::vector<std::filesystem::path> reserved_paths;
@@ -1877,6 +1883,82 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
 
 namespace {
 
+// True when `ancestor` is `path` itself or one of its parent folders.
+bool XEZarIsSameOrAncestorPath(const std::filesystem::path& ancestor,
+                               const std::filesystem::path& path) {
+  auto ancestor_it = ancestor.begin();
+  auto path_it = path.begin();
+  for (; ancestor_it != ancestor.end(); ++ancestor_it, ++path_it) {
+    if (path_it == path.end() || *path_it != *ancestor_it) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Text for confirmations: Documents-relative, or relative to the linked folder
+// that holds the path, never the raw container path.
+std::string XEZarDisplayPath(const std::filesystem::path& path) {
+  const std::filesystem::path canonical = xe::ui::NormalizedIOSLibraryPath(path);
+  const std::filesystem::path documents =
+      xe::ui::NormalizedIOSLibraryPath(xe_get_ios_documents_path());
+  if (XEZarIsSameOrAncestorPath(documents, canonical)) {
+    const std::filesystem::path relative = canonical.lexically_relative(documents);
+    return relative == "." || relative.empty() ? std::string("Documents")
+                                                : "Documents/" + relative.generic_string();
+  }
+  for (const xe::ui::IOSExternalLibraryLocation& location :
+       xe::ui::ListIOSExternalLibraryLocations()) {
+    if (location.path.empty()) {
+      continue;
+    }
+    const std::filesystem::path root = xe::ui::NormalizedIOSLibraryPath(location.path);
+    if (XEZarIsSameOrAncestorPath(root, canonical)) {
+      const std::filesystem::path relative = canonical.lexically_relative(root);
+      const std::string root_name =
+          location.name.empty() ? root.filename().string() : location.name;
+      return relative == "." || relative.empty() ? root_name
+                                                  : root_name + "/" + relative.generic_string();
+    }
+  }
+  return ".../" + (canonical.has_parent_path() ? canonical.parent_path().filename().string() + "/"
+                                               : std::string()) +
+         canonical.filename().string();
+}
+
+// Empty when `delete_path` may be removed. Otherwise why not: it is, or holds,
+// the app's Documents/library/content/config folders or a linked folder root.
+std::string XEZarDeleteRefusalReason(const std::filesystem::path& delete_path) {
+  const std::filesystem::path target = xe::ui::NormalizedIOSLibraryPath(delete_path);
+  const std::filesystem::path documents = xe_get_ios_documents_path();
+  struct ProtectedRoot {
+    std::filesystem::path path;
+    std::string what;
+  };
+  std::vector<ProtectedRoot> protected_roots = {
+      {documents, "the XeniOS Documents folder (saves, profiles and settings)"},
+      {documents / "games", "the XeniOS game library folder"},
+      {documents / "content", "the XeniOS content folder (saves and installed content)"},
+      {documents / "config", "the XeniOS config folder"},
+  };
+  for (const xe::ui::IOSExternalLibraryLocation& location :
+       xe::ui::ListIOSExternalLibraryLocations()) {
+    if (!location.path.empty()) {
+      protected_roots.push_back(
+          {location.path, "the linked folder \"" +
+                              (location.name.empty() ? location.path.filename().string()
+                                                      : location.name) +
+                              "\""});
+    }
+  }
+  for (const ProtectedRoot& root : protected_roots) {
+    if (XEZarIsSameOrAncestorPath(target, xe::ui::NormalizedIOSLibraryPath(root.path))) {
+      return "it is, or contains, " + root.what;
+    }
+  }
+  return std::string();
+}
+
 bool XEZarDeleteSourceFiles(const std::filesystem::path& source_path, std::string* message_out) {
   if (message_out) {
     message_out->clear();
@@ -1886,6 +1968,16 @@ bool XEZarDeleteSourceFiles(const std::filesystem::path& source_path, std::strin
   if (delete_path.empty()) {
     if (message_out) {
       *message_out = "Original source path is empty.";
+    }
+    return false;
+  }
+  const std::string refusal = XEZarDeleteRefusalReason(delete_path);
+  if (!refusal.empty()) {
+    XELOGW("iOS ZAR: refusing to delete original '{}': {}", xe::strip_pii(delete_path.string()),
+           refusal);
+    if (message_out) {
+      *message_out = "Not deleted: " + XEZarDisplayPath(delete_path) + " - " + refusal +
+                     ". Delete it in Files if you want it gone.";
     }
     return false;
   }
@@ -2037,9 +2129,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 - (NSArray<XeniaIOSZarConversionPreflightAction*>*)
     zarCleanupActionsForSourcePath:(const std::filesystem::path&)sourcePath
                  sourceWasExternal:(BOOL)sourceWasExternal;
+- (void)confirmAndStartDeleteOriginalsForRequests:
+    (std::vector<XeniaIOSZarConversionRequest>)requests;
 - (void)deleteOriginalGameAfterZarConversionAtPath:(const std::filesystem::path&)sourcePath;
 - (void)deleteExternalGameFilesAfterZarConversionAtPath:(const std::filesystem::path&)sourcePath;
 - (void)unlinkExternalGameForConvertedSourcePath:(const std::filesystem::path&)sourcePath;
+- (void)performDeleteExternalGameFilesAtPath:(const std::filesystem::path&)sourcePath;
 @end
 
 @implementation XeniaIOSZarConversionCoordinator {
@@ -2244,10 +2339,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                       @"for in-place conversion.");
                                   return;
                                 }
-                                [unsafe_self
-                                    startZarConversionRequests:std::move(in_place_requests)
-                                                   cleanupMode:XeniaIOSZarConversionCleanupMode::
-                                                                   kDeleteOriginalsAfterSuccess];
+                                [unsafe_self confirmAndStartDeleteOriginalsForRequests:std::move(
+                                                                           in_place_requests)];
                               }]];
   }
 
@@ -2344,10 +2437,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                          @"conversion.");
                                      return;
                                    }
-                                   [unsafe_self
-                                       startZarConversionRequests:std::move(in_place_requests)
-                                                      cleanupMode:XeniaIOSZarConversionCleanupMode::
-                                                                      kDeleteOriginalsAfterSuccess];
+                                   [unsafe_self confirmAndStartDeleteOriginalsForRequests:std::move(
+                                                                              in_place_requests)];
                                  }]];
 
   [completion_copy release];
@@ -2385,7 +2476,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   void (^completion_copy)(BOOL) = [completion copy];
   if (requests.empty()) {
     XELOGI("iOS ZAR: no post-import conversion requests added_path='{}' external={}",
-           addedPath.string(), XEZarBoolString(externalLibrary));
+           xe::strip_pii(addedPath.string()), XEZarBoolString(externalLibrary));
     if (completion_copy) {
       completion_copy(NO);
       [completion_copy release];
@@ -2395,7 +2486,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
   XELOGI("iOS ZAR: post-import conversion prompt added_path='{}' external={} "
          "games={} requests={}",
-         addedPath.string(), XEZarBoolString(externalLibrary), discovered_games_.size(),
+         xe::strip_pii(addedPath.string()), XEZarBoolString(externalLibrary),
+         discovered_games_.size(),
          requests.size());
   auto requests_holder =
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
@@ -2472,7 +2564,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   std::vector<XeniaIOSZarConversionRequest> requests = XEZarSingleConversionRequest(game);
   if (requests.empty()) {
     XELOGI("iOS ZAR: no single conversion requests title='{}' path='{}'", game.title,
-           game.path.string());
+           xe::strip_pii(game.path.string()));
     XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"Already ZAR",
                      @"This game is already a .zar archive and does not need conversion.");
     return;
@@ -2618,8 +2710,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
            "source='{}' output='{}'",
            index + 1, requests.size(), XEZarSourceKindForLog(request.source_path),
            XEZarBoolString(request.likely_source_external),
-           XEZarBoolString(request.output_in_place), request.source_path.string(),
-           request.output_path.string());
+           XEZarBoolString(request.output_in_place), xe::strip_pii(request.source_path.string()),
+           xe::strip_pii(request.output_path.string()));
   }
 
   auto cancel_requested = std::make_shared<std::atomic_bool>(false);
@@ -2650,6 +2742,31 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
   auto requests_holder =
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
+
+  // Keep the screen awake for the whole batch, and ask for the extra time iOS
+  // gives an app that is briefly backgrounded. The task ends on every exit
+  // path (finished, cancelled, or expired); expiry cancels the conversion so
+  // the ".part" file is cleaned up before the system suspends the app.
+  xe_ios_idle_timer_hold(@"zar-conversion");
+  auto background_task = std::make_shared<UIBackgroundTaskIdentifier>(UIBackgroundTaskInvalid);
+  auto end_background_task = [background_task]() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (*background_task != UIBackgroundTaskInvalid) {
+        [[UIApplication sharedApplication] endBackgroundTask:*background_task];
+        *background_task = UIBackgroundTaskInvalid;
+      }
+    });
+  };
+  *background_task = [[UIApplication sharedApplication]
+      beginBackgroundTaskWithName:@"zar-conversion"
+                expirationHandler:^{
+                  XELOGW("iOS ZAR: background time expired; cancelling conversion");
+                  cancel_requested->store(true);
+                  if (*background_task != UIBackgroundTaskInvalid) {
+                    [[UIApplication sharedApplication] endBackgroundTask:*background_task];
+                    *background_task = UIBackgroundTaskInvalid;
+                  }
+                }];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
     std::vector<XeniaIOSZarConversionItemResult> results;
     results.reserve(requests_holder->size());
@@ -2689,7 +2806,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       XELOGI("iOS ZAR: item {}/{} starting kind={} source='{}' output='{}' "
              "matched_external={} source_was_external={} access_granted={}",
              index + 1, requests_holder->size(), XEZarSourceKindForLog(request.source_path),
-             request.source_path.string(), request.output_path.string(),
+             xe::strip_pii(request.source_path.string()),
+             xe::strip_pii(request.output_path.string()),
              XEZarBoolString(matched_external_location), XEZarBoolString(item.source_was_external),
              XEZarBoolString(external_access != nil));
       if (matched_external_location && !external_access) {
@@ -2706,9 +2824,36 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
         continue;
       }
 
+      {
+        // The archive can't be known exactly in advance; use the estimate, or
+        // the source size as a worst case, and stop before reading anything.
+        const uint64_t needed_bytes =
+            request.estimate_available ? request.estimated_zar_bytes : request.source_bytes;
+        NSError* space_error = nil;
+        if (needed_bytes &&
+            !XeniaIOSCheckFreeSpace(ToNSString(request.output_path.parent_path().string()),
+                                    needed_bytes, &space_error)) {
+          item.conversion.success = false;
+          item.conversion.storage_full = true;
+          item.conversion.error_message = space_error.localizedDescription
+                                              ? std::string([space_error.localizedDescription
+                                                                UTF8String])
+                                              : std::string("Not enough storage.");
+          XELOGI("iOS ZAR: item {}/{} skipped: not enough storage needed={}", index + 1,
+                 requests_holder->size(), needed_bytes);
+          publish_item_row(item, index);
+          results.push_back(std::move(item));
+          [external_access release];
+          continue;
+        }
+      }
+
       XELOGI("iOS ZAR: item {}/{} invoking converter", index + 1, requests_holder->size());
       StorePendingZarConversionRecord(request.source_path, request.output_path,
                                       ToNSString(request.output_name), item.source_was_external);
+      // The library scan sweeps stale ".part" files; tell it this one is live.
+      NSString* part_path_ns = ToNSString(request.output_path.string() + ".part");
+      XeniaIOSRegisterActivePartPath(part_path_ns);
       item.conversion = xe::vfs::ConvertPathToZar(
           request.source_path, request.output_path,
           [unsafe_self, index, count = requests_holder->size(),
@@ -2730,6 +2875,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
             });
           },
           [cancel_requested]() { return cancel_requested->load(); });
+      XeniaIOSUnregisterActivePartPath(part_path_ns);
 
       if (item.conversion.success) {
         std::string validation_error;
@@ -2739,7 +2885,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
           std::error_code remove_ec;
           std::filesystem::remove(request.output_path, remove_ec);
           XELOGI("iOS ZAR: item {}/{} validation failed output='{}' error='{}'", index + 1,
-                 requests_holder->size(), request.output_path.string(), validation_error);
+                 requests_holder->size(), xe::strip_pii(request.output_path.string()),
+                 validation_error);
         }
       }
 
@@ -2783,6 +2930,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       [external_access release];
     }
 
+    xe_ios_idle_timer_release(@"zar-conversion");
+    end_background_task();
     dispatch_async(dispatch_get_main_queue(), ^{
       [unsafe_self refreshImportedGamesAsyncWithCompletion:^{
         [unsafe_self presentZarConversionSummaryForResults:std::move(results)
@@ -2809,9 +2958,21 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   }
 
   const std::filesystem::path output_path{std::string([output_path_string UTF8String])};
+  {
+    // The converter writes "<name>.part" and renames when done, so a leftover
+    // part file always belongs to an interrupted run.
+    std::filesystem::path part_path = output_path;
+    part_path += ".part";
+    std::error_code part_ec;
+    const bool had_part = std::filesystem::remove(part_path, part_ec);
+    if (had_part) {
+      XELOGI("iOS ZAR: removed interrupted conversion part file");
+    }
+  }
   std::string validation_error;
   if (xe::vfs::ValidateZarArchive(output_path, &validation_error)) {
-    XELOGI("iOS ZAR: pending conversion output is valid output='{}'", output_path.string());
+    XELOGI("iOS ZAR: pending conversion output is valid output='{}'",
+           xe::strip_pii(output_path.string()));
     ClearPendingZarConversionRecord();
     [self refreshImportedGamesAsync];
     XEPresentOKAlert(
@@ -2826,7 +2987,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   std::filesystem::remove(output_path, remove_ec);
   XELOGI("iOS ZAR: removed incomplete pending output='{}' remove_error='{}' "
          "validation_error='{}'",
-         output_path.string(), remove_ec ? remove_ec.message() : "none", validation_error);
+         xe::strip_pii(output_path.string()), remove_ec ? remove_ec.message() : "none",
+         validation_error);
   ClearPendingZarConversionRecord();
   [self refreshImportedGamesAsync];
   XEPresentOKAlert([self topPresentedControllerForModalPresentation],
@@ -3046,6 +3208,87 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   [self showStatusToast:toast_message style:toast_style];
 }
 
+// "Delete Originals" asks first, showing every path that will be removed, and
+// refuses outright when one of them is, or holds, an app or linked-folder root.
+- (void)confirmAndStartDeleteOriginalsForRequests:
+    (std::vector<XeniaIOSZarConversionRequest>)requests {
+  NSMutableArray<NSString*>* delete_lines = [NSMutableArray array];
+  NSMutableArray<NSString*>* refused_lines = [NSMutableArray array];
+  for (const XeniaIOSZarConversionRequest& request : requests) {
+    const std::filesystem::path delete_path = XEZarExternalDeletePath(request.source_path);
+    NSString* display = ToNSString(XEZarDisplayPath(delete_path));
+    const std::string refusal = XEZarDeleteRefusalReason(delete_path);
+    if (refusal.empty()) {
+      [delete_lines addObject:display];
+    } else {
+      [refused_lines
+          addObject:[NSString stringWithFormat:@"%@ (%@)", display, ToNSString(refusal)]];
+    }
+  }
+
+  __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
+  auto requests_holder =
+      std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
+  UIAlertController* alert = nil;
+  if (refused_lines.count > 0) {
+    alert = [UIAlertController
+        alertControllerWithTitle:@"Can't Delete These Originals"
+                         message:[NSString
+                                     stringWithFormat:@"XeniOS won't delete:\n%@\n\nThey are or "
+                                                      @"contain folders XeniOS or you rely on. "
+                                                      @"You can still convert and keep the "
+                                                      @"originals.",
+                                                      [refused_lines
+                                                          componentsJoinedByString:@"\n"]]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:@"Convert and Keep Originals"
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction* action) {
+                                   [unsafe_self
+                                       startZarConversionRequests:*requests_holder
+                                                      cleanupMode:XeniaIOSZarConversionCleanupMode::
+                                                                      kKeepOriginals];
+                                 }]];
+  } else {
+    // Long lists are shortened in the text; every path is still logged.
+    NSMutableArray<NSString*>* shown = [NSMutableArray array];
+    for (NSUInteger i = 0; i < delete_lines.count && i < 8; ++i) {
+      [shown addObject:delete_lines[i]];
+    }
+    if (delete_lines.count > shown.count) {
+      [shown addObject:[NSString stringWithFormat:@"...and %lu more",
+                                                  static_cast<unsigned long>(delete_lines.count -
+                                                                             shown.count)]];
+    }
+    alert = [UIAlertController
+        alertControllerWithTitle:@"Delete Originals?"
+                         message:[NSString
+                                     stringWithFormat:@"After each successful conversion, these "
+                                                      @"will be permanently deleted:\n%@",
+                                                      [shown componentsJoinedByString:@"\n"]]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:@"Convert and Delete"
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(__unused UIAlertAction* action) {
+                                   [unsafe_self
+                                       startZarConversionRequests:*requests_holder
+                                                      cleanupMode:XeniaIOSZarConversionCleanupMode::
+                                                                      kDeleteOriginalsAfterSuccess];
+                                 }]];
+  }
+  [[self topPresentedControllerForModalPresentation] presentViewController:alert
+                                                                  animated:YES
+                                                                completion:nil];
+}
+
 - (void)deleteOriginalGameAfterZarConversionAtPath:(const std::filesystem::path&)sourcePath {
   bool attempted = false;
   std::string message;
@@ -3057,6 +3300,40 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 }
 
 - (void)deleteExternalGameFilesAfterZarConversionAtPath:(const std::filesystem::path&)sourcePath {
+  const std::filesystem::path delete_path = XEZarExternalDeletePath(sourcePath);
+  const std::string refusal = XEZarDeleteRefusalReason(delete_path);
+  if (!refusal.empty()) {
+    XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"Can't Delete",
+                     [NSString stringWithFormat:@"%@ can't be deleted because %@. Delete it in "
+                                                @"Files if you want it gone.",
+                                                ToNSString(XEZarDisplayPath(delete_path)),
+                                                ToNSString(refusal)]);
+    return;
+  }
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:@"Delete External Files?"
+                       message:[NSString stringWithFormat:@"This permanently deletes:\n%@",
+                                                          ToNSString(XEZarDisplayPath(
+                                                              delete_path))]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(__unused UIAlertAction* action) {
+                                              [self refreshImportedGamesAsync];
+                                            }]];
+  const std::filesystem::path confirmed_path = sourcePath;
+  [confirm addAction:[UIAlertAction actionWithTitle:@"Delete"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction* action) {
+                                              [self performDeleteExternalGameFilesAtPath:
+                                                        confirmed_path];
+                                            }]];
+  [[self topPresentedControllerForModalPresentation] presentViewController:confirm
+                                                                  animated:YES
+                                                                completion:nil];
+}
+
+- (void)performDeleteExternalGameFilesAtPath:(const std::filesystem::path&)sourcePath {
   NSError* external_access_error = nil;
   BOOL matched_external_location = NO;
   XeniaIOSExternalLibraryAccess* external_access = [xe::ui::StartIOSExternalLibraryAccessForPath(
