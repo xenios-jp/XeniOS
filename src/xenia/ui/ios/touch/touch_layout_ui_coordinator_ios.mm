@@ -20,6 +20,7 @@
 #include "xenia/config.h"
 #include "xenia/hid/touch/touch_layout_ios.h"
 
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 #import "xenia/ui/ios/touch/touch_layout_library_ios.h"
 #import "xenia/ui/ios/touch/touch_layout_library_view_ios.h"
@@ -1033,6 +1034,12 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
       return YES;
     }
 
+    if (!xe_ios_online_features_enabled()) {
+      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
+                                                message:xe_ios_online_features_off_message()];
+      return YES;
+    }
+
     NSString* host_label = source_url.host ?: @"the source";
     NSString* prompt_message =
         [NSString stringWithFormat:@"Download a touch layout from %@?", host_label];
@@ -1064,6 +1071,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 
 - (void)downloadTouchLayoutFromURL:(NSURL*)source_url hostLabel:(NSString*)host_label {
   if (!source_url) {
+    return;
+  }
+  if (!xe_ios_online_features_enabled()) {
+    [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
+                                              message:xe_ios_online_features_off_message()];
     return;
   }
 
