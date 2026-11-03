@@ -52,9 +52,7 @@ void xe_apply_label_font(UILabel* label, UIFontTextStyle text_style, CGFloat poi
     return;
   }
   label.font = xe_scaled_system_font(text_style, point_size, weight);
-  if (@available(iOS 10.0, *)) {
-    label.adjustsFontForContentSizeCategory = YES;
-  }
+  label.adjustsFontForContentSizeCategory = YES;
 }
 
 void xe_apply_monospaced_label_font(UILabel* label, UIFontTextStyle text_style, CGFloat point_size,
@@ -63,9 +61,7 @@ void xe_apply_monospaced_label_font(UILabel* label, UIFontTextStyle text_style, 
     return;
   }
   label.font = xe_scaled_monospaced_font(text_style, point_size, weight);
-  if (@available(iOS 10.0, *)) {
-    label.adjustsFontForContentSizeCategory = YES;
-  }
+  label.adjustsFontForContentSizeCategory = YES;
 }
 
 void xe_apply_button_title_font(UIButton* button, UIFontTextStyle text_style, CGFloat point_size,
@@ -74,9 +70,7 @@ void xe_apply_button_title_font(UIButton* button, UIFontTextStyle text_style, CG
     return;
   }
   button.titleLabel.font = xe_scaled_system_font(text_style, point_size, weight);
-  if (@available(iOS 10.0, *)) {
-    button.titleLabel.adjustsFontForContentSizeCategory = YES;
-  }
+  button.titleLabel.adjustsFontForContentSizeCategory = YES;
 }
 
 void xe_apply_text_view_font(UITextView* text_view, UIFontTextStyle text_style, CGFloat point_size,
@@ -86,9 +80,7 @@ void xe_apply_text_view_font(UITextView* text_view, UIFontTextStyle text_style, 
   }
   text_view.font = monospaced ? xe_scaled_monospaced_font(text_style, point_size, weight)
                               : xe_scaled_system_font(text_style, point_size, weight);
-  if (@available(iOS 10.0, *)) {
-    text_view.adjustsFontForContentSizeCategory = YES;
-  }
+  text_view.adjustsFontForContentSizeCategory = YES;
 }
 
 XeniaPaddedLabel* xe_make_tag_pill(NSString* text, UIColor* text_color) {
