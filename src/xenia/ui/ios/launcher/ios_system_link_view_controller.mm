@@ -293,7 +293,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
           @"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find "
           @"each other automatically and connect directly where their networks allow, "
           @"otherwise through a relay. The in-game menu shows how the room is connected. "
-          @"Players in your room can see your IP address.",
+          @"Players in your room can see your IP address and a profile ID.",
           @"system link view controller: footer");
     case Row::kCreate:
       return NSLocalizedString(@"Share the code with the players you want. Everyone needs this "
@@ -1323,7 +1323,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
     case StatusRow::kRelayed:
     case StatusRow::kNotConnected:
     case StatusRow::kOtherVersion:
-      return NSLocalizedString(@"Players in your room can see your IP address.",
+      return NSLocalizedString(@"Players in your room can see your IP address and a profile ID.",
                                @"system link status view controller: footer");
     case StatusRow::kThisGame:
     case StatusRow::kOtherGame:
