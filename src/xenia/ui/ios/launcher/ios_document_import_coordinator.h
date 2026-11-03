@@ -24,6 +24,7 @@
 
 - (UIViewController*)documentImportCoordinatorPresenter;
 - (BOOL)documentImportCoordinatorGameStopInProgress;
+- (BOOL)documentImportCoordinatorGameRunning;
 - (BOOL)documentImportCoordinatorJITAcquired;
 - (void)documentImportCoordinatorSetStatusText:(NSString*)text;
 - (std::filesystem::path)documentImportCoordinatorImportGameAtURL:(NSURL*)sourceURL
