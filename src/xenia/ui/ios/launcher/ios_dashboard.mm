@@ -9,11 +9,16 @@
 
 #import "xenia/ui/ios/launcher/ios_dashboard.h"
 
+#import <ImageIO/ImageIO.h>
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -23,10 +28,12 @@
 #include "xenia/kernel/title_id_utils.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/launcher/ios_dashboard_disc_tray_view_controller.h"
+#import "xenia/ui/ios/launcher/ios_game_art.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
+#include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/vfs/xex_metadata.h"
 
 DECLARE_path(storage_root);
@@ -44,6 +51,7 @@ namespace ui {
 namespace {
 
 struct LibraryDisc {
+  uint32_t title_id = 0;
   std::string title;
   // Which disc, its format and the linked folder it is in.
   std::string detail;
@@ -68,6 +76,79 @@ std::filesystem::path LibraryIconsPath() {
     return {};
   }
   return std::filesystem::path([caches fileSystemRepresentation]) / "xenia" / "library-icons";
+}
+
+// A release's thumbnail keeps its path, so the dashboard reads the cover that
+// replaces its icon from where it read the icon.
+std::filesystem::path LibraryIconPath(const std::filesystem::path& icons_path, uint32_t title_id,
+                                      uint32_t media_id) {
+  return icons_path / fmt::format("{:08X}-{:08X}.png", title_id, media_id);
+}
+
+// The dashboard draws a game's thumbnail 64 pixels square.
+constexpr size_t kThumbnailPixels = 64;
+
+// Covers made into thumbnails, by title id. Only on LibraryQueue.
+std::unordered_map<uint32_t, std::vector<uint8_t>>& CoverThumbnails() {
+  static auto* thumbnails = new std::unordered_map<uint32_t, std::vector<uint8_t>>();
+  return *thumbnails;
+}
+
+// The cover the library fetched for the title, whole, in the dashboard's
+// square thumbnail, as a PNG that fits a content header. Nothing if the
+// library has no cover for it yet.
+std::vector<uint8_t> CoverThumbnail(uint32_t title_id) {
+  auto& thumbnails = CoverThumbnails();
+  if (auto it = thumbnails.find(title_id); it != thumbnails.end()) {
+    return it->second;
+  }
+  std::vector<uint8_t> thumbnail;
+  @autoreleasepool {
+    CGImageRef cover = xe_cached_game_art(title_id).CGImage;
+    if (!cover) {
+      return {};
+    }
+    CGColorSpaceRef color_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef context = CGBitmapContextCreate(nullptr, kThumbnailPixels, kThumbnailPixels, 8, 0,
+                                                 color_space, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(color_space);
+    if (!context) {
+      return {};
+    }
+    // Box art is taller than it is wide. It keeps its shape, with clear sides.
+    const CGFloat width = CGImageGetWidth(cover);
+    const CGFloat height = CGImageGetHeight(cover);
+    const CGFloat scale = CGFloat(kThumbnailPixels) / std::max(width, height);
+    const CGFloat fitted_width = std::round(width * scale);
+    const CGFloat fitted_height = std::round(height * scale);
+    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    CGContextDrawImage(
+        context,
+        CGRectMake((kThumbnailPixels - fitted_width) / 2, (kThumbnailPixels - fitted_height) / 2,
+                   fitted_width, fitted_height),
+        cover);
+    CGImageRef fitted = CGBitmapContextCreateImage(context);
+    CGContextRelease(context);
+    NSMutableData* png = [NSMutableData data];
+    CGImageDestinationRef destination = CGImageDestinationCreateWithData(
+        (CFMutableDataRef)png, (CFStringRef)UTTypePNG.identifier, 1, nullptr);
+    if (fitted && destination) {
+      CGImageDestinationAddImage(destination, fitted, nullptr);
+      if (CGImageDestinationFinalize(destination) &&
+          png.length <= vfs::XContentMetadata::kThumbLengthV2) {
+        const auto* bytes = static_cast<const uint8_t*>(png.bytes);
+        thumbnail.assign(bytes, bytes + png.length);
+      }
+    }
+    if (destination) {
+      CFRelease(destination);
+    }
+    CGImageRelease(fitted);
+  }
+  if (!thumbnail.empty()) {
+    thumbnails.emplace(title_id, thumbnail);
+  }
+  return thumbnail;
 }
 
 // The disc's format, as the library names it.
@@ -120,15 +201,58 @@ UIViewController* AppRootViewController() {
   return nil;
 }
 
-// Writes |data| unless the file already holds as many bytes, which an icon
-// that changed is unlikely to.
+// Writes |data| unless the file already holds it, all at once, as the
+// dashboard may be reading it.
 bool WriteIcon(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(path, ec);
-  if (!ec && size == data.size()) {
+  if (xe::filesystem::ReadAllBytes(path) == data) {
     return true;
   }
-  return xe::filesystem::WriteAllBytes(path, data);
+  NSData* bytes = [NSData dataWithBytes:data.data() length:data.size()];
+  return [bytes writeToFile:[NSString stringWithUTF8String:path.c_str()] atomically:YES];
+}
+
+// Gives the dashboard a cover that arrived after the library was handed to it.
+// Only on LibraryQueue.
+void UseFetchedCover(uint32_t title_id) {
+  const auto thumbnail = CoverThumbnail(title_id);
+  const auto icons_path = LibraryIconsPath();
+  if (thumbnail.empty() || icons_path.empty()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(library_titles_mutex);
+  for (auto& title : library_titles) {
+    if (title.title_id != title_id) {
+      continue;
+    }
+    auto icon_path = LibraryIconPath(icons_path, title.title_id, title.version);
+    if (!WriteIcon(icon_path, thumbnail)) {
+      continue;
+    }
+    for (auto& disc : library_discs) {
+      if (disc.title_id == title_id) {
+        disc.icon_path = icon_path;
+      }
+    }
+    title.icon_path = std::move(icon_path);
+  }
+}
+
+// Fetches the covers the library hasn't yet, as it does for the games it
+// shows, and gives the dashboard each one that arrives.
+void FetchCovers(std::vector<uint32_t> title_ids) {
+  std::sort(title_ids.begin(), title_ids.end());
+  title_ids.erase(std::unique(title_ids.begin(), title_ids.end()), title_ids.end());
+  dispatch_async(dispatch_get_main_queue(), ^{
+    for (const uint32_t title_id : title_ids) {
+      xe_fetch_game_art(title_id, ^(UIImage* cover) {
+        if (cover) {
+          dispatch_async(LibraryQueue(), ^{
+            UseFetchedCover(title_id);
+          });
+        }
+      });
+    }
+  });
 }
 
 }  // namespace
@@ -213,6 +337,7 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
     std::vector<Emulator::LibraryTitle> titles;
     titles.reserve(games_owner->size());
     std::vector<LibraryDisc> discs;
+    std::vector<uint32_t> missing_covers;
     for (auto& game : *games_owner) {
       // The dashboard doesn't list itself, nor anything without a title.
       if (!game.title_id || kernel::IsSystemTitle(game.title_id) || game.title.empty()) {
@@ -226,23 +351,38 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
       title.name = game.title;
       title.path = game.path;
       title.content_type = game.content_type;
-      if (!game.icon_data.empty() && !icons_path.empty()) {
-        auto icon_path =
-            icons_path / fmt::format("{:08X}-{:08X}.png", game.title_id, game.media_id);
-        if (WriteIcon(icon_path, game.icon_data)) {
+      // The cover the library fetched, as its games show, else the game's own
+      // icon.
+      std::vector<uint8_t> cover;
+      if (game.system == IOSGameSystem::kXbox360) {
+        cover = CoverThumbnail(game.title_id);
+        if (cover.empty()) {
+          missing_covers.push_back(game.title_id);
+        }
+      }
+      const auto& icon = cover.empty() ? game.icon_data : cover;
+      if (!icon.empty() && !icons_path.empty()) {
+        auto icon_path = LibraryIconPath(icons_path, game.title_id, game.media_id);
+        if (WriteIcon(icon_path, icon)) {
           title.icon_path = std::move(icon_path);
         }
       }
       // Every copy of every disc can go in the tray.
       EnsureDiscoveredGameDiscList(&game);
       for (const auto& disc : game.discs) {
-        discs.push_back({game.title, DiscDetail(game, disc), disc.path, title.icon_path});
+        discs.push_back(
+            {game.title_id, game.title, DiscDetail(game, disc), disc.path, title.icon_path});
       }
       titles.push_back(std::move(title));
     }
-    std::lock_guard<std::mutex> lock(library_titles_mutex);
-    library_titles = std::move(titles);
-    library_discs = std::move(discs);
+    {
+      std::lock_guard<std::mutex> lock(library_titles_mutex);
+      library_titles = std::move(titles);
+      library_discs = std::move(discs);
+    }
+    if (!missing_covers.empty()) {
+      FetchCovers(std::move(missing_covers));
+    }
   });
 }
 
@@ -272,6 +412,7 @@ std::filesystem::path PickIOSDashboardDisc() {
       disc.title = [NSString stringWithUTF8String:entry.title.c_str()];
       disc.detail = [NSString stringWithUTF8String:entry.detail.c_str()];
       disc.path = [NSString stringWithUTF8String:entry.path.c_str()];
+      disc.titleId = entry.title_id;
       if (!entry.icon_path.empty()) {
         disc.iconPath = [NSString stringWithUTF8String:entry.icon_path.c_str()];
       }

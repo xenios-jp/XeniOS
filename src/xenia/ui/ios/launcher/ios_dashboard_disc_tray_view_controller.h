@@ -21,6 +21,8 @@
 // "Disc 1 of 2 · ZAR · Backup".
 @property(nonatomic, copy) NSString* detail;
 @property(nonatomic, copy) NSString* path;
+// The game, whose cover the tray shows when the library has fetched one.
+@property(nonatomic) uint32_t titleId;
 // The game's icon, or nil.
 @property(nonatomic, copy) NSString* iconPath;
 @end
