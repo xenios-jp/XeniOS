@@ -213,25 +213,34 @@ NSString* XEZarFormatTimeRemaining(double seconds) {
     return nil;
   }
   if (seconds <= 5.0) {
-    return @"A few seconds remaining";
+    return NSLocalizedString(@"A few seconds remaining",
+                             @"zar conversion coordinator: user-visible text");
   }
   if (seconds < 60.0) {
     long rounded = static_cast<long>(std::llround(seconds / 5.0)) * 5;
     if (rounded < 5) {
       rounded = 5;
     }
-    return [NSString stringWithFormat:@"About %ld seconds remaining", rounded];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"About %ld seconds remaining",
+                                           @"zar conversion coordinator: user-visible text"),
+                         rounded];
   }
   if (seconds < 3600.0) {
     long minutes = static_cast<long>(std::ceil(seconds / 60.0));
     return [NSString
-        stringWithFormat:@"About %ld minute%@ remaining", minutes, minutes == 1 ? @"" : @"s"];
+        stringWithFormat:NSLocalizedString(@"About %ld minute%@ remaining",
+                                           @"zar conversion coordinator: user-visible text"),
+                         minutes, minutes == 1 ? @"" : @"s"];
   }
   long hours = static_cast<long>(std::llround(seconds / 3600.0));
   if (hours < 1) {
     hours = 1;
   }
-  return [NSString stringWithFormat:@"About %ld hour%@ remaining", hours, hours == 1 ? @"" : @"s"];
+  return [NSString
+      stringWithFormat:NSLocalizedString(@"About %ld hour%@ remaining",
+                                         @"zar conversion coordinator: user-visible text"),
+                       hours, hours == 1 ? @"" : @"s"];
 }
 
 NSString* const kXEZarSummaryRowTitleKey = @"title";
@@ -409,34 +418,42 @@ void XEZarRefreshConversionRequestEstimate(XeniaIOSZarConversionRequest* request
 
 NSString* XEZarSpaceDeltaSummary(uint64_t source_bytes, uint64_t output_bytes) {
   if (!source_bytes || !output_bytes) {
-    return @"Space saved could not be estimated.";
-  }
-  if (source_bytes >= output_bytes) {
-    const uint64_t saved_bytes = source_bytes - output_bytes;
-    return [NSString stringWithFormat:@"Saved %@ (%@ -> %@).", XEZarFormatByteCount(saved_bytes),
-                                      XEZarFormatByteCount(source_bytes),
-                                      XEZarFormatByteCount(output_bytes)];
-  }
-  return [NSString stringWithFormat:@"Archive is %@ larger (%@ -> %@).",
-                                    XEZarFormatByteCount(output_bytes - source_bytes),
-                                    XEZarFormatByteCount(source_bytes),
-                                    XEZarFormatByteCount(output_bytes)];
-}
-
-NSString* XEZarEstimatedSpaceDeltaSummary(uint64_t source_bytes, uint64_t output_bytes) {
-  if (!source_bytes || !output_bytes) {
-    return @"Estimated savings unavailable.";
+    return NSLocalizedString(@"Space saved could not be estimated.",
+                             @"zar conversion coordinator: user-visible text");
   }
   if (source_bytes >= output_bytes) {
     const uint64_t saved_bytes = source_bytes - output_bytes;
     return [NSString
-        stringWithFormat:@"Estimated savings: %@ (%@ -> %@).", XEZarFormatByteCount(saved_bytes),
-                         XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
+        stringWithFormat:NSLocalizedString(@"Saved %@ (%@ -> %@).",
+                                           @"zar conversion coordinator: user-visible text"),
+                         XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
+                         XEZarFormatByteCount(output_bytes)];
   }
-  return [NSString stringWithFormat:@"Estimated .zar is %@ larger (%@ -> %@).",
-                                    XEZarFormatByteCount(output_bytes - source_bytes),
-                                    XEZarFormatByteCount(source_bytes),
-                                    XEZarFormatByteCount(output_bytes)];
+  return [NSString
+      stringWithFormat:NSLocalizedString(@"Archive is %@ larger (%@ -> %@).",
+                                         @"zar conversion coordinator: user-visible text"),
+                       XEZarFormatByteCount(output_bytes - source_bytes),
+                       XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
+}
+
+NSString* XEZarEstimatedSpaceDeltaSummary(uint64_t source_bytes, uint64_t output_bytes) {
+  if (!source_bytes || !output_bytes) {
+    return NSLocalizedString(@"Estimated savings unavailable.",
+                             @"zar conversion coordinator: user-visible text");
+  }
+  if (source_bytes >= output_bytes) {
+    const uint64_t saved_bytes = source_bytes - output_bytes;
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Estimated savings: %@ (%@ -> %@).",
+                                           @"zar conversion coordinator: user-visible text"),
+                         XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
+                         XEZarFormatByteCount(output_bytes)];
+  }
+  return [NSString
+      stringWithFormat:NSLocalizedString(@"Estimated .zar is %@ larger (%@ -> %@).",
+                                         @"zar conversion coordinator: user-visible text"),
+                       XEZarFormatByteCount(output_bytes - source_bytes),
+                       XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
 }
 
 // Builds the table row for one finished item. The title is the game name; the
@@ -444,61 +461,102 @@ NSString* XEZarEstimatedSpaceDeltaSummary(uint64_t source_bytes, uint64_t output
 // is self-explanatory both live during conversion and in the final results.
 NSDictionary<NSString*, NSString*>* XEZarResultRowForItem(
     const XeniaIOSZarConversionItemResult& item, XeniaIOSZarConversionCleanupMode cleanup_mode) {
-  NSString* name = XEZarResultDisplayName(item) ?: @"Game";
-  NSString* source_name = XEZarResultSourceName(item) ?: @"Source";
+  NSString* name =
+      XEZarResultDisplayName(item)
+          ?: NSLocalizedString(@"Game", @"zar conversion coordinator: user-visible text");
+  NSString* source_name =
+      XEZarResultSourceName(item)
+          ?: NSLocalizedString(@"Source", @"zar conversion coordinator: user-visible text");
   NSMutableArray<NSString*>* detail_parts = [NSMutableArray array];
   NSString* symbol = @"circle";
   NSString* style = kXEZarSummaryRowStyleMuted;
 
   if (item.skipped_after_cancel) {
-    [detail_parts addObject:@"Not started. Cancelled before reaching this item."];
-    [detail_parts addObject:[NSString stringWithFormat:@"Source: %@", source_name]];
+    [detail_parts addObject:NSLocalizedString(@"Not started. Cancelled before reaching this item.",
+                                              @"zar conversion coordinator: detail text")];
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Source: %@",
+                                                 @"zar conversion coordinator: detail text"),
+                                             source_name]];
     symbol = @"clock";
     style = kXEZarSummaryRowStyleMuted;
   } else if (item.conversion.cancelled) {
-    [detail_parts addObject:@"Cancelled. Partial .zar output was removed."];
+    [detail_parts addObject:NSLocalizedString(@"Cancelled. Partial .zar output was removed.",
+                                              @"zar conversion coordinator: detail text")];
     if (item.conversion.files_written > 0 || item.conversion.bytes_written > 0) {
       [detail_parts
           addObject:[NSString
-                        stringWithFormat:@"%u file(s), %@ packed before cancellation.",
+                        stringWithFormat:NSLocalizedString(
+                                             @"%u file(s), %@ packed before cancellation.",
+                                             @"zar conversion coordinator: detail text"),
                                          item.conversion.files_written,
                                          XEZarFormatByteCount(item.conversion.bytes_written)]];
     }
-    [detail_parts addObject:[NSString stringWithFormat:@"Source: %@", source_name]];
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Source: %@",
+                                                 @"zar conversion coordinator: detail text"),
+                                             source_name]];
     symbol = @"xmark.circle";
     style = kXEZarSummaryRowStyleWarning;
   } else if (!item.conversion.success) {
-    NSString* error = item.conversion.error_message.empty()
-                          ? @"Conversion failed."
-                          : ToNSString(item.conversion.error_message);
-    [detail_parts addObject:(error ?: @"Conversion failed.")];
-    [detail_parts addObject:[NSString stringWithFormat:@"Source: %@", source_name]];
+    NSString* error =
+        item.conversion.error_message.empty()
+            ? NSLocalizedString(@"Conversion failed.", @"zar conversion coordinator: message")
+            : ToNSString(item.conversion.error_message);
+    [detail_parts addObject:(error
+                                 ?: NSLocalizedString(@"Conversion failed.",
+                                                      @"zar conversion coordinator: detail text"))];
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Source: %@",
+                                                 @"zar conversion coordinator: detail text"),
+                                             source_name]];
     symbol = @"exclamationmark.triangle";
     style = kXEZarSummaryRowStyleError;
   } else {
     if (item.request.source_bytes > 0 && item.output_bytes > 0) {
       [detail_parts addObject:XEZarSpaceDeltaSummary(item.request.source_bytes, item.output_bytes)];
     } else if (item.output_bytes > 0) {
-      [detail_parts addObject:[NSString stringWithFormat:@"Output size: %@.",
-                                                         XEZarFormatByteCount(item.output_bytes)]];
+      [detail_parts
+          addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                   @"Output size: %@.",
+                                                   @"zar conversion coordinator: detail text"),
+                                               XEZarFormatByteCount(item.output_bytes)]];
     } else {
-      [detail_parts addObject:@"Conversion complete."];
+      [detail_parts addObject:NSLocalizedString(@"Conversion complete.",
+                                                @"zar conversion coordinator: detail text")];
     }
-    [detail_parts addObject:[NSString stringWithFormat:@"Created %@.", XEZarResultOutputName(item)
-                                                                           ?: @"archive.zar"]];
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Created %@.",
+                                                 @"zar conversion coordinator: detail text"),
+                                             XEZarResultOutputName(item) ?: @"archive.zar"]];
     symbol = @"checkmark.circle";
     style = kXEZarSummaryRowStyleSuccess;
     if (item.cleanup_attempted) {
-      NSString* cleanup_message = item.cleanup_message.empty() ? @"Original cleanup finished."
-                                                               : ToNSString(item.cleanup_message);
+      NSString* cleanup_message = item.cleanup_message.empty()
+                                      ? NSLocalizedString(@"Original cleanup finished.",
+                                                          @"zar conversion coordinator: message")
+                                      : ToNSString(item.cleanup_message);
       if (item.cleanup_succeeded) {
-        [detail_parts addObject:(cleanup_message ?: @"Original cleanup finished.")];
+        [detail_parts addObject:(cleanup_message
+                                     ?: NSLocalizedString(@"Original cleanup finished.",
+                                                          @"zar conversion coordinator: message"))];
         symbol = cleanup_mode == XeniaIOSZarConversionCleanupMode::kDeleteOriginalsAfterSuccess
                      ? @"trash.circle"
                      : @"checkmark.circle";
       } else {
-        [detail_parts addObject:[NSString stringWithFormat:@"Cleanup failed: %@",
-                                                           (cleanup_message ?: @"Unknown error.")]];
+        [detail_parts
+            addObject:[NSString
+                          stringWithFormat:NSLocalizedString(
+                                               @"Cleanup failed: %@",
+                                               @"zar conversion coordinator: detail text"),
+                                           (cleanup_message
+                                                ?: NSLocalizedString(
+                                                       @"Unknown error.",
+                                                       @"zar conversion coordinator: message"))]];
         symbol = @"exclamationmark.triangle";
         style = kXEZarSummaryRowStyleWarning;
       }
@@ -766,7 +824,12 @@ NSString* XEZarRequestSourceName(const XeniaIOSZarConversionRequest& request) {
 }
 
 NSString* XEZarPreflightItemCountText(size_t count) {
-  return count == 1 ? @"1 item" : [NSString stringWithFormat:@"%zu items", count];
+  return count == 1
+             ? NSLocalizedString(@"1 item", @"zar conversion coordinator: user-visible text")
+             : [NSString stringWithFormat:NSLocalizedString(
+                                              @"%zu items",
+                                              @"zar conversion coordinator: user-visible text"),
+                                          count];
 }
 
 NSArray<NSDictionary<NSString*, NSString*>*>* XEZarPreflightRowsForRequests(
@@ -775,21 +838,37 @@ NSArray<NSDictionary<NSString*, NSString*>*>* XEZarPreflightRowsForRequests(
   for (const XeniaIOSZarConversionRequest& request : requests) {
     NSMutableArray<NSString*>* detail_parts = [NSMutableArray array];
     NSString* output_name = XEZarRequestOutputName(request) ?: @"archive.zar";
-    [detail_parts addObject:[NSString stringWithFormat:@"Output: %@", output_name]];
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Output: %@",
+                                                 @"zar conversion coordinator: detail text"),
+                                             output_name]];
     if (request.estimate_available) {
       [detail_parts addObject:XEZarEstimatedSpaceDeltaSummary(request.source_bytes,
                                                               request.estimated_zar_bytes)];
     } else {
-      [detail_parts
-          addObject:estimating ? @"Waiting for estimate." : @"Estimated savings unavailable."];
+      [detail_parts addObject:estimating
+                                  ? NSLocalizedString(@"Waiting for estimate.",
+                                                      @"zar conversion coordinator: detail text")
+                                  : NSLocalizedString(@"Estimated savings unavailable.",
+                                                      @"zar conversion coordinator: detail text")];
     }
-    NSString* source_name = XEZarRequestSourceName(request) ?: @"Source";
-    [detail_parts addObject:[NSString stringWithFormat:@"Source: %@", source_name]];
+    NSString* source_name =
+        XEZarRequestSourceName(request)
+            ?: NSLocalizedString(@"Source", @"zar conversion coordinator: user-visible text");
+    [detail_parts
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Source: %@",
+                                                 @"zar conversion coordinator: detail text"),
+                                             source_name]];
     if (request.likely_source_external) {
-      [detail_parts addObject:@"External library item."];
+      [detail_parts addObject:NSLocalizedString(@"External library item.",
+                                                @"zar conversion coordinator: detail text")];
     }
     XEZarAddSummaryRow(
-        rows, XEZarRequestDisplayName(request) ?: @"Game",
+        rows,
+        XEZarRequestDisplayName(request)
+            ?: NSLocalizedString(@"Game", @"zar conversion coordinator: user-visible text"),
         [detail_parts componentsJoinedByString:@"\n"],
         request.estimate_available ? @"archivebox" : @"clock",
         request.estimate_available ? kXEZarSummaryRowStyleSuccess : kXEZarSummaryRowStyleMuted);
@@ -1010,8 +1089,9 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
                                    forAxis:UILayoutConstraintAxisHorizontal];
 
   warning_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
-  warning_label_.text =
-      @"Keep XeniOS open until conversion finishes. Cancel removes partial output.";
+  warning_label_.text = NSLocalizedString(
+      @"Keep XeniOS open until conversion finishes. Cancel removes partial output.",
+      @"zar conversion coordinator: label text");
   warning_label_.textColor = [XeniaTheme textSecondary];
   warning_label_.font = warning_font;
   warning_label_.adjustsFontForContentSizeCategory = YES;
@@ -1127,10 +1207,13 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   finished_ = NO;
   item_rows_ = [[NSArray alloc] init];
   actions_ = [[NSArray alloc] init];
-  summary_headline_ = [@"Estimating savings..." copy];
-  summary_detail_ = [[NSString stringWithFormat:@"Scanning %lu item%@...",
-                                                static_cast<unsigned long>(requestCount),
-                                                requestCount == 1 ? @"" : @"s"] retain];
+  summary_headline_ = [NSLocalizedString(@"Estimating savings...",
+                                         @"zar conversion coordinator: user-visible text") copy];
+  summary_detail_ =
+      [[NSString stringWithFormat:NSLocalizedString(@"Scanning %lu item%@...",
+                                                    @"zar conversion coordinator: detail text"),
+                                  static_cast<unsigned long>(requestCount),
+                                  requestCount == 1 ? @"" : @"s"] retain];
   summary_show_spinner_ = YES;
   return self;
 }
@@ -1314,17 +1397,20 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
     phase_ = XeniaIOSZarPreflightPhaseEstimating;
     summary_show_spinner_ = YES;
     [summary_headline_ release];
-    summary_headline_ = [@"Estimating savings..." copy];
+    summary_headline_ = [NSLocalizedString(@"Estimating savings...",
+                                           @"zar conversion coordinator: user-visible text") copy];
     const NSUInteger safe_total = total > 0 ? total : request_count_;
     double percent = 0.0;
     if (safe_total > 0) {
       percent = (static_cast<double>(completed) / static_cast<double>(safe_total)) * 100.0;
     }
     [summary_detail_ release];
-    summary_detail_ = [[NSString stringWithFormat:@"Scanned %lu of %lu item%@ (%.0f%%)",
-                                                  static_cast<unsigned long>(completed),
-                                                  static_cast<unsigned long>(safe_total),
-                                                  safe_total == 1 ? @"" : @"s", percent] retain];
+    summary_detail_ =
+        [[NSString stringWithFormat:NSLocalizedString(@"Scanned %lu of %lu item%@ (%.0f%%)",
+                                                      @"zar conversion coordinator: detail text"),
+                                    static_cast<unsigned long>(completed),
+                                    static_cast<unsigned long>(safe_total),
+                                    safe_total == 1 ? @"" : @"s", percent] retain];
   } else {
     phase_ = XeniaIOSZarPreflightPhaseReady;
     summary_show_spinner_ = NO;
@@ -1332,22 +1418,27 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
     NSString* detail = nil;
     if (any_estimate && source_bytes > 0 && estimated_zar_bytes > 0) {
       if (source_bytes >= estimated_zar_bytes) {
-        headline =
-            [NSString stringWithFormat:@"Save about %@",
-                                       XEZarFormatByteCount(source_bytes - estimated_zar_bytes)];
+        headline = [NSString
+            stringWithFormat:NSLocalizedString(@"Save about %@",
+                                               @"zar conversion coordinator: user-visible text"),
+                             XEZarFormatByteCount(source_bytes - estimated_zar_bytes)];
       } else {
-        headline =
-            [NSString stringWithFormat:@"Uses about %@ more",
-                                       XEZarFormatByteCount(estimated_zar_bytes - source_bytes)];
+        headline = [NSString
+            stringWithFormat:NSLocalizedString(@"Uses about %@ more",
+                                               @"zar conversion coordinator: user-visible text"),
+                             XEZarFormatByteCount(estimated_zar_bytes - source_bytes)];
       }
       detail =
           [NSString stringWithFormat:@"%@ - %@ -> %@", XEZarPreflightItemCountText(request_count_),
                                      XEZarFormatByteCount(source_bytes),
                                      XEZarFormatByteCount(estimated_zar_bytes)];
     } else {
-      headline = @"Ready to convert";
-      detail = [NSString stringWithFormat:@"%@ - estimated savings unavailable",
-                                          XEZarPreflightItemCountText(request_count_)];
+      headline =
+          NSLocalizedString(@"Ready to convert", @"zar conversion coordinator: user-visible text");
+      detail =
+          [NSString stringWithFormat:NSLocalizedString(@"%@ - estimated savings unavailable",
+                                                       @"zar conversion coordinator: detail text"),
+                                     XEZarPreflightItemCountText(request_count_)];
     }
     [summary_headline_ release];
     summary_headline_ = [headline copy];
@@ -1499,55 +1590,68 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
 
   NSString* batch_text = nil;
   if (!converting_cancel_enabled_) {
-    batch_text = @"Cancelling after the current file";
+    batch_text = NSLocalizedString(@"Cancelling after the current file",
+                                   @"zar conversion coordinator: label text");
   } else if (converting_count_ > 1) {
-    batch_text = [NSString stringWithFormat:@"Item %lu of %lu",
-                                            static_cast<unsigned long>(converting_index_),
-                                            static_cast<unsigned long>(converting_count_)];
+    batch_text =
+        [NSString stringWithFormat:NSLocalizedString(@"Item %lu of %lu",
+                                                     @"zar conversion coordinator: label text"),
+                                   static_cast<unsigned long>(converting_index_),
+                                   static_cast<unsigned long>(converting_count_)];
   } else {
-    batch_text = @"Current item";
+    batch_text = NSLocalizedString(@"Current item", @"zar conversion coordinator: label text");
   }
 
   NSString* percent_text =
       converting_finalizing_
-          ? @"Finalizing"
+          ? NSLocalizedString(@"Finalizing", @"zar conversion coordinator: label text")
           : (converting_total_bytes_ > 0 ? [NSString stringWithFormat:@"%.0f%%", progress * 100.0f]
                                          : @"--");
 
   NSString* eta_text = nil;
   if (!converting_cancel_enabled_) {
-    eta_text = @"Finishing the current file...";
+    eta_text = NSLocalizedString(@"Finishing the current file...",
+                                 @"zar conversion coordinator: label text");
   } else if (converting_finalizing_) {
-    eta_text = @"Finishing up...";
+    eta_text = NSLocalizedString(@"Finishing up...", @"zar conversion coordinator: label text");
   } else if (converting_eta_text_.length > 0) {
     eta_text = converting_eta_text_;
   } else {
-    eta_text = @"Estimating time remaining...";
+    eta_text = NSLocalizedString(@"Estimating time remaining...",
+                                 @"zar conversion coordinator: label text");
   }
 
   NSString* detail_text = nil;
   if (converting_finalizing_) {
-    detail_text = @"Writing archive index and validating output.";
+    detail_text = NSLocalizedString(@"Writing archive index and validating output.",
+                                    @"zar conversion coordinator: detail text");
   } else if (converting_total_bytes_ > 0) {
-    NSString* size_text =
-        [NSString stringWithFormat:@"%@ of %@", XEZarFormatByteCount(converting_bytes_),
-                                   XEZarFormatByteCount(converting_total_bytes_)];
-    detail_text =
-        converting_files_ > 0
-            ? [NSString stringWithFormat:@"%@, %u file%@ packed", size_text, converting_files_,
-                                         converting_files_ == 1 ? @"" : @"s"]
-            : size_text;
+    NSString* size_text = [NSString
+        stringWithFormat:NSLocalizedString(@"%@ of %@", @"zar conversion coordinator: label text"),
+                         XEZarFormatByteCount(converting_bytes_),
+                         XEZarFormatByteCount(converting_total_bytes_)];
+    detail_text = converting_files_ > 0
+                      ? [NSString stringWithFormat:NSLocalizedString(
+                                                       @"%@, %u file%@ packed",
+                                                       @"zar conversion coordinator: detail text"),
+                                                   size_text, converting_files_,
+                                                   converting_files_ == 1 ? @"" : @"s"]
+                      : size_text;
   } else {
-    detail_text = @"Preparing file list.";
+    detail_text =
+        NSLocalizedString(@"Preparing file list.", @"zar conversion coordinator: detail text");
   }
 
-  [cell updateWithBatchText:batch_text
-                 outputName:converting_output_name_.length > 0 ? converting_output_name_
-                                                               : @"Preparing archive"
-                percentText:percent_text
-                   progress:progress
-                    etaText:eta_text
-                 detailText:detail_text];
+  [cell
+      updateWithBatchText:batch_text
+               outputName:converting_output_name_.length > 0
+                              ? converting_output_name_
+                              : NSLocalizedString(@"Preparing archive",
+                                                  @"zar conversion coordinator: user-visible text")
+              percentText:percent_text
+                 progress:progress
+                  etaText:eta_text
+               detailText:detail_text];
 }
 
 - (void)showResultsWithTitle:(NSString*)title
@@ -1597,17 +1701,23 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
 - (NSString*)tableView:(UITableView*)__unused tableView titleForHeaderInSection:(NSInteger)section {
   switch ([self sectionKindAtIndex:section]) {
     case XeniaIOSZarPreflightSectionActions:
-      return phase_ == XeniaIOSZarPreflightPhaseDone ? @"Original Files" : @"Convert Options";
+      return phase_ == XeniaIOSZarPreflightPhaseDone
+                 ? NSLocalizedString(@"Original Files",
+                                     @"zar conversion coordinator: user-visible text")
+                 : NSLocalizedString(@"Convert Options",
+                                     @"zar conversion coordinator: user-visible text");
     case XeniaIOSZarPreflightSectionProgress:
-      return @"Converting";
+      return NSLocalizedString(@"Converting", @"zar conversion coordinator: user-visible text");
     case XeniaIOSZarPreflightSectionSummary:
       return done_title_;
     case XeniaIOSZarPreflightSectionItems:
       if (phase_ == XeniaIOSZarPreflightPhaseConverting ||
           phase_ == XeniaIOSZarPreflightPhaseDone) {
-        return @"Items";
+        return NSLocalizedString(@"Items", @"zar conversion coordinator: user-visible text");
       }
-      return request_count_ == 1 ? @"Item" : @"Items";
+      return request_count_ == 1
+                 ? NSLocalizedString(@"Item", @"zar conversion coordinator: user-visible text")
+                 : NSLocalizedString(@"Items", @"zar conversion coordinator: user-visible text");
   }
   return nil;
 }
@@ -1622,7 +1732,9 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
       return nil;
     case XeniaIOSZarPreflightSectionItems:
       if (phase_ == XeniaIOSZarPreflightPhaseReady) {
-        return @"Keep XeniOS open during conversion. Canceling removes partial output.";
+        return NSLocalizedString(
+            @"Keep XeniOS open during conversion. Canceling removes partial output.",
+            @"zar conversion coordinator: user-visible text");
       }
       return nil;
     case XeniaIOSZarPreflightSectionSummary:
@@ -1705,7 +1817,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   cell.textLabel.text = action.title;
   cell.textLabel.textColor = tint;
   cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-  cell.detailTextLabel.text = estimating ? @"Available once the estimate finishes." : action.detail;
+  cell.detailTextLabel.text = estimating
+                                  ? NSLocalizedString(@"Available once the estimate finishes.",
+                                                      @"zar conversion coordinator: detail text")
+                                  : action.detail;
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
   cell.accessoryType =
@@ -1818,20 +1933,21 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   BOOL show_spinner = NO;
   if (row == current) {
     if (converting_finalizing_) {
-      status = @"Finalizing...";
+      status = NSLocalizedString(@"Finalizing...", @"zar conversion coordinator: item status");
       symbol_name = @"archivebox";
     } else {
-      status = @"Converting...";
+      status = NSLocalizedString(@"Converting...", @"zar conversion coordinator: item status");
       symbol_name = @"arrow.triangle.2.circlepath";
       show_spinner = YES;
     }
     style = kXEZarSummaryRowStyleSuccess;
   } else if (row < current) {
-    status = @"Finishing up...";
+    status =
+        NSLocalizedString(@"Finishing up...", @"zar conversion coordinator: user-visible text");
     symbol_name = @"checkmark.circle";
     style = kXEZarSummaryRowStyleSuccess;
   } else {
-    status = @"Waiting";
+    status = NSLocalizedString(@"Waiting", @"zar conversion coordinator: user-visible text");
     symbol_name = @"clock";
     style = kXEZarSummaryRowStyleMuted;
   }
@@ -1842,9 +1958,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   UIImage* symbol = [UIImage systemImageNamed:symbol_name withConfiguration:symbol_config];
   cell.imageView.image = [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
   cell.imageView.tintColor = tint;
-  cell.textLabel.text = (row >= 0 && row < static_cast<NSInteger>(converting_item_names_.count))
-                            ? [converting_item_names_ objectAtIndex:row]
-                            : @"Game";
+  cell.textLabel.text =
+      (row >= 0 && row < static_cast<NSInteger>(converting_item_names_.count))
+          ? [converting_item_names_ objectAtIndex:row]
+          : NSLocalizedString(@"Game", @"zar conversion coordinator: user-visible text");
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
   cell.detailTextLabel.text = status;
@@ -2280,9 +2397,13 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   void (^completion_copy)(BOOL) = [completion copy];
   [actions addObject:[XeniaIOSZarConversionPreflightAction
-                         actionWithTitle:@"Convert to ZAR"
-                                  detail:@"Create the archive in XeniOS, then choose what to do "
-                                         @"with the original."
+                         actionWithTitle:NSLocalizedString(@"Convert to ZAR",
+                                                           @"zar conversion coordinator: title")
+                                  detail:
+                                      NSLocalizedString(
+                                          @"Create the archive in XeniOS, then choose what to do "
+                                          @"with the original.",
+                                          @"zar conversion coordinator: title")
                               symbolName:@"archivebox"
                                    style:kXEZarSummaryRowStyleSuccess
                                  handler:^{
@@ -2296,13 +2417,19 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                  }]];
 
   if (supports_auto_cleanup) {
-    NSString* cleanup_title = supports_external_delete ? @"Convert and Unlink Originals"
-                                                       : @"Convert and Delete Original Copies";
+    NSString* cleanup_title =
+        supports_external_delete
+            ? NSLocalizedString(@"Convert and Unlink Originals",
+                                @"zar conversion coordinator: title")
+            : NSLocalizedString(@"Convert and Delete Original Copies",
+                                @"zar conversion coordinator: user-visible text");
     [actions
         addObject:[XeniaIOSZarConversionPreflightAction
                       actionWithTitle:cleanup_title
-                               detail:@"Create the archive and clean up the old library entry "
-                                      @"after a successful conversion."
+                               detail:NSLocalizedString(
+                                          @"Create the archive and clean up the old library entry "
+                                          @"after a successful conversion.",
+                                          @"zar conversion coordinator: title")
                            symbolName:supports_external_delete ? @"link.badge.minus" : @"trash"
                                 style:kXEZarSummaryRowStyleWarning
                               handler:^{
@@ -2320,9 +2447,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
     IOSDiscoveredGame game_copy = game;
     [actions
         addObject:[XeniaIOSZarConversionPreflightAction
-                      actionWithTitle:@"Convert In Place and Delete Original"
-                               detail:@"Write the archive beside the external source, then "
-                                      @"delete the original files."
+                      actionWithTitle:NSLocalizedString(@"Convert In Place and Delete Original",
+                                                        @"zar conversion coordinator: title")
+                               detail:NSLocalizedString(
+                                          @"Write the archive beside the external source, then "
+                                          @"delete the original files.",
+                                          @"zar conversion coordinator: title")
                            symbolName:@"trash.circle"
                                 style:kXEZarSummaryRowStyleError
                               handler:^{
@@ -2334,9 +2464,13 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                 if (in_place_requests.empty()) {
                                   XEPresentOKAlert(
                                       [unsafe_self topPresentedControllerForModalPresentation],
-                                      @"External Folder Unavailable",
-                                      @"XeniOS could not access the linked external folder "
-                                      @"for in-place conversion.");
+                                      NSLocalizedString(
+                                          @"External Folder Unavailable",
+                                          @"zar conversion coordinator: user-visible text"),
+                                      NSLocalizedString(
+                                          @"XeniOS could not access the linked external folder "
+                                          @"for in-place conversion.",
+                                          @"zar conversion coordinator: user-visible text"));
                                   return;
                                 }
                                 [unsafe_self confirmAndStartDeleteOriginalsForRequests:std::move(
@@ -2374,9 +2508,13 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   void (^completion_copy)(BOOL) = [completion copy];
   [actions addObject:[XeniaIOSZarConversionPreflightAction
-                         actionWithTitle:@"Convert in Place"
-                                  detail:@"Write .zar archives beside the source games and keep "
-                                         @"the originals."
+                         actionWithTitle:NSLocalizedString(@"Convert in Place",
+                                                           @"zar conversion coordinator: title")
+                                  detail:
+                                      NSLocalizedString(
+                                          @"Write .zar archives beside the source games and keep "
+                                          @"the originals.",
+                                          @"zar conversion coordinator: title")
                               symbolName:@"archivebox"
                                    style:kXEZarSummaryRowStyleSuccess
                                  handler:^{
@@ -2389,9 +2527,13 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                    if (in_place_requests.empty()) {
                                      XEPresentOKAlert(
                                          [unsafe_self topPresentedControllerForModalPresentation],
-                                         @"No Games to Convert",
-                                         @"No non-.zar games were available for in-place "
-                                         @"conversion.");
+                                         NSLocalizedString(
+                                             @"No Games to Convert",
+                                             @"zar conversion coordinator: user-visible text"),
+                                         NSLocalizedString(
+                                             @"No non-.zar games were available for in-place "
+                                             @"conversion.",
+                                             @"zar conversion coordinator: user-visible text"));
                                      return;
                                    }
                                    [unsafe_self
@@ -2401,9 +2543,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                  }]];
 
   [actions addObject:[XeniaIOSZarConversionPreflightAction
-                         actionWithTitle:@"Convert and Import"
-                                  detail:@"Create .zar archives in XeniOS, then decide how to "
-                                         @"handle the originals."
+                         actionWithTitle:NSLocalizedString(@"Convert and Import",
+                                                           @"zar conversion coordinator: title")
+                                  detail:NSLocalizedString(
+                                             @"Create .zar archives in XeniOS, then decide how to "
+                                             @"handle the originals.",
+                                             @"zar conversion coordinator: title")
                               symbolName:@"square.and.arrow.down"
                                    style:kXEZarSummaryRowStyleSuccess
                                  handler:^{
@@ -2416,30 +2561,39 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                                                       kAskAfterSuccess];
                                  }]];
 
-  [actions addObject:[XeniaIOSZarConversionPreflightAction
-                         actionWithTitle:@"Convert and Delete Originals"
-                                  detail:@"Write archives beside the source games and delete the "
-                                         @"original files after success."
-                              symbolName:@"trash.circle"
-                                   style:kXEZarSummaryRowStyleError
-                                 handler:^{
-                                   std::vector<XeniaIOSZarConversionRequest> in_place_requests =
-                                       XEZarBulkConversionRequests(unsafe_self->discovered_games_,
-                                                                   false, true);
-                                   if (completion_copy) {
-                                     completion_copy(YES);
-                                   }
-                                   if (in_place_requests.empty()) {
-                                     XEPresentOKAlert(
-                                         [unsafe_self topPresentedControllerForModalPresentation],
-                                         @"No Games to Convert",
-                                         @"No non-.zar games were available for in-place "
-                                         @"conversion.");
-                                     return;
-                                   }
-                                   [unsafe_self confirmAndStartDeleteOriginalsForRequests:std::move(
-                                                                              in_place_requests)];
-                                 }]];
+  [actions
+      addObject:[XeniaIOSZarConversionPreflightAction
+                    actionWithTitle:NSLocalizedString(@"Convert and Delete Originals",
+                                                      @"zar conversion coordinator: title")
+                             detail:NSLocalizedString(
+                                        @"Write archives beside the source games and delete the "
+                                        @"original files after success.",
+                                        @"zar conversion coordinator: title")
+                         symbolName:@"trash.circle"
+                              style:kXEZarSummaryRowStyleError
+                            handler:^{
+                              std::vector<XeniaIOSZarConversionRequest> in_place_requests =
+                                  XEZarBulkConversionRequests(unsafe_self->discovered_games_, false,
+                                                              true);
+                              if (completion_copy) {
+                                completion_copy(YES);
+                              }
+                              if (in_place_requests.empty()) {
+                                XEPresentOKAlert(
+                                    [unsafe_self topPresentedControllerForModalPresentation],
+                                    NSLocalizedString(
+                                        @"No Games to Convert",
+                                        @"zar conversion coordinator: user-visible text"),
+                                    NSLocalizedString(
+                                        @"No non-.zar games were available for in-place "
+                                        @"conversion.",
+                                        @"zar conversion coordinator: user-visible text"));
+                                return;
+                              }
+                              [unsafe_self
+                                  confirmAndStartDeleteOriginalsForRequests:std::move(
+                                                                                in_place_requests)];
+                            }]];
 
   [completion_copy release];
   return actions;
@@ -2491,10 +2645,14 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
          requests.size());
   auto requests_holder =
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
-  NSString* title = externalLibrary
-                        ? @"Convert External Library to ZAR"
-                        : (requests_holder->size() == 1 ? @"Convert Imported Game to ZAR"
-                                                        : @"Convert Added Games to ZAR");
+  NSString* title =
+      externalLibrary ? NSLocalizedString(@"Convert External Library to ZAR",
+                                          @"zar conversion coordinator: title")
+                      : (requests_holder->size() == 1
+                             ? NSLocalizedString(@"Convert Imported Game to ZAR",
+                                                 @"zar conversion coordinator: user-visible text")
+                             : NSLocalizedString(@"Convert Added Games to ZAR",
+                                                 @"zar conversion coordinator: user-visible text"));
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   XeniaIOSZarConversionPreflightViewController* preflight_controller = [self
       presentZarConversionPreflightWithTitle:title
@@ -2565,8 +2723,11 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   if (requests.empty()) {
     XELOGI("iOS ZAR: no single conversion requests title='{}' path='{}'", game.title,
            xe::strip_pii(game.path.string()));
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"Already ZAR",
-                     @"This game is already a .zar archive and does not need conversion.");
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"Already ZAR", @"zar conversion coordinator: user-visible text"),
+        NSLocalizedString(@"This game is already a .zar archive and does not need conversion.",
+                          @"zar conversion coordinator: user-visible text"));
     return;
   }
 
@@ -2574,7 +2735,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   XeniaIOSZarConversionPreflightViewController* preflight_controller = [self
-      presentZarConversionPreflightWithTitle:@"Convert to ZAR"
+      presentZarConversionPreflightWithTitle:NSLocalizedString(@"Convert to ZAR",
+                                                               @"zar conversion coordinator: title")
                                 requestCount:requests_holder->size()
                                cancelHandler:^{
                                  [unsafe_self dismissZarConversionPreflightWithCompletion:nil];
@@ -2628,8 +2790,11 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       XEZarBulkConversionRequests(discovered_games_);
   if (requests.empty()) {
     XELOGI("iOS ZAR: no bulk conversion requests");
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"No Games to Convert",
-                     @"No non-.zar games were found in the current library.");
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"No Games to Convert", @"zar conversion coordinator: user-visible text"),
+        NSLocalizedString(@"No non-.zar games were found in the current library.",
+                          @"zar conversion coordinator: user-visible text"));
     return;
   }
 
@@ -2638,7 +2803,8 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   XeniaIOSZarConversionPreflightViewController* preflight_controller = [self
-      presentZarConversionPreflightWithTitle:@"Convert Library to ZAR"
+      presentZarConversionPreflightWithTitle:NSLocalizedString(@"Convert Library to ZAR",
+                                                               @"zar conversion coordinator: title")
                                 requestCount:requests_holder->size()
                                cancelHandler:^{
                                  [unsafe_self dismissZarConversionPreflightWithCompletion:nil];
@@ -2697,8 +2863,11 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                        cleanupMode:(XeniaIOSZarConversionCleanupMode)cleanupMode {
   if (requests.empty()) {
     XELOGI("iOS ZAR: start requested with no conversion requests");
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"No Games to Convert",
-                     @"No non-.zar games were selected for conversion.");
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"No Games to Convert", @"zar conversion coordinator: user-visible text"),
+        NSLocalizedString(@"No non-.zar games were selected for conversion.",
+                          @"zar conversion coordinator: user-visible text"));
     return;
   }
 
@@ -2723,11 +2892,15 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   // that did not route through the preflight options first.
   NSMutableArray<NSString*>* item_names = [NSMutableArray array];
   for (const XeniaIOSZarConversionRequest& request : requests) {
-    [item_names addObject:(XEZarRequestDisplayName(request) ?: @"Game")];
+    [item_names addObject:(XEZarRequestDisplayName(request)
+                               ?: NSLocalizedString(
+                                      @"Game", @"zar conversion coordinator: user-visible text"))];
   }
   NSString* batch_output_name = ToNSString(requests.front().output_name);
   if (!zar_conversion_preflight_controller_) {
-    [self presentZarConversionPreflightWithTitle:@"Convert to ZAR"
+    [self presentZarConversionPreflightWithTitle:NSLocalizedString(
+                                                     @"Convert to ZAR",
+                                                     @"zar conversion coordinator: title")
                                     requestCount:requests.size()
                                    cancelHandler:nil];
   }
@@ -2976,10 +3149,15 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
     ClearPendingZarConversionRecord();
     [self refreshImportedGamesAsync];
     XEPresentOKAlert(
-        [self topPresentedControllerForModalPresentation], @"ZAR Conversion Finished",
-        [NSString stringWithFormat:@"%@ is present and valid. The original source was kept because "
-                                   @"XeniOS was closed before cleanup could be confirmed.",
-                                   output_name ?: output_path_string.lastPathComponent]);
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"ZAR Conversion Finished",
+                          @"zar conversion coordinator: user-visible text"),
+        [NSString
+            stringWithFormat:NSLocalizedString(
+                                 @"%@ is present and valid. The original source was kept because "
+                                 @"XeniOS was closed before cleanup could be confirmed.",
+                                 @"zar conversion coordinator: user-visible text"),
+                             output_name ?: output_path_string.lastPathComponent]);
     return;
   }
 
@@ -2991,9 +3169,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
          validation_error);
   ClearPendingZarConversionRecord();
   [self refreshImportedGamesAsync];
-  XEPresentOKAlert([self topPresentedControllerForModalPresentation],
-                   @"Incomplete ZAR Conversion Removed",
-                   @"XeniOS removed the partial .zar output from the interrupted conversion.");
+  XEPresentOKAlert(
+      [self topPresentedControllerForModalPresentation],
+      NSLocalizedString(@"Incomplete ZAR Conversion Removed",
+                        @"zar conversion coordinator: user-visible text"),
+      NSLocalizedString(@"XeniOS removed the partial .zar output from the interrupted conversion.",
+                        @"zar conversion coordinator: user-visible text"));
 }
 
 - (void)updateZarConversionProgressWithFiles:(uint32_t)files
@@ -3025,9 +3206,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   const std::filesystem::path source_path = sourcePath;
   if (sourceWasExternal) {
     [actions addObject:[XeniaIOSZarConversionPreflightAction
-                           actionWithTitle:@"Unlink Original"
-                                    detail:@"Remove the linked library entry. The source files "
-                                           @"stay on the external drive."
+                           actionWithTitle:NSLocalizedString(@"Unlink Original",
+                                                             @"zar conversion coordinator: title")
+                                    detail:NSLocalizedString(
+                                               @"Remove the linked library entry. The source files "
+                                               @"stay on the external drive.",
+                                               @"zar conversion coordinator: title")
                                 symbolName:@"link.badge.minus"
                                      style:kXEZarSummaryRowStyleWarning
                                    handler:^{
@@ -3038,9 +3222,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                    }]];
     [actions
         addObject:[XeniaIOSZarConversionPreflightAction
-                      actionWithTitle:@"Delete External Files"
-                               detail:@"Permanently delete the original files from the "
-                                      @"external drive."
+                      actionWithTitle:NSLocalizedString(@"Delete External Files",
+                                                        @"zar conversion coordinator: title")
+                               detail:NSLocalizedString(
+                                          @"Permanently delete the original files from the "
+                                          @"external drive.",
+                                          @"zar conversion coordinator: title")
                            symbolName:@"trash"
                                 style:kXEZarSummaryRowStyleError
                               handler:^{
@@ -3052,9 +3239,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   } else if (xe::ui::IsISOPath(sourcePath) &&
              xe::ui::IsPathInIOSImportedGamesDirectory(sourcePath)) {
     [actions addObject:[XeniaIOSZarConversionPreflightAction
-                           actionWithTitle:@"Delete Original Copy"
-                                    detail:@"Delete the imported source file now that the .zar "
-                                           @"archive exists."
+                           actionWithTitle:NSLocalizedString(@"Delete Original Copy",
+                                                             @"zar conversion coordinator: title")
+                                    detail:NSLocalizedString(
+                                               @"Delete the imported source file now that the .zar "
+                                               @"archive exists.",
+                                               @"zar conversion coordinator: title")
                                 symbolName:@"trash"
                                      style:kXEZarSummaryRowStyleError
                                    handler:^{
@@ -3065,9 +3255,12 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                    }]];
   }
   [actions addObject:[XeniaIOSZarConversionPreflightAction
-                         actionWithTitle:@"Keep Original"
-                                  detail:@"Leave the original game in place alongside the new "
-                                         @".zar archive."
+                         actionWithTitle:NSLocalizedString(@"Keep Original",
+                                                           @"zar conversion coordinator: title")
+                                  detail:NSLocalizedString(
+                                             @"Leave the original game in place alongside the new "
+                                             @".zar archive.",
+                                             @"zar conversion coordinator: title")
                               symbolName:@"checkmark.circle"
                                    style:kXEZarSummaryRowStyleSuccess
                                  handler:^{
@@ -3136,30 +3329,43 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       static_cast<unsigned long>(cleanup_failure_count), static_cast<unsigned long>(failure_count),
       source_bytes, output_bytes, XEZarCleanupModeName(cleanupMode), isBulk ? "true" : "false");
 
-  NSString* title = @"ZAR Conversion Complete";
+  NSString* title =
+      NSLocalizedString(@"ZAR Conversion Complete", @"zar conversion coordinator: title");
   if (cancelled_count > 0 || skipped_count > 0) {
-    title = @"ZAR Conversion Cancelled";
+    title = NSLocalizedString(@"ZAR Conversion Cancelled", @"zar conversion coordinator: title");
   } else if (success_count > 0 && failure_count > 0) {
-    title = @"ZAR Conversion Finished with Errors";
+    title = NSLocalizedString(@"ZAR Conversion Finished with Errors",
+                              @"zar conversion coordinator: title");
   } else if (success_count == 0) {
-    title = @"ZAR Conversion Failed";
+    title = NSLocalizedString(@"ZAR Conversion Failed", @"zar conversion coordinator: title");
   }
 
   NSMutableArray<NSString*>* lines = [NSMutableArray array];
-  [lines addObject:[NSString stringWithFormat:@"Converted: %lu of %lu.",
+  [lines addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                  @"Converted: %lu of %lu.",
+                                                  @"zar conversion coordinator: user-visible text"),
                                               static_cast<unsigned long>(success_count),
                                               static_cast<unsigned long>(results.size())]];
   if (failure_count > 0) {
-    [lines addObject:[NSString stringWithFormat:@"Failed: %lu.",
-                                                static_cast<unsigned long>(failure_count)]];
+    [lines
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Failed: %lu.",
+                                                 @"zar conversion coordinator: user-visible text"),
+                                             static_cast<unsigned long>(failure_count)]];
   }
   if (cancelled_count > 0) {
-    [lines addObject:[NSString stringWithFormat:@"Cancelled: %lu.",
-                                                static_cast<unsigned long>(cancelled_count)]];
+    [lines
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Cancelled: %lu.",
+                                                 @"zar conversion coordinator: user-visible text"),
+                                             static_cast<unsigned long>(cancelled_count)]];
   }
   if (skipped_count > 0) {
-    [lines addObject:[NSString stringWithFormat:@"Not started: %lu.",
-                                                static_cast<unsigned long>(skipped_count)]];
+    [lines
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"Not started: %lu.",
+                                                 @"zar conversion coordinator: user-visible text"),
+                                             static_cast<unsigned long>(skipped_count)]];
   }
   if (success_count > 0 && source_bytes > 0 && output_bytes > 0) {
     [lines addObject:XEZarSpaceDeltaSummary(source_bytes, output_bytes)];
@@ -3167,17 +3373,27 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   if (cleanup_success_count > 0) {
     NSString* cleanup_label =
         cleanupMode == XeniaIOSZarConversionCleanupMode::kDeleteOriginalsAfterSuccess
-            ? @"Deleted originals"
-            : @"Cleaned originals";
-    [lines addObject:[NSString stringWithFormat:@"%@: %lu.", cleanup_label,
-                                                static_cast<unsigned long>(cleanup_success_count)]];
+            ? NSLocalizedString(@"Deleted originals",
+                                @"zar conversion coordinator: user-visible text")
+            : NSLocalizedString(@"Cleaned originals",
+                                @"zar conversion coordinator: user-visible text");
+    [lines
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"%@: %lu.",
+                                                 @"zar conversion coordinator: user-visible text"),
+                                             cleanup_label,
+                                             static_cast<unsigned long>(cleanup_success_count)]];
   }
   if (cleanup_failure_count > 0) {
-    [lines addObject:[NSString stringWithFormat:@"%lu cleanup step(s) failed.",
-                                                static_cast<unsigned long>(cleanup_failure_count)]];
+    [lines
+        addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                 @"%lu cleanup step(s) failed.",
+                                                 @"zar conversion coordinator: user-visible text"),
+                                             static_cast<unsigned long>(cleanup_failure_count)]];
   }
   if (cancelled_count > 0) {
-    [lines addObject:@"Partial .zar output from the cancelled item was removed."];
+    [lines addObject:NSLocalizedString(@"Partial .zar output from the cancelled item was removed.",
+                                       @"zar conversion coordinator: user-visible text")];
   }
 
   NSString* summary = [lines componentsJoinedByString:@"\n"];
@@ -3196,14 +3412,18 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                                      actions:cleanup_actions];
 
   XeniaIOSStatusToastStyle toast_style = XeniaIOSStatusToastStyleSuccess;
-  NSString* toast_message = @"ZAR conversion finished.";
+  NSString* toast_message =
+      NSLocalizedString(@"ZAR conversion finished.", @"zar conversion coordinator: message");
   if (cancelled_count > 0 || skipped_count > 0) {
     toast_style = XeniaIOSStatusToastStyleInfo;
-    toast_message = @"ZAR conversion cancelled.";
+    toast_message =
+        NSLocalizedString(@"ZAR conversion cancelled.", @"zar conversion coordinator: message");
   } else if (failure_count > 0 || cleanup_failure_count > 0 || success_count == 0) {
     toast_style = success_count > 0 ? XeniaIOSStatusToastStyleInfo : XeniaIOSStatusToastStyleError;
-    toast_message =
-        success_count > 0 ? @"ZAR conversion finished with errors." : @"ZAR conversion failed.";
+    toast_message = success_count > 0 ? NSLocalizedString(@"ZAR conversion finished with errors.",
+                                                          @"zar conversion coordinator: message")
+                                      : NSLocalizedString(@"ZAR conversion failed.",
+                                                          @"zar conversion coordinator: message");
   }
   [self showStatusToast:toast_message style:toast_style];
 }
@@ -3232,20 +3452,25 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   UIAlertController* alert = nil;
   if (refused_lines.count > 0) {
     alert = [UIAlertController
-        alertControllerWithTitle:@"Can't Delete These Originals"
-                         message:[NSString
-                                     stringWithFormat:@"XeniOS won't delete:\n%@\n\nThey are or "
-                                                      @"contain folders XeniOS or you rely on. "
-                                                      @"You can still convert and keep the "
-                                                      @"originals.",
-                                                      [refused_lines
-                                                          componentsJoinedByString:@"\n"]]
+        alertControllerWithTitle:NSLocalizedString(@"Can't Delete These Originals",
+                                                   @"zar conversion coordinator: title")
+                         message:[NSString stringWithFormat:
+                                               NSLocalizedString(
+                                                   @"XeniOS won't delete:\n%@\n\nThey are or "
+                                                   @"contain folders XeniOS or you rely on. "
+                                                   @"You can still convert and keep the "
+                                                   @"originals.",
+                                                   @"zar conversion coordinator: message"),
+                                               [refused_lines componentsJoinedByString:@"\n"]]
                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
     [alert addAction:[UIAlertAction
-                         actionWithTitle:@"Convert and Keep Originals"
+                         actionWithTitle:NSLocalizedString(@"Cancel",
+                                                           @"zar conversion coordinator: title")
+                                   style:UIAlertActionStyleCancel
+                                 handler:nil]];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Convert and Keep Originals",
+                                                           @"zar conversion coordinator: title")
                                    style:UIAlertActionStyleDefault
                                  handler:^(__unused UIAlertAction* action) {
                                    [unsafe_self
@@ -3260,22 +3485,31 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
       [shown addObject:delete_lines[i]];
     }
     if (delete_lines.count > shown.count) {
-      [shown addObject:[NSString stringWithFormat:@"...and %lu more",
-                                                  static_cast<unsigned long>(delete_lines.count -
-                                                                             shown.count)]];
+      [shown addObject:[NSString
+                           stringWithFormat:NSLocalizedString(
+                                                @"...and %lu more",
+                                                @"zar conversion coordinator: user-visible text"),
+                                            static_cast<unsigned long>(delete_lines.count -
+                                                                       shown.count)]];
     }
     alert = [UIAlertController
-        alertControllerWithTitle:@"Delete Originals?"
-                         message:[NSString
-                                     stringWithFormat:@"After each successful conversion, these "
-                                                      @"will be permanently deleted:\n%@",
-                                                      [shown componentsJoinedByString:@"\n"]]
+        alertControllerWithTitle:NSLocalizedString(@"Delete Originals?",
+                                                   @"zar conversion coordinator: title")
+                         message:[NSString stringWithFormat:
+                                               NSLocalizedString(
+                                                   @"After each successful conversion, these "
+                                                   @"will be permanently deleted:\n%@",
+                                                   @"zar conversion coordinator: message"),
+                                               [shown componentsJoinedByString:@"\n"]]
                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
     [alert addAction:[UIAlertAction
-                         actionWithTitle:@"Convert and Delete"
+                         actionWithTitle:NSLocalizedString(@"Cancel",
+                                                           @"zar conversion coordinator: title")
+                                   style:UIAlertActionStyleCancel
+                                 handler:nil]];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Convert and Delete",
+                                                           @"zar conversion coordinator: title")
                                    style:UIAlertActionStyleDestructive
                                  handler:^(__unused UIAlertAction* action) {
                                    [unsafe_self
@@ -3303,31 +3537,40 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   const std::filesystem::path delete_path = XEZarExternalDeletePath(sourcePath);
   const std::string refusal = XEZarDeleteRefusalReason(delete_path);
   if (!refusal.empty()) {
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation], @"Can't Delete",
-                     [NSString stringWithFormat:@"%@ can't be deleted because %@. Delete it in "
-                                                @"Files if you want it gone.",
-                                                ToNSString(XEZarDisplayPath(delete_path)),
-                                                ToNSString(refusal)]);
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"Can't Delete", @"zar conversion coordinator: user-visible text"),
+        [NSString
+            stringWithFormat:NSLocalizedString(@"%@ can't be deleted because %@. Delete it in "
+                                               @"Files if you want it gone.",
+                                               @"zar conversion coordinator: user-visible text"),
+                             ToNSString(XEZarDisplayPath(delete_path)), ToNSString(refusal)]);
     return;
   }
   UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:@"Delete External Files?"
-                       message:[NSString stringWithFormat:@"This permanently deletes:\n%@",
-                                                          ToNSString(XEZarDisplayPath(
-                                                              delete_path))]
+      alertControllerWithTitle:NSLocalizedString(@"Delete External Files?",
+                                                 @"zar conversion coordinator: title")
+                       message:[NSString
+                                   stringWithFormat:NSLocalizedString(
+                                                        @"This permanently deletes:\n%@",
+                                                        @"zar conversion coordinator: message"),
+                                                    ToNSString(XEZarDisplayPath(delete_path))]
                 preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [self refreshImportedGamesAsync];
-                                            }]];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                   @"Cancel", @"zar conversion coordinator: title")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(__unused UIAlertAction* action) {
+                                         [self refreshImportedGamesAsync];
+                                       }]];
   const std::filesystem::path confirmed_path = sourcePath;
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Delete"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [self performDeleteExternalGameFilesAtPath:
-                                                        confirmed_path];
-                                            }]];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                   @"Delete", @"zar conversion coordinator: title")
+                                         style:UIAlertActionStyleDestructive
+                                       handler:^(__unused UIAlertAction* action) {
+                                         [self performDeleteExternalGameFilesAtPath:confirmed_path];
+                                       }]];
   [[self topPresentedControllerForModalPresentation] presentViewController:confirm
                                                                   animated:YES
                                                                 completion:nil];
@@ -3339,10 +3582,13 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   XeniaIOSExternalLibraryAccess* external_access = [xe::ui::StartIOSExternalLibraryAccessForPath(
       sourcePath, &matched_external_location, &external_access_error) retain];
   if (matched_external_location && !external_access) {
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation],
-                     @"External Folder Unavailable",
-                     external_access_error.localizedDescription
-                         ?: @"XeniOS could not access the linked external folder.");
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation],
+        NSLocalizedString(@"External Folder Unavailable",
+                          @"zar conversion coordinator: user-visible text"),
+        external_access_error.localizedDescription
+            ?: NSLocalizedString(@"XeniOS could not access the linked external folder.",
+                                 @"zar conversion coordinator: user-visible text"));
     return;
   }
   std::string message;
@@ -3359,10 +3605,17 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   BOOL success = xe::ui::HideIOSExternalLibraryGameAtPath(sourcePath, &hidden_name, &error);
   NSString* message = nil;
   if (success) {
-    message = hidden_name.length > 0 ? [NSString stringWithFormat:@"Unlinked %@.", hidden_name]
-                                     : @"Unlinked original game.";
+    message =
+        hidden_name.length > 0
+            ? [NSString stringWithFormat:NSLocalizedString(@"Unlinked %@.",
+                                                           @"zar conversion coordinator: message"),
+                                         hidden_name]
+            : NSLocalizedString(@"Unlinked original game.",
+                                @"zar conversion coordinator: user-visible text");
   } else {
-    message = error.localizedDescription ?: @"Failed to unlink original game.";
+    message = error.localizedDescription
+                  ?: NSLocalizedString(@"Failed to unlink original game.",
+                                       @"zar conversion coordinator: message");
   }
   [self refreshImportedGamesAsync];
   [self showStatusToast:message

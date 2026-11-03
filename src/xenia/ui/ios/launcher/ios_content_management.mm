@@ -254,11 +254,11 @@ std::filesystem::path xe_dlc_content_root(uint32_t title_id) {
 NSString* xe_installed_content_kind_label(IOSInstalledContentKind kind) {
   switch (kind) {
     case IOSInstalledContentKind::kTitleUpdate:
-      return @"Title Update";
+      return NSLocalizedString(@"Title Update", @"content management: title");
     case IOSInstalledContentKind::kDlc:
-      return @"DLC";
+      return NSLocalizedString(@"DLC", @"content management: user-visible text");
   }
-  return @"Content";
+  return NSLocalizedString(@"Content", @"content management: user-visible text");
 }
 
 std::string xe_content_package_directory_name(const std::filesystem::path& package_path) {
@@ -279,14 +279,17 @@ bool xe_read_selected_content_package(const std::filesystem::path& path,
   auto metadata = xe::vfs::ExtractStfsMetadata(path);
   if (!metadata.has_value()) {
     if (error_message_out) {
-      *error_message_out = @"Could not read the content package header.";
+      *error_message_out = NSLocalizedString(@"Could not read the content package header.",
+                                             @"content management: error message");
     }
     return false;
   }
 
   if (xe::ui::IOSContentDataFileCount(path) > 0 && !HasContentSidecarDataDirectory(path)) {
     if (error_message_out) {
-      *error_message_out = @"This content package is missing its required .data sidecar folder.";
+      *error_message_out =
+          NSLocalizedString(@"This content package is missing its required .data sidecar folder.",
+                            @"content management: error message");
     }
     return false;
   }

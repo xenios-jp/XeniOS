@@ -25,10 +25,10 @@
   cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
   cell.detailTextLabel.minimumScaleFactor = 0.8;
   if (row == 0) {
-    cell.textLabel.text = @"Title";
+    cell.textLabel.text = NSLocalizedString(@"Title", @"compat report cells: label text");
     cell.detailTextLabel.text = title;
   } else {
-    cell.textLabel.text = @"Title ID";
+    cell.textLabel.text = NSLocalizedString(@"Title ID", @"compat report cells: label text");
     cell.detailTextLabel.text = XEFormatTitleIDHexUpper(title_id);
   }
   return cell;
@@ -44,23 +44,23 @@
   NSDictionary* build_info = xe_current_compat_report_build_info();
   switch (row) {
     case 0:
-      cell.textLabel.text = @"Device";
+      cell.textLabel.text = NSLocalizedString(@"Device", @"compat report cells: label text");
       cell.detailTextLabel.text = xe_device_display_name();
       break;
     case 1:
-      cell.textLabel.text = @"OS Version";
+      cell.textLabel.text = NSLocalizedString(@"OS Version", @"compat report cells: label text");
       cell.detailTextLabel.text = [UIDevice currentDevice].systemVersion;
       break;
     case 2:
-      cell.textLabel.text = @"Architecture";
+      cell.textLabel.text = NSLocalizedString(@"Architecture", @"compat report cells: label text");
       cell.detailTextLabel.text = @"arm64";
       break;
     case 3:
-      cell.textLabel.text = @"GPU Backend";
+      cell.textLabel.text = NSLocalizedString(@"GPU Backend", @"compat report cells: label text");
       cell.detailTextLabel.text = @"msl";
       break;
     case 4:
-      cell.textLabel.text = @"Build";
+      cell.textLabel.text = NSLocalizedString(@"Build", @"compat report cells: label text");
       cell.detailTextLabel.text = xe_user_facing_build_label(build_info);
       break;
     default:
@@ -196,7 +196,9 @@
   cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
   cell.imageView.clipsToBounds = YES;
   cell.imageView.layer.cornerRadius = XeniaRadiusXs;
-  cell.textLabel.text = [NSString stringWithFormat:@"Screenshot %ld", (long)(index + 1)];
+  cell.textLabel.text = [NSString
+      stringWithFormat:NSLocalizedString(@"Screenshot %ld", @"compat report cells: label text"),
+                       (long)(index + 1)];
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   return cell;
 }
@@ -204,7 +206,7 @@
 + (UITableViewCell*)addScreenshotCell {
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
-  cell.textLabel.text = @"Add Screenshot";
+  cell.textLabel.text = NSLocalizedString(@"Add Screenshot", @"compat report cells: label text");
   cell.textLabel.textColor = [XeniaTheme accent];
   cell.imageView.image = [UIImage systemImageNamed:@"plus.circle"];
   cell.imageView.tintColor = [XeniaTheme accent];
@@ -217,7 +219,9 @@
   cell.backgroundColor = [XeniaTheme accent];
   cell.clipsToBounds = YES;
   cell.layer.cornerRadius = XeniaRadiusMd;
-  cell.textLabel.text = submitting ? @"Submitting..." : @"Submit Report";
+  cell.textLabel.text =
+      submitting ? @"Submitting..."
+                 : NSLocalizedString(@"Submit Report", @"compat report cells: label text");
   cell.textLabel.textColor = [XeniaTheme accentFg];
   cell.textLabel.textAlignment = NSTextAlignmentCenter;
   xe_apply_label_font(cell.textLabel, UIFontTextStyleHeadline, 17.0, UIFontWeightSemibold);

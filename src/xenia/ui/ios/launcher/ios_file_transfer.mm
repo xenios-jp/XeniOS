@@ -46,8 +46,10 @@ NSError* TransferError(NSInteger code, NSString* message) {
                          userInfo:@{NSLocalizedDescriptionKey : message}];
 }
 
-NSError* CancelledError() { return TransferError(XeniaIOSFileTransferErrorCancelled,
-@"Cancelled."); }
+NSError* CancelledError() {
+  return TransferError(XeniaIOSFileTransferErrorCancelled,
+                       NSLocalizedString(@"Cancelled.", @"file transfer: error message"));
+}
 
 // "<path>.<8 hex>.part": unique per writer, so two writers of the same final name (an import and
 // a ZAR conversion, say) never share or delete each other's in-progress file.
@@ -88,7 +90,8 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
   if (in_fd < 0) {
     const int err = errno;
     if (error) {
-      *error = XeniaIOSErrorFromErrno(err, @"Could not read the selected file.");
+      *error = XeniaIOSErrorFromErrno(err, NSLocalizedString(@"Could not read the selected file.",
+                                                             @"file transfer: error message"));
     }
     return NO;
   }
@@ -98,7 +101,9 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
     const int err = errno;
     close(in_fd);
     if (error) {
-      *error = XeniaIOSErrorFromErrno(err, @"Could not create the destination file.");
+      *error =
+          XeniaIOSErrorFromErrno(err, NSLocalizedString(@"Could not create the destination file.",
+                                                        @"file transfer: error message"));
     }
     return NO;
   }
@@ -123,7 +128,8 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
       }
       const int err = errno;
       if (error) {
-        *error = XeniaIOSErrorFromErrno(err, @"Reading the selected file failed.");
+        *error = XeniaIOSErrorFromErrno(err, NSLocalizedString(@"Reading the selected file failed.",
+                                                               @"file transfer: error message"));
       }
       ok = NO;
       break;
@@ -140,7 +146,8 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
         }
         const int err = errno;
         if (error) {
-          *error = XeniaIOSErrorFromErrno(err, @"Writing the copy failed.");
+          *error = XeniaIOSErrorFromErrno(
+              err, NSLocalizedString(@"Writing the copy failed.", @"file transfer: error message"));
         }
         ok = NO;
         break;
@@ -160,14 +167,16 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
   if (ok && fsync(out_fd) != 0) {
     const int err = errno;
     if (error) {
-      *error = XeniaIOSErrorFromErrno(err, @"Flushing the copy failed.");
+      *error = XeniaIOSErrorFromErrno(
+          err, NSLocalizedString(@"Flushing the copy failed.", @"file transfer: error message"));
     }
     ok = NO;
   }
   if (close(out_fd) != 0 && ok) {
     const int err = errno;
     if (error) {
-      *error = XeniaIOSErrorFromErrno(err, @"Finishing the copy failed.");
+      *error = XeniaIOSErrorFromErrno(
+          err, NSLocalizedString(@"Finishing the copy failed.", @"file transfer: error message"));
     }
     ok = NO;
   }
@@ -180,7 +189,8 @@ BOOL CopyOneItem(NSString* source, NSString* destination_part, CopyState* state,
   if (![file_manager fileExistsAtPath:source isDirectory:&is_directory]) {
     if (error) {
       *error = TransferError(XeniaIOSFileTransferErrorFailed,
-                             @"The selected file is no longer available.");
+                             NSLocalizedString(@"The selected file is no longer available.",
+                                               @"file transfer: user-visible text"));
     }
     return NO;
   }
@@ -290,19 +300,24 @@ BOOL XeniaIOSCheckFreeSpace(NSString* path, uint64_t needed_bytes, NSError** err
   if (error) {
     *error = TransferError(
         XeniaIOSFileTransferErrorInsufficientSpace,
-        [NSString stringWithFormat:@"Not enough storage: need %@, have %@. Free up space on this "
-                                   @"device, or use Link Folder to play from the original "
-                                   @"location without copying.",
-                                   XeniaIOSFormatByteCount(needed_bytes + kFreeSpaceReserveBytes),
-                                   XeniaIOSFormatByteCount(available)]);
+        [NSString
+            stringWithFormat:NSLocalizedString(
+                                 @"Not enough storage: need %@, have %@. Free up space on this "
+                                 @"device, or use Link Folder to play from the original "
+                                 @"location without copying.",
+                                 @"file transfer: user-visible text"),
+                             XeniaIOSFormatByteCount(needed_bytes + kFreeSpaceReserveBytes),
+                             XeniaIOSFormatByteCount(available)]);
   }
   return NO;
 }
 
 NSError* XeniaIOSErrorFromErrno(int err, NSString* fallback) {
   if (err == ENOSPC || err == EDQUOT) {
-    return TransferError(XeniaIOSFileTransferErrorInsufficientSpace,
-                         @"Storage is full. Free up space on this device and try again.");
+    return TransferError(
+        XeniaIOSFileTransferErrorInsufficientSpace,
+        NSLocalizedString(@"Storage is full. Free up space on this device and try again.",
+                          @"file transfer: user-visible text"));
   }
   return TransferError(XeniaIOSFileTransferErrorFailed,
                        [NSString stringWithFormat:@"%@ (%s)", fallback, strerror(err)]);
@@ -587,7 +602,7 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   // dismissWithCompletion: (or the user tapped Cancel and the transfer ended).
   __block XeniaIOSTransferProgressAlert* unretained_alert = progress_alert;
   progress_alert->_cancelAction =
-      [UIAlertAction actionWithTitle:@"Cancel"
+      [UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"file transfer: title")
                                style:UIAlertActionStyleCancel
                              handler:^(__unused UIAlertAction* action) {
                                // UIKit dismisses the alert itself after the tap.
@@ -683,9 +698,10 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   }
   if (total > 0) {
     _progressView.progress = static_cast<float>(static_cast<double>(copied) / total);
-    _alert.message = [NSString stringWithFormat:@"%@\n%@ of %@\n", _baseMessage,
-                                                XeniaIOSFormatByteCount(copied),
-                                                XeniaIOSFormatByteCount(total)];
+    _alert.message =
+        [NSString stringWithFormat:NSLocalizedString(@"%@\n%@ of %@\n", @"file transfer: message"),
+                                   _baseMessage, XeniaIOSFormatByteCount(copied),
+                                   XeniaIOSFormatByteCount(total)];
   }
 }
 

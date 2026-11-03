@@ -92,11 +92,14 @@ UIView* XeniaCompatDetailsMetricTile(NSString* label, NSString* value, UIColor* 
 
   UIView* value_view = nil;
   if (value_is_pill) {
-    value_view = xe_make_tag_pill(value ?: @"Unknown", value_color ?: [XeniaTheme textMuted]);
+    value_view = xe_make_tag_pill(
+        value ?: NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text"),
+        value_color ?: [XeniaTheme textMuted]);
   } else {
     UILabel* value_label = [[[UILabel alloc] init] autorelease];
     value_label.translatesAutoresizingMaskIntoConstraints = NO;
-    value_label.text = value ?: @"Unknown";
+    value_label.text =
+        value ?: NSLocalizedString(@"Unknown", @"game compatibility cells: label text");
     value_label.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     value_label.textColor = value_color ?: [XeniaTheme textPrimary];
     value_label.numberOfLines = 1;
@@ -132,7 +135,8 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
       date_string.length >= 10 ? xe_format_iso_date(date_string) : date_string;
 
   if (![notes isKindOfClass:[NSString class]] || notes.length == 0) {
-    notes = @"No details provided.";
+    notes =
+        NSLocalizedString(@"No details provided.", @"game compatibility cells: user-visible text");
   }
 
   NSMutableArray<NSString*>* info_parts = [NSMutableArray array];
@@ -212,8 +216,11 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   BOOL can_expand_notes = notes.length > 170 || [notes rangeOfString:@"\n"].location != NSNotFound;
   UIButton* expand_notes_button = [UIButton buttonWithType:UIButtonTypeSystem];
   expand_notes_button.translatesAutoresizingMaskIntoConstraints = NO;
-  [expand_notes_button setTitle:(report_expanded ? @"Show less" : @"Show more")
-                       forState:UIControlStateNormal];
+  [expand_notes_button
+      setTitle:(report_expanded
+                    ? NSLocalizedString(@"Show less", @"game compatibility cells: title")
+                    : NSLocalizedString(@"Show more", @"game compatibility cells: title"))
+      forState:UIControlStateNormal];
   [expand_notes_button setTitleColor:[XeniaTheme accent] forState:UIControlStateNormal];
   expand_notes_button.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
   expand_notes_button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
@@ -226,7 +233,9 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   UIButton* open_comment_button = [UIButton buttonWithType:UIButtonTypeSystem];
   open_comment_button.translatesAutoresizingMaskIntoConstraints = NO;
-  [open_comment_button setTitle:@"Open comment" forState:UIControlStateNormal];
+  [open_comment_button
+      setTitle:NSLocalizedString(@"Open comment", @"game compatibility cells: title")
+      forState:UIControlStateNormal];
   [open_comment_button setTitleColor:[XeniaTheme accent] forState:UIControlStateNormal];
   open_comment_button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
   open_comment_button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
@@ -301,7 +310,10 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   NSDictionary* details_source = summary_source ?: latest_report;
 
   NSString* status = xe_string_from_object(details_source[@"status"]);
-  NSString* status_label = status.length > 0 ? xe_compat_status_label(status) : @"Unknown";
+  NSString* status_label =
+      status.length > 0
+          ? xe_compat_status_label(status)
+          : NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text");
   UIColor* status_color =
       status.length > 0 ? xe_compat_status_color(status) : [XeniaTheme textMuted];
 
@@ -309,19 +321,22 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
                                 ? details_source[@"deviceMachine"]
                                 : details_source[@"device"];
   NSString* device =
-      report_device.length > 0 ? xe_device_display_name_for_machine(report_device) : @"Unknown";
+      report_device.length > 0
+          ? xe_device_display_name_for_machine(report_device)
+          : NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text");
 
   NSString* platform_display =
       xe_platform_display_text(details_source[@"platform"], details_source[@"osVersion"]);
   if (platform_display.length == 0) {
-    platform_display = @"Unknown";
+    platform_display =
+        NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text");
   }
 
   NSString* gpu = [details_source[@"gpuBackend"] isKindOfClass:[NSString class]]
                       ? details_source[@"gpuBackend"]
                       : nil;
   if (gpu.length == 0) {
-    gpu = @"Unknown";
+    gpu = NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text");
   } else {
     gpu = [gpu uppercaseString];
   }
@@ -331,25 +346,32 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   if (based_on_date.length == 0 && [compat_info[@"updatedAt"] isKindOfClass:[NSString class]]) {
     based_on_date = compat_info[@"updatedAt"];
   }
-  NSString* footnote = @"Based on available compatibility data.";
+  NSString* footnote = NSLocalizedString(@"Based on available compatibility data.",
+                                         @"game compatibility cells: user-visible text");
   if (using_release_summary && [status isEqualToString:@"untested"]) {
-    footnote =
-        @"No official release reports yet. Preview or self-built reports may still appear below.";
+    footnote = NSLocalizedString(
+        @"No official release reports yet. Preview or self-built reports may still appear below.",
+        @"game compatibility cells: user-visible text");
   } else if (using_release_summary && based_on_date.length > 0) {
-    footnote = [NSString stringWithFormat:@"Based on the latest official release summary from %@.",
-                                          xe_format_iso_date(based_on_date)];
+    footnote = [NSString
+        stringWithFormat:NSLocalizedString(@"Based on the latest official release summary from %@.",
+                                           @"game compatibility cells: user-visible text"),
+                         xe_format_iso_date(based_on_date)];
   } else if (using_release_summary) {
-    footnote = @"Based on the current official release summary.";
+    footnote = NSLocalizedString(@"Based on the current official release summary.",
+                                 @"game compatibility cells: user-visible text");
   } else if (based_on_date.length > 0) {
     footnote = [NSString
-        stringWithFormat:@"Based on the latest report from %@.", xe_format_iso_date(based_on_date)];
+        stringWithFormat:NSLocalizedString(@"Based on the latest report from %@.",
+                                           @"game compatibility cells: user-visible text"),
+                         xe_format_iso_date(based_on_date)];
   }
 
   UIView* card = XeniaCompatCardViewForCell(cell);
 
   UILabel* heading = [[[UILabel alloc] init] autorelease];
   heading.translatesAutoresizingMaskIntoConstraints = NO;
-  heading.text = @"Details";
+  heading.text = NSLocalizedString(@"Details", @"game compatibility cells: label text");
   heading.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
   heading.textColor = [XeniaTheme textPrimary];
   [card addSubview:heading];
@@ -357,7 +379,11 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   UILabel* subheading = [[[UILabel alloc] init] autorelease];
   subheading.translatesAutoresizingMaskIntoConstraints = NO;
   subheading.text =
-      using_release_summary ? @"RELEASE SUMMARY" : (summary_source ? @"CURRENT SUMMARY" : @"LATEST REPORT");
+      using_release_summary
+          ? NSLocalizedString(@"RELEASE SUMMARY", @"game compatibility cells: label text")
+          : (summary_source
+                 ? NSLocalizedString(@"CURRENT SUMMARY", @"game compatibility cells: label text")
+                 : NSLocalizedString(@"LATEST REPORT", @"game compatibility cells: label text"));
   subheading.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
   subheading.textColor = [XeniaTheme textMuted];
   [card addSubview:subheading];
@@ -389,14 +415,22 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   row_two.distribution = UIStackViewDistributionFillEqually;
   [grid addArrangedSubview:row_two];
 
-  [row_one addArrangedSubview:XeniaCompatDetailsMetricTile(@"STATUS", status_label, status_color,
-                                                          YES)];
-  [row_one addArrangedSubview:XeniaCompatDetailsMetricTile(@"DEVICE", device,
-                                                          [XeniaTheme textPrimary], NO)];
-  [row_two addArrangedSubview:XeniaCompatDetailsMetricTile(@"PLATFORM", platform_display,
-                                                          [XeniaTheme textPrimary], NO)];
-  [row_two addArrangedSubview:XeniaCompatDetailsMetricTile(@"GPU", gpu, [XeniaTheme textPrimary],
-                                                          NO)];
+  [row_one
+      addArrangedSubview:XeniaCompatDetailsMetricTile(
+                             NSLocalizedString(@"STATUS", @"game compatibility cells: detail text"),
+                             status_label, status_color, YES)];
+  [row_one
+      addArrangedSubview:XeniaCompatDetailsMetricTile(
+                             NSLocalizedString(@"DEVICE", @"game compatibility cells: detail text"),
+                             device, [XeniaTheme textPrimary], NO)];
+  [row_two addArrangedSubview:XeniaCompatDetailsMetricTile(
+                                  NSLocalizedString(@"PLATFORM",
+                                                    @"game compatibility cells: detail text"),
+                                  platform_display, [XeniaTheme textPrimary], NO)];
+  [row_two
+      addArrangedSubview:XeniaCompatDetailsMetricTile(
+                             NSLocalizedString(@"GPU", @"game compatibility cells: detail text"),
+                             gpu, [XeniaTheme textPrimary], NO)];
 
   UILabel* footer = [[[UILabel alloc] init] autorelease];
   footer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -455,7 +489,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   UILabel* heading = [[[UILabel alloc] init] autorelease];
   heading.translatesAutoresizingMaskIntoConstraints = NO;
-  heading.text = @"Tested this game?";
+  heading.text = NSLocalizedString(@"Tested this game?", @"game compatibility cells: label text");
   heading.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
   heading.textColor = [XeniaTheme textPrimary];
   heading.textAlignment = NSTextAlignmentCenter;
@@ -463,7 +497,9 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   UILabel* subtext = [[[UILabel alloc] init] autorelease];
   subtext.translatesAutoresizingMaskIntoConstraints = NO;
-  subtext.text = @"Help the community by sharing how well this title runs on your device.";
+  subtext.text =
+      NSLocalizedString(@"Help the community by sharing how well this title runs on your device.",
+                        @"game compatibility cells: label text");
   subtext.font = [UIFont systemFontOfSize:14];
   subtext.textColor = [XeniaTheme textSecondary];
   subtext.numberOfLines = 0;
@@ -472,7 +508,8 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   UIButton* submit_button = [UIButton buttonWithType:UIButtonTypeSystem];
   submit_button.translatesAutoresizingMaskIntoConstraints = NO;
-  [submit_button setTitle:@"Submit Report" forState:UIControlStateNormal];
+  [submit_button setTitle:NSLocalizedString(@"Submit Report", @"game compatibility cells: title")
+                 forState:UIControlStateNormal];
   submit_button.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
   [submit_button setTitleColor:[XeniaTheme accentFg] forState:UIControlStateNormal];
   submit_button.backgroundColor = [XeniaTheme accent];
@@ -540,16 +577,19 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   heading_row.backgroundColor = [XeniaTheme bgSurface];
   UILabel* heading_label = [[[UILabel alloc] init] autorelease];
   heading_label.translatesAutoresizingMaskIntoConstraints = NO;
-  heading_label.text = @"Discussion";
+  heading_label.text = NSLocalizedString(@"Discussion", @"game compatibility cells: label text");
   heading_label.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
   heading_label.textColor = [XeniaTheme textPrimary];
   [heading_row addSubview:heading_label];
 
   UIButton* heading_button = [UIButton buttonWithType:UIButtonTypeSystem];
   heading_button.translatesAutoresizingMaskIntoConstraints = NO;
-  NSString* button_title = issue_number > 0
-                               ? [NSString stringWithFormat:@"View Issue #%ld", (long)issue_number]
-                               : @"View on GitHub";
+  NSString* button_title =
+      issue_number > 0
+          ? [NSString stringWithFormat:NSLocalizedString(@"View Issue #%ld",
+                                                         @"game compatibility cells: title"),
+                                       (long)issue_number]
+          : NSLocalizedString(@"View on GitHub", @"game compatibility cells: user-visible text");
   [heading_button setTitle:button_title forState:UIControlStateNormal];
   [heading_button setTitleColor:[XeniaTheme accent] forState:UIControlStateNormal];
   heading_button.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
@@ -572,7 +612,8 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   if (loading) {
     UILabel* loading_label = [[[UILabel alloc] init] autorelease];
-    loading_label.text = @"Loading discussion...";
+    loading_label.text =
+        NSLocalizedString(@"Loading discussion...", @"game compatibility cells: label text");
     loading_label.font = [UIFont systemFontOfSize:15];
     loading_label.textColor = [XeniaTheme textMuted];
     loading_label.numberOfLines = 1;
@@ -582,7 +623,8 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
   if (reports.count == 0) {
     UILabel* empty_label = [[[UILabel alloc] init] autorelease];
-    empty_label.text = @"No reports yet. Be the first to submit one.";
+    empty_label.text = NSLocalizedString(@"No reports yet. Be the first to submit one.",
+                                         @"game compatibility cells: label text");
     empty_label.font = [UIFont systemFontOfSize:15];
     empty_label.textColor = [XeniaTheme textMuted];
     empty_label.numberOfLines = 0;
@@ -606,9 +648,13 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
     UILabel* summary_label = [[[UILabel alloc] init] autorelease];
     summary_label.text =
         show_all
-            ? [NSString stringWithFormat:@"Showing all %ld reports.", (long)report_count]
-            : [NSString stringWithFormat:@"Showing latest %ld of %ld reports.", (long)visible_count,
-                                         (long)report_count];
+            ? [NSString stringWithFormat:NSLocalizedString(@"Showing all %ld reports.",
+                                                           @"game compatibility cells: label text"),
+                                         (long)report_count]
+            : [NSString stringWithFormat:NSLocalizedString(
+                                             @"Showing latest %ld of %ld reports.",
+                                             @"game compatibility cells: user-visible text"),
+                                         (long)visible_count, (long)report_count];
     summary_label.font = [UIFont systemFontOfSize:12];
     summary_label.textColor = [XeniaTheme textMuted];
     summary_label.numberOfLines = 1;
@@ -616,10 +662,12 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
     UIButton* toggle_button = [UIButton buttonWithType:UIButtonTypeSystem];
     toggle_button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    NSString* toggle_title = show_all
-                                 ? @"Show fewer reports"
-                                 : [NSString stringWithFormat:@"Show all %ld reports",
-                                                            (long)report_count];
+    NSString* toggle_title =
+        show_all ? NSLocalizedString(@"Show fewer reports", @"game compatibility cells: title")
+                 : [NSString stringWithFormat:NSLocalizedString(
+                                                  @"Show all %ld reports",
+                                                  @"game compatibility cells: user-visible text"),
+                                              (long)report_count];
     [toggle_button setTitle:toggle_title forState:UIControlStateNormal];
     [toggle_button setTitleColor:[XeniaTheme accent] forState:UIControlStateNormal];
     toggle_button.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];

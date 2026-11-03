@@ -38,7 +38,7 @@
     title_id_ = title_id;
     game_title_ = [title copy];
     host_ = host;
-    self.title = @"Manage Content";
+    self.title = NSLocalizedString(@"Manage Content", @"game content view controller: title");
   }
   return self;
 }
@@ -52,11 +52,11 @@
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:@"Close"
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
-                                       action:@selector(doneTapped:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Close", @"game content view controller: title")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(doneTapped:)] autorelease];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -115,23 +115,30 @@
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
   if (section == 0) {
-    return @"Actions";
+    return NSLocalizedString(@"Actions", @"game content view controller: user-visible text");
   }
-  return @"Installed Content";
+  return NSLocalizedString(@"Installed Content",
+                           @"game content view controller: user-visible text");
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
   if (section == 0) {
     if (game_title_.length > 0) {
-      return
-          [NSString stringWithFormat:@"Install title updates or DLC packages for %@.", game_title_];
+      return [NSString
+          stringWithFormat:NSLocalizedString(@"Install title updates or DLC packages for %@.",
+                                             @"game content view controller: user-visible text"),
+                           game_title_];
     }
-    return @"Install title updates or DLC packages for this game.";
+    return NSLocalizedString(@"Install title updates or DLC packages for this game.",
+                             @"game content view controller: user-visible text");
   }
   if (installed_content_.empty()) {
-    return @"No title updates or DLC are installed for this title.";
+    return NSLocalizedString(@"No title updates or DLC are installed for this title.",
+                             @"game content view controller: user-visible text");
   }
-  return @"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.";
+  return NSLocalizedString(
+      @"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.",
+      @"game content view controller: user-visible text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -143,10 +150,13 @@
       cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                      reuseIdentifier:kActionCellIdentifier] autorelease];
     }
-    cell.textLabel.text = @"Add Content";
+    cell.textLabel.text =
+        NSLocalizedString(@"Add Content", @"game content view controller: label text");
     cell.textLabel.textColor = self.view.tintColor;
-    cell.detailTextLabel.text = @"Import a title update or DLC package for this game. Large "
-                                @"packages can be linked from a Link Folder instead of copied.";
+    cell.detailTextLabel.text =
+        NSLocalizedString(@"Import a title update or DLC package for this game. Large "
+                          @"packages can be linked from a Link Folder instead of copied.",
+                          @"game content view controller: detail text");
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.imageView.image = [UIImage systemImageNamed:@"plus.circle.fill"];
     cell.imageView.tintColor = self.view.tintColor;
@@ -162,8 +172,10 @@
       cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                      reuseIdentifier:kEmptyCellIdentifier] autorelease];
     }
-    cell.textLabel.text = @"No content installed";
-    cell.detailTextLabel.text = @"Add a title update or DLC package from Files.";
+    cell.textLabel.text =
+        NSLocalizedString(@"No content installed", @"game content view controller: label text");
+    cell.detailTextLabel.text = NSLocalizedString(@"Add a title update or DLC package from Files.",
+                                                  @"game content view controller: detail text");
     cell.textLabel.textColor = [XeniaTheme textMuted];
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -182,9 +194,11 @@
   cell.textLabel.text = ToNSString(entry.name);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text =
-      entry.linked
-          ? [NSString stringWithFormat:@"%@ - Linked", xe_installed_content_kind_label(entry.kind)]
-          : xe_installed_content_kind_label(entry.kind);
+      entry.linked ? [NSString stringWithFormat:NSLocalizedString(
+                                                    @"%@ - Linked",
+                                                    @"game content view controller: detail text"),
+                                                xe_installed_content_kind_label(entry.kind)]
+                   : xe_installed_content_kind_label(entry.kind);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.accessoryType = UITableViewCellAccessoryNone;
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -206,21 +220,33 @@
   const IOSInstalledContentEntry& entry = installed_content_[static_cast<size_t>(indexPath.row)];
   const std::filesystem::path entry_path = entry.path;
   NSString* display_name = ToNSString(entry.name);
-  NSString* confirm_title = entry.linked ? @"Unlink Content" : @"Delete Content";
+  NSString* confirm_title =
+      entry.linked ? NSLocalizedString(@"Unlink Content", @"game content view controller: title")
+                   : NSLocalizedString(@"Delete Content", @"game content view controller: title");
   NSString* confirm_message =
       entry.linked
-          ? [NSString stringWithFormat:@"Unlink \"%@\"? The source files in the external folder "
-                                       @"will not be deleted.",
-                                       display_name]
-          : [NSString stringWithFormat:@"Delete \"%@\"? This cannot be undone.", display_name];
-  NSString* action_title = entry.linked ? @"Unlink" : @"Delete";
+          ? [NSString
+                stringWithFormat:NSLocalizedString(
+                                     @"Unlink \"%@\"? The source files in the external folder "
+                                     @"will not be deleted.",
+                                     @"game content view controller: message"),
+                                 display_name]
+          : [NSString stringWithFormat:NSLocalizedString(
+                                           @"Delete \"%@\"? This cannot be undone.",
+                                           @"game content view controller: user-visible text"),
+                                       display_name];
+  NSString* action_title =
+      entry.linked ? NSLocalizedString(@"Unlink", @"game content view controller: title")
+                   : NSLocalizedString(@"Delete", @"game content view controller: title");
   UIAlertController* confirm =
       [UIAlertController alertControllerWithTitle:confirm_title
                                           message:confirm_message
                                    preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Cancel",
+                                                           @"game content view controller: title")
+                                   style:UIAlertActionStyleCancel
+                                 handler:nil]];
   [confirm
       addAction:[UIAlertAction
                     actionWithTitle:action_title
@@ -230,9 +256,16 @@
                               std::filesystem::remove_all(entry_path, ec);
                               if (ec) {
                                 XEPresentOKAlert(
-                                    self, @"Delete Failed",
-                                    [NSString stringWithFormat:@"Failed deleting %@: %s",
-                                                               display_name, ec.message().c_str()]);
+                                    self,
+                                    NSLocalizedString(
+                                        @"Delete Failed",
+                                        @"game content view controller: user-visible text"),
+                                    [NSString
+                                        stringWithFormat:
+                                            NSLocalizedString(
+                                                @"Failed deleting %@: %s",
+                                                @"game content view controller: user-visible text"),
+                                            display_name, ec.message().c_str()]);
                                 return;
                               }
                               xe_remove_linked_content_marker(entry);
@@ -259,31 +292,38 @@
   BOOL access_granted = [url startAccessingSecurityScopedResource];
   XeniaIOSFileTransfer* transfer = [[XeniaIOSFileTransfer alloc] init];
   XeniaIOSTransferProgressAlert* progress_alert = [[XeniaIOSTransferProgressAlert
-      presentFrom:self
-            title:@"Adding Content"
-          message:@"Checking the package..."
-    cancelHandler:^{
-      [transfer cancel];
-    }] retain];
+        presentFrom:self
+              title:NSLocalizedString(@"Adding Content", @"game content view controller: title")
+            message:NSLocalizedString(@"Checking the package...",
+                                      @"game content view controller: message")
+      cancelHandler:^{
+        [transfer cancel];
+      }] retain];
   const uint32_t title_id = title_id_;
   id<XeniaGameContentHost> host = host_;
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     BOOL install_success = NO;
     BOOL cancelled = NO;
-    NSString* result_title = @"Unsupported Content";
+    NSString* result_title =
+        NSLocalizedString(@"Unsupported Content", @"game content view controller: title");
     NSString* result_message = nil;
     @autoreleasepool {
       IOSSelectedContentPackage package_info;
       NSString* validation_error = nil;
       if (!xe_read_selected_content_package(std::filesystem::path([url.path UTF8String]),
                                             &package_info, &validation_error)) {
-        result_title = @"Invalid Package";
-        result_message = validation_error ?: @"Could not read the selected content package.";
+        result_title =
+            NSLocalizedString(@"Invalid Package", @"game content view controller: title");
+        result_message = validation_error
+                             ?: NSLocalizedString(@"Could not read the selected content package.",
+                                                  @"game content view controller: message");
       } else if (package_info.title_id != title_id) {
-        result_title = @"Wrong Game";
+        result_title = NSLocalizedString(@"Wrong Game", @"game content view controller: title");
         result_message = [NSString
-            stringWithFormat:@"This package is for title %08X, but the current game is %08X.",
+            stringWithFormat:NSLocalizedString(
+                                 @"This package is for title %08X, but the current game is %08X.",
+                                 @"game content view controller: message"),
                              package_info.title_id, title_id];
       } else {
         switch (package_info.content_type) {
@@ -298,10 +338,18 @@
             install_success = host && [host installTitleUpdateAtPath:url.path
                                                               status:&status_message
                                                       notTitleUpdate:nullptr];
-            result_title = install_success ? @"Installed" : @"Install Failed";
-            result_message = install_success
-                                 ? (status_message ?: @"Title update installed successfully.")
-                                 : (status_message ?: @"Title update installation failed.");
+            result_title =
+                install_success
+                    ? NSLocalizedString(@"Installed", @"game content view controller: title")
+                    : NSLocalizedString(@"Install Failed", @"game content view controller: title");
+            result_message =
+                install_success
+                    ? (status_message
+                           ?: NSLocalizedString(@"Title update installed successfully.",
+                                                @"game content view controller: message"))
+                    : (status_message
+                           ?: NSLocalizedString(@"Title update installation failed.",
+                                                @"game content view controller: message"));
           } break;
           case xe::XContentType::kMarketplaceContent: {
             std::string error_message;
@@ -313,18 +361,25 @@
                     package_info.path, &matched_external_location, &source_relative_path,
                     &external_access_error);
             if (matched_external_location && !external_access) {
-              result_title = @"Link Failed";
-              result_message = external_access_error.localizedDescription
-                                   ?: @"XeniOS could not access the linked external folder.";
+              result_title =
+                  NSLocalizedString(@"Link Failed", @"game content view controller: title");
+              result_message =
+                  external_access_error.localizedDescription
+                      ?: NSLocalizedString(@"XeniOS could not access the linked external folder.",
+                                           @"game content view controller: message");
             } else if (external_access) {
               install_success = xe_link_content_package_into_root(
                   package_info, xe_dlc_content_root(title_id), source_relative_path,
                   &error_message);
-              result_title = install_success ? @"Linked" : @"Link Failed";
-              result_message = install_success
-                                   ? @"DLC linked from the external folder."
-                                   : ToNSString(error_message.empty() ? "DLC linking failed."
-                                                                      : error_message);
+              result_title =
+                  install_success
+                      ? NSLocalizedString(@"Linked", @"game content view controller: title")
+                      : NSLocalizedString(@"Link Failed", @"game content view controller: title");
+              result_message =
+                  install_success
+                      ? NSLocalizedString(@"DLC linked from the external folder.",
+                                          @"game content view controller: message")
+                      : ToNSString(error_message.empty() ? "DLC linking failed." : error_message);
             } else {
               dispatch_async(dispatch_get_main_queue(), ^{
                 [progress_alert updateCopiedBytes:0 totalBytes:1];
@@ -338,13 +393,19 @@
                   },
                   &error_message);
               cancelled = !install_success && transfer.cancelled;
-              result_title = install_success ? @"Installed" : @"Install Failed";
+              result_title =
+                  install_success
+                      ? NSLocalizedString(@"Installed", @"game content view controller: title")
+                      : NSLocalizedString(@"Install Failed",
+                                          @"game content view controller: title");
               // On success, error_message carries a warning about skipped folder entries.
               if (install_success) {
-                result_message =
-                    error_message.empty()
-                        ? @"DLC installed successfully."
-                        : [@"DLC installed. " stringByAppendingString:ToNSString(error_message)];
+                result_message = error_message.empty()
+                                     ? NSLocalizedString(@"DLC installed successfully.",
+                                                         @"game content view controller: message")
+                                     : [NSLocalizedString(@"DLC installed. ",
+                                                          @"game content view controller: message")
+                                           stringByAppendingString:ToNSString(error_message)];
               } else {
                 result_message = ToNSString(error_message.empty() ? "DLC installation failed."
                                                                   : error_message);
@@ -353,7 +414,9 @@
           } break;
           default:
             result_message =
-                [NSString stringWithFormat:@"Content type 0x%08X is not a title update or DLC.",
+                [NSString stringWithFormat:NSLocalizedString(
+                                               @"Content type 0x%08X is not a title update or DLC.",
+                                               @"game content view controller: message"),
                                            static_cast<uint32_t>(package_info.content_type)];
             break;
         }

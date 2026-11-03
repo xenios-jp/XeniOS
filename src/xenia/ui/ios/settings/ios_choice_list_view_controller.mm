@@ -92,7 +92,10 @@
                                                          : UITableViewCellAccessoryNone;
   cell.isAccessibilityElement = YES;
   cell.accessibilityLabel = cell.textLabel.text;
-  cell.accessibilityValue = (choice.value == selected_value_) ? @"Selected" : @"Not selected";
+  cell.accessibilityValue =
+      (choice.value == selected_value_)
+          ? NSLocalizedString(@"Selected", @"choice list view controller: accessibility value")
+          : NSLocalizedString(@"Not selected", @"choice list view controller: accessibility value");
   cell.accessibilityTraits =
       UIAccessibilityTraitButton |
       ((choice.value == selected_value_) ? UIAccessibilityTraitSelected : 0);

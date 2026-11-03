@@ -14,10 +14,13 @@
 namespace {
 
 NSString* const kAcknowledgementsResourceName = @"Acknowledgements";
-NSString* const kAcknowledgementsFallbackText =
-    @"The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia "
-    @"(BSD license) and includes third-party libraries. Their licenses are in the source "
-    @"repository: https://github.com/xenios-jp/XeniOS";
+NSString* AcknowledgementsFallbackText() {
+  return NSLocalizedString(
+      @"The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia "
+      @"(BSD license) and includes third-party libraries. Their licenses are in the source "
+      @"repository: https://github.com/xenios-jp/XeniOS",
+      @"acknowledgements: fallback text shown when the license file is missing");
+}
 
 }  // namespace
 
@@ -35,7 +38,9 @@ NSString* const kAcknowledgementsFallbackText =
   if (self) {
     entry_ = [entry retain];
     NSString* name = entry[@"name"];
-    self.title = [name isKindOfClass:[NSString class]] ? name : @"License";
+    self.title = [name isKindOfClass:[NSString class]]
+                     ? name
+                     : NSLocalizedString(@"License", @"acknowledgements view controller: title");
   }
   return self;
 }
@@ -74,7 +79,10 @@ NSString* const kAcknowledgementsFallbackText =
   text_view.textContainerInset = UIEdgeInsetsMake(16.0, 12.0, 24.0, 12.0);
   text_view.dataDetectorTypes = UIDataDetectorTypeLink;
   text_view.text = text;
-  text_view.accessibilityLabel = [NSString stringWithFormat:@"%@ license", self.title];
+  text_view.accessibilityLabel = [NSString
+      stringWithFormat:NSLocalizedString(@"%@ license",
+                                         @"acknowledgements view controller: accessibility label"),
+                       self.title];
   [self.view addSubview:text_view];
   [NSLayoutConstraint activateConstraints:@[
     [text_view.topAnchor constraintEqualToAnchor:self.view.topAnchor],
@@ -95,7 +103,7 @@ NSString* const kAcknowledgementsFallbackText =
 - (instancetype)init {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
-    self.title = @"Acknowledgements";
+    self.title = NSLocalizedString(@"Acknowledgements", @"acknowledgements view controller: title");
     loading_ = YES;
   }
   return self;
@@ -147,10 +155,12 @@ NSString* const kAcknowledgementsFallbackText =
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForFooterInSection:(NSInteger)section {
   if (loading_) {
-    return @"Loading…";
+    return NSLocalizedString(@"Loading…", @"acknowledgements view controller: user-visible text");
   }
-  return failed_ ? kAcknowledgementsFallbackText
-                 : @"XeniOS is based on Xenia and uses the open-source software listed above.";
+  return failed_ ? AcknowledgementsFallbackText()
+                 : NSLocalizedString(
+                       @"XeniOS is based on Xenia and uses the open-source software listed above.",
+                       @"acknowledgements view controller: label text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -173,7 +183,8 @@ NSString* const kAcknowledgementsFallbackText =
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityLabel = entry[@"name"];
   cell.accessibilityValue = usage;
-  cell.accessibilityHint = @"Shows the license.";
+  cell.accessibilityHint = NSLocalizedString(
+      @"Shows the license.", @"acknowledgements view controller: accessibility hint");
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   return cell;
 }

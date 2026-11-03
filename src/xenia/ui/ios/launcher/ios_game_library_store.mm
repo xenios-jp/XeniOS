@@ -516,7 +516,9 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, XeniaIOSFileTr
                      code:1001
                  userInfo:@{
                    NSLocalizedDescriptionKey : [NSString
-                       stringWithFormat:@"Failed creating library folder: %s", ec.message().c_str()]
+                       stringWithFormat:NSLocalizedString(@"Failed creating library folder: %s",
+                                                          @"game library store: user-visible text"),
+                                        ec.message().c_str()]
                  }];
     }
     return {};
@@ -633,10 +635,13 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, XeniaIOSFileTr
 BOOL SaveIOSExternalLibraryLocation(NSURL* folder_url, NSError** error) {
   if (!folder_url.fileURL) {
     if (error) {
-      *error = [NSError
-          errorWithDomain:@"XeniaIOSExternalLibrary"
-                     code:2001
-                 userInfo:@{NSLocalizedDescriptionKey : @"Selected location is not a folder."}];
+      *error = [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
+                                   code:2001
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     NSLocalizedString(@"Selected location is not a folder.",
+                                                       @"game library store: user-visible text")
+                               }];
     }
     return NO;
   }
@@ -649,10 +654,13 @@ BOOL SaveIOSExternalLibraryLocation(NSURL* folder_url, NSError** error) {
       [folder_url stopAccessingSecurityScopedResource];
     }
     if (error && !*error) {
-      *error = [NSError
-          errorWithDomain:@"XeniaIOSExternalLibrary"
-                     code:2002
-                 userInfo:@{NSLocalizedDescriptionKey : @"Selected location is not a folder."}];
+      *error = [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
+                                   code:2002
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     NSLocalizedString(@"Selected location is not a folder.",
+                                                       @"game library store: user-visible text")
+                               }];
     }
     return NO;
   }
@@ -682,7 +690,8 @@ BOOL SaveIOSExternalLibraryLocation(NSURL* folder_url, NSError** error) {
   [records addObject:@{
     kExternalLibraryBookmarkKey : bookmark,
     kExternalLibraryPathKey : path,
-    kExternalLibraryNameKey : name ?: @"External Library",
+    kExternalLibraryNameKey : name
+        ?: NSLocalizedString(@"External Library", @"game library store: user-visible text"),
   }];
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
@@ -731,10 +740,13 @@ BOOL HideIOSExternalLibraryGameAtPath(const std::filesystem::path& path, NSStrin
 
   if (!matched) {
     if (error) {
-      *error = [NSError
-          errorWithDomain:@"XeniaIOSExternalLibrary"
-                     code:2005
-                 userInfo:@{NSLocalizedDescriptionKey : @"Linked external game was not found."}];
+      *error = [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
+                                   code:2005
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     NSLocalizedString(@"Linked external game was not found.",
+                                                       @"game library store: user-visible text")
+                               }];
     }
     return NO;
   }
@@ -791,10 +803,13 @@ BOOL RemoveIOSExternalLibraryLocationForPath(const std::filesystem::path& path,
 
   if (!removed) {
     if (error) {
-      *error = [NSError
-          errorWithDomain:@"XeniaIOSExternalLibrary"
-                     code:2004
-                 userInfo:@{NSLocalizedDescriptionKey : @"Linked external folder was not found."}];
+      *error = [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
+                                   code:2004
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     NSLocalizedString(@"Linked external folder was not found.",
+                                                       @"game library store: user-visible text")
+                               }];
     }
     return NO;
   }
@@ -849,10 +864,13 @@ BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
 
   if (!removed) {
     if (error) {
-      *error = [NSError
-          errorWithDomain:@"XeniaIOSExternalLibrary"
-                     code:2004
-                 userInfo:@{NSLocalizedDescriptionKey : @"Linked external folder was not found."}];
+      *error = [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
+                                   code:2004
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey :
+                                     NSLocalizedString(@"Linked external folder was not found.",
+                                                       @"game library store: user-visible text")
+                               }];
     }
     return NO;
   }
@@ -916,8 +934,9 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
                      ?: [NSError errorWithDomain:@"XeniaIOSExternalLibrary"
                                             code:2003
                                         userInfo:@{
-                                          NSLocalizedDescriptionKey :
-                                              @"External library folder is no longer available."
+                                          NSLocalizedDescriptionKey : NSLocalizedString(
+                                              @"External library folder is no longer available.",
+                                              @"game library store: user-visible text")
                                         }];
       }
       return nil;

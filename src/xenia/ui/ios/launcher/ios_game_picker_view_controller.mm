@@ -109,7 +109,9 @@
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.imageView.image = [UIImage systemImageNamed:@"gamecontroller.fill"];
   cell.imageView.tintColor = [XeniaTheme accent];
-  XEApplyAccessibility(cell, item.title, item.subtitle, @"Opens this game's touch layout editor.",
+  XEApplyAccessibility(cell, item.title, item.subtitle,
+                       NSLocalizedString(@"Opens this game's touch layout editor.",
+                                         @"game picker view controller: title"),
                        UIAccessibilityTraitButton);
   return cell;
 }

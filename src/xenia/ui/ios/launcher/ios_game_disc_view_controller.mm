@@ -19,12 +19,18 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   if (!disc.source_label.empty()) {
     source = ToNSString(disc.source_label);
   } else if (disc.has_imported_source && disc.has_external_source) {
-    source = @"Imported + External";
+    source =
+        NSLocalizedString(@"Imported + External", @"game disc view controller: user-visible text");
   } else {
-    source = disc.is_external || disc.has_external_source ? @"External" : @"Imported";
+    source = disc.is_external || disc.has_external_source
+                 ? NSLocalizedString(@"External", @"game disc view controller: user-visible text")
+                 : NSLocalizedString(@"Imported", @"game disc view controller: user-visible text");
   }
   if (disc.media_id) {
-    return [NSString stringWithFormat:@"%@ - %@ - Media %08X", source, filename, disc.media_id];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"%@ - %@ - Media %08X",
+                                           @"game disc view controller: user-visible text"),
+                         source, filename, disc.media_id];
   }
   return [NSString stringWithFormat:@"%@ - %@", source, filename];
 }
@@ -46,7 +52,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
     title_ = [title copy];
     discs_ = discs;
     selection_handler_ = [selectionHandler copy];
-    self.title = @"Launch Disc";
+    self.title = NSLocalizedString(@"Launch Disc", @"game disc view controller: title");
   }
   return self;
 }
@@ -86,16 +92,18 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
 
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForHeaderInSection:(NSInteger)__unused section {
-  return title_.length ? title_ : @"Game";
+  return title_.length ? title_ : NSLocalizedString(@"Game", @"game disc view controller: title");
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForFooterInSection:(NSInteger)__unused section {
   if (discs_.empty()) {
-    return @"No alternate discs were found for this title.";
+    return NSLocalizedString(@"No alternate discs were found for this title.",
+                             @"game disc view controller: user-visible text");
   }
-  return @"Choose the disc to boot. Saves, title updates, and installed content "
-         @"remain shared by title ID.";
+  return NSLocalizedString(@"Choose the disc to boot. Saves, title updates, and installed content "
+                           @"remain shared by title ID.",
+                           @"game disc view controller: user-visible text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -109,7 +117,8 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   }
 
   if (discs_.empty()) {
-    cell.textLabel.text = @"No discs available";
+    cell.textLabel.text =
+        NSLocalizedString(@"No discs available", @"game disc view controller: label text");
     cell.detailTextLabel.text = nil;
     cell.textLabel.textColor = [XeniaTheme textMuted];
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
@@ -129,7 +138,8 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityLabel = cell.textLabel.text;
   cell.accessibilityValue = cell.detailTextLabel.text;
-  cell.accessibilityHint = @"Launches this disc.";
+  cell.accessibilityHint =
+      NSLocalizedString(@"Launches this disc.", @"game disc view controller: accessibility hint");
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   return cell;
 }

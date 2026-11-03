@@ -118,7 +118,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = @"Live Log";
+  self.title = NSLocalizedString(@"Live Log", @"log view controller: title");
   readQueue_ = dispatch_queue_create("xenia.log-view.read", DISPATCH_QUEUE_SERIAL);
   lastSize_ = -1;
   self.view.backgroundColor = [UIColor systemBackgroundColor];
@@ -199,20 +199,26 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 - (UIMenu*)buildActionsMenu {
   __unsafe_unretained XeniaLogViewController* weak_self = self;
   UIAction* copy_action =
-      [UIAction actionWithTitle:@"Copy"
+      [UIAction actionWithTitle:NSLocalizedString(@"Copy", @"log view controller: title")
                           image:[UIImage systemImageNamed:@"doc.on.doc"]
                      identifier:nil
-                        handler:^(__unused UIAction* action) { [weak_self copyLog]; }];
+                        handler:^(__unused UIAction* action) {
+                          [weak_self copyLog];
+                        }];
   UIAction* share_action =
-      [UIAction actionWithTitle:@"Share"
+      [UIAction actionWithTitle:NSLocalizedString(@"Share", @"log view controller: title")
                           image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                      identifier:nil
-                        handler:^(__unused UIAction* action) { [weak_self shareLogTapped:nil]; }];
+                        handler:^(__unused UIAction* action) {
+                          [weak_self shareLogTapped:nil];
+                        }];
   UIAction* refresh_action =
-      [UIAction actionWithTitle:@"Refresh"
+      [UIAction actionWithTitle:NSLocalizedString(@"Refresh", @"log view controller: title")
                           image:[UIImage systemImageNamed:@"arrow.clockwise"]
                      identifier:nil
-                        handler:^(__unused UIAction* action) { [weak_self reloadLogForced:YES]; }];
+                        handler:^(__unused UIAction* action) {
+                          [weak_self reloadLogForced:YES];
+                        }];
   return [UIMenu menuWithTitle:@"" children:@[ copy_action, share_action, refresh_action ]];
 }
 
@@ -220,7 +226,8 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   paused_ = !paused_;
   if (paused_) {
     [self stopAutoRefresh];
-    footerLabel_.text = @"Paused. Resume to continue the live tail.";
+    footerLabel_.text = NSLocalizedString(@"Paused. Resume to continue the live tail.",
+                                          @"log view controller: section footer");
   } else {
     [self startAutoRefresh];
     [self reloadLogForced:YES];
@@ -230,7 +237,9 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 
 - (void)updatePauseButton {
   pauseButton_.image = [UIImage systemImageNamed:(paused_ ? @"play.fill" : @"pause.fill")];
-  pauseButton_.accessibilityLabel = paused_ ? @"Resume live log" : @"Pause live log";
+  pauseButton_.accessibilityLabel =
+      paused_ ? NSLocalizedString(@"Resume live log", @"log view controller: accessibility label")
+              : NSLocalizedString(@"Pause live log", @"log view controller: accessibility label");
 }
 
 - (void)copyLog {
@@ -358,9 +367,11 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
         if (content.empty()) {
           NSString* path_ns = ToNSString(xe::strip_pii(log_path.string()));
           display_text =
-              [NSString stringWithFormat:@"No recent log data found.\n\nExpected file:\n%@\n\n"
-                                         @"Launch a game and keep this open. This view updates "
-                                         @"automatically.",
+              [NSString stringWithFormat:NSLocalizedString(
+                                             @"No recent log data found.\n\nExpected file:\n%@\n\n"
+                                             @"Launch a game and keep this open. This view updates "
+                                             @"automatically.",
+                                             @"log view controller: label text"),
                                          path_ns];
         } else {
           // Older log lines can still carry container paths.
@@ -390,8 +401,10 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
     }
   }
   if (!paused_) {
-    footerLabel_.text = [NSString stringWithFormat:@"Live tail (0.5s). Showing last %zu KB from %@",
-                                                   kMaxLogBytes / 1024, footer_path];
+    footerLabel_.text = [NSString
+        stringWithFormat:NSLocalizedString(@"Live tail (0.5s). Showing last %zu KB from %@",
+                                           @"log view controller: section footer"),
+                         kMaxLogBytes / 1024, footer_path];
   }
 }
 

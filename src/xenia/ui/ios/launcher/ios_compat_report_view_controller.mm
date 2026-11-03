@@ -36,7 +36,7 @@
     selected_perf_ = -1;
     screenshots_ = [[NSMutableArray alloc] init];
     submitting_ = NO;
-    self.title = @"Submit Report";
+    self.title = NSLocalizedString(@"Submit Report", @"compat report view controller: title");
   }
   return self;
 }
@@ -241,17 +241,25 @@
                                                       object:nil
                                                     userInfo:discussion_user_info];
 
-  NSString* message = @"Your compatibility report has been submitted.";
+  NSString* message = NSLocalizedString(@"Your compatibility report has been submitted.",
+                                        @"compat report view controller: message");
   if ([issue_url isKindOfClass:[NSString class]] && issue_url.length > 0) {
-    message = [message stringByAppendingFormat:@"\n\nGitHub issue: %@", issue_url];
+    message = [message
+        stringByAppendingFormat:
+            NSLocalizedString(
+                @"\n\nGitHub issue: %@",
+                @"compat report view controller: appended issue link line in alert message"),
+            issue_url];
   }
 
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"Report Submitted"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Report Submitted",
+                                                 @"compat report view controller: title")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert addAction:[UIAlertAction
-                       actionWithTitle:@"OK"
+                       actionWithTitle:NSLocalizedString(@"OK",
+                                                         @"compat report view controller: title")
                                  style:UIAlertActionStyleDefault
                                handler:^(__unused UIAlertAction* action) {
                                  if (self.navigationController) {
@@ -273,18 +281,26 @@
     return;
   }
   if (selected_status_ < 0) {
-    [self showAlertWithTitle:@"Missing Status" message:@"Please select a compatibility status."];
+    [self showAlertWithTitle:NSLocalizedString(@"Missing Status",
+                                               @"compat report view controller: title")
+                     message:NSLocalizedString(@"Please select a compatibility status.",
+                                               @"compat report view controller: message")];
     return;
   }
   if (selected_perf_ < 0) {
-    [self showAlertWithTitle:@"Missing Performance" message:@"Please select a performance tier."];
+    [self showAlertWithTitle:NSLocalizedString(@"Missing Performance",
+                                               @"compat report view controller: title")
+                     message:NSLocalizedString(@"Please select a performance tier.",
+                                               @"compat report view controller: message")];
     return;
   }
 
   NSString* notes = [self trimmedNotes];
   if (notes.length == 0) {
-    [self showAlertWithTitle:@"Missing Notes"
-                     message:@"Please add a short note about your experience."];
+    [self showAlertWithTitle:NSLocalizedString(@"Missing Notes",
+                                               @"compat report view controller: title")
+                     message:NSLocalizedString(@"Please add a short note about your experience.",
+                                               @"compat report view controller: message")];
     return;
   }
 
@@ -321,7 +337,10 @@
 
 - (void)addScreenshotTapped {
   if (screenshots_.count >= 5) {
-    [self showAlertWithTitle:@"Limit Reached" message:@"You can attach up to 5 screenshots."];
+    [self showAlertWithTitle:NSLocalizedString(@"Limit Reached",
+                                               @"compat report view controller: title")
+                     message:NSLocalizedString(@"You can attach up to 5 screenshots.",
+                                               @"compat report view controller: message")];
     return;
   }
 
@@ -393,17 +412,18 @@
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
   switch (section) {
     case 0:
-      return @"Game";
+      return NSLocalizedString(@"Game", @"compat report view controller: user-visible text");
     case 1:
-      return @"Environment";
+      return NSLocalizedString(@"Environment", @"compat report view controller: user-visible text");
     case 2:
-      return @"Compatibility Status";
+      return NSLocalizedString(@"Compatibility Status",
+                               @"compat report view controller: user-visible text");
     case 3:
-      return @"Performance";
+      return NSLocalizedString(@"Performance", @"compat report view controller: user-visible text");
     case 4:
-      return @"Notes";
+      return NSLocalizedString(@"Notes", @"compat report view controller: user-visible text");
     case 5:
-      return @"Screenshots";
+      return NSLocalizedString(@"Screenshots", @"compat report view controller: user-visible text");
     default:
       return nil;
   }
@@ -414,8 +434,10 @@
     if (!xe_ios_online_features_enabled()) {
       return xe_ios_online_features_off_message();
     }
-    return @"Submitting posts your notes, screenshots, device model and app build publicly on "
-           @"the XeniOS compatibility tracker. Don't include personal information.";
+    return NSLocalizedString(
+        @"Submitting posts your notes, screenshots, device model and app build publicly on "
+        @"the XeniOS compatibility tracker. Don't include personal information.",
+        @"compat report view controller: user-visible text");
   }
   if (section != 1) {
     return nil;
@@ -423,7 +445,10 @@
   NSDictionary* build_info = xe_current_compat_report_build_info();
   NSString* build_label = xe_user_facing_build_label(build_info);
   return build_label.length > 0
-             ? [NSString stringWithFormat:@"Reports are tagged as %@.", build_label]
+             ? [NSString stringWithFormat:NSLocalizedString(
+                                              @"Reports are tagged as %@.",
+                                              @"compat report view controller: user-visible text"),
+                                          build_label]
              : nil;
 }
 
@@ -472,8 +497,10 @@
 
       notes_placeholder_label_ = [[UILabel alloc] init];
       notes_placeholder_label_.translatesAutoresizingMaskIntoConstraints = NO;
-      notes_placeholder_label_.text = @"Describe your experience (e.g. crashes, graphical "
-                                      @"glitches, audio issues, performance drops)...";
+      notes_placeholder_label_.text =
+          NSLocalizedString(@"Describe your experience (e.g. crashes, graphical "
+                            @"glitches, audio issues, performance drops)...",
+                            @"compat report view controller: placeholder");
       notes_placeholder_label_.textColor = [XeniaTheme textMuted];
       notes_placeholder_label_.numberOfLines = 0;
       notes_placeholder_label_.lineBreakMode = NSLineBreakByWordWrapping;
