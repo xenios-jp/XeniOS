@@ -19,6 +19,8 @@
 // and removing wait for the running game to end.
 @interface XeniaSystemSoftwareViewController : XESheetTableViewController
 - (instancetype)initWithGameRunning:(BOOL)game_running;
+// Shown on its own, from the launcher, rather than inside Settings.
+@property(nonatomic) BOOL showsDoneButton;
 @end
 
 #endif  // XENIA_UI_IOS_SETTINGS_IOS_SYSTEM_SOFTWARE_VIEW_CONTROLLER_H_

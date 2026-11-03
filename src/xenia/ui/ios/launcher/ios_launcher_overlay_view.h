@@ -46,9 +46,12 @@
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^profileHandler)(void);
 @property(nonatomic, copy) void (^importHandler)(void);
-// Backs the Xbox 360 Dashboard button beside Import, which shows while the
-// system software is installed.
+// Back the Xbox 360 Dashboard's tile, which leads the library while it has
+// games (an empty library offers the dashboard beside Import instead). The
+// tile starts the dashboard, or sets it up; its menu also opens the system
+// software page.
 @property(nonatomic, copy) void (^dashboardHandler)(void);
+@property(nonatomic, copy) void (^dashboardSystemSoftwareHandler)(void);
 @property(nonatomic, copy) void (^bulkZarConversionHandler)(void);
 // Backs the "Open StikDebug" button on the JIT card. The button is hidden
 // while this is nil.
@@ -71,6 +74,8 @@
 - (void)setJITStatusText:(NSString*)text;
 - (void)setMemoryEntitlementEnabled:(BOOL)enabled;
 - (void)setMemoryEntitlementStatusText:(NSString*)text;
+// The focus index counts the grid's items, the Dashboard tile included; the
+// game handlers above get indexes into the games.
 - (void)setFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll;
 - (NSInteger)focusedGameIndex;
 - (void)reloadGames;

@@ -36,6 +36,7 @@
 @interface XeniaLauncherEmptyStateActionProxy : NSObject
 @property(nonatomic, assign) XeniaIOSLauncherOverlayView* owner;
 - (void)importGames;
+- (void)openDashboard;
 @end
 
 @interface XeniaIOSLauncherOverlayView () <UICollectionViewDataSource,
@@ -45,6 +46,7 @@
 @property(nonatomic, assign) BOOL jitAcquired;
 @property(nonatomic, assign) BOOL memoryEntitlementEnabled;
 - (void)importTapped:(UIButton*)sender;
+- (void)dashboardTapped:(UIButton*)sender;
 @end
 
 @implementation XeniaLauncherEmptyStateActionProxy
@@ -53,11 +55,55 @@
     [_owner importTapped:nil];
   }
 }
+- (void)openDashboard {
+  if (_owner.actionsEnabled) {
+    [_owner dashboardTapped:nil];
+  }
+}
 @end
 
 namespace {
 // Minimum touch target for the plain icon buttons.
 constexpr CGFloat kMinTapTarget = 44.0;
+
+// The Xbox 360 Dashboard tile's art, at a cover's size: the accent fading
+// into the surface, under a grid of tiles. Drawn once per appearance.
+UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
+  static UIImage* art[2] = {nil, nil};
+  UIImage*& cached = art[traits.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0];
+  if (cached) {
+    return cached;
+  }
+  const CGSize size = CGSizeMake(219.0, 300.0);
+  UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
+  format.scale = 2.0;
+  format.opaque = YES;
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
+  UIColor* top = [[XeniaTheme accent] resolvedColorWithTraitCollection:traits];
+  UIColor* bottom = [[XeniaTheme bgSurface2] resolvedColorWithTraitCollection:traits];
+  UIImage* symbol =
+      [[UIImage systemImageNamed:@"square.grid.2x2.fill"
+               withConfiguration:[UIImageSymbolConfiguration
+                                     configurationWithPointSize:64.0
+                                                         weight:UIImageSymbolWeightSemibold]]
+          imageWithTintColor:[UIColor colorWithWhite:1.0 alpha:0.92]
+               renderingMode:UIImageRenderingModeAlwaysOriginal];
+  cached = [[renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient = CGGradientCreateWithColors(
+        space, (CFArrayRef) @[ (id)top.CGColor, (id)bottom.CGColor ], nullptr);
+    CGContextDrawLinearGradient(context.CGContext, gradient, CGPointZero,
+                                CGPointMake(0.0, size.height), 0);
+    CGGradientRelease(gradient);
+    CGColorSpaceRelease(space);
+    const CGSize symbol_size = symbol.size;
+    [symbol drawInRect:CGRectMake((size.width - symbol_size.width) * 0.5,
+                                  (size.height - symbol_size.height) * 0.42, symbol_size.width,
+                                  symbol_size.height)];
+  }] retain];
+  return cached;
+}
 
 bool xe_uses_accessibility_text(UITraitCollection* traits) {
   return UIContentSizeCategoryIsAccessibilityCategory(traits.preferredContentSizeCategory);
@@ -95,7 +141,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* _profileButton;
   UIButton* _openGameButton;
   UIButton* _convertLibraryButton;
-  UIButton* _dashboardButton;
+  BOOL _dashboardInstalled;
   UIView* _jitWarningCard;
   UIImageView* _jitStatusIcon;
   UILabel* _jitTitleLabel;
@@ -415,32 +461,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                         @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
 
-  UIButtonConfiguration* dashboardCfg = [UIButtonConfiguration plainButtonConfiguration];
-  dashboardCfg.image =
-      [UIImage systemImageNamed:@"square.stack.3d.up"
-              withConfiguration:[[UIImageSymbolConfiguration
-                                    configurationWithTextStyle:UIFontTextStyleTitle3
-                                                         scale:UIImageSymbolScaleMedium]
-                                    configurationByApplyingConfiguration:
-                                        [UIImageSymbolConfiguration
-                                            configurationWithWeight:UIImageSymbolWeightMedium]]];
-  dashboardCfg.baseForegroundColor = [XeniaTheme accent];
-  dashboardCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
-  _dashboardButton = [[UIButton buttonWithConfiguration:dashboardCfg primaryAction:nil] retain];
-  _dashboardButton.translatesAutoresizingMaskIntoConstraints = NO;
-  _dashboardButton.hidden = YES;
-  [_dashboardButton addTarget:self
-                       action:@selector(dashboardTapped:)
-             forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(
-      _dashboardButton,
-      NSLocalizedString(@"Xbox 360 Dashboard", @"launcher overlay view: user-visible text"), nil,
-      NSLocalizedString(@"Starts the Xbox 360 Dashboard.",
-                        @"launcher overlay view: user-visible text"),
-      UIAccessibilityTraitButton);
-
-  UIStackView* libraryActionsStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ _convertLibraryButton, _dashboardButton, _openGameButton ]];
+  UIStackView* libraryActionsStack =
+      [[UIStackView alloc] initWithArrangedSubviews:@[ _convertLibraryButton, _openGameButton ]];
   libraryActionsStack.axis = UILayoutConstraintAxisHorizontal;
   libraryActionsStack.alignment = UIStackViewAlignmentCenter;
   libraryActionsStack.spacing = 4.0;
@@ -604,8 +626,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_profileButton release];
   [_openGameButton release];
   [_convertLibraryButton release];
-  [_dashboardButton release];
   [_dashboardHandler release];
+  [_dashboardSystemSoftwareHandler release];
   [_jitWarningCard release];
   [_jitStatusIcon release];
   [_jitTitleLabel release];
@@ -649,8 +671,74 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (void)setDashboardInstalled:(BOOL)installed {
-  _dashboardButton.hidden = !installed;
-  [self applyActionsEnabledState];
+  if (_dashboardInstalled == installed) {
+    return;
+  }
+  _dashboardInstalled = installed;
+  if (_games.count > 0) {
+    [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ [NSIndexPath indexPathForItem:0
+                                                                              inSection:0] ]];
+  } else {
+    _gamesCollectionView.backgroundView = nil;
+    [self updateEmptyState];
+  }
+}
+
+#pragma mark - Library items
+
+// The Dashboard tile leads the grid while the library has games, so the
+// games' items come after it.
+- (NSInteger)gameItemOffset {
+  return _games.count > 0 ? 1 : 0;
+}
+
+- (NSInteger)libraryItemCount {
+  return static_cast<NSInteger>(_games.count) + [self gameItemOffset];
+}
+
+- (BOOL)isDashboardItem:(NSInteger)item {
+  return _games.count > 0 && item == 0;
+}
+
+// The game an item shows: nil for the Dashboard tile and past the end.
+- (XeniaIOSLauncherGameSnapshot*)gameAtItem:(NSInteger)item {
+  const NSInteger index = item - [self gameItemOffset];
+  if (index < 0 || index >= static_cast<NSInteger>(_games.count)) {
+    return nil;
+  }
+  return _games[static_cast<NSUInteger>(index)];
+}
+
+- (void)configureDashboardCell:(XeniaGameTileCell*)cell {
+  NSString* title =
+      NSLocalizedString(@"Xbox 360 Dashboard", @"launcher overlay view: user-visible text");
+  cell.representedTitleId = 0;
+  cell.titleLabel.text = title;
+  cell.iconView.image = xe_dashboard_tile_art(cell.traitCollection);
+  cell.contentTypePill.text =
+      _dashboardInstalled
+          ? @""
+          : NSLocalizedString(@"Set Up", @"launcher overlay view: Dashboard tile label, before "
+                                         @"the system software is installed");
+  cell.contentTypePill.hidden = _dashboardInstalled;
+  cell.contentTypePill.textColor = [XeniaTheme accent];
+  cell.contentTypePill.backgroundColor = [UIColor clearColor];
+  cell.contentTypePill.layer.borderColor = [UIColor clearColor].CGColor;
+  cell.compatPill.text = @"";
+  cell.compatPill.hidden = YES;
+  cell.controllerFocused =
+      _controllerNavigationEnabled && _libraryFocusActive && _focusedGameIndex == 0;
+  cell.accessibilityLabel = title;
+  cell.accessibilityValue =
+      _dashboardInstalled
+          ? nil
+          : NSLocalizedString(@"Not set up", @"launcher overlay view: accessibility value");
+  cell.accessibilityHint = _dashboardInstalled
+                               ? NSLocalizedString(@"Starts the Xbox 360 Dashboard.",
+                                                   @"launcher overlay view: user-visible text")
+                               : NSLocalizedString(@"Sets up the Xbox 360 Dashboard.",
+                                                   @"launcher overlay view: accessibility hint");
+  cell.accessibilityTraits = UIAccessibilityTraitButton;
 }
 
 - (void)openStikDebugTapped:(UIButton*)__unused sender {
@@ -681,14 +769,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _profileButton.enabled = _actionsEnabled;
   _openGameButton.enabled = _actionsEnabled;
   _convertLibraryButton.enabled = _actionsEnabled && !_convertLibraryButton.hidden;
-  _dashboardButton.enabled = _actionsEnabled && !_dashboardButton.hidden;
 
   CGFloat actionAlpha = _actionsEnabled ? 1.0 : 0.5;
   _settingsButton.alpha = actionAlpha;
   _profileButton.alpha = actionAlpha;
   _openGameButton.alpha = actionAlpha;
   _convertLibraryButton.alpha = _convertLibraryButton.hidden ? 0.0 : actionAlpha;
-  _dashboardButton.alpha = _dashboardButton.hidden ? 0.0 : actionAlpha;
 }
 
 - (void)setActionsEnabled:(BOOL)actionsEnabled {
@@ -743,7 +829,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [self clearButtonFocusChrome:_profileButton];
     [self clearButtonFocusChrome:_openGameButton];
     [self clearButtonFocusChrome:_convertLibraryButton];
-    if (_focusedGameIndex >= 0 && _focusedGameIndex < static_cast<NSInteger>(_games.count)) {
+    if (_focusedGameIndex >= 0 && _focusedGameIndex < [self libraryItemCount]) {
       NSIndexPath* focusedPath = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
       [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ focusedPath ]];
     }
@@ -760,7 +846,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 
   if (previousLibraryFocusActive != _libraryFocusActive && _focusedGameIndex >= 0 &&
-      _focusedGameIndex < static_cast<NSInteger>(_games.count)) {
+      _focusedGameIndex < [self libraryItemCount]) {
     NSIndexPath* focusedPath = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
     [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ focusedPath ]];
   }
@@ -790,6 +876,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       [UIAction actionWithHandler:^(__unused UIAction* action) {
         [proxy importGames];
       }];
+  UIButtonConfiguration* dashboardCfg = [UIButtonConfiguration plainButtonConfiguration];
+  dashboardCfg.title = _dashboardInstalled
+                           ? NSLocalizedString(@"Start the Xbox 360 Dashboard",
+                                               @"launcher overlay view: button title")
+                           : NSLocalizedString(@"Set Up the Xbox 360 Dashboard",
+                                               @"launcher overlay view: button title");
+  dashboardCfg.baseForegroundColor = [XeniaTheme accent];
+  empty.secondaryButton = dashboardCfg;
+  empty.secondaryButtonProperties.primaryAction =
+      [UIAction actionWithHandler:^(__unused UIAction* action) {
+        [proxy openDashboard];
+      }];
   UIContentUnavailableView* emptyView =
       [[UIContentUnavailableView alloc] initWithConfiguration:empty];
   _gamesCollectionView.backgroundView = emptyView;
@@ -798,7 +896,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 - (void)setGames:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
   NSArray<XeniaIOSLauncherGameSnapshot*>* oldGames = [_games retain];
+  const NSInteger oldOffset = [self gameItemOffset];
   _games = [games copy];
+  const NSInteger newOffset = [self gameItemOffset];
   _gamesLoaded = YES;
   BOOL hasConvertibleGames = NO;
   for (XeniaIOSLauncherGameSnapshot* game in _games) {
@@ -824,9 +924,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSMutableArray<NSIndexPath*>* deletes = [NSMutableArray array];
   NSMutableArray<NSIndexPath*>* inserts = [NSMutableArray array];
   for (NSOrderedCollectionChange* change in diff) {
-    NSIndexPath* path = [NSIndexPath indexPathForItem:static_cast<NSInteger>(change.index)
-                                            inSection:0];
-    if (change.changeType == NSCollectionChangeRemove) {
+    const BOOL removed = change.changeType == NSCollectionChangeRemove;
+    NSIndexPath* path = [NSIndexPath
+        indexPathForItem:static_cast<NSInteger>(change.index) + (removed ? oldOffset : newOffset)
+               inSection:0];
+    if (removed) {
       [removedOld addIndex:change.index];
       [deletes addObject:path];
     } else {
@@ -855,11 +957,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
         after.decodedIcon = before.decodedIcon;
       }
     } else {
-      [changed addObject:[NSIndexPath indexPathForItem:static_cast<NSInteger>(newIndex)
+      [changed addObject:[NSIndexPath indexPathForItem:static_cast<NSInteger>(newIndex) + newOffset
                                              inSection:0]];
     }
-    if (static_cast<NSInteger>(oldIndex) == _focusedGameIndex) {
-      newFocus = static_cast<NSInteger>(newIndex);
+    if (static_cast<NSInteger>(oldIndex) + oldOffset == _focusedGameIndex) {
+      newFocus = static_cast<NSInteger>(newIndex) + newOffset;
     }
     ++oldIndex;
     ++newIndex;
@@ -869,7 +971,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     _focusedGameIndex = -1;
   } else if (newFocus >= 0) {
     _focusedGameIndex = newFocus;
-  } else if (_focusedGameIndex < 0 || _focusedGameIndex >= static_cast<NSInteger>(_games.count)) {
+  } else if (_focusedGameIndex < 0 || _focusedGameIndex >= [self libraryItemCount]) {
     _focusedGameIndex = 0;
   }
   [self applyActionsEnabledState];
@@ -888,8 +990,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [oldGames release];
     return;
   }
-  if (!oldGames || !self.window || self.hidden) {
-    // Not on screen (or first load): a plain reload is cheaper than a diff.
+  if (!oldGames || !self.window || self.hidden || oldOffset != newOffset) {
+    // Not on screen (or first load), or the Dashboard tile came or went: a
+    // plain reload is cheaper than a diff.
     [_gamesCollectionView reloadData];
     [oldGames release];
     return;
@@ -971,13 +1074,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (void)setFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll {
-  if (_games.count == 0) {
+  const NSInteger itemCount = [self libraryItemCount];
+  if (itemCount == 0) {
     index = -1;
   } else {
     if (index < 0) {
       index = 0;
     }
-    NSInteger maxIndex = static_cast<NSInteger>(_games.count - 1);
+    NSInteger maxIndex = itemCount - 1;
     if (index > maxIndex) {
       index = maxIndex;
     }
@@ -986,19 +1090,17 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _focusedGameIndex = index;
 
   NSMutableArray<NSIndexPath*>* reloadPaths = [NSMutableArray array];
-  if (previous >= 0 && previous < static_cast<NSInteger>(_games.count)) {
+  if (previous >= 0 && previous < itemCount) {
     [reloadPaths addObject:[NSIndexPath indexPathForItem:previous inSection:0]];
   }
-  if (_focusedGameIndex >= 0 && _focusedGameIndex < static_cast<NSInteger>(_games.count) &&
-      _focusedGameIndex != previous) {
+  if (_focusedGameIndex >= 0 && _focusedGameIndex < itemCount && _focusedGameIndex != previous) {
     [reloadPaths addObject:[NSIndexPath indexPathForItem:_focusedGameIndex inSection:0]];
   }
   if (reloadPaths.count > 0) {
     [_gamesCollectionView reconfigureItemsAtIndexPaths:reloadPaths];
   }
 
-  if (scroll && _focusedGameIndex >= 0 &&
-      _focusedGameIndex < static_cast<NSInteger>(_games.count)) {
+  if (scroll && _focusedGameIndex >= 0 && _focusedGameIndex < itemCount) {
     NSIndexPath* path = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
     [_gamesCollectionView scrollToItemAtIndexPath:path
                                  atScrollPosition:UICollectionViewScrollPositionCenteredVertically
@@ -1161,7 +1263,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 - (NSInteger)collectionView:(UICollectionView* __unused)collectionView
      numberOfItemsInSection:(NSInteger)__unused section {
-  return static_cast<NSInteger>(_games.count);
+  return [self libraryItemCount];
 }
 
 - (UICollectionViewCell*)collectionView:(UICollectionView*)collectionView
@@ -1169,7 +1271,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   XeniaGameTileCell* cell =
       [collectionView dequeueReusableCellWithReuseIdentifier:@"ImportedGameCell"
                                                 forIndexPath:indexPath];
-  if (indexPath.item < 0 || static_cast<NSUInteger>(indexPath.item) >= _games.count) {
+  if ([self isDashboardItem:indexPath.item]) {
+    [self configureDashboardCell:cell];
+    return cell;
+  }
+  XeniaIOSLauncherGameSnapshot* game = [self gameAtItem:indexPath.item];
+  if (!game) {
     cell.titleLabel.text = @"";
     cell.iconView.image = nil;
     cell.contentTypePill.text = @"";
@@ -1182,7 +1289,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     return cell;
   }
 
-  XeniaIOSLauncherGameSnapshot* game = _games[static_cast<NSUInteger>(indexPath.item)];
   cell.titleLabel.text = game.title;
   cell.contentTypePill.text = game.contentTypeName ?: @"";
   cell.contentTypePill.hidden = game.contentTypeName.length == 0;
@@ -1293,8 +1399,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)reconfigureVisibleGamesWithTitleId:(uint32_t)titleId {
   NSMutableArray<NSIndexPath*>* paths = [NSMutableArray array];
   for (NSIndexPath* path in _gamesCollectionView.indexPathsForVisibleItems) {
-    if (static_cast<NSUInteger>(path.item) < _games.count &&
-        _games[static_cast<NSUInteger>(path.item)].titleId == titleId) {
+    if ([self gameAtItem:path.item].titleId == titleId) {
       [paths addObject:path];
     }
   }
@@ -1340,10 +1445,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)collectionView:(UICollectionView*)collectionView
     prefetchItemsAtIndexPaths:(NSArray<NSIndexPath*>*)indexPaths {
   for (NSIndexPath* path in indexPaths) {
-    if (path.item < 0 || static_cast<NSUInteger>(path.item) >= _games.count) {
-      continue;
-    }
-    XeniaIOSLauncherGameSnapshot* game = _games[static_cast<NSUInteger>(path.item)];
+    XeniaIOSLauncherGameSnapshot* game = [self gameAtItem:path.item];
     if (game.supportsRemoteArt) {
       [self loadCoverForTitleId:game.titleId collectionView:collectionView];
     }
@@ -1355,12 +1457,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)collectionView:(UICollectionView*)collectionView
     didSelectItemAtIndexPath:(NSIndexPath*)indexPath {
   [collectionView deselectItemAtIndexPath:indexPath animated:YES];
-  if (indexPath.item < 0 || static_cast<NSUInteger>(indexPath.item) >= _games.count) {
+  if (indexPath.item < 0 || indexPath.item >= [self libraryItemCount]) {
     return;
   }
   [self setFocusedGameIndex:indexPath.item scroll:NO];
+  if ([self isDashboardItem:indexPath.item]) {
+    [self dashboardTapped:nil];
+    return;
+  }
   if (_gameLaunchedHandler) {
-    _gameLaunchedHandler(static_cast<NSUInteger>(indexPath.item));
+    _gameLaunchedHandler(static_cast<NSUInteger>(indexPath.item - [self gameItemOffset]));
   }
 }
 
@@ -1398,16 +1504,55 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_gamesCollectionView.collectionViewLayout invalidateLayout];
 }
 
+- (UIContextMenuConfiguration*)dashboardContextMenuForIndexPath:(NSIndexPath*)indexPath {
+  return [UIContextMenuConfiguration
+      configurationWithIdentifier:indexPath
+                  previewProvider:nil
+                   actionProvider:^UIMenu*(NSArray<UIMenuElement*>* __unused suggestedActions) {
+                     // The block retains the overlay for as long as the menu lives.
+                     XeniaIOSLauncherOverlayView* owner = self;
+                     UIAction* open = [UIAction
+                         actionWithTitle:owner->_dashboardInstalled
+                                             ? NSLocalizedString(
+                                                   @"Start Dashboard",
+                                                   @"launcher overlay view: menu action")
+                                             : NSLocalizedString(
+                                                   @"Set Up Dashboard",
+                                                   @"launcher overlay view: menu action")
+                                   image:[UIImage systemImageNamed:owner->_dashboardInstalled
+                                                                       ? @"play.fill"
+                                                                       : @"arrow.down.circle"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   [owner dashboardTapped:nil];
+                                 }];
+                     UIAction* system_software = [UIAction
+                         actionWithTitle:NSLocalizedString(@"System Software",
+                                                           @"launcher overlay view: menu action")
+                                   image:[UIImage systemImageNamed:@"gearshape"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (owner->_dashboardSystemSoftwareHandler) {
+                                     owner->_dashboardSystemSoftwareHandler();
+                                   }
+                                 }];
+                     return [UIMenu menuWithChildren:@[ open, system_software ]];
+                   }];
+}
+
 - (UIContextMenuConfiguration*)collectionView:(UICollectionView*)collectionView
     contextMenuConfigurationForItemAtIndexPath:(NSIndexPath*)indexPath
                                          point:(CGPoint)point {
   (void)collectionView;
   (void)point;
-  if (indexPath.item < 0 || static_cast<NSUInteger>(indexPath.item) >= _games.count) {
+  if ([self isDashboardItem:indexPath.item]) {
+    return [self dashboardContextMenuForIndexPath:indexPath];
+  }
+  if (![self gameAtItem:indexPath.item]) {
     return nil;
   }
 
-  NSUInteger gameIndex = static_cast<NSUInteger>(indexPath.item);
+  NSUInteger gameIndex = static_cast<NSUInteger>(indexPath.item - [self gameItemOffset]);
   return [UIContextMenuConfiguration
       configurationWithIdentifier:indexPath
                   previewProvider:nil
