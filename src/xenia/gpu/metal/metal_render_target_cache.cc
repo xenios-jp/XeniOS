@@ -56,6 +56,7 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_msaa_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_as_rgba16_rgba16f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_cs.h"
@@ -269,6 +270,24 @@ bool IsFull64RGB10FloatToRGBA16OneSample(
          ((key.dest & 0x1F80u) == (26u << 7) ||
           (key.dest & 0x1F80u) == (32u << 7)) &&
          key.sample == 0;
+}
+
+// The two-sample average of a 2x or the four-sample one of a 4x
+// 2_10_10_10_FLOAT (or 2_10_10_10_FLOAT_AS_16_16_16_16) source into
+// 16_16_16_16 or 16_16_16_16_FLOAT, with any exponent bias and number format.
+bool IsFull64RGB10FloatToRGBA16Average(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull64bpp) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  return (((key.edram == 0x03000400u || key.edram == 0x0C000400u) &&
+           key.sample == 4) ||
+          ((key.edram == 0x03000800u || key.edram == 0x0C000800u) &&
+           key.sample == 6)) &&
+         ((key.dest & 0x1F80u) == (26u << 7) ||
+          (key.dest & 0x1F80u) == (32u << 7));
 }
 
 // A one-sample 16_16_16_16 copy into 16_16_16_16, with any exponent bias and
@@ -1026,6 +1045,11 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
           device_, resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs_metallib,
           sizeof(resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs_metallib),
           "resolve_full_64bpp_rgb10f_rgba16_1x_direct");
+  resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_64bpp_rgb10f_rgba16_msaa_direct_cs_metallib,
+          sizeof(resolve_full_64bpp_rgb10f_rgba16_msaa_direct_cs_metallib),
+          "resolve_full_64bpp_rgb10f_rgba16_msaa_direct");
   resolve_specialized_pipelines_.clear();
   for (const ResolveSpecialization& specialization : kResolveSpecializations) {
     resolve_specialized_pipelines_.push_back(
@@ -1202,6 +1226,10 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_) {
     resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_->release();
     resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_ = nullptr;
+  }
+  if (resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_) {
+    resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_->release();
+    resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_ = nullptr;
   }
   if (resolve_full_64bpp_rgba16_1x_direct_pipeline_) {
     resolve_full_64bpp_rgba16_1x_direct_pipeline_->release();
@@ -3413,6 +3441,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   // arithmetic of the generic 64bpp copy.
   const bool rgb10f_rgba16_1x = IsFull64RGB10FloatToRGBA16OneSample(
       copy_shader, copy_shader_constants);
+  // And so are their 2x and 4x averages, from the multisampled render target.
+  const bool rgb10f_rgba16_average = IsFull64RGB10FloatToRGBA16Average(
+      copy_shader, copy_shader_constants);
   const bool rgb10f_1x =
       !rgb10_4x_average &&
       (rgb10f_rgba16_1x ||
@@ -3422,22 +3453,27 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
   const bool copy_from_render_target =
-      rgb10_4x_average || rgb10f_1x || rgba16_1x;
+      rgb10_4x_average || rgb10f_1x || rgba16_1x || rgb10f_rgba16_average;
   // The dump shader's direct resolve only copies bits.
   if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull64bpp &&
-      !rgba16_1x && !rgb10f_rgba16_1x) {
+      !rgba16_1x && !rgb10f_rgba16_1x && !rgb10f_rgba16_average) {
     return false;
   }
   MTL::ComputePipelineState* rgb10_pipeline = nullptr;
   MTL::Texture* rgb10_source = nullptr;
   uint32_t rgb10_origin[2] = {};
+  // For the 2x and 4x averages, the host sample of each guest sample in the
+  // order the copy adds them, a byte each.
+  uint32_t rgb10_host_samples = 0;
   if (copy_from_render_target) {
-    if (rgba16_1x || rgb10f_rgba16_1x) {
+    if (rgba16_1x || rgb10f_rgba16_1x || rgb10f_rgba16_average) {
       // No texture-cache refresh for 64bpp destinations.
       if (!refresh_texture) {
         rgb10_pipeline =
             rgba16_1x ? resolve_full_64bpp_rgba16_1x_direct_pipeline_
-                      : resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_;
+            : rgb10f_rgba16_average
+                ? resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_
+                : resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_;
       }
     } else if (rgb10_4x_average) {
       rgb10_pipeline =
@@ -3465,7 +3501,25 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     // target the way the dump does, which needs the render target to hold the
     // source format, not just its layout.
     const xenos::MsaaSamples source_msaa_samples =
-        rgb10_4x_average ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
+        rgb10_4x_average        ? xenos::MsaaSamples::k4X
+        : rgb10f_rgba16_average ? edram_info.msaa_samples
+                                : xenos::MsaaSamples::k1X;
+    // 2x render targets are 4x where the device has no 2x.
+    const NS::UInteger source_sample_count =
+        source_msaa_samples == xenos::MsaaSamples::k1X   ? 1
+        : source_msaa_samples == xenos::MsaaSamples::k2X ? (msaa_2x_supported_
+                                                                ? 2
+                                                                : 4)
+                                                         : 4;
+    if (source_msaa_samples == xenos::MsaaSamples::k2X) {
+      rgb10_host_samples =
+          draw_util::GetD3D10SampleIndexForGuest2xMSAA(0, msaa_2x_supported_) |
+          (draw_util::GetD3D10SampleIndexForGuest2xMSAA(1, msaa_2x_supported_)
+           << 8);
+    } else if (source_msaa_samples == xenos::MsaaSamples::k4X) {
+      // The guest 4x sample numbering matches the host one.
+      rgb10_host_samples = 0x03020100u;
+    }
     const MTL::PixelFormat source_pixel_format =
         rgba16_1x          ? MTL::PixelFormatRGBA16Uint
         : rgb10_4x_average ? MTL::PixelFormatRGB10A2Unorm
@@ -3474,8 +3528,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         rt_key.msaa_samples != source_msaa_samples ||
         rt_key.Is64bpp() != rgba16_1x ||
         rgb10_source->pixelFormat() != source_pixel_format ||
-        rgb10_source->sampleCount() != (rgb10_4x_average ? 4 : 1) ||
-        (rgb10f_1x &&
+        rgb10_source->sampleCount() != source_sample_count ||
+        ((rgb10f_1x || rgb10f_rgba16_average) &&
          rt_key.GetColorFormat() !=
              xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT &&
          rt_key.GetColorFormat() != xenos::ColorRenderTargetFormat::
@@ -3487,11 +3541,14 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         edram_info.base_tiles < rt_key.base_tiles) {
       return false;
     }
-    // 64bpp tiles are half as wide in pixels.
-    const uint32_t tile_width = xenos::kEdramTileWidthSamples >>
-                                uint32_t(rgb10_4x_average || rgba16_1x);
+    // 64bpp tiles are half as wide in pixels, and so are 4x ones, which are
+    // also half as tall as 1x ones, like 2x ones.
+    const uint32_t tile_width =
+        xenos::kEdramTileWidthSamples >>
+        uint32_t(source_msaa_samples >= xenos::MsaaSamples::k4X || rgba16_1x);
     const uint32_t tile_height =
-        xenos::kEdramTileHeightSamples >> uint32_t(rgb10_4x_average);
+        xenos::kEdramTileHeightSamples >>
+        uint32_t(source_msaa_samples >= xenos::MsaaSamples::k2X);
     const uint32_t base_delta = edram_info.base_tiles - rt_key.base_tiles;
     rgb10_origin[0] = base_delta % edram_info.pitch_tiles * tile_width +
                       resolve_info.coordinate_info.edram_offset_x_div_8 * 8;
@@ -3609,12 +3666,13 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     // it is passed in a buffer slice like the other internal compute
     // constants.
     // The origin, then, for the refresh, the texture's width with the row
-    // offset above it, and its logical height.
+    // offset above it, and its logical height - or, for the 64bpp averages,
+    // which have no refresh, the host sample indices.
     const uint32_t rgb10_constants[4] = {
         rgb10_origin[0], rgb10_origin[1],
         refresh_texture
             ? uint32_t(refresh_texture->width()) | (refresh_offset_y << 16)
-            : 0,
+            : rgb10_host_samples,
         refresh_texture
             ? uint32_t(refresh_texture->height()) | (refresh_alias_count << 16)
             : 0};
@@ -4577,7 +4635,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                   /*allow_full32_rgb10f_1x=*/true,
                                   /*allow_full64_rgba16_1x=*/true,
                                   /*allow_full64_rgb10f_rgba16_1x=*/true,
-                                  /*allow_samples_as_pixels=*/true) ==
+                                  /*allow_samples_as_pixels=*/true,
+                                  /*allow_full64_rgb10f_rgba16_average=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
@@ -4586,6 +4645,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
         // The 64bpp copies have no refresh variant.
         !IsFull64RGBA16OneSample(copy_shader, copy_constants) &&
         !IsFull64RGB10FloatToRGBA16OneSample(copy_shader, copy_constants) &&
+        !IsFull64RGB10FloatToRGBA16Average(copy_shader, copy_constants) &&
         // Four-sample cache reuse exposes helper-lane derivative differences
         // unless guest fragments keep their helpers within each primitive.
         (!IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) ||
