@@ -62,6 +62,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_external_folders_view_controller.mm
   launcher/ios_external_url.h
   launcher/ios_external_url.mm
+  launcher/ios_file_transfer.h
+  launcher/ios_file_transfer.mm
   launcher/ios_game_art.h
   launcher/ios_game_art.mm
   launcher/ios_game_compatibility_cells.h

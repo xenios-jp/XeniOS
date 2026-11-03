@@ -28,6 +28,9 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 
 @implementation XeniaIOSExternalFoldersViewController {
   std::vector<xe::ui::IOSExternalLibraryLocation> folders_;
+  // Set while the picker is up to re-link an unavailable folder.
+  BOOL relinking_;
+  std::filesystem::path relink_old_root_;
 }
 
 - (instancetype)init {
@@ -86,6 +89,11 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 }
 
 - (void)addFolderTapped:(__unused id)sender {
+  relinking_ = NO;
+  [self presentFolderPicker];
+}
+
+- (void)presentFolderPicker {
   UIDocumentPickerViewController* picker =
       [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeFolder ]];
   picker.delegate = self;
@@ -102,7 +110,7 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
                      error.localizedDescription ?: @"Could not unlink the selected folder.");
     return NO;
   }
-  XELOGI("iOS external folders: unlinked '{}'", path.string());
+  XELOGI("iOS external folders: unlinked '{}'", xe::strip_pii(path.string()));
 
   // Duplicate records resolving to the same root are all dropped at once, and
   // the list collapses to the empty-state row when nothing is left. Reload
@@ -122,15 +130,62 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   if (!url) {
     return;
   }
+  const BOOL relinking = relinking_;
+  const std::filesystem::path old_root = relink_old_root_;
+  relinking_ = NO;
+  relink_old_root_.clear();
   NSError* error = nil;
+  // Linking first means a failed pick never loses the old entry.
   if (!xe::ui::SaveIOSExternalLibraryLocation(url, &error)) {
-    XEPresentOKAlert(self, @"Link Failed",
+    XEPresentOKAlert(self, relinking ? @"Re-link Failed" : @"Link Failed",
                      error.localizedDescription ?: @"Could not link the selected folder.");
     return;
   }
-  XELOGI("iOS external folders: linked '{}'", url.path ? [url.path UTF8String] : "");
+  if (relinking && !old_root.empty() &&
+      xe::ui::NormalizedIOSLibraryPath(old_root) !=
+          xe::ui::NormalizedIOSLibraryPath(std::filesystem::path([url.path UTF8String]))) {
+    xe::ui::RemoveIOSExternalLibraryLocationAtRoot(old_root, nullptr, nullptr);
+  }
+  XELOGI("iOS external folders: {} '{}'", relinking ? "re-linked" : "linked",
+         xe::strip_pii(url.path ? [url.path UTF8String] : ""));
   [self notifyExternalLibraryChanged];
   [self reloadFolders];
+}
+
+- (void)documentPickerWasCancelled:(__unused UIDocumentPickerViewController*)controller {
+  relinking_ = NO;
+  relink_old_root_.clear();
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (folders_.empty() || indexPath.row >= static_cast<NSInteger>(folders_.size())) {
+    return;
+  }
+  const xe::ui::IOSExternalLibraryLocation folder = folders_[static_cast<size_t>(indexPath.row)];
+  if (folder.available) {
+    return;
+  }
+  NSString* name = folder.name.empty() ? @"this folder" : ToNSString(folder.name);
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@"Folder Unavailable"
+                       message:[NSString stringWithFormat:@"XeniOS can't reach \"%@\". If the "
+                                                          @"drive or share is connected, pick the "
+                                                          @"folder again to re-link it.",
+                                                          name]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  const std::filesystem::path old_root = folder.path;
+  [alert addAction:[UIAlertAction actionWithTitle:@"Re-link"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            relinking_ = YES;
+                                            relink_old_root_ = old_root;
+                                            [self presentFolderPicker];
+                                          }]];
+  [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Table view
@@ -193,7 +248,10 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 
   NSString* path_text = ToNSString(folder.path.string());
   cell.detailTextLabel.text =
-      folder.available ? path_text : [NSString stringWithFormat:@"Unavailable - %@", path_text];
+      folder.available ? path_text
+                       : [NSString stringWithFormat:@"Unavailable - tap to re-link\n%@", path_text];
+  cell.selectionStyle =
+      folder.available ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
   cell.detailTextLabel.textColor =
       folder.available ? [XeniaTheme textSecondary] : [XeniaTheme statusWarning];
 
