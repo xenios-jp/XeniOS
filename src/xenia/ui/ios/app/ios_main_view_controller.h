@@ -62,6 +62,8 @@ class IOSWindowedAppContext;
                                    maxLength:(NSUInteger)max_length
                                   completion:(void (^)(BOOL cancelled, NSString* text))completion;
 - (BOOL)handleExternalLaunchURL:(NSURL*)url;
+// A file opened from Files or AirDrop: imported or linked, never launched directly.
+- (BOOL)handleOpenedFileURL:(NSURL*)url;
 - (void)evaluateAutomaticStikDebugJITHandoffIfNeeded;
 - (void)presentGameLaunchFailureAlertWithMessage:(NSString*)message;
 - (void)presentGameStopStuckAlert;
