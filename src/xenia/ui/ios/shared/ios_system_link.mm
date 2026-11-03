@@ -989,10 +989,9 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 
 - (void)updateConfiguration {
   UIButtonConfiguration* configuration = self.configuration;
-  // The players in rooms run the app too, but a Mac or an older app doesn't say it's open.
-  const NSInteger total = std::max(xe_ios_system_link_online_here(),
-                                   xe_ios_system_link_online_total() +
-                                       std::max<NSInteger>(0, xe_ios_system_link_online_private()));
+  // Players, not apps: an open app with nobody in a lobby or room isn't someone to play with.
+  const NSInteger total = xe_ios_system_link_online_total() +
+                          std::max<NSInteger>(0, xe_ios_system_link_online_private());
   configuration.title =
       total > 0
           ? [NSString localizedStringWithFormat:NSLocalizedString(
