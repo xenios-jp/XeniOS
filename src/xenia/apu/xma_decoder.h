@@ -81,6 +81,9 @@ class XmaDecoder {
   std::unique_ptr<xe::threading::Event> work_event_ = nullptr;
 
   std::atomic<bool> paused_ = false;
+  // Set while WorkerThreadMain runs. With use_dedicated_xma_thread off the
+  // worker returns at once and contexts decode on the kicking guest thread.
+  std::atomic<bool> worker_loop_running_ = {false};
   xe::threading::Fence pause_fence_;   // Signaled when worker paused.
   xe::threading::Fence resume_fence_;  // Signaled when resume requested.
 
