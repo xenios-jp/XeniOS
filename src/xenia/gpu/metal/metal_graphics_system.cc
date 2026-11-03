@@ -42,6 +42,14 @@ void MetalGraphicsSystem::SetShaderWaitCompileBoost(
   }
 }
 
+void MetalGraphicsSystem::SetCompileBoostAllowed(
+    CommandProcessor* command_processor, bool allowed) {
+  if (command_processor) {
+    static_cast<MetalCommandProcessor*>(command_processor)
+        ->SetCompileThreadBoostAllowed(allowed);
+  }
+}
+
 std::string MetalGraphicsSystem::name() const { return "Metal"; }
 
 X_STATUS MetalGraphicsSystem::Setup(cpu::Processor* processor,
