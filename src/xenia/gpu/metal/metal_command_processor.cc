@@ -810,6 +810,11 @@ void MetalCommandProcessor::InitializeAsyncCompilation() {
   for (size_t i = 0; i < thread_count; ++i) {
     async_compile_threads_.emplace_back([this, i]() { AsyncCompileThread(i); });
   }
+  {
+    // A boost asked for before the pool existed.
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    UpdateCompileThreadLimitLocked();
+  }
 
   XELOGI(
       "Metal: async {} shader/pipeline compilation enabled with {} worker "
@@ -871,7 +876,8 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_compile_shutdown_ = false;
   async_compile_base_thread_count_ = 0;
   async_compile_thread_limit_ = 0;
-  async_compile_hold_boost_ = false;
+  // async_compile_hold_boost_ is the app's request, not pool state: it is kept
+  // so a pool that starts after the request still honours it.
   async_compile_awaiters_ = 0;
   storage_stats_pending_ = false;
   storage_stats_boosted_ = false;
@@ -3408,7 +3414,8 @@ void MetalCommandProcessor::UpdateCompileThreadLimitLocked() {
     return;
   }
   size_t limit = async_compile_base_thread_count_;
-  if (async_compile_hold_boost_ || async_compile_awaiters_) {
+  if ((async_compile_hold_boost_ || async_compile_awaiters_) &&
+      async_compile_boost_allowed_) {
     // Whatever is waiting for the compile threads leaves the CPU to them.
     limit = std::max<size_t>(limit, std::thread::hardware_concurrency());
   }
@@ -3469,18 +3476,28 @@ bool MetalCommandProcessor::TakeQueuedPipelineLocked(uint64_t key) {
 
 void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
   std::lock_guard<std::mutex> lock(async_compile_mutex_);
-  if (async_compile_shutdown_ || !async_compile_base_thread_count_ ||
-      async_compile_hold_boost_ == boost) {
+  if (async_compile_shutdown_ || async_compile_hold_boost_ == boost) {
     return;
   }
   async_compile_hold_boost_ = boost;
   if (boost && storage_stats_pending_) {
     storage_stats_boosted_ = true;
   }
+  // Without a pool yet, it applies when the pool starts.
   UpdateCompileThreadLimitLocked();
   XELOGI("Metal: {} shader/pipeline compile thread(s){}",
          async_compile_thread_limit_,
          boost ? " while the game waits for shaders" : "");
+}
+
+void MetalCommandProcessor::SetCompileThreadBoostAllowed(bool allowed) {
+  std::lock_guard<std::mutex> lock(async_compile_mutex_);
+  if (async_compile_boost_allowed_ == allowed) {
+    return;
+  }
+  async_compile_boost_allowed_ = allowed;
+  UpdateCompileThreadLimitLocked();
+  XELOGI("Metal: compile thread boost {}", allowed ? "allowed" : "off (hot device)");
 }
 
 template <typename Done>

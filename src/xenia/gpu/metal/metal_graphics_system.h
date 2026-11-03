@@ -33,6 +33,10 @@ class MetalGraphicsSystem : public GraphicsSystem {
   // a shader rebuild. Any thread.
   static void SetShaderWaitCompileBoost(CommandProcessor* command_processor,
                                         bool waiting);
+  // Whether that boost may use more than the configured compile threads; off
+  // while the device is hot. Any thread.
+  static void SetCompileBoostAllowed(CommandProcessor* command_processor,
+                                     bool allowed);
 
   std::string name() const override;
 

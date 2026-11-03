@@ -169,6 +169,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // may use every core; off returns to the configured count once the extra
   // threads finish what they hold. Any thread.
   void SetCompileThreadBoost(bool boost);
+  // Whether a boost may raise the pool past the configured count. The app turns
+  // it off while the device is hot, as every core compiling heats it further.
+  // Any thread.
+  void SetCompileThreadBoostAllowed(bool allowed);
   // Blocks until every command buffer has completed and run its handlers, then
   // returns the GPU time (GPUEndTime - GPUStartTime) summed over all of them.
   uint64_t AwaitCompletedGpuTimeNs(uint64_t* command_buffers);
@@ -847,6 +851,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // What raises the limit to every core: the guest held for a rebuild
   // (SetCompileThreadBoost), and threads blocked on the compile threads.
   bool async_compile_hold_boost_ = false;
+  bool async_compile_boost_allowed_ = true;
   size_t async_compile_awaiters_ = 0;
   // The last pipeline AcquirePipelineState reported pending, for
   // AwaitPendingPipeline. Command processor thread only.
