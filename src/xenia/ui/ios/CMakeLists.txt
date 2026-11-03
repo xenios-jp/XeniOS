@@ -32,6 +32,8 @@ target_sources(xenia-ui-ios PRIVATE
   game/ios_achievement_notification_presenter.mm
   game/ios_achievements_view_controller.h
   game/ios_achievements_view_controller.mm
+  game/ios_launch_status.h
+  game/ios_launch_status.mm
   game/ios_metal_view.h
   game/ios_metal_view.mm
   game/ios_shader_compile_indicator.h
