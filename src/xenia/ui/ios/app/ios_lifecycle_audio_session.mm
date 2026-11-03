@@ -27,9 +27,9 @@ namespace {
 // (xenia/apu/phase/phase_audio_driver.mm) restarts its engine on it.
 NSString* const kAudioSessionRestoredNotification = @"XeniaAudioSessionRestored";
 
-// The one place the category is chosen. Playback ignores the silent switch and
-// stops other apps' audio; AVAudioSessionCategorySoloAmbient would follow the
-// silent switch. Pending a product decision.
+// The one place the category is chosen. Playback ignores the silent switch, as
+// decided for XeniOS, and stops other apps' audio; AVAudioSessionCategorySoloAmbient
+// would follow the silent switch.
 NSString* AudioSessionCategory() { return AVAudioSessionCategoryPlayback; }
 
 constexpr int kRestoreMaxAttempts = 10;
