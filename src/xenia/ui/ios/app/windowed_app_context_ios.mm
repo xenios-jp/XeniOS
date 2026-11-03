@@ -9,8 +9,12 @@
 
 #include "xenia/ui/ios/app/windowed_app_context_ios.h"
 
+#include "xenia/base/logging.h"
+
 #import <UIKit/UIKit.h>
 #import <dispatch/dispatch.h>
+
+#import "xenia/ui/ios/shared/ios_alert_actions.h"
 
 namespace xe {
 namespace ui {
@@ -56,6 +60,16 @@ bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const s
   UIViewController* base_view_controller = view_controller_;
   if ([NSThread isMainThread]) {
     dispatch_release(sem);
+    // The answer can't be waited for here. A notice with one button is still
+    // worth showing, but a choice can't be made on the user's behalf.
+    if (prompt_buttons.count > 1) {
+      XELOGW("PromptMessageBoxUI: \"{}\" asks for a choice on the UI thread, not shown",
+             title);
+      if (selected_button_out) {
+        *selected_button_out = selected_button;
+      }
+      return false;
+    }
     UIViewController* presenter = base_view_controller;
     while (presenter.presentedViewController) {
       presenter = presenter.presentedViewController;
@@ -124,6 +138,11 @@ bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const s
     if (preferred_action) {
       alert.preferredAction = preferred_action;
     }
+    // B on a controller, or leaving the game, answers it as cancelled.
+    XeniaAlertSetCancelHandler(alert, ^{
+      dispatch_semaphore_signal(sem);
+    });
+    XeniaAlertMarkGuestPrompt(alert);
     [presenter presentViewController:alert animated:YES completion:nil];
   });
 
@@ -133,6 +152,20 @@ bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const s
     *selected_button_out = selected_button;
   }
   return shown ? true : false;
+}
+
+void IOSWindowedAppContext::CancelGuestPrompts() const {
+  UIViewController* view_controller = view_controller_;
+  if (!view_controller) {
+    return;
+  }
+  if ([NSThread isMainThread]) {
+    XeniaCancelGuestAlerts(view_controller);
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    XeniaCancelGuestAlerts(view_controller);
+  });
 }
 
 void IOSWindowedAppContext::NotifyUILoopOfPendingFunctions() {

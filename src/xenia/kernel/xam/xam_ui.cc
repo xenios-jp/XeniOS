@@ -550,6 +550,8 @@ dword_result_t XamShowKeyboardUI_entry(
         user_index, title ? xe::to_utf8(title.value()) : "",
         description ? xe::to_utf8(description.value()) : "",
         default_text ? xe::to_utf8(default_text.value()) : "",
+        // The last unit holds the terminator.
+        buffer_length - 1,
         [buffer, buffer_length](const std::u16string& text) {
           string_util::copy_and_swap_truncating(buffer, text, buffer_length);
         }, overlapped);
