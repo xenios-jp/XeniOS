@@ -73,6 +73,9 @@
 /* document import coordinator: message */
 "%@\nFor very large files, Link Folder plays them in place without copying." = "%@\nFor very large files, Link Folder plays them in place without copying.";
 
+/* system software view controller: install progress */
+"%d%% done" = "%d%% done";
+
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
 
@@ -114,6 +117,9 @@
 
 /* Control tooltip line; %s is the tint style */
 "\nTint: %s" = "\nTint: %s";
+
+/* system software view controller: footer */
+"A failed install left the previous system software in the \"unrestored\" folder in XeniOS's system folder in Files. Move it back or delete it to install again." = "A failed install left the previous system software in the \"unrestored\" folder in XeniOS's system folder in Files. Move it back or delete it to install again.";
 
 /* zar conversion coordinator: user-visible text */
 "A few seconds remaining" = "A few seconds remaining";
@@ -423,6 +429,9 @@
 /* game content view controller: message */
 "Checking the package..." = "Checking the package...";
 
+/* system software view controller: status */
+"Checking…" = "Checking…";
+
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -662,6 +671,12 @@
 /* Error shown when saving a touch layout; %s is the system error */
 "Could not write layout file: %s" = "Could not write layout file: %s";
 
+/* system software view controller: title */
+"Couldn't Install the System Software" = "Couldn't Install the System Software";
+
+/* system software view controller: title */
+"Couldn't Remove the System Software" = "Couldn't Remove the System Software";
+
 /* compat report submission: user-visible text */
 "Couldn't Send Report" = "Couldn't Send Report";
 
@@ -834,6 +849,9 @@
 /* zar conversion coordinator: title */
 "Delete the imported source file now that the .zar archive exists." = "Delete the imported source file now that the .zar archive exists.";
 
+/* system software view controller: message */
+"Delete XeniOS's system folder in Files instead." = "Delete XeniOS's system folder in Files instead.";
+
 /* Toast; %@ is the layout name */
 "Deleted %@." = "Deleted %@.";
 
@@ -946,6 +964,9 @@
 
 /* Error text; %ld is the HTTP status code */
 "Download failed with HTTP %ld." = "Download failed with HTTP %ld.";
+
+/* system software view controller: footer */
+"Download the USB system update from Microsoft's page to Files, then install it here. You can pick the zip or the folder Files expands it to." = "Download the USB system update from Microsoft's page to Files, then install it here. You can pick the zip or the folder Files expands it to.";
 
 /* Toast; %@ is the host name of the download source */
 "Downloading touch layout from %@..." = "Downloading touch layout from %@...";
@@ -1280,6 +1301,9 @@
 "Games may stutter until this finishes." = "Games may stutter until this finishes.";
 
 /* settings hub view controller: title */
+"Games · Install the system update and the Xbox 360 Dashboard." = "Games · Install the system update and the Xbox 360 Dashboard.";
+
+/* settings hub view controller: title */
 "Games · Manage title-specific content from a game tile." = "Games · Manage title-specific content from a game tile.";
 
 /* settings hub view controller: title */
@@ -1287,6 +1311,9 @@
 
 /* settings hub view controller: title */
 "Games · Rescan XeniOS storage and update the launcher grid." = "Games · Rescan XeniOS storage and update the launcher grid.";
+
+/* system software view controller: action */
+"Get the Update from Microsoft" = "Get the Update from Microsoft";
 
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
@@ -1468,6 +1495,12 @@
 /* game content view controller: title */
 "Install Failed" = "Install Failed";
 
+/* system software view controller: action */
+"Install from Files" = "Install from Files";
+
+/* settings hub view controller: title */
+"Install the system update that has the Xbox 360 Dashboard." = "Install the system update that has the Xbox 360 Dashboard.";
+
 /* Alert message; %@ is the host name of the download source */
 "Install the touch layout from %@?" = "Install the touch layout from %@?";
 
@@ -1484,7 +1517,8 @@
    Fallback alert title: install a touch layout */
 "Install Touch Layout" = "Install Touch Layout";
 
-/* game content view controller: title */
+/* game content view controller: title
+   system software view controller: status */
 "Installed" = "Installed";
 
 /* game content view controller: user-visible text */
@@ -1492,6 +1526,9 @@
 
 /* document import coordinator: message */
 "Installed title update." = "Installed title update.";
+
+/* system software view controller: title */
+"Installing System Software" = "Installing System Software";
 
 /* game content view controller: title */
 "Invalid Package" = "Invalid Package";
@@ -1907,6 +1944,9 @@
 /* file transfer: user-visible text */
 "Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying." = "Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying.";
 
+/* system software view controller: status */
+"Not Installed" = "Not Installed";
+
 /* Alert button: dismiss without enabling */
 "Not Now" = "Not Now";
 
@@ -2013,11 +2053,17 @@
 /* VoiceOver hint for the Display button */
 "Opens display scaling and position options." = "Opens display scaling and position options.";
 
+/* system software view controller: accessibility hint */
+"Opens Files to pick the system update zip or its folder." = "Opens Files to pick the system update zip or its folder.";
+
 /* VoiceOver hint for the Graphics button */
 "Opens graphics compatibility settings." = "Opens graphics compatibility settings.";
 
 /* VoiceOver hint of a link button */
 "Opens in Safari." = "Opens in Safari.";
+
+/* system software view controller: accessibility hint */
+"Opens Microsoft's system update page in Safari." = "Opens Microsoft's system update page in Safari.";
 
 /* launcher overlay view: user-visible text */
 "Opens profile management." = "Opens profile management.";
@@ -2236,6 +2282,12 @@
 /* Section header in the pause menu */
 "Quick Settings" = "Quick Settings";
 
+/* system software view controller: footer */
+"Quit the game to install the system software." = "Quit the game to install the system software.";
+
+/* system software view controller: footer */
+"Quit the game to remove the system software." = "Quit the game to remove the system software.";
+
 /* Slider label in the touch analog tuning screen */
 "Radius" = "Radius";
 
@@ -2267,14 +2319,29 @@
 /* Title of the Refresh submenu */
 "Refresh: Uncapped" = "Refresh: Uncapped";
 
+/* system software view controller: action */
+"Reinstall from Files" = "Reinstall from Files";
+
 /* game compatibility cells: label text */
 "RELEASE SUMMARY" = "RELEASE SUMMARY";
+
+/* system software view controller: action */
+"Remove" = "Remove";
+
+/* system software view controller: action */
+"Remove System Software" = "Remove System Software";
+
+/* system software view controller: title */
+"Remove System Software?" = "Remove System Software?";
 
 /* zar conversion coordinator: title */
 "Remove the linked library entry. The source files stay on the external drive." = "Remove the linked library entry. The source files stay on the external drive.";
 
 /* Result message; %llu is the number of items removed */
 "Removed %llu cached item(s). Relaunch before testing." = "Removed %llu cached item(s). Relaunch before testing.";
+
+/* system software view controller: accessibility hint */
+"Removes the system software. Asks first." = "Removes the system software. Asks first.";
 
 /* Context menu item in the layout library
    Swipe action in the layout library */
@@ -2590,6 +2657,9 @@
 /* Launcher label; %@ is the signed-in gamertag */
 "Signed in: %@" = "Signed in: %@";
 
+/* system software view controller: label */
+"Size" = "Size";
+
 /* Row subtitle in the touch control edit panel */
 "Slide while holding" = "Slide while holding";
 
@@ -2620,8 +2690,14 @@
 /* Name of a controller button in a touch control preview */
 "Start" = "Start";
 
+/* system software view controller: message */
+"Start the Xbox 360 Dashboard from the Library." = "Start the Xbox 360 Dashboard from the Library.";
+
 /* Launch screen status: the game runs, nothing shown yet */
 "Starting the game…" = "Starting the game…";
+
+/* launcher overlay view: user-visible text */
+"Starts the Xbox 360 Dashboard." = "Starts the Xbox 360 Dashboard.";
 
 /* game compatibility cells: detail text */
 "STATUS" = "STATUS";
@@ -2672,6 +2748,9 @@
 
 /* launcher overlay view: accessibility hint */
 "Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
+
+/* system software view controller: title */
+"System Software Installed" = "System Software Installed";
 
 /* Row title in the touch control edit panel */
 "Tap" = "Tap";
@@ -2739,6 +2818,9 @@
 /* game patches view controller: user-visible text */
 "The patches folder was not found." = "The patches folder was not found.";
 
+/* system software view controller: install error */
+"The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again." = "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again.";
+
 /* compat report submission: user-visible text */
 "The report server is having trouble right now. Please try again later." = "The report server is having trouble right now. Please try again later.";
 
@@ -2751,6 +2833,12 @@
 /* Placeholder for the host name of a layout download source */
 "the source" = "the source";
 
+/* system software view controller: install error */
+"The system software couldn't be written. Check that there is enough free space." = "The system software couldn't be written. Check that there is enough free space.";
+
+/* system software view controller: install error */
+"The system update couldn't be read." = "The system update couldn't be read.";
+
 /* Error text: download failed */
 "The touch layout could not be downloaded." = "The touch layout could not be downloaded.";
 
@@ -2759,6 +2847,12 @@
 
 /* Error text: layout payload is empty */
 "The touch layout payload was empty." = "The touch layout payload was empty.";
+
+/* system software view controller: footer */
+"The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system folder in Files." = "The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system folder in Files.";
+
+/* system software view controller: message */
+"The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay." = "The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay.";
 
 /* Row title in the touch control edit panel */
 "Then button" = "Then button";
@@ -2795,6 +2889,9 @@
 
 /* Launch screen note: a launch step is slow */
 "This is taking longer than usual." = "This is taking longer than usual.";
+
+/* system software view controller: install error */
+"This isn't a USB system update. Pick the system update zip from Microsoft, or the folder Files expands it to." = "This isn't a USB system update. Pick the system update zip from Microsoft, or the folder Files expands it to.";
 
 /* Alert message: touch layout needs a title ID */
 "This item does not expose a title ID, so a title-specific touch layout cannot be saved." = "This item does not expose a title ID, so a title-specific touch layout cannot be saved.";
@@ -3044,7 +3141,8 @@
 /* config view controller: user-visible text */
 "Value Not Accepted" = "Value Not Accepted";
 
-/* settings hub view controller: title */
+/* settings hub view controller: title
+   system software view controller: label */
 "Version" = "Version";
 
 /* Slider label in the touch analog tuning screen */
@@ -3107,6 +3205,14 @@
 
 /* game content view controller: title */
 "Wrong Game" = "Wrong Game";
+
+/* launcher overlay view: user-visible text
+   main view controller: title */
+"Xbox 360 Dashboard" = "Xbox 360 Dashboard";
+
+/* settings hub view controller: title
+   system software view controller: title */
+"Xbox 360 System Software" = "Xbox 360 System Software";
 
 /* Title of an information message box */
 "XeniOS" = "XeniOS";

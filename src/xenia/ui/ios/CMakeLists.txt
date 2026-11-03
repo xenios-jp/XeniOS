@@ -60,6 +60,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_compat_summary.mm
   launcher/ios_content_management.h
   launcher/ios_content_management.mm
+  launcher/ios_dashboard.h
+  launcher/ios_dashboard.mm
   launcher/ios_document_import_coordinator.h
   launcher/ios_document_import_coordinator.mm
   launcher/ios_external_folders_view_controller.h
@@ -123,6 +125,8 @@ target_sources(xenia-ui-ios PRIVATE
   settings/ios_profile_view_controller.mm
   settings/ios_settings_hub_view_controller.h
   settings/ios_settings_hub_view_controller.mm
+  settings/ios_system_software_view_controller.h
+  settings/ios_system_software_view_controller.mm
   shared/apple_theme_tokens.cc
   shared/apple_theme_tokens.h
   shared/apple_ui_navigation.cc

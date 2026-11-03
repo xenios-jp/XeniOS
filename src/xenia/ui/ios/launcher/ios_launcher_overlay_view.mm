@@ -95,6 +95,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* _profileButton;
   UIButton* _openGameButton;
   UIButton* _convertLibraryButton;
+  UIButton* _dashboardButton;
   UIView* _jitWarningCard;
   UIImageView* _jitStatusIcon;
   UILabel* _jitTitleLabel;
@@ -414,8 +415,32 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                         @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
 
-  UIStackView* libraryActionsStack =
-      [[UIStackView alloc] initWithArrangedSubviews:@[ _convertLibraryButton, _openGameButton ]];
+  UIButtonConfiguration* dashboardCfg = [UIButtonConfiguration plainButtonConfiguration];
+  dashboardCfg.image =
+      [UIImage systemImageNamed:@"square.stack.3d.up"
+              withConfiguration:[[UIImageSymbolConfiguration
+                                    configurationWithTextStyle:UIFontTextStyleTitle3
+                                                         scale:UIImageSymbolScaleMedium]
+                                    configurationByApplyingConfiguration:
+                                        [UIImageSymbolConfiguration
+                                            configurationWithWeight:UIImageSymbolWeightMedium]]];
+  dashboardCfg.baseForegroundColor = [XeniaTheme accent];
+  dashboardCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
+  _dashboardButton = [[UIButton buttonWithConfiguration:dashboardCfg primaryAction:nil] retain];
+  _dashboardButton.translatesAutoresizingMaskIntoConstraints = NO;
+  _dashboardButton.hidden = YES;
+  [_dashboardButton addTarget:self
+                       action:@selector(dashboardTapped:)
+             forControlEvents:UIControlEventTouchUpInside];
+  XEApplyAccessibility(
+      _dashboardButton,
+      NSLocalizedString(@"Xbox 360 Dashboard", @"launcher overlay view: user-visible text"), nil,
+      NSLocalizedString(@"Starts the Xbox 360 Dashboard.",
+                        @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
+
+  UIStackView* libraryActionsStack = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _convertLibraryButton, _dashboardButton, _openGameButton ]];
   libraryActionsStack.axis = UILayoutConstraintAxisHorizontal;
   libraryActionsStack.alignment = UIStackViewAlignmentCenter;
   libraryActionsStack.spacing = 4.0;
@@ -579,6 +604,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_profileButton release];
   [_openGameButton release];
   [_convertLibraryButton release];
+  [_dashboardButton release];
+  [_dashboardHandler release];
   [_jitWarningCard release];
   [_jitStatusIcon release];
   [_jitTitleLabel release];
@@ -615,6 +642,17 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
+- (void)dashboardTapped:(UIButton*)__unused sender {
+  if (_dashboardHandler) {
+    _dashboardHandler();
+  }
+}
+
+- (void)setDashboardInstalled:(BOOL)installed {
+  _dashboardButton.hidden = !installed;
+  [self applyActionsEnabledState];
+}
+
 - (void)openStikDebugTapped:(UIButton*)__unused sender {
   if (_openStikDebugHandler) {
     _openStikDebugHandler();
@@ -643,12 +681,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _profileButton.enabled = _actionsEnabled;
   _openGameButton.enabled = _actionsEnabled;
   _convertLibraryButton.enabled = _actionsEnabled && !_convertLibraryButton.hidden;
+  _dashboardButton.enabled = _actionsEnabled && !_dashboardButton.hidden;
 
   CGFloat actionAlpha = _actionsEnabled ? 1.0 : 0.5;
   _settingsButton.alpha = actionAlpha;
   _profileButton.alpha = actionAlpha;
   _openGameButton.alpha = actionAlpha;
   _convertLibraryButton.alpha = _convertLibraryButton.hidden ? 0.0 : actionAlpha;
+  _dashboardButton.alpha = _dashboardButton.hidden ? 0.0 : actionAlpha;
 }
 
 - (void)setActionsEnabled:(BOOL)actionsEnabled {
