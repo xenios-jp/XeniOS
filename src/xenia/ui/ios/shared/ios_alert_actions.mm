@@ -16,6 +16,8 @@ namespace {
 char kActionHandlerKey;
 char kCancelHandlerKey;
 char kGuestPromptKey;
+// What answers a guest prompt that is not an alert (a sheet) when the game ends.
+char kGuestCancelKey;
 
 using ActionHandler = void (^)(UIAlertAction*);
 
@@ -174,6 +176,10 @@ void XeniaPresentGuestPrompt(UIViewController* root, UIViewController* prompt,
   }
   if ([prompt isKindOfClass:[UIAlertController class]]) {
     XeniaAlertMarkGuestPrompt((UIAlertController*)prompt);
+  } else {
+    // A sheet has no cancel action to run: the failure answer is its cancel.
+    objc_setAssociatedObject(prompt, &kGuestPromptKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(prompt, &kGuestCancelKey, failed, OBJC_ASSOCIATION_COPY_NONATOMIC);
   }
   __block BOOL shown = NO;
   [top presentViewController:prompt
@@ -203,6 +209,20 @@ void XeniaCancelGuestAlerts(UIViewController* root) {
         objc_getAssociatedObject(presented, &kGuestPromptKey)) {
       // Whatever it presented goes with it.
       XeniaAlertCancel((UIAlertController*)presented);
+      return;
+    }
+    if (objc_getAssociatedObject(presented, &kGuestPromptKey)) {
+      // A sheet: answer it now, so the waiting thread doesn't sit out the
+      // dismissal, and only once.
+      void (^cancel)(void) = objc_getAssociatedObject(presented, &kGuestCancelKey);
+#if !__has_feature(objc_arc)
+      cancel = [[cancel copy] autorelease];  // Outlives the association.
+#endif
+      objc_setAssociatedObject(presented, &kGuestCancelKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+      if (cancel) {
+        cancel();
+      }
+      [presented dismissViewControllerAnimated:YES completion:nil];
       return;
     }
     presented = next;
