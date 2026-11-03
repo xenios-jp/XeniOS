@@ -1,0 +1,588 @@
+name: Apple Publish
+
+# Builds the XeniOS IPA and publishes it as a GitHub release, then records it in
+# xenios.jp's build manifests. Ported from the public XeniOS repository's workflow
+# (branch xenios) to this tree's CMake iOS build. iPhone and iPad only: the site's
+# Mac entry is left as it is.
+#
+# Pushes to ci/** branches, and manual runs with "publish" off, build the IPA
+# and stop: the IPA is a workflow artifact, nothing is published.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Publish channel"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - "release"
+          - "preview"
+      stage:
+        description: "Release stage"
+        required: true
+        default: "stable"
+        type: choice
+        options:
+          - "stable"
+          - "alpha"
+          - "beta"
+          - "rc"
+      version:
+        description: "Marketing version override (optional)"
+        required: false
+        type: string
+      build_number:
+        description: "Build number override (optional)"
+        required: false
+        type: string
+      publish:
+        description: "Publish the GitHub release and the xenios.jp manifests (off: build the IPA only)"
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - "preview"
+      - "xenios"
+      - "ci/**"
+    tags:
+      - "v*"
+      - "release-*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "apple-publish-${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  # Apple's Metal Shader Converter for iPhoneOS. Apple's download needs a developer
+  # login, so the dylib is mirrored as an asset of release MSC_IOS_RELEASE_TAG in
+  # MSC_IOS_REPO (Apache 2.0 permits it; every IPA ships it too). The hash pins the
+  # mirrored bytes and codesign proves they are Apple's.
+  MSC_IOS_REPO: "xenios-jp/metal-shader-converter"
+  MSC_IOS_RELEASE_TAG: "ios-4.0.3"
+  MSC_IOS_SHA256: "bd6b729dcbde133a511d95130eb4d287a1e18b4170453f8b350e78a20bfc37aa"
+
+jobs:
+  resolve-metadata:
+    name: Resolve publish metadata
+    runs-on: ubuntu-latest
+    outputs:
+      channel: "${{ steps.channel.outputs.channel }}"
+      publish: "${{ steps.channel.outputs.publish }}"
+      stage: "${{ steps.metadata.outputs.stage }}"
+      version: "${{ steps.metadata.outputs.version }}"
+      build_number: "${{ steps.metadata.outputs.build_number }}"
+      commit_short: "${{ steps.metadata.outputs.commit_short }}"
+      issued_at: "${{ steps.metadata.outputs.issued_at }}"
+      display_label: "${{ steps.metadata.outputs.display_label }}"
+      ios_build_id: "${{ steps.metadata.outputs.ios_build_id }}"
+      release_tag: "${{ steps.release.outputs.tag }}"
+      prerelease: "${{ steps.release.outputs.prerelease }}"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve publish channel
+        id: channel
+        shell: bash
+        env:
+          INPUT_CHANNEL: "${{ inputs.channel }}"
+          INPUT_PUBLISH: "${{ inputs.publish }}"
+        run: |
+          set -euo pipefail
+
+          is_preview_ref() {
+            [[ "${1}" == "refs/heads/preview" ]]
+          }
+
+          is_release_ref() {
+            [[ "${1}" == "refs/heads/xenios" || "${1}" == refs/tags/v* || "${1}" == refs/tags/release-* ]]
+          }
+
+          publish="true"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            channel="${INPUT_CHANNEL}"
+            if [[ "${INPUT_PUBLISH}" != "true" ]]; then
+              publish="false"
+            elif [[ "${channel}" == "preview" ]]; then
+              is_preview_ref "${GITHUB_REF}" || {
+                echo "::error::Manual preview publishes must run from refs/heads/preview (got ${GITHUB_REF})"
+                exit 1
+              }
+            elif [[ "${channel}" == "release" ]]; then
+              is_release_ref "${GITHUB_REF}" || {
+                echo "::error::Manual release publishes must run from refs/heads/xenios or release tags (got ${GITHUB_REF})"
+                exit 1
+              }
+            fi
+          elif is_preview_ref "${GITHUB_REF}"; then
+            channel="preview"
+          elif is_release_ref "${GITHUB_REF}"; then
+            channel="release"
+          elif [[ "${GITHUB_REF}" == refs/heads/ci/* ]]; then
+            channel="preview"
+            publish="false"
+          else
+            echo "::error::Unsupported ref ${GITHUB_REF} for trusted Apple publish"
+            exit 1
+          fi
+          case "${channel}" in
+            release|preview)
+              ;;
+            *)
+              echo "::error::Unsupported channel ${channel}"
+              exit 1
+              ;;
+          esac
+          echo "channel=${channel}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute publish metadata
+        id: metadata
+        shell: bash
+        env:
+          CHANNEL: "${{ steps.channel.outputs.channel }}"
+          VERSION_OVERRIDE: "${{ inputs.version }}"
+          BUILD_NUMBER_OVERRIDE: "${{ inputs.build_number }}"
+          STAGE_OVERRIDE: "${{ inputs.stage }}"
+        run: |
+          set -euo pipefail
+          args=(--channel "${CHANNEL}")
+          if [ -n "${VERSION_OVERRIDE}" ]; then
+            args+=(--version "${VERSION_OVERRIDE}")
+          fi
+          if [ -n "${BUILD_NUMBER_OVERRIDE}" ]; then
+            args+=(--build-number "${BUILD_NUMBER_OVERRIDE}")
+          fi
+          if [ -n "${STAGE_OVERRIDE}" ]; then
+            args+=(--stage "${STAGE_OVERRIDE}")
+          fi
+          args+=(--print-metadata)
+          ./tools/build_apple_release.sh "${args[@]}" > build-metadata.env
+
+          while IFS='=' read -r key value; do
+            case "$key" in
+              channel|stage|version|build_number|commit_short|issued_at|display_label|ios_build_id)
+                echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          done < build-metadata.env
+
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        env:
+          CHANNEL: "${{ steps.channel.outputs.channel }}"
+          STAGE: "${{ steps.metadata.outputs.stage }}"
+          VERSION: "${{ steps.metadata.outputs.version }}"
+          BUILD_NUMBER: "${{ steps.metadata.outputs.build_number }}"
+        run: |
+          set -euo pipefail
+
+          stage_suffix=""
+          if [[ -n "${STAGE}" && "${STAGE}" != "stable" ]]; then
+            stage_suffix="-${STAGE}"
+          fi
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          elif [[ "${CHANNEL}" == "preview" ]]; then
+            release_tag="preview-v${VERSION}-build-${BUILD_NUMBER}${stage_suffix}"
+          else
+            release_tag="release-v${VERSION}-build-${BUILD_NUMBER}${stage_suffix}"
+          fi
+
+          if [[ "${CHANNEL}" == "preview" ]]; then
+            prerelease="true"
+          else
+            prerelease="false"
+          fi
+
+          echo "tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload publish metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: "apple-publish-metadata"
+          path: "build-metadata.env"
+          if-no-files-found: error
+
+  build-ios:
+    name: Build iOS arm64
+    needs:
+      - resolve-metadata
+    # The iOS 27 SDK is needed (crash reporter extension, StateReporting); the
+    # macos-26 image tops out at Xcode 26.
+    runs-on: xcode-27
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "${xcode}" ]; then
+            echo "::error::No Xcode 27 on this runner:"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "${xcode}"
+          xcodebuild -version
+
+      - name: Install Metal Toolchain
+        # Apple's MobileAsset catalog fetch is flaky; retry with backoff.
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo xcodebuild -downloadComponent MetalToolchain; then
+              exit 0
+            fi
+            if [ $attempt -lt 5 ]; then
+              delay=$((attempt * 30))
+              echo "::warning::MetalToolchain download attempt $attempt failed; retrying in ${delay}s"
+              sleep $delay
+            fi
+          done
+          echo "::error::MetalToolchain download failed after 5 attempts"
+          exit 1
+
+      - name: Cache Slang
+        id: cache-slang
+        uses: actions/cache@v4
+        with:
+          path: .slang
+          # Keep in sync with SLANG_VERSION in xenia-build.py.
+          key: ${{ runner.os }}-${{ runner.arch }}-slang-2026.8
+
+      - name: Download Slang
+        if: steps.cache-slang.outputs.cache-hit != 'true'
+        run: ./xenia-build.py slang
+
+      - name: Cache Metal Shader Converter (macOS)
+        id: cache-msc
+        uses: actions/cache@v4
+        with:
+          path: .metal-shader-converter
+          # Keep in sync with MSC_VERSION in xenia-build.py.
+          key: ${{ runner.os }}-metal-shader-converter-4.0-beta2
+
+      - name: Download Metal Shader Converter (macOS, for the host shader tool's configure)
+        if: steps.cache-msc.outputs.cache-hit != 'true'
+        run: ./xenia-build.py msc
+
+      - name: Download Metal Shader Converter (iOS)
+        shell: bash
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          set -euo pipefail
+          msc_dir="${RUNNER_TEMP}/msc-ios"
+          mkdir -p "${msc_dir}"
+          gh release download "${MSC_IOS_RELEASE_TAG}" --repo "${MSC_IOS_REPO}" \
+            --pattern libmetalirconverter.dylib --dir "${msc_dir}" --clobber
+          dylib="${msc_dir}/libmetalirconverter.dylib"
+          echo "${MSC_IOS_SHA256}  ${dylib}" | shasum -a 256 -c -
+          codesign --verify --strict "${dylib}"
+          xcrun vtool -show-build "${dylib}" | grep "platform IOS"
+          echo "MSC_IOS_LIBRARY=${dylib}" >> "$GITHUB_ENV"
+
+      - name: Fetch submodules and data
+        shell: bash
+        run: |
+          set -euo pipefail
+          # DirectXShaderCompiler isn't needed: the DXIL the Metal backend converts
+          # comes from Mesa's spirv_to_dxil.
+          git submodule update --init --depth=1 -j"$(sysctl -n hw.ncpu)" \
+            $(grep -oE 'path = .+' .gitmodules | sed 's/path = //' \
+              | grep -v 'DirectXShaderCompiler')
+          # wxWidgets has nested submodules that the macOS configure reads.
+          git submodule update --init --recursive --depth=1 \
+            -j"$(sysctl -n hw.ncpu)" third_party/wxWidgets
+          # game-patches and the compatibility data baked into the app.
+          ./xenia-build.py fetchdata
+
+      # The runner's default python3 is Homebrew's and refuses pip installs
+      # (PEP 668). Mesa imports mako from whichever python3 it finds on PATH.
+      - name: Set up Python for Meson
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Meson for spirv_to_dxil
+        run: python3 -m pip install --upgrade meson mako pyyaml packaging
+
+      - name: Build the host shader tool
+        # The iOS build runs a native macOS xenia-shader-cc from this revision.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host --target xenia-shader-cc
+          tool="$(find build-host -type f -name xenia-shader-cc -perm -u+x -print -quit)"
+          [ -n "${tool}" ] || { echo "::error::xenia-shader-cc was not built"; exit 1; }
+          echo "XENIA_SHADER_CC=${GITHUB_WORKSPACE}/${tool}" >> "$GITHUB_ENV"
+
+      - name: Configure the iOS build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-ios -G "Ninja Multi-Config" \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
+            -DCMAKE_CONFIGURATION_TYPES=Release \
+            -DXENIA_BUILD_IOS_TRACE_APP=OFF \
+            -DXENIA_IOS_COMPATIBILITY_DATA_DIR="${GITHUB_WORKSPACE}/build/data_repos/game-compatibility" \
+            -DXENIA_IOS_HOST_SHADER_COMPILER="${XENIA_SHADER_CC}" \
+            -DXENIA_IOS_SHADER_CONVERTER_LIBRARY="${MSC_IOS_LIBRARY}"
+
+      - name: Build and package the IPA
+        shell: bash
+        env:
+          # The diagnostics Worker counts a build as official only when its
+          # ATTESTATION_KEY secret holds this same key.
+          XENIOS_BUILD_ATTESTATION_KEY: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY }}"
+          XENIOS_BUILD_ATTESTATION_KEY_ID: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY_ID }}"
+          # Where the app sends diagnostics. The URL isn't secret, so a repository
+          # variable can override the Worker's address.
+          XENIOS_DIAGNOSTICS_URL: "${{ vars.XENIOS_DIAGNOSTICS_URL || 'https://xenios-diagnostics.xenios.workers.dev/v1/diag' }}"
+          PUBLISH: "${{ needs.resolve-metadata.outputs.publish }}"
+          CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          VERSION: "${{ needs.resolve-metadata.outputs.version }}"
+          BUILD_NUMBER: "${{ needs.resolve-metadata.outputs.build_number }}"
+          STAGE: "${{ needs.resolve-metadata.outputs.stage }}"
+          ISSUED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
+        run: |
+          set -euo pipefail
+          if [ -z "${XENIOS_BUILD_ATTESTATION_KEY}" ]; then
+            if [ "${PUBLISH}" = "true" ]; then
+              echo "::error::XENIOS_BUILD_ATTESTATION_KEY is not configured"
+              exit 1
+            fi
+            echo "::warning::No attestation key: this build-only IPA reports itself as self-built"
+          fi
+
+          ./tools/build_apple_release.sh \
+            --ios-build-dir build-ios \
+            --out scratch/artifacts \
+            --channel "${CHANNEL}" \
+            --version "${VERSION}" \
+            --build-number "${BUILD_NUMBER}" \
+            --stage "${STAGE}" \
+            --issued-at "${ISSUED_AT}"
+
+          test -f scratch/artifacts/xenios_ios_iphone_ipad.ipa
+          maps=(scratch/artifacts/symbols/*.map.gz)
+          test -f "${maps[0]}"
+
+          # The diagnostics Worker symbolicates crashes only for builds whose map is
+          # in its database; loading it needs the Worker's wrangler.toml.
+          {
+            echo "### Crash symbol map"
+            echo "Load \`$(basename "${maps[0]}")\` into the diagnostics database:"
+            echo '```'
+            echo "gh run download ${GITHUB_RUN_ID} -R ${GITHUB_REPOSITORY} -n xenios_ios_symbols -D xenios-symbols"
+            echo "node tools/ios/diagnostics/symbols.mjs xenios-symbols/*.map.gz > symbols.sql"
+            echo "(cd tools/ios/diagnostics && wrangler d1 execute xenios-diagnostics --remote --file ../../../symbols.sql)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: "xenios_ios_iphone_ipad"
+          path: "scratch/artifacts/xenios_ios_iphone_ipad.ipa"
+          if-no-files-found: error
+
+      - name: Upload the crash symbol map
+        uses: actions/upload-artifact@v4
+        with:
+          name: "xenios_ios_symbols"
+          path: "scratch/artifacts/symbols/*.map.gz"
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-release:
+    name: Publish release and xenios.jp manifests
+    needs:
+      - resolve-metadata
+      - build-ios
+    if: "${{ needs.resolve-metadata.outputs.publish == 'true' }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download publish metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: "apple-publish-metadata"
+          path: "."
+
+      - name: Download the IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: "xenios_ios_iphone_ipad"
+          path: "artifacts/ios"
+
+      - name: Create or update GitHub release
+        id: github_release
+        shell: bash
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          DISPLAY_LABEL: "${{ needs.resolve-metadata.outputs.display_label }}"
+          CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          STAGE: "${{ needs.resolve-metadata.outputs.stage }}"
+          VERSION: "${{ needs.resolve-metadata.outputs.version }}"
+          BUILD_NUMBER: "${{ needs.resolve-metadata.outputs.build_number }}"
+          COMMIT_SHORT: "${{ needs.resolve-metadata.outputs.commit_short }}"
+          PUBLISHED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
+          RELEASE_TAG: "${{ needs.resolve-metadata.outputs.release_tag }}"
+          PRERELEASE: "${{ needs.resolve-metadata.outputs.prerelease }}"
+        run: |
+          set -euo pipefail
+
+          # Release notes are written on the release page. A new release starts
+          # with the build details, and a rerun keeps the text written there.
+          {
+            printf '# %s\n\n' "${DISPLAY_LABEL}"
+            printf -- '- Channel: %s\n' "${CHANNEL}"
+            printf -- '- Stage: %s\n' "${STAGE}"
+            printf -- '- Version: %s\n' "${VERSION}"
+            printf -- '- Build number: %s\n' "${BUILD_NUMBER}"
+            printf -- '- Commit: %s\n' "${COMMIT_SHORT}"
+            printf -- '- Published at: %s\n' "${PUBLISHED_AT}"
+            printf -- '- Source ref: %s\n' "${GITHUB_REF}"
+          } > release-notes.md
+
+          jq -n \
+            --arg tag "${RELEASE_TAG}" \
+            --arg target "${GITHUB_SHA}" \
+            --arg name "${DISPLAY_LABEL}" \
+            --arg body "$(cat release-notes.md)" \
+            --argjson prerelease "${PRERELEASE}" \
+            '{
+              tag_name: $tag,
+              target_commitish: $target,
+              name: $name,
+              body: $body,
+              draft: false,
+              prerelease: $prerelease
+            } + (if $prerelease then {} else {make_latest: "true"} end)' \
+            > release-payload.json
+
+          release_id=""
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>/dev/null)"; then
+            release_id="$(jq -r '.id // empty' <<<"${release_json}")"
+          fi
+          if [ -n "${release_id}" ] && ! [[ "${release_id}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected release id payload for ${RELEASE_TAG}: ${release_id}"
+            exit 1
+          fi
+
+          if [ -n "${release_id}" ]; then
+            jq 'del(.body)' release-payload.json \
+              | gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                  --method PATCH \
+                  --input - \
+                  >/dev/null
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/releases" \
+              --method POST \
+              --input release-payload.json \
+              >/dev/null
+          fi
+
+          gh release upload "${RELEASE_TAG}" \
+            artifacts/ios/xenios_ios_iphone_ipad.ipa \
+            --clobber
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+
+          html_url="$(jq -r '.html_url' release.json)"
+          ios_download_url="$(jq -r '.assets[] | select(.name == "xenios_ios_iphone_ipad.ipa") | .browser_download_url' release.json)"
+
+          for output_name in html_url ios_download_url; do
+            output_value="${!output_name}"
+            if [ -z "${output_value}" ] || [ "${output_value}" = "null" ]; then
+              echo "::error::Missing GitHub release output: ${output_name}"
+              exit 1
+            fi
+          done
+
+          {
+            echo "html_url=${html_url}"
+            echo "ios_download_url=${ios_download_url}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate xenios.jp credentials
+        shell: bash
+        env:
+          GH_TOKEN: "${{ secrets.XENIOS_WEBSITE_PAT }}"
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::XENIOS_WEBSITE_PAT is not configured"
+            exit 1
+          fi
+          gh api "repos/xenios-jp/xenios.jp" >/dev/null
+
+      - name: Check out xenios.jp
+        uses: actions/checkout@v4
+        with:
+          repository: "xenios-jp/xenios.jp"
+          ref: "main"
+          path: "xenios-website"
+          token: "${{ secrets.XENIOS_WEBSITE_PAT }}"
+          fetch-depth: 0
+
+      - name: Update xenios.jp build manifests
+        shell: bash
+        env:
+          CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          RELEASE_URL: "${{ steps.github_release.outputs.html_url }}"
+          IOS_DOWNLOAD_URL: "${{ steps.github_release.outputs.ios_download_url }}"
+        run: |
+          set -euo pipefail
+          python3 tools/update_website_build_manifests.py \
+            --website-repo "${GITHUB_WORKSPACE}/xenios-website" \
+            --metadata-file build-metadata.env \
+            --channel "${CHANNEL}" \
+            --release-url "${RELEASE_URL}" \
+            --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa" \
+            --ios-download-url "${IOS_DOWNLOAD_URL}"
+
+      - name: Commit xenios.jp build manifests
+        shell: bash
+        env:
+          DISPLAY_LABEL: "${{ needs.resolve-metadata.outputs.display_label }}"
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/xenios-website"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/release-builds.json data/builds-history.json
+          if git diff --staged --quiet; then
+            echo "No xenios.jp manifest changes"
+            exit 0
+          fi
+          git commit -m "builds: publish ${DISPLAY_LABEL}"
+          git push origin HEAD:main

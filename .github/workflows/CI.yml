@@ -30,9 +30,11 @@ jobs:
   build:
     name: Build
     # Draft PRs don't need the pipeline. Marking one ready re-triggers it.
+    # The public XeniOS repository publishes through apple-publish.yml only.
     if: >-
+      github.repository != 'xenios-jp/XeniOS' && (
       github.event_name != 'pull_request' ||
-      github.event.pull_request.draft == false
+      github.event.pull_request.draft == false)
     permissions:
       contents: read
       actions: write
