@@ -83,7 +83,7 @@ std::string IOSConfigCustomChoiceTitle(const std::string& value) {
 
 bool IOSConfigIsHiddenKey(const std::string& key) {
   return key == "storage_root" || key == "content_root" || key == "cache_root" ||
-         key == "log_file";
+         key == "log_file" || key == "render_target_path";
 }
 
 std::string StripTomlQuotes(std::string value) {
