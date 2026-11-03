@@ -139,6 +139,8 @@ class RelayClient {
   static constexpr uint64_t kLobbyPingMs = 20000;
   static constexpr uint64_t kLobbyLostMs = 60000;
   static constexpr uint64_t kRejectRetryMs = 10000;
+  // A joined lobby connection is welcomed or rejected within this long.
+  static constexpr uint64_t kWelcomeMs = 15000;
   static constexpr uint64_t kMaxBackoffMs = 15000;
   static constexpr uint64_t kOfflineMs = 10000;
   static constexpr uint64_t kIceRetryMs = 30000;
@@ -209,6 +211,9 @@ class RelayClient {
   uint32_t failures_ = 0;
   std::optional<uint64_t> down_since_ms_;
   uint64_t lobby_heard_ms_ = 0;
+  uint64_t join_sent_ms_ = 0;
+  // The lobby answered this connection's join.
+  bool answered_ = false;
   // The lobby's name for this player's network, when it gives one.
   std::optional<uint64_t> net_;
   uint64_t next_lobby_ping_ms_ = 0;
