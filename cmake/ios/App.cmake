@@ -1,4 +1,9 @@
 set(_xe_ios_entitlements "${PROJECT_SOURCE_DIR}/xenia_ios.entitlements")
+set(XENIOS_BUNDLE_IDENTIFIER "com.xenios" CACHE STRING "XeniOS bundle identifier")
+set(XENIOS_VERSION "" CACHE STRING
+    "CFBundleShortVersionString; empty takes the newest v<version> tag reachable from HEAD")
+set(XENIOS_BUILD_NUMBER "" CACHE STRING
+    "CFBundleVersion; empty takes the commit count of HEAD")
 set(XENIA_IOS_COMPATIBILITY_DATA_DIR
     "${XENIA_DATA_REPOS_DIR}/xenia-manager-database/data/game-compatibility"
     CACHE PATH "Existing native launcher compatibility data")
@@ -20,10 +25,11 @@ set_target_properties(xenia-app PROPERTIES
   SKIP_BUILD_RPATH TRUE
   MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info_ios.plist"
   MACOSX_BUNDLE_BUNDLE_NAME "XeniOS"
-  MACOSX_BUNDLE_GUI_IDENTIFIER "com.xenios"
+  MACOSX_BUNDLE_GUI_IDENTIFIER "${XENIOS_BUNDLE_IDENTIFIER}"
+  # Placeholders: stamp_ios_version.py writes the real values after linking.
   MACOSX_BUNDLE_BUNDLE_VERSION "1"
-  MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
-  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.xenios"
+  MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0.0"
+  XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${XENIOS_BUNDLE_IDENTIFIER}"
   XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
   XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
     "${_xe_ios_entitlements}")
@@ -117,6 +123,12 @@ xe_embed_binary_assets(xenia-app "${PROJECT_SOURCE_DIR}/assets/icons" icons)
 xe_embed_compressed_bundle(xenia-app
   "${XENIA_IOS_COMPATIBILITY_DATA_DIR}"
   game_compat)
+# Version from the newest release tag and build number from the commit count, so
+# every build of a commit carries the same, ever-growing build number.
+set(_xe_ios_stamp_command
+  "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build/stamp_ios_version.py"
+  "$<TARGET_BUNDLE_DIR:xenia-app>" "${PROJECT_SOURCE_DIR}"
+  "--version=${XENIOS_VERSION}" "--build=${XENIOS_BUILD_NUMBER}")
 set(_xe_ios_package_command
   /bin/bash "${PROJECT_SOURCE_DIR}/tools/package_ios_ipa.sh"
   "$<TARGET_BUNDLE_DIR:xenia-app>"
@@ -125,7 +137,13 @@ set(_xe_ios_package_command
   "$<TARGET_BUNDLE_DIR:xenia-app>/../XeniOS.requested-entitlements.plist"
   "$<TARGET_BUNDLE_DIR:xenia-app>/../XeniOS.signed-entitlements.plist")
 include(${PROJECT_SOURCE_DIR}/cmake/ios/Assets.cmake)
+add_custom_command(TARGET xenia-app POST_BUILD COMMAND ${_xe_ios_stamp_command} VERBATIM)
+# CMake rewrites the bundle's Info.plist from the template whenever it regenerates,
+# dropping what the post-build steps added, so packaging adds it again.
 add_custom_target(xenia-app-ios-package
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/build/merge_ios_assets.py"
+    "${_xe_ios_assets}" "$<TARGET_BUNDLE_DIR:xenia-app>"
+  COMMAND ${_xe_ios_stamp_command}
   COMMAND ${_xe_ios_package_command}
   DEPENDS xenia-app
   VERBATIM)
