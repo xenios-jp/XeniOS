@@ -57,6 +57,8 @@
   <array>
     <string>iPhoneOS</string>
   </array>
+  <key>CADisableMinimumFrameDurationOnPhone</key>
+  <true/>
   <key>CFBundleShortVersionString</key>
   <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
   <key>CFBundleVersion</key>
@@ -76,6 +78,8 @@
   </array>
   <key>DTPlatformName</key>
   <string>iphoneos</string>
+  <key>GCSupportsGameMode</key>
+  <true/>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.games</string>
   <key>LSApplicationQueriesSchemes</key>
@@ -110,7 +114,10 @@
   <key>UIFileSharingEnabled</key>
   <true/>
   <key>UILaunchScreen</key>
-  <dict/>
+  <dict>
+    <key>UIColorName</key>
+    <string>LaunchBackground</string>
+  </dict>
   <key>UIDeviceFamily</key>
   <array>
     <integer>1</integer>
@@ -126,7 +133,6 @@
   <key>UISupportedInterfaceOrientations</key>
   <array>
     <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationPortraitUpsideDown</string>
     <string>UIInterfaceOrientationLandscapeLeft</string>
     <string>UIInterfaceOrientationLandscapeRight</string>
   </array>
