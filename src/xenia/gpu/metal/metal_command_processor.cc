@@ -329,6 +329,7 @@ const char* const kCommandBufferKindNames[] = {
     "rt_resolve",
     "rt_dump",
     "rt_other",
+    "submission_pass_limit",
 };
 static_assert(std::size(kCommandBufferKindNames) ==
                   size_t(MetalCommandProcessor::CommandBufferKind::kCount),
@@ -3029,6 +3030,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
         kind_per_frame(CommandBufferKind::kSubmissionPrimaryBufferEnd));
     COUNT_profile_set("gpu/cb_submission_wait_per_frame",
                       kind_per_frame(CommandBufferKind::kSubmissionWait));
+    COUNT_profile_set("gpu/cb_submission_pass_limit_per_frame",
+                      kind_per_frame(CommandBufferKind::kSubmissionPassLimit));
     COUNT_profile_set("gpu/cb_texture_upload_batch_per_frame",
                       kind_per_frame(CommandBufferKind::kTextureUploadBatch));
     COUNT_profile_set("gpu/cb_texture_upload_private_per_frame",
@@ -3747,6 +3750,10 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       !render_target_cache_->IsRenderPassDescriptorCompatible(
           current_render_pass_descriptor_, 1)) {
     EndRenderEncoder();
+  }
+  if (UseDxilPath() && current_command_buffer_ && !current_render_encoder_ &&
+      command_buffer_render_passes_ >= kMaxRenderPassesPerCommandBuffer) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionPassLimit);
   }
   const bool initial_draw_encoder_deferred = CanDeferEmptyDrawEncoder();
   if (initial_draw_encoder_deferred) {
@@ -6222,6 +6229,7 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   current_command_buffer_->retain();
   current_command_buffer_->setLabel(
       NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
+  command_buffer_render_passes_ = 0;
 
   if (!UseDxilPath() && !EnsureSpirvUniformBuffer()) {
     static auto last_ensure_uniforms_fail_log =
@@ -6436,6 +6444,7 @@ void MetalCommandProcessor::EndRenderEncoder() {
   }
   current_render_encoder_->release();
   current_render_encoder_ = nullptr;
+  ++command_buffer_render_passes_;
   if (current_render_pass_descriptor_) {
     current_render_pass_descriptor_->release();
     current_render_pass_descriptor_ = nullptr;

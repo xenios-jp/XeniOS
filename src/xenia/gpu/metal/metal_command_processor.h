@@ -127,6 +127,7 @@ class MetalCommandProcessor : public CommandProcessor {
     kRenderTargetResolve,
     kRenderTargetDump,
     kRenderTargetOther,
+    kSubmissionPassLimit,
     kCount,
   };
 
@@ -1033,6 +1034,17 @@ class MetalCommandProcessor : public CommandProcessor {
   uint64_t render_passes_window_start_ = 0;
   uint64_t submission_current_ = 0;
   uint64_t submission_completed_processed_ = 0;
+  // A draw ends the command buffer once it holds this many render passes.
+  // Apple's driver can pause a long command buffer partway through until the
+  // GPU drains what it has already sent, leaving the GPU idle for about a
+  // millisecond, so a frame split into a few command buffers keeps it busy.
+  // On an iPad, splits at 32 and 48 passes still paused in the frames
+  // measured, and 40 paused in none of them. Only on the DXIL path: on the
+  // SPIRV-Cross path each command buffer holds a uniforms buffer from a small
+  // pool.
+  static constexpr uint32_t kMaxRenderPassesPerCommandBuffer = 40;
+  // Render passes ended in the current command buffer.
+  uint32_t command_buffer_render_passes_ = 0;
   // Signaled by the submission completion handler so waits for a specific
   // submission don't have to poll.
   std::mutex completion_mutex_;
