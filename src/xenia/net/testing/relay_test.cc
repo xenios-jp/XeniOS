@@ -1905,6 +1905,93 @@ TEST_CASE("Relay transport waits out a lobby that isn't there", "[relay]") {
   CHECK(lobby.connects <= 3);
 }
 
+TEST_CASE("Relay transport stays out of the lobby until System Link plays",
+          "[relay]") {
+  Hooks hooks;
+  FakeLobby lobby;
+  UseLobby(lobby);
+  RelayConfig config = Config();
+  config.lobby = std::string(kLobbyUrl);
+  std::string error;
+  std::vector<uint8_t> frame;
+  auto wait_for_lobby = [&](secure::PacketTransport& transport) {
+    for (int i = 0; i < 100 && !lobby.connects; ++i) {
+      transport.Receive(frame, 50);
+    }
+    return lobby.connects;
+  };
+  auto quiet = [&](secure::PacketTransport& transport, int ms) {
+    for (int i = 0; i < ms / 50; ++i) {
+      transport.Receive(frame, 50);
+    }
+    return lobby.connects == 0;
+  };
+  {
+    // Nothing opens on its own, or says anything.
+    auto transport = secure::OpenRelayTransport(kMacA, config, error);
+    REQUIRE(transport);
+    CHECK(quiet(*transport, 2500));
+    {
+      std::lock_guard lock(hooks.mutex);
+      CHECK(hooks.statuses.empty());
+    }
+    transport->Activate();
+    CHECK(wait_for_lobby(*transport) == 1);
+    for (int i = 0; i < 5; ++i) {
+      transport->Receive(frame, 50);
+    }
+    CHECK(hooks
+              .Reported(0,
+                        [](const RelayStatus& status) {
+                          return status.state == State::kOnline;
+                        })
+              .has_value());
+  }
+  {
+    std::lock_guard lock(hooks.mutex);
+    hooks.statuses.clear();
+  }
+
+  // A frame to send is System Link play too.
+  lobby.connects = 0;
+  {
+    auto transport = secure::OpenRelayTransport(kMacA, config, error);
+    REQUIRE(transport);
+    CHECK(transport->Send(MakeFrame(kMacA, kBroadcast, 60, 1)) == 60);
+    CHECK(wait_for_lobby(*transport) == 1);
+  }
+
+  // A private room the player chose joins at game start.
+  lobby.connects = 0;
+  {
+    RelayConfig chosen = Config(1, PrivateRoom(NewRoomCode()));
+    chosen.lobby = std::string(kLobbyUrl);
+    auto transport = secure::OpenRelayTransport(kMacA, chosen, error);
+    REQUIRE(transport);
+    CHECK(wait_for_lobby(*transport) == 1);
+  }
+
+  // And so does one chosen while the game runs.
+  lobby.connects = 0;
+  {
+    std::mutex mutex;
+    Room wanted = PublicLobby(kTitle);
+    RelayConfig later = config;
+    later.current_room = [&]() -> std::optional<Room> {
+      std::lock_guard lock(mutex);
+      return wanted;
+    };
+    auto transport = secure::OpenRelayTransport(kMacA, later, error);
+    REQUIRE(transport);
+    CHECK(quiet(*transport, 2500));
+    {
+      std::lock_guard lock(mutex);
+      wanted = PrivateRoom(NewRoomCode());
+    }
+    CHECK(wait_for_lobby(*transport) == 1);
+  }
+}
+
 #if XE_PLATFORM_APPLE
 // Against a real lobby over NSURLSession, when XE_SYSTEMLINK_TEST_LOBBY names
 // it. With XE_SYSTEMLINK_TEST_ICE_PORT, its TURN credentials are for user1 on a
