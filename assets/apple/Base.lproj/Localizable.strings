@@ -7,20 +7,47 @@
 /* Version text; %1$@ is the version, %2$lld the build number */
 "%1$@ (%2$lld)" = "%1$@ (%2$lld)";
 
+/* game disc view controller: user-visible text */
+"%1$@ - %2$@ - Media %3$08X" = "%1$@ - %2$@ - Media %3$08X";
+
+/* zar conversion coordinator: user-visible text */
+"%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone." = "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone.";
+
+/* zar conversion coordinator: label text */
+"%1$@ of %2$@" = "%1$@ of %2$@";
+
+/* compat formatting: user-visible text */
+"%1$@ Preview %2$@" = "%1$@ Preview %2$@";
+
+/* config view controller: user-visible text */
+"%1$@ was not changed. %2$@" = "%1$@ was not changed. %2$@";
+
 /* Touch control summary; %1$@ is the control type, %2$.0f its width in units, %3$.0f its opacity percentage */
 "%1$@, %2$.0fu, %3$.0f%%" = "%1$@, %2$.0fu, %3$.0f%%";
 
 /* VoiceOver label of an achievement toast; %1$@ is the title, %2$@ the description */
 "%1$@, %2$@" = "%1$@, %2$@";
 
+/* zar conversion coordinator: detail text */
+"%1$@, %2$u file%3$@ packed" = "%1$@, %2$u file%3$@ packed";
+
 /* VoiceOver value of an achievement; %1$@ is Unlocked or Locked, %2$u the gamerscore, %3$@ the description */
 "%1$@, %2$u gamerscore, %3$@" = "%1$@, %2$u gamerscore, %3$@";
+
+/* zar conversion coordinator: user-visible text */
+"%1$@: %2$lu." = "%1$@: %2$lu.";
+
+/* file transfer: message */
+"%1$@\n%2$@ of %3$@\n" = "%1$@\n%2$@ of %3$@\n";
 
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@." = "%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@.";
 
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
+
+/* zar conversion coordinator: detail text */
+"%1$u file(s), %2$@ packed before cancellation." = "%1$u file(s), %2$@ packed before cancellation.";
 
 /* Gamerscore progress; %1$u is the score earned, %2$u the total possible */
 "%1$u/%2$u G" = "%1$u/%2$u G";
@@ -31,9 +58,6 @@
 /* Profile picker row; %@ is the gamertag */
 "%@ (Signed In)" = "%@ (Signed In)";
 
-/* game disc view controller: user-visible text */
-"%@ - %@ - Media %08X" = "%@ - %@ - Media %08X";
-
 /* zar conversion coordinator: detail text */
 "%@ - estimated savings unavailable" = "%@ - estimated savings unavailable";
 
@@ -41,31 +65,10 @@
 "%@ - Linked" = "%@ - Linked";
 
 /* zar conversion coordinator: user-visible text */
-"%@ can't be deleted because %@. Delete it in Files if you want it gone." = "%@ can't be deleted because %@. Delete it in Files if you want it gone.";
-
-/* zar conversion coordinator: user-visible text */
 "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed." = "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed.";
 
 /* acknowledgements view controller: accessibility label */
 "%@ license" = "%@ license";
-
-/* zar conversion coordinator: label text */
-"%@ of %@" = "%@ of %@";
-
-/* compat formatting: user-visible text */
-"%@ Preview %@" = "%@ Preview %@";
-
-/* config view controller: user-visible text */
-"%@ was not changed. %@" = "%@ was not changed. %@";
-
-/* zar conversion coordinator: detail text */
-"%@, %u file%@ packed" = "%@, %u file%@ packed";
-
-/* zar conversion coordinator: user-visible text */
-"%@: %lu." = "%@: %lu.";
-
-/* file transfer: message */
-"%@\n%@ of %@\n" = "%@\n%@ of %@\n";
 
 /* document import coordinator: message */
 "%@\nFor very large files, Link Folder plays them in place without copying." = "%@\nFor very large files, Link Folder plays them in place without copying.";
@@ -75,9 +78,6 @@
 
 /* document import coordinator: message */
 "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete." = "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete.";
-
-/* zar conversion coordinator: detail text */
-"%u file(s), %@ packed before cancellation." = "%u file(s), %@ packed before cancellation.";
 
 /* Gamerscore of one achievement; %u is the score */
 "%u G" = "%u G";
@@ -101,7 +101,7 @@
 "1 item" = "1 item";
 
 /* Control tooltip line; the first %s is the trigger, the second the action */
-"\n2nd: %s, %s" = "\n2nd: %s, %s";
+"\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
 
 /* compat report view controller: appended issue link line in alert message */
 "\n\nGitHub issue: %@" = "\n\nGitHub issue: %@";
@@ -110,7 +110,7 @@
 "\n\nXeniOS has to close. The log is saved; open XeniOS again to share it." = "\n\nXeniOS has to close. The log is saved; open XeniOS again to share it.";
 
 /* Control tooltip line; the numbers are the control frame */
-"\nFrame: %.2f, %.2f, %.2f x %.2f" = "\nFrame: %.2f, %.2f, %.2f x %.2f";
+"\nFrame: %1$.2f, %2$.2f, %3$.2f x %4$.2f" = "\nFrame: %1$.2f, %2$.2f, %3$.2f x %4$.2f";
 
 /* Control tooltip line; %s is the tint style */
 "\nTint: %s" = "\nTint: %s";
@@ -118,11 +118,11 @@
 /* zar conversion coordinator: user-visible text */
 "A few seconds remaining" = "A few seconds remaining";
 
+/* Alert message; %1$@ is the game to launch, %2$@ the running game */
+"A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost." = "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost.";
+
 /* Alert message; %@ is the game title */
 "A link wants to launch \"%@\"." = "A link wants to launch \"%@\".";
-
-/* Alert message; %1$@ is the game to launch, %2$@ the running game */
-"A link wants to launch \"%@\". This will stop \"%@\", and unsaved progress will be lost." = "A link wants to launch \"%@\". This will stop \"%@\", and unsaved progress will be lost.";
 
 /* Alert message; %@ is the game to launch */
 "A link wants to launch \"%@\". This will stop the running game, and unsaved progress will be lost." = "A link wants to launch \"%@\". This will stop the running game, and unsaved progress will be lost.";
@@ -134,10 +134,10 @@
 "About" = "About";
 
 /* zar conversion coordinator: user-visible text */
-"About %ld hour%@ remaining" = "About %ld hour%@ remaining";
+"About %1$ld hour%2$@ remaining" = "About %1$ld hour%2$@ remaining";
 
 /* zar conversion coordinator: user-visible text */
-"About %ld minute%@ remaining" = "About %ld minute%@ remaining";
+"About %1$ld minute%2$@ remaining" = "About %1$ld minute%2$@ remaining";
 
 /* zar conversion coordinator: user-visible text */
 "About %ld seconds remaining" = "About %ld seconds remaining";
@@ -253,7 +253,7 @@
 "Architecture" = "Architecture";
 
 /* zar conversion coordinator: user-visible text */
-"Archive is %@ larger (%@ -> %@)." = "Archive is %@ larger (%@ -> %@).";
+"Archive is %1$@ larger (%2$@ -> %3$@)." = "Archive is %1$@ larger (%2$@ -> %3$@).";
 
 /* config view controller: accessibility hint */
 "Asks before putting every setting back to its default." = "Asks before putting every setting back to its default.";
@@ -584,7 +584,7 @@
 "Convert to ZAR" = "Convert to ZAR";
 
 /* zar conversion coordinator: user-visible text */
-"Converted: %lu of %lu." = "Converted: %lu of %lu.";
+"Converted: %1$lu of %2$lu." = "Converted: %1$lu of %2$lu.";
 
 /* zar conversion coordinator: user-visible text */
 "Converting" = "Converting";
@@ -991,14 +991,14 @@
 "Environment" = "Environment";
 
 /* zar conversion coordinator: user-visible text */
-"Estimated .zar is %@ larger (%@ -> %@)." = "Estimated .zar is %@ larger (%@ -> %@).";
+"Estimated .zar is %1$@ larger (%2$@ -> %3$@)." = "Estimated .zar is %1$@ larger (%2$@ -> %3$@).";
 
 /* zar conversion coordinator: detail text
    zar conversion coordinator: user-visible text */
 "Estimated savings unavailable." = "Estimated savings unavailable.";
 
 /* zar conversion coordinator: user-visible text */
-"Estimated savings: %@ (%@ -> %@)." = "Estimated savings: %@ (%@ -> %@).";
+"Estimated savings: %1$@ (%2$@ -> %3$@)." = "Estimated savings: %1$@ (%2$@ -> %3$@).";
 
 /* zar conversion coordinator: user-visible text */
 "Estimating savings..." = "Estimating savings...";
@@ -1086,7 +1086,7 @@
 "Failed creating library folder: %s" = "Failed creating library folder: %s";
 
 /* game content view controller: user-visible text */
-"Failed deleting %@: %s" = "Failed deleting %@: %s";
+"Failed deleting %1$@: %2$s" = "Failed deleting %1$@: %2$s";
 
 /* Toast: developer-facing error about the library callback */
 "Failed to build gameInfo callback URL." = "Failed to build gameInfo callback URL.";
@@ -1504,7 +1504,7 @@
 "Item" = "Item";
 
 /* zar conversion coordinator: label text */
-"Item %lu of %lu" = "Item %lu of %lu";
+"Item %1$lu of %2$lu" = "Item %1$lu of %2$lu";
 
 /* zar conversion coordinator: user-visible text */
 "Items" = "Items";
@@ -1700,7 +1700,7 @@
 "Live Log" = "Live Log";
 
 /* log view controller: section footer */
-"Live tail (0.5s). Showing last %zu KB from %@" = "Live tail (0.5s). Showing last %zu KB from %@";
+"Live tail (0.5s). Showing last %1$zu KB from %2$@" = "Live tail (0.5s). Showing last %1$zu KB from %2$@";
 
 /* Very short badge on a touch control: Look */
 "Lk" = "Lk";
@@ -1910,7 +1910,7 @@
 "No title updates or DLC are installed for this title." = "No title updates or DLC are installed for this title.";
 
 /* file transfer: user-visible text */
-"Not enough storage: need %@, have %@. Free up space on this device, or use Link Folder to play from the original location without copying." = "Not enough storage: need %@, have %@. Free up space on this device, or use Link Folder to play from the original location without copying.";
+"Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying." = "Not enough storage: need %1$@, have %2$@. Free up space on this device, or use Link Folder to play from the original location without copying.";
 
 /* Alert button: dismiss without enabling */
 "Not Now" = "Not Now";
@@ -2075,7 +2075,7 @@
 "Overall Sensitivity" = "Overall Sensitivity";
 
 /* config view controller: label text */
-"Overrides here apply only to %@ (%@). They are read when the title launches, so relaunch the game after saving." = "Overrides here apply only to %@ (%@). They are read when the title launches, so relaunch the game after saving.";
+"Overrides here apply only to %1$@ (%2$@). They are read when the title launches, so relaunch the game after saving." = "Overrides here apply only to %1$@ (%2$@). They are read when the title launches, so relaunch the game after saving.";
 
 /* Very short badge on a touch control: Pause */
 "P" = "P";
@@ -2391,7 +2391,7 @@
 "Saved" = "Saved";
 
 /* zar conversion coordinator: user-visible text */
-"Saved %@ (%@ -> %@)." = "Saved %@ (%@ -> %@).";
+"Saved %1$@ (%2$@ -> %3$@)." = "Saved %1$@ (%2$@ -> %3$@).";
 
 /* Toast; %@ is the new layout name */
 "Saved copy %@." = "Saved copy %@.";
@@ -2418,13 +2418,13 @@
 "Scaling: Stretch" = "Scaling: Stretch";
 
 /* zar conversion coordinator: detail text */
-"Scanned %lu of %lu item%@ (%.0f%%)" = "Scanned %lu of %lu item%@ (%.0f%%)";
+"Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)" = "Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)";
 
 /* game patches view controller: detail text */
-"Scanned %zu files in:\n%@\n\nAdd xenia-canary .patch.toml files for this title." = "Scanned %zu files in:\n%@\n\nAdd xenia-canary .patch.toml files for this title.";
+"Scanned %1$zu files in:\n%2$@\n\nAdd xenia-canary .patch.toml files for this title." = "Scanned %1$zu files in:\n%2$@\n\nAdd xenia-canary .patch.toml files for this title.";
 
 /* zar conversion coordinator: detail text */
-"Scanning %lu item%@..." = "Scanning %lu item%@...";
+"Scanning %1$lu item%2$@..." = "Scanning %1$lu item%2$@...";
 
 /* Section header in display settings */
 "Screen Mode" = "Screen Mode";
@@ -2567,7 +2567,7 @@
 "Showing all %ld reports." = "Showing all %ld reports.";
 
 /* game compatibility cells: user-visible text */
-"Showing latest %ld of %ld reports." = "Showing latest %ld of %ld reports.";
+"Showing latest %1$ld of %2$ld reports." = "Showing latest %1$ld of %2$ld reports.";
 
 /* VoiceOver hint for the Achievements button */
 "Shows achievements for the current game." = "Shows achievements for the current game.";
@@ -2796,7 +2796,7 @@
 "This link is missing a 'source' URL or 'file' payload." = "This link is missing a 'source' URL or 'file' payload.";
 
 /* game content view controller: message */
-"This package is for title %08X, but the current game is %08X." = "This package is for title %08X, but the current game is %08X.";
+"This package is for title %1$08X, but the current game is %2$08X." = "This package is for title %1$08X, but the current game is %2$08X.";
 
 /* game patches view controller: detail text */
 "This patch file did not contain any toggles." = "This patch file did not contain any toggles.";
@@ -2825,11 +2825,11 @@
 /* compat report cells: label text */
 "Title ID" = "Title ID";
 
-/* game patches view controller: detail text */
-"Title ID %08X did not match any discovered patch file.\n\nFolder: %@\nPatch-looking files: %zu\nParse failures: %zu\nOther title IDs: %zu" = "Title ID %08X did not match any discovered patch file.\n\nFolder: %@\nPatch-looking files: %zu\nParse failures: %zu\nOther title IDs: %zu";
-
 /* Toast; %08X is the title ID in hexadecimal */
 "Title ID %08X was not found in Library." = "Title ID %08X was not found in Library.";
+
+/* game patches view controller: detail text */
+"Title ID %1$08X did not match any discovered patch file.\n\nFolder: %2$@\nPatch-looking files: %3$zu\nParse failures: %4$zu\nOther title IDs: %5$zu" = "Title ID %1$08X did not match any discovered patch file.\n\nFolder: %2$@\nPatch-looking files: %3$zu\nParse failures: %4$zu\nOther title IDs: %5$zu";
 
 /* Picker row detail; %@ is a title ID in hexadecimal */
 "Title ID %@" = "Title ID %@";

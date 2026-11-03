@@ -159,16 +159,16 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
                            ToNSString(discovery_summary_.directory_path)];
     } else if (discovery_summary_.candidate_files == 0 && discovery_summary_.bundled_files == 0) {
       cell.detailTextLabel.text = [NSString
-          stringWithFormat:NSLocalizedString(@"Scanned %zu files in:\n%@\n\nAdd xenia-canary "
+          stringWithFormat:NSLocalizedString(@"Scanned %1$zu files in:\n%2$@\n\nAdd xenia-canary "
                                              @".patch.toml files for this title.",
                                              @"game patches view controller: detail text"),
                            discovery_summary_.scanned_files,
                            ToNSString(discovery_summary_.directory_path)];
     } else {
       cell.detailTextLabel.text = [NSString
-          stringWithFormat:NSLocalizedString(@"Title ID %08X did not match any discovered patch "
-                                             @"file.\n\nFolder: %@\nPatch-looking files: %zu\n"
-                                             @"Parse failures: %zu\nOther title IDs: %zu",
+          stringWithFormat:NSLocalizedString(@"Title ID %1$08X did not match any discovered patch "
+                                             @"file.\n\nFolder: %2$@\nPatch-looking files: %3$zu\n"
+                                             @"Parse failures: %4$zu\nOther title IDs: %5$zu",
                                              @"game patches view controller: detail text"),
                            title_id_, ToNSString(discovery_summary_.directory_path),
                            discovery_summary_.candidate_files, discovery_summary_.parse_failures,

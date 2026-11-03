@@ -28,7 +28,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   }
   if (disc.media_id) {
     return [NSString
-        stringWithFormat:NSLocalizedString(@"%@ - %@ - Media %08X",
+        stringWithFormat:NSLocalizedString(@"%1$@ - %2$@ - Media %3$08X",
                                            @"game disc view controller: user-visible text"),
                          source, filename, disc.media_id];
   }
