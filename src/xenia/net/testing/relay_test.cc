@@ -1559,6 +1559,44 @@ TEST_CASE("Relay players wait for a welcome only so long", "[relay]") {
   CHECK(!rejected.LobbyStale(now + 30000));
 }
 
+TEST_CASE("Relay players rejoining their own room are reconnecting",
+          "[relay]") {
+  constexpr std::string_view kDuplicate =
+      R"({"t":"reject","reason":"duplicate_mac"})";
+  RelayClient client(kMacA, Config());
+  Outbox out;
+  uint64_t now = 100000;
+  JoinRoom(client, now);
+  REQUIRE(client.status().state == State::kOnline);
+
+  // The network changed: the lobby still holds the old connection.
+  now += 5000;
+  client.LobbyClosed(now);
+  const uint64_t left = now;
+  now += 1000;
+  client.LobbyConnecting(now);
+  client.LobbyOpened(now, out);
+  client.LobbyMessage(kDuplicate, now, out);
+  CHECK(client.status().state == State::kReconnecting);
+  client.LobbyClosed(now);
+  // Tried again sooner than other turned away players.
+  CHECK(!client.WantsLobby(now + 4999));
+  CHECK(client.WantsLobby(now + 5000));
+  // Past the time the lobby holds a quiet connection, it's someone else.
+  client.Tick(left + 70000, out);
+  CHECK(client.status().state == State::kReconnecting);
+  client.Tick(left + 70001, out);
+  CHECK(client.status().state == State::kRejected);
+  CHECK(client.status().reject == Reject::kDuplicateMac);
+
+  // Never in the room, the profile is another player's.
+  RelayClient stranger(kMacA, Config());
+  stranger.LobbyConnecting(now);
+  stranger.LobbyOpened(now, out);
+  stranger.LobbyMessage(kDuplicate, now, out);
+  CHECK(stranger.status().state == State::kRejected);
+}
+
 TEST_CASE("Relay players take the lobby's word for who shares a network",
           "[relay]") {
   // Private addresses are probed when the lobby saw both players on one

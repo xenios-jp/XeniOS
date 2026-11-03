@@ -45,7 +45,7 @@ BOOL xe_ios_system_link_uses_relay(void);
 // What System Link is doing in the running game.
 struct XeniaIOSSystemLinkSnapshot {
   // Off until the game starts System Link over the internet.
-  enum class State { kOff, kConnecting, kOnline, kOffline, kRejected };
+  enum class State { kOff, kConnecting, kReconnecting, kOnline, kOffline, kRejected };
   State state = State::kOff;
   // Why the server turned the player away, while rejected.
   NSString* problem = nil;

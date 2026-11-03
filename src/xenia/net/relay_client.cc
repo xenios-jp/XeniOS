@@ -244,6 +244,9 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
     return;
   }
   lobby_heard_ms_ = now_ms;
+  if (joined_) {
+    last_joined_ms_ = now_ms;
+  }
   if (text == "pong") {
     return;
   }
@@ -298,6 +301,7 @@ void RelayClient::OnWelcome(uint64_t room_secret, std::optional<IceServers> ice,
   room_secret_ = room_secret;
   joined_ = true;
   answered_ = true;
+  last_joined_ms_ = now_ms;
   rejected_ = false;
   failures_ = 0;
   down_since_ms_.reset();
@@ -363,13 +367,16 @@ void RelayClient::PermitRelays(uint64_t now_ms, Outbox& out) {
 
 void RelayClient::LobbyClosed(uint64_t now_ms) {
   lobby_ = Lobby::kClosed;
+  if (joined_) {
+    last_joined_ms_ = now_ms;
+  }
   joined_ = false;
   if (!down_since_ms_) {
     down_since_ms_ = now_ms;
   }
   next_connect_ms_ =
       now_ms + (rejected_
-                    ? kRejectRetryMs
+                    ? (Reconnecting(now_ms) ? kRejoinRetryMs : kRejectRetryMs)
                     : std::min<uint64_t>(kMaxBackoffMs,
                                          1000ull << std::min(failures_, 4u)));
   ++failures_;
@@ -683,6 +690,11 @@ bool RelayClient::SameNetwork(const Peer& peer) const {
   return SharesPublicAddress(peer);
 }
 
+bool RelayClient::Reconnecting(uint64_t now_ms) const {
+  return rejected_ && reject_ == Reject::kDuplicateMac && last_joined_ms_ &&
+         now_ms - *last_joined_ms_ <= kRejoinGraceMs;
+}
+
 void RelayClient::SendProbe(const Peer& peer, const Endpoint& to, Outbox& out) {
   out.datagrams.push_back({to, Encode(Probe{room_secret_, mac_, peer.listed.mac,
                                             peer.nonces[0], false})});
@@ -821,7 +833,8 @@ void RelayClient::UpdateStatus(uint64_t now_ms) {
   if (joined_) {
     status.state = RelayStatus::State::kOnline;
   } else if (rejected_) {
-    status.state = RelayStatus::State::kRejected;
+    status.state = Reconnecting(now_ms) ? RelayStatus::State::kReconnecting
+                                        : RelayStatus::State::kRejected;
     status.reject = reject_;
   } else if (down_since_ms_ && now_ms - *down_since_ms_ > kOfflineMs) {
     status.state = RelayStatus::State::kOffline;
