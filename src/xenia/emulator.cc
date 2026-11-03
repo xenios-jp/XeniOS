@@ -944,8 +944,9 @@ void Emulator::ChangeDisc() {
     kernel_state_->smc()->SetTrayState(X_DVD_TRAY_STATE::CLOSED);
     picking_disc_ = false;
   };
-  const auto pick = [this, close_tray, launch]() {
-    const std::filesystem::path path = disc_picker_();
+  // The sheet can outlive the title, so the pick holds its own picker.
+  const auto pick = [this, picker = disc_picker_, close_tray, launch]() {
+    const std::filesystem::path path = picker();
     // The pick is dropped for a title launched meanwhile. A launch under way
     // holds the lock while it waits on this thread.
     std::unique_lock<std::recursive_mutex> lock(launch_mutex_,
