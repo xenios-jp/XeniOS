@@ -26,6 +26,7 @@
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 DECLARE_path(log_file);
+DECLARE_bool(log_to_stdout);
 
 @implementation XeniaAppDelegate {
   std::unique_ptr<xe::ui::IOSWindowedAppContext> app_context_;
@@ -214,6 +215,13 @@ DECLARE_path(log_file);
   // Keeps the previous session's log and notes how that session ended, so a crash can be
   // reported on this launch. Must run before the log file is opened.
   xe_ios_begin_session_log(cvars::log_file);
+  // Launched by a JIT tool, stdout feeds that tool's live console, which renders every line.
+  // A game's log keeps StikDebug busy until it stops serving JIT requests and iOS kills it for
+  // CPU use, leaving the game stopped at its next one. The log file keeps everything;
+  // XENIA_LOG_TO_STDOUT=1 (an Xcode scheme, say) mirrors it to stdout anyway.
+  if (!getenv("XENIA_LOG_TO_STDOUT")) {
+    cvars::log_to_stdout = false;
+  }
   xe::InitializeLogging(app_->GetName());
 
   if (!app_->OnInitialize()) {
