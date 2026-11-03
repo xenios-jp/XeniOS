@@ -1749,7 +1749,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   self.gameStopInProgress = YES;
   self.gameRunning = NO;
-  // A guest thread waiting on a sheet (achievements) would hold up the title's teardown.
+  // A guest thread waiting on a message box or a sheet (achievements) would hold up the title's
+  // teardown. Answer the prompts first: dismissing one unanswered leaves its thread waiting.
+  XeniaCancelGuestAlerts(self);
   if (self.presentedViewController) {
     [self dismissViewControllerAnimated:NO completion:nil];
   }
@@ -4536,7 +4538,9 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   self.gameStopInProgress = NO;
   // A sheet or alert left up by the game that ended: the "Game Isn't Responding" alert, or the
   // achievements sheet a guest thread is still waiting on (its dismissal reports completion).
-  // The launch-failure alert is presented after this runs.
+  // The launch-failure alert is presented after this runs. Guest prompts are answered before
+  // anything is dismissed, so no thread is left waiting on one.
+  XeniaCancelGuestAlerts(self);
   if (self.presentedViewController) {
     [self dismissViewControllerAnimated:NO completion:nil];
   }
