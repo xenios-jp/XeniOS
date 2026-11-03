@@ -10,10 +10,12 @@
 #ifndef XENIA_UI_IOS_LAUNCHER_IOS_DASHBOARD_H_
 #define XENIA_UI_IOS_LAUNCHER_IOS_DASHBOARD_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -80,6 +82,17 @@ std::filesystem::path PickIOSDashboardDisc();
 // Starts access to every linked library folder, which the dashboard's games
 // are in, for as long as the dashboard runs.
 NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess();
+
+// What an install that didn't succeed says. Nil for a finished or cancelled
+// one.
+NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result);
+
+// Installs the update from |source| off the main thread. |progress| gets whole
+// percents and |completion| the result, both on the main thread. Setting
+// |cancel| stops the install early.
+void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
+                                   void (^progress)(int percent),
+                                   void (^completion)(SystemFilesResult result));
 #endif  // __OBJC__
 
 }  // namespace ui

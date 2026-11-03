@@ -16,6 +16,7 @@
 #include <memory>
 
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
+#import "xenia/ui/ios/launcher/ios_system_update_page_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
@@ -30,35 +31,6 @@ enum InstallRow : NSInteger {
   kRowGetUpdate,
   kRowInstall,
 };
-
-// What an install that didn't succeed says. Nil for a cancelled one.
-NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
-  using xe::ui::SystemFilesResult;
-  switch (result) {
-    case SystemFilesResult::kSuccess:
-    case SystemFilesResult::kCancelled:
-      return nil;
-    case SystemFilesResult::kNotSystemUpdate:
-      return NSLocalizedString(
-          @"This isn't a USB system update. Pick the system update zip from Microsoft, or the "
-          @"folder Files expands it to.",
-          @"system software view controller: install error");
-    case SystemFilesResult::kReadFailed:
-      return NSLocalizedString(@"The system update couldn't be read.",
-                               @"system software view controller: install error");
-    case SystemFilesResult::kWriteFailed:
-      return NSLocalizedString(
-          @"The system software couldn't be written. Check that there is enough free space.",
-          @"system software view controller: install error");
-    case SystemFilesResult::kRestoreFailed:
-      return NSLocalizedString(
-          @"The previous system software couldn't be put back. Its folders are in the "
-          @"\"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete "
-          @"them to install again.",
-          @"system software view controller: install error");
-  }
-  return nil;
-}
 
 }  // namespace
 
@@ -90,7 +62,18 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
 
 - (void)viewDidLoad {
   [super viewDidLoad];
+  if (self.showsDoneButton) {
+    self.navigationItem.rightBarButtonItem =
+        [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                       target:self
+                                                       action:@selector(doneTapped:)] autorelease];
+  }
   [self reloadInfo];
+}
+
+- (void)doneTapped:(id)__unused sender {
+  UIViewController* sheet = self.navigationController ?: self;
+  [sheet.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)reloadInfo {
@@ -145,8 +128,9 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
                                  @"system software view controller: footer");
       }
       return NSLocalizedString(
-          @"Download the USB system update from Microsoft's page to Files, then install it here. "
-          @"You can pick the zip or the folder Files expands it to.",
+          @"Get the USB system update on Microsoft's page, here in XeniOS, and it installs once "
+          @"it has downloaded. Or install one you have in Files: the zip, or the folder Files "
+          @"expands it to.",
           @"system software view controller: footer");
     default:
       return game_running_ ? NSLocalizedString(@"Quit the game to remove the system software.",
@@ -209,11 +193,11 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
     if (indexPath.row == kRowGetUpdate) {
       return [self actionCellWithTitle:NSLocalizedString(@"Get the Update from Microsoft",
                                                          @"system software view controller: action")
-                            symbolName:@"safari"
+                            symbolName:@"arrow.down.circle"
                                   hint:NSLocalizedString(
-                                           @"Opens Microsoft's system update page in Safari.",
+                                           @"Opens Microsoft's system update page.",
                                            @"system software view controller: accessibility hint")
-                               enabled:YES
+                               enabled:[self canChangeSystemSoftware]
                            destructive:NO];
     }
     return [self
@@ -241,15 +225,12 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section == kSectionInstall && indexPath.row == kRowGetUpdate) {
-    NSURL* url = [NSURL URLWithString:XeniaIOSSystemUpdateSupportURL];
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    return;
-  }
   if (![self canChangeSystemSoftware]) {
     return;
   }
-  if (indexPath.section == kSectionInstall) {
+  if (indexPath.section == kSectionInstall && indexPath.row == kRowGetUpdate) {
+    [self pushSystemUpdatePage];
+  } else if (indexPath.section == kSectionInstall) {
     [self presentInstallPicker];
   } else if (indexPath.section == kSectionRemove) {
     [self confirmRemove];
@@ -257,6 +238,16 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
 }
 
 #pragma mark - Install
+
+- (void)pushSystemUpdatePage {
+  __unsafe_unretained XeniaSystemSoftwareViewController* unsafe_self = self;
+  XeniaSystemUpdatePageViewController* page =
+      [[[XeniaSystemUpdatePageViewController alloc] initWithDownloadHandler:^(NSURL* file) {
+        [unsafe_self.navigationController popToViewController:unsafe_self animated:YES];
+        [unsafe_self installFromURL:file];
+      }] autorelease];
+  [self.navigationController pushViewController:page animated:YES];
+}
 
 - (void)presentInstallPicker {
   // A copy, so the install reads local files the picker's access doesn't
@@ -305,26 +296,14 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
   [self setProgressPercent:0];
   [self presentViewController:alert animated:YES completion:nil];
 
-  const std::filesystem::path source([url fileSystemRepresentation]);
-  NSURL* picked_url = [url retain];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    int last_percent = 0;
-    const auto result = xe::ui::InstallIOSSystemSoftware(
-        source, [&last_percent, cancel, self](size_t done, size_t total) {
-          const int percent = total ? static_cast<int>(done * 100 / total) : 0;
-          if (percent != last_percent) {
-            last_percent = percent;
-            dispatch_async(dispatch_get_main_queue(), ^{
-              [self setProgressPercent:percent];
-            });
-          }
-          return !cancel->load();
-        });
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self finishInstallWithResult:result pickedURL:picked_url];
-      [picked_url release];
-    });
-  });
+  xe::ui::InstallIOSSystemSoftwareAsync(
+      url, cancel,
+      ^(int percent) {
+        [self setProgressPercent:percent];
+      },
+      ^(xe::ui::SystemFilesResult result) {
+        [self finishInstallWithResult:result pickedURL:url];
+      });
 }
 
 - (void)finishInstallWithResult:(xe::ui::SystemFilesResult)result pickedURL:(NSURL*)picked_url {
@@ -346,7 +325,7 @@ NSString* InstallFailureMessage(xe::ui::SystemFilesResult result) {
                                          @"system software view controller: title"),
                        NSLocalizedString(@"Start the Xbox 360 Dashboard from the Library.",
                                          @"system software view controller: message"));
-    } else if (NSString* message = InstallFailureMessage(result)) {
+    } else if (NSString* message = xe::ui::IOSSystemSoftwareInstallFailureMessage(result)) {
       XEPresentOKAlert(self,
                        NSLocalizedString(@"Couldn't Install the System Software",
                                          @"system software view controller: title"),

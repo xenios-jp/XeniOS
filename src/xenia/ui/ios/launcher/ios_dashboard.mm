@@ -325,6 +325,56 @@ bool RemoveIOSSystemSoftware() {
   return true;
 }
 
+NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result) {
+  switch (result) {
+    case SystemFilesResult::kSuccess:
+    case SystemFilesResult::kCancelled:
+      return nil;
+    case SystemFilesResult::kNotSystemUpdate:
+      return NSLocalizedString(
+          @"This isn't a USB system update. Pick the system update zip from Microsoft, or the "
+          @"folder Files expands it to.",
+          @"system software view controller: install error");
+    case SystemFilesResult::kReadFailed:
+      return NSLocalizedString(@"The system update couldn't be read.",
+                               @"system software view controller: install error");
+    case SystemFilesResult::kWriteFailed:
+      return NSLocalizedString(
+          @"The system software couldn't be written. Check that there is enough free space.",
+          @"system software view controller: install error");
+    case SystemFilesResult::kRestoreFailed:
+      return NSLocalizedString(
+          @"The previous system software couldn't be put back. Its folders are in the "
+          @"\"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete "
+          @"them to install again.",
+          @"system software view controller: install error");
+  }
+  return nil;
+}
+
+void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
+                                   void (^progress)(int percent),
+                                   void (^completion)(SystemFilesResult result)) {
+  const std::filesystem::path source_path([source fileSystemRepresentation]);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    int last_percent = 0;
+    const auto result = InstallIOSSystemSoftware(
+        source_path, [&last_percent, &cancel, progress](size_t done, size_t total) {
+          const int percent = total ? static_cast<int>(done * 100 / total) : 0;
+          if (percent != last_percent) {
+            last_percent = percent;
+            dispatch_async(dispatch_get_main_queue(), ^{
+              progress(percent);
+            });
+          }
+          return !cancel->load();
+        });
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  });
+}
+
 void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
   auto* owned = new std::vector<IOSDiscoveredGame>(std::move(games));
   dispatch_async(LibraryQueue(), ^{

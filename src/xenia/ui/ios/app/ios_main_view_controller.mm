@@ -56,6 +56,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_report_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_content_management.h"
 #import "xenia/ui/ios/launcher/ios_dashboard.h"
+#import "xenia/ui/ios/launcher/ios_dashboard_setup_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_document_import_coordinator.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_external_url.h"
@@ -79,6 +80,7 @@
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
+#import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
@@ -659,6 +661,44 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                            @"main view controller: title")];
 }
 
+// The library's Dashboard tile starts the dashboard, or, before there is
+// system software, sets it up.
+- (void)openDashboard {
+  if (xe::ui::IsIOSDashboardInstalled()) {
+    [self launchDashboard];
+    return;
+  }
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  XeniaDashboardSetupViewController* setup =
+      [[[XeniaDashboardSetupViewController alloc] initWithStartHandler:^{
+        [unsafe_self launchDashboard];
+      }] autorelease];
+  [self presentLauncherSheetWithRoot:setup];
+}
+
+// The System Software page from Settings, on its own: the Dashboard tile's
+// menu opens it.
+- (void)openSystemSoftware {
+  XeniaSystemSoftwareViewController* page = [[[XeniaSystemSoftwareViewController alloc]
+      initWithGameRunning:self.gameRunning] autorelease];
+  page.showsDoneButton = YES;
+  [self presentLauncherSheetWithRoot:page];
+}
+
+- (void)presentLauncherSheetWithRoot:(UIViewController*)root {
+  XeniaLandscapeNavigationController* sheet =
+      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:root] autorelease];
+  XEConfigureTaskSheet(sheet, self.view, CGSizeMake(620.0, 760.0), NO);
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+// The launcher's grid leads with the Dashboard tile while there are games, so
+// the controller's item indexes run one ahead of the games'.
+- (NSInteger)launcherGameItemOffset {
+  return discovered_games_.empty() ? 0 : 1;
+}
+
 // A title the emulator starts itself, like a game the dashboard launches, gets
 // what a launch from the library sets up: its touch layout and access to the
 // folder it is in (to every linked folder, for the dashboard). A game the
@@ -887,7 +927,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       return;
     }
     std::filesystem::path focused_path;
-    const NSInteger focused_game_index = self.controllerNavigationCoordinator.focusedGameIndex;
+    const NSInteger focused_game_index =
+        self.controllerNavigationCoordinator.focusedGameIndex - [self launcherGameItemOffset];
     const BOOL has_focused_path =
         focused_game_index >= 0 &&
         focused_game_index < static_cast<NSInteger>(self->discovered_games_.size());
@@ -905,7 +946,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       if (focused_it != self->discovered_games_.end()) {
         [self.controllerNavigationCoordinator
             setFocusedGameIndex:static_cast<NSInteger>(
-                                    std::distance(self->discovered_games_.begin(), focused_it))
+                                    std::distance(self->discovered_games_.begin(), focused_it)) +
+                                [self launcherGameItemOffset]
                          scroll:NO];
       }
     }
@@ -920,7 +962,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return;
   }
   std::filesystem::path focused_path;
-  const NSInteger focused_game_index = self.controllerNavigationCoordinator.focusedGameIndex;
+  const NSInteger focused_game_index =
+      self.controllerNavigationCoordinator.focusedGameIndex - [self launcherGameItemOffset];
   const BOOL has_focused_path =
       focused_game_index >= 0 &&
       focused_game_index < static_cast<NSInteger>(discovered_games_.size());
@@ -938,7 +981,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     if (focused_it != discovered_games_.end()) {
       [self.controllerNavigationCoordinator
           setFocusedGameIndex:static_cast<NSInteger>(
-                                  std::distance(discovered_games_.begin(), focused_it))
+                                  std::distance(discovered_games_.begin(), focused_it)) +
+                              [self launcherGameItemOffset]
                        scroll:NO];
     }
   }
@@ -957,7 +1001,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (NSInteger)controllerNavigationGameCount {
-  return static_cast<NSInteger>(discovered_games_.size());
+  return static_cast<NSInteger>(discovered_games_.size()) + [self launcherGameItemOffset];
 }
 
 - (NSInteger)controllerNavigationLauncherColumnCount {
@@ -1034,6 +1078,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)controllerNavigationManageGameAtIndex:(NSInteger)index {
+  if ([self launcherGameItemOffset] && index == 0) {
+    [self openSystemSoftware];
+    return;
+  }
+  index -= [self launcherGameItemOffset];
   if (index < 0 || index >= static_cast<NSInteger>(discovered_games_.size())) {
     return;
   }
@@ -1041,6 +1090,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)controllerNavigationLaunchGameAtIndex:(NSInteger)index {
+  if ([self launcherGameItemOffset] && index == 0) {
+    [self openDashboard];
+    return;
+  }
+  index -= [self launcherGameItemOffset];
   if (index < 0 || index >= static_cast<NSInteger>(discovered_games_.size())) {
     return;
   }
@@ -1235,7 +1289,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [unsafe_self presentLibraryAddSheetFromView:unsafe_self.launcherOverlayView];
   };
   self.launcherOverlayView.dashboardHandler = ^{
-    [unsafe_self launchDashboard];
+    [unsafe_self openDashboard];
+  };
+  self.launcherOverlayView.dashboardSystemSoftwareHandler = ^{
+    [unsafe_self openSystemSoftware];
   };
   [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
   self.launcherOverlayView.openStikDebugHandler = ^{
@@ -2440,7 +2497,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (discovered_games_.empty()) {
     focused_game_index = -1;
   } else if (focused_game_index < 0 ||
-             focused_game_index >= static_cast<NSInteger>(discovered_games_.size())) {
+             focused_game_index >=
+                 static_cast<NSInteger>(discovered_games_.size()) + [self launcherGameItemOffset]) {
     focused_game_index = 0;
   }
   [self.controllerNavigationCoordinator setFocusedGameIndex:focused_game_index scroll:NO];

@@ -64,6 +64,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_dashboard.mm
   launcher/ios_dashboard_disc_tray_view_controller.h
   launcher/ios_dashboard_disc_tray_view_controller.mm
+  launcher/ios_dashboard_setup_view_controller.h
+  launcher/ios_dashboard_setup_view_controller.mm
   launcher/ios_document_import_coordinator.h
   launcher/ios_document_import_coordinator.mm
   launcher/ios_external_folders_view_controller.h
@@ -102,6 +104,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_launcher_overlay_view.mm
   launcher/zar_converter.h
   launcher/zar_converter.cc
+  launcher/ios_system_update_page_view_controller.h
+  launcher/ios_system_update_page_view_controller.mm
   launcher/ios_zar_conversion_coordinator.h
   launcher/ios_zar_conversion_coordinator.mm
   settings/ios_acknowledgements_view_controller.h
