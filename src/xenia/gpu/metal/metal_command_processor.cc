@@ -2995,12 +2995,20 @@ void MetalCommandProcessor::InitializeShaderStorage(
   uint64_t start_ticks = xe::Clock::QueryHostTickCount();
   CreateStoredPipelines(stored_descriptions);
   compile_activity.storage_empty = stored_descriptions.empty();
-  compile_activity.storage_queued_end =
+  uint64_t storage_queued_end =
       compile_activity.queued.load(std::memory_order_relaxed);
+  compile_activity.storage_queued_end = storage_queued_end;
+  // Nothing went to the compile threads (no async compilation, or every
+  // stored entry was rejected): the load is over, and a queued_end of 0 must
+  // not read as "not known yet".
+  if (storage_queued_end == compile_activity.storage_queued_begin) {
+    compile_activity.storage_loading = false;
+  }
   if (blocking) {
     // The caller is waiting on this, so finish rather than leaving the compile
     // threads to race the guest's first draws.
     AwaitAsyncCompiles();
+    compile_activity.storage_loading = false;
   }
   XELOGI("Metal pipeline storage: {} path, stored pipelines {} in {} ms",
          UseDxilPath() ? "DXIL" : "SPIRV-Cross",
