@@ -32,6 +32,18 @@ constexpr NSUInteger kMaxMessageChars = 600;
 NSString* g_launch_id = nil;
 std::atomic<bool> g_game_running{false};
 std::atomic<uint32_t> g_title_id{0};
+// Apple's state reporting was told the running title, which it is only while
+// diagnostics can be sent.
+std::atomic<bool> g_title_reported{false};
+
+void ReportTitleState(uint32_t title_id) {
+  if (title_id && xe_ios_diagnostics_upload_allowed()) {
+    xe_ios_state_reporting_note_title(title_id);
+    g_title_reported.store(true, std::memory_order_relaxed);
+  } else if (g_title_reported.exchange(false, std::memory_order_relaxed)) {
+    xe_ios_state_reporting_note_title(0);
+  }
+}
 
 // Launches and the games they ran, oldest first: [{launch, title, at}], an
 // entry when a launch starts, a game starts or ends, or diagnostics are turned
@@ -267,7 +279,7 @@ void xe_ios_diagnostics_note_game_running(BOOL running) {
   g_title_id.store(0, std::memory_order_relaxed);
   NoteLaunchLog();
   xe_ios_fault_record_note_title(0);
-  xe_ios_state_reporting_note_title(0);
+  ReportTitleState(0);
   if (NSDictionary* session = xe_ios_session_stats_end()) {
     xe_ios_diagnostics_enqueue(@"session", session);
     xe_ios_diagnostics_upload_pending();
@@ -280,7 +292,7 @@ void xe_ios_diagnostics_note_title(uint32_t title_id, uint64_t jit_base, uint64_
   xe_ios_session_stats_note_title(title_id);
   xe_ios_fault_record_note_title(title_id);
   xe_ios_fault_record_note_jit_range(jit_base, jit_size);
-  xe_ios_state_reporting_note_title(title_id);
+  ReportTitleState(title_id);
 }
 
 void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, NSDate* end) {
@@ -303,6 +315,10 @@ void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, 
 void xe_ios_diagnostics_settings_changed(void) {
   const BOOL allowed = xe_ios_diagnostics_upload_allowed();
   xe_ios_fault_record_note_upload_allowed(allowed);
+  // Apple's state reporting hears the title only while diagnostics are on.
+  ReportTitleState(allowed && g_game_running.load(std::memory_order_relaxed)
+                       ? g_title_id.load(std::memory_order_relaxed)
+                       : 0);
   if (allowed) {
     NoteLaunchLog();
     xe_ios_diagnostics_upload_pending();
