@@ -40,6 +40,48 @@ NSString* PlayersText(NSInteger players) {
                                                    long(players)];
 }
 
+// Online Features is one switch for everything XeniOS sends, so turning it on from here asks
+// first and says what else it starts.
+void ConfirmTurnOnOnlineFeatures(UIViewController* presenter, void (^turn_on)(void)) {
+  NSString* message =
+      NSLocalizedString(@"This turns on all Online Features, not only System Link: update checks, "
+                        @"compatibility data, cover art, compatibility discussions and reports, "
+                        @"and System Link over the internet, where players can see your IP "
+                        @"address and a profile ID.",
+                        @"system link view controller: alert message");
+  if (xe_ios_diagnostics_available() && xe_ios_share_diagnostics_enabled()) {
+    message = [message
+        stringByAppendingFormat:@" %@",
+                                NSLocalizedString(@"Share Diagnostics is on, so anonymous crash "
+                                                  @"reports and performance statistics are sent "
+                                                  @"too.",
+                                                  @"system link view controller: alert message")];
+  }
+  message = [message
+      stringByAppendingFormat:@"\n\n%@", NSLocalizedString(@"You can change this in Settings > "
+                                                            @"About > Privacy.",
+                                                            @"system link view controller: alert "
+                                                            @"message")];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Turn On Online Features?",
+                                                 @"system link view controller: alert title")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel",
+                                                         @"system link view controller: button")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Turn On",
+                                                         @"system link view controller: button")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 turn_on();
+                               }]];
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 // Game names by title ID in hex, from the compatibility data.
 NSDictionary<NSString*, NSString*>* LoadGameNames() {
   NSMutableDictionary<NSString*, NSString*>* names = [NSMutableDictionary dictionary];
@@ -356,8 +398,10 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   switch ([self rowAtIndexPath:indexPath]) {
     case Row::kTurnOnOnline:
-      xe_ios_set_online_features_enabled(YES);
-      [self reloadRows];
+      ConfirmTurnOnOnlineFeatures(self, ^{
+        xe_ios_set_online_features_enabled(YES);
+        [self reloadRows];
+      });
       break;
     case Row::kLobby:
       xe_ios_set_system_link_room(title_id_, nil);
@@ -933,9 +977,11 @@ constexpr CGFloat kOnlineIconSize = 36.0;
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   switch ([self rowAtIndexPath:indexPath]) {
     case OnlineRow::kTurnOnOnline:
-      xe_ios_set_online_features_enabled(YES);
-      [self reloadRows];
-      xe_ios_system_link_refresh_online();
+      ConfirmTurnOnOnlineFeatures(self, ^{
+        xe_ios_set_online_features_enabled(YES);
+        [self reloadRows];
+        xe_ios_system_link_refresh_online();
+      });
       break;
     case OnlineRow::kCreateRoom:
       if (library_names_.count) {
