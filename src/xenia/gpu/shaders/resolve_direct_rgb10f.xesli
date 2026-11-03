@@ -1,8 +1,10 @@
 #ifndef XENIA_GPU_SHADERS_RESOLVE_DIRECT_RGB10F_XESLI_
 #define XENIA_GPU_SHADERS_RESOLVE_DIRECT_RGB10F_XESLI_
 
-// The EDRAM dump's packing of an RGBA16Float host render target sample as
-// 2_10_10_10_FLOAT, for the direct resolves that read such render targets.
+// The EDRAM dump's packing of host render target samples, for the direct
+// resolves that read the render targets: 2_10_10_10_FLOAT from RGBA16Float, and
+// the unsigned normalized 8_8_8_8 and 2_10_10_10 from RGBA8Unorm and
+// RGB10A2Unorm.
 
 // The dump's 7e3 packing of a host color component (UnclampedFloat32To7e3):
 // NClamp to [0, 31.875], then PreClampedFloat32To7e3, rounding to the nearest
@@ -41,6 +43,22 @@ uint XeResolveDirectPackRGB10A2Float(float4_xe sample) {
          (XeResolveDirectFloat32To7e3(sample.g) << 10u) |
          (XeResolveDirectFloat32To7e3(sample.b) << 20u) |
          (uint(alpha * 3.0f + 0.5f) << 30u);
+}
+
+// The dump's 8_8_8_8 packing of a host RGBA8Unorm sample.
+uint XeResolveDirectPackRGBA8(float4_xe sample) {
+  return uint(sample.r * 255.0f + 0.5f) |
+         (uint(sample.g * 255.0f + 0.5f) << 8u) |
+         (uint(sample.b * 255.0f + 0.5f) << 16u) |
+         (uint(sample.a * 255.0f + 0.5f) << 24u);
+}
+
+// The dump's 2_10_10_10 packing of a host RGB10A2Unorm sample.
+uint XeResolveDirectPackRGB10A2(float4_xe sample) {
+  return uint(sample.r * 1023.0f + 0.5f) |
+         (uint(sample.g * 1023.0f + 0.5f) << 10u) |
+         (uint(sample.b * 1023.0f + 0.5f) << 20u) |
+         (uint(sample.a * 3.0f + 0.5f) << 30u);
 }
 
 #endif  // XENIA_GPU_SHADERS_RESOLVE_DIRECT_RGB10F_XESLI_
