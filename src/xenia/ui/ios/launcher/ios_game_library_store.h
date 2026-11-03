@@ -84,6 +84,10 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
 XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
     const std::filesystem::path& path, BOOL* matchedExternalLocation,
     std::filesystem::path* relativePath, NSError** error);
+// Security-scoped access to every linked folder that is available, resolving
+// each bookmark once. Hold it for a game session so a disc swap can reach a
+// disc in another linked folder.
+NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSExternalLibraryAccessForAllLocations();
 
 #endif  // __OBJC__
 
