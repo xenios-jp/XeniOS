@@ -61,20 +61,18 @@ void XEConfigureTaskSheet(UINavigationController* navigation_controller,
   navigation_controller.modalPresentationStyle =
       (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) ? UIModalPresentationFormSheet
                                                             : UIModalPresentationPageSheet;
-  if (@available(iOS 15.0, *)) {
-    UISheetPresentationController* sheet = navigation_controller.sheetPresentationController;
-    sheet.detents = landscape_presentation
-                       ? @[ [UISheetPresentationControllerDetent largeDetent] ]
-                       : @[
-                         [UISheetPresentationControllerDetent mediumDetent],
-                         [UISheetPresentationControllerDetent largeDetent]
-                       ];
-    sheet.prefersGrabberVisible = YES;
-    sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
-    if (UI_USER_INTERFACE_IDIOM() != UIUserInterfaceIdiomPad) {
-      sheet.prefersEdgeAttachedInCompactHeight = YES;
-      sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
-    }
+  UISheetPresentationController* sheet = navigation_controller.sheetPresentationController;
+  sheet.detents = landscape_presentation
+                     ? @[ [UISheetPresentationControllerDetent largeDetent] ]
+                     : @[
+                       [UISheetPresentationControllerDetent mediumDetent],
+                       [UISheetPresentationControllerDetent largeDetent]
+                     ];
+  sheet.prefersGrabberVisible = YES;
+  sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
+  if (UI_USER_INTERFACE_IDIOM() != UIUserInterfaceIdiomPad) {
+    sheet.prefersEdgeAttachedInCompactHeight = YES;
+    sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
   }
 }
 
@@ -112,18 +110,16 @@ void XEConfigureDestinationControllerPresentation(
   view_controller.modalPresentationStyle =
       fullscreen ? UIModalPresentationFullScreen : UIModalPresentationPageSheet;
 
-  if (@available(iOS 15.0, *)) {
-    UISheetPresentationController* sheet =
-        view_controller.sheetPresentationController;
-    if (sheet) {
-      sheet.detents = @[ [UISheetPresentationControllerDetent largeDetent] ];
-      sheet.selectedDetentIdentifier =
-          UISheetPresentationControllerDetentIdentifierLarge;
-      sheet.prefersGrabberVisible = NO;
-      sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
-      sheet.prefersEdgeAttachedInCompactHeight = NO;
-      sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = NO;
-    }
+  UISheetPresentationController* sheet =
+      view_controller.sheetPresentationController;
+  if (sheet) {
+    sheet.detents = @[ [UISheetPresentationControllerDetent largeDetent] ];
+    sheet.selectedDetentIdentifier =
+        UISheetPresentationControllerDetentIdentifierLarge;
+    sheet.prefersGrabberVisible = NO;
+    sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
+    sheet.prefersEdgeAttachedInCompactHeight = NO;
+    sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = NO;
   }
 }
 
@@ -192,20 +188,8 @@ UIVisualEffectView* xe_install_chrome_backdrop(UIView* host, UIVisualEffect* eff
 }  // namespace
 
 UIVisualEffect* xe_make_chrome_visual_effect(BOOL clear_variant) {
-  if (@available(iOS 26.0, *)) {
-    UIGlassEffectStyle style =
-        clear_variant ? UIGlassEffectStyleClear : UIGlassEffectStyleRegular;
-    return [UIGlassEffect effectWithStyle:style];
-  }
-  // iOS 18-25 fallback: the closest pre-glass UIBlurEffect for each variant.
-  // SystemUltraThinMaterial reads as the most transparent, suitable for
-  // surfaces sitting on top of rich content (clear-variant callers like the
-  // compat hero over game artwork). SystemMaterial is the standard chrome
-  // material every other caller has been using.
-  UIBlurEffectStyle fallback_style = clear_variant
-                                         ? UIBlurEffectStyleSystemUltraThinMaterial
-                                         : UIBlurEffectStyleSystemMaterial;
-  return [UIBlurEffect effectWithStyle:fallback_style];
+  UIGlassEffectStyle style = clear_variant ? UIGlassEffectStyleClear : UIGlassEffectStyleRegular;
+  return [UIGlassEffect effectWithStyle:style];
 }
 
 void xe_apply_floating_window_chrome(UIView* view) {
@@ -222,8 +206,7 @@ void xe_apply_floating_window_chrome(UIView* view) {
   view.layer.shadowOffset = CGSizeMake(0.0f, 8.0f);
   // The backdrop sits inside the floating view as a child UIVisualEffectView
   // so the shadow can render outside the masked-to-bounds layer. Picked by
-  // xe_make_chrome_visual_effect — liquid glass on iOS 26+, SystemMaterial
-  // on iOS 18-25.
+  // xe_make_chrome_visual_effect — liquid glass.
   xe_install_chrome_backdrop(view, xe_make_chrome_visual_effect(NO));
 
   // Refresh the border CGColor on trait flips. The visual-effect view picks

@@ -33,7 +33,7 @@ Options:
                        random com.xenios.<id> otherwise)
   --random-ios-bundle-id
                        Force a random iOS bundle identifier for this package
-  --ios-min VERSION    iOS minimum version (default: 18.0)
+  --ios-min VERSION    iOS minimum version (default: 26.0)
   --attestation-key-id ID
                        Optional key id embedded in the attestation payload
   --print-metadata     Print resolved version/build/channel/attestation data and exit
@@ -573,7 +573,7 @@ release_stage="${XENIOS_BUILD_STAGE:-}"
 issued_at_override="${XENIOS_BUILD_ISSUED_AT:-}"
 stamp_bundle=""
 stamp_platform=""
-ios_min="18.0"
+ios_min="26.0"
 attestation_key="${XENIOS_BUILD_ATTESTATION_KEY:-}"
 attestation_key_id="${XENIOS_BUILD_ATTESTATION_KEY_ID:-ci-hmac-v1}"
 ios_bundle_id="${XENIOS_IOS_BUNDLE_ID:-}"

@@ -343,112 +343,109 @@
 - (UIContextMenuConfiguration*)tableView:(UITableView*)__unused tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath
                                         point:(CGPoint)__unused point {
-  if (@available(iOS 13.0, *)) {
-    XeniaTouchLayoutLibraryItem* item = [self layoutItemAtIndexPath:indexPath];
-    if (!item) {
-      return nil;
-    }
-
-    NSString* local_id = [[item.localID copy] autorelease];
-    const BOOL official = item.official;
-    const BOOL favorite = item.isFavorite;
-    XeniaTouchLayoutLibraryTableController* controller = self;
-    return [UIContextMenuConfiguration
-        configurationWithIdentifier:nil
-                     previewProvider:nil
-                      actionProvider:^UIMenu*(
-                          __unused NSArray<UIMenuElement*>* suggested_actions) {
-                        NSMutableArray<UIMenuElement*>* actions = [NSMutableArray array];
-                        [actions
-                            addObject:
-                                [UIAction
-                                    actionWithTitle:NSLocalizedString(
-                                                        @"Use for This Game",
-                                                        @"Context menu item in the layout library")
-                                              image:[UIImage systemImageNamed:@"checkmark.circle"]
-                                         identifier:nil
-                                            handler:^(__unused UIAction* action) {
-                                              if (controller->setTitleDefaultHandler_) {
-                                                controller->setTitleDefaultHandler_(local_id);
-                                              }
-                                            }]];
-                        [actions
-                            addObject:
-                                [UIAction
-                                    actionWithTitle:NSLocalizedString(
-                                                        @"Use for All Games",
-                                                        @"Context menu item in the layout library")
-                                              image:[UIImage systemImageNamed:@"star.circle"]
-                                         identifier:nil
-                                            handler:^(__unused UIAction* action) {
-                                              if (controller->setGlobalDefaultHandler_) {
-                                                controller->setGlobalDefaultHandler_(local_id);
-                                              }
-                                            }]];
-                        [actions
-                            addObject:
-                                [UIAction
-                                    actionWithTitle:
-                                        (favorite ? NSLocalizedString(
-                                                        @"Unfavorite",
-                                                        @"Context menu item in the layout library")
-                                                  : NSLocalizedString(
-                                                        @"Favorite",
-                                                        @"Context menu item in the layout library"))
-                                              image:[UIImage systemImageNamed:@"star"]
-                                         identifier:nil
-                                            handler:^(__unused UIAction* action) {
-                                              if (controller->favoriteLayoutHandler_) {
-                                                controller->favoriteLayoutHandler_(local_id,
-                                                                                   !favorite);
-                                              }
-                                            }]];
-                        [actions
-                            addObject:
-                                [UIAction
-                                    actionWithTitle:NSLocalizedString(
-                                                        @"Export",
-                                                        @"Context menu item in the layout library")
-                                              image:[UIImage
-                                                        systemImageNamed:@"square.and.arrow.up"]
-                                         identifier:nil
-                                            handler:^(__unused UIAction* action) {
-                                              if (controller->exportLayoutHandler_) {
-                                                controller->exportLayoutHandler_(local_id);
-                                              }
-                                            }]];
-                        if (!official) {
-                          [actions
-                              addObject:[UIAction
-                                            actionWithTitle:
-                                                NSLocalizedString(
-                                                    @"Rename",
-                                                    @"Context menu item in the layout library")
-                                                      image:[UIImage systemImageNamed:@"pencil"]
-                                                 identifier:nil
-                                                    handler:^(__unused UIAction* action) {
-                                                      if (controller->renameLayoutHandler_) {
-                                                        controller->renameLayoutHandler_(local_id);
-                                                      }
-                                                    }]];
-                          UIAction* delete_action = [UIAction
-                              actionWithTitle:NSLocalizedString(
-                                                  @"Delete",
-                                                  @"Context menu item in the layout library")
-                                        image:[UIImage systemImageNamed:@"trash"]
-                                   identifier:nil
-                                      handler:^(__unused UIAction* action) {
-                                        if (controller->deleteLayoutHandler_) {
-                                          controller->deleteLayoutHandler_(local_id);
-                                        }
-                                      }];
-                          delete_action.attributes = UIMenuElementAttributesDestructive;
-                          [actions addObject:delete_action];
-                        }
-                        return [UIMenu menuWithTitle:@"" children:actions];
-                      }];
+  XeniaTouchLayoutLibraryItem* item = [self layoutItemAtIndexPath:indexPath];
+  if (!item) {
+    return nil;
   }
-  return nil;
+
+  NSString* local_id = [[item.localID copy] autorelease];
+  const BOOL official = item.official;
+  const BOOL favorite = item.isFavorite;
+  XeniaTouchLayoutLibraryTableController* controller = self;
+  return [UIContextMenuConfiguration
+      configurationWithIdentifier:nil
+                   previewProvider:nil
+                    actionProvider:^UIMenu*(
+                        __unused NSArray<UIMenuElement*>* suggested_actions) {
+                      NSMutableArray<UIMenuElement*>* actions = [NSMutableArray array];
+                      [actions
+                          addObject:
+                              [UIAction
+                                  actionWithTitle:NSLocalizedString(
+                                                      @"Use for This Game",
+                                                      @"Context menu item in the layout library")
+                                            image:[UIImage systemImageNamed:@"checkmark.circle"]
+                                       identifier:nil
+                                          handler:^(__unused UIAction* action) {
+                                            if (controller->setTitleDefaultHandler_) {
+                                              controller->setTitleDefaultHandler_(local_id);
+                                            }
+                                          }]];
+                      [actions
+                          addObject:
+                              [UIAction
+                                  actionWithTitle:NSLocalizedString(
+                                                      @"Use for All Games",
+                                                      @"Context menu item in the layout library")
+                                            image:[UIImage systemImageNamed:@"star.circle"]
+                                       identifier:nil
+                                          handler:^(__unused UIAction* action) {
+                                            if (controller->setGlobalDefaultHandler_) {
+                                              controller->setGlobalDefaultHandler_(local_id);
+                                            }
+                                          }]];
+                      [actions
+                          addObject:
+                              [UIAction
+                                  actionWithTitle:
+                                      (favorite ? NSLocalizedString(
+                                                      @"Unfavorite",
+                                                      @"Context menu item in the layout library")
+                                                : NSLocalizedString(
+                                                      @"Favorite",
+                                                      @"Context menu item in the layout library"))
+                                            image:[UIImage systemImageNamed:@"star"]
+                                       identifier:nil
+                                          handler:^(__unused UIAction* action) {
+                                            if (controller->favoriteLayoutHandler_) {
+                                              controller->favoriteLayoutHandler_(local_id,
+                                                                                 !favorite);
+                                            }
+                                          }]];
+                      [actions
+                          addObject:
+                              [UIAction
+                                  actionWithTitle:NSLocalizedString(
+                                                      @"Export",
+                                                      @"Context menu item in the layout library")
+                                            image:[UIImage
+                                                      systemImageNamed:@"square.and.arrow.up"]
+                                       identifier:nil
+                                          handler:^(__unused UIAction* action) {
+                                            if (controller->exportLayoutHandler_) {
+                                              controller->exportLayoutHandler_(local_id);
+                                            }
+                                          }]];
+                      if (!official) {
+                        [actions
+                            addObject:[UIAction
+                                          actionWithTitle:
+                                              NSLocalizedString(
+                                                  @"Rename",
+                                                  @"Context menu item in the layout library")
+                                                    image:[UIImage systemImageNamed:@"pencil"]
+                                               identifier:nil
+                                                  handler:^(__unused UIAction* action) {
+                                                    if (controller->renameLayoutHandler_) {
+                                                      controller->renameLayoutHandler_(local_id);
+                                                    }
+                                                  }]];
+                        UIAction* delete_action = [UIAction
+                            actionWithTitle:NSLocalizedString(
+                                                @"Delete",
+                                                @"Context menu item in the layout library")
+                                      image:[UIImage systemImageNamed:@"trash"]
+                                 identifier:nil
+                                    handler:^(__unused UIAction* action) {
+                                      if (controller->deleteLayoutHandler_) {
+                                        controller->deleteLayoutHandler_(local_id);
+                                      }
+                                    }];
+                        delete_action.attributes = UIMenuElementAttributesDestructive;
+                        [actions addObject:delete_action];
+                      }
+                      return [UIMenu menuWithTitle:@"" children:actions];
+                    }];
 }
 
 @end

@@ -103,17 +103,15 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
   layout_library_filter_control_.backgroundColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySubtle]];
   layout_library_filter_control_.tintColor = [XeniaTheme touchTintAmber];
-  if (@available(iOS 13.0, *)) {
-    layout_library_filter_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
-    [layout_library_filter_control_
-        setTitleTextAttributes:@{
-          NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]
-        }
-                    forState:UIControlStateNormal];
-    [layout_library_filter_control_
-        setTitleTextAttributes:@{NSForegroundColorAttributeName : [UIColor blackColor]}
-                    forState:UIControlStateSelected];
-  }
+  layout_library_filter_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
+  [layout_library_filter_control_
+      setTitleTextAttributes:@{
+        NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]
+      }
+                  forState:UIControlStateNormal];
+  [layout_library_filter_control_
+      setTitleTextAttributes:@{NSForegroundColorAttributeName : [UIColor blackColor]}
+                  forState:UIControlStateSelected];
   [layout_library_filter_control_ addTarget:self
                                      action:@selector(layoutLibraryFilterChanged:)
                            forControlEvents:UIControlEventValueChanged];
@@ -148,14 +146,10 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
   layout_library_table_.estimatedRowHeight = 52.0f;
   layout_library_table_.estimatedSectionHeaderHeight = 0.01f;
   layout_library_table_.estimatedSectionFooterHeight = 0.01f;
-  if (@available(iOS 15.0, *)) {
-    layout_library_table_.sectionHeaderTopPadding = 0.0f;
-  }
+  layout_library_table_.sectionHeaderTopPadding = 0.0f;
   layout_library_table_.separatorColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySoft]];
-  if (@available(iOS 11.0, *)) {
-    layout_library_table_.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-  }
+  layout_library_table_.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
   layout_library_controller_ = [[XeniaTouchLayoutLibraryTableController alloc] init];
   __unsafe_unretained XeniaTouchOverlayEditChromeIOS* unsafe_self = self;
   layout_library_controller_.loadHandler = ^(NSString* local_id) {

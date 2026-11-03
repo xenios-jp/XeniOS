@@ -98,9 +98,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 52.0;
-  if (@available(iOS 15.0, *)) {
-    self.tableView.sectionHeaderTopPadding = 0;
-  }
+  self.tableView.sectionHeaderTopPadding = 0;
 }
 
 - (void)reloadDashboard {

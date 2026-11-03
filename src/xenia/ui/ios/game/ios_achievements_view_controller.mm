@@ -85,9 +85,7 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 88.0;
-  if (@available(iOS 15.0, *)) {
-    self.tableView.sectionHeaderTopPadding = 0;
-  }
+  self.tableView.sectionHeaderTopPadding = 0;
 
   if (app_context_) {
     snapshot_ = app_context_->LoadAchievementsSnapshot(user_index_, title_id_);
