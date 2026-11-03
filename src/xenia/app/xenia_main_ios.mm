@@ -25,6 +25,8 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "xenia/base/cvar.h"
@@ -449,6 +451,14 @@ ui::IOSPatchFileSummary BuildIOSPatchFileSummary(const patcher::PatchSourceFile&
 
 namespace {
 
+// What a title-to-title launch carries beside its path, as the desktop
+// RelaunchTitle does: the package inside a disc and the original Xbox game
+// XeFu runs.
+struct LaunchExtras {
+  std::string package;
+  std::filesystem::path xbox_disc;
+};
+
 // Internal pause reason, beside ui::IOSWindowedAppContext::EmulationPauseReason:
 // a live settings change is being applied.
 constexpr uint32_t kPauseReasonLiveSettings = 1u << 8;
@@ -540,9 +550,11 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   bool RequestGameStop(const char* reason);
   void ClearGameplayInputBlockerIfApplied();
   void ClearPresenterForTitleExit();
-  void StartEmulatorThread(std::filesystem::path game_path, bool require_cpu_backend);
+  void StartEmulatorThread(std::filesystem::path game_path, bool require_cpu_backend,
+                           LaunchExtras extras = {});
   void StartQueuedLaunchIfIdle();
-  void EmulatorThread(const std::filesystem::path& game_path, bool require_cpu_backend);
+  void EmulatorThread(const std::filesystem::path& game_path, bool require_cpu_backend,
+                      const LaunchExtras& extras);
   void ApplyGuestDisplayRefreshCapToWindowFromUIThread(bool capped);
   bool EnsureProfileServicesReady();
 
@@ -574,7 +586,7 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   std::thread emulator_thread_;
   std::atomic<bool> worker_running_{false};
   std::condition_variable launch_condition_;
-  std::optional<std::pair<std::filesystem::path, bool>> pending_worker_launch_;
+  std::optional<std::tuple<std::filesystem::path, bool, LaunchExtras>> pending_worker_launch_;
   bool subsystems_ready_ = false;  // Accessed only by the emulator worker.
   std::atomic<bool> emulator_thread_running_{false};
   std::atomic<bool> game_stop_requested_{false};
@@ -583,6 +595,7 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   std::atomic<bool> gameplay_input_blocker_applied_{false};
   std::mutex launch_mutex_;
   std::optional<std::filesystem::path> queued_launch_path_;
+  LaunchExtras queued_launch_extras_;  // Of queued_launch_path_.
   // Set by each launch from the library: whether it is the dashboard, which
   // boots with the console's animation and which a game it starts goes back to.
   std::atomic<bool> dashboard_session_{false};
@@ -720,6 +733,7 @@ bool EmulatorAppIOS::OnInitialize() {
       std::lock_guard<std::mutex> lock(launch_mutex_);
       if (!queued_launch_path_.has_value()) {
         queued_launch_path_ = xe::ui::IOSInstalledDashboardPath();
+        queued_launch_extras_ = {};
       }
     }
     return RequestGameStop("Exit to dashboard");
@@ -753,8 +767,8 @@ bool EmulatorAppIOS::OnInitialize() {
   emulator_->set_on_launch_new_title([this](const std::string& host_path,
                                             const std::string& launch_module, uint32_t launch_flags,
                                             const std::string& launch_data_hex,
-                                            const std::string& /*xbox_disc*/,
-                                            const std::string& /*package*/) {
+                                            const std::string& xbox_disc,
+                                            const std::string& package) {
     if (shutting_down_.load(std::memory_order_acquire)) {
       XELOGW("iOS: Ignoring title relaunch request while shutting down");
       return;
@@ -790,6 +804,8 @@ bool EmulatorAppIOS::OnInitialize() {
     {
       std::lock_guard<std::mutex> lock(launch_mutex_);
       queued_launch_path_ = relaunch_target;
+      queued_launch_extras_ = {package, xbox_disc.empty() ? std::filesystem::path()
+                                                          : std::filesystem::path(xbox_disc)};
     }
 
     cvars::launch_module = launch_module;
@@ -799,9 +815,9 @@ bool EmulatorAppIOS::OnInitialize() {
     RequestGameStop("Title relaunch");
 
     XELOGI("iOS: Queued title relaunch target='{}' module='{}' flags={} "
-           "data_len={}",
+           "data_len={} package='{}' xbox_disc={}",
            xe::strip_pii(xe::path_to_utf8(relaunch_target)), xe::strip_pii(launch_module),
-           launch_flags, launch_data_hex.size());
+           launch_flags, launch_data_hex.size(), package, !xbox_disc.empty());
   });
 
   emulator_->on_launch.AddListener([](uint32_t title_id, const std::string_view title_name) {
@@ -933,6 +949,7 @@ bool EmulatorAppIOS::OnInitialize() {
       }
       if (emulator_thread_running_.load(std::memory_order_acquire)) {
         queued_launch_path_ = game_path;
+        queued_launch_extras_ = {};
         should_queue_launch = true;
       }
     }
@@ -1694,10 +1711,10 @@ void EmulatorAppIOS::ClearPresenterForTitleExit() {
 }
 
 void EmulatorAppIOS::StartEmulatorThread(std::filesystem::path game_path,
-                                         bool require_cpu_backend) {
+                                         bool require_cpu_backend, LaunchExtras extras) {
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);
-    pending_worker_launch_.emplace(std::move(game_path), require_cpu_backend);
+    pending_worker_launch_.emplace(std::move(game_path), require_cpu_backend, std::move(extras));
     game_stop_requested_.store(false, std::memory_order_release);
     emulator_thread_running_.store(true, std::memory_order_release);
   }
@@ -1706,7 +1723,7 @@ void EmulatorAppIOS::StartEmulatorThread(std::filesystem::path game_path,
     emulator_thread_ = std::thread([this]() {
       // SDL setup, title reset and final destruction stay on one host thread.
       while (true) {
-        std::pair<std::filesystem::path, bool> launch;
+        std::tuple<std::filesystem::path, bool, LaunchExtras> launch;
         {
           std::unique_lock<std::mutex> lock(launch_mutex_);
           launch_condition_.wait(lock, [this]() {
@@ -1719,7 +1736,7 @@ void EmulatorAppIOS::StartEmulatorThread(std::filesystem::path game_path,
           launch = std::move(*pending_worker_launch_);
           pending_worker_launch_.reset();
         }
-        EmulatorThread(launch.first, launch.second);
+        EmulatorThread(std::get<0>(launch), std::get<1>(launch), std::get<2>(launch));
         emulator_thread_running_.store(false, std::memory_order_release);
         game_stop_requested_.store(false, std::memory_order_release);
         app_context().CallInUIThread([this]() { StartQueuedLaunchIfIdle(); });
@@ -1738,6 +1755,7 @@ void EmulatorAppIOS::StartQueuedLaunchIfIdle() {
   }
 
   std::optional<std::filesystem::path> queued_path;
+  LaunchExtras queued_extras;
   {
     std::lock_guard<std::mutex> lock(launch_mutex_);
     if (title_update_install_in_progress_) {
@@ -1748,6 +1766,7 @@ void EmulatorAppIOS::StartQueuedLaunchIfIdle() {
     }
     queued_path = std::move(queued_launch_path_);
     queued_launch_path_.reset();
+    queued_extras = std::exchange(queued_launch_extras_, {});
   }
 
   if (!queued_path.has_value() || queued_path->empty()) {
@@ -1765,7 +1784,7 @@ void EmulatorAppIOS::StartQueuedLaunchIfIdle() {
                           ?: @""
                     }];
   }
-  StartEmulatorThread(std::move(*queued_path), true);
+  StartEmulatorThread(std::move(*queued_path), true, std::move(queued_extras));
 }
 
 void EmulatorAppIOS::OnDestroy() {
@@ -1820,7 +1839,7 @@ void EmulatorAppIOS::OnDestroy() {
 }
 
 void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
-                                    bool require_cpu_backend) {
+                                    bool require_cpu_backend, const LaunchExtras& extras) {
   xe::threading::set_name("Emulator Thread");
   const qos_class_t qos =
       cvars::ios_emulator_thread_user_initiated_qos ? QOS_CLASS_USER_INITIATED : QOS_CLASS_DEFAULT;
@@ -2020,6 +2039,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       if (xam) {
         auto& loader_data = xam->loader_data();
         loader_data.host_path = xe::path_to_utf8(abs_path);
+        loader_data.package_path = extras.package;
         loader_data.launch_data_present = false;
         loader_data.launch_flags = 0;
         loader_data.launch_data.clear();
@@ -2067,7 +2087,11 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       emulator_->RequestBootAnimation();
     }
     ui::ios::SetLaunchStage(ui::ios::LaunchStage::kLoading);
-    X_STATUS launch_result = emulator_->LaunchPath(abs_path);
+    // ResetTitle emptied the drive, which XeFu's original Xbox game needs kept.
+    if (!extras.xbox_disc.empty()) {
+      emulator_->InsertXboxGame(extras.xbox_disc);
+    }
+    X_STATUS launch_result = emulator_->LaunchPath(abs_path, extras.package);
     cvars::launch_module = "";
     cvars::launch_flags = 0;
     cvars::launch_data = "";
