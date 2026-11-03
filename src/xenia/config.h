@@ -12,6 +12,8 @@
 
 #include <filesystem>
 #include <functional>
+#include <set>
+#include <string>
 #include <string_view>
 #include "third_party/tomlplusplus/toml.hpp"
 
@@ -33,6 +35,11 @@ std::filesystem::path GetBundledDataPath(const std::string& subdirectory);
 // Returns the title_id if successful, 0 otherwise.
 uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path);
 void SaveConfig();
+// Writes the current values of the cvars named in |names| and keeps every other
+// key as the config file has it, so an edit made to the file while the app runs
+// survives. A key the file lacks, or has with the wrong type, gets its current
+// value; a missing or unreadable file gets every current value.
+void SaveConfigValues(const std::set<std::string>& names);
 void SaveGameConfig(uint32_t title_id, const toml::table& config_table);
 // Resolves a possibly dotted category ("GPU.Debug") to a nested table.
 toml::table* ResolveSectionTable(toml::table& root, std::string_view section);

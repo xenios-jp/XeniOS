@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,10 @@ class IConfigVar : virtual public ICommandVar {
   virtual std::string commandline_value() const = 0;
   virtual void LoadConfigValue(const toml::node* result) = 0;
   virtual void LoadGameConfigValue(const toml::node* result) = 0;
+  // |result| written the way config_value() writes this cvar's value, or nullopt
+  // when |result| isn't of the cvar's type. Leaves the cvar unchanged.
+  virtual std::optional<std::string> FormatConfigValue(
+      const toml::node* result) const = 0;
   virtual void ClearGameConfigValue() = 0;
   virtual void ResetConfigValueToDefault() = 0;
   // Save/restore mechanism for temporarily loading values without contaminating
@@ -106,6 +111,8 @@ class ConfigVar : public CommandVar<T>, virtual public IConfigVar {
   void AddToLaunchOptions(cxxopts::Options* options) override;
   void LoadConfigValue(const toml::node* result) override;
   void LoadGameConfigValue(const toml::node* result) override;
+  std::optional<std::string> FormatConfigValue(
+      const toml::node* result) const override;
   void ClearGameConfigValue() override;
   void SetConfigValue(T val);
   void SetGameConfigValue(T val);
@@ -308,6 +315,26 @@ std::string ConfigVar<T>::config_value() const {
     return this->ToString(*config_value_);
   }
   return this->ToString(this->default_value_);
+}
+template <class T>
+std::optional<std::string> ConfigVar<T>::FormatConfigValue(
+    const toml::node* result) const {
+  auto value_opt = result->value<T>();
+  if (!value_opt) {
+    return std::nullopt;
+  }
+  return this->ToString(value_opt.value());
+}
+template <>
+inline std::optional<std::string>
+ConfigVar<std::filesystem::path>::FormatConfigValue(
+    const toml::node* result) const {
+  auto value_opt = result->value<std::string>();
+  if (!value_opt) {
+    return std::nullopt;
+  }
+  return this->ToString(
+      xe::to_path(xe::utf8::fix_path_separators(value_opt.value())));
 }
 template <class T>
 std::string ConfigVar<T>::default_value() const {

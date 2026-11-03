@@ -547,6 +547,9 @@ static bool SetConfigVarStringLikeValue(const std::string& key, const std::strin
 bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
                             const std::set<std::string>* dirty_keys) {
   bool ok = true;
+  // Only these keys are written: the rest of the file stays as it is on disk, so an edit made to
+  // it while the app runs isn't overwritten with the value the app loaded at launch.
+  std::set<std::string> changed_keys;
   for (const IOSConfigSection& section : sections) {
     for (const IOSConfigItem& item : section.items) {
       if (dirty_keys && dirty_keys->find(item.key) == dirty_keys->end()) {
@@ -554,6 +557,9 @@ bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
       }
       if (item.storage == IOSConfigStorage::kConfigVar && IOSConfigIsHiddenKey(item.key)) {
         continue;
+      }
+      if (item.storage == IOSConfigStorage::kConfigVar) {
+        changed_keys.insert(item.key);
       }
       switch (item.control_type) {
         case IOSConfigControlType::kToggle:
@@ -648,11 +654,12 @@ bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
       }
     }
   }
-  config::SaveConfig();
+  config::SaveConfigValues(changed_keys);
   return ok;
 }
 
 bool ResetAllIOSConfigToDefaults(void) {
+  std::set<std::string> reset_keys;
   if (cvar::ConfigVars) {
     for (const auto& entry : *cvar::ConfigVars) {
       cvar::IConfigVar* var = entry.second;
@@ -662,11 +669,12 @@ bool ResetAllIOSConfigToDefaults(void) {
         continue;
       }
       var->ResetConfigValueToDefault();
+      reset_keys.insert(entry.first);
     }
   }
   // iOS-only switches that live in NSUserDefaults rather than cvars.
   [GetUserDefaults() removeObjectForKey:kXeniaAutoOpenStikDebugOnLaunchPreferenceKey];
-  config::SaveConfig();
+  config::SaveConfigValues(reset_keys);
   return true;
 }
 
