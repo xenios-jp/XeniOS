@@ -903,7 +903,16 @@ bool EmulatorAppIOS::OnInitialize() {
     if (enabled && XeniaIOSCurrentWindowScalingMode() == XeniaIOSWindowScalingModeStretch) {
       enabled = false;
     }
-    cvars::present_letterbox = enabled;
+    // At the game config's priority, which the next title's config load drops.
+    // The saved game setting below takes over for later launches of this one.
+    if (cvar::ConfigVars) {
+      auto it = cvar::ConfigVars->find("present_letterbox");
+      if (it != cvar::ConfigVars->end()) {
+        if (auto* config_var = dynamic_cast<cvar::ConfigVar<bool>*>(it->second)) {
+          config_var->SetGameConfigValue(enabled);
+        }
+      }
+    }
     std::lock_guard<std::mutex> lock(launch_mutex_);
     config::SaveGameConfigSetting(emulator_.get(), "Display", "present_letterbox", enabled);
   });
