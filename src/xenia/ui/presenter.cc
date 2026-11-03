@@ -71,6 +71,9 @@ DEFINE_int32(
 namespace xe {
 namespace ui {
 
+static std::atomic<Presenter::GuestOutputRefreshObserver>
+    guest_output_refresh_observer_{nullptr};
+
 void Presenter::FatalErrorHostGpuLossCallback(
     [[maybe_unused]] bool is_responsible,
     [[maybe_unused]] bool statically_from_ui_thread) {
@@ -358,6 +361,11 @@ void Presenter::PaintFromUIThread(bool force_paint) {
   }
 }
 
+void Presenter::SetGuestOutputRefreshObserver(
+    GuestOutputRefreshObserver observer) {
+  guest_output_refresh_observer_.store(observer, std::memory_order_relaxed);
+}
+
 bool Presenter::RefreshGuestOutput(
     uint32_t frontbuffer_width, uint32_t frontbuffer_height,
     uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
@@ -434,6 +442,12 @@ bool Presenter::RefreshGuestOutput(
   guest_output_last_refresh_ticks_.store(
       std::chrono::steady_clock::now().time_since_epoch().count(),
       std::memory_order_relaxed);
+  if (is_active) {
+    if (GuestOutputRefreshObserver observer =
+            guest_output_refresh_observer_.load(std::memory_order_relaxed)) {
+      observer();
+    }
+  }
 
   // Trigger the presentation on the host.
   PaintResult paint_result = PaintResult::kNotPresented;

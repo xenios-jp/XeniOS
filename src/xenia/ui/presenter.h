@@ -320,6 +320,12 @@ class Presenter {
       uint32_t frontbuffer_width, uint32_t frontbuffer_height,
       uint32_t display_aspect_ratio_x, uint32_t display_aspect_ratio_y,
       std::function<bool(GuestOutputRefreshContext& context)> refresher);
+  // Called on the refreshing thread after each refresh that produced a guest
+  // frame, for frame pacing statistics, so it must be cheap. One observer for
+  // all presenters; nullptr removes it.
+  using GuestOutputRefreshObserver = void (*)();
+  static void SetGuestOutputRefreshObserver(
+      GuestOutputRefreshObserver observer);
   // The implementation must be callable from any thread, including from
   // multiple at the same time, and it should acquire the latest guest output
   // image via ConsumeGuestOutput.
