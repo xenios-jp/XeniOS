@@ -13,6 +13,7 @@
 #include "xenia/kernel/xam/xam_system_link.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstring>
 #include <deque>
@@ -38,16 +39,30 @@
 #include "xenia/net/host_interfaces.h"
 #include "xenia/net/packet_transport.h"
 
-DEFINE_string(systemlink_transport, "tunnel",
+#if XE_PLATFORM_IOS
+// iOS blocks the tunnel's broadcasts without an entitlement sideloaded builds
+// can't carry, and the first one brings up the Local Network alert. The relay
+// only talks to the internet, and only while the app allows it.
+constexpr char kSystemLinkTransportDefault[] = "relay";
+#else
+constexpr char kSystemLinkTransportDefault[] = "tunnel";
+#endif
+DEFINE_string(systemlink_transport, kSystemLinkTransportDefault,
               "How System Link traffic travels. \"tunnel\" sends it straight "
               "to other Xenia instances on this LAN and is the better choice "
-              "for Xenia-to-Xenia play. \"kai\" goes through an XLink Kai "
+              "for Xenia-to-Xenia play. \"relay\" plays with other Xenia and "
+              "XeniOS instances over the internet, in a room that "
+              "systemlink_lobby lists. \"kai\" goes through an XLink Kai "
               "engine, which reaches Xbox 360 consoles and players over the "
               "internet. \"off\" turns System Link off for every title. While "
               "systemlink_cross_platform is on, titles with cross-platform "
               "System Link use the local network in place of the tunnel or "
               "Kai.",
               "Network");
+#if XE_PLATFORM_IOS
+// Installs from before the relay kept "tunnel" in their config.
+UPDATE_from_string(systemlink_transport, 2026, 11, 3, 11, "tunnel");
+#endif
 DEFINE_bool(systemlink_cross_platform, false,
             "Lets Shadowrun, Lost Planet Colonies, Aliens: Colonial Marines "
             "and Universe at War: Earth Assault play System Link with Xbox "
@@ -71,6 +86,17 @@ DEFINE_int32(systemlink_tunnel_port, 36020,
 DEFINE_string(systemlink_tunnel_address, "255.255.255.255",
               "Where the System Link tunnel sends: the LAN broadcast address "
               "or the IPv4 address of one other instance.",
+              "Network");
+DEFINE_string(systemlink_lobby, std::string(xe::net::relay::kDefaultLobby),
+              "wss:// address of the System Link lobby, which lists the "
+              "players in each room. Players reach each other directly where "
+              "their networks allow and through the lobby's TURN relay "
+              "otherwise.",
+              "Network");
+DEFINE_string(systemlink_room, "",
+              "The relay room to play in: a private room's 6-character code, "
+              "or empty for the title's public lobby. Players in a room can "
+              "see each other's IP addresses.",
               "Network");
 
 namespace xe {
@@ -153,12 +179,65 @@ std::optional<uint32_t> ParseAddress(const std::string& text) {
   return address.to_uint();
 }
 
+std::mutex relay_policy_mutex;
+SystemLinkRelayPolicy relay_policy;
+// How many times the room may have changed.
+std::atomic<uint32_t> relay_room_changes{0};
+
+bool RelayAllowed() {
+  std::lock_guard lock(relay_policy_mutex);
+  return !relay_policy.allowed || relay_policy.allowed();
+}
+
+std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
+  std::string code = cvars::systemlink_room;
+  {
+    std::lock_guard lock(relay_policy_mutex);
+    if (relay_policy.room) {
+      code = relay_policy.room(title_id);
+    }
+  }
+  if (code.empty()) {
+    return net::relay::PublicLobby(title_id);
+  }
+  const auto normalized = net::relay::NormalizeRoomCode(code);
+  if (!normalized) {
+    // Not even a near miss of a private code goes in the log.
+    XELOGE("System Link: the room code isn't valid");
+    return std::nullopt;
+  }
+  return net::relay::PrivateRoom(*normalized);
+}
+
 std::unique_ptr<net::secure::PacketTransport> OpenTransport(
-    const net::secure::Mac& mac) {
+    const net::secure::Mac& mac, const xex2_opt_execution_info& execution) {
   const std::string& name = cvars::systemlink_transport;
   std::string error;
   std::unique_ptr<net::secure::PacketTransport> transport;
-  if (name == "kai") {
+  if (name == "relay") {
+    net::relay::RelayConfig config;
+    config.lobby = cvars::systemlink_lobby;
+    const auto room = RelayRoom(execution.title_id);
+    if (!room) {
+      return nullptr;
+    }
+    config.room = *room;
+    config.title_id = execution.title_id;
+    config.title_version = execution.version_value;
+    config.allowed = [] { return RelayAllowed(); };
+    // The room is only asked for again once it may have changed.
+    config.current_room = [title_id = uint32_t(execution.title_id),
+                           seen = relay_room_changes.load()]() mutable
+        -> std::optional<net::relay::Room> {
+      const uint32_t changes = relay_room_changes.load();
+      if (changes == seen) {
+        return std::nullopt;
+      }
+      seen = changes;
+      return RelayRoom(title_id);
+    };
+    transport = net::secure::OpenRelayTransport(mac, config, error);
+  } else if (name == "kai") {
     const auto engine = ParseAddress(cvars::systemlink_kai_engine);
     if (!engine) {
       return nullptr;
@@ -240,7 +319,17 @@ std::unique_ptr<net::secure::PacketTransport> OpenCrossPlatformTransport(
 
 }  // namespace
 
-bool SystemLinkEnabled() { return cvars::systemlink_transport != "off"; }
+bool SystemLinkEnabled() {
+  const std::string& transport = cvars::systemlink_transport;
+  return transport != "off" && (transport != "relay" || RelayAllowed());
+}
+
+void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy) {
+  std::lock_guard lock(relay_policy_mutex);
+  relay_policy = std::move(policy);
+}
+
+void SystemLinkRoomChanged() { ++relay_room_changes; }
 
 bool CrossPlatformTitle(KernelState* kernel_state) {
   auto module = kernel_state->GetExecutableModule();
@@ -291,7 +380,8 @@ std::unique_ptr<net::SystemLink> CreateSystemLink(KernelState* kernel_state,
     association.cross_platform.emplace();
     transport = OpenCrossPlatformTransport(*association.cross_platform, port);
   } else {
-    transport = OpenTransport(kernel_state->xconfig()->mac_address());
+    transport =
+        OpenTransport(kernel_state->xconfig()->mac_address(), *execution);
   }
   if (!transport) {
     return nullptr;
