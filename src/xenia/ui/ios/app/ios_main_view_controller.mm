@@ -347,6 +347,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)inGameSettingsTapped:(UIButton*)sender;
 - (void)inGameLiveLogTapped:(UIButton*)sender;
 - (void)exitGameTapped:(UIButton*)sender;
+- (void)exitGameToDashboard;
 - (void)handleSettingsHubAction:(XeniaSettingsHubAction)action;
 - (void)confirmClearCurrentGameShaderCache;
 - (void)confirmClearAllShaderCaches;
@@ -433,6 +434,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   BOOL emulation_paused_by_user_;
   BOOL presenting_stikdebug_automation_prompt_;
   uint32_t active_game_title_id_;
+  // The dashboard was launched from the library; the games it starts exit back to it.
+  BOOL dashboard_session_;
   std::string active_touch_layout_local_id_;
   UITapGestureRecognizer* in_game_menu_tap_recognizer_;  // owned by self.view
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* active_external_game_accesses_;
@@ -658,7 +661,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 // A title the emulator starts itself, like a game the dashboard launches, gets
 // what a launch from the library sets up: its touch layout and access to the
-// folder it is in (to every linked folder, for the dashboard).
+// folder it is in (to every linked folder, for the dashboard). A game the
+// dashboard starts exits back to it.
 - (void)onTitleWillStart:(NSNotification*)note {
   NSString* path_ns = note.userInfo[XeniaIOSTitlePathKey];
   if (![path_ns isKindOfClass:[NSString class]] || !path_ns.length) {
@@ -671,9 +675,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
           path, &matched_external_location, nil)) {
     [accesses addObject:access];
   }
-  if (xe::ui::IsIOSInstalledDashboardPath(path)) {
+  const BOOL starts_dashboard = xe::ui::IsIOSInstalledDashboardPath(path);
+  if (starts_dashboard) {
     [accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
   }
+  self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
   active_game_title_id_ = [self titleIDForGamePath:path];
   [self appendLinkedContentAccessesForTitleID:active_game_title_id_
                                      accesses:accesses
@@ -1416,7 +1422,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [unsafe_self inGameLiveLogTapped:nil];
   };
   self.inGameMenuOverlay.exitHandler = ^{
-    [unsafe_self exitGameTapped:nil];
+    if (unsafe_self.inGameMenuOverlay.exitsToDashboard) {
+      [unsafe_self exitGameToDashboard];
+    } else {
+      [unsafe_self exitGameTapped:nil];
+    }
   };
   self.inGameMenuOverlay.graphicsHandler = ^{
     [unsafe_self presentQuickSettings];
@@ -1573,6 +1583,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                 preventInteractiveDismissal:NO
                                  completion:nil];
   [log_vc release];
+}
+
+// A game the dashboard started goes back to it, as the game's own exit does.
+- (void)exitGameToDashboard {
+  [self hideInGameMenuOverlay];
+  if (self.gameStopInProgress) {
+    return;
+  }
+  [self launchDashboard];
 }
 
 - (void)exitGameTapped:(UIButton*)sender {
@@ -3116,7 +3135,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [launch_external_accesses addObject:external_access];
   }
   // The dashboard reads and starts the games in every linked folder.
-  if (xe::ui::IsIOSInstalledDashboardPath(launch_path)) {
+  const BOOL launches_dashboard = xe::ui::IsIOSInstalledDashboardPath(launch_path);
+  if (launches_dashboard) {
     [launch_external_accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
   }
   NSString* linked_content_access_error = nil;
@@ -3129,6 +3149,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [self refreshImportedGamesAsync];
     return;
   }
+  dashboard_session_ = launches_dashboard;
+  self.inGameMenuOverlay.exitsToDashboard = NO;
 
   if (self.gameStopInProgress || self.gameRunning) {
     if (self.appContext) {

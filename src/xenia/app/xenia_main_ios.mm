@@ -896,8 +896,14 @@ bool EmulatorAppIOS::OnInitialize() {
       cvars::launch_flags = 0;
       cvars::launch_data = "";
       const bool is_dashboard = xe::ui::IsIOSInstalledDashboardPath(game_path);
+      // Going back to the dashboard from one of its games skips the boot
+      // animation, as on a console.
+      const bool returns_to_dashboard = is_dashboard &&
+                                        dashboard_session_.load(std::memory_order_acquire) &&
+                                        emulator_thread_running_.load(std::memory_order_acquire);
       dashboard_session_.store(is_dashboard, std::memory_order_release);
-      boot_animation_pending_.store(is_dashboard, std::memory_order_release);
+      boot_animation_pending_.store(is_dashboard && !returns_to_dashboard,
+                                    std::memory_order_release);
     }
 
     bool should_queue_launch = false;
