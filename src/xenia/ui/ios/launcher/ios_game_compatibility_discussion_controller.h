@@ -29,6 +29,9 @@
 @property(nonatomic, readonly) NSInteger issueNumber;
 @property(nonatomic, readonly, getter=isLoading) BOOL loading;
 @property(nonatomic, readonly) BOOL showAll;
+// YES when "Online features" is off, so the discussion can only show what is already cached.
+// The owning view can say why instead of showing an empty list.
+@property(nonatomic, readonly) BOOL onlineFeaturesOff;
 
 - (instancetype)initWithTitleID:(uint32_t)title_id compatInfo:(NSDictionary*)compat_info;
 - (void)setCompatInfo:(NSDictionary*)compat_info;
