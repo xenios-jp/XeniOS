@@ -251,7 +251,7 @@ NSString* xe_user_facing_build_label(NSDictionary* build_info) {
 
   if ([channel isEqualToString:@"preview"] && version_label.length > 0) {
     if (stage_label.length > 0) {
-      return [NSString stringWithFormat:NSLocalizedString(@"%@ Preview %@",
+      return [NSString stringWithFormat:NSLocalizedString(@"%1$@ Preview %2$@",
                                                           @"compat formatting: user-visible text"),
                                         stage_label, version_label];
     }

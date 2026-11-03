@@ -652,7 +652,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
                                                            @"game compatibility cells: label text"),
                                          (long)report_count]
             : [NSString stringWithFormat:NSLocalizedString(
-                                             @"Showing latest %ld of %ld reports.",
+                                             @"Showing latest %1$ld of %2$ld reports.",
                                              @"game compatibility cells: user-visible text"),
                                          (long)visible_count, (long)report_count];
     summary_label.font = [UIFont systemFontOfSize:12];

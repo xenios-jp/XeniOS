@@ -302,7 +302,7 @@ BOOL XeniaIOSCheckFreeSpace(NSString* path, uint64_t needed_bytes, NSError** err
         XeniaIOSFileTransferErrorInsufficientSpace,
         [NSString
             stringWithFormat:NSLocalizedString(
-                                 @"Not enough storage: need %@, have %@. Free up space on this "
+                                 @"Not enough storage: need %1$@, have %2$@. Free up space on this "
                                  @"device, or use Link Folder to play from the original "
                                  @"location without copying.",
                                  @"file transfer: user-visible text"),
@@ -699,7 +699,7 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   if (total > 0) {
     _progressView.progress = static_cast<float>(static_cast<double>(copied) / total);
     _alert.message =
-        [NSString stringWithFormat:NSLocalizedString(@"%@\n%@ of %@\n", @"file transfer: message"),
+        [NSString stringWithFormat:NSLocalizedString(@"%1$@\n%2$@ of %3$@\n", @"file transfer: message"),
                                    _baseMessage, XeniaIOSFormatByteCount(copied),
                                    XeniaIOSFormatByteCount(total)];
   }
