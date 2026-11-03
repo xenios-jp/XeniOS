@@ -23,7 +23,8 @@
 - (BOOL)installTitleUpdateAtPath:(NSString*)path
                           status:(NSString**)status_out
                   notTitleUpdate:(BOOL*)not_title_update_out;
-- (void)refreshImportedGames;
+// Rescans the library off the main thread.
+- (void)refreshImportedGamesAsync;
 @end
 
 // Per-game content management sheet: lists installed title updates and DLC

@@ -100,12 +100,8 @@
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 360.0;
   self.tableView.alwaysBounceVertical = YES;
-  if (@available(iOS 11.0, *)) {
-    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-  }
-  if (@available(iOS 15.0, *)) {
-    self.tableView.sectionHeaderTopPadding = 0;
-  }
+  self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+  self.tableView.sectionHeaderTopPadding = 0;
   self.title = @"";
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onDiscussionDidUpdate:)
@@ -126,14 +122,21 @@
   // Add bottom safe area inset so the Submit Report card isn't clipped
   // behind the home indicator.
   UIEdgeInsets insets = self.tableView.contentInset;
-  CGFloat safe_bottom = 0.0;
-  if (@available(iOS 11.0, *)) {
-    safe_bottom = self.view.safeAreaInsets.bottom;
-  }
+  CGFloat safe_bottom = self.view.safeAreaInsets.bottom;
   if (fabs(insets.bottom - safe_bottom) > 0.5) {
     insets.bottom = safe_bottom;
     self.tableView.contentInset = insets;
   }
+}
+
+// Reloads rows 0...last_row in place (the table has a fixed three rows), so
+// scroll position and the hero header are left alone.
+- (void)reloadCompatibilityRowsThrough:(NSInteger)last_row {
+  NSMutableArray<NSIndexPath*>* paths = [NSMutableArray array];
+  for (NSInteger row = 0; row <= last_row; ++row) {
+    [paths addObject:[NSIndexPath indexPathForRow:row inSection:0]];
+  }
+  [self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
@@ -146,7 +149,7 @@
   // CGColor, and the table cells re-render their cards on reload from the
   // dynamic XeniaTheme accessors.
   [hero_view_ updateTraitColors];
-  [self.tableView reloadData];
+  [self reloadCompatibilityRowsThrough:2];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -237,7 +240,7 @@
   compat_info_ = [next_info retain];
   [discussion_controller_ setCompatInfo:next_info];
   [self refreshHeroContent];
-  [self.tableView reloadData];
+  [self reloadCompatibilityRowsThrough:2];
 }
 
 - (void)onDiscussionDidUpdate:(NSNotification*)notification {
@@ -246,8 +249,10 @@
 
 - (void)compatibilityDiscussionControllerDidUpdate:
     (XeniaGameCompatibilityDiscussionController*)__unused controller {
+  // Only the discussion and details rows read discussion state; the Submit
+  // Report card is unchanged.
   [self refreshHeroContent];
-  [self.tableView reloadData];
+  [self reloadCompatibilityRowsThrough:1];
 }
 
 - (NSDictionary*)latestDiscussionReport {

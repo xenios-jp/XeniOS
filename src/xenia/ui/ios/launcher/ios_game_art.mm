@@ -9,85 +9,263 @@
 
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 
+#import <ImageIO/ImageIO.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
 
+// Longest side, in pixels, of a cover stored on disk. Anything larger is
+// downsampled before it is written.
+constexpr CGFloat kMaxStoredArtPixels = 1024.0;
+// Covers not in the library and untouched for this long are pruned.
+constexpr NSTimeInterval kArtPruneAge = 30.0 * 24.0 * 3600.0;
+
+NSString* xe_art_cache_dir_named(NSString* name) {
+  NSString* caches =
+      NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+  NSString* dir = [caches stringByAppendingPathComponent:name];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+  return dir;
+}
+
+// The directory statics are first touched from the main thread and from the
+// NSURLSession and image queues, so they initialise through dispatch_once.
 NSString* xe_game_art_cache_dir(void) {
   static NSString* dir;
-  if (!dir) {
-    NSString* caches =
-        NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    dir = [[caches stringByAppendingPathComponent:@"game-art"] retain];  // MRC
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
-  }
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dir = [xe_art_cache_dir_named(@"game-art") retain];  // MRC
+  });
+  return dir;
+}
+
+NSString* xe_game_background_cache_dir(void) {
+  static NSString* dir;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dir = [xe_art_cache_dir_named(@"game-background-art") retain];
+  });
   return dir;
 }
 
 NSString* xe_game_art_hex(uint32_t title_id) { return XEFormatTitleIDHexLower(title_id); }
 
-NSMutableSet* xe_game_art_inflight_ids(void) {
-  static NSMutableSet* inflight;
-  if (!inflight) {
-    inflight = [[NSMutableSet alloc] init];
-  }
-  return inflight;
+NSString* xe_art_path(NSString* dir, uint32_t title_id) {
+  return [dir stringByAppendingPathComponent:[xe_game_art_hex(title_id)
+                                                 stringByAppendingString:@".jpg"]];
 }
 
-NSMutableDictionary* xe_game_art_retry_after(void) {
-  static NSMutableDictionary* retry_after;
-  if (!retry_after) {
-    retry_after = [[NSMutableDictionary alloc] init];
-  }
-  return retry_after;
+// Pre-decoded, downsampled covers keyed by title id. Filled off the main
+// thread; NSCache evicts under pressure and the memory warning observer
+// below empties it outright.
+NSCache<NSNumber*, UIImage*>* xe_art_thumbnail_cache(void) {
+  static NSCache<NSNumber*, UIImage*>* cache;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cache = [[NSCache alloc] init];
+    cache.name = @"xenia.game-art.thumbnails";
+    cache.countLimit = 160;
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification* __unused note) {
+                  [cache removeAllObjects];
+                }];
+  });
+  return cache;
 }
 
-bool xe_begin_game_art_fetch(NSString* hex) {
-  if (!hex.length) {
+dispatch_queue_t xe_art_decode_queue(void) {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0);
+    queue = dispatch_queue_create("xenia.game-art.decode", attr);
+  });
+  return queue;
+}
+
+// Reads and decodes `source` at no more than `max_pixels` on the longest side.
+// The bitmap is decoded immediately so the first draw on the main thread does
+// not pay for it.
+UIImage* xe_art_decode_thumbnail(CGImageSourceRef source, CGFloat max_pixels) {
+  if (!source || CGImageSourceGetCount(source) == 0) {
+    return nil;
+  }
+  NSDictionary* options = @{
+    (id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
+    (id)kCGImageSourceCreateThumbnailWithTransform : @YES,
+    (id)kCGImageSourceShouldCacheImmediately : @YES,
+    (id)kCGImageSourceThumbnailMaxPixelSize : @(max_pixels),
+  };
+  CGImageRef cg = CGImageSourceCreateThumbnailAtIndex(source, 0, (CFDictionaryRef)options);
+  if (!cg) {
+    return nil;
+  }
+  UIImage* image = [UIImage imageWithCGImage:cg scale:1.0 orientation:UIImageOrientationUp];
+  CGImageRelease(cg);
+  return image;
+}
+
+// Reads the pixel size from the header only.
+bool xe_art_header_size(CGImageSourceRef source, CGSize* size_out) {
+  if (!source || CGImageSourceGetCount(source) == 0 ||
+      CGImageSourceGetStatus(source) != kCGImageStatusComplete) {
     return false;
   }
-  NSMutableSet* inflight = xe_game_art_inflight_ids();
-  if ([inflight containsObject:hex]) {
+  NSDictionary* props =
+      CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, nullptr));
+  NSNumber* w = props[(id)kCGImagePropertyPixelWidth];
+  NSNumber* h = props[(id)kCGImagePropertyPixelHeight];
+  if (w.doubleValue <= 0 || h.doubleValue <= 0) {
     return false;
   }
-  NSDate* retry_after = [xe_game_art_retry_after() objectForKey:hex];
-  if (retry_after && [retry_after timeIntervalSinceNow] > 0) {
-    return false;
-  }
-  [inflight addObject:hex];
+  *size_out = CGSizeMake(w.doubleValue, h.doubleValue);
   return true;
 }
 
-void xe_complete_game_art_fetch(NSString* hex, bool success) {
-  if (!hex.length) {
-    return;
+// Validates downloaded bytes with an ImageIO header check (no full decode),
+// downsamples oversized art, and writes the result to `path`. Returns the
+// decoded image, or nil when the bytes are not an image.
+UIImage* xe_art_store_download(NSData* data, NSString* path) {
+  CGImageSourceRef source = CGImageSourceCreateWithData((CFDataRef)data, nullptr);
+  if (!source) {
+    return nil;
   }
-  [xe_game_art_inflight_ids() removeObject:hex];
-  NSMutableDictionary* retry_after = xe_game_art_retry_after();
-  if (success) {
-    [retry_after removeObjectForKey:hex];
-  } else {
-    // Throttle repeated failed downloads while still allowing periodic retries.
-    [retry_after setObject:[NSDate dateWithTimeIntervalSinceNow:300.0] forKey:hex];
+  CGSize size = CGSizeZero;
+  UIImage* image = nil;
+  if (xe_art_header_size(source, &size)) {
+    if (MAX(size.width, size.height) > kMaxStoredArtPixels) {
+      image = xe_art_decode_thumbnail(source, kMaxStoredArtPixels);
+      if (image) {
+        NSMutableData* jpeg = [NSMutableData data];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithData(
+            (CFMutableDataRef)jpeg, (CFStringRef)UTTypeJPEG.identifier, 1, nullptr);
+        if (dest) {
+          CGImageDestinationAddImage(
+              dest, image.CGImage,
+              (CFDictionaryRef) @{(id)kCGImageDestinationLossyCompressionQuality : @0.85});
+          if (CGImageDestinationFinalize(dest)) {
+            [jpeg writeToFile:path atomically:YES];
+          }
+          CFRelease(dest);
+        }
+      }
+    } else {
+      image = xe_art_decode_thumbnail(source, kMaxStoredArtPixels);
+      if (image) {
+        [data writeToFile:path atomically:YES];
+      }
+    }
+  }
+  CFRelease(source);
+  return image;
+}
+
+// Fetch bookkeeping. Everything below is touched on the main thread only.
+// Keys are "cover:<hex>" / "background:<hex>" so the two fetchers share one
+// throttle without colliding.
+NSMutableDictionary<NSString*, NSMutableArray*>* xe_art_waiters(void) {
+  static NSMutableDictionary* waiters;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    waiters = [[NSMutableDictionary alloc] init];
+  });
+  return waiters;
+}
+
+NSMutableDictionary<NSString*, NSDate*>* xe_art_retry_after(void) {
+  static NSMutableDictionary* retry_after;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    retry_after = [[NSMutableDictionary alloc] init];
+  });
+  return retry_after;
+}
+
+void xe_art_call_all(NSArray* completions, UIImage* image) {
+  for (void (^completion)(UIImage*) in completions) {
+    completion(image);
   }
 }
 
-NSString* xe_game_background_cache_dir(void) {
-  static NSString* dir;
-  if (!dir) {
-    NSString* caches =
-        NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    dir = [[caches stringByAppendingPathComponent:@"game-background-art"] retain];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
+// Shared cover/background fetcher. Duplicate requests for a key that is in
+// flight, or recently failed, are folded into the same waiter list and every
+// completion is invoked exactly once on the main thread (nil on failure).
+void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
+                  void (^completion)(UIImage* _Nullable image)) {
+  if (![NSThread isMainThread]) {
+    void (^copied)(UIImage*) = [completion copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      xe_fetch_art(key, url, dir, title_id, copied);
+    });
+    [copied release];
+    return;
   }
-  return dir;
+  if (!url) {
+    if (completion) {
+      completion(nil);
+    }
+    return;
+  }
+  NSMutableDictionary* waiters = xe_art_waiters();
+  NSMutableArray* pending = waiters[key];
+  if (pending) {
+    if (completion) {
+      [pending addObject:[[completion copy] autorelease]];
+    }
+    return;
+  }
+  NSDate* retry_after = xe_art_retry_after()[key];
+  if (retry_after && [retry_after timeIntervalSinceNow] > 0) {
+    if (completion) {
+      completion(nil);
+    }
+    return;
+  }
+  pending = [NSMutableArray array];
+  if (completion) {
+    [pending addObject:[[completion copy] autorelease]];
+  }
+  waiters[key] = pending;
+
+  NSString* path = xe_art_path(dir, title_id);
+  NSURLSessionDataTask* task = [[NSURLSession sharedSession]
+        dataTaskWithURL:url
+      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        UIImage* image = nil;
+        if (!error && data.length > 0) {
+          NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
+          if ([http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 200) {
+            image = xe_art_store_download(data, path);
+          }
+        }
+        [image retain];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          NSArray* completions = [waiters[key] retain];
+          [waiters removeObjectForKey:key];
+          if (image) {
+            [xe_art_retry_after() removeObjectForKey:key];
+            [xe_art_thumbnail_cache() removeObjectForKey:@(title_id)];
+          } else {
+            // Throttle repeated failed downloads while still allowing
+            // periodic retries.
+            xe_art_retry_after()[key] = [NSDate dateWithTimeIntervalSinceNow:300.0];
+          }
+          xe_art_call_all(completions, image);
+          [completions release];
+          [image release];
+        });
+      }];
+  [task resume];
 }
 
 }  // namespace
@@ -96,122 +274,108 @@ UIImage* xe_cached_game_art(uint32_t title_id) {
   if (!title_id) {
     return nil;
   }
-  NSString* path = [xe_game_art_cache_dir()
-      stringByAppendingPathComponent:[xe_game_art_hex(title_id) stringByAppendingString:@".jpg"]];
-  return [UIImage imageWithContentsOfFile:path];
+  return [UIImage imageWithContentsOfFile:xe_art_path(xe_game_art_cache_dir(), title_id)];
 }
 
 UIImage* xe_cached_game_background_art(uint32_t title_id) {
   if (!title_id) {
     return nil;
   }
-  NSString* path = [xe_game_background_cache_dir()
-      stringByAppendingPathComponent:[xe_game_art_hex(title_id) stringByAppendingString:@".jpg"]];
-  return [UIImage imageWithContentsOfFile:path];
+  return [UIImage imageWithContentsOfFile:xe_art_path(xe_game_background_cache_dir(), title_id)];
+}
+
+UIImage* xe_cached_game_art_thumbnail(uint32_t title_id) {
+  if (!title_id) {
+    return nil;
+  }
+  return [xe_art_thumbnail_cache() objectForKey:@(title_id)];
+}
+
+void xe_load_game_art_thumbnail(uint32_t title_id, CGFloat max_pixels,
+                                void (^completion)(UIImage* _Nullable image)) {
+  void (^copied)(UIImage*) = [completion copy];
+  if (!title_id) {
+    if (copied) {
+      copied(nil);
+    }
+    [copied release];
+    return;
+  }
+  NSString* path = xe_art_path(xe_game_art_cache_dir(), title_id);
+  dispatch_async(xe_art_decode_queue(), ^{
+    UIImage* image = nil;
+    NSURL* file = [NSURL fileURLWithPath:path];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((CFURLRef)file, nullptr);
+    if (source) {
+      image = xe_art_decode_thumbnail(source, MAX(max_pixels, 64.0));
+      CFRelease(source);
+    }
+    if (image) {
+      [xe_art_thumbnail_cache() setObject:image forKey:@(title_id)];
+    }
+    [image retain];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (copied) {
+        copied(image);
+      }
+      [copied release];
+      [image release];
+    });
+  });
+}
+
+void xe_purge_game_art_cache(void) { [xe_art_thumbnail_cache() removeAllObjects]; }
+
+void xe_prune_game_art_cache(NSSet<NSNumber*>* keep_title_ids) {
+  NSSet* keep = [keep_title_ids copy];
+  dispatch_async(xe_art_decode_queue(), ^{
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* dir = xe_game_art_cache_dir();
+    NSDate* cutoff = [NSDate dateWithTimeIntervalSinceNow:-kArtPruneAge];
+    for (NSString* name in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+      NSString* stem = name.stringByDeletingPathExtension;
+      unsigned int value = 0;
+      if (![[NSScanner scannerWithString:stem] scanHexInt:&value] ||
+          [keep containsObject:@(value)]) {
+        continue;
+      }
+      NSString* path = [dir stringByAppendingPathComponent:name];
+      NSDate* modified = [fm attributesOfItemAtPath:path error:nil].fileModificationDate;
+      if (modified && [modified compare:cutoff] == NSOrderedAscending) {
+        [fm removeItemAtPath:path error:nil];
+      }
+    }
+    [keep release];
+  });
 }
 
 void xe_fetch_game_art(uint32_t title_id, void (^completion)(UIImage* _Nullable image)) {
-  if (!title_id) {
-    if (completion) {
-      completion(nil);
-    }
-    return;
-  }
-  if (!xe_ios_online_features_enabled()) {
+  if (!title_id || !xe_ios_online_features_enabled()) {
     if (completion) {
       completion(nil);
     }
     return;
   }
   NSString* hex = xe_game_art_hex(title_id);
-  if (!xe_begin_game_art_fetch(hex)) {
-    return;
-  }
   NSString* url_str = [NSString
       stringWithFormat:
           @"https://raw.githubusercontent.com/Element18592/360-Game-Art/main/Games/%@/cover.jpg",
           hex];
-  NSURL* url = [NSURL URLWithString:url_str];
-  if (!url) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      xe_complete_game_art_fetch(hex, false);
-      if (completion) {
-        completion(nil);
-      }
-    });
-    return;
-  }
-  NSURLSessionDataTask* task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
-      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-        UIImage* image = nil;
-        if (!error && data.length > 0) {
-          NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
-          if ([http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 200) {
-            image = [UIImage imageWithData:data];
-            if (image) {
-              NSString* path = [xe_game_art_cache_dir()
-                  stringByAppendingPathComponent:[hex stringByAppendingString:@".jpg"]];
-              [data writeToFile:path atomically:YES];
-            }
-          }
-        }
-        const bool success = image != nil;
-        dispatch_async(dispatch_get_main_queue(), ^{
-          xe_complete_game_art_fetch(hex, success);
-          if (completion) {
-            completion(image);
-          }
-        });
-      }];
-  [task resume];
+  xe_fetch_art([@"cover:" stringByAppendingString:hex], [NSURL URLWithString:url_str],
+               xe_game_art_cache_dir(), title_id, completion);
 }
 
 void xe_fetch_game_background_art(uint32_t title_id, void (^completion)(UIImage* _Nullable image)) {
-  if (!title_id) {
+  if (!title_id || !xe_ios_online_features_enabled()) {
     if (completion) {
       completion(nil);
     }
     return;
   }
-  if (!xe_ios_online_features_enabled()) {
-    if (completion) {
-      completion(nil);
-    }
-    return;
-  }
-  NSString* hex_upper = XEFormatTitleIDHexUpper(title_id);
   NSString* url_str = [NSString stringWithFormat:@"https://raw.githubusercontent.com/xenia-manager/"
                                                  @"x360db/main/titles/%@/artwork/background.jpg",
-                                                 hex_upper];
-  NSURL* url = [NSURL URLWithString:url_str];
-  if (!url) {
-    if (completion) {
-      completion(nil);
-    }
-    return;
-  }
-  NSURLSessionDataTask* task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
-      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-        UIImage* image = nil;
-        if (!error && data.length > 0) {
-          NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
-          if ([http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 200) {
-            image = [UIImage imageWithData:data];
-            if (image) {
-              NSString* path = [xe_game_background_cache_dir()
-                  stringByAppendingPathComponent:[xe_game_art_hex(title_id)
-                                                     stringByAppendingString:@".jpg"]];
-              [data writeToFile:path atomically:YES];
-            }
-          }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-          if (completion) {
-            completion(image);
-          }
-        });
-      }];
-  [task resume];
+                                                 XEFormatTitleIDHexUpper(title_id)];
+  xe_fetch_art([@"background:" stringByAppendingString:xe_game_art_hex(title_id)],
+               [NSURL URLWithString:url_str], xe_game_background_cache_dir(), title_id,
+               completion);
 }

@@ -754,21 +754,16 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
     if (!g_state || ![g_state[@"pending"] boolValue] || [g_state[@"game"] boolValue]) {
       return;
     }
-    NSString* version = g_state[@"prev_version"];
     NSString* message = g_state[@"prev_message"];
     NSMutableString* text = [NSMutableString string];
     if ([g_state[@"prev_game"] boolValue]) {
-      [text appendFormat:NSLocalizedString(
-                             @"XeniOS stopped while it was open during a game (version %@). "
-                             @"Sharing its log helps get this fixed.",
-                             @"Alert message after a crash during a game; %@ is the app version"),
-                         version ? version : @"?"];
+      [text appendString:NSLocalizedString(
+                             @"XeniOS quit during a game. Share the log to help fix it.",
+                             @"Alert message after a crash during a game")];
     } else {
-      [text appendFormat:NSLocalizedString(
-                             @"XeniOS stopped while it was open (version %@). Sharing its log "
-                             @"helps get this fixed.",
-                             @"Alert message after a crash outside a game; %@ is the app version"),
-                         version ? version : @"?"];
+      [text appendString:NSLocalizedString(
+                             @"XeniOS quit unexpectedly. Share the log to help fix it.",
+                             @"Alert message after a crash outside a game")];
     }
     if (message.length) {
       [text appendFormat:@"\n\n%s", xe::strip_pii([message UTF8String]).c_str()];
@@ -786,7 +781,7 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
 
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:
-          NSLocalizedString(@"XeniOS closed unexpectedly last time",
+          NSLocalizedString(@"XeniOS Quit Unexpectedly",
                             @"Alert title: shown after the app crashed in the previous session")
                        message:summary_text
                 preferredStyle:UIAlertControllerStyleAlert];

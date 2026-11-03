@@ -446,11 +446,8 @@
     [hero_background_view_ addSubview:hero_header_view_];
   }
   host_view = host_view ?: controller_view.superview ?: controller_view;
-  CGFloat safe_top = 0.0;
-  if (@available(iOS 11.0, *)) {
-    UIWindow* window = host_view.window ?: controller_view.window;
-    safe_top = window ? window.safeAreaInsets.top : host_view.safeAreaInsets.top;
-  }
+  UIWindow* window = host_view.window ?: controller_view.window;
+  CGFloat safe_top = window ? window.safeAreaInsets.top : host_view.safeAreaInsets.top;
   if (host_view && hero_background_view_.superview != host_view) {
     [hero_background_view_ removeFromSuperview];
     [host_view addSubview:hero_background_view_];
@@ -469,15 +466,9 @@
     UIEdgeInsets content_inset = table_view.contentInset;
     content_inset.top = desired_top_inset;
     table_view.contentInset = content_inset;
-    if (@available(iOS 13.0, *)) {
-      UIEdgeInsets vertical_insets = table_view.verticalScrollIndicatorInsets;
-      vertical_insets.top = desired_top_inset;
-      table_view.verticalScrollIndicatorInsets = vertical_insets;
-    } else {
-      UIEdgeInsets indicator_insets = content_inset;
-      indicator_insets.top = desired_top_inset;
-      table_view.scrollIndicatorInsets = indicator_insets;
-    }
+    UIEdgeInsets vertical_insets = table_view.verticalScrollIndicatorInsets;
+    vertical_insets.top = desired_top_inset;
+    table_view.verticalScrollIndicatorInsets = vertical_insets;
     table_view.contentOffset = CGPointMake(table_view.contentOffset.x,
                                            relative_offset - desired_top_inset);
   }
@@ -528,9 +519,7 @@
   // hero card is the largest sheet surface and reads as "iPad-class chrome"
   // at 28pt; smaller values make it feel cramped against the artwork edge.
   hero_header_card_view_.layer.cornerRadius = 28.0;
-  if (@available(iOS 11.0, *)) {
-    hero_header_card_view_.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
-  }
+  hero_header_card_view_.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
   hero_header_card_view_.layer.borderWidth = 0.5;
   hero_header_card_view_.layer.borderColor = [XeniaTheme border].CGColor;
   hero_header_card_view_.clipsToBounds = YES;

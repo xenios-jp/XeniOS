@@ -38,10 +38,6 @@ NSString* xe_jit_not_detected_guidance_message(void);
 NSString* xe_memory_entitlement_missing_status_message(void);
 NSString* xe_memory_entitlement_not_detected_guidance_message(void);
 
-// Decorates a CALayer with a pulsing radial ring for the JIT status indicator.
-void xe_add_jit_ring_pulse(CALayer* layer, NSString* key, CGFloat end_scale, CGFloat peak_opacity,
-                           CFTimeInterval duration);
-
 // File system locations.
 std::filesystem::path xe_get_ios_documents_path(void);
 

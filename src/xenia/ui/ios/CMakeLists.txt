@@ -195,6 +195,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework AudioToolbox"
   "-framework Foundation"
   "-framework GameController"
+  "-framework ImageIO"
   "-framework Metal"
   "-framework MetalKit"
   "-framework PhotosUI"

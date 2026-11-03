@@ -23,10 +23,6 @@
 - (UIViewController*)zarConversionCoordinatorPresenter;
 - (void)zarConversionCoordinatorShowStatusToast:(NSString*)message
                                           style:(XeniaIOSStatusToastStyle)style;
-- (void)zarConversionCoordinatorShowPersistentStatusToast:(NSString*)message
-                                                    style:(XeniaIOSStatusToastStyle)style;
-- (void)zarConversionCoordinatorUpdateStatusToast:(NSString*)message;
-- (void)zarConversionCoordinatorDismissStatusToast;
 - (void)zarConversionCoordinatorRefreshImportedGames;
 - (void)zarConversionCoordinatorRefreshImportedGamesWithCompletion:(void (^)(void))completion;
 @end

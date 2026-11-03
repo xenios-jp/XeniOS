@@ -324,6 +324,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)updateStatusToast:(NSString*)message;
 - (void)dismissStatusToast;
 - (void)showStatusToastForMessage:(NSString*)message;
+- (void)presentLaunchProblemAlertWithMessage:(NSString*)message;
+- (void)presentLinkCouldNotBeOpenedAlert;
 - (void)presentGameActionsSheetForIndex:(size_t)game_index;
 - (void)presentTouchLayoutGamePicker;
 - (void)performGameAction:(XeniaIOSGameAction)action forIndex:(size_t)game_index;
@@ -407,6 +409,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 @implementation XeniaViewController {
   std::vector<IOSDiscoveredGame> discovered_games_;
   NSDictionary* compat_data_;
+  // Icon bytes already wrapped for the launcher, by game path, and the last snapshot set pushed to
+  // it. A refresh that finds nothing changed leaves the grid (and any scroll or menu) alone.
+  NSMutableDictionary<NSString*, NSData*>* launcher_icon_cache_;
+  NSArray<NSString*>* launcher_snapshot_signature_;
   CGSize last_collection_layout_size_;
   uint64_t library_refresh_generation_;
   BOOL compat_fetch_started_;
@@ -1021,10 +1027,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (elapsed >= 300.0) {
     self.jitPollTimedOut = YES;
     [self updateJITStatusIndicator];
-    NSString* message =
-        NSLocalizedString(@"JIT is still unavailable. Open StikDebug, then return here to retry.",
-                          @"Toast: JIT did not become available after waiting");
-    [self showStatusToast:message style:XeniaIOSStatusToastStyleWarning];
+    // The JIT card on the launcher carries the timed-out state and its retry action; a toast
+    // would vanish before the user could act on it.
     return;
   }
 
@@ -1165,6 +1169,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   self.launcherOverlayView.importHandler = ^{
     [unsafe_self presentLibraryAddSheetFromView:unsafe_self.launcherOverlayView];
   };
+  self.launcherOverlayView.openStikDebugHandler = ^{
+    [unsafe_self requestStikDebugJITHandoffForPendingLaunchPath:nullptr
+                                              requirePreference:NO
+                                   promptForAutomationOnSuccess:NO];
+  };
   self.launcherOverlayView.bulkZarConversionHandler = ^{
     [unsafe_self.zarConversionCoordinator
         presentBulkConversionOptionsForGames:unsafe_self->discovered_games_];
@@ -1203,9 +1212,6 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [unsafe_self copyLaunchURLForGameAtIndex:gameIndex];
   };
 
-  // Route the public statusLabel to the overlay's internal label.
-  self.statusLabel = self.launcherOverlayView.statusLabel;
-
   // Allocated but off-screen — existing code can set .text without crashing.
   UILabel* signed_in_profile_label = [[UILabel alloc] init];
   self.signedInProfileLabel = signed_in_profile_label;
@@ -1215,6 +1221,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)refreshLauncherGameSnapshots {
   NSMutableArray<XeniaIOSLauncherGameSnapshot*>* snapshots =
       [NSMutableArray arrayWithCapacity:discovered_games_.size()];
+  NSMutableArray<NSString*>* signature =
+      [NSMutableArray arrayWithCapacity:discovered_games_.size()];
+  NSMutableDictionary<NSString*, NSData*>* next_icon_cache =
+      [NSMutableDictionary dictionaryWithCapacity:discovered_games_.size()];
   for (const IOSDiscoveredGame& game : discovered_games_) {
     XeniaIOSLauncherGameSnapshot* snapshot = [[XeniaIOSLauncherGameSnapshot alloc] init];
     snapshot.title =
@@ -1277,11 +1287,42 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     snapshot.supportsZarConversion = xe_game_supports_zar_conversion(game);
     snapshot.supportsRemoteArt = xe_game_system_supports_remote_art(game.system);
     if (!game.icon_data.empty()) {
-      snapshot.iconData = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
+      // Reuse the NSData from the last refresh when the bytes are identical, instead of copying
+      // every icon again on each refresh.
+      NSString* icon_key = ToNSString(game.path.string());
+      NSData* icon = [launcher_icon_cache_ objectForKey:icon_key];
+      if (!icon || icon.length != game.icon_data.size() ||
+          memcmp(icon.bytes, game.icon_data.data(), icon.length) != 0) {
+        icon = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
+      }
+      snapshot.iconData = icon;
+      [next_icon_cache setObject:icon forKey:icon_key];
     }
+    [signature addObject:[NSString stringWithFormat:@"%@|%@|%u|%d|%@|%@|%d%d%d%d%d%d|%zu|%lu",
+                                                    ToNSString(game.path.string()), snapshot.title,
+                                                    snapshot.titleId, (int)snapshot.hasCompatInfo,
+                                                    snapshot.compatStatus,
+                                                    snapshot.contentTypeName ?: @"",
+                                                    (int)snapshot.supportsCompatibility,
+                                                    (int)snapshot.supportsManageContent,
+                                                    (int)snapshot.supportsDiscSelection,
+                                                    (int)snapshot.supportsPatches,
+                                                    (int)snapshot.supportsZarConversion,
+                                                    (int)snapshot.supportsRemoteArt,
+                                                    snapshot.discCount,
+                                                    (unsigned long)snapshot.iconData.length]];
     [snapshots addObject:snapshot];
     [snapshot release];
   }
+  [launcher_icon_cache_ release];
+  launcher_icon_cache_ = [next_icon_cache retain];
+  if (launcher_snapshot_signature_ && [launcher_snapshot_signature_ isEqualToArray:signature]) {
+    // Nothing the grid shows has changed (a foreground return, a no-op rescan): keep the cells,
+    // their decoded covers and any scroll or context menu in progress.
+    return;
+  }
+  [launcher_snapshot_signature_ release];
+  launcher_snapshot_signature_ = [signature copy];
   [self.launcherOverlayView setGames:snapshots];
   [self.launcherOverlayView
       setFocusedGameIndex:self.controllerNavigationCoordinator.focusedGameIndex
@@ -1429,9 +1470,18 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 - (void)presentQuickSettings {
   [self hideInGameMenuOverlay];
+  // Name the running game so the sheet says which game its changes are saved for.
+  NSString* quick_game_title = nil;
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (game.title_id == active_game_title_id_ && active_game_title_id_ != 0) {
+      quick_game_title =
+          game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
+      break;
+    }
+  }
   XeniaIOSQuickSettingsViewController* quickVC =
       [[XeniaIOSQuickSettingsViewController alloc] initWithGameTitleID:active_game_title_id_
-                                                             gameTitle:nil];
+                                                             gameTitle:quick_game_title];
   quickVC.appContext = self.appContext;
   [self presentPauseSheetWithRootController:quickVC
                               preferredSize:CGSizeMake(480.0, 560.0)
@@ -1453,10 +1503,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)exitGameTapped:(UIButton*)sender {
   [self hideInGameMenuOverlay];
   if (self.gameStopInProgress) {
-    self.statusLabel.text = @"";
-    [self showStatusToast:NSLocalizedString(@"Stopping game... Please wait.",
-                                            @"Toast: a stop request is already in progress")
-                    style:XeniaIOSStatusToastStyleInfo];
+    // The "Stopping game..." state is already on screen until teardown finishes.
     return;
   }
   if (!self.appContext) {
@@ -1473,9 +1520,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   self.launcherOverlayView.alpha = 1.0;
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
   xe_request_current_orientation(self);
-  self.statusLabel.text = @"";
-  [self showStatusToast:NSLocalizedString(@"Stopping game...", @"Toast: the game is being stopped")
-                  style:XeniaIOSStatusToastStyleInfo];
+  // Stays up until teardown finishes (showLauncherOverlay or the failure path dismisses it), so
+  // the user is not left guessing while the game winds down.
+  [self showPersistentStatusToast:NSLocalizedString(@"Stopping game...",
+                                                    @"Status while the game is being stopped")
+                            style:XeniaIOSStatusToastStyleInfo];
 
   xe::ui::IOSWindowedAppContext* app_context = self.appContext;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -1485,6 +1534,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       self.gameStopInProgress = NO;
+      [self dismissStatusToast];
     });
   });
 }
@@ -1647,6 +1697,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                           initialSection:initial_section];
     workspace.dismissalHandler = dismissal_handler;
     workspace.actionHandler = action_handler;
+    workspace.noGameRunning = !self.gameRunning;
     destination = workspace;
   } else {
     XeniaSettingsHubViewController* hub =
@@ -1656,6 +1707,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     hub.showsCloseButton = YES;
     hub.dismissalHandler = dismissal_handler;
     hub.actionHandler = action_handler;
+    hub.noGameRunning = !self.gameRunning;
     XeniaLandscapeNavigationController* nav =
         [[XeniaLandscapeNavigationController alloc] initWithRootViewController:hub];
     [hub release];
@@ -2232,20 +2284,6 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   return ImportGameIntoIOSLibrary(source_url, error);
 }
 
-- (void)refreshImportedGames {
-  ++library_refresh_generation_;
-  // Load cached title names populated by previous game launches.
-  NSString* caches_dir =
-      NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-  NSString* names_path = [caches_dir stringByAppendingPathComponent:@"title-names.plist"];
-  NSDictionary* title_name_cache = [[NSDictionary dictionaryWithContentsOfFile:names_path] retain];
-
-  discovered_games_ = ScanIOSGameLibrary(title_name_cache);
-  [title_name_cache release];
-
-  [self finishImportedGamesRefresh];
-}
-
 - (void)refreshImportedGamesAsync {
   [self refreshImportedGamesAsyncWithCompletion:nil];
 }
@@ -2268,11 +2306,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* caches_dir =
       NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
   NSString* names_path = [caches_dir stringByAppendingPathComponent:@"title-names.plist"];
-  NSDictionary* title_name_cache = [[NSDictionary dictionaryWithContentsOfFile:names_path] retain];
+  // Parsed on the scan queue below, not here: the plist read must stay off the main thread.
+  NSString* names_path_copy = [names_path copy];
   void (^completion_copy)(const std::vector<IOSDiscoveredGame>&) = [completion copy];
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSDictionary* title_name_cache =
+        [[NSDictionary dictionaryWithContentsOfFile:names_path_copy] retain];
+    [names_path_copy release];
     auto* scanned_games = new std::vector<IOSDiscoveredGame>(ScanIOSGameLibrary(title_name_cache));
     [title_name_cache release];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -2492,9 +2534,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   UIApplication* application = [UIApplication sharedApplication];
   if (![application canOpenURL:stikdebug_url]) {
     XELOGW("iOS: StikDebug URL scheme unavailable");
-    [self showStatusToast:NSLocalizedString(@"StikDebug is not installed or unavailable.",
-                                            @"Toast: StikDebug is unavailable")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+        @"StikDebug is not installed or unavailable.",
+        @"Alert message: StikDebug is unavailable")];
     if (launch_path && !launch_path->empty()) {
       ClearPendingExternalLaunchPathPreference();
     }
@@ -2525,10 +2567,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                        completionHandler:^(BOOL success) {
                          if (!success) {
                            XELOGW("iOS: Failed to open StikDebug handoff URL");
-                           [self
-                               showStatusToast:NSLocalizedString(@"Failed to open StikDebug.",
-                                                                 @"Toast: could not open StikDebug")
-                                         style:XeniaIOSStatusToastStyleError];
+                           [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+                               @"Failed to open StikDebug.",
+                               @"Alert message: could not open StikDebug")];
                            if (has_pending_launch) {
                              ClearPendingExternalLaunchPathPreference();
                            }
@@ -2559,17 +2600,17 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    [self showStatusToast:NSLocalizedString(@"Launch URL unavailable for this game.",
-                                            @"Toast: no launch URL exists for the game")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+        @"Launch URL unavailable for this game.",
+        @"Alert message: no launch URL exists for the game")];
     return;
   }
 
   NSString* launch_url = xe_launch_url_for_title_id(game.title_id, game.system);
   if (!launch_url || launch_url.length == 0) {
-    [self showStatusToast:NSLocalizedString(@"Failed to build launch URL.",
-                                            @"Toast: building the launch URL failed")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+        @"Failed to build launch URL.",
+        @"Alert message: building the launch URL failed")];
     return;
   }
 
@@ -2593,10 +2634,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (!callback_scheme || callback_scheme.length == 0) {
     XELOGW("iOS: gameInfo request is missing callback scheme");
-    [self
-        showStatusToast:NSLocalizedString(@"gameInfo request is missing a callback scheme.",
-                                          @"Toast: developer-facing error about a library request")
-                  style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return YES;
   }
 
@@ -2604,10 +2642,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (request_scheme && [callback_scheme caseInsensitiveCompare:request_scheme] == NSOrderedSame) {
     XELOGW("iOS: gameInfo callback scheme {} would loop back into XeniOS",
            [callback_scheme UTF8String]);
-    [self
-        showStatusToast:NSLocalizedString(@"gameInfo callback scheme cannot point back to XeniOS.",
-                                          @"Toast: developer-facing error about a library request")
-                  style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return YES;
   }
 
@@ -2683,20 +2718,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!json_data || json_error) {
     XELOGE("iOS: Failed serializing gameInfo payload: {}",
            json_error.localizedDescription.UTF8String);
-    [self showStatusToast:NSLocalizedString(
-                              @"Failed to build gameInfo payload.",
-                              @"Toast: developer-facing error about the library payload")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return;
   }
 
   NSString* games_payload = [json_data base64EncodedStringWithOptions:0];
   if (!games_payload || games_payload.length == 0) {
     XELOGW("iOS: gameInfo payload encoding produced empty data");
-    [self showStatusToast:NSLocalizedString(
-                              @"Failed to encode gameInfo payload.",
-                              @"Toast: developer-facing error about the library payload")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return;
   }
 
@@ -2709,10 +2738,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!callback_url) {
     XELOGE("iOS: Failed building gameInfo callback URL for scheme {}",
            [callback_scheme UTF8String]);
-    [self showStatusToast:NSLocalizedString(
-                              @"Failed to build gameInfo callback URL.",
-                              @"Toast: developer-facing error about the library callback")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return;
   }
 
@@ -2740,11 +2766,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
           return;
         }
         XELOGW("iOS: Failed opening gameInfo callback URL {}://", [callback_app UTF8String]);
-        [self showStatusToast:[NSString stringWithFormat:NSLocalizedString(
-                                                             @"Failed to return library to %@.",
-                                                             @"Toast; %@ is the name of the app"),
-                                                         callback_app]
-                        style:XeniaIOSStatusToastStyleError];
+        [self presentLaunchProblemAlertWithMessage:[NSString
+            stringWithFormat:NSLocalizedString(@"Failed to return library to %@.",
+                                               @"Toast; %@ is the name of the app"),
+            callback_app]];
       }];
 }
 
@@ -2790,12 +2815,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
         return YES;
       }
       XELOGW("iOS: External launch title ID {:08X} was not found in Library", title_id);
-      [self showStatusToast:[NSString
-                                stringWithFormat:NSLocalizedString(
-                                                     @"Title ID %08X was not found in Library.",
-                                                     @"Toast; %08X is the title ID in hexadecimal"),
-                                                 title_id]
-                      style:XeniaIOSStatusToastStyleError];
+      [self presentLaunchProblemAlertWithMessage:[NSString
+          stringWithFormat:NSLocalizedString(@"Title ID %08X was not found in Library.",
+                                             @"Alert message; %08X is the title ID in hexadecimal"),
+          title_id]];
       return NO;
     }
   }
@@ -2803,9 +2826,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (launch_path.empty()) {
     XELOGW("iOS: External launch URL missing valid game target (scheme={} host={})",
            url.scheme ? [url.scheme UTF8String] : "", url.host ? [url.host UTF8String] : "");
-    [self showStatusToast:NSLocalizedString(@"Launch URL missing a valid game target.",
-                                            @"Toast: a launch link names no usable game")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLinkCouldNotBeOpenedAlert];
     return NO;
   }
 
@@ -2962,7 +2983,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
         external_access_error.localizedDescription
             ?: NSLocalizedString(@"External library folder is unavailable.",
                                  @"Error text: the external library folder cannot be reached");
-    [self showStatusToast:message style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:message];
     [self refreshImportedGamesAsync];
     return;
   }
@@ -2976,9 +2997,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* path_ns = ToNSString(launch_path.string());
   std::error_code path_exists_ec;
   if (!std::filesystem::exists(launch_path, path_exists_ec)) {
-    [self showStatusToast:NSLocalizedString(@"Game file is no longer available.",
-                                            @"Toast: the game file is gone")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+        @"Game file is no longer available.",
+        @"Alert message: the game file is gone")];
     [self refreshImportedGamesAsync];
     return;
   }
@@ -2987,9 +3008,6 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     auto metadata = xe::vfs::ExtractStfsMetadata(launch_path);
     if (metadata.has_value() && xe::ui::IOSContentDataFileCount(launch_path) > 0 &&
         !HasContentSidecarDataDirectory(launch_path)) {
-      [self showStatusToast:NSLocalizedString(@"Selected game is missing its .data folder.",
-                                              @"Toast: GOD package lacks its .data folder")
-                      style:XeniaIOSStatusToastStyleError];
       XEPresentOKAlert(
           self,
           NSLocalizedString(@"Missing Game Data",
@@ -3024,11 +3042,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (![self appendLinkedContentAccessesForTitleID:launch_title_id
                                           accesses:launch_external_accesses
                                       errorMessage:&linked_content_access_error]) {
-    [self
-        showStatusToast:(linked_content_access_error
-                             ?: NSLocalizedString(@"Linked content is unavailable.",
-                                                  @"Error text: linked content cannot be reached"))
-                  style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:(linked_content_access_error
+        ?: NSLocalizedString(@"Linked content is unavailable.",
+                             @"Error text: linked content cannot be reached"))];
     [self refreshImportedGamesAsync];
     return;
   }
@@ -3036,6 +3052,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (self.gameStopInProgress || self.gameRunning) {
     if (self.appContext) {
       self.gameRunning = YES;
+      if (self.gameStopInProgress) {
+        [self dismissStatusToast];
+      }
       self.gameStopInProgress = NO;
       active_game_title_id_ = launch_title_id;
       [self applyTouchLayoutModelForTitleID:active_game_title_id_];
@@ -3051,9 +3070,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:NO];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
-      [self showStatusToast:NSLocalizedString(@"Unable to queue launch (app context unavailable).",
-                                              @"Toast: launch could not be queued")
-                      style:XeniaIOSStatusToastStyleError];
+      [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+          @"XeniOS isn't ready yet. Try again.",
+          @"Alert message: launch could not be queued")];
     }
     return;
   }
@@ -3076,9 +3095,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:YES];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
-    [self showStatusToast:NSLocalizedString(@"Unable to launch game (app context unavailable).",
-                                            @"Toast: launch failed")
-                    style:XeniaIOSStatusToastStyleError];
+    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
+        @"XeniOS isn't ready yet. Try again.",
+        @"Alert message: launch failed")];
     self.launcherOverlayView.hidden = NO;
     self.launcherOverlayView.alpha = 1.0;
     [self updateTouchControlsOverlayVisibilityAnimated:YES];
@@ -3409,18 +3428,23 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSDictionary* compat_data = [compat_data_ objectForKey:XEFormatTitleIDHexUpper(game.title_id)];
   NSString* game_title =
       game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
-  UIImage* hero_artwork = xe_cached_game_art(game.title_id);
-  if (!hero_artwork && !game.icon_data.empty()) {
-    NSData* data = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
-    hero_artwork = [UIImage imageWithData:data];
-  }
-  if (!hero_artwork && self.launcherOverlayView.gamesCollectionView) {
+  // The visible tile already holds the decoded cover, so take that first. Reading and decoding
+  // the cached art file on the main thread is only the fallback for a tile that is off screen.
+  UIImage* hero_artwork = nil;
+  if (self.launcherOverlayView.gamesCollectionView) {
     NSIndexPath* index_path = [NSIndexPath indexPathForItem:(NSInteger)game_index inSection:0];
     XeniaGameTileCell* tile = (XeniaGameTileCell*)[self.launcherOverlayView.gamesCollectionView
         cellForItemAtIndexPath:index_path];
     if ([tile isKindOfClass:[XeniaGameTileCell class]]) {
       hero_artwork = tile.iconView.image;
     }
+  }
+  if (!hero_artwork) {
+    hero_artwork = xe_cached_game_art(game.title_id);
+  }
+  if (!hero_artwork && !game.icon_data.empty()) {
+    NSData* data = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
+    hero_artwork = [UIImage imageWithData:data];
   }
   XeniaGameCompatibilityViewController* compatibility_controller =
       [[XeniaGameCompatibilityViewController alloc] initWithTitleID:game.title_id
@@ -4160,19 +4184,6 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self showStatusToast:message style:style];
 }
 
-- (void)zarConversionCoordinatorShowPersistentStatusToast:(NSString*)message
-                                                    style:(XeniaIOSStatusToastStyle)style {
-  [self showPersistentStatusToast:message style:style];
-}
-
-- (void)zarConversionCoordinatorUpdateStatusToast:(NSString*)message {
-  [self updateStatusToast:message];
-}
-
-- (void)zarConversionCoordinatorDismissStatusToast {
-  [self dismissStatusToast];
-}
-
 - (void)zarConversionCoordinatorRefreshImportedGames {
   [self refreshImportedGamesAsync];
 }
@@ -4239,6 +4250,9 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   gameplay_modal_presentation_pending_ = NO;
   [self clearActiveExternalGameAccesses];
   self.gameRunning = NO;
+  if (self.gameStopInProgress) {
+    [self dismissStatusToast];  // The "Stopping game..." state is over.
+  }
   self.gameStopInProgress = NO;
   // A sheet or alert left up by the game that ended: the "Game Isn't Responding" alert, or the
   // achievements sheet a guest thread is still waiting on (its dismissal reports completion).
@@ -4248,7 +4262,6 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   [self hideInGameMenuOverlay];
   self.launcherOverlayView.hidden = NO;
-  self.statusLabel.text = @"";
   [self refreshSignedInProfileUI];
   [self updateJITStatusIndicator];
   [self updateJITAvailabilityUI];
@@ -4314,6 +4327,8 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self.controllerNavigationCoordinator invalidate];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [compat_data_ release];
+  [launcher_icon_cache_ release];
+  [launcher_snapshot_signature_ release];
   [_controllerNavigationCoordinator release];
   [_documentImportCoordinator release];
   [_zarConversionCoordinator release];
@@ -4326,7 +4341,6 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [active_external_game_accesses_ release];
   [pending_url_confirmation_ release];
   [_metalView release];
-  [_statusLabel release];
   [super dealloc];
 }
 
@@ -4433,6 +4447,20 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 
 - (void)dismissStatusToast {
   [self.statusToastPresenter dismiss];
+}
+
+// Errors and states with a next step are never toasts: a toast vanishes in a few seconds and has
+// nothing to tap, so a failed launch or link gets an alert with a button instead.
+- (void)presentLaunchProblemAlertWithMessage:(NSString*)message {
+  XEPresentOKAlert(
+      self, NSLocalizedString(@"Something Went Wrong", @"Alert title: a game or link failed"),
+      message);
+}
+
+- (void)presentLinkCouldNotBeOpenedAlert {
+  XEPresentOKAlert(self, NSLocalizedString(@"Can't Open Link", @"Alert title: a link failed"),
+                   NSLocalizedString(@"That link could not be opened.",
+                                     @"Alert message: an incoming link was not usable"));
 }
 
 - (void)showStatusToastForMessage:(NSString*)message {

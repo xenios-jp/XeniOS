@@ -28,6 +28,7 @@
   NSString* game_title_;
   id<XeniaGameContentHost> host_;  // not retained; presenter owns this sheet
   std::vector<IOSInstalledContentEntry> installed_content_;
+  uint64_t content_reload_generation_;
 }
 
 - (instancetype)initWithTitleID:(uint32_t)title_id
@@ -73,22 +74,27 @@
   [self.navigationController popViewControllerAnimated:YES];
 }
 
+// Walks the content tree off the main thread, then reloads the table. A newer
+// reload supersedes one still in flight.
 - (void)reloadInstalledContent {
-  installed_content_ = xe_list_installed_content(title_id_);
-  [self.tableView reloadData];
+  const uint64_t generation = ++content_reload_generation_;
+  const uint32_t title_id = title_id_;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    std::vector<IOSInstalledContentEntry> content = xe_list_installed_content(title_id);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (generation != content_reload_generation_) {
+        return;
+      }
+      installed_content_ = std::move(content);
+      [self.tableView reloadData];
+    });
+  });
 }
 
 - (void)refreshLauncherContentState {
-  if (host_) {
-    // The scan walks every linked folder; keep it off the main thread when the
-    // host offers the async form (the installed-content list below doesn't
-    // depend on it).
-    if ([(id)host_ respondsToSelector:@selector(refreshImportedGamesAsync)]) {
-      [(id)host_ performSelector:@selector(refreshImportedGamesAsync)];
-    } else {
-      [host_ refreshImportedGames];
-    }
-  }
+  // The library scan walks every linked folder, so the host does it off the
+  // main thread.
+  [host_ refreshImportedGamesAsync];
   [self reloadInstalledContent];
 }
 
@@ -209,7 +215,7 @@
   return indexPath.section == 1 && !installed_content_.empty();
 }
 
-- (void)tableView:(UITableView* __unused)tableView
+- (void)tableView:(UITableView*)tableView
     commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
      forRowAtIndexPath:(NSIndexPath*)indexPath {
   if (editingStyle != UITableViewCellEditingStyleDelete || indexPath.section != 1 ||
@@ -238,15 +244,26 @@
   NSString* action_title =
       entry.linked ? NSLocalizedString(@"Unlink", @"game content view controller: title")
                    : NSLocalizedString(@"Delete", @"game content view controller: title");
+  // Destructive confirmations are action sheets, anchored to the row on iPad.
   UIAlertController* confirm =
       [UIAlertController alertControllerWithTitle:confirm_title
                                           message:confirm_message
-                                   preferredStyle:UIAlertControllerStyleAlert];
+                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  UITableViewCell* row_cell = [tableView cellForRowAtIndexPath:indexPath];
+  UIPopoverPresentationController* popover = confirm.popoverPresentationController;
+  if (popover) {
+    popover.sourceView = row_cell ?: tableView;
+    popover.sourceRect = row_cell ? row_cell.bounds
+                                  : CGRectMake(CGRectGetMidX(tableView.bounds),
+                                               CGRectGetMidY(tableView.bounds), 1, 1);
+  }
   [confirm addAction:[UIAlertAction
                          actionWithTitle:NSLocalizedString(@"Cancel",
                                                            @"game content view controller: title")
                                    style:UIAlertActionStyleCancel
-                                 handler:nil]];
+                                 handler:^(__unused UIAlertAction* action) {
+                                   [tableView setEditing:NO animated:YES];
+                                 }]];
   [confirm
       addAction:[UIAlertAction
                     actionWithTitle:action_title

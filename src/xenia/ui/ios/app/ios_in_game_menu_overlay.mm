@@ -27,6 +27,7 @@
   UIView* _panel;
   UILabel* _titleLabel;
   UILabel* _subtitleLabel;
+  UILabel* _thermalLabel;
   UIStackView* _contentStack;
   UIStackView* _rowOneStack;
   UIStackView* _rowTwoStack;
@@ -93,6 +94,21 @@
   xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline, 15.0,
                       UIFontWeightRegular);
   _subtitleLabel.textAlignment = NSTextAlignmentCenter;
+
+  // Shown while the device is Serious or hotter, so the warm state outlives the one-time toast.
+  _thermalLabel = [[UILabel alloc] init];
+  _thermalLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  _thermalLabel.text = NSLocalizedString(@"Device is warm. The game may run slower.",
+                                         @"In-game menu notice while thermally limited");
+  _thermalLabel.textColor = [XeniaTheme statusWarning];
+  _thermalLabel.numberOfLines = 0;
+  _thermalLabel.textAlignment = NSTextAlignmentCenter;
+  xe_apply_label_font(_thermalLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  _thermalLabel.hidden = YES;
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(thermalStateChanged:)
+                                               name:NSProcessInfoThermalStateDidChangeNotification
+                                             object:nil];
 
   _resumeButton = [self newButtonWithTitle:NSLocalizedString(@"Resume", @"In-game menu button")
                                  imageName:nil
@@ -170,6 +186,7 @@
   _contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[
     _titleLabel,
     _subtitleLabel,
+    _thermalLabel,
     _resumeButton,
     _rowOneStack,
     _rowTwoStack,
@@ -181,7 +198,15 @@
   _contentStack.alignment = UIStackViewAlignmentFill;
   _contentStack.distribution = UIStackViewDistributionFill;
   _contentStack.spacing = 10.0;
-  [_panel addSubview:_contentStack];
+  // The glass buttons share one container so neighbouring buttons blend like the system's.
+  UIVisualEffectView* glass_container = [[UIVisualEffectView alloc] initWithEffect:nil];
+  glass_container.translatesAutoresizingMaskIntoConstraints = NO;
+  UIGlassContainerEffect* container_effect = [[[UIGlassContainerEffect alloc] init] autorelease];
+  container_effect.spacing = 10.0;
+  glass_container.effect = container_effect;
+  [glass_container.contentView addSubview:_contentStack];
+  [_panel addSubview:glass_container];
+  [glass_container autorelease];
 
   [NSLayoutConstraint activateConstraints:@[
     [_panel.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
@@ -200,15 +225,15 @@
       [[_panel.widthAnchor constraintEqualToConstant:420] retain];
   _panelWidthConstraint.priority = UILayoutPriorityDefaultHigh;
   _resumeHeightConstraint =
-      [[_resumeButton.heightAnchor constraintEqualToConstant:52] retain];
+      [[_resumeButton.heightAnchor constraintGreaterThanOrEqualToConstant:52] retain];
   _rowOneHeightConstraint =
-      [[_rowOneStack.heightAnchor constraintEqualToConstant:50] retain];
+      [[_rowOneStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
   _rowTwoHeightConstraint =
-      [[_rowTwoStack.heightAnchor constraintEqualToConstant:50] retain];
+      [[_rowTwoStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
   _rowThreeHeightConstraint =
-      [[_rowThreeStack.heightAnchor constraintEqualToConstant:50] retain];
+      [[_rowThreeStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
   _liveLogHeightConstraint =
-      [[_liveLogButton.heightAnchor constraintEqualToConstant:46] retain];
+      [[_liveLogButton.heightAnchor constraintGreaterThanOrEqualToConstant:46] retain];
   _resumeHeightConstraint.priority = UILayoutPriorityDefaultHigh;
   _rowOneHeightConstraint.priority = UILayoutPriorityDefaultHigh;
   _rowTwoHeightConstraint.priority = UILayoutPriorityDefaultHigh;
@@ -222,18 +247,22 @@
     _rowThreeHeightConstraint,
     _liveLogHeightConstraint,
 
-    [_contentStack.topAnchor constraintEqualToAnchor:_panel.topAnchor constant:14],
-    [_contentStack.leadingAnchor constraintEqualToAnchor:_panel.leadingAnchor
-                                                constant:14],
-    [_contentStack.trailingAnchor constraintEqualToAnchor:_panel.trailingAnchor
-                                                 constant:-14],
-    [_contentStack.bottomAnchor constraintEqualToAnchor:_panel.bottomAnchor
-                                               constant:-14],
+    [glass_container.topAnchor constraintEqualToAnchor:_panel.topAnchor constant:14],
+    [glass_container.leadingAnchor constraintEqualToAnchor:_panel.leadingAnchor constant:14],
+    [glass_container.trailingAnchor constraintEqualToAnchor:_panel.trailingAnchor constant:-14],
+    [glass_container.bottomAnchor constraintEqualToAnchor:_panel.bottomAnchor constant:-14],
+    [_contentStack.topAnchor constraintEqualToAnchor:glass_container.contentView.topAnchor],
+    [_contentStack.leadingAnchor constraintEqualToAnchor:glass_container.contentView.leadingAnchor],
+    [_contentStack.trailingAnchor
+        constraintEqualToAnchor:glass_container.contentView.trailingAnchor],
+    [_contentStack.bottomAnchor constraintEqualToAnchor:glass_container.contentView.bottomAnchor],
   ]];
   return self;
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_thermalLabel release];
   [_resumeHandler release];
   [_editControlsHandler release];
   [_achievementsHandler release];
@@ -272,31 +301,30 @@
                 foregroundColor:(UIColor*)foregroundColor
                      menuAction:(XeniaIOSInGameMenuAction)menuAction
                          action:(SEL)action {
-  UIButtonConfiguration* config = [UIButtonConfiguration tintedButtonConfiguration];
+  const BOOL resume = menuAction == XeniaIOSInGameMenuActionResume;
+  // Resume is the one prominent glass button; the rest are plain glass. Only Resume and Exit
+  // carry a tint (accent and error), the others keep the neutral glass.
+  UIButtonConfiguration* config = resume ? [UIButtonConfiguration prominentGlassButtonConfiguration]
+                                         : [UIButtonConfiguration glassButtonConfiguration];
   config.title = title;
   if (imageName.length) {
     config.image = [UIImage systemImageNamed:imageName];
     config.imagePadding = 6;
   }
   config.baseForegroundColor = foregroundColor;
-  config.baseBackgroundColor = backgroundColor;
-  config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
-  if (menuAction == XeniaIOSInGameMenuActionResume) {
-    config = [UIButtonConfiguration filledButtonConfiguration];
-    config.title = title;
+  if (resume || menuAction == XeniaIOSInGameMenuActionExit) {
     config.baseBackgroundColor = backgroundColor;
-    config.baseForegroundColor = foregroundColor;
-    config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-    config.contentInsets = NSDirectionalEdgeInsetsMake(12, 18, 12, 18);
   }
+  config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
+  config.contentInsets = resume ? NSDirectionalEdgeInsetsMake(12, 18, 12, 18)
+                                : NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
   UIButton* button = [[UIButton buttonWithConfiguration:config primaryAction:nil] retain];
   button.translatesAutoresizingMaskIntoConstraints = NO;
   xe_apply_button_title_font(button, UIFontTextStyleBody, 16.0, UIFontWeightSemibold);
-  button.titleLabel.numberOfLines = 1;
-  button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  button.titleLabel.adjustsFontSizeToFitWidth = YES;
-  button.titleLabel.minimumScaleFactor = 0.72;
+  // Long labels and large Dynamic Type wrap onto a second line instead of shrinking or clipping.
+  button.titleLabel.numberOfLines = 0;
+  button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+  button.titleLabel.textAlignment = NSTextAlignmentCenter;
   button.accessibilityLabel = title;
   button.tag = menuAction;
   switch (menuAction) {
@@ -375,10 +403,10 @@
                                      : UIFontTextStyleBody,
                              compact ? (resume ? 16.0 : 14.0) : 16.0,
                              UIFontWeightSemibold);
-  button.titleLabel.numberOfLines = 1;
-  button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  button.titleLabel.adjustsFontSizeToFitWidth = YES;
-  button.titleLabel.minimumScaleFactor = 0.72;
+  // Long labels and large Dynamic Type wrap onto a second line instead of shrinking or clipping.
+  button.titleLabel.numberOfLines = 0;
+  button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+  button.titleLabel.textAlignment = NSTextAlignmentCenter;
 }
 
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact {
@@ -403,9 +431,7 @@
                title:NSLocalizedString(@"Resume", @"In-game menu button")
              compact:compact
               resume:YES];
-  NSString* edit_controls_title =
-      compact ? NSLocalizedString(@"Controls", @"In-game menu button")
-              : NSLocalizedString(@"Edit Controls", @"In-game menu button");
+  NSString* edit_controls_title = NSLocalizedString(@"Edit Controls", @"In-game menu button");
   [self updateButton:_editControlsButton title:edit_controls_title compact:compact resume:NO];
   [self updateButton:_graphicsButton
                title:NSLocalizedString(@"Graphics", @"In-game menu button")
@@ -424,11 +450,9 @@
              compact:compact
               resume:NO];
   NSString* exit_title =
-      compact ? NSLocalizedString(@"Exit", @"In-game menu button, leaves the game")
-              : NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
+      NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
   [self updateButton:_exitButton title:exit_title compact:compact resume:NO];
-  NSString* live_log_title = compact ? NSLocalizedString(@"Log", @"In-game menu button")
-                                     : NSLocalizedString(@"Live Log", @"In-game menu button");
+  NSString* live_log_title = NSLocalizedString(@"Live Log", @"In-game menu button");
   [self updateButton:_liveLogButton title:live_log_title compact:compact resume:NO];
 }
 
@@ -494,10 +518,8 @@
     return;
   }
   if (action == XeniaIOSInGameMenuActionDisplay) {
-    if (@available(iOS 17.4, *)) {
-      [button performPrimaryAction];
-      return;
-    }
+    [button performPrimaryAction];
+    return;
   }
   [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
@@ -561,6 +583,9 @@
                                 @"Subtitle of the in-game menu when a controller is connected")
             : NSLocalizedString(@"Tap anywhere to close", @"Subtitle of the in-game menu");
   }
+  if (visible) {
+    [self updateThermalNotice];
+  }
   if (visible == !self.hidden) {
     if (completion) {
       completion(YES);
@@ -603,6 +628,17 @@
   }
 }
 
+- (void)updateThermalNotice {
+  _thermalLabel.hidden =
+      [NSProcessInfo processInfo].thermalState < NSProcessInfoThermalStateSerious;
+}
+
+- (void)thermalStateChanged:(NSNotification*)__unused note {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self updateThermalNotice];
+  });
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
   const BOOL isLandscape = self.bounds.size.width > self.bounds.size.height;
@@ -610,8 +646,17 @@
   if (CGRectIsEmpty(safeFrame)) {
     safeFrame = self.bounds;
   }
-  const BOOL compactLandscape = isLandscape && safeFrame.size.height < 460.0;
+  // A phone in landscape has a compact vertical size class; the height test also covers short
+  // resizable windows on iPad, where the size class stays regular.
+  const BOOL compactLandscape =
+      isLandscape && (safeFrame.size.height < 460.0 ||
+                      self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact);
+  const BOOL regularWidth =
+      self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
   if (compactLandscape) {
+    _panelWidthConstraint.constant = MIN(560.0, MAX(320.0, safeFrame.size.width - 24.0));
+  } else if (regularWidth) {
+    // iPad and wide windows: a readable width that follows the window, not a phone-width stack.
     _panelWidthConstraint.constant = MIN(560.0, MAX(320.0, safeFrame.size.width - 24.0));
   } else {
     _panelWidthConstraint.constant = isLandscape ? 540.0 : 420.0;

@@ -159,36 +159,6 @@ NSString* xe_jit_not_detected_guidance_message(void) {
                            @"Guidance when JIT is not active before launching a game");
 }
 
-void xe_add_jit_ring_pulse(CALayer* layer, NSString* key, CGFloat end_scale, CGFloat peak_opacity,
-                           CFTimeInterval duration) {
-  if ([layer animationForKey:key]) {
-    return;
-  }
-
-  CAMediaTimingFunction* ease_out =
-      [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-
-  CAKeyframeAnimation* scale = [CAKeyframeAnimation animationWithKeyPath:@"transform.scale"];
-  scale.values = @[ @1.0, @(1.0 + (end_scale - 1.0) * 0.45), @(end_scale) ];
-  scale.keyTimes = @[ @0.0, @0.42, @1.0 ];
-  scale.timingFunctions = @[ ease_out, ease_out ];
-  scale.calculationMode = kCAAnimationCubic;
-
-  CAKeyframeAnimation* fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-  fade.values = @[ @0.0, @(peak_opacity), @(peak_opacity * 0.55), @0.0 ];
-  fade.keyTimes = @[ @0.0, @0.2, @0.58, @1.0 ];
-  fade.timingFunctions = @[ ease_out, ease_out, ease_out ];
-  fade.calculationMode = kCAAnimationLinear;
-
-  CAAnimationGroup* group = [CAAnimationGroup animation];
-  group.animations = @[ scale, fade ];
-  group.duration = duration;
-  group.repeatCount = HUGE_VALF;
-  group.removedOnCompletion = NO;
-  group.fillMode = kCAFillModeBoth;
-  [layer addAnimation:group forKey:key];
-}
-
 // A plain RX mmap probe can succeed on iOS 18.5 while guest JIT execution is
 // still unavailable. Treat debugger/JIT-enabled process state as part of the
 // runtime readiness check so the launcher and automation don't produce false
@@ -241,25 +211,23 @@ void xe_request_orientation(UIViewController* view_controller, UIInterfaceOrient
   (void)orientation;
 #if !TARGET_OS_TV
   [view_controller setNeedsUpdateOfSupportedInterfaceOrientations];
-  if (@available(iOS 16.0, *)) {
-    UIWindowScene* scene = view_controller.view.window.windowScene;
-    if (!scene) {
-      for (UIScene* connected_scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([connected_scene isKindOfClass:[UIWindowScene class]]) {
-          scene = (UIWindowScene*)connected_scene;
-          break;
-        }
+  UIWindowScene* scene = view_controller.view.window.windowScene;
+  if (!scene) {
+    for (UIScene* connected_scene in [UIApplication sharedApplication].connectedScenes) {
+      if ([connected_scene isKindOfClass:[UIWindowScene class]]) {
+        scene = (UIWindowScene*)connected_scene;
+        break;
       }
     }
-    if (scene) {
-      UIWindowSceneGeometryPreferencesIOS* preferences =
-          [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
-      [scene requestGeometryUpdateWithPreferences:preferences
-                                     errorHandler:^(NSError* error) {
-                                       XELOGW("iOS: Orientation geometry update failed: {}",
-                                              [[error localizedDescription] UTF8String]);
-                                     }];
-    }
+  }
+  if (scene) {
+    UIWindowSceneGeometryPreferencesIOS* preferences =
+        [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
+    [scene requestGeometryUpdateWithPreferences:preferences
+                                   errorHandler:^(NSError* error) {
+                                     XELOGW("iOS: Orientation geometry update failed: {}",
+                                            [[error localizedDescription] UTF8String]);
+                                   }];
   }
   [UIViewController attemptRotationToDeviceOrientation];
 #endif

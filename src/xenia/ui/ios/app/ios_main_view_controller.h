@@ -38,11 +38,9 @@ class IOSWindowedAppContext;
 
 // App-delegate bridge surface.
 @property(nonatomic, strong) XeniaMetalView* metalView;
-@property(nonatomic, strong) UILabel* statusLabel;
 @property(nonatomic, assign) xe::ui::IOSWindowedAppContext* appContext;
 
 - (void)refreshSignedInProfileUI;
-- (void)refreshImportedGames;
 - (void)showLauncherOverlay;
 - (void)presentSystemSigninPromptForUserIndex:(uint32_t)user_index
                                   usersNeeded:(uint32_t)users_needed
