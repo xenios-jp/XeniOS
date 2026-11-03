@@ -30,6 +30,8 @@ struct sigaction original_sigill_handler_;
 struct sigaction original_sigsegv_handler_;
 struct sigaction original_sigbus_handler_;
 struct sigaction original_sigtrap_handler_;
+static std::atomic<ExceptionHandler::UnhandledObserver> unhandled_observer_{
+    nullptr};
 
 // This can be as large as needed, but isn't often needed.
 // As we will be sometimes firing many exceptions we want to avoid having to
@@ -524,6 +526,12 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     return;
   }
 
+  if (ExceptionHandler::UnhandledObserver observer =
+          unhandled_observer_.load(std::memory_order_acquire)) {
+    observer(signal_number, reinterpret_cast<uint64_t>(signal_info->si_addr),
+             &thread_context);
+  }
+
   if (signal_number == SIGTRAP) {
     // Returning would resume past the trap; hand it to the original handler.
     sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
@@ -548,6 +556,10 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   if (original_handler) {
     sigaction(signal_number, original_handler, nullptr);
   }
+}
+
+void ExceptionHandler::SetUnhandledObserver(UnhandledObserver observer) {
+  unhandled_observer_.store(observer, std::memory_order_release);
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {
