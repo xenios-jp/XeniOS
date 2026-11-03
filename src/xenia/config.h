@@ -17,6 +17,10 @@
 #include <string_view>
 #include "third_party/tomlplusplus/toml.hpp"
 
+namespace cvar {
+class IConfigVar;
+}  // namespace cvar
+
 namespace xe {
 class Emulator;
 }  // namespace xe
@@ -41,6 +45,11 @@ void SaveConfig();
 // value; a missing or unreadable file gets every current value.
 void SaveConfigValues(const std::set<std::string>& names);
 void SaveGameConfig(uint32_t title_id, const toml::table& config_table);
+// The node holding |var|'s value in a parsed config: at its category, in a
+// table stored under the literal dotted category, or in the [GPU] table it
+// moved out of. Null if the config has none.
+const toml::node* FindConfigNode(const toml::table& root,
+                                 const cvar::IConfigVar& var);
 // Resolves a possibly dotted category ("GPU.Debug") to a nested table.
 toml::table* ResolveSectionTable(toml::table& root, std::string_view section);
 void SaveGameConfigSetting(xe::Emulator* emulator, const char* section,
