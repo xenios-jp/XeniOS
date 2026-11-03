@@ -34,6 +34,14 @@ void MetalGraphicsSystem::AwaitGpuIdleOnWorkerThread(
   }
 }
 
+void MetalGraphicsSystem::SetShaderWaitCompileBoost(
+    CommandProcessor* command_processor, bool waiting) {
+  if (command_processor) {
+    static_cast<MetalCommandProcessor*>(command_processor)
+        ->SetCompileThreadBoost(waiting);
+  }
+}
+
 std::string MetalGraphicsSystem::name() const { return "Metal"; }
 
 X_STATUS MetalGraphicsSystem::Setup(cpu::Processor* processor,

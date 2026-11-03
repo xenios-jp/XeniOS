@@ -802,6 +802,8 @@ void MetalCommandProcessor::InitializeAsyncCompilation() {
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     async_compile_shutdown_ = false;
+    async_compile_base_thread_count_ = thread_count;
+    async_compile_thread_limit_ = thread_count;
   }
 
   async_compile_threads_.reserve(thread_count);
@@ -821,6 +823,7 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
     async_compile_shutdown_ = true;
   }
   async_compile_cv_.notify_all();
+  async_compile_boost_cv_.notify_all();
 
   for (std::thread& thread : async_compile_threads_) {
     if (thread.joinable()) {
@@ -828,6 +831,16 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
     }
   }
   async_compile_threads_.clear();
+  std::vector<std::thread> boost_threads;
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    boost_threads.swap(async_compile_boost_threads_);
+  }
+  for (std::thread& thread : boost_threads) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
 
   std::lock_guard<std::mutex> lock(async_compile_mutex_);
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
@@ -857,7 +870,10 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_tess_shaders_failed_.clear();
   async_compile_busy_ = 0;
   async_compile_shutdown_ = false;
+  async_compile_base_thread_count_ = 0;
+  async_compile_thread_limit_ = 0;
   storage_stats_pending_ = false;
+  storage_stats_boosted_ = false;
   // The dropped requests count as finished, so the backlog reads empty.
   compile_activity.finished.store(
       compile_activity.queued.load(std::memory_order_relaxed),
@@ -1708,13 +1724,23 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
     TessellationShadersCompileRequest tess_shaders_request;
     {
       std::unique_lock<std::mutex> lock(async_compile_mutex_);
-      async_compile_cv_.wait(lock, [this]() {
-        return async_compile_shutdown_ || !async_shader_queue_.empty() ||
+      async_compile_boost_cv_.wait(lock, [this, thread_index]() {
+        return async_compile_shutdown_ ||
+               thread_index < async_compile_thread_limit_;
+      });
+      async_compile_cv_.wait(lock, [this, thread_index]() {
+        return async_compile_shutdown_ ||
+               thread_index >= async_compile_thread_limit_ ||
+               !async_shader_queue_.empty() ||
                !async_pipeline_queue_.empty() ||
                !async_tess_shaders_queue_.empty();
       });
       if (async_compile_shutdown_) {
         return;
+      }
+      if (thread_index >= async_compile_thread_limit_) {
+        // The boost ended: park.
+        continue;
       }
       // Pipelines first: they are the nearly finished work, and everything
       // else exists to unblock one.
@@ -3024,6 +3050,8 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_pending_ = !stored_descriptions.empty();
+    storage_stats_boosted_ =
+        async_compile_thread_limit_ > async_compile_base_thread_count_;
     storage_stats_start_ticks_ = start_ticks;
     storage_stats_stored_ = stored_descriptions.size();
     storage_stats_version_ = config.version;
@@ -3313,6 +3341,9 @@ bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
 
 void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
   storage_stats_pending_ = false;
+  if (storage_stats_boosted_) {
+    return;
+  }
   uint64_t elapsed_us = (xe::Clock::QueryHostTickCount() -
                          storage_stats_start_ticks_) *
                         1000000 / xe::Clock::QueryHostTickFrequency();
@@ -3339,6 +3370,37 @@ void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
   if (IsAsyncCompileIdleLocked()) {
     async_compile_idle_cv_.notify_all();
   }
+}
+
+void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
+  std::lock_guard<std::mutex> lock(async_compile_mutex_);
+  if (async_compile_shutdown_ || !async_compile_base_thread_count_) {
+    return;
+  }
+  size_t limit = async_compile_base_thread_count_;
+  if (boost) {
+    // The held guest and GPU worker leave the CPU to the compile threads.
+    limit = std::max<size_t>(limit, std::thread::hardware_concurrency());
+  }
+  if (limit == async_compile_thread_limit_) {
+    return;
+  }
+  if (limit > async_compile_base_thread_count_ && storage_stats_pending_) {
+    storage_stats_boosted_ = true;
+  }
+  async_compile_thread_limit_ = limit;
+  for (size_t i =
+           async_compile_base_thread_count_ + async_compile_boost_threads_.size();
+       i < limit; ++i) {
+    async_compile_boost_threads_.emplace_back(
+        [this, i]() { AsyncCompileThread(i); });
+  }
+  // Wakes the parked threads when the limit rises, and sends the extra ones
+  // back to park when it falls.
+  async_compile_boost_cv_.notify_all();
+  async_compile_cv_.notify_all();
+  XELOGI("Metal: {} shader/pipeline compile thread(s){}", limit,
+         boost ? " while the game waits for shaders" : "");
 }
 
 void MetalCommandProcessor::AwaitAsyncCompiles() {
