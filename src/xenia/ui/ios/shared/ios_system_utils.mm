@@ -147,11 +147,14 @@ BOOL xe_ios_requires_debugger_broker(void) {
 }
 
 NSString* xe_jit_waiting_status_message(void) {
-  return @"JIT is not active. In StikDebug, assign Amethyst-MeloNX.js or universal.js.";
+  return @"JIT is not active. Enable it with StikDebug (assign universal.js or "
+         @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker.";
 }
 
 NSString* xe_jit_not_detected_guidance_message(void) {
-  return @"JIT is not active. In StikDebug, assign Amethyst-MeloNX.js or universal.js.";
+  return @"JIT is not active. Enable it with StikDebug (assign universal.js or "
+         @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool "
+         @"attached until the game has started.";
 }
 
 void xe_add_jit_ring_pulse(CALayer* layer, NSString* key, CGFloat end_scale, CGFloat peak_opacity,
