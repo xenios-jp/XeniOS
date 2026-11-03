@@ -11,8 +11,11 @@
 
 #include <cerrno>
 #include <cstdlib>
+#include <system_error>
+#include <vector>
 
 #include "xenia/ui/ios/launcher/ios_game_library.h"
+#include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -57,6 +60,22 @@ NSString* ExternalURLActionName(NSURL* url) {
   return nil;
 }
 
+bool PathIsUnderRoot(const std::filesystem::path& path, const std::filesystem::path& root) {
+  if (root.empty()) {
+    return false;
+  }
+  auto path_it = path.begin();
+  for (auto root_it = root.begin(); root_it != root.end(); ++root_it, ++path_it) {
+    if (root_it->empty()) {
+      continue;  // Trailing separator.
+    }
+    if (path_it == path.end() || *path_it != *root_it) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool BuildLaunchPathFromURLValue(NSString* value,
                                  std::filesystem::path* path_out) {
   if (!path_out) {
@@ -83,8 +102,16 @@ bool BuildLaunchPathFromURLValue(NSString* value,
         stringByAppendingPathComponent:normalized];
   }
 
-  *path_out = std::filesystem::path([normalized UTF8String]).lexically_normal();
-  return !path_out->empty();
+  // Only paths inside the library (Documents or a linked folder) may be launched
+  // through a link, so a crafted URL cannot point at app internals or other
+  // containers. Symlinks are resolved before comparing.
+  std::filesystem::path candidate =
+      std::filesystem::path([normalized UTF8String]).lexically_normal();
+  if (candidate.empty() || !IsPathUnderIOSLibraryRoots(candidate)) {
+    return false;
+  }
+  *path_out = candidate;
+  return true;
 }
 
 bool ParseTitleIDFromURLValue(NSString* value, uint32_t* title_id_out) {
@@ -137,6 +164,36 @@ bool ParseGameSystemFromURLValue(NSString* value, IOSGameSystem* system_out) {
 }
 
 }  // namespace
+
+bool IsPathUnderIOSLibraryRoots(const std::filesystem::path& path) {
+  if (path.empty() || !path.is_absolute()) {
+    return false;
+  }
+  std::error_code ec;
+  std::filesystem::path resolved = std::filesystem::weakly_canonical(path, ec);
+  if (ec) {
+    return false;
+  }
+  std::vector<std::filesystem::path> roots;
+  roots.push_back(xe_get_ios_documents_path());
+  for (const IOSExternalLibraryLocation& location : ListIOSExternalLibraryLocations()) {
+    if (location.available && !location.path.empty()) {
+      roots.push_back(location.path);
+    }
+  }
+  for (const std::filesystem::path& root : roots) {
+    std::filesystem::path resolved_root = std::filesystem::weakly_canonical(root, ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    // A root itself is not a game; require something below it.
+    if (resolved != resolved_root && PathIsUnderRoot(resolved, resolved_root)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 NSString* DecodeURLComponent(NSString* value) {
   if (!value || value.length == 0) {
@@ -224,8 +281,16 @@ bool IsExternalGameInfoRequestURL(NSURL* url, NSString** callback_scheme_out) {
   NSURLComponents* components =
       [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
   if (callback_scheme_out) {
-    *callback_scheme_out = URLQueryItemValueCaseInsensitive(
+    NSString* scheme = URLQueryItemValueCaseInsensitive(
         components, @[ @"scheme", @"callback-scheme", @"callback_scheme" ]);
+    // Accept only a well-formed URL scheme, since the name is shown in a prompt.
+    NSCharacterSet* scheme_chars = [NSCharacterSet
+        characterSetWithCharactersInString:
+            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-."];
+    if (scheme.length > 0 && scheme.length <= 64 &&
+        [scheme rangeOfCharacterFromSet:scheme_chars.invertedSet].location == NSNotFound) {
+      *callback_scheme_out = scheme;
+    }
   }
   return true;
 }

@@ -20,6 +20,7 @@
 #import "xenia/ui/ios/app/ios_lifecycle_observer.h"
 #import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/app/ios_main_view_controller.h"
+#import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -242,6 +243,15 @@ DECLARE_path(log_file);
     vc.appContext->LaunchGame(std::string());
   }
 
+  {
+    // Leftover copies of opened files; keep the one this launch is about to import.
+    const std::filesystem::path keep_path =
+        launch_url.isFileURL ? std::filesystem::path([launch_url.path UTF8String])
+                             : std::filesystem::path();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      xe::ui::CleanupIOSDocumentsInbox(keep_path);
+    });
+  }
   if (launch_url) {
     [self handleExternalLaunchURL:launch_url sourceTag:source_tag ? source_tag : "bootstrap"];
   }
@@ -264,9 +274,9 @@ DECLARE_path(log_file);
     return NO;
   }
 
-  NSString* absolute_url = [url absoluteString];
-  XELOGI("iOS: Received app URL ({}) {}", source_tag ? source_tag : "unknown",
-         absolute_url ? [absolute_url UTF8String] : "");
+  // Scheme and host only: file URLs and launch queries carry paths.
+  XELOGI("iOS: Received app URL ({}) scheme={} host={}", source_tag ? source_tag : "unknown",
+         url.scheme ? [url.scheme UTF8String] : "", url.host ? [url.host UTF8String] : "");
 
   XeniaViewController* view_controller = [self xeniaViewController];
   if (!view_controller) {
@@ -274,7 +284,10 @@ DECLARE_path(log_file);
     return NO;
   }
 
-  BOOL handled = [view_controller handleExternalLaunchURL:url];
+  // Files opened from Files/AirDrop go through the import flow (security scope,
+  // copy or link, Inbox cleanup); xenios:// URLs keep the launch path.
+  BOOL handled = url.isFileURL ? [view_controller handleOpenedFileURL:url]
+                               : [view_controller handleExternalLaunchURL:url];
   if (!handled) {
     XELOGW("iOS: URL launch was not handled");
   }

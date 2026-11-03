@@ -362,6 +362,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)saveTouchLayoutModelForTitleID:(uint32_t)title_id;
 - (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path;
 - (BOOL)handleExternalTouchLayoutFileURL:(NSURL*)url;
+- (void)presentURLConfirmation:(UIAlertController*)alert;
+- (void)clearURLConfirmation;
+- (void)proceedWithExternalLaunchPath:(const std::filesystem::path&)launch_path
+                          displayName:(NSString*)display_name;
+- (void)sendGameInfoToCallbackScheme:(NSString*)callback_scheme requestURL:(NSURL*)url;
+- (NSString*)runningGameDisplayName;
 - (BOOL)handleExternalTouchLayoutSchemeURL:(NSURL*)url;
 - (void)presentPendingTouchLayoutInstallIfReady;
 - (void)handleAppDidBecomeActive:(NSNotification*)note;
@@ -402,6 +408,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   uint64_t library_refresh_generation_;
   BOOL compat_fetch_started_;
   BOOL update_check_started_;
+  BOOL external_title_launch_rescanned_;
+  UIAlertController* pending_url_confirmation_;  // retained
   std::filesystem::path pending_external_launch_path_;
   std::filesystem::path deferred_jit_prompt_queued_launch_path_;
   std::filesystem::path deferred_jit_prompt_persisted_launch_path_;
@@ -2177,10 +2185,6 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame* match = find_match();
   if (!match) {
-    [self refreshImportedGames];
-    match = find_match();
-  }
-  if (!match) {
     return NO;
   }
 
@@ -2341,8 +2345,33 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return YES;
   }
 
-  [self refreshImportedGames];
+  // Any app can send this URL: the library's titles and icons leave only after the
+  // user agrees.
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@"Share Game Library?"
+                       message:[NSString stringWithFormat:@"The app \"%@\" is asking for the "
+                                                          @"titles and icons of your game library.",
+                                                          callback_scheme]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(__unused UIAlertAction* action) {
+                                            [self clearURLConfirmation];
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Share"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            [self clearURLConfirmation];
+                                            [self sendGameInfoToCallbackScheme:callback_scheme
+                                                                    requestURL:url];
+                                          }]];
+  [self presentURLConfirmation:alert];
+  return YES;
+}
 
+- (void)sendGameInfoToCallbackScheme:(NSString*)callback_scheme requestURL:(NSURL*)url {
+  // discovered_games_ is kept current by the async refreshes (launch, foreground,
+  // after every import); a synchronous rescan here would block the main thread.
   NSMutableArray* exported_games = [NSMutableArray array];
   size_t skipped_without_title_id = 0;
   for (const IOSDiscoveredGame& game : discovered_games_) {
@@ -2381,7 +2410,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     XELOGE("iOS: Failed serializing gameInfo payload: {}",
            json_error.localizedDescription.UTF8String);
     [self showStatusToast:@"Failed to build gameInfo payload." style:XeniaIOSStatusToastStyleError];
-    return YES;
+    return;
   }
 
   NSString* games_payload = [json_data base64EncodedStringWithOptions:0];
@@ -2389,7 +2418,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     XELOGW("iOS: gameInfo payload encoding produced empty data");
     [self showStatusToast:@"Failed to encode gameInfo payload."
                     style:XeniaIOSStatusToastStyleError];
-    return YES;
+    return;
   }
 
   NSURLComponents* callback_components = [[[NSURLComponents alloc] init] autorelease];
@@ -2403,15 +2432,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
            [callback_scheme UTF8String]);
     [self showStatusToast:@"Failed to build gameInfo callback URL."
                     style:XeniaIOSStatusToastStyleError];
-    return YES;
+    return;
   }
 
   const NSUInteger exported_count = exported_games.count;
   NSString* callback_app = callback_scheme;
   XELOGI(
-      "iOS: Returning {} games via {} (skipped {} without title IDs, payload {} bytes, URL chars "
-      "{})",
-      static_cast<uint32_t>(exported_count), callback_url.absoluteString.UTF8String,
+      "iOS: Returning {} games via {}:// (skipped {} without title IDs, payload {} bytes, URL "
+      "chars {})",
+      static_cast<uint32_t>(exported_count), [callback_scheme UTF8String],
       static_cast<uint32_t>(skipped_without_title_id), static_cast<uint32_t>(json_data.length),
       static_cast<uint32_t>(callback_url.absoluteString.length));
 
@@ -2426,13 +2455,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                           style:XeniaIOSStatusToastStyleSuccess];
           return;
         }
-        XELOGW("iOS: Failed opening gameInfo callback URL {}",
-               callback_url.absoluteString.UTF8String);
+        XELOGW("iOS: Failed opening gameInfo callback URL {}://", [callback_app UTF8String]);
         [self showStatusToast:[NSString
                                   stringWithFormat:@"Failed to return library to %@.", callback_app]
                         style:XeniaIOSStatusToastStyleError];
       }];
-  return YES;
 }
 
 - (BOOL)handleExternalLaunchURL:(NSURL*)url {
@@ -2466,6 +2493,16 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                       system:title_system_present ? &title_system : nullptr
                                         path:&launch_path
                                  displayName:&display_name]) {
+      // The library may still show the cached list from the last launch: rescan once
+      // in the background, then look again.
+      if (!external_title_launch_rescanned_) {
+        external_title_launch_rescanned_ = YES;
+        [self refreshImportedGamesAsyncWithCompletion:^{
+          [self handleExternalLaunchURL:url];
+          external_title_launch_rescanned_ = NO;
+        }];
+        return YES;
+      }
       XELOGW("iOS: External launch title ID {:08X} was not found in Library", title_id);
       [self showStatusToast:[NSString stringWithFormat:@"Title ID %08X was not found in Library.",
                                                        title_id]
@@ -2475,9 +2512,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   if (launch_path.empty()) {
-    NSString* absolute_url = [url absoluteString];
-    XELOGW("iOS: External launch URL missing valid game target: {}",
-           absolute_url ? [absolute_url UTF8String] : "");
+    XELOGW("iOS: External launch URL missing valid game target (scheme={} host={})",
+           url.scheme ? [url.scheme UTF8String] : "", url.host ? [url.host UTF8String] : "");
     [self showStatusToast:@"Launch URL missing a valid game target."
                     style:XeniaIOSStatusToastStyleError];
     return NO;
@@ -2489,10 +2525,53 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (title_id) {
     XELOGI("iOS: External game launch requested by title ID {:08X}: {}", title_id,
-           launch_path.string());
+           xe::strip_pii(launch_path.string()));
   } else {
-    XELOGI("iOS: External game launch requested: {}", launch_path.string());
+    XELOGI("iOS: External game launch requested: {}", xe::strip_pii(launch_path.string()));
   }
+
+  // Any app or web page can open xenios:// URLs, so a link never starts or replaces a
+  // game without asking.
+  const BOOL replaces_game = self.gameRunning || self.gameStopInProgress;
+  NSString* running_name = replaces_game ? [self runningGameDisplayName] : nil;
+  NSString* message = nil;
+  if (!replaces_game) {
+    message = [NSString stringWithFormat:@"A link wants to launch \"%@\".", display_name];
+  } else if (running_name.length) {
+    message = [NSString stringWithFormat:@"A link wants to launch \"%@\". This will stop \"%@\", "
+                                         @"and unsaved progress will be lost.",
+                                         display_name, running_name];
+  } else {
+    message = [NSString stringWithFormat:@"A link wants to launch \"%@\". This will stop the "
+                                         @"running game, and unsaved progress will be lost.",
+                                         display_name];
+  }
+  UIAlertController* alert =
+      [UIAlertController alertControllerWithTitle:replaces_game ? @"Replace Running Game?"
+                                                                : @"Launch Game?"
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(__unused UIAlertAction* action) {
+                                            [self clearURLConfirmation];
+                                          }]];
+  const std::filesystem::path confirmed_path = launch_path;
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:replaces_game ? @"Replace" : @"Launch"
+                                 style:replaces_game ? UIAlertActionStyleDestructive
+                                                     : UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 [self clearURLConfirmation];
+                                 [self proceedWithExternalLaunchPath:confirmed_path
+                                                         displayName:display_name];
+                               }]];
+  [self presentURLConfirmation:alert];
+  return YES;
+}
+
+- (void)proceedWithExternalLaunchPath:(const std::filesystem::path&)launch_path
+                          displayName:(NSString*)display_name {
   if (!self.jitAcquired) {
     pending_external_launch_path_ = launch_path;
     if (![self requestAutomaticStikDebugJITHandoffForPendingLaunchPath:&launch_path]) {
@@ -2500,10 +2579,54 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
           showStatusToast:[NSString stringWithFormat:@"Waiting for JIT to launch: %@", display_name]
                     style:XeniaIOSStatusToastStyleInfo];
     }
-    return YES;
+    return;
   }
 
   [self launchGameAtPath:launch_path displayName:display_name];
+}
+
+// Link-driven prompts (launch, gameInfo) show one at a time: a newer link replaces
+// the older prompt instead of stacking on it.
+- (void)presentURLConfirmation:(UIAlertController*)alert {
+  UIAlertController* older = pending_url_confirmation_;
+  pending_url_confirmation_ = [alert retain];
+  void (^present)(void) = ^{
+    UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+    [presenter presentViewController:alert animated:YES completion:nil];
+  };
+  if (older.presentingViewController && !older.isBeingDismissed) {
+    [older.presentingViewController dismissViewControllerAnimated:NO completion:present];
+  } else {
+    present();
+  }
+  [older release];
+}
+
+- (void)clearURLConfirmation {
+  [pending_url_confirmation_ release];
+  pending_url_confirmation_ = nil;
+}
+
+- (NSString*)runningGameDisplayName {
+  if (!active_game_title_id_) {
+    return nil;
+  }
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (game.title_id == active_game_title_id_ && !game.title.empty()) {
+      return ToNSString(game.title);
+    }
+  }
+  return nil;
+}
+
+// A file opened from Files or AirDrop. Not a launch: route it through the import flow.
+- (BOOL)handleOpenedFileURL:(NSURL*)url {
+  if ([self handleExternalTouchLayoutFileURL:url]) {
+    return YES;
+  }
+  const BOOL in_place =
+      !xe::ui::IsPathInIOSDocumentsInbox(std::filesystem::path([url.path UTF8String]));
+  [self.documentImportCoordinator handleOpenedDocumentURL:url openInPlace:in_place];
   return YES;
 }
 
@@ -3768,6 +3891,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_achievementNotificationPresenter release];
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];
+  [pending_url_confirmation_ release];
   [super dealloc];
 }
 
