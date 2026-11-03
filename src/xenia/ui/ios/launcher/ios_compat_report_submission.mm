@@ -11,6 +11,7 @@
 
 #include "xenia/base/logging.h"
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -57,6 +58,12 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                           notes:(NSString*)notes
                     screenshots:(NSArray<UIImage*>*)screenshots
                      completion:(XeniaCompatReportSubmissionCompletion)completion {
+  if (!xe_ios_online_features_enabled()) {
+    xe_finish_report_submission(completion, nil, nil, nil, @"Online Features Are Off",
+                                xe_ios_online_features_off_message());
+    return;
+  }
+
   NSMutableArray<NSString*>* screenshot_data =
       [NSMutableArray arrayWithCapacity:screenshots.count];
   NSUInteger screenshot_total_bytes = 0;
@@ -127,8 +134,11 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
         completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
           dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
-              xe_finish_report_submission(completion, nil, nil, nil, @"Network Error",
-                                          error.localizedDescription);
+              XELOGW("iOS compat submit: network error domain={} code={}",
+                     [error.domain UTF8String], static_cast<long>(error.code));
+              xe_finish_report_submission(completion, nil, nil, nil, @"Couldn't Send Report",
+                                          @"XeniOS couldn't reach the report server. Check your "
+                                          @"connection and try again.");
               return;
             }
 
@@ -137,23 +147,19 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                                         ? http_response.statusCode
                                         : 0;
 
-            NSString* response_text = @"";
-            if (data.length > 0) {
-              NSString* body_text =
-                  [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
-              if (body_text.length > 0) {
-                response_text = body_text;
-              }
-            }
-
             if (![http_response isKindOfClass:[NSHTTPURLResponse class]] || status_code < 200 ||
                 status_code >= 300) {
+              // The status goes to the log; the server's reply text is not shown to the user.
+              XELOGW("iOS compat submit: server returned HTTP {} ({} byte reply)",
+                     static_cast<long>(status_code), static_cast<unsigned long>(data.length));
               NSString* message =
-                  [NSString stringWithFormat:@"Server returned HTTP %ld", (long)status_code];
-              if (response_text.length > 0) {
-                message = [message stringByAppendingFormat:@"\n%@", response_text];
-              }
-              xe_finish_report_submission(completion, nil, nil, nil, @"Submission Failed",
+                  status_code == 429
+                      ? @"Too many reports were sent recently. Please try again later."
+                  : (status_code >= 400 && status_code < 500)
+                      ? @"The server didn't accept this report. Please try again later."
+                      : @"The report server is having trouble right now. Please try again "
+                        @"later.";
+              xe_finish_report_submission(completion, nil, nil, nil, @"Couldn't Send Report",
                                           message);
               return;
             }
@@ -164,6 +170,11 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
               if ([response_json isKindOfClass:[NSDictionary class]] &&
                   [response_json[@"issueUrl"] isKindOfClass:[NSString class]]) {
                 issue_url = response_json[@"issueUrl"];
+                // The link is opened later; only accept an https URL.
+                NSURL* parsed_issue_url = [NSURL URLWithString:issue_url];
+                if (![parsed_issue_url.scheme isEqualToString:@"https"]) {
+                  issue_url = nil;
+                }
               }
             }
 

@@ -23,7 +23,24 @@
 extern NSString* const kXeniaAutoOpenStikDebugOnLaunchPreferenceKey;
 extern NSString* const kXeniaLastAutoStikDebugAttemptTimestampPreferenceKey;
 
-bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections);
+// Writes the items of |sections| back to their cvars / user defaults. With |dirty_keys|, only
+// items whose key is in the set are written, so values the user didn't touch stay as they are.
+bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
+                            const std::set<std::string>* dirty_keys = nullptr);
+// Puts every user-facing cvar back to its default and saves the config. The path cvars
+// (IOSConfigIsHiddenKey) and transient cvars are left alone.
+bool ResetAllIOSConfigToDefaults(void);
+// Cvars that must never be listed or edited in the UI (storage locations, log file).
+bool IOSConfigIsHiddenKey(const std::string& key);
+// Checks a numeric field against the range of the cvar's type. Returns false and fills
+// |message| (user-readable) when |value| can't be stored.
+bool IOSConfigValidateIntegerValue(const std::string& key, int64_t value, std::string* message);
+bool IOSConfigValidateDoubleValue(const std::string& key, double value, std::string* message);
+
+// Hidden developer mode: unlocks Advanced Debug and All Config. Off by default.
+extern NSString* const kXeniaDeveloperModeChangedNotification;
+bool IOSDeveloperModeEnabled(void);
+void IOSSetDeveloperModeEnabled(bool enabled);
 void OverlayIOSConfigSectionsFromGameConfig(std::vector<IOSConfigSection>* sections,
                                             uint32_t title_id);
 bool ApplyIOSConfigSectionsToGameConfig(const std::vector<IOSConfigSection>& sections,
