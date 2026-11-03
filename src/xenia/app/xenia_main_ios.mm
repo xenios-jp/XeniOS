@@ -33,6 +33,7 @@
 #include "xenia/base/string.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
+#include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/jit_memory_ios.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
@@ -46,6 +47,7 @@
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_crash_reporting.h"
+#include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/presenter.h"
@@ -826,6 +828,20 @@ bool EmulatorAppIOS::OnInitialize() {
       }
       [value release];
     }
+  });
+  // Diagnostics: the game a crash or a session belongs to, and the JIT's code
+  // range, where crash frames in guest code fall.
+  emulator_->on_launch.AddListener([this](uint32_t title_id, const std::string_view) {
+    uint64_t jit_base = 0;
+    uint64_t jit_size = 0;
+    cpu::Processor* processor = emulator_->processor();
+    if (processor && processor->backend()) {
+      if (cpu::backend::CodeCache* code_cache = processor->backend()->code_cache()) {
+        jit_base = code_cache->execute_base_address();
+        jit_size = code_cache->total_size();
+      }
+    }
+    xe_ios_diagnostics_note_title(title_id, jit_base, jit_size);
   });
 
   // Create the display window from the Metal view in the app context.

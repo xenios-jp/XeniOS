@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/shared/ios_online_features.h"
 
+#import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
+
 namespace {
 
 // On unless turned off; the first-launch notice says so before anything is fetched.
@@ -19,6 +21,8 @@ NSString* const kOnlineFeaturesKey = @"XeniaOnlineFeaturesEnabled";
 // Link, which shows other players the device's IP address.
 NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeRevision";
 constexpr NSInteger kOnlineFeaturesNoticeRevision = 2;
+NSString* const kShareDiagnosticsKey = @"XeniaShareDiagnosticsEnabled";
+NSString* const kDiagnosticsNoticeKey = @"XeniaDiagnosticsNoticeAnswered";
 
 }  // namespace
 
@@ -50,6 +54,35 @@ BOOL xe_ios_online_features_notice_pending(void) {
 }
 
 void xe_ios_set_online_features_notice_answered(void) {
-  [[NSUserDefaults standardUserDefaults] setInteger:kOnlineFeaturesNoticeRevision
-                                             forKey:kOnlineFeaturesNoticeKey];
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setInteger:kOnlineFeaturesNoticeRevision forKey:kOnlineFeaturesNoticeKey];
+  [defaults setBool:YES forKey:kDiagnosticsNoticeKey];
+}
+
+BOOL xe_ios_share_diagnostics_enabled(void) {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if ([defaults objectForKey:kShareDiagnosticsKey] == nil) {
+    return YES;
+  }
+  return [defaults boolForKey:kShareDiagnosticsKey];
+}
+
+void xe_ios_set_share_diagnostics_enabled(BOOL enabled) {
+  [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kShareDiagnosticsKey];
+}
+
+BOOL xe_ios_diagnostics_notice_pending(void) {
+  // With Online Features off nothing is sent, so there is nothing to ask yet;
+  // turning them back on in Settings shows the Share Diagnostics switch.
+  return !xe_ios_online_features_notice_pending() && xe_ios_online_features_enabled() &&
+         ![[NSUserDefaults standardUserDefaults] boolForKey:kDiagnosticsNoticeKey];
+}
+
+void xe_ios_set_diagnostics_notice_answered(void) {
+  [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kDiagnosticsNoticeKey];
+}
+
+BOOL xe_ios_diagnostics_upload_allowed(void) {
+  return xe_ios_online_features_enabled() && xe_ios_share_diagnostics_enabled() &&
+         !xe_ios_diagnostics_notice_pending() && xe_ios_diagnostics_endpoint();
 }

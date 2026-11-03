@@ -26,6 +26,23 @@ NSString* xe_ios_online_features_off_message(void);
 // again once when online features gain something new. Nothing is fetched at launch
 // while it is pending.
 BOOL xe_ios_online_features_notice_pending(void);
+// Also answers the diagnostics notice: the first-launch notice covers both.
 void xe_ios_set_online_features_notice_answered(void);
+
+// Share Diagnostics: anonymous crash reports and performance statistics
+// (ios_diagnostics.h). On unless turned off, and only in effect while Online
+// Features is on too.
+BOOL xe_ios_share_diagnostics_enabled(void);
+void xe_ios_set_share_diagnostics_enabled(BOOL enabled);
+
+// YES for an install that answered the first-launch notice before it covered
+// diagnostics, until the one-time diagnostics notice has been answered.
+BOOL xe_ios_diagnostics_notice_pending(void);
+void xe_ios_set_diagnostics_notice_answered(void);
+
+// Online Features and Share Diagnostics both on, no notice pending, and a
+// build with a diagnostics endpoint: the only state in which diagnostics are
+// recorded for sending or sent.
+BOOL xe_ios_diagnostics_upload_allowed(void);
 
 #endif  // XENIA_UI_IOS_SHARED_IOS_ONLINE_FEATURES_H_

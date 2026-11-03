@@ -151,14 +151,25 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_system_link.mm
   shared/ios_update_check.h
   shared/ios_update_check.mm
+  shared/ios_crash_context.h
   shared/ios_crash_reporting.h
   shared/ios_crash_reporting.mm
+  shared/ios_diagnostics.h
+  shared/ios_diagnostics.mm
+  shared/ios_diagnostics_outbox.h
+  shared/ios_diagnostics_outbox.mm
+  shared/ios_fault_record.h
+  shared/ios_fault_record.mm
   shared/ios_hero_glow_palette.h
   shared/ios_hero_glow_palette.mm
   shared/ios_idle_timer.h
   shared/ios_idle_timer.mm
   shared/ios_resource_pressure.h
   shared/ios_resource_pressure.mm
+  shared/ios_session_stats.h
+  shared/ios_session_stats.mm
+  shared/ios_state_reporting.h
+  shared/ios_state_reporting.mm
   shared/ios_online_features.h
   shared/ios_online_features.mm
   shared/ios_theme.h
@@ -203,6 +214,11 @@ target_compile_options(xenia-ui-ios PRIVATE
   $<$<COMPILE_LANGUAGE:OBJCXX>:-Wno-nullability-completeness>
 )
 
+# StateReporting (ios_state_reporting.mm) is new in iOS 27; the app runs on 26.
+target_link_options(xenia-ui-ios PUBLIC
+  "SHELL:-weak_framework StateReporting"
+)
+
 target_link_libraries(xenia-ui-ios PUBLIC
   xenia-base
   xenia-hid-touch-model
@@ -218,6 +234,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework QuartzCore"
   "-framework UIKit"
   "-framework UniformTypeIdentifiers"
+  z
 )
 target_link_libraries(xenia-ui-ios PRIVATE zarchive zstd)
 
