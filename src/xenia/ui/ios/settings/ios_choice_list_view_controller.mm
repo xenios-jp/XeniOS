@@ -78,8 +78,8 @@
   static NSString* const kChoiceCellIdentifier = @"XeniaChoiceCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kChoiceCellIdentifier];
   if (!cell) {
-    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                  reuseIdentifier:kChoiceCellIdentifier];
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                   reuseIdentifier:kChoiceCellIdentifier] autorelease];
   }
   if (indexPath.row < 0 || indexPath.row >= static_cast<NSInteger>(choices_.size())) {
     cell.textLabel.text = @"";

@@ -10,6 +10,7 @@
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
 
 #include "xenia/ui/ios/settings/ios_config_models.h"
+#import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
@@ -33,6 +34,11 @@
 
 - (void)viewDidLoad {
   [super viewDidLoad];
+
+  // The raw debug overrides are for the hidden developer mode (About -> Version).
+  if (!IOSDeveloperModeEnabled()) {
+    return;
+  }
 
   UIView* footer = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 56)] autorelease];
   footer.backgroundColor = [UIColor clearColor];
@@ -61,6 +67,7 @@
              liveOverride:YES
               gameTitleID:self.gameTitleID
                 gameTitle:self.gameTitle];
+  debugVC.appContext = self.appContext;
   [self.navigationController pushViewController:debugVC animated:YES];
   [debugVC release];
 }

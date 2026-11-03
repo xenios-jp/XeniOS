@@ -12,6 +12,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_cells.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_submission.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 @implementation XeniaCompatReportViewController {
@@ -409,6 +410,13 @@
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  if (section == 6) {
+    if (!xe_ios_online_features_enabled()) {
+      return xe_ios_online_features_off_message();
+    }
+    return @"Submitting posts your notes, screenshots, device model and app build publicly on "
+           @"the XeniOS compatibility tracker. Don't include personal information.";
+  }
   if (section != 1) {
     return nil;
   }

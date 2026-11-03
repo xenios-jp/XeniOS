@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/shared/ios_update_check.h"
 
+#import "xenia/ui/ios/shared/ios_online_features.h"
+
 @implementation XeniaUpdateInfo
 - (void)dealloc {
   [_currentVersionText release];
@@ -138,7 +140,10 @@ XeniaUpdateInfo* MakeUpdateInfo(NSString* latest_version, long long latest_build
   info.currentVersionText = xe_current_app_version_text();
   info.latestVersionString = latest_version;
   info.latestBuild = latest_build;
-  info.downloadURLString = download_url.length ? download_url : kDownloadFallbackURL;
+  // The release page comes from a network response; only open it if it is ours.
+  NSURL* parsed_download_url = download_url.length ? [NSURL URLWithString:download_url] : nil;
+  info.downloadURLString =
+      xe_ios_is_trusted_release_url(parsed_download_url) ? download_url : kDownloadFallbackURL;
   info.latestVersionText = VersionText(latest_version, latest_build);
   if (xe_is_development_build()) {
     info.status = XeniaUpdateStatusDevelopmentBuild;
@@ -169,6 +174,28 @@ void DeliverCachedResult(void (^completion)(XeniaUpdateInfo* info)) {
 }
 
 }  // namespace
+
+BOOL xe_ios_is_trusted_release_url(NSURL* url) {
+  if (![url isKindOfClass:[NSURL class]]) {
+    return NO;
+  }
+  NSURLComponents* components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+  if (![components.scheme isEqualToString:@"https"] || components.user || components.password ||
+      components.port) {
+    return NO;
+  }
+  NSString* host = components.host.lowercaseString;
+  if ([host isEqualToString:@"xenios.jp"] || [host hasSuffix:@".xenios.jp"]) {
+    return YES;
+  }
+  if ([host isEqualToString:@"github.com"]) {
+    // Percent-decoded and dot-segment checks keep "/xenios-jp/XeniOS/../evil" out.
+    NSString* path = components.path;
+    return [path hasPrefix:@"/xenios-jp/XeniOS/"] &&
+           [path rangeOfString:@".."].location == NSNotFound;
+  }
+  return NO;
+}
 
 NSString* xe_current_app_version_string(void) {
   id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
@@ -218,6 +245,11 @@ void xe_check_for_update(BOOL force_refresh, void (^completion)(XeniaUpdateInfo*
         completion(info);
       }
     });
+    return;
+  }
+
+  if (!xe_ios_online_features_enabled()) {
+    DeliverCachedResult(completion);
     return;
   }
 

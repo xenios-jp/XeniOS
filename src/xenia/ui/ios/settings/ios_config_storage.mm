@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -67,6 +68,28 @@ static cvar::IConfigVar* GetConfigVar(const std::string& key) {
 }
 
 bool IOSConfigHasConfigVar(const std::string& key) { return GetConfigVar(key) != nullptr; }
+
+bool IOSConfigIsHiddenKey(const std::string& key) {
+  return key == "storage_root" || key == "content_root" || key == "cache_root" ||
+         key == "log_file";
+}
+
+NSString* const kXeniaDeveloperModeChangedNotification = @"XeniaDeveloperModeChanged";
+static NSString* const kXeniaDeveloperModePreferenceKey = @"ios_developer_mode";
+
+bool IOSDeveloperModeEnabled(void) {
+  return GetUserDefaultBool(kXeniaDeveloperModePreferenceKey, false);
+}
+
+void IOSSetDeveloperModeEnabled(bool enabled) {
+  if (enabled == IOSDeveloperModeEnabled()) {
+    return;
+  }
+  SetUserDefaultBool(kXeniaDeveloperModePreferenceKey, enabled);
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:kXeniaDeveloperModeChangedNotification
+                    object:nil];
+}
 
 std::string StripTomlQuotes(std::string value) {
   value = TrimAscii(std::move(value));
@@ -499,10 +522,17 @@ static bool SetConfigVarStringLikeValue(const std::string& key, const std::strin
   return false;
 }
 
-bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections) {
+bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
+                            const std::set<std::string>* dirty_keys) {
   bool ok = true;
   for (const IOSConfigSection& section : sections) {
     for (const IOSConfigItem& item : section.items) {
+      if (dirty_keys && dirty_keys->find(item.key) == dirty_keys->end()) {
+        continue;
+      }
+      if (item.storage == IOSConfigStorage::kConfigVar && IOSConfigIsHiddenKey(item.key)) {
+        continue;
+      }
       switch (item.control_type) {
         case IOSConfigControlType::kToggle:
           if (item.storage == IOSConfigStorage::kUserDefaults) {
@@ -598,6 +628,58 @@ bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections) {
   }
   config::SaveConfig();
   return ok;
+}
+
+bool ResetAllIOSConfigToDefaults(void) {
+  if (cvar::ConfigVars) {
+    for (const auto& entry : *cvar::ConfigVars) {
+      cvar::IConfigVar* var = entry.second;
+      if (!var || var->is_transient() || var->category() == "Config" ||
+          IOSConfigIsHiddenKey(entry.first) ||
+          dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(var)) {
+        continue;
+      }
+      var->ResetConfigValueToDefault();
+    }
+  }
+  // iOS-only switches that live in NSUserDefaults rather than cvars.
+  [GetUserDefaults() removeObjectForKey:kXeniaAutoOpenStikDebugOnLaunchPreferenceKey];
+  config::SaveConfig();
+  return true;
+}
+
+bool IOSConfigValidateIntegerValue(const std::string& key, int64_t value, std::string* message) {
+  cvar::IConfigVar* var = GetConfigVar(key);
+  int64_t min_value = std::numeric_limits<int64_t>::min();
+  int64_t max_value = std::numeric_limits<int64_t>::max();
+  if (dynamic_cast<cvar::ConfigVar<int32_t>*>(var)) {
+    min_value = std::numeric_limits<int32_t>::min();
+    max_value = std::numeric_limits<int32_t>::max();
+  } else if (dynamic_cast<cvar::ConfigVar<uint32_t>*>(var)) {
+    min_value = 0;
+    max_value = std::numeric_limits<uint32_t>::max();
+  } else if (dynamic_cast<cvar::ConfigVar<uint64_t>*>(var)) {
+    min_value = 0;
+  }
+  if (value >= min_value && value <= max_value) {
+    return true;
+  }
+  if (message) {
+    *message = "Enter a whole number from " + std::to_string(min_value) + " to " +
+               std::to_string(max_value) + ".";
+  }
+  return false;
+}
+
+bool IOSConfigValidateDoubleValue(const std::string& key, double value, std::string* message) {
+  (void)key;
+  if (std::isfinite(value) && std::fabs(value) <= 1.0e9) {
+    return true;
+  }
+  if (message) {
+    *message = "Enter a number between -1000000000 and 1000000000.";
+  }
+  return false;
 }
 
 void OverlayIOSConfigSectionsFromGameConfig(std::vector<IOSConfigSection>* sections,

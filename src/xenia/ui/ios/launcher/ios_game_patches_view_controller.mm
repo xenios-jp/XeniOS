@@ -190,7 +190,6 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
 
   UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
   toggle.on = patch.is_enabled;
-  toggle.tag = indexPath.section * 1000 + indexPath.row;
   [toggle addTarget:self
                 action:@selector(patchSwitchChanged:)
       forControlEvents:UIControlEventValueChanged];
@@ -202,8 +201,16 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
 }
 
 - (void)patchSwitchChanged:(UISwitch*)sender {
-  NSInteger section = sender.tag / 1000;
-  NSInteger row = sender.tag % 1000;
+  // The switch belongs to whichever row it currently sits in.
+  CGPoint point = [sender convertPoint:CGPointMake(CGRectGetMidX(sender.bounds),
+                                                   CGRectGetMidY(sender.bounds))
+                                toView:self.tableView];
+  NSIndexPath* index_path = [self.tableView indexPathForRowAtPoint:point];
+  if (!index_path) {
+    return;
+  }
+  NSInteger section = index_path.section;
+  NSInteger row = index_path.row;
   if (section < 0 || row < 0 || section >= static_cast<NSInteger>(patch_files_.size())) {
     return;
   }

@@ -12,6 +12,7 @@
 
 #import <UIKit/UIKit.h>
 
+#include "xenia/ui/ios/app/windowed_app_context_ios.h"
 #include "xenia/ui/ios/settings/ios_config_models.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -26,6 +27,9 @@
 @property(nonatomic, readonly) uint32_t gameTitleID;
 @property(nonatomic, copy, readonly) NSString* gameTitle;
 @property(nonatomic, assign) BOOL liveOverride;
+// Lets live overrides and resets run with the game paused (ApplyLiveSettings). Not retained.
+// Nil when no game can be running; pushed controllers inherit it.
+@property(nonatomic, assign) xe::ui::IOSWindowedAppContext* appContext;
 
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind style:(UITableViewStyle)style;
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind

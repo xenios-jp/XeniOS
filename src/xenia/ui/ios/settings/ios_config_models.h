@@ -65,6 +65,7 @@ enum class IOSConfigAction {
   kOpenAllConfigSettings,
   kViewRecentLog,
   kResetGameSettings,
+  kResetAllSettings,
   kManageExternalFolders,
 };
 

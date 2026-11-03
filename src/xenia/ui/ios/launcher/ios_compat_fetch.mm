@@ -11,6 +11,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_fetch.h"
 
 #import "xenia/ui/ios/launcher/ios_compat_cache.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 
 static NSURLSession* xe_compat_url_session(void) {
   static NSURLSession* session = nil;
@@ -113,6 +114,11 @@ void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
         }
       });
     }
+  }
+
+  // Online features off: the cached list above is all there is.
+  if (!xe_ios_online_features_enabled()) {
+    return;
   }
 
   xe_fetch_compat_data_from_urls(

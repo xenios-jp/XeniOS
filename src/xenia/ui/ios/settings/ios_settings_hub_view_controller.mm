@@ -9,10 +9,14 @@
 
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 
+#import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_catalog.h"
+#import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/settings/ios_config_view_controller.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
+#import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
@@ -771,9 +775,29 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
 @interface XeniaSettingsAboutViewController : XESheetTableViewController
 @end
 
+namespace {
+
+typedef NS_ENUM(NSInteger, XeniaAboutSection) {
+  XeniaAboutSectionBuild = 0,
+  XeniaAboutSectionUpdates,
+  XeniaAboutSectionPrivacy,
+  XeniaAboutSectionLinks,
+  XeniaAboutSectionDeveloper,  // Only while developer mode is on.
+};
+
+constexpr NSInteger kAboutVersionRow = 1;
+constexpr NSInteger kAboutAcknowledgementsRow = 4;  // After the four links.
+constexpr NSInteger kDeveloperModeTapCount = 7;
+constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
+
+}  // namespace
+
 @implementation XeniaSettingsAboutViewController {
   XeniaUpdateInfo* update_info_;
   BOOL update_checking_;
+  NSInteger version_tap_count_;
+  NSTimeInterval last_version_tap_time_;
+  XeniaIOSStatusToastPresenter* toast_presenter_;
 }
 
 - (instancetype)init {
@@ -785,6 +809,8 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [toast_presenter_ release];
   [update_info_ release];
   [super dealloc];
 }
@@ -792,7 +818,21 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
+  toast_presenter_ = [[XeniaIOSStatusToastPresenter alloc] init];
+  // Another path (the switch below, or Reset) can change developer mode.
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(developerModeChanged:)
+                                               name:kXeniaDeveloperModeChangedNotification
+                                             object:nil];
   [self refreshUpdateStatusForced:NO];
+}
+
+- (void)developerModeChanged:(NSNotification*)__unused notification {
+  [self.tableView reloadData];
+}
+
+- (NSInteger)sectionCount {
+  return IOSDeveloperModeEnabled() ? 5 : 4;
 }
 
 - (void)refreshUpdateStatusForced:(BOOL)forced {
@@ -817,36 +857,55 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
   if (!self.isViewLoaded || !self.tableView.window) {
     return;
   }
-  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaAboutSectionUpdates]
                 withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 3;
+  return [self sectionCount];
 }
 
 - (NSInteger)tableView:(UITableView* __unused)tableView
  numberOfRowsInSection:(NSInteger)section {
   switch (section) {
-    case 0:
-      return 3;  // Build
-    case 1:
-      return 1;  // Updates
+    case XeniaAboutSectionBuild:
+      return 3;
+    case XeniaAboutSectionUpdates:
+    case XeniaAboutSectionPrivacy:
+    case XeniaAboutSectionDeveloper:
+      return 1;
     default:
-      return 4;  // Links
+      return 5;  // Four links and Acknowledgements.
   }
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
 titleForHeaderInSection:(NSInteger)section {
   switch (section) {
-    case 0:
+    case XeniaAboutSectionBuild:
       return @"Build";
-    case 1:
+    case XeniaAboutSectionUpdates:
       return @"Updates";
+    case XeniaAboutSectionPrivacy:
+      return @"Privacy";
+    case XeniaAboutSectionDeveloper:
+      return @"Developer";
     default:
       return @"Links";
   }
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView
+titleForFooterInSection:(NSInteger)section {
+  if (section == XeniaAboutSectionPrivacy) {
+    return @"Update checks, compatibility data, cover art, and compatibility discussions and "
+           @"reports. Turn this off and XeniOS does none of these. Games are not affected.";
+  }
+  if (section == XeniaAboutSectionDeveloper) {
+    return @"Shows Advanced Debug and All Config under Settings > Advanced. These change "
+           @"emulator internals and can break games.";
+  }
+  return nil;
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -863,7 +922,7 @@ titleForHeaderInSection:(NSInteger)section {
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
 
-  if (indexPath.section == 0) {
+  if (indexPath.section == XeniaAboutSectionBuild) {
     NSArray* titles = @[ @"Name", @"Version", @"Bundle" ];
     NSString* version = XeniaBundleValue(@"CFBundleShortVersionString") ?: @"";
     NSString* build = XeniaBundleValue((NSString*)kCFBundleVersionKey) ?: @"";
@@ -880,7 +939,29 @@ titleForHeaderInSection:(NSInteger)section {
     return cell;
   }
 
-  if (indexPath.section == 1) {
+  if (indexPath.section == XeniaAboutSectionPrivacy ||
+      indexPath.section == XeniaAboutSectionDeveloper) {
+    const BOOL privacy = indexPath.section == XeniaAboutSectionPrivacy;
+    cell.textLabel.text = privacy ? @"Online Features" : @"Developer Mode";
+    cell.detailTextLabel.text = @"";
+    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    toggle.on = privacy ? xe_ios_online_features_enabled() : IOSDeveloperModeEnabled();
+    toggle.accessibilityLabel = cell.textLabel.text;
+    [toggle addTarget:self
+                  action:privacy ? @selector(onlineFeaturesSwitchChanged:)
+                                 : @selector(developerModeSwitchChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
+    return cell;
+  }
+
+  if (indexPath.section == XeniaAboutSectionUpdates) {
+    if (!xe_ios_online_features_enabled() && !update_checking_) {
+      cell.textLabel.text = @"Updates";
+      cell.detailTextLabel.text = @"Online features off";
+      cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+      return cell;
+    }
     if (update_checking_) {
       cell.textLabel.text = @"Checking for Updates…";
       cell.detailTextLabel.text = @"";
@@ -916,7 +997,7 @@ titleForHeaderInSection:(NSInteger)section {
     return cell;
   }
 
-  NSArray* titles = @[ @"Website", @"GitHub", @"Discord", @"Support" ];
+  NSArray* titles = @[ @"Website", @"GitHub", @"Discord", @"Support", @"Acknowledgements" ];
   cell.textLabel.text = [titles objectAtIndex:indexPath.row];
   cell.detailTextLabel.text = @"";
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -924,14 +1005,65 @@ titleForHeaderInSection:(NSInteger)section {
   return cell;
 }
 
+- (void)onlineFeaturesSwitchChanged:(UISwitch*)sender {
+  xe_ios_set_online_features_enabled(sender.isOn);
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaAboutSectionUpdates]
+                withRowAnimation:UITableViewRowAnimationNone];
+  if (sender.isOn) {
+    [self refreshUpdateStatusForced:NO];
+  }
+}
+
+- (void)developerModeSwitchChanged:(UISwitch*)sender {
+  IOSSetDeveloperModeEnabled(sender.isOn);
+}
+
+// Seven quick taps on the Version row switch developer mode on.
+- (void)registerVersionTap {
+  const NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+  if (now - last_version_tap_time_ > kDeveloperModeTapWindowSeconds) {
+    version_tap_count_ = 0;
+  }
+  last_version_tap_time_ = now;
+  ++version_tap_count_;
+  if (version_tap_count_ < kDeveloperModeTapCount) {
+    return;
+  }
+  version_tap_count_ = 0;
+  if (IOSDeveloperModeEnabled()) {
+    [toast_presenter_ presentMessage:@"Developer mode is already on."
+                               style:XeniaIOSStatusToastStyleInfo
+                              inView:self.view];
+    return;
+  }
+  IOSSetDeveloperModeEnabled(true);
+  [toast_presenter_ presentMessage:@"Developer mode is on. You can turn it off at the bottom of "
+                                   @"this page."
+                             style:XeniaIOSStatusToastStyleSuccess
+                            inView:self.view];
+}
+
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section == 1) {
+  if (indexPath.section == XeniaAboutSectionBuild) {
+    if (indexPath.row == kAboutVersionRow) {
+      [self registerVersionTap];
+    }
+    return;
+  }
+  if (indexPath.section == XeniaAboutSectionUpdates) {
+    if (!xe_ios_online_features_enabled()) {
+      XEPresentOKAlert(self, @"Online Features Are Off", xe_ios_online_features_off_message());
+      return;
+    }
     if (update_checking_ || update_info_.status == XeniaUpdateStatusDevelopmentBuild) {
       return;
     }
+    NSURL* download_url = update_info_.downloadURLString.length
+                              ? [NSURL URLWithString:update_info_.downloadURLString]
+                              : nil;
     if (update_info_.status == XeniaUpdateStatusUpdateAvailable &&
-        update_info_.downloadURLString.length) {
+        xe_ios_is_trusted_release_url(download_url)) {
       XeniaOpenSettingsURL(update_info_.downloadURLString);
     } else {
       // Up to date / unknown: tap re-checks immediately.
@@ -939,7 +1071,14 @@ titleForHeaderInSection:(NSInteger)section {
     }
     return;
   }
-  if (indexPath.section != 2) {
+  if (indexPath.section != XeniaAboutSectionLinks) {
+    return;
+  }
+  if (indexPath.row == kAboutAcknowledgementsRow) {
+    XeniaAcknowledgementsViewController* acknowledgements =
+        [[XeniaAcknowledgementsViewController alloc] init];
+    [self.navigationController pushViewController:acknowledgements animated:YES];
+    [acknowledgements release];
     return;
   }
   NSArray* urls = @[
@@ -955,6 +1094,7 @@ titleForHeaderInSection:(NSInteger)section {
 
 @interface XeniaSettingsHubViewController () <UISearchResultsUpdating>
 - (UIViewController*)makeDetailControllerForItem:(XeniaSettingsHubItem*)item;
+- (UIViewController*)makeRawDetailControllerForItem:(XeniaSettingsHubItem*)item;
 @end
 
 @implementation XeniaSettingsHubViewController {
@@ -991,11 +1131,24 @@ titleForHeaderInSection:(NSInteger)section {
     all_sections_ = [[self buildSections] retain];
     sections_ = [all_sections_ retain];
     self.title = @"Settings";
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(developerModeChanged:)
+                                                 name:kXeniaDeveloperModeChangedNotification
+                                               object:nil];
   }
   return self;
 }
 
+- (void)developerModeChanged:(NSNotification*)__unused notification {
+  [all_sections_ release];
+  all_sections_ = [[self buildSections] retain];
+  if (!search_controller_.active) {
+    [self replaceVisibleSections:all_sections_];
+  }
+}
+
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [on_status_ release];
   [action_handler_ release];
   [all_sections_ release];
@@ -1130,6 +1283,12 @@ titleForHeaderInSection:(NSInteger)section {
                                            symbolName:@"info.circle.fill"
                                             tintColor:gray],
                  ]];
+
+  // Advanced Debug and All Config edit emulator internals; they appear only in developer
+  // mode (About > Version, seven taps).
+  if (!IOSDeveloperModeEnabled()) {
+    return @[ account, gameplay, graphics_performance, games, compatibility, app ];
+  }
 
   XeniaSettingsHubSection* advanced =
       [XeniaSettingsHubSection sectionWithTitle:@"Advanced"
@@ -1320,6 +1479,9 @@ titleForHeaderInSection:(NSInteger)section {
       IOSConfigCatalogKind::kSystem,
   };
   for (IOSConfigCatalogKind kind : kCatalogs) {
+    if (kind == IOSConfigCatalogKind::kDebugSettings && !IOSDeveloperModeEnabled()) {
+      continue;
+    }
     XeniaAppendCatalogSearchResults(setting_results, kind, query);
   }
   if (setting_results.count) {
@@ -1445,6 +1607,15 @@ titleForHeaderInSection:(NSInteger)section {
 }
 
 - (UIViewController*)makeDetailControllerForItem:(XeniaSettingsHubItem*)item {
+  UIViewController* detail = [self makeRawDetailControllerForItem:item];
+  // Live setting changes pause the running game through the app context.
+  if ([detail isKindOfClass:[XeniaConfigViewController class]]) {
+    ((XeniaConfigViewController*)detail).appContext = app_context_;
+  }
+  return detail;
+}
+
+- (UIViewController*)makeRawDetailControllerForItem:(XeniaSettingsHubItem*)item {
   if (!item) {
     return nil;
   }
@@ -1588,20 +1759,22 @@ titleForHeaderInSection:(NSInteger)section {
           actionHandler:action_handler_] autorelease];
     }
     case XeniaSettingsHubCategoryKindPerGameSettings: {
-      NSArray* items = @[
-        [XeniaSettingsActionListItem
+      NSMutableArray* items = [NSMutableArray arrayWithObject:[XeniaSettingsActionListItem
             infoItemWithTitle:@"Title Overrides"
                      subtitle:@"Open Game Settings from a game tile to edit settings that apply only to that title."
-                   symbolName:@"slider.horizontal.3"],
-        [XeniaSettingsActionListItem
+                   symbolName:@"slider.horizontal.3"]];
+      if (IOSDeveloperModeEnabled()) {
+        [items addObject:[XeniaSettingsActionListItem
             infoItemWithTitle:@"Search Overrides"
                      subtitle:@"Search All Config appears at the top of each title's settings sheet."
-                   symbolName:@"magnifyingglass"],
+                   symbolName:@"magnifyingglass"]];
+      }
+      [items addObjectsFromArray:@[
         [XeniaSettingsActionListItem
             infoItemWithTitle:@"Reset Game Settings"
                      subtitle:@"Reset appears in the same title settings sheet and deletes saved overrides for that title."
                    symbolName:@"arrow.counterclockwise"],
-      ];
+      ]];
       return [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:@"Per-Game Settings"
                   items:items

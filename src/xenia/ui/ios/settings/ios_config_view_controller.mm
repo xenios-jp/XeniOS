@@ -29,6 +29,7 @@
 #import "xenia/ui/ios/settings/ios_choice_list_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_builder.h"
 #import "xenia/ui/ios/settings/ios_config_models.h"
+#import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
@@ -55,14 +56,14 @@ void OpenExternalURLString(NSString* url_string) {
   NSURL* url = [NSURL URLWithString:url_string];
   if (!url) {
     XELOGW("iOS: Failed to create URL from string: {}",
-           url_string ? [url_string UTF8String] : "(null)");
+           xe::strip_pii(url_string ? [url_string UTF8String] : "(null)"));
     return;
   }
   [[UIApplication sharedApplication] openURL:url
       options:@{}
       completionHandler:^(BOOL success) {
         if (!success) {
-          XELOGW("iOS: Failed to open external URL: {}", [url_string UTF8String]);
+          XELOGW("iOS: Failed to open external URL: {}", xe::strip_pii([url_string UTF8String]));
         }
       }];
 }
@@ -184,10 +185,45 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   return OverrideCvarByName(key, std::filesystem::path(value));
 }
 
+// Assigns the item's value to its cvar as a game override. Runs inside ApplyLiveSettings.
+void ApplyLiveOverrideValue(const IOSConfigItem& item) {
+  switch (item.control_type) {
+    case IOSConfigControlType::kToggle:
+      OverrideCvarByName(item.key, item.bool_value);
+      break;
+    case IOSConfigControlType::kInteger:
+      OverrideIntegerCvarByName(item.key, item.integer_value);
+      break;
+    case IOSConfigControlType::kDouble:
+      OverrideFloatingCvarByName(item.key, item.double_value);
+      break;
+    case IOSConfigControlType::kString:
+    case IOSConfigControlType::kPath:
+      OverrideStringLikeCvarByName(item.key, item.string_value);
+      break;
+    case IOSConfigControlType::kEnum:
+    case IOSConfigControlType::kChoiceString:
+      OverrideStringLikeCvarByName(item.key, item.string_value);
+      break;
+    case IOSConfigControlType::kChoiceInt32:
+      OverrideIntegerCvarByName(item.key, item.choice_value);
+      break;
+    case IOSConfigControlType::kChoiceUInt32:
+      OverrideIntegerCvarByName(item.key, item.choice_value);
+      break;
+    case IOSConfigControlType::kChoiceUInt64:
+      OverrideIntegerCvarByName(item.key, item.choice_value);
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 @interface XeniaConfigViewController ()
 - (void)confirmResetGameSettings;
+- (void)confirmResetAllSettings;
 @end
 
 @implementation XeniaConfigViewController {
@@ -197,6 +233,7 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   BOOL hasPendingChanges_;
   BOOL shows_root_dismiss_button_;
   BOOL live_override_;
+  xe::ui::IOSWindowedAppContext* app_context_;
   uint32_t game_title_id_;
   NSString* game_title_;
   UIBarButtonItem* saveButton_;
@@ -206,6 +243,7 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
 @synthesize dismissalHandler = dismissal_handler_;
 @synthesize showsRootDismissButton = shows_root_dismiss_button_;
 @synthesize liveOverride = live_override_;
+@synthesize appContext = app_context_;
 
 - (instancetype)initWithStyle:(UITableViewStyle)style {
   return [self initWithCatalogKind:IOSConfigCatalogKind::kMain style:style];
@@ -732,8 +770,8 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   static NSString* const kCellIdentifier = @"XeniaConfigCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
-    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                  reuseIdentifier:kCellIdentifier];
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                   reuseIdentifier:kCellIdentifier] autorelease];
   }
 
   IOSConfigItem* item = [self itemAtIndexPath:indexPath];
@@ -798,7 +836,15 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.isAccessibilityElement = NO;
+    // The row is the VoiceOver element (the field alone has no label); activating it
+    // focuses the field through didSelectRow.
+    field.isAccessibilityElement = NO;
+    cell.isAccessibilityElement = YES;
+    cell.accessibilityLabel = content.text;
+    cell.accessibilityValue = field.text;
+    cell.accessibilityHint =
+        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+    cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kDouble) {
     content.secondaryText = ToNSString(item->subtitle);
@@ -818,7 +864,15 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.isAccessibilityElement = NO;
+    // The row is the VoiceOver element (the field alone has no label); activating it
+    // focuses the field through didSelectRow.
+    field.isAccessibilityElement = NO;
+    cell.isAccessibilityElement = YES;
+    cell.accessibilityLabel = content.text;
+    cell.accessibilityValue = field.text;
+    cell.accessibilityHint =
+        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+    cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kString ||
              item->control_type == IOSConfigControlType::kPath) {
@@ -840,10 +894,19 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.isAccessibilityElement = NO;
+    // The row is the VoiceOver element (the field alone has no label); activating it
+    // focuses the field through didSelectRow.
+    field.isAccessibilityElement = NO;
+    cell.isAccessibilityElement = YES;
+    cell.accessibilityLabel = content.text;
+    cell.accessibilityValue = field.text;
+    cell.accessibilityHint =
+        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+    cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kAction) {
-    const bool destructive_action = item->action == IOSConfigAction::kResetGameSettings;
+    const bool destructive_action = item->action == IOSConfigAction::kResetGameSettings ||
+                                    item->action == IOSConfigAction::kResetAllSettings;
     content.textProperties.color =
         destructive_action ? [UIColor systemRedColor] : self.view.tintColor;
     content.secondaryText = ToNSString(item->subtitle);
@@ -854,8 +917,10 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
     cell.isAccessibilityElement = YES;
     cell.accessibilityLabel = content.text;
     cell.accessibilityValue = content.secondaryText;
-    cell.accessibilityHint = destructive_action ? @"Deletes saved game-specific overrides."
-                                                : @"Opens another settings page.";
+    cell.accessibilityHint = item->action == IOSConfigAction::kResetAllSettings
+                                 ? @"Asks before putting every setting back to its default."
+                             : destructive_action ? @"Deletes saved game-specific overrides."
+                                                  : @"Opens another settings page.";
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   } else {
@@ -926,8 +991,10 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
     case IOSConfigControlType::kInteger: {
       if (utf8) {
         char* end = nullptr;
+        errno = 0;
         long long parsed = std::strtoll(utf8, &end, 10);
-        if (end != utf8 && *end == '\0') {
+        if (end != utf8 && *end == '\0' && errno == 0 &&
+            IOSConfigValidateIntegerValue(item->key, parsed, nullptr)) {
           item->integer_value = static_cast<int64_t>(parsed);
           [self configItemDidChange:item];
         }
@@ -937,7 +1004,8 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
       if (utf8) {
         char* end = nullptr;
         double parsed = std::strtod(utf8, &end);
-        if (end != utf8 && *end == '\0') {
+        if (end != utf8 && *end == '\0' &&
+            IOSConfigValidateDoubleValue(item->key, parsed, nullptr)) {
           item->double_value = parsed;
           [self configItemDidChange:item];
         }
@@ -952,6 +1020,7 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
       return;
   }
   [self markPendingChangesForItem:item];
+  [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
 }
 
 - (void)integerFieldChanged:(UITextField*)sender {
@@ -964,17 +1033,27 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   const char* utf8 = [sender.text UTF8String];
   if (!utf8) return;
   char* end = nullptr;
+  errno = 0;
   long long parsed = std::strtoll(utf8, &end, 10);
-  if (end != utf8 && *end == '\0') {
+  std::string problem;
+  if (end == utf8 || *end != '\0' || errno == ERANGE) {
+    problem = "Enter a whole number.";
+  } else if (!IOSConfigValidateIntegerValue(item->key, parsed, &problem)) {
+    // |problem| holds the allowed range.
+  } else {
     item->integer_value = static_cast<int64_t>(parsed);
     [self markPendingChangesForItem:item];
     if (live_override_) {
       [self applyLiveOverrideForItem:item];
     }
     [self configItemDidChange:item];
-  } else {
-    sender.text = [NSString stringWithFormat:@"%lld", item->integer_value];
+    return;
   }
+  sender.text = [NSString stringWithFormat:@"%lld", item->integer_value];
+  [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
+  XEPresentOKAlert(self, @"Value Not Accepted",
+                   [NSString stringWithFormat:@"%@ was not changed. %@", ToNSString(item->title),
+                                              ToNSString(problem)]);
 }
 
 - (void)doubleFieldChanged:(UITextField*)sender {
@@ -988,16 +1067,25 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   if (!utf8) return;
   char* end = nullptr;
   double parsed = std::strtod(utf8, &end);
-  if (end != utf8 && *end == '\0') {
+  std::string problem;
+  if (end == utf8 || *end != '\0') {
+    problem = "Enter a number.";
+  } else if (!IOSConfigValidateDoubleValue(item->key, parsed, &problem)) {
+    // |problem| holds the allowed range.
+  } else {
     item->double_value = parsed;
     [self markPendingChangesForItem:item];
     if (live_override_) {
       [self applyLiveOverrideForItem:item];
     }
     [self configItemDidChange:item];
-  } else {
-    sender.text = [NSString stringWithFormat:@"%.6g", item->double_value];
+    return;
   }
+  sender.text = [NSString stringWithFormat:@"%.6g", item->double_value];
+  [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
+  XEPresentOKAlert(self, @"Value Not Accepted",
+                   [NSString stringWithFormat:@"%@ was not changed. %@", ToNSString(item->title),
+                                              ToNSString(problem)]);
 }
 
 - (void)stringFieldChanged:(UITextField*)sender {
@@ -1021,35 +1109,13 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
 
 - (void)applyLiveOverrideForItem:(IOSConfigItem*)item {
   if (!item || item->key.empty()) return;
-  switch (item->control_type) {
-    case IOSConfigControlType::kToggle:
-      OverrideCvarByName(item->key, item->bool_value);
-      break;
-    case IOSConfigControlType::kInteger:
-      OverrideIntegerCvarByName(item->key, item->integer_value);
-      break;
-    case IOSConfigControlType::kDouble:
-      OverrideFloatingCvarByName(item->key, item->double_value);
-      break;
-    case IOSConfigControlType::kString:
-    case IOSConfigControlType::kPath:
-      OverrideStringLikeCvarByName(item->key, item->string_value);
-      break;
-    case IOSConfigControlType::kEnum:
-    case IOSConfigControlType::kChoiceString:
-      OverrideStringLikeCvarByName(item->key, item->string_value);
-      break;
-    case IOSConfigControlType::kChoiceInt32:
-      OverrideIntegerCvarByName(item->key, item->choice_value);
-      break;
-    case IOSConfigControlType::kChoiceUInt32:
-      OverrideIntegerCvarByName(item->key, item->choice_value);
-      break;
-    case IOSConfigControlType::kChoiceUInt64:
-      OverrideIntegerCvarByName(item->key, item->choice_value);
-      break;
-    default:
-      break;
+  // The game's threads read these cvars, so assign them while it is paused.
+  const IOSConfigItem value = *item;
+  auto apply = [value]() { ApplyLiveOverrideValue(value); };
+  if (app_context_) {
+    app_context_->ApplyLiveSettings(apply);
+  } else {
+    apply();
   }
 
   if (game_title_id_) {
@@ -1080,6 +1146,7 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   }
   config_vc.dismissalHandler = self.dismissalHandler;
   config_vc.showsRootDismissButton = self.showsRootDismissButton;
+  config_vc.appContext = app_context_;
   [self.navigationController pushViewController:config_vc animated:YES];
   [config_vc release];
 }
@@ -1134,6 +1201,9 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
       } break;
       case IOSConfigAction::kResetGameSettings:
         [self confirmResetGameSettings];
+        break;
+      case IOSConfigAction::kResetAllSettings:
+        [self confirmResetAllSettings];
         break;
       case IOSConfigAction::kNone:
       default:
@@ -1231,6 +1301,42 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
   [self presentViewController:confirm animated:YES completion:nil];
 }
 
+- (void)confirmResetAllSettings {
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:@"Reset All Settings?"
+                       message:@"Every XeniOS setting goes back to its default. Games, saves, "
+                               @"profiles, touch layouts and per-game overrides are kept. "
+                               @"Relaunch XeniOS afterwards."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:@"Reset"
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(__unused UIAlertAction* action) {
+                                   bool ok = false;
+                                   auto reset = [&ok]() { ok = ResetAllIOSConfigToDefaults(); };
+                                   if (app_context_) {
+                                     app_context_->ApplyLiveSettings(reset);
+                                   } else {
+                                     reset();
+                                   }
+                                   dirty_keys_.clear();
+                                   hasPendingChanges_ = NO;
+                                   saveButton_.enabled = NO;
+                                   [self replaceSections:[self buildSections]];
+                                   XEPresentOKAlert(self,
+                                                    ok ? @"Settings Reset" : @"Reset Failed",
+                                                    ok ? @"All settings are back to their "
+                                                         @"defaults. Relaunch XeniOS before "
+                                                         @"testing."
+                                                       : @"Settings could not be reset. Check "
+                                                         @"xenia.log.");
+                                 }]];
+  [self presentViewController:confirm animated:YES completion:nil];
+}
+
 - (void)dismissSettingsControllerAnimated:(BOOL)animated {
   void (^dismissal_handler)(void) = [dismissal_handler_ copy];
   [self dismissViewControllerAnimated:animated
@@ -1298,7 +1404,7 @@ bool OverrideStringLikeCvarByName(const std::string& key, const std::string& val
                                                          dirty_keys_)
                           ? YES
                           : NO)
-                   : (ApplyIOSConfigSections(sections_for_save) ? YES : NO);
+                   : (ApplyIOSConfigSections(sections_for_save, &dirty_keys_) ? YES : NO);
   hasPendingChanges_ = NO;
   dirty_keys_.clear();
   saveButton_.enabled = NO;

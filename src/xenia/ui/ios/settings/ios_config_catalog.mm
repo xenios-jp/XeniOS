@@ -116,7 +116,10 @@ static void AddChoiceSetting(std::vector<IOSConfigItem>& items, IOSConfigControl
     }
   }
   if (!found) {
-    item.choice_value = item.choices.front().value;
+    // Keep a value the list doesn't offer (hand-edited config, older build) and show it as is;
+    // it only changes if the user picks another entry.
+    item.choices.insert(item.choices.begin(),
+                        {"Custom (" + std::to_string(item.choice_value) + ")", item.choice_value});
   }
   items.push_back(std::move(item));
 }
@@ -147,6 +150,13 @@ static void AddStringChoiceSetting(std::vector<IOSConfigItem>& items, const std:
       found = true;
       break;
     }
+  }
+  if (!found && !item.string_value.empty()) {
+    item.choices.push_back({"Custom (" + item.string_value + ")",
+                            static_cast<int64_t>(item.choice_string_values.size())});
+    item.choice_string_values.push_back(item.string_value);
+    item.choice_value = static_cast<int64_t>(item.choice_string_values.size() - 1);
+    found = true;
   }
   if (!found) {
     item.string_value = fallback;
@@ -326,7 +336,7 @@ static std::vector<IOSConfigSection> BuildGraphicsSections() {
                  "Compiles Metal shaders and pipelines in background threads to reduce "
                  "stutter. New effects may appear a moment late; turn this off if you "
                  "prefer blocking correctness over smoother frame pacing.",
-                 false);
+                 true);
   PushIfNotEmpty(sections, std::move(shader));
   return sections;
 }
@@ -345,7 +355,7 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
                  "Compiles Metal shaders and pipelines in background threads to reduce "
                  "stutter. New effects may appear a moment late; turn this off if you "
                  "prefer blocking correctness over smoother frame pacing.",
-                 false);
+                 true);
   PushIfNotEmpty(sections, std::move(caching));
 
   IOSConfigSection scheduler;
@@ -422,9 +432,14 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
                  false);
   AddChoiceSetting(audio.items, IOSConfigControlType::kChoiceUInt32, "apu_max_queued_frames",
                    "Audio Queue Depth",
-                   "Larger queues reduce underruns at the cost of latency. Use 48 or 64 "
-                   "only if audio still stutters after a full relaunch.",
-                   32, {{"32 Frames", 32}, {"48 Frames", 48}, {"64 Frames", 64}});
+                   "Larger queues reduce underruns at the cost of latency. 8 is the default; "
+                   "try 32, 48 or 64 only if audio still stutters after a full relaunch.",
+                   8,
+                   {{"8 Frames (Default)", 8},
+                    {"16 Frames", 16},
+                    {"32 Frames", 32},
+                    {"48 Frames", 48},
+                    {"64 Frames", 64}});
   AddStringChoiceSetting(audio.items, "xma_decoder", "XMA Decoder",
                          "Select the XMA decoder implementation. New is the current general "
                          "default; Old and Master are fallback paths for regressions, and Fake "
@@ -580,6 +595,14 @@ static std::vector<IOSConfigSection> BuildDiagnosticsSections() {
                    "without Xcode.");
   PushIfNotEmpty(sections, std::move(diagnostics));
 
+  IOSConfigSection reset;
+  reset.title = "Reset";
+  AddActionSetting(reset.items, IOSConfigAction::kResetAllSettings,
+                   "Reset All Settings to Defaults",
+                   "Puts every setting back to its default. Games, saves, profiles and "
+                   "per-game overrides are kept.");
+  PushIfNotEmpty(sections, std::move(reset));
+
   return sections;
 }
 
@@ -614,7 +637,38 @@ static std::vector<IOSConfigSection> BuildGraphicsCompatSections() {
   return sections;
 }
 
+// "occlusion_query_fake_lower_threshold" -> "Occlusion Query Fake Lower Threshold".
+static std::string ReadableTitleForKey(const std::string& key) {
+  std::string title;
+  bool word_start = true;
+  for (char c : key) {
+    if (c == '_') {
+      title.push_back(' ');
+      word_start = true;
+    } else {
+      title.push_back(word_start ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                                 : c);
+      word_start = false;
+    }
+  }
+  return title;
+}
+
+static std::vector<IOSConfigSection> BuildDebugSettingsSectionsRaw();
+
 std::vector<IOSConfigSection> BuildDebugSettingsSections() {
+  std::vector<IOSConfigSection> sections = BuildDebugSettingsSectionsRaw();
+  for (IOSConfigSection& section : sections) {
+    for (IOSConfigItem& item : section.items) {
+      if (item.title == item.key) {
+        item.title = ReadableTitleForKey(item.key);
+      }
+    }
+  }
+  return sections;
+}
+
+static std::vector<IOSConfigSection> BuildDebugSettingsSectionsRaw() {
   std::vector<IOSConfigSection> sections;
 
   IOSConfigSection common;
@@ -771,7 +825,8 @@ std::vector<IOSConfigSection> BuildAllCvarSections() {
   }
 
   for (const auto& [name, var] : *cvar::ConfigVars) {
-    if (var->is_transient() || var->category() == "Config") {
+    if (var->is_transient() || var->category() == "Config" || IOSConfigIsHiddenKey(name) ||
+        dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(var)) {
       continue;
     }
 
@@ -992,9 +1047,12 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
       {
         IOSConfigSection more;
         more.title = "Search Overrides";
-        AddActionSetting(more.items, IOSConfigAction::kOpenAllConfigSettings,
-                         "Search All Config",
-                         "Find any non-transient cvar and save it as a title-specific override.");
+        if (IOSDeveloperModeEnabled()) {
+          AddActionSetting(more.items, IOSConfigAction::kOpenAllConfigSettings,
+                           "Search All Config",
+                           "Find any non-transient cvar and save it as a title-specific "
+                           "override.");
+        }
         AddActionSetting(more.items, IOSConfigAction::kResetGameSettings,
                          "Reset Game Settings",
                          "Delete saved overrides for this title and return to defaults.");

@@ -10,6 +10,7 @@
 #import "xenia/ui/ios/launcher/ios_game_compatibility_discussion_controller.h"
 
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 
 namespace {
 
@@ -186,6 +187,10 @@ constexpr NSTimeInterval kXeniaDiscussionCacheFreshSeconds = 300.0;
   }
 }
 
+- (BOOL)onlineFeaturesOff {
+  return !xe_ios_online_features_enabled();
+}
+
 - (void)fetchDiscussion {
   NSString* cache_path = xe_discussion_cache_path(title_id_);
   if (reports_.count == 0) {
@@ -211,6 +216,12 @@ constexpr NSTimeInterval kXeniaDiscussionCacheFreshSeconds = 300.0;
         !loading_) {
       return;
     }
+  }
+
+  if (!xe_ios_online_features_enabled()) {
+    loading_ = NO;
+    [self notifyDidUpdate];
+    return;
   }
 
   NSString* url_string = [NSString

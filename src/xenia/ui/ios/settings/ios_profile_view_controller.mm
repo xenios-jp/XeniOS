@@ -125,8 +125,8 @@
   static NSString* const kCellIdentifier = @"XeniaProfileCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
-    cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                  reuseIdentifier:kCellIdentifier];
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                   reuseIdentifier:kCellIdentifier] autorelease];
   }
 
   cell.textLabel.numberOfLines = 1;

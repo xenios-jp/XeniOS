@@ -78,6 +78,7 @@
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -624,6 +625,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (update_check_started_) {
     return;
   }
+  if (!xe_ios_online_features_enabled()) {
+    return;
+  }
   update_check_started_ = YES;
   // Throttled to once per day inside xe_check_for_update. The block retains self
   // for the duration of the request.
@@ -661,18 +665,18 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                           latest,
                                                           info.currentVersionText ?: @"this build"]
                 preferredStyle:UIAlertControllerStyleAlert];
-  NSString* download_url = info.downloadURLString;
-  [alert
-      addAction:[UIAlertAction actionWithTitle:@"Download"
-                                         style:UIAlertActionStyleDefault
-                                       handler:^(__unused UIAlertAction* action) {
-                                         if (download_url.length) {
-                                           [[UIApplication sharedApplication]
-                                                         openURL:[NSURL URLWithString:download_url]
-                                                         options:@{}
-                                               completionHandler:nil];
-                                         }
-                                       }]];
+  NSURL* download_target = [NSURL URLWithString:info.downloadURLString ?: @""];
+  if (!xe_ios_is_trusted_release_url(download_target)) {
+    download_target = [NSURL URLWithString:@"https://xenios.jp/downloads"];
+  }
+  [alert addAction:[UIAlertAction actionWithTitle:@"Download"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            [[UIApplication sharedApplication]
+                                                          openURL:download_target
+                                                          options:@{}
+                                                completionHandler:nil];
+                                          }]];
   [alert addAction:[UIAlertAction actionWithTitle:@"Later"
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
@@ -1285,6 +1289,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   XeniaIOSQuickSettingsViewController* quickVC =
       [[XeniaIOSQuickSettingsViewController alloc] initWithGameTitleID:active_game_title_id_
                                                              gameTitle:nil];
+  quickVC.appContext = self.appContext;
   [self presentPauseSheetWithRootController:quickVC
                               preferredSize:CGSizeMake(480.0, 560.0)
                 preventInteractiveDismissal:NO
@@ -2806,6 +2811,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                        style:UITableViewStyleInsetGrouped
                                                  gameTitleID:game.title_id
                                                    gameTitle:game_title];
+  config_controller.appContext = self.appContext;
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:config_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(640.0, 760.0),
