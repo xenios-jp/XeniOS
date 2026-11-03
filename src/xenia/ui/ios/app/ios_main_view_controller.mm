@@ -428,6 +428,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   std::unique_ptr<xe::hid::touch::IOSTouchRuntimeModel> touch_runtime_model_;
   BOOL touch_layout_edit_mode_active_;
   BOOL gameplay_modal_presentation_pending_;
+  // The user paused the game with the in-game menu's Pause Emulator button.
+  BOOL emulation_paused_by_user_;
   BOOL presenting_stikdebug_automation_prompt_;
   uint32_t active_game_title_id_;
   std::string active_touch_layout_local_id_;
@@ -650,8 +652,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self.controllerNavigationCoordinator refreshLauncherFocus];
   [self.controllerNavigationCoordinator refreshInGameFocus];
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
-  // Losing the last controller mid-game opens the menu, which pauses the game, instead of
-  // leaving the player under fire while the touch controls come back.
+  // Losing the last controller mid-game opens the menu, where the player can pause the game,
+  // instead of leaving them under fire while the touch controls come back.
   if ([note.name isEqualToString:GCControllerDidDisconnectNotification] && self.gameRunning &&
       self.launcherOverlayView.hidden && ![self hasConnectedGameplayController]) {
     [self showInGameMenuOverlayAnimated:YES];
@@ -1370,6 +1372,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   self.inGameMenuOverlay.graphicsHandler = ^{
     [unsafe_self presentQuickSettings];
   };
+  self.inGameMenuOverlay.pauseEmulatorHandler = ^{
+    [unsafe_self setEmulationPausedByUser:!unsafe_self.inGameMenuOverlay.emulatorPaused];
+  };
   [self refreshInGameDisplayMenu];
 }
 
@@ -1433,6 +1438,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                    [self.controllerNavigationCoordinator refreshInGameFocus];
                                    [self updateTouchControlsOverlayVisibilityAnimated:YES];
                                  }];
+}
+
+- (void)setEmulationPausedByUser:(BOOL)paused {
+  emulation_paused_by_user_ = paused;
+  self.inGameMenuOverlay.emulatorPaused = paused;
+  if (self.appContext) {
+    self.appContext->SetEmulationPaused(xe::ui::IOSWindowedAppContext::EmulationPauseReason::kUser,
+                                        paused ? true : false);
+  }
 }
 
 - (void)resumeGameTapped:(UIButton*)sender {
@@ -4243,6 +4257,9 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     return;
   }
   _gameRunning = gameRunning;
+  if (!gameRunning && emulation_paused_by_user_) {
+    [self setEmulationPausedByUser:NO];
+  }
   self.shaderCompileIndicator.active = gameRunning;
   self.launchStatusView.active = gameRunning;
   if (gameRunning) {
@@ -4435,9 +4452,11 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   if (self.appContext) {
     const bool covered = [self shouldBlockGameplayInput] ? true : false;
     self.appContext->SetGameplayInputBlocked(covered);
-    // The game is hidden or blocked by the menu or a sheet: stop it too.
-    self.appContext->SetEmulationPaused(
-        xe::ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, covered);
+    // The menu and sheets leave the game running, so a System Link game keeps going for the
+    // other players. A pause the user chose in the menu ends when the game is uncovered.
+    if (!covered && emulation_paused_by_user_) {
+      [self setEmulationPausedByUser:NO];
+    }
   }
   // The screen-wide tap recognizer used to toggle the in-game menu would
   // otherwise fire every time the user presses a touch overlay button (the
