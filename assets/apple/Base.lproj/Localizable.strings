@@ -180,6 +180,9 @@
 /* VoiceOver label of the add control button */
 "Add control" = "Add control";
 
+/* dashboard disc tray: empty library text */
+"Add games to the library to put them in the drive." = "Add games to the library to put them in the drive.";
+
 /* launcher overlay view: empty library message */
 "Add games with Files or Finder." = "Add games with Files or Finder.";
 
@@ -432,9 +435,6 @@
 /* system software view controller: status */
 "Checking…" = "Checking…";
 
-/* dashboard disc tray: prompt text */
-"Choose a game from the library to put in the drive." = "Choose a game from the library to put in the drive.";
-
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -486,6 +486,9 @@
    Navigation bar button that closes the touch layout editor
    settings hub view controller: title */
 "Close" = "Close";
+
+/* VoiceOver hint for the disc tray's Leave Empty button */
+"Closes the tray with no disc in the drive." = "Closes the tray with no disc in the drive.";
 
 /* VoiceOver label of the panel's expand/collapse button */
 "Collapse" = "Collapse";
@@ -902,6 +905,9 @@
 /* game patches view controller: accessibility value */
 "Disabled" = "Disabled";
 
+/* dashboard disc tray: which disc of a game */
+"Disc %u of %u" = "Disc %u of %u";
+
 /* config view controller: title */
 "Discard" = "Discard";
 
@@ -1235,6 +1241,9 @@
 /* file transfer: error message */
 "Flushing the copy failed." = "Flushing the copy failed.";
 
+/* dashboard disc tray: a game kept as a folder of files */
+"Folder" = "Folder";
+
 /* external folders view controller: title */
 "Folder Unavailable" = "Folder Unavailable";
 
@@ -1485,8 +1494,8 @@
 /* Slider label in the touch analog tuning screen */
 "Input Smoothing" = "Input Smoothing";
 
-/* dashboard disc tray: prompt title */
-"Insert a Disc" = "Insert a Disc";
+/* dashboard disc tray: title */
+"Insert Disc" = "Insert Disc";
 
 /* Alert button: install
    Fallback alert button: install */
@@ -1668,7 +1677,7 @@
 /* Alert message: edit a control's label */
 "Leave blank to use the default label." = "Leave blank to use the default label.";
 
-/* dashboard disc tray: option for no disc */
+/* dashboard disc tray: button, closes the tray with no disc */
 "Leave Empty" = "Leave Empty";
 
 /* zar conversion coordinator: title */
@@ -1893,7 +1902,8 @@
 /* external folders view controller: label text */
 "No external folders linked" = "No external folders linked";
 
-/* launcher overlay view: empty library title */
+/* dashboard disc tray: empty library title
+   launcher overlay view: empty library title */
 "No Games" = "No Games";
 
 /* Alert title: no games for the touch layout picker */
@@ -2291,6 +2301,9 @@
 /* profile view controller: title */
 "Profiles" = "Profiles";
 
+/* VoiceOver hint for a disc in the disc tray */
+"Puts this disc in the drive." = "Puts this disc in the drive.";
+
 /* Section header in the pause menu */
 "Quick Settings" = "Quick Settings";
 
@@ -2529,6 +2542,9 @@
 
 /* settings hub view controller: title */
 "Search and edit every registered cvar." = "Search and edit every registered cvar.";
+
+/* dashboard disc tray: search field placeholder */
+"Search Games" = "Search Games";
 
 /* config view controller: placeholder
    settings hub view controller: placeholder */
@@ -2874,9 +2890,6 @@
 
 /* Row title in the touch control edit panel */
 "Then drag" = "Then drag";
-
-/* dashboard disc tray: prompt text, empty library */
-"There are no games in the library to put in the drive." = "There are no games in the library to put in the drive.";
 
 /* Fallback for the current version text in the update notice */
 "this build" = "this build";

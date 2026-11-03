@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/launcher/ios_dashboard.h"
 
+#import <UIKit/UIKit.h>
+
 #include <memory>
 #include <mutex>
 #include <system_error>
@@ -19,9 +21,12 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/kernel/title_id_utils.h"
-#include "xenia/kernel/xam/xam_ui_ios.h"
+#import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
+#import "xenia/ui/ios/launcher/ios_dashboard_disc_tray_view_controller.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
+#import "xenia/ui/ios/shared/ios_alert_actions.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
+#include "xenia/ui/ios/shared/ios_view_helpers.h"
 #include "xenia/vfs/xex_metadata.h"
 
 DECLARE_path(storage_root);
@@ -39,8 +44,11 @@ namespace ui {
 namespace {
 
 struct LibraryDisc {
-  std::string label;
+  std::string title;
+  // Which disc, its format and the linked folder it is in.
+  std::string detail;
   std::filesystem::path path;
+  std::filesystem::path icon_path;
 };
 
 std::mutex library_titles_mutex;
@@ -60,6 +68,56 @@ std::filesystem::path LibraryIconsPath() {
     return {};
   }
   return std::filesystem::path([caches fileSystemRepresentation]) / "xenia" / "library-icons";
+}
+
+// The disc's format, as the library names it.
+NSString* DiscFormat(const std::filesystem::path& path) {
+  if (IsZarPath(path)) {
+    return @"ZAR";
+  }
+  if (IsISOPath(path)) {
+    return @"ISO";
+  }
+  if (IsLikelyGodContainerFile(path)) {
+    return @"GOD";
+  }
+  if (IsDefaultXexPath(path)) {
+    return NSLocalizedString(@"Folder", @"dashboard disc tray: a game kept as a folder of files");
+  }
+  return nil;
+}
+
+// Like "Disc 1 of 2 · ZAR · Backup".
+std::string DiscDetail(const IOSDiscoveredGame& game, const IOSDiscoveredGame::Disc& disc) {
+  NSMutableArray<NSString*>* parts = [NSMutableArray arrayWithCapacity:3];
+  if (disc.disc_count > 1 && disc.disc_number > 0) {
+    [parts
+        addObject:[NSString
+                      localizedStringWithFormat:NSLocalizedString(
+                                                    @"Disc %u of %u",
+                                                    @"dashboard disc tray: which disc of a game"),
+                                                unsigned(disc.disc_number),
+                                                unsigned(disc.disc_count)]];
+  }
+  if (NSString* format = DiscFormat(disc.path)) {
+    [parts addObject:format];
+  }
+  if (disc.is_external && !game.external_location_name.empty()) {
+    [parts addObject:[NSString stringWithUTF8String:game.external_location_name.c_str()]];
+  }
+  return [[parts componentsJoinedByString:@" · "] UTF8String];
+}
+
+// The app's root view controller, which the tray is presented over.
+UIViewController* AppRootViewController() {
+  for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
+    if ([scene isKindOfClass:[UIWindowScene class]]) {
+      if (UIViewController* root = ((UIWindowScene*)scene).keyWindow.rootViewController) {
+        return root;
+      }
+    }
+  }
+  return nil;
 }
 
 // Writes |data| unless the file already holds as many bytes, which an icon
@@ -175,14 +233,12 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
           title.icon_path = std::move(icon_path);
         }
       }
-      titles.push_back(std::move(title));
       // Every copy of every disc can go in the tray.
       EnsureDiscoveredGameDiscList(&game);
       for (const auto& disc : game.discs) {
-        discs.push_back(
-            {game.discs.size() > 1 ? fmt::format("{} ({})", game.title, disc.label) : game.title,
-             disc.path});
+        discs.push_back({game.title, DiscDetail(game, disc), disc.path, title.icon_path});
       }
+      titles.push_back(std::move(title));
     }
     std::lock_guard<std::mutex> lock(library_titles_mutex);
     library_titles = std::move(titles);
@@ -196,34 +252,61 @@ std::vector<Emulator::LibraryTitle> IOSDashboardLibraryTitles() {
 }
 
 std::filesystem::path PickIOSDashboardDisc() {
-  std::vector<LibraryDisc> discs;
-  {
-    std::lock_guard<std::mutex> lock(library_titles_mutex);
-    discs = library_discs;
-  }
-  std::vector<std::string> options;
-  options.reserve(discs.size() + 1);
-  for (const auto& disc : discs) {
-    options.push_back(disc.label);
-  }
-  std::string title, text;
-  @autoreleasepool {
-    title = NSLocalizedString(@"Insert a Disc", @"dashboard disc tray: prompt title").UTF8String;
-    text = (discs.empty()
-                ? NSLocalizedString(@"There are no games in the library to put in the drive.",
-                                    @"dashboard disc tray: prompt text, empty library")
-                : NSLocalizedString(@"Choose a game from the library to put in the drive.",
-                                    @"dashboard disc tray: prompt text"))
-               .UTF8String;
-    options.push_back(
-        NSLocalizedString(@"Leave Empty", @"dashboard disc tray: option for no disc").UTF8String);
-  }
-  // ChooseOption gives -1 on the main thread, as for a cancel.
-  const int choice = kernel::xam::ios::ChooseOption(title, text, options);
-  if (choice < 0 || static_cast<size_t>(choice) >= discs.size()) {
+  // The answer comes from a sheet on the main thread, so it can't be waited
+  // for there.
+  if ([NSThread isMainThread]) {
+    XELOGW("iOS: the dashboard's disc tray can't wait for a disc on the main thread");
     return {};
   }
-  return discs[choice].path;
+  std::vector<LibraryDisc> library;
+  {
+    std::lock_guard<std::mutex> lock(library_titles_mutex);
+    library = library_discs;
+  }
+  __block NSString* picked = nil;
+  dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+  @autoreleasepool {
+    NSMutableArray<XeniaDashboardDisc*>* discs = [NSMutableArray arrayWithCapacity:library.size()];
+    for (const auto& entry : library) {
+      XeniaDashboardDisc* disc = [[[XeniaDashboardDisc alloc] init] autorelease];
+      disc.title = [NSString stringWithUTF8String:entry.title.c_str()];
+      disc.detail = [NSString stringWithUTF8String:entry.detail.c_str()];
+      disc.path = [NSString stringWithUTF8String:entry.path.c_str()];
+      if (!entry.icon_path.empty()) {
+        disc.iconPath = [NSString stringWithUTF8String:entry.icon_path.c_str()];
+      }
+      [discs addObject:disc];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      void (^answer)(NSString*) = ^(NSString* path) {
+        picked = [path copy];
+        dispatch_semaphore_signal(answered);
+      };
+      UIViewController* root = AppRootViewController();
+      if (!root) {
+        XELOGW("iOS: no window to show the dashboard's disc tray in");
+        answer(nil);
+        return;
+      }
+      XeniaDashboardDiscTrayViewController* tray =
+          [[[XeniaDashboardDiscTrayViewController alloc] initWithDiscs:discs
+                                                            completion:answer] autorelease];
+      XeniaLandscapeNavigationController* sheet = [[[XeniaLandscapeNavigationController alloc]
+          initWithRootViewController:tray] autorelease];
+      XEConfigureTaskSheet(sheet, root.view, CGSizeMake(540.0, 620.0), NO);
+      XeniaPresentGuestPrompt(root, sheet, ^{
+        [tray answerEmpty];
+      });
+    });
+  }
+  dispatch_semaphore_wait(answered, DISPATCH_TIME_FOREVER);
+  dispatch_release(answered);
+  std::filesystem::path path;
+  if (picked) {
+    path = picked.fileSystemRepresentation;
+    [picked release];
+  }
+  return path;
 }
 
 NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess() {
