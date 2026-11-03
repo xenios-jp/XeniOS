@@ -263,7 +263,7 @@
                                     [NSString
                                         stringWithFormat:
                                             NSLocalizedString(
-                                                @"Failed deleting %@: %s",
+                                                @"Failed deleting %1$@: %2$s",
                                                 @"game content view controller: user-visible text"),
                                             display_name, ec.message().c_str()]);
                                 return;
@@ -322,7 +322,7 @@
         result_title = NSLocalizedString(@"Wrong Game", @"game content view controller: title");
         result_message = [NSString
             stringWithFormat:NSLocalizedString(
-                                 @"This package is for title %08X, but the current game is %08X.",
+                                 @"This package is for title %1$08X, but the current game is %2$08X.",
                                  @"game content view controller: message"),
                              package_info.title_id, title_id];
       } else {

@@ -961,8 +961,11 @@ titleForFooterInSection:(NSInteger)section {
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   UITableViewCell* cell = [self aboutCellForTableView:tableView indexPath:indexPath];
   if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
-    // The switch carries the label, value and hint; the cell stays a container.
+    // The switch carries the label and value; the cell stays a container, and its
+    // labels are hidden so VoiceOver doesn't read the title twice.
     cell.isAccessibilityElement = NO;
+    cell.textLabel.isAccessibilityElement = NO;
+    cell.detailTextLabel.isAccessibilityElement = NO;
     return cell;
   }
   const BOOL actionable = cell.selectionStyle != UITableViewCellSelectionStyleNone;

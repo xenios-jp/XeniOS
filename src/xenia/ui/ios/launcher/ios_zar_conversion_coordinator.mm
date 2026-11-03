@@ -229,7 +229,7 @@ NSString* XEZarFormatTimeRemaining(double seconds) {
   if (seconds < 3600.0) {
     long minutes = static_cast<long>(std::ceil(seconds / 60.0));
     return [NSString
-        stringWithFormat:NSLocalizedString(@"About %ld minute%@ remaining",
+        stringWithFormat:NSLocalizedString(@"About %1$ld minute%2$@ remaining",
                                            @"zar conversion coordinator: user-visible text"),
                          minutes, minutes == 1 ? @"" : @"s"];
   }
@@ -238,7 +238,7 @@ NSString* XEZarFormatTimeRemaining(double seconds) {
     hours = 1;
   }
   return [NSString
-      stringWithFormat:NSLocalizedString(@"About %ld hour%@ remaining",
+      stringWithFormat:NSLocalizedString(@"About %1$ld hour%2$@ remaining",
                                          @"zar conversion coordinator: user-visible text"),
                        hours, hours == 1 ? @"" : @"s"];
 }
@@ -424,13 +424,13 @@ NSString* XEZarSpaceDeltaSummary(uint64_t source_bytes, uint64_t output_bytes) {
   if (source_bytes >= output_bytes) {
     const uint64_t saved_bytes = source_bytes - output_bytes;
     return [NSString
-        stringWithFormat:NSLocalizedString(@"Saved %@ (%@ -> %@).",
+        stringWithFormat:NSLocalizedString(@"Saved %1$@ (%2$@ -> %3$@).",
                                            @"zar conversion coordinator: user-visible text"),
                          XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
                          XEZarFormatByteCount(output_bytes)];
   }
   return [NSString
-      stringWithFormat:NSLocalizedString(@"Archive is %@ larger (%@ -> %@).",
+      stringWithFormat:NSLocalizedString(@"Archive is %1$@ larger (%2$@ -> %3$@).",
                                          @"zar conversion coordinator: user-visible text"),
                        XEZarFormatByteCount(output_bytes - source_bytes),
                        XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
@@ -444,13 +444,13 @@ NSString* XEZarEstimatedSpaceDeltaSummary(uint64_t source_bytes, uint64_t output
   if (source_bytes >= output_bytes) {
     const uint64_t saved_bytes = source_bytes - output_bytes;
     return [NSString
-        stringWithFormat:NSLocalizedString(@"Estimated savings: %@ (%@ -> %@).",
+        stringWithFormat:NSLocalizedString(@"Estimated savings: %1$@ (%2$@ -> %3$@).",
                                            @"zar conversion coordinator: user-visible text"),
                          XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
                          XEZarFormatByteCount(output_bytes)];
   }
   return [NSString
-      stringWithFormat:NSLocalizedString(@"Estimated .zar is %@ larger (%@ -> %@).",
+      stringWithFormat:NSLocalizedString(@"Estimated .zar is %1$@ larger (%2$@ -> %3$@).",
                                          @"zar conversion coordinator: user-visible text"),
                        XEZarFormatByteCount(output_bytes - source_bytes),
                        XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
@@ -488,7 +488,7 @@ NSDictionary<NSString*, NSString*>* XEZarResultRowForItem(
       [detail_parts
           addObject:[NSString
                         stringWithFormat:NSLocalizedString(
-                                             @"%u file(s), %@ packed before cancellation.",
+                                             @"%1$u file(s), %2$@ packed before cancellation.",
                                              @"zar conversion coordinator: detail text"),
                                          item.conversion.files_written,
                                          XEZarFormatByteCount(item.conversion.bytes_written)]];
@@ -1210,7 +1210,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   summary_headline_ = [NSLocalizedString(@"Estimating savings...",
                                          @"zar conversion coordinator: user-visible text") copy];
   summary_detail_ =
-      [[NSString stringWithFormat:NSLocalizedString(@"Scanning %lu item%@...",
+      [[NSString stringWithFormat:NSLocalizedString(@"Scanning %1$lu item%2$@...",
                                                     @"zar conversion coordinator: detail text"),
                                   static_cast<unsigned long>(requestCount),
                                   requestCount == 1 ? @"" : @"s"] retain];
@@ -1406,7 +1406,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
     }
     [summary_detail_ release];
     summary_detail_ =
-        [[NSString stringWithFormat:NSLocalizedString(@"Scanned %lu of %lu item%@ (%.0f%%)",
+        [[NSString stringWithFormat:NSLocalizedString(@"Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)",
                                                       @"zar conversion coordinator: detail text"),
                                     static_cast<unsigned long>(completed),
                                     static_cast<unsigned long>(safe_total),
@@ -1594,7 +1594,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
                                    @"zar conversion coordinator: label text");
   } else if (converting_count_ > 1) {
     batch_text =
-        [NSString stringWithFormat:NSLocalizedString(@"Item %lu of %lu",
+        [NSString stringWithFormat:NSLocalizedString(@"Item %1$lu of %2$lu",
                                                      @"zar conversion coordinator: label text"),
                                    static_cast<unsigned long>(converting_index_),
                                    static_cast<unsigned long>(converting_count_)];
@@ -1627,12 +1627,12 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
                                     @"zar conversion coordinator: detail text");
   } else if (converting_total_bytes_ > 0) {
     NSString* size_text = [NSString
-        stringWithFormat:NSLocalizedString(@"%@ of %@", @"zar conversion coordinator: label text"),
+        stringWithFormat:NSLocalizedString(@"%1$@ of %2$@", @"zar conversion coordinator: label text"),
                          XEZarFormatByteCount(converting_bytes_),
                          XEZarFormatByteCount(converting_total_bytes_)];
     detail_text = converting_files_ > 0
                       ? [NSString stringWithFormat:NSLocalizedString(
-                                                       @"%@, %u file%@ packed",
+                                                       @"%1$@, %2$u file%3$@ packed",
                                                        @"zar conversion coordinator: detail text"),
                                                    size_text, converting_files_,
                                                    converting_files_ == 1 ? @"" : @"s"]
@@ -3342,7 +3342,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
   NSMutableArray<NSString*>* lines = [NSMutableArray array];
   [lines addObject:[NSString stringWithFormat:NSLocalizedString(
-                                                  @"Converted: %lu of %lu.",
+                                                  @"Converted: %1$lu of %2$lu.",
                                                   @"zar conversion coordinator: user-visible text"),
                                               static_cast<unsigned long>(success_count),
                                               static_cast<unsigned long>(results.size())]];
@@ -3379,7 +3379,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                 @"zar conversion coordinator: user-visible text");
     [lines
         addObject:[NSString stringWithFormat:NSLocalizedString(
-                                                 @"%@: %lu.",
+                                                 @"%1$@: %2$lu.",
                                                  @"zar conversion coordinator: user-visible text"),
                                              cleanup_label,
                                              static_cast<unsigned long>(cleanup_success_count)]];
@@ -3541,7 +3541,7 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
         [self topPresentedControllerForModalPresentation],
         NSLocalizedString(@"Can't Delete", @"zar conversion coordinator: user-visible text"),
         [NSString
-            stringWithFormat:NSLocalizedString(@"%@ can't be deleted because %@. Delete it in "
+            stringWithFormat:NSLocalizedString(@"%1$@ can't be deleted because %2$@. Delete it in "
                                                @"Files if you want it gone.",
                                                @"zar conversion coordinator: user-visible text"),
                              ToNSString(XEZarDisplayPath(delete_path)), ToNSString(refusal)]);

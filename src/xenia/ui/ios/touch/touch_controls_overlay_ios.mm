@@ -988,8 +988,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
           forControlEvents:UIControlEventTouchUpInside];
   [self addSubview:pause_button_];
 
-  // Added behind the pause button so VoiceOver reads it first. hitTest: never returns it, so
-  // touches for sighted users are unchanged.
+  // Below the pause button, so the button stays reachable. hitTest: never returns this view,
+  // so touches for sighted users are unchanged.
   direct_touch_view_ = [[UIView alloc] initWithFrame:CGRectZero];
   direct_touch_view_.backgroundColor = [UIColor clearColor];
   direct_touch_view_.userInteractionEnabled = NO;
@@ -1269,7 +1269,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
       control.secondary_behavior.action != xe::hid::touch::IOSTouchAction::kNone) {
     [text appendFormat:
               NSLocalizedString(
-                  @"\n2nd: %s, %s",
+                  @"\n2nd: %1$s, %2$s",
                   @"Control tooltip line; the first %s is the trigger, the second the action"),
               xe::hid::touch::IOSTouchInteractionTriggerDisplayName(
                   control.secondary_behavior.trigger),
@@ -1281,7 +1281,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   const bool tooltip_is_portrait = TouchOverlayIsPortraitForView(self);
   const xe::hid::touch::IOSTouchRect& tooltip_frame =
       xe::hid::touch::ActiveControlFrameForOrientation(control, tooltip_is_portrait);
-  [text appendFormat:NSLocalizedString(@"\nFrame: %.2f, %.2f, %.2f x %.2f",
+  [text appendFormat:NSLocalizedString(@"\nFrame: %1$.2f, %2$.2f, %3$.2f x %4$.2f",
                                        @"Control tooltip line; the numbers are the control frame"),
                      tooltip_frame.x, tooltip_frame.y, tooltip_frame.width, tooltip_frame.height];
 

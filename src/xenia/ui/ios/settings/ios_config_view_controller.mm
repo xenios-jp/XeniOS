@@ -360,7 +360,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
                               : NSLocalizedString(@"this game", @"config view controller: title");
     body.text = [NSString
         stringWithFormat:NSLocalizedString(
-                             @"Overrides here apply only to %@ (%@). They are read when the title "
+                             @"Overrides here apply only to %1$@ (%2$@). They are read when the title "
                              @"launches, so relaunch the game after saving.",
                              @"config view controller: label text"),
                          game_name, title_id];
@@ -1081,7 +1081,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
   XEPresentOKAlert(
       self, NSLocalizedString(@"Value Not Accepted", @"config view controller: user-visible text"),
-      [NSString stringWithFormat:NSLocalizedString(@"%@ was not changed. %@",
+      [NSString stringWithFormat:NSLocalizedString(@"%1$@ was not changed. %2$@",
                                                    @"config view controller: user-visible text"),
                                  ToNSString(item->title), ToNSString(problem)]);
 }
@@ -1115,7 +1115,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
   XEPresentOKAlert(
       self, NSLocalizedString(@"Value Not Accepted", @"config view controller: user-visible text"),
-      [NSString stringWithFormat:NSLocalizedString(@"%@ was not changed. %@",
+      [NSString stringWithFormat:NSLocalizedString(@"%1$@ was not changed. %2$@",
                                                    @"config view controller: user-visible text"),
                                  ToNSString(item->title), ToNSString(problem)]);
 }

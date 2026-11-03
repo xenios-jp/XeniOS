@@ -402,7 +402,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   }
   if (!paused_) {
     footerLabel_.text = [NSString
-        stringWithFormat:NSLocalizedString(@"Live tail (0.5s). Showing last %zu KB from %@",
+        stringWithFormat:NSLocalizedString(@"Live tail (0.5s). Showing last %1$zu KB from %2$@",
                                            @"log view controller: section footer"),
                          kMaxLogBytes / 1024, footer_path];
   }
