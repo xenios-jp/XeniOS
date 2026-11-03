@@ -1729,9 +1729,11 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
       alertControllerWithTitle:NSLocalizedString(@"Reset All Settings?",
                                                  @"config view controller: title")
                        message:NSLocalizedString(
-                                   @"Every XeniOS setting goes back to its default. Games, saves, "
-                                   @"profiles, touch layouts and per-game overrides are kept. "
-                                   @"Relaunch XeniOS afterwards.",
+                                   @"Every XeniOS setting goes back to its default, including the "
+                                   @"display scaling mode. Games, saves, profiles and their "
+                                   @"sign-ins, touch layouts, per-game overrides, the shader "
+                                   @"compile indicator, Online Features and Share Diagnostics "
+                                   @"are kept. Relaunch XeniOS afterwards.",
                                    @"config view controller: message")
                 preferredStyle:UIAlertControllerStyleAlert];
   [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
