@@ -112,6 +112,7 @@ void DismissLikeSwipe(UIViewController* presented) {
 @implementation XeniaIOSControllerNavigationCoordinator {
   id<XeniaIOSControllerNavigationHost> _host;
   NSTimer* _timer;
+  BOOL _started;
   xe::ui::apple::ControllerNavigationMapper _mapper;
   xe::ui::apple::FocusGraph _launcherFocusGraph;
   xe::ui::apple::FocusGraph _inGameFocusGraph;
@@ -144,18 +145,56 @@ void DismissLikeSwipe(UIViewController* presented) {
 }
 
 - (void)start {
-  if (_timer) {
+  if (_started) {
     return;
   }
-  _timer = [[NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0)
-                                            target:self
-                                          selector:@selector(poll:)
-                                          userInfo:nil
-                                           repeats:YES] retain];
-  _timer.tolerance = 0.01;
+  _started = YES;
+  NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+  [center addObserver:self
+             selector:@selector(controllersChanged:)
+                 name:GCControllerDidConnectNotification
+               object:nil];
+  [center addObserver:self
+             selector:@selector(controllersChanged:)
+                 name:GCControllerDidDisconnectNotification
+               object:nil];
+  [self updatePolling];
 }
 
 - (void)invalidate {
+  if (_started) {
+    _started = NO;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+  }
+  [self stopTimer];
+}
+
+- (void)controllersChanged:(NSNotification* __unused)note {
+  [self updatePolling];
+}
+
+// Polls at 60 Hz only while a controller is connected, so touch-only use
+// doesn't wake the app every frame.
+- (void)updatePolling {
+  if (_started && [_host controllerNavigationHasConnectedController]) {
+    if (!_timer) {
+      _timer = [[NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0)
+                                                target:self
+                                              selector:@selector(poll:)
+                                              userInfo:nil
+                                               repeats:YES] retain];
+      _timer.tolerance = 0.01;
+    }
+    return;
+  }
+  if (_timer) {
+    [self stopTimer];
+    // Once more, to clear the focus the last controller left.
+    [self poll:nil];
+  }
+}
+
+- (void)stopTimer {
   [_timer invalidate];
   [_timer release];
   _timer = nil;
@@ -873,16 +912,11 @@ void DismissLikeSwipe(UIViewController* presented) {
     set_button(gamepad.leftShoulder.pressed, xe::hid::X_INPUT_GAMEPAD_LEFT_SHOULDER);
     set_button(gamepad.rightShoulder.pressed, xe::hid::X_INPUT_GAMEPAD_RIGHT_SHOULDER);
 
-    if (@available(iOS 13.0, tvOS 13.0, macCatalyst 13.0, *)) {
-      set_button(gamepad.buttonMenu.pressed, xe::hid::X_INPUT_GAMEPAD_START);
-    }
-    if (@available(iOS 14.0, tvOS 14.0, macCatalyst 14.0, *)) {
-      set_button(gamepad.buttonOptions.pressed, xe::hid::X_INPUT_GAMEPAD_BACK);
-    }
-    if (@available(iOS 12.1, tvOS 12.1, macCatalyst 13.1, *)) {
-      set_button(gamepad.leftThumbstickButton.pressed, xe::hid::X_INPUT_GAMEPAD_LEFT_THUMB);
-      set_button(gamepad.rightThumbstickButton.pressed, xe::hid::X_INPUT_GAMEPAD_RIGHT_THUMB);
-    }
+    set_button(gamepad.buttonMenu.pressed, xe::hid::X_INPUT_GAMEPAD_START);
+    // Optional on a gamepad: nil, so never pressed, where it is missing.
+    set_button(gamepad.buttonOptions.pressed, xe::hid::X_INPUT_GAMEPAD_BACK);
+    set_button(gamepad.leftThumbstickButton.pressed, xe::hid::X_INPUT_GAMEPAD_LEFT_THUMB);
+    set_button(gamepad.rightThumbstickButton.pressed, xe::hid::X_INPUT_GAMEPAD_RIGHT_THUMB);
 
     out_state->packet_number = ++_nativeControllerPacketNumber;
     out_state->gamepad.buttons = buttons;
