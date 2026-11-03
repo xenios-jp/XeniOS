@@ -155,6 +155,46 @@ void XeniaLimitTextFieldLength(UITextField* field, NSUInteger max_length) {
   [limiter textChanged:field];
 }
 
+UIViewController* XeniaTopPresenter(UIViewController* root) {
+  UIViewController* top = root;
+  while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+    top = top.presentedViewController;
+  }
+  return top;
+}
+
+void XeniaPresentGuestPrompt(UIViewController* root, UIViewController* prompt,
+                             void (^failed)(void)) {
+  UIViewController* top = XeniaTopPresenter(root);
+  if (!top || !top.view.window) {
+    if (failed) {
+      failed();
+    }
+    return;
+  }
+  if ([prompt isKindOfClass:[UIAlertController class]]) {
+    XeniaAlertMarkGuestPrompt((UIAlertController*)prompt);
+  }
+  __block BOOL shown = NO;
+  [top presentViewController:prompt
+                    animated:YES
+                  completion:^{
+                    shown = YES;
+                  }];
+  // UIKit refuses a presentation silently, without the completion: long after
+  // the animation, a prompt that never appeared is answered as failed.
+  [prompt retain];
+  void (^failed_copy)(void) = [failed copy];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(1.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (!shown && !prompt.presentingViewController && failed_copy) {
+                     failed_copy();
+                   }
+                   [failed_copy release];
+                   [prompt release];
+                 });
+}
+
 void XeniaCancelGuestAlerts(UIViewController* root) {
   UIViewController* presented = root.presentedViewController;
   while (presented) {

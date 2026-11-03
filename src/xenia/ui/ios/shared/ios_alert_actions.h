@@ -33,6 +33,15 @@ void XeniaAlertCancel(UIAlertController* alert);
 // Moves the preferred action by delta through the enabled actions, wrapping.
 void XeniaAlertMoveSelection(UIAlertController* alert, NSInteger delta);
 
+// The view controller on top of root's presentation chain.
+UIViewController* XeniaTopPresenter(UIViewController* root);
+// Presents a prompt a guest thread waits on, from the top of root's chain, and
+// marks it a guest prompt if it is an alert. When UIKit doesn't show it (no
+// window, or another presentation still in flight), runs failed instead, so
+// the waiting thread isn't left waiting for an answer that can't come.
+void XeniaPresentGuestPrompt(UIViewController* root, UIViewController* prompt,
+                             void (^failed)(void));
+
 // Cancels every guest prompt presented above root. Main thread only.
 void XeniaCancelGuestAlerts(UIViewController* root);
 

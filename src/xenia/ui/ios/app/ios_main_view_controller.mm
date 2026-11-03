@@ -1766,12 +1766,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                           finish(signed_in);
                         }]];
 
-    UIViewController* presenter = self;
-    while (presenter.presentedViewController) {
-      presenter = presenter.presentedViewController;
-    }
-    XeniaAlertMarkGuestPrompt(create_alert);
-    [presenter presentViewController:create_alert animated:YES completion:nil];
+    XeniaPresentGuestPrompt(self, create_alert, ^{
+      finish(NO);
+    });
   };
 
   if (profiles.empty()) {
@@ -1825,12 +1822,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     popover.permittedArrowDirections = 0;
   }
 
-  UIViewController* presenter = self;
-  while (presenter.presentedViewController) {
-    presenter = presenter.presentedViewController;
-  }
-  XeniaAlertMarkGuestPrompt(sheet);
-  [presenter presentViewController:sheet animated:YES completion:nil];
+  XeniaPresentGuestPrompt(self, sheet, ^{
+    finish(NO);
+  });
 }
 
 - (void)presentAchievementsForUserIndex:(uint32_t)user_index
@@ -1851,15 +1845,32 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   achievements_vc.dismissalHandler = ^{
     [unsafe_self updateTouchControlsOverlayVisibilityAnimated:YES];
   };
-  [self presentPauseSheetWithRootController:achievements_vc
-                              preferredSize:CGSizeMake(560.0, 620.0)
-                preventInteractiveDismissal:NO
-                                 completion:^{
-                                   if (completion) {
-                                     completion(YES);
-                                   }
-                                 }];
+  // A guest thread waits for the sheet to show, so answer it once whether or
+  // not UIKit shows it.
+  __block BOOL answered = NO;
+  void (^answer)(BOOL) = [[^(BOOL shown) {
+    if (!answered) {
+      answered = YES;
+      if (completion) {
+        completion(shown);
+      }
+    }
+  } copy] autorelease];
+  UINavigationController* nav = [self presentPauseSheetWithRootController:achievements_vc
+                                                            preferredSize:CGSizeMake(560.0, 620.0)
+                                              preventInteractiveDismissal:NO
+                                                               completion:^{
+                                                                 answer(YES);
+                                                               }];
   [achievements_vc release];
+  [nav retain];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(1.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (!nav.presentingViewController) {
+                     answer(NO);
+                   }
+                   [nav release];
+                 });
 }
 
 - (void)presentAchievementNotification:(const xe::ui::AchievementNotificationPayload&)payload {
@@ -1917,12 +1928,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   // So Return submits.
   alert.preferredAction = ok_action;
 
-  UIViewController* presenter = self;
-  while (presenter.presentedViewController) {
-    presenter = presenter.presentedViewController;
-  }
-  XeniaAlertMarkGuestPrompt(alert);
-  [presenter presentViewController:alert animated:YES completion:nil];
+  XeniaPresentGuestPrompt(self, alert, ^{
+    if (completion) {
+      completion(YES, @"");
+    }
+  });
 }
 
 - (void)updateJITStatusIndicator {
