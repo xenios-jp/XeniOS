@@ -208,7 +208,16 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 - (void)viewDidDisappear:(BOOL)animated {
   [super viewDidDisappear:animated];
   if (self.isBeingDismissed || self.navigationController.isBeingDismissed) {
-    [self runDismissalHandlerOnce];
+    // Not inline: the presenter still reports this sheet as presented until the transition
+    // ends, and the handler re-evaluates whether the game is covered.
+    void (^dismissal_handler)(void) = dismissal_handler_;
+    dismissal_handler_ = nil;
+    if (dismissal_handler) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        dismissal_handler();
+        [dismissal_handler release];
+      });
+    }
   }
 }
 
