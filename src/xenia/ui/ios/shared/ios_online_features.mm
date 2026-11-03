@@ -11,10 +11,11 @@
 
 namespace {
 
-// Pending user decision: whether online features start on (YES) or off (NO).
+// On unless turned off; the first-launch notice says so before anything is fetched.
 constexpr BOOL kOnlineFeaturesDefault = YES;
 
 NSString* const kOnlineFeaturesKey = @"XeniaOnlineFeaturesEnabled";
+NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeAnswered";
 
 }  // namespace
 
@@ -32,4 +33,12 @@ void xe_ios_set_online_features_enabled(BOOL enabled) {
 
 NSString* xe_ios_online_features_off_message(void) {
   return @"Online features are turned off. Turn them on in Settings > About > Privacy.";
+}
+
+BOOL xe_ios_online_features_notice_pending(void) {
+  return ![[NSUserDefaults standardUserDefaults] boolForKey:kOnlineFeaturesNoticeKey];
+}
+
+void xe_ios_set_online_features_notice_answered(void) {
+  [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnlineFeaturesNoticeKey];
 }
