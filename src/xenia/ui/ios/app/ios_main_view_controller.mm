@@ -50,6 +50,7 @@
 #import "xenia/ui/ios/game/ios_achievement_notification_presenter.h"
 #import "xenia/ui/ios/game/ios_achievements_view_controller.h"
 #import "xenia/ui/ios/game/ios_metal_view.h"
+#import "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_content_management.h"
@@ -281,6 +282,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     XeniaIOSAchievementNotificationPresenter* achievementNotificationPresenter;
 @property(nonatomic, strong) XeniaIOSStatusToastPresenter* statusToastPresenter;
 @property(nonatomic, strong) XeniaTouchControlsOverlayView* touchControlsOverlay;
+@property(nonatomic, strong) XeniaShaderCompileIndicator* shaderCompileIndicator;
 @property(nonatomic, assign) BOOL gameRunning;
 @property(nonatomic, assign) BOOL gameStopInProgress;
 @property(nonatomic, strong) NSTimer* jitPollTimer;
@@ -474,6 +476,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   self.metalView = [[[XeniaMetalView alloc] initWithFrame:self.view.bounds] autorelease];
   self.metalView.contentScaleFactor = [UIScreen mainScreen].scale;
   [self.view addSubview:self.metalView];
+
+  // Above the game, below the touch controls and every menu.
+  XeniaShaderCompileIndicator* compile_indicator =
+      [[[XeniaShaderCompileIndicator alloc] initWithFrame:self.view.bounds] autorelease];
+  compile_indicator.autoresizingMask =
+      UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  self.shaderCompileIndicator = compile_indicator;
+  [self.view insertSubview:compile_indicator aboveSubview:self.metalView];
 
   // Create the iOS touch overlay above the Metal view. Hidden by default;
   // visibility is driven by -updateTouchControlsOverlayVisibilityAnimated:.
@@ -3854,6 +3864,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     return;
   }
   _gameRunning = gameRunning;
+  self.shaderCompileIndicator.active = gameRunning;
   [self setNeedsUpdateOfHomeIndicatorAutoHidden];
   [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
 }
@@ -3934,6 +3945,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_touchLayoutCoordinator release];
   [_windowPositionOverlay release];
   [_touchControlsOverlay release];
+  [_shaderCompileIndicator release];
   [_achievementNotificationPresenter release];
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];
