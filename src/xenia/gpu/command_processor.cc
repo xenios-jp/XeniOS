@@ -416,26 +416,57 @@ bool CommandProcessor::IsReadbackResolveEnabled() const {
   return cvars::readback_resolve;
 }
 
+void CommandProcessor::ApplyZPDMode(ZPDMode mode) {
+  // On the command processor thread: the query state and the command list it
+  // records into belong to it.
+  if (zpd_mode_ == mode) {
+    return;
+  }
+  // Close any active query segment before the mode changes so that a
+  // BeginQuery recorded under the old mode gets a matching EndQuery.
+  // Without this, switching to kFake mid-frame would make Metal's
+  // EndRenderEncoder skip CloseQuerySegment, leaving the query dangling.
+  if (active_segment_.segment_active) {
+    CloseQuerySegment();
+  }
+  // Queued reports retire by the rules of the mode that queued them: a strict
+  // report holds the queue, and the guest may be waiting on it, while a fast
+  // one corrects a guess. Retire them all now, with what has resolved and at
+  // least one visible sample, so the new mode starts with an empty queue.
+  PollCompletedSubmission();
+  for (ZPDReport& report : zpd_reports_) {
+    if (report.pending_segments) {
+      report.delta.z_pass = std::max<uint64_t>(report.delta.z_pass, 1);
+      report.pending_segments = 0;
+      zpd_stats_.retires_abandoned++;
+    }
+  }
+  PumpPendingRetire();
+  if (mode == ZPDMode::kFake) {
+    // Fake mode counts no report, as when it is set at startup.
+    zpd_current_report_ = {};
+    active_segment_.segment_pending_begin = false;
+  } else if (zpd_mode_ == ZPDMode::kFake) {
+    // Start counting with the next handle, so queued handles stay consecutive.
+    zpd_current_report_ = {};
+    zpd_current_report_.handle = zpd_next_report_handle_++;
+    active_segment_.segment_pending_begin = true;
+  }
+  zpd_mode_ = mode;
+}
+
+void CommandProcessor::ReloadZPDMode() {
+  ZPDMode mode = ParseZPDMode();
+  cached_zpd_mode_ = mode;
+  CallInThread([this, mode]() { ApplyZPDMode(mode); });
+}
+
 void CommandProcessor::SetZPDMode(ZPDMode mode) {
   if (cached_zpd_mode_ == mode) {
     return;
   }
   cached_zpd_mode_ = mode;
-  // The query state and the command list it records into belong to the
-  // command processor thread, while this is called from the UI.
-  CallInThread([this, mode]() {
-    if (zpd_mode_ == mode) {
-      return;
-    }
-    // Close any active query segment before the mode changes so that a
-    // BeginQuery recorded under the old mode gets a matching EndQuery.
-    // Without this, switching to kFake mid-frame would make Metal's
-    // EndRenderEncoder skip CloseQuerySegment, leaving the query dangling.
-    if (active_segment_.segment_active) {
-      CloseQuerySegment();
-    }
-    zpd_mode_ = mode;
-  });
+  CallInThread([this, mode]() { ApplyZPDMode(mode); });
   const char* mode_str = "fake";
   switch (mode) {
     case ZPDMode::kFast:

@@ -1335,6 +1335,21 @@ void EmulatorAppIOS::ApplyLiveSettings(const std::function<void()>& apply) {
     XELOGW("iOS: the game did not pause in time; applying live settings anyway");
   }
   apply();
+  // The GPU worker caches the occlusion query mode when the game starts. Queued behind the
+  // pause, the switch runs on the worker as the game resumes, with the GPU idle.
+  dispatch_async(pause_queue_, ^{
+    {
+      std::lock_guard<std::mutex> lock(pause_state_mutex_);
+      if (!pause_game_running_) {
+        return;
+      }
+    }
+    Emulator* emulator = emulator_.get();
+    gpu::GraphicsSystem* graphics = emulator ? emulator->graphics_system() : nullptr;
+    if (gpu::CommandProcessor* processor = graphics ? graphics->command_processor() : nullptr) {
+      processor->ReloadZPDMode();
+    }
+  });
   auto watchdog = stop_watchdog_;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kLiveSettingsHoldNs), dispatch_get_main_queue(),
                  ^{

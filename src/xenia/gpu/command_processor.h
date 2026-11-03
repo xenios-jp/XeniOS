@@ -177,6 +177,10 @@ class CommandProcessor {
   // Set ZPD mode (updates both cvar and cached value). Callable from any
   // thread, the query state switches over on the command processor thread.
   void SetZPDMode(ZPDMode mode);
+  // Switches to the mode the occlusion_query cvar names, on the worker thread,
+  // so a changed setting applies to the running game. Call it from the thread
+  // that changed the cvar.
+  void ReloadZPDMode();
 
   // "Desired" is for the external thread managing the post-processing effect.
   SwapPostEffect GetDesiredSwapPostEffect() const {
@@ -558,6 +562,9 @@ class CommandProcessor {
   // reach the guest before it loops again. Fast modes give up on a stuck front
   // report after kFastZPDRetireDeadlineMs.
   void PumpPendingRetire();
+  // Changes the mode on the worker thread, retiring reports queued under the
+  // old one.
+  void ApplyZPDMode(ZPDMode mode);
   // Guest writeback.
   void WriteZPDReport(uint32_t report_address, const XenosZPDReport& value) {
     value.WriteTo(
