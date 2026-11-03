@@ -43,7 +43,7 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = @"External Folders";
+  self.title = NSLocalizedString(@"External Folders", @"external folders view controller: title");
   self.view.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 64.0;
@@ -106,8 +106,12 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   NSString* removed_name = nil;
   NSError* error = nil;
   if (!xe::ui::RemoveIOSExternalLibraryLocationAtRoot(path, &removed_name, &error)) {
-    XEPresentOKAlert(self, @"Unlink Failed",
-                     error.localizedDescription ?: @"Could not unlink the selected folder.");
+    XEPresentOKAlert(
+        self,
+        NSLocalizedString(@"Unlink Failed", @"external folders view controller: user-visible text"),
+        error.localizedDescription
+            ?: NSLocalizedString(@"Could not unlink the selected folder.",
+                                 @"external folders view controller: user-visible text"));
     return NO;
   }
   XELOGI("iOS external folders: unlinked '{}'", xe::strip_pii(path.string()));
@@ -137,8 +141,15 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   NSError* error = nil;
   // Linking first means a failed pick never loses the old entry.
   if (!xe::ui::SaveIOSExternalLibraryLocation(url, &error)) {
-    XEPresentOKAlert(self, relinking ? @"Re-link Failed" : @"Link Failed",
-                     error.localizedDescription ?: @"Could not link the selected folder.");
+    XEPresentOKAlert(
+        self,
+        relinking ? NSLocalizedString(@"Re-link Failed",
+                                      @"external folders view controller: user-visible text")
+                  : NSLocalizedString(@"Link Failed",
+                                      @"external folders view controller: user-visible text"),
+        error.localizedDescription
+            ?: NSLocalizedString(@"Could not link the selected folder.",
+                                 @"external folders view controller: user-visible text"));
     return;
   }
   if (relinking && !old_root.empty() &&
@@ -166,25 +177,36 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   if (folder.available) {
     return;
   }
-  NSString* name = folder.name.empty() ? @"this folder" : ToNSString(folder.name);
+  NSString* name = folder.name.empty()
+                       ? NSLocalizedString(@"this folder",
+                                           @"external folders view controller: user-visible text")
+                       : ToNSString(folder.name);
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Folder Unavailable"
-                       message:[NSString stringWithFormat:@"XeniOS can't reach \"%@\". If the "
-                                                          @"drive or share is connected, pick the "
-                                                          @"folder again to re-link it.",
-                                                          name]
+      alertControllerWithTitle:NSLocalizedString(@"Folder Unavailable",
+                                                 @"external folders view controller: title")
+                       message:[NSString stringWithFormat:
+                                             NSLocalizedString(
+                                                 @"XeniOS can't reach \"%@\". If the "
+                                                 @"drive or share is connected, pick the "
+                                                 @"folder again to re-link it.",
+                                                 @"external folders view controller: message"),
+                                             name]
                 preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel",
+                                                         @"external folders view controller: title")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
   const std::filesystem::path old_root = folder.path;
-  [alert addAction:[UIAlertAction actionWithTitle:@"Re-link"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            relinking_ = YES;
-                                            relink_old_root_ = old_root;
-                                            [self presentFolderPicker];
-                                          }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Re-link",
+                                                         @"external folders view controller: title")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 relinking_ = YES;
+                                 relink_old_root_ = old_root;
+                                 [self presentFolderPicker];
+                               }]];
   [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -201,14 +223,17 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 
 - (NSString*)tableView:(__unused UITableView*)tableView
     titleForHeaderInSection:(__unused NSInteger)section {
-  return @"Linked Folders";
+  return NSLocalizedString(@"Linked Folders",
+                           @"external folders view controller: user-visible text");
 }
 
 - (NSString*)tableView:(__unused UITableView*)tableView
     titleForFooterInSection:(__unused NSInteger)section {
-  return @"Games in linked folders appear in your library without being copied. Unlinking a "
-         @"folder only removes it from XeniOS; the files are not deleted. A folder shows as "
-         @"Unavailable when its drive or network share is disconnected.";
+  return NSLocalizedString(
+      @"Games in linked folders appear in your library without being copied. Unlinking a "
+      @"folder only removes it from XeniOS; the files are not deleted. A folder shows as "
+      @"Unavailable when its drive or network share is disconnected.",
+      @"external folders view controller: user-visible text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -223,10 +248,12 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
       cell.textLabel.numberOfLines = 0;
       cell.detailTextLabel.numberOfLines = 0;
     }
-    cell.textLabel.text = @"No external folders linked";
+    cell.textLabel.text = NSLocalizedString(@"No external folders linked",
+                                            @"external folders view controller: label text");
     cell.textLabel.textColor = [XeniaTheme textPrimary];
     cell.detailTextLabel.text =
-        @"Tap + to link a folder from Files, a USB drive, or a network share.";
+        NSLocalizedString(@"Tap + to link a folder from Files, a USB drive, or a network share.",
+                          @"external folders view controller: detail text");
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.imageView.image = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -243,13 +270,20 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
     cell.detailTextLabel.numberOfLines = 0;
   }
   const xe::ui::IOSExternalLibraryLocation& folder = folders_[static_cast<size_t>(indexPath.row)];
-  cell.textLabel.text = folder.name.empty() ? @"External Library" : ToNSString(folder.name);
+  cell.textLabel.text =
+      folder.name.empty()
+          ? NSLocalizedString(@"External Library", @"external folders view controller: label text")
+          : ToNSString(folder.name);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
 
   NSString* path_text = ToNSString(folder.path.string());
   cell.detailTextLabel.text =
-      folder.available ? path_text
-                       : [NSString stringWithFormat:@"Unavailable - tap to re-link\n%@", path_text];
+      folder.available
+          ? path_text
+          : [NSString stringWithFormat:NSLocalizedString(
+                                           @"Unavailable - tap to re-link\n%@",
+                                           @"external folders view controller: detail text"),
+                                       path_text];
   cell.selectionStyle =
       folder.available ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
   cell.detailTextLabel.textColor =
@@ -283,7 +317,8 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   __unsafe_unretained XeniaIOSExternalFoldersViewController* unsafe_self = self;
   UIContextualAction* unlink = [UIContextualAction
       contextualActionWithStyle:UIContextualActionStyleDestructive
-                          title:@"Unlink"
+                          title:NSLocalizedString(@"Unlink",
+                                                  @"external folders view controller: title")
                         handler:^(__unused UIContextualAction* action, __unused UIView* sourceView,
                                   void (^completionHandler)(BOOL)) {
                           completionHandler([unsafe_self unlinkExternalFolderAtPath:path]);
