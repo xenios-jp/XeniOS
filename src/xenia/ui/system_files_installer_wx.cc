@@ -19,9 +19,15 @@
 #include <string_view>
 #include <vector>
 
+#include "xenia/base/platform.h"
+
+#if XE_PLATFORM_IOS
+#include "xenia/ui/system_files_source_ios.h"
+#else
 #include <wx/log.h>
 #include <wx/wfstream.h>
 #include <wx/zipstrm.h>
+#endif  // XE_PLATFORM_IOS
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/mbedtls/include/mbedtls/sha256.h"
@@ -247,6 +253,10 @@ SystemFilesResult UnzipUpdate(
     const std::filesystem::path& zip_path,
     const std::filesystem::path& update_path,
     const std::function<bool(size_t done, size_t total)>& progress) {
+#if XE_PLATFORM_IOS
+  // iOS has no wx. It reads the zip itself, or the folder Files expands it to.
+  return ExtractSystemUpdate(zip_path, update_path, progress);
+#else
   // Problems come back as results, not as wx error dialogs.
   wxLogNull no_wx_log;
   wxFFileInputStream input(wxString::FromUTF8(xe::path_to_utf8(zip_path)));
@@ -289,6 +299,7 @@ SystemFilesResult UnzipUpdate(
     return SystemFilesResult::kReadFailed;
   }
   return SystemFilesResult::kSuccess;
+#endif  // XE_PLATFORM_IOS
 }
 
 // Whether the SHA-256 of the file at |path| is |expected_hex|.
