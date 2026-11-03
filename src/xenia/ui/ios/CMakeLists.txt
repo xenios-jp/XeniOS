@@ -62,6 +62,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_content_management.mm
   launcher/ios_dashboard.h
   launcher/ios_dashboard.mm
+  launcher/ios_dashboard_disc_tray_view_controller.h
+  launcher/ios_dashboard_disc_tray_view_controller.mm
   launcher/ios_document_import_coordinator.h
   launcher/ios_document_import_coordinator.mm
   launcher/ios_external_folders_view_controller.h
