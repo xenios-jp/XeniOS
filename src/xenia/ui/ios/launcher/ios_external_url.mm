@@ -180,7 +180,12 @@ bool IsPathUnderIOSLibraryRoots(const std::filesystem::path& path) {
   }
   std::vector<std::filesystem::path> roots;
   roots.push_back(xe_get_ios_documents_path());
-  for (const IOSExternalLibraryLocation& location : ListIOSExternalLibraryLocations()) {
+  // The last scan's listing: resolving the bookmarks here would run on the main thread.
+  std::vector<IOSExternalLibraryLocation> locations;
+  if (!CachedIOSExternalLibraryLocations(&locations)) {
+    locations = ListIOSExternalLibraryLocations();
+  }
+  for (const IOSExternalLibraryLocation& location : locations) {
     if (location.available && !location.path.empty()) {
       roots.push_back(location.path);
     }

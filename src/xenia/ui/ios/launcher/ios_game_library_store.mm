@@ -142,6 +142,21 @@ const char* LibraryCandidateKindForLog(const std::filesystem::path& path) {
 
 const char* BoolForLog(bool value) { return value ? "true" : "false"; }
 
+// The last listing of the linked folders, so the main thread can read their
+// availability without resolving bookmarks (an unreachable share or drive can
+// block a resolve for a long time). Filled by ListIOSExternalLibraryLocations,
+// which every library scan runs on its background queue; dropped whenever the
+// saved locations change.
+std::mutex g_location_cache_mutex;
+std::vector<IOSExternalLibraryLocation> g_location_cache;
+bool g_location_cache_valid = false;
+
+void InvalidateExternalLibraryLocationCache() {
+  std::lock_guard<std::mutex> lock(g_location_cache_mutex);
+  g_location_cache.clear();
+  g_location_cache_valid = false;
+}
+
 NSArray<NSDictionary*>* ExternalLibraryLocationRecords() {
   id records =
       [[NSUserDefaults standardUserDefaults] objectForKey:kExternalLibraryLocationsDefaultsKey];
@@ -735,6 +750,7 @@ BOOL SaveIOSExternalLibraryLocation(NSURL* folder_url, NSError** error) {
   }];
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
+  InvalidateExternalLibraryLocationCache();
   XELOGI("iOS: Linked external library location: {}", xe::strip_pii([path UTF8String]));
   return YES;
 }
@@ -760,7 +776,20 @@ std::vector<IOSExternalLibraryLocation> ListIOSExternalLibraryLocations() {
     location.available = url != nil && !stale && url.path.length > 0;
     locations.push_back(std::move(location));
   }
+  {
+    std::lock_guard<std::mutex> lock(g_location_cache_mutex);
+    g_location_cache = locations;
+    g_location_cache_valid = true;
+  }
   return locations;
+}
+
+bool CachedIOSExternalLibraryLocations(std::vector<IOSExternalLibraryLocation>* locations_out) {
+  std::lock_guard<std::mutex> lock(g_location_cache_mutex);
+  if (g_location_cache_valid && locations_out) {
+    *locations_out = g_location_cache;
+  }
+  return g_location_cache_valid;
 }
 
 BOOL HideIOSExternalLibraryGameAtPath(const std::filesystem::path& path, NSString** hiddenName,
@@ -856,6 +885,7 @@ BOOL RemoveIOSExternalLibraryLocationForPath(const std::filesystem::path& path,
 
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
+  InvalidateExternalLibraryLocationCache();
   XELOGI("iOS: Removed external library location for {}", xe::strip_pii(path.string()));
   return YES;
 }
@@ -917,6 +947,7 @@ BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
 
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
+  InvalidateExternalLibraryLocationCache();
   XELOGI("iOS: Removed external library location rooted at {}", xe::strip_pii(path.string()));
   return YES;
 }
@@ -936,10 +967,13 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
     relativePath->clear();
   }
   const std::filesystem::path normalized_game_path = WeaklyCanonicalOrAbsolute(path);
+  // A path in the app's own container is not in a linked folder; don't resolve
+  // every bookmark (each can block on an unreachable share) to find that out.
+  const bool path_in_documents = PathIsInDirectory(
+      normalized_game_path, WeaklyCanonicalOrAbsolute(xe_get_ios_documents_path()));
   for (NSDictionary* record in ExternalLibraryLocationRecords()) {
     BOOL stale = NO;
     NSError* resolve_error = nil;
-    NSURL* url = ResolveExternalLibraryRecord(record, &stale, &resolve_error);
     std::filesystem::path matched_relative_path;
     BOOL record_matches_path = NO;
     NSString* stored_path = [record objectForKey:kExternalLibraryPathKey];
@@ -949,6 +983,10 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
       record_matches_path =
           TryMakeRelativePathInDirectory(normalized_game_path, root_path, &matched_relative_path);
     }
+    if (path_in_documents && !record_matches_path) {
+      continue;
+    }
+    NSURL* url = ResolveExternalLibraryRecord(record, &stale, &resolve_error);
     if (url.path.length > 0) {
       std::filesystem::path root_path =
           WeaklyCanonicalOrAbsolute(std::filesystem::path(std::string([url.path UTF8String])));
@@ -1376,6 +1414,8 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
   // scope starts and stops on the thread that ran it.
   @autoreleasepool {
     games = ScanIOSGameLibraryImpl(title_name_cache);
+    // Refresh the cached folder availability while still off the main thread.
+    ListIOSExternalLibraryLocations();
   }
   SaveCachedIOSGameLibrary(games);
   return games;
