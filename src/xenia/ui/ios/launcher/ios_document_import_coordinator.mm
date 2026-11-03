@@ -235,7 +235,17 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
       const BOOL is_launchable_package =
           has_content_package_info && xe::ui::IsIOSLaunchableContentType(package_info.content_type);
       BOOL handled = NO;
-      if (can_install_title_updates && !likely_direct_game && !is_launchable_package) {
+      if (has_content_package_info && !is_launchable_package &&
+          package_info.content_type != xe::XContentType::kInstaller) {
+        // DLC and marketplace packages are installed against a game, not
+        // added to the library; they would be copied in and never listed.
+        outcome = Outcome::kFailed;
+        message = NSLocalizedString(
+            @"This is add-on content (DLC or a marketplace package), not a game. Install it "
+            @"from the game's Manage Content screen.",
+            @"document import coordinator: message");
+        handled = YES;
+      } else if (can_install_title_updates && !likely_direct_game && !is_launchable_package) {
         // The emulator copies and installs the update itself: check space up
         // front, and the Cancel button no longer applies.
         NSError* space_error = nil;
@@ -348,13 +358,15 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
             const std::filesystem::path launch_path = imported_path;
             [self refreshImportedGamesWithScannedGamesCompletion:^(
                       const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {
+              const BOOL listed = [self scannedGames:scanned_games containPath:launch_path];
               [self promptForZarConversionAfterAddingPath:launch_path
                                                     games:scanned_games
                                           externalLibrary:NO
                                                completion:^(BOOL conversionChosen) {
                                                  [self launchOrWaitForImportedPath:launch_path
                                                                        displayName:imported_name
-                                                                  conversionChosen:conversionChosen];
+                                                                  conversionChosen:conversionChosen
+                                                                            listed:listed];
                                                }];
             }];
           } break;
@@ -367,10 +379,36 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   });
 }
 
+// True when the library scan lists the imported file as a game (a plain
+// content package or a stray file is copied in but never shows up).
+- (BOOL)scannedGames:(const std::vector<xe::ui::IOSDiscoveredGame>&)games
+         containPath:(const std::filesystem::path&)path {
+  const std::filesystem::path normalized = xe::ui::NormalizedIOSLibraryPath(path);
+  for (const xe::ui::IOSDiscoveredGame& game : games) {
+    if (xe::ui::NormalizedIOSLibraryPath(game.path) == normalized) {
+      return YES;
+    }
+    for (const xe::ui::IOSDiscoveredGame::Disc& disc : game.discs) {
+      if (xe::ui::NormalizedIOSLibraryPath(disc.path) == normalized) {
+        return YES;
+      }
+    }
+  }
+  return NO;
+}
+
 - (void)launchOrWaitForImportedPath:(const std::filesystem::path&)path
                         displayName:(NSString*)displayName
-                   conversionChosen:(BOOL)conversionChosen {
+                   conversionChosen:(BOOL)conversionChosen
+                             listed:(BOOL)listed {
   if (conversionChosen) {
+    return;
+  }
+  if (!listed) {
+    [_host documentImportCoordinatorSetStatusText:
+               [NSString stringWithFormat:NSLocalizedString(@"Imported %@.",
+                                                            @"document import coordinator: label text"),
+                                          displayName]];
     return;
   }
   if ([_host documentImportCoordinatorGameRunning] ||
