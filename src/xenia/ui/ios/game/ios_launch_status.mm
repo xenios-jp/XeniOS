@@ -146,6 +146,9 @@ using xe::ui::ios::LaunchStage;
 constexpr CFTimeInterval kElapsedAfterSeconds = 5.0;
 // A step that lasts this long gets a note and a Cancel button.
 constexpr CFTimeInterval kSlowStageSeconds = 15.0;
+// A launch the emulator hasn't started by now was likely refused (it was shutting down
+// or installing an update): Cancel appears.
+constexpr CFTimeInterval kUnstartedLaunchSeconds = 10.0;
 constexpr CFTimeInterval kFadeInSeconds = 0.2;
 constexpr CFTimeInterval kFadeOutSeconds = 0.35;
 constexpr CFTimeInterval kTextFadeSeconds = 0.2;
@@ -530,7 +533,9 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   }
   // A long step gets a note and a way out. Not while shaders compile: their
   // progress shows, and the shader sheet offers its own choice.
-  const BOOL slow = !awaiting_ && !shaders_ && now - stage_since_ >= kSlowStageSeconds;
+  const BOOL unstarted = awaiting_ && elapsed >= kUnstartedLaunchSeconds;
+  const BOOL slow =
+      unstarted || (!awaiting_ && !shaders_ && now - stage_since_ >= kSlowStageSeconds);
   NSString* hint = nil;
   if (slow) {
     hint = stage_ == LaunchStage::kStarting
