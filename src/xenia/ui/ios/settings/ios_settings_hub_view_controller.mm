@@ -910,6 +910,22 @@ titleForFooterInSection:(NSInteger)section {
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  UITableViewCell* cell = [self aboutCellForTableView:tableView indexPath:indexPath];
+  if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
+    // The switch carries the label, value and hint; the cell stays a container.
+    cell.isAccessibilityElement = NO;
+    return cell;
+  }
+  const BOOL actionable = cell.selectionStyle != UITableViewCellSelectionStyleNone;
+  NSString* value = cell.detailTextLabel.text.length ? cell.detailTextLabel.text : nil;
+  XEApplyAccessibility(cell, cell.textLabel.text, value, nil,
+                       actionable ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText);
+  cell.isAccessibilityElement = YES;
+  return cell;
+}
+
+- (UITableViewCell*)aboutCellForTableView:(UITableView*)tableView
+                                indexPath:(NSIndexPath*)indexPath {
   static NSString* const kCellIdentifier = @"XeniaSettingsAboutCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
