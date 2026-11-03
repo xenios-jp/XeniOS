@@ -16,6 +16,8 @@
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
+#import "xenia/ui/ios/shared/ios_diagnostics.h"
+#import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -836,11 +838,13 @@ typedef NS_ENUM(NSInteger, XeniaAboutSection) {
   XeniaAboutSectionBuild = 0,
   XeniaAboutSectionUpdates,
   XeniaAboutSectionPrivacy,
+  XeniaAboutSectionDiagnostics,  // Under Privacy, with its own footer.
   XeniaAboutSectionLinks,
   XeniaAboutSectionCount,
 };
 
 constexpr NSInteger kAboutAcknowledgementsRow = 4;  // After the four links.
+constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
 
 }  // namespace
 
@@ -906,6 +910,8 @@ constexpr NSInteger kAboutAcknowledgementsRow = 4;  // After the four links.
     case XeniaAboutSectionUpdates:
     case XeniaAboutSectionPrivacy:
       return 1;
+    case XeniaAboutSectionDiagnostics:
+      return 2;
     default:
       return 5;  // Four links and Acknowledgements.
   }
@@ -920,6 +926,8 @@ titleForHeaderInSection:(NSInteger)section {
       return NSLocalizedString(@"Updates", @"settings hub view controller: user-visible text");
     case XeniaAboutSectionPrivacy:
       return NSLocalizedString(@"Privacy", @"settings hub view controller: user-visible text");
+    case XeniaAboutSectionDiagnostics:
+      return nil;
     default:
       return NSLocalizedString(@"Links", @"settings hub view controller: user-visible text");
   }
@@ -930,9 +938,17 @@ titleForFooterInSection:(NSInteger)section {
   if (section == XeniaAboutSectionPrivacy) {
     return NSLocalizedString(
         @"Update checks, compatibility data, cover art, compatibility discussions and "
-        @"reports, and System Link over the internet. Turn this off and XeniOS does none of "
-        @"these. Games still run, without System Link.",
+        @"reports, System Link over the internet, and diagnostics. Turn this off and XeniOS "
+        @"does none of these. Games still run, without System Link.",
         @"settings hub view controller: user-visible text");
+  }
+  if (section == XeniaAboutSectionDiagnostics) {
+    return NSLocalizedString(
+        @"Sends crash reports and performance statistics: device model, iOS version, XeniOS "
+        @"version, the game's title ID, frame rate, temperature state and memory use. Never "
+        @"your files, file names, Apple Account or location. Logs are only sent when you share "
+        @"them yourself.",
+        @"settings hub view controller: footer of the Share Diagnostics switch");
   }
   return nil;
 }
@@ -992,6 +1008,35 @@ titleForFooterInSection:(NSInteger)section {
     ];
     cell.textLabel.text = [titles objectAtIndex:indexPath.row];
     cell.detailTextLabel.text = [values objectAtIndex:indexPath.row];
+    return cell;
+  }
+
+  if (indexPath.section == XeniaAboutSectionDiagnostics &&
+      indexPath.row == kAboutPendingReportsRow) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Pending Reports", @"settings hub view controller: label text");
+    const NSUInteger pending = xe_ios_diagnostics_pending_count();
+    cell.detailTextLabel.text =
+        pending ? [NSString localizedStringWithFormat:@"%lu", (unsigned long)pending]
+                : NSLocalizedString(@"None", @"settings hub view controller: no pending reports");
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    return cell;
+  }
+
+  if (indexPath.section == XeniaAboutSectionDiagnostics) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Share Diagnostics", @"settings hub view controller: label text");
+    cell.detailTextLabel.text = @"";
+    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    // Online Features off sends nothing, diagnostics included.
+    toggle.on = xe_ios_online_features_enabled() && xe_ios_share_diagnostics_enabled();
+    toggle.enabled = xe_ios_online_features_enabled();
+    toggle.accessibilityLabel = cell.textLabel.text;
+    [toggle addTarget:self
+                  action:@selector(shareDiagnosticsSwitchChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
     return cell;
   }
 
@@ -1075,11 +1120,27 @@ titleForFooterInSection:(NSInteger)section {
 
 - (void)onlineFeaturesSwitchChanged:(UISwitch*)sender {
   xe_ios_set_online_features_enabled(sender.isOn);
-  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaAboutSectionUpdates]
-                withRowAnimation:UITableViewRowAnimationNone];
+  if (sender.isOn) {
+    // Share Diagnostics and its footer are right below: no separate notice later.
+    xe_ios_set_diagnostics_notice_answered();
+  }
+  xe_ios_diagnostics_settings_changed();
+  NSMutableIndexSet* sections = [NSMutableIndexSet indexSetWithIndex:XeniaAboutSectionUpdates];
+  [sections addIndex:XeniaAboutSectionDiagnostics];
+  [self.tableView reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
   if (sender.isOn) {
     [self refreshUpdateStatusForced:NO];
   }
+}
+
+- (void)shareDiagnosticsSwitchChanged:(UISwitch*)sender {
+  xe_ios_set_share_diagnostics_enabled(sender.isOn);
+  // Off deletes what is queued; the Pending Reports count follows.
+  xe_ios_diagnostics_settings_changed();
+  [self.tableView
+      reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:kAboutPendingReportsRow
+                                                   inSection:XeniaAboutSectionDiagnostics] ]
+            withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
@@ -1108,6 +1169,13 @@ titleForFooterInSection:(NSInteger)section {
       // Up to date / unknown: tap re-checks immediately.
       [self refreshUpdateStatusForced:YES];
     }
+    return;
+  }
+  if (indexPath.section == XeniaAboutSectionDiagnostics &&
+      indexPath.row == kAboutPendingReportsRow) {
+    [self.navigationController
+        pushViewController:xe_ios_diagnostics_make_pending_reports_controller()
+                  animated:YES];
     return;
   }
   if (indexPath.section != XeniaAboutSectionLinks) {

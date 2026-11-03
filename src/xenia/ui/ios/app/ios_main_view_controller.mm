@@ -84,6 +84,7 @@
 #import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
+#import "xenia/ui/ios/shared/ios_diagnostics.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_resource_pressure.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
@@ -801,9 +802,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 // Once, before the first launch fetches anything: what goes over the network and that
-// reports are public. The appearance tasks run when it closes.
+// reports are public. Installs that answered it before it covered diagnostics are asked
+// once about those instead. The appearance tasks run when it closes.
 - (BOOL)presentOnlineFeaturesNoticeIfNeeded {
-  if (!xe_ios_online_features_notice_pending()) {
+  const BOOL first_launch = xe_ios_online_features_notice_pending();
+  if (!first_launch && !xe_ios_diagnostics_notice_pending()) {
     return NO;
   }
   if (online_features_notice_presented_) {
@@ -824,32 +827,60 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return YES;
   }
   online_features_notice_presented_ = YES;
-  UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Online Features",
-                                                 @"Alert title: first-run online features notice")
-                       message:
-                           NSLocalizedString(
-                               @"XeniOS checks for updates, downloads compatibility information "
-                               @"and cover art, and links System Link games with other players "
-                               @"over the internet, who can see your IP address. Compatibility "
-                               @"reports you submit are public.\n\nYou can change this in "
-                               @"Settings > About > Privacy.",
-                               @"Alert message: first-run online features notice")
-                preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert =
+      first_launch
+          ? [UIAlertController
+                alertControllerWithTitle:NSLocalizedString(
+                                             @"Online Features",
+                                             @"Alert title: first-run online features notice")
+                                 message:NSLocalizedString(
+                                             @"XeniOS checks for updates, downloads compatibility "
+                                             @"information and cover art, and sends anonymous "
+                                             @"crash reports and performance statistics to help "
+                                             @"fix problems. It also links System Link games with "
+                                             @"other players over the internet, who can see your "
+                                             @"IP address. Compatibility reports you submit are "
+                                             @"public.\n\nYou can change this in Settings > About "
+                                             @"> Privacy.",
+                                             @"Alert message: first-run online features notice")
+                          preferredStyle:UIAlertControllerStyleAlert]
+          : [UIAlertController
+                alertControllerWithTitle:NSLocalizedString(
+                                             @"Crash Reports and Performance",
+                                             @"Alert title: one-time notice that diagnostics are "
+                                             @"now sent, for installs that saw the older notice")
+                                 message:NSLocalizedString(
+                                             @"XeniOS can now send anonymous crash reports and "
+                                             @"performance statistics, such as frame rate and "
+                                             @"device temperature, to help fix problems. They "
+                                             @"never include your files, your name or your Apple "
+                                             @"Account.\n\nYou can change this in Settings > "
+                                             @"About > Privacy.",
+                                             @"Alert message: one-time diagnostics notice")
+                          preferredStyle:UIAlertControllerStyleAlert];
   void (^answer)(BOOL) = ^(BOOL enabled) {
-    xe_ios_set_online_features_enabled(enabled);
-    xe_ios_set_online_features_notice_answered();
+    if (first_launch) {
+      xe_ios_set_online_features_enabled(enabled);
+      xe_ios_set_online_features_notice_answered();
+    } else {
+      xe_ios_set_share_diagnostics_enabled(enabled);
+      xe_ios_set_diagnostics_notice_answered();
+    }
+    xe_ios_diagnostics_settings_changed();
     [self runAppearanceTasks];
   };
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Turn Off",
-                                                         @"Alert button: disables online features")
-                                 style:UIAlertActionStyleDefault
-                               handler:^(__unused UIAlertAction* action) {
-                                 answer(NO);
-                               }]];
+  NSString* decline =
+      first_launch ? NSLocalizedString(@"Turn Off", @"Alert button: disables online features")
+                   : NSLocalizedString(@"Don't Send",
+                                       @"Alert button: turns off crash reports and statistics");
+  [alert addAction:[UIAlertAction actionWithTitle:decline
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            answer(NO);
+                                          }]];
   UIAlertAction* keep_on = [UIAlertAction
-      actionWithTitle:NSLocalizedString(@"Continue", @"Alert button: keeps online features on")
+      actionWithTitle:NSLocalizedString(@"Continue",
+                                        @"Alert button: keeps online features or diagnostics on")
                 style:UIAlertActionStyleDefault
               handler:^(__unused UIAlertAction* action) {
                 answer(YES);
