@@ -22,4 +22,9 @@ void xe_ios_set_online_features_enabled(BOOL enabled);
 // Short text for the unavailable state of a feature, e.g. in an alert.
 NSString* xe_ios_online_features_off_message(void);
 
+// YES until the first-launch notice about online features has been answered. Nothing
+// is fetched at launch while it is pending.
+BOOL xe_ios_online_features_notice_pending(void);
+void xe_ios_set_online_features_notice_answered(void);
+
 #endif  // XENIA_UI_IOS_SHARED_IOS_ONLINE_FEATURES_H_
