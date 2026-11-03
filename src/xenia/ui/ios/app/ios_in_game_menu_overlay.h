@@ -24,6 +24,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
   XeniaIOSInGameMenuActionLiveLog,
   XeniaIOSInGameMenuActionExit,
   XeniaIOSInGameMenuActionGraphics = 8,
+  XeniaIOSInGameMenuActionPauseEmulator,
 };
 
 @interface XeniaIOSInGameMenuOverlay : UIView
@@ -35,7 +36,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, copy) void (^liveLogHandler)(void);
 @property(nonatomic, copy) void (^exitHandler)(void);
 @property(nonatomic, copy) void (^graphicsHandler)(void);
+@property(nonatomic, copy) void (^pauseEmulatorHandler)(void);
 @property(nonatomic, strong) UIMenu* displayMenu;
+// Whether the user paused the game from the menu: the pause button then offers to resume.
+@property(nonatomic, assign) BOOL emulatorPaused;
 
 - (BOOL)isOverlayVisible;
 - (BOOL)isActionEnabled:(XeniaIOSInGameMenuAction)action;
