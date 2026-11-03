@@ -75,13 +75,19 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory);
 // (removed only after the copy succeeded). Default NO: the rename fails.
 @property(nonatomic) BOOL replacesExisting;
 
+// Folder entries that were neither files nor folders (symbolic links and the like) and so were
+// not copied, as of the last successful copy. Callers should tell the user when it is not 0.
+@property(atomic, readonly) NSUInteger skippedItemCount;
+
 // Callable from any thread.
 - (void)cancel;
 @property(atomic, readonly, getter=isCancelled) BOOL cancelled;
 
 @end
 
-// A modal alert with a progress bar and a Cancel button. Main thread only.
+// A modal alert with a progress bar and a Cancel button. Main thread only. While it is up the
+// screen stays awake and the app holds a background task; if iOS ends that time the transfer is
+// cancelled through `cancelHandler`.
 @interface XeniaIOSTransferProgressAlert : NSObject
 
 // `cancelHandler` runs once on the main thread if the user taps Cancel.

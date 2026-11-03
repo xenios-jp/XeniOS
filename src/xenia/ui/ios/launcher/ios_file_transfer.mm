@@ -21,6 +21,7 @@
 #include <system_error>
 
 #include "xenia/base/logging.h"
+#include "xenia/ui/ios/shared/ios_idle_timer.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
 NSString* const XeniaIOSFileTransferErrorDomain = @"XeniaIOSFileTransfer";
@@ -48,7 +49,12 @@ NSError* TransferError(NSInteger code, NSString* message) {
 NSError* CancelledError() { return TransferError(XeniaIOSFileTransferErrorCancelled,
 @"Cancelled."); }
 
-NSString* PartPath(NSString* path) { return [path stringByAppendingString:@".part"]; }
+// "<path>.<8 hex>.part": unique per writer, so two writers of the same final name (an import and
+// a ZAR conversion, say) never share or delete each other's in-progress file.
+NSString* PartPath(NSString* path) {
+  NSString* token = [[[NSUUID UUID] UUIDString] substringToIndex:8];
+  return [NSString stringWithFormat:@"%@.%@.part", path, token];
+}
 
 void RemovePath(NSString* path) {
   std::error_code ec;
@@ -59,6 +65,8 @@ struct CopyState {
   std::atomic<bool>* cancelled = nullptr;
   uint64_t copied = 0;
   uint64_t total = 0;
+  // Entries in a folder that aren't files or folders (links, devices): not copied.
+  NSUInteger skipped = 0;
   XeniaIOSFileTransferProgress progress = nil;
   CFAbsoluteTime last_report = 0;
 
@@ -147,6 +155,15 @@ BOOL CopyOneFile(NSString* source, NSString* destination, CopyState* state, NSEr
   }
   free(buffer);
   close(in_fd);
+  // Flush before the caller renames the file into place, so a power loss can't leave a short
+  // file under the final name. Plain fsync: F_FULLFSYNC on multi-GB files is far too slow.
+  if (ok && fsync(out_fd) != 0) {
+    const int err = errno;
+    if (error) {
+      *error = XeniaIOSErrorFromErrno(err, @"Flushing the copy failed.");
+    }
+    ok = NO;
+  }
   if (close(out_fd) != 0 && ok) {
     const int err = errno;
     if (error) {
@@ -200,6 +217,8 @@ BOOL CopyOneItem(NSString* source, NSString* destination_part, CopyState* state,
       if (!CopyOneFile(from, to, state, error)) {
         return NO;
       }
+    } else {
+      ++state->skipped;
     }
   }
   return YES;
@@ -348,6 +367,7 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
 
 @implementation XeniaIOSFileTransfer {
   std::atomic<bool> _cancelled;
+  std::atomic<NSUInteger> _skippedItemCount;
 }
 
 @synthesize replacesExisting = _replacesExisting;
@@ -357,6 +377,7 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
     return nil;
   }
   _cancelled.store(false);
+  _skippedItemCount.store(0);
   return self;
 }
 
@@ -366,6 +387,10 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
 
 - (BOOL)isCancelled {
   return _cancelled.load();
+}
+
+- (NSUInteger)skippedItemCount {
+  return _skippedItemCount.load();
 }
 
 - (BOOL)runPairs:(NSArray<NSArray<NSString*>*>*)pairs
@@ -386,7 +411,6 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   NSMutableArray<NSString*>* parts = [NSMutableArray array];
   for (NSArray<NSString*>* pair in pairs) {
     NSString* part = PartPath(pair[1]);
-    RemovePath(part);  // Left over from a crashed earlier run.
     XeniaIOSRegisterActivePartPath(part);
     [parts addObject:part];
   }
@@ -404,14 +428,28 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   }
 
   NSMutableArray<NSString*>* renamed = [NSMutableArray array];
+  // [final, backup] for items a replacing transfer moved out of the way. The backup carries a
+  // ".part" suffix and is registered, so a crash leaves something the stale sweep removes.
+  NSMutableArray<NSArray<NSString*>*>* backups = [NSMutableArray array];
   if (ok) {
     // The main item is pairs[0]; rename it last so it only appears once its
     // sidecars are in place.
     for (NSInteger i = static_cast<NSInteger>(pairs.count) - 1; ok && i >= 0; --i) {
       NSString* final_path = pairs[static_cast<NSUInteger>(i)][1];
       NSError* move_error = nil;
-      if (_replacesExisting) {
-        RemovePath(final_path);
+      if (_replacesExisting && [file_manager fileExistsAtPath:final_path]) {
+        NSString* backup = PartPath(final_path);
+        XeniaIOSRegisterActivePartPath(backup);
+        if ([file_manager moveItemAtPath:final_path toPath:backup error:&move_error]) {
+          [backups addObject:@[ final_path, backup ]];
+        } else {
+          XeniaIOSUnregisterActivePartPath(backup);
+          if (error) {
+            *error = move_error;
+          }
+          ok = NO;
+          break;
+        }
       }
       if ([file_manager moveItemAtPath:parts[static_cast<NSUInteger>(i)]
                                 toPath:final_path
@@ -430,16 +468,28 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
     for (NSString* final_path in renamed) {
       RemovePath(final_path);
     }
+    // Put back what the transfer was replacing.
+    for (NSArray<NSString*>* backup in backups) {
+      RemovePath(backup[0]);
+      [file_manager moveItemAtPath:backup[1] toPath:backup[0] error:nil];
+    }
     for (NSString* part in parts) {
       RemovePath(part);
     }
   } else {
+    for (NSArray<NSString*>* backup in backups) {
+      RemovePath(backup[1]);
+    }
     state.copied = state.total;
     state.Report(true);
+  }
+  for (NSArray<NSString*>* backup in backups) {
+    XeniaIOSUnregisterActivePartPath(backup[1]);
   }
   for (NSString* part in parts) {
     XeniaIOSUnregisterActivePartPath(part);
   }
+  _skippedItemCount.store(ok ? state.skipped : 0);
   return ok;
 }
 
@@ -496,10 +546,22 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   BOOL _dismissRequested;
   BOOL _cancelTapped;
   BOOL _dismissed;
+  NSString* _activityName;
+  UIBackgroundTaskIdentifier _backgroundTask;
   void (^_dismissCompletion)(void);
 }
 
+- (instancetype)init {
+  if (!(self = [super init])) {
+    return nil;
+  }
+  _backgroundTask = UIBackgroundTaskInvalid;
+  return self;
+}
+
 - (void)dealloc {
+  [self endActivity];
+  [_activityName release];
   [_alert release];
   [_progressView release];
   [_baseMessage release];
@@ -550,8 +612,42 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
   ]];
   progress_alert->_progressView = bar;
 
+  [progress_alert beginActivity];
   [progress_alert tryPresentFrom:presenter attemptsLeft:6];
   return progress_alert;
+}
+
+// Keeps the screen on and asks iOS for background time for the length of the transfer.
+- (void)beginActivity {
+  _activityName =
+      [[NSString stringWithFormat:@"transfer-%p", static_cast<void*>(self)] retain];
+  xe_ios_idle_timer_hold(_activityName);
+  __block XeniaIOSTransferProgressAlert* unretained_self = self;
+  _backgroundTask = [[UIApplication sharedApplication]
+      beginBackgroundTaskWithName:@"file-transfer"
+                expirationHandler:^{
+                  XELOGW("iOS: Background time expired; cancelling the transfer");
+                  if (unretained_self->_cancelHandler) {
+                    unretained_self->_cancelHandler();
+                  }
+                  [unretained_self endBackgroundTask];
+                }];
+}
+
+- (void)endBackgroundTask {
+  if (_backgroundTask != UIBackgroundTaskInvalid) {
+    [[UIApplication sharedApplication] endBackgroundTask:_backgroundTask];
+    _backgroundTask = UIBackgroundTaskInvalid;
+  }
+}
+
+- (void)endActivity {
+  [self endBackgroundTask];
+  if (_activityName) {
+    xe_ios_idle_timer_release(_activityName);
+    [_activityName release];
+    _activityName = nil;
+  }
 }
 
 - (void)tryPresentFrom:(UIViewController*)presenter attemptsLeft:(int)attempts {
@@ -605,6 +701,7 @@ size_t XeniaIOSSweepStalePartFiles(const std::filesystem::path& directory) {
     return;
   }
   _dismissRequested = YES;
+  [self endActivity];
   [_dismissCompletion release];
   _dismissCompletion = [completion copy];
   if (_presented || !_alert.beingPresented) {
