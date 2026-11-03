@@ -1742,20 +1742,39 @@ RenderTargetCache::GetDirectResolveEligibility(
   return DirectResolveEligibility::kEligible;
 }
 
-bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+bool RenderTargetCache::IsRenderTargetDataOnlyInRectangle(
+    RenderTargetKey key, bool is_64bpp,
+    const Transfer::Rectangle& rectangle) const {
+  Transfer::Rectangle outside[Transfer::kMaxRectanglesWithCutout];
+  for (const auto& range_pair : ownership_ranges_) {
+    const OwnershipRange& range = range_pair.second;
+    if (range.render_target != key && range.depth_bits_target != key &&
+        range.host_depth_render_target_unorm24 != key &&
+        range.host_depth_render_target_float24 != key) {
+      continue;
+    }
+    // GetRangeRectangles takes the parts before and after the base, where the
+    // render target's EDRAM addressing wraps, separately.
+    uint32_t start_tiles = range_pair.first;
+    uint32_t end_tiles = range.end_tiles;
+    uint32_t split_tiles =
+        start_tiles < key.base_tiles && end_tiles > key.base_tiles
+            ? key.base_tiles
+            : end_tiles;
+    if (Transfer::GetRangeRectangles(start_tiles, split_tiles, key, is_64bpp,
+                                     outside, &rectangle) ||
+        (split_tiles < end_tiles &&
+         Transfer::GetRangeRectangles(split_tiles, end_tiles, key, is_64bpp,
+                                      outside, &rectangle))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
     const draw_util::ResolveInfo& resolve_info,
-    Transfer::Rectangle& clear_rectangle_out,
-    RenderTarget*& depth_render_target_out,
-    std::vector<Transfer>& depth_transfers_out,
-    RenderTarget*& color_render_target_out,
-    std::vector<Transfer>& color_transfers_out) {
-  assert_true(GetPath() == Path::kHostRenderTargets);
-
-  // These transfers precede a clear rather than a draw, so drop the last
-  // draw's blending and keep IsTransferValueConverted7e3And8888 bit-exact.
-  std::memset(last_update_blend_reading_color_rts_, 0,
-              sizeof(last_update_blend_reading_color_rts_));
-
+    ResolveClearPlan& plan_out) const {
   uint32_t pitch_tiles_at_32bpp;
   uint32_t base_offset_tiles_at_32bpp;
   xenos::MsaaSamples msaa_samples;
@@ -1918,16 +1937,62 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
             depth_clear_start_tiles_wrapped - color_clear_start_tiles_wrapped);
   }
 
+  plan_out.clear_rectangle = clear_rectangle;
+  plan_out.depth_render_target_key = RenderTargetKey();
+  plan_out.depth_clear_start_tiles_base_relative =
+      depth_clear_start_tiles_base_relative;
+  plan_out.depth_clear_length_tiles = depth_clear_length_tiles;
+  if (depth_clear_length_tiles) {
+    RenderTargetKey& depth_key = plan_out.depth_render_target_key;
+    depth_key.base_tiles = resolve_info.depth_original_base;
+    depth_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
+    depth_key.msaa_samples = msaa_samples;
+    depth_key.is_depth = 1;
+    depth_key.resource_format = resolve_info.depth_edram_info.format;
+    depth_key.scale_native = uint32_t(scale_native);
+  }
+  plan_out.color_render_target_key = RenderTargetKey();
+  plan_out.color_clear_start_tiles_base_relative =
+      color_clear_start_tiles_base_relative;
+  plan_out.color_clear_length_tiles = color_clear_length_tiles;
+  if (color_clear_length_tiles) {
+    RenderTargetKey& color_key = plan_out.color_render_target_key;
+    color_key.base_tiles = resolve_info.color_original_base;
+    color_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
+    color_key.msaa_samples = msaa_samples;
+    color_key.is_depth = 0;
+    color_key.resource_format = uint32_t(GetColorResourceFormat(
+        xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
+    color_key.scale_native = uint32_t(scale_native);
+  }
+  return true;
+}
+
+bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+    const draw_util::ResolveInfo& resolve_info,
+    Transfer::Rectangle& clear_rectangle_out,
+    RenderTarget*& depth_render_target_out,
+    std::vector<Transfer>& depth_transfers_out,
+    RenderTarget*& color_render_target_out,
+    std::vector<Transfer>& color_transfers_out) {
+  assert_true(GetPath() == Path::kHostRenderTargets);
+
+  // These transfers precede a clear rather than a draw, so drop the last
+  // draw's blending and keep IsTransferValueConverted7e3And8888 bit-exact.
+  std::memset(last_update_blend_reading_color_rts_, 0,
+              sizeof(last_update_blend_reading_color_rts_));
+
+  ResolveClearPlan plan;
+  if (!GetHostRenderTargetsResolveClearPlan(resolve_info, plan)) {
+    return false;
+  }
+  const Transfer::Rectangle& clear_rectangle = plan.clear_rectangle;
+  uint32_t depth_clear_length_tiles = plan.depth_clear_length_tiles;
+  uint32_t color_clear_length_tiles = plan.color_clear_length_tiles;
   RenderTargetKey depth_render_target_key;
   RenderTarget* depth_render_target = nullptr;
   if (depth_clear_length_tiles) {
-    depth_render_target_key.base_tiles = resolve_info.depth_original_base;
-    depth_render_target_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
-    depth_render_target_key.msaa_samples = msaa_samples;
-    depth_render_target_key.is_depth = 1;
-    depth_render_target_key.resource_format =
-        resolve_info.depth_edram_info.format;
-    depth_render_target_key.scale_native = uint32_t(scale_native);
+    depth_render_target_key = plan.depth_render_target_key;
     depth_render_target = GetOrCreateRenderTarget(depth_render_target_key);
     if (!depth_render_target) {
       // Failed to create the depth render target, don't clear it.
@@ -1938,13 +2003,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
   RenderTargetKey color_render_target_key;
   RenderTarget* color_render_target = nullptr;
   if (color_clear_length_tiles) {
-    color_render_target_key.base_tiles = resolve_info.color_original_base;
-    color_render_target_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
-    color_render_target_key.msaa_samples = msaa_samples;
-    color_render_target_key.is_depth = 0;
-    color_render_target_key.resource_format = uint32_t(GetColorResourceFormat(
-        xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
-    color_render_target_key.scale_native = uint32_t(scale_native);
+    color_render_target_key = plan.color_render_target_key;
     color_render_target = GetOrCreateRenderTarget(color_render_target_key);
     if (!color_render_target) {
       // Failed to create the color render target, don't clear it.
@@ -1961,16 +2020,18 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
   depth_render_target_out = depth_render_target;
   depth_transfers_out.clear();
   if (depth_render_target) {
-    ChangeOwnership(
-        depth_render_target_key, depth_clear_start_tiles_base_relative,
-        depth_clear_length_tiles, &depth_transfers_out, &clear_rectangle);
+    ChangeOwnership(depth_render_target_key,
+                    plan.depth_clear_start_tiles_base_relative,
+                    depth_clear_length_tiles, &depth_transfers_out,
+                    &clear_rectangle);
   }
   color_render_target_out = color_render_target;
   color_transfers_out.clear();
   if (color_render_target) {
-    ChangeOwnership(
-        color_render_target_key, color_clear_start_tiles_base_relative,
-        color_clear_length_tiles, &color_transfers_out, &clear_rectangle);
+    ChangeOwnership(color_render_target_key,
+                    plan.color_clear_start_tiles_base_relative,
+                    color_clear_length_tiles, &color_transfers_out,
+                    &clear_rectangle);
   }
   return true;
 }

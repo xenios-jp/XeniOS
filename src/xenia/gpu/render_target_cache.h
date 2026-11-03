@@ -747,6 +747,30 @@ class RenderTargetCache {
       bool allow_full64_rgb10f_rgba16_average = false,
       bool allow_full32_1x_conversion = false) const;
 
+  // What a resolve clear will write, without creating render targets or
+  // changing ownership: the rectangle (in the render targets' pixels) and the
+  // keys and tile ranges of the targets cleared. Empty keys for targets not
+  // cleared. Returns false if nothing would be cleared.
+  struct ResolveClearPlan {
+    Transfer::Rectangle clear_rectangle;
+    RenderTargetKey depth_render_target_key;
+    uint32_t depth_clear_start_tiles_base_relative;
+    uint32_t depth_clear_length_tiles;
+    RenderTargetKey color_render_target_key;
+    uint32_t color_clear_start_tiles_base_relative;
+    uint32_t color_clear_length_tiles;
+  };
+  bool GetHostRenderTargetsResolveClearPlan(
+      const draw_util::ResolveInfo& resolve_info,
+      ResolveClearPlan& plan_out) const;
+  // Whether every EDRAM range the render target with the key holds, in any of
+  // the ownership roles, lies inside the rectangle (in its pixels), so nothing
+  // will read the rest of its backing. A render target is as tall as the
+  // EDRAM, so a clear of a guest-sized rectangle may then clear all of it.
+  bool IsRenderTargetDataOnlyInRectangle(
+      RenderTargetKey key, bool is_64bpp,
+      const Transfer::Rectangle& rectangle) const;
+
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected
   // to be obtained via draw_util::GetResolveInfo. Returns whether any clears
