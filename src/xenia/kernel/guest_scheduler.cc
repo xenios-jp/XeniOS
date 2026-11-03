@@ -304,6 +304,9 @@ void GuestScheduler::EnsureStarted() {
     cpus_[i].host_thread->set_name(std::string("Guest CPU ") +
                                    std::to_string(i));
   }
+  // started_ is set before the events above exist; Pause/ResumeDispatch touch
+  // them only after this.
+  dispatch_ready_.store(true, std::memory_order_release);
   if (cvars::guest_scheduler_pause_stress_ms) {
     xe::threading::Thread::CreationParameters params;
     pause_stress_thread_ =
@@ -321,9 +324,14 @@ void GuestScheduler::Shutdown() {
   }
   shutting_down_.store(true);
   Thaw();
-  // A paused dispatch thread waits on resume_event_, not ready_event.
-  dispatch_paused_.store(false, std::memory_order_release);
-  resume_event_->Set();
+  {
+    // Under the pause lock, so a PauseDispatch that read shutting_down_ before
+    // it was set can't re-arm the hold after this (it rechecks under the lock).
+    std::lock_guard<std::mutex> api(pause_api_lock_);
+    // A paused dispatch thread waits on resume_event_, not ready_event.
+    dispatch_paused_.store(false, std::memory_order_release);
+    resume_event_->Set();
+  }
   if (pause_stress_thread_) {
     xe::threading::Wait(pause_stress_thread_.get(), false);
     pause_stress_thread_.reset();
@@ -1793,6 +1801,9 @@ bool GuestScheduler::PauseDispatch(std::chrono::milliseconds timeout,
     return true;  // Nothing is dispatching.
   }
   std::lock_guard<std::mutex> api(pause_api_lock_);
+  if (shutting_down_.load()) {
+    return true;
+  }
   if (freezer_.load()) {
     return false;
   }
@@ -1800,7 +1811,7 @@ bool GuestScheduler::PauseDispatch(std::chrono::milliseconds timeout,
     resume_event_->Reset();
     dispatch_paused_.store(true, std::memory_order_release);
   }
-  if (!started_.load()) {
+  if (!dispatch_ready_.load(std::memory_order_acquire)) {
     return true;  // The dispatch threads will start held.
   }
   constexpr uint32_t kAllCpus = (uint32_t(1) << kMaxCpus) - 1;
@@ -1818,7 +1829,7 @@ bool GuestScheduler::PauseDispatch(std::chrono::milliseconds timeout,
       }
     }
     const uint32_t done = quiesced_mask_.load();
-    if ((done & kAllCpus) == kAllCpus) {
+    if ((done & kAllCpus) == kAllCpus || shutting_down_.load()) {
       return true;
     }
     // Idle CPUs sleep on ready_event and see the pause only once woken.
@@ -1843,6 +1854,9 @@ void GuestScheduler::ResumeDispatch() {
     return;
   }
   resume_event_->Set();
+  if (!dispatch_ready_.load(std::memory_order_acquire)) {
+    return;
+  }
   for (int i = 0; i < kMaxCpus; ++i) {
     if (cpus_[i].ready_event) {
       cpus_[i].ready_event->Set();

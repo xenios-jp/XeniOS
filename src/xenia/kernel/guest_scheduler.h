@@ -382,6 +382,8 @@ class GuestScheduler {
   // sits in HoldDispatchThread. pause_api_lock_ serialises Pause/Resume.
   std::atomic<bool> dispatch_paused_{false};
   std::atomic<uint32_t> quiesced_mask_{0};
+  // Set once EnsureStarted has created the ready events and dispatch threads.
+  std::atomic<bool> dispatch_ready_{false};
   std::unique_ptr<xe::threading::Event> resume_event_;
   std::mutex pause_api_lock_;
   // Debug: cvar guest_scheduler_pause_stress_ms.
