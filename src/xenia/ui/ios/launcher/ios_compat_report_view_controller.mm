@@ -62,9 +62,7 @@
                                                     target:self
                                                     action:@selector(dismissKeyboard)];
   keyboard_done_button_.tintColor = [XeniaTheme accent];
-  if (@available(iOS 15.0, *)) {
-    self.tableView.sectionHeaderTopPadding = 0;
-  }
+  self.tableView.sectionHeaderTopPadding = 0;
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(keyboardWillChangeFrame:)
                                                name:UIKeyboardWillChangeFrameNotification

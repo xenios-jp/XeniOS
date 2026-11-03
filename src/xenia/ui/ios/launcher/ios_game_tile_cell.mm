@@ -29,6 +29,9 @@
   self.contentView.backgroundColor = [UIColor clearColor];
   self.isAccessibilityElement = YES;
   self.accessibilityTraits = UIAccessibilityTraitButton;
+  // Pointer: lift the tile under a trackpad or mouse pointer on iPad.
+  self.hoverStyle = [UIHoverStyle styleWithEffect:[UIHoverLiftEffect effect]
+                                            shape:[UIShape rectShapeWithCornerRadius:XeniaRadiusLg]];
 
   self.cardView = [[UIView alloc] init];
   self.cardView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -58,7 +61,7 @@
   self.contentTypePill.layer.cornerRadius = 0.0;
   self.contentTypePill.layer.borderWidth = 0.0;
   self.contentTypePill.clipsToBounds = NO;
-  xe_apply_label_font(self.contentTypePill, UIFontTextStyleCaption2, 10.0, UIFontWeightSemibold);
+  xe_apply_label_font(self.contentTypePill, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
   self.contentTypePill.textColor = [XeniaTheme textMuted];
   self.contentTypePill.backgroundColor = [UIColor clearColor];
   self.contentTypePill.hidden = YES;
@@ -90,7 +93,7 @@
   self.compatPill.layer.borderWidth = 0.0;
   self.compatPill.clipsToBounds = NO;
   self.compatPill.backgroundColor = [UIColor clearColor];
-  xe_apply_label_font(self.compatPill, UIFontTextStyleCaption2, 10.0, UIFontWeightSemibold);
+  xe_apply_label_font(self.compatPill, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
   self.compatPill.hidden = YES;
   [self.compatPill setContentHuggingPriority:UILayoutPriorityRequired
                                      forAxis:UILayoutConstraintAxisHorizontal];
@@ -111,11 +114,10 @@
   [self.footerView addSubview:self.metadataStackView];
 
   // Apply the default chrome (shadow + border + label color) up front.
-  // -updateControllerFocusAppearance only runs from -setControllerFocused:
-  // and -traitCollectionDidChange:, so without this call a freshly-created
-  // (never-focused) cell inherits the layer-default shadowOpacity = 0 and
-  // never picks up the always-on tile shadow until it gets focused once.
-  [self updateControllerFocusAppearance];
+  // The configuration pass only runs once the cell is in a view hierarchy, so
+  // without this call a freshly-created cell inherits the layer-default
+  // shadowOpacity = 0 until its first state change.
+  [self updateConfigurationUsingState:self.configurationState];
 
   [NSLayoutConstraint activateConstraints:@[
     [self.cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
@@ -155,17 +157,6 @@
   self.titleLabel.preferredMaxLayoutWidth = MAX(CGRectGetWidth(self.footerView.bounds) - 20.0, 0.0);
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if ([self.traitCollection
-          hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
-    // CGColor is captured at assignment time and won't auto-flip. Re-apply
-    // the focus-aware chrome from the dynamic XeniaTheme accessors so it
-    // tracks the new userInterfaceStyle.
-    [self updateControllerFocusAppearance];
-  }
-}
-
 - (void)prepareForReuse {
   [super prepareForReuse];
   self.iconView.image = nil;
@@ -182,13 +173,12 @@
   self.contentView.transform = CGAffineTransformIdentity;
   self.accessibilityLabel = nil;
   self.accessibilityValue = nil;
+  self.representedTitleId = 0;
   _controllerFocused = NO;
-  // Re-run the appearance setter explicitly: setting _controllerFocused
-  // directly above bypassed -setControllerFocused: (since the previous
-  // value may already have been NO if the cell was never focused), so the
-  // shadow/border state has to be reset by hand to keep recycled cells
-  // looking identical to fresh ones.
-  [self updateControllerFocusAppearance];
+  // Setting _controllerFocused directly bypassed -setControllerFocused:, so
+  // request the configuration pass by hand to keep recycled cells looking
+  // identical to fresh ones.
+  [self setNeedsUpdateConfiguration];
 }
 
 - (void)setControllerFocused:(BOOL)controllerFocused {
@@ -196,37 +186,58 @@
     return;
   }
   _controllerFocused = controllerFocused;
-  [self updateControllerFocusAppearance];
+  [self setNeedsUpdateConfiguration];
 }
 
-- (void)updateControllerFocusAppearance {
+// Called by UIKit on every state change (focus, highlight, selection) and on
+// trait changes, so the CGColor-backed border and shadow follow light/dark
+// without a trait-change workaround. Colors are resolved against the state's
+// trait collection because CGColor does not track appearance on its own.
+- (void)updateConfigurationUsingState:(UICellConfigurationState*)state {
+  [super updateConfigurationUsingState:state];
+  UITraitCollection* traits = state.traitCollection;
+  auto resolved = ^CGColorRef(UIColor* color) {
+    return [color resolvedColorWithTraitCollection:traits].CGColor;
+  };
+
+  // Larger text: allow a two-line title and stack the metadata pills.
+  BOOL accessibilityText =
+      UIContentSizeCategoryIsAccessibilityCategory(traits.preferredContentSizeCategory);
+  self.titleLabel.numberOfLines = accessibilityText ? 2 : 1;
+  self.metadataStackView.axis =
+      accessibilityText ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+  self.metadataStackView.alignment =
+      accessibilityText ? UIStackViewAlignmentLeading : UIStackViewAlignmentCenter;
+  self.metadataStackView.spacing = accessibilityText ? 4.0 : 8.0;
+
   self.footerView.backgroundColor = [XeniaTheme bgSurface];
-  if (self.controllerFocused) {
+  if (self.controllerFocused || state.isFocused) {
     self.cardView.layer.borderWidth = 1.5f;
-    self.cardView.layer.borderColor = [XeniaTheme accent].CGColor;
+    self.cardView.layer.borderColor = resolved([XeniaTheme accent]);
     self.titleLabel.textColor = [XeniaTheme textPrimary];
-    self.layer.shadowColor = [XeniaTheme accent].CGColor;
+    self.layer.shadowColor = resolved([XeniaTheme accent]);
     self.layer.shadowOpacity = 0.24f;
     self.layer.shadowRadius = 10.0f;
     self.layer.zPosition = 1.0f;
   } else {
     self.cardView.layer.borderWidth = 0.5f;
-    self.cardView.layer.borderColor = [XeniaTheme border].CGColor;
+    self.cardView.layer.borderColor = resolved([XeniaTheme border]);
     self.titleLabel.textColor = [XeniaTheme textPrimary];
     // A subtle always-on shadow so light-mode tiles read as floating cards
     // against a near-white background. In dark mode the shadow is black-on-
     // black at 18% opacity, which still gives a soft separation without
     // looking out of place.
-    self.layer.shadowColor =
-        [UIColor colorWithDynamicProvider:^UIColor*(UITraitCollection* traits) {
-          return traits.userInterfaceStyle == UIUserInterfaceStyleLight
-                     ? [[UIColor blackColor] colorWithAlphaComponent:0.18]
-                     : [[UIColor blackColor] colorWithAlphaComponent:0.42];
-        }].CGColor;
+    self.layer.shadowColor = [[UIColor blackColor]
+                                 colorWithAlphaComponent:traits.userInterfaceStyle ==
+                                                                 UIUserInterfaceStyleLight
+                                                             ? 0.18
+                                                             : 0.42].CGColor;
     self.layer.shadowOpacity = 0.18f;
     self.layer.shadowRadius = 6.0f;
     self.layer.zPosition = 0.0f;
   }
+  // Pressed look: dim the card slightly while the tile is highlighted.
+  self.cardView.alpha = state.isHighlighted ? 0.85 : 1.0;
   self.contentTypePill.textColor = [XeniaTheme textMuted];
   self.contentTypePill.backgroundColor = [UIColor clearColor];
   self.contentTypePill.layer.borderColor = [UIColor clearColor].CGColor;
