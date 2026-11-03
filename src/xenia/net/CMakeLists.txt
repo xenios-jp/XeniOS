@@ -3,6 +3,12 @@ xe_platform_sources(xenia-net ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(xenia-net PUBLIC mbedtls xenia-base PRIVATE asio)
 if(WIN32)
   target_link_libraries(xenia-net PRIVATE iphlpapi)
+elseif(APPLE)
+  # xe_platform_sources globs *.cc only; .mm sources need explicit listing.
+  target_sources(xenia-net PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/lobby_socket_apple.mm
+  )
+  target_link_libraries(xenia-net PRIVATE "-framework Foundation")
 endif()
 xe_target_defaults(xenia-net)
 

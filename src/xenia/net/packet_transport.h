@@ -11,12 +11,14 @@
 #define XENIA_NET_PACKET_TRANSPORT_H_
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "xenia/net/host_interfaces.h"
+#include "xenia/net/relay_client.h"
 #include "xenia/net/xnet_secure.h"
 
 namespace xe::net::secure {
@@ -66,6 +68,37 @@ std::unique_ptr<PacketTransport> OpenUdpTunnelTransport(
 std::unique_ptr<PacketTransport> OpenHostTransport(const HostInterface& host,
                                                    uint16_t port,
                                                    std::string& error);
+
+// A WebSocket to the System Link lobby, which the platform opens. Its events
+// may come on any thread until it's destroyed.
+class LobbySocket {
+ public:
+  struct Events {
+    std::function<void()> opened;
+    std::function<void(std::string text)> message;
+    // Also when it couldn't connect. Nothing follows it.
+    std::function<void(std::string reason)> closed;
+  };
+  virtual ~LobbySocket() = default;
+  virtual void Send(std::string text) = 0;
+};
+using LobbySocketFactory = std::function<std::unique_ptr<LobbySocket>(
+    const std::string& url, LobbySocket::Events events)>;
+// How relay transports reach the lobby. Without one they can't. Apple
+// platforms start with one over NSURLSession.
+void SetLobbySocketFactory(LobbySocketFactory factory);
+
+// Exchanges frames with the other instances in a room the lobby names,
+// directly with those whose NATs let a probe through and through a TURN relay
+// with the others. A player's local addresses are only tried when it's behind
+// the same public address, so internet play needs no local network access.
+std::unique_ptr<PacketTransport> OpenRelayTransport(
+    const Mac& mac, const relay::RelayConfig& config, std::string& error);
+
+// Called on the System Link thread when a relay transport's status changes,
+// with State::kStopped when it closes.
+void SetRelayStatusListener(
+    std::function<void(const relay::RelayStatus&)> listener);
 
 }  // namespace xe::net::secure
 
