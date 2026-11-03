@@ -54,6 +54,9 @@
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
+#if XE_PLATFORM_IOS
+#include "xenia/kernel/xam/xam_ui_ios.h"
+#endif
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -2059,6 +2062,53 @@ const std::filesystem::path Emulator::GetNewDiscPath(
       }
     }
   }
+
+#if XE_PLATFORM_IOS
+  // iOS has no ImGui drawer, so the dialog below never shows, and the file
+  // picker it falls back to blocks the guest. Ask natively instead: one of
+  // the title's discs in the library, or leaving the game. Every disc is
+  // offered, the requested one may be the one first launched.
+  if (kernel_state_) {
+    std::string text = window_message;
+    while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) {
+      text.pop_back();
+    }
+    if (saved_discs.empty()) {
+      text +=
+          "\n\nNo disc of this game is in the library. Add the disc, then "
+          "start the game again.";
+    }
+    std::vector<std::string> options;
+    for (const auto& disc : saved_discs) {
+      options.push_back(disc.label);
+    }
+    options.push_back("Exit Game");
+    int choice =
+        kernel::xam::ios::ChooseOption("Insert Disc", text, options);
+    if (choice >= 0 && choice < int(saved_discs.size())) {
+      // A disc folder can lack Default.xex. Mount it through any executable
+      // in its root, the mount takes the parent directory.
+      path = saved_discs[choice].path;
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 saved_discs[choice].path.parent_path(), ec)) {
+          if (entry.path().extension() == ".xex") {
+            path = entry.path();
+            break;
+          }
+        }
+      }
+      XELOGI("GetNewDiscPath: Selected disc from saved paths: {}",
+             xe::strip_pii(xe::path_to_utf8(path)));
+      return path;
+    }
+    // Exit Game, or cancelled by B or by leaving the game. XamSwapDisc would
+    // only ask again, so end the title.
+    XELOGI("GetNewDiscPath: Leaving the game from the disc prompt");
+    kernel_state_->ExitToDashboard();
+  }
+#endif
 
   // Check if we need to show the disc selection dialog
   bool show_error = window_message.find("ERROR:") != std::string::npos;
