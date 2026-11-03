@@ -96,6 +96,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/zar_converter.cc
   launcher/ios_zar_conversion_coordinator.h
   launcher/ios_zar_conversion_coordinator.mm
+  settings/ios_acknowledgements_view_controller.h
+  settings/ios_acknowledgements_view_controller.mm
   settings/ios_choice_list_view_controller.h
   settings/ios_choice_list_view_controller.mm
   settings/ios_config_builder.h
@@ -137,6 +139,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_hero_glow_palette.mm
   shared/ios_idle_timer.h
   shared/ios_idle_timer.mm
+  shared/ios_online_features.h
+  shared/ios_online_features.mm
   shared/ios_theme.h
   shared/ios_theme.mm
   shared/ios_theme_controls.h

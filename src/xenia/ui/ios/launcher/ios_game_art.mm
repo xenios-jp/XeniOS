@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
@@ -116,6 +117,12 @@ void xe_fetch_game_art(uint32_t title_id, void (^completion)(UIImage* _Nullable 
     }
     return;
   }
+  if (!xe_ios_online_features_enabled()) {
+    if (completion) {
+      completion(nil);
+    }
+    return;
+  }
   NSString* hex = xe_game_art_hex(title_id);
   if (!xe_begin_game_art_fetch(hex)) {
     return;
@@ -162,6 +169,12 @@ void xe_fetch_game_art(uint32_t title_id, void (^completion)(UIImage* _Nullable 
 
 void xe_fetch_game_background_art(uint32_t title_id, void (^completion)(UIImage* _Nullable image)) {
   if (!title_id) {
+    if (completion) {
+      completion(nil);
+    }
+    return;
+  }
+  if (!xe_ios_online_features_enabled()) {
     if (completion) {
       completion(nil);
     }

@@ -53,9 +53,15 @@ BOOL xe_is_development_build(void);
 NSInteger xe_compare_app_versions(NSString* lhs_version, long long lhs_build, NSString* rhs_version,
                                   long long rhs_build);
 
+// YES for an https URL the update flow may open: github.com under /xenios-jp/XeniOS/, or
+// xenios.jp (and its subdomains). Anything else, including a release API's html_url that
+// points elsewhere, must fall back to the known download page.
+BOOL xe_ios_is_trusted_release_url(NSURL* url);
+
 // Queries the latest XeniOS GitHub release. Throttled to once per day unless
 // force_refresh is YES (e.g. a manual "Check Now" tap). The most recent result
 // is cached so the throttled path and offline launches still report a status.
+// With "Online features" off nothing is requested and the cached result is reported.
 // completion is always invoked, on the main queue.
 void xe_check_for_update(BOOL force_refresh, void (^completion)(XeniaUpdateInfo* info));
 
