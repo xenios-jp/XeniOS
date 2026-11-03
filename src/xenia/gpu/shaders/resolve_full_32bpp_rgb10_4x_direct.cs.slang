@@ -23,13 +23,7 @@ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, 1, 0, u0, space0, 1)
 #define LOCAL_SIZE_Y_XE 8
 #define LOCAL_SIZE_Z_XE 1
 
-// The dump's 2_10_10_10 packing of a host RGB10A2Unorm sample.
-uint XeResolveDirectPackRGB10A2(float4_xe sample) {
-  return uint(sample.r * 1023.0f + 0.5f) |
-         (uint(sample.g * 1023.0f + 0.5f) << 10u) |
-         (uint(sample.b * 1023.0f + 0.5f) << 20u) |
-         (uint(sample.a * 3.0f + 0.5f) << 30u);
-}
+#include "resolve_direct_rgb10f.xesli"
 
 entry_bindings_begin_compute_xe
   XE_RESOLVE_PUSH_CONST_BINDING

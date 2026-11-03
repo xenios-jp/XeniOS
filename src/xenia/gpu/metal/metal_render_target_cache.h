@@ -326,6 +326,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       nullptr;
   MTL::ComputePipelineState*
       resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ = nullptr;
+  // The generic 32bpp copy of one sample of a 1x 8_8_8_8, 2_10_10_10 or
+  // 2_10_10_10_FLOAT render target, reading it directly.
+  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_pipeline_ = nullptr;
+  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_refresh_pipeline_ =
+      nullptr;
   MTL::ComputePipelineState* resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
       nullptr;
   MTL::ComputePipelineState*
