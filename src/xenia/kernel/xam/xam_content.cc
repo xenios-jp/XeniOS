@@ -800,7 +800,22 @@ dword_result_t XamSwapDisc_entry(
   // Mount to Cdrom0 so the game: symlink points to the new disc
   auto mount_path = "\\Device\\Cdrom0";
 
+#if XE_PLATFORM_IOS
   kernel_state()->emulator()->EjectDisc();
+#else
+  if (kernel_state()->emulator()->UsesEmulatedDrive()) {
+    // The dashboard's drive also forgets the disc put in through its tray.
+    kernel_state()->emulator()->EjectDisc();
+  } else if (filesystem->ResolvePath(mount_path) != NULL) {
+    // Unmount the current disc. A game keeps the handles it holds on it open.
+    // So nothing mounts from the disc between closing its packages and
+    // unmounting it.
+    auto global_lock = global_critical_region::AcquireDirect();
+    kernel_state()->content_manager()->ClosePackagesMountedFrom(
+        filesystem->GetDevice(mount_path));
+    filesystem->UnregisterDevice(mount_path);
+  }
+#endif  // XE_PLATFORM_IOS
 
   std::u16string text_message = xe::load_and_swap<std::u16string>(
       kernel_state()->memory()->TranslateVirtual(error_message->stringTextPtr));
