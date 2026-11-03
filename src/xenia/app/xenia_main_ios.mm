@@ -749,11 +749,13 @@ bool EmulatorAppIOS::OnInitialize() {
     return RequestGameStop("Exit to dashboard");
   });
 
-  // A disc swap offers the library's copies of the title's discs.
+  // A disc swap offers the library's copies of the title's discs. It reads the
+  // last scan's cache: a scan here would run on the guest thread, open and close
+  // the folders' security scopes and rewrite the cache.
   emulator_->set_disc_provider([](uint32_t title_id) {
     std::vector<Emulator::TitleDisc> discs;
     @autoreleasepool {
-      for (auto& game : xe::ui::ScanIOSGameLibrary(nil)) {
+      for (auto& game : xe::ui::LoadCachedIOSGameLibrary()) {
         if (game.title_id != title_id) {
           continue;
         }
