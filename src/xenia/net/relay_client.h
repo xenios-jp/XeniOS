@@ -54,6 +54,9 @@ struct RelayStatus {
     // Turned away as a duplicate soon after this player was in the room, so the
     // lobby most likely still holds its old connection. Still trying.
     kReconnecting,
+    // Left the room because the app doesn't allow it online any more, and
+    // waits to be allowed again.
+    kPaused,
     // System Link closed.
     kStopped,
   };
