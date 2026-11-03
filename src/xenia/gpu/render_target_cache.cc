@@ -1579,7 +1579,8 @@ RenderTargetCache::GetDirectResolveEligibility(
     draw_util::ResolveCopyShaderIndex copy_shader, bool allow_full32_4x_average,
     bool allow_cross_depth_color, bool allow_full32_rgb10f_1x,
     bool allow_full64_rgba16_1x, bool allow_full64_rgb10f_rgba16_1x,
-    bool allow_samples_as_pixels) const {
+    bool allow_samples_as_pixels,
+    bool allow_full64_rgb10f_rgba16_average) const {
   if (GetPath() != Path::kHostRenderTargets) {
     return DirectResolveEligibility::kNotHostRenderTargets;
   }
@@ -1639,23 +1640,32 @@ RenderTargetCache::GetDirectResolveEligibility(
       // The single-sample conversion of a 16_16_16_16 source into a
       // 16_16_16_16 destination, or of a 2_10_10_10_FLOAT source into a
       // 16_16_16_16 or 16_16_16_16_FLOAT one, exponent bias and number format
-      // included.
+      // included - for 2_10_10_10_FLOAT, also the average of all samples of a
+      // 2x or 4x source.
       auto source_format =
           xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format);
+      xenos::MsaaSamples msaa_samples =
+          resolve_info.color_edram_info.msaa_samples;
+      xenos::CopySampleSelect sample_select =
+          resolve_info.copy_dest_coordinate_info.copy_sample_select;
+      bool one_sample = msaa_samples == xenos::MsaaSamples::k1X &&
+                        sample_select == xenos::CopySampleSelect::k0;
+      bool average =
+          (msaa_samples == xenos::MsaaSamples::k2X &&
+           sample_select == xenos::CopySampleSelect::k01) ||
+          (msaa_samples == xenos::MsaaSamples::k4X &&
+           sample_select == xenos::CopySampleSelect::k0123);
       bool rgba16 =
-          allow_full64_rgba16_1x &&
+          allow_full64_rgba16_1x && one_sample &&
           source_format == xenos::ColorRenderTargetFormat::k_16_16_16_16;
       bool rgb10f =
-          allow_full64_rgb10f_rgba16_1x &&
+          ((allow_full64_rgb10f_rgba16_1x && one_sample) ||
+           (allow_full64_rgb10f_rgba16_average && average)) &&
           (source_format ==
                xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT ||
            source_format == xenos::ColorRenderTargetFormat::
                                 k_2_10_10_10_FLOAT_AS_16_16_16_16);
       if ((!rgba16 && !rgb10f) || resolve_info.IsCopyingDepth() ||
-          resolve_info.color_edram_info.msaa_samples !=
-              xenos::MsaaSamples::k1X ||
-          resolve_info.copy_dest_coordinate_info.copy_sample_select !=
-              xenos::CopySampleSelect::k0 ||
           (resolve_info.copy_dest_info.copy_dest_format !=
                xenos::ColorFormat::k_16_16_16_16 &&
            (!rgb10f || resolve_info.copy_dest_info.copy_dest_format !=
