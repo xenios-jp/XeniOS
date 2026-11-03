@@ -56,6 +56,8 @@ enum class IOSConfigCatalogKind {
   kPerGame,
   kGraphicsCompat,
   kAllCvars,
+  // Every curated setting in one list, de-duplicated by key. Visible to everyone.
+  kAllSettings,
 };
 
 enum class IOSConfigAction {
@@ -72,6 +74,9 @@ enum class IOSConfigAction {
 struct IOSConfigChoice {
   std::string title;
   int64_t value = 0;
+  // A value the list doesn't offer (hand-edited config, older build), kept so it shows as it is.
+  // It marks the current value and can't be picked.
+  bool is_custom = false;
 };
 
 struct IOSConfigItem {
@@ -91,6 +96,11 @@ struct IOSConfigItem {
   std::string category;
   bool is_advanced = false;
   std::string enum_key;
+  // The cvar's default (or the frontend default), as text; |has_default| is false when unknown.
+  bool has_default = false;
+  std::string default_value;
+  // Unit shown after a custom number, e.g. "FPS" ("40 FPS (custom)").
+  std::string value_unit;
 };
 
 struct IOSConfigSection {

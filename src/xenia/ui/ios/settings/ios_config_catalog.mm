@@ -11,9 +11,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,7 +30,7 @@
 // entitlement keys appear verbatim in the (CMS-wrapped) Entitlements plist.
 // Conservative: if there's no profile to inspect, assume granted so we never
 // show a false "missing entitlement" warning.
-static bool IOSHasHeadPoseEntitlement() {
+static bool IOSReadHeadPoseEntitlement() {
   @autoreleasepool {
     NSString* path = [[NSBundle mainBundle] pathForResource:@"embedded"
                                                      ofType:@"mobileprovision"];
@@ -48,6 +50,16 @@ static bool IOSHasHeadPoseEntitlement() {
   }
 }
 
+// The profile is read once; the answer can't change while the app runs.
+static bool IOSHasHeadPoseEntitlement() {
+  static bool granted = false;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    granted = IOSReadHeadPoseEntitlement();
+  });
+  return granted;
+}
+
 static std::string TrimAscii(std::string value) {
   size_t start = 0;
   while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
@@ -58,6 +70,15 @@ static std::string TrimAscii(std::string value) {
     --end;
   }
   return value.substr(start, end - start);
+}
+
+// Adds |item| and records the cvar's default so rows can show and restore it.
+static void AddItem(std::vector<IOSConfigItem>& items, IOSConfigItem item) {
+  if (item.storage == IOSConfigStorage::kConfigVar && !item.key.empty() &&
+      item.control_type != IOSConfigControlType::kAction) {
+    item.has_default = IOSConfigGetConfigVarDefaultString(item.key, &item.default_value);
+  }
+  items.push_back(std::move(item));
 }
 
 static void AddBoolSetting(std::vector<IOSConfigItem>& items, const std::string& key,
@@ -73,7 +94,7 @@ static void AddBoolSetting(std::vector<IOSConfigItem>& items, const std::string&
   item.bool_value = fallback;
   IOSConfigParseBoolString(IOSConfigGetConfigVarString(key, fallback ? "true" : "false"),
                            &item.bool_value);
-  items.push_back(std::move(item));
+  AddItem(items, std::move(item));
 }
 
 static void AddUserDefaultBoolSetting(std::vector<IOSConfigItem>& items, NSString* key,
@@ -89,13 +110,16 @@ static void AddUserDefaultBoolSetting(std::vector<IOSConfigItem>& items, NSStrin
   item.control_type = IOSConfigControlType::kToggle;
   item.storage = IOSConfigStorage::kUserDefaults;
   item.bool_value = GetUserDefaultBool(key, fallback);
+  item.has_default = true;
+  item.default_value = fallback ? "true" : "false";
   items.push_back(std::move(item));
 }
 
 static void AddChoiceSetting(std::vector<IOSConfigItem>& items, IOSConfigControlType control_type,
                              const std::string& key, const std::string& title,
                              const std::string& subtitle, int64_t fallback,
-                             std::vector<IOSConfigChoice> choices) {
+                             std::vector<IOSConfigChoice> choices,
+                             const std::string& value_unit = std::string()) {
   if (!IOSConfigHasConfigVar(key) || choices.empty()) {
     return;
   }
@@ -104,6 +128,7 @@ static void AddChoiceSetting(std::vector<IOSConfigItem>& items, IOSConfigControl
   item.title = title;
   item.subtitle = subtitle;
   item.control_type = control_type;
+  item.value_unit = value_unit;
   item.choice_value = fallback;
   IOSConfigParseInt64String(IOSConfigGetConfigVarString(key, std::to_string(fallback)),
                             &item.choice_value);
@@ -118,10 +143,11 @@ static void AddChoiceSetting(std::vector<IOSConfigItem>& items, IOSConfigControl
   if (!found) {
     // Keep a value the list doesn't offer (hand-edited config, older build) and show it as is;
     // it only changes if the user picks another entry.
-    item.choices.insert(item.choices.begin(),
-                        {"Custom (" + std::to_string(item.choice_value) + ")", item.choice_value});
+    item.choices.insert(
+        item.choices.begin(),
+        {IOSConfigCustomChoiceTitle(item.choice_value, value_unit), item.choice_value, true});
   }
-  items.push_back(std::move(item));
+  AddItem(items, std::move(item));
 }
 
 static void AddStringChoiceSetting(std::vector<IOSConfigItem>& items, const std::string& key,
@@ -152,8 +178,8 @@ static void AddStringChoiceSetting(std::vector<IOSConfigItem>& items, const std:
     }
   }
   if (!found && !item.string_value.empty()) {
-    item.choices.push_back({"Custom (" + item.string_value + ")",
-                            static_cast<int64_t>(item.choice_string_values.size())});
+    item.choices.push_back({IOSConfigCustomChoiceTitle(item.string_value),
+                            static_cast<int64_t>(item.choice_string_values.size()), true});
     item.choice_string_values.push_back(item.string_value);
     item.choice_value = static_cast<int64_t>(item.choice_string_values.size() - 1);
     found = true;
@@ -173,7 +199,7 @@ static void AddStringChoiceSetting(std::vector<IOSConfigItem>& items, const std:
     item.string_value = item.choice_string_values.front();
   }
 
-  items.push_back(std::move(item));
+  AddItem(items, std::move(item));
 }
 
 static void AddActionSetting(std::vector<IOSConfigItem>& items, IOSConfigAction action,
@@ -184,6 +210,26 @@ static void AddActionSetting(std::vector<IOSConfigItem>& items, IOSConfigAction 
   item.control_type = IOSConfigControlType::kAction;
   item.action = action;
   items.push_back(std::move(item));
+}
+
+// Fills the choices of an enum row from |options| and selects the stored value. A stored value
+// that isn't an option is kept as a last "Custom (...)" entry rather than shown as the first one.
+static void FillEnumChoices(IOSConfigItem* item, const std::vector<std::string>& options) {
+  bool found = false;
+  for (size_t i = 0; i < options.size(); ++i) {
+    item->choices.push_back({options[i], static_cast<int64_t>(i)});
+    item->choice_string_values.push_back(options[i]);
+    if (!found && options[i] == item->string_value) {
+      item->choice_value = static_cast<int64_t>(i);
+      found = true;
+    }
+  }
+  if (!found && !item->string_value.empty()) {
+    item->choices.push_back({IOSConfigCustomChoiceTitle(item->string_value),
+                             static_cast<int64_t>(item->choice_string_values.size()), true});
+    item->choice_string_values.push_back(item->string_value);
+    item->choice_value = static_cast<int64_t>(item->choice_string_values.size() - 1);
+  }
 }
 
 static void AddEnumSetting(std::vector<IOSConfigItem>& items, const std::string& key,
@@ -203,14 +249,8 @@ static void AddEnumSetting(std::vector<IOSConfigItem>& items, const std::string&
   item.control_type = IOSConfigControlType::kEnum;
   item.enum_key = key;
   item.string_value = IOSConfigGetConfigVarString(key, it->second.front());
-  for (size_t i = 0; i < it->second.size(); ++i) {
-    item.choices.push_back({it->second[i], static_cast<int64_t>(i)});
-    item.choice_string_values.push_back(it->second[i]);
-    if (it->second[i] == item.string_value) {
-      item.choice_value = static_cast<int64_t>(i);
-    }
-  }
-  items.push_back(std::move(item));
+  FillEnumChoices(&item, it->second);
+  AddItem(items, std::move(item));
 }
 
 static void AddIntegerSetting(std::vector<IOSConfigItem>& items, const std::string& key,
@@ -227,7 +267,7 @@ static void AddIntegerSetting(std::vector<IOSConfigItem>& items, const std::stri
   if (IOSConfigParseInt64String(IOSConfigGetConfigVarString(key, "0"), &parsed)) {
     item.integer_value = parsed;
   }
-  items.push_back(std::move(item));
+  AddItem(items, std::move(item));
 }
 
 static void AddDoubleSetting(std::vector<IOSConfigItem>& items, const std::string& key,
@@ -248,7 +288,7 @@ static void AddDoubleSetting(std::vector<IOSConfigItem>& items, const std::strin
       item.double_value = parsed;
     }
   }
-  items.push_back(std::move(item));
+  AddItem(items, std::move(item));
 }
 
 std::string ChoiceTitleForItem(const IOSConfigItem& item) {
@@ -294,7 +334,8 @@ static std::vector<IOSConfigSection> BuildDisplaySections() {
                     {"45 FPS", 45},
                     {"60 FPS", 60},
                     {"90 FPS", 90},
-                    {"120 FPS", 120}});
+                    {"120 FPS", 120}},
+                   "FPS");
   AddBoolSetting(display.items, "guest_display_refresh_cap", "Cap Guest Display Refresh",
                  "Keeps guest vblank at console timing instead of running as fast as "
                  "possible. Turn this off only for troubleshooting speed or timing-"
@@ -320,24 +361,9 @@ static std::vector<IOSConfigSection> BuildGraphicsSections() {
                          "metal", {{"Metal", "metal"}, {"Vulkan (MoltenVK)", "vulkan"}});
   AddIntegerSetting(backend.items, "anisotropic_override", "Anisotropic Override",
                     "Override anisotropic filtering level (-1 = auto, 0 = off, 1-5).");
-  AddEnumSetting(backend.items, "render_target_path", "Render Target Path",
-                 "Selects the render target implementation path after a relaunch. The "
-                 "Accuracy path is currently unavailable on Metal.");
   PushIfNotEmpty(sections, std::move(backend));
-
-  IOSConfigSection shader;
-  shader.title = "Shader & Pipeline";
-  shader.footer = "These settings trade stutter, battery usage, and cache size.";
-  AddBoolSetting(shader.items, "store_shaders", "Persistent Shader Cache",
-                 "Keeps translated shaders and pipelines on disk so later boots stutter "
-                 "less. Disable only if you suspect cache corruption after an update.",
-                 true);
-  AddBoolSetting(shader.items, "async_shader_compilation", "Async Shader Compilation",
-                 "Compiles Metal shaders and pipelines in background threads to reduce "
-                 "stutter. New effects may appear a moment late; turn this off if you "
-                 "prefer blocking correctness over smoother frame pacing.",
-                 true);
-  PushIfNotEmpty(sections, std::move(shader));
+  // Shader cache and async compilation live under Performance, render target path under
+  // Compatibility, so each setting has one home.
   return sections;
 }
 
@@ -368,15 +394,18 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
   AddBoolSetting(scheduler.items, "ios_gpu_commands_user_interactive_qos",
                  "GPU Commands User-Interactive QoS",
                  "Runs the Metal command processor host thread at user-interactive QoS "
-                 "so frame submission and presentation get latency-critical scheduling.",
+                 "so frame submission and presentation get latency-critical scheduling. "
+                 "Uses more battery.",
                  true);
   AddBoolSetting(scheduler.items, "ios_guest_threads_user_initiated_qos",
                  "Guest Threads User-Initiated QoS",
                  "Runs guest XThreads and GuestScheduler dispatch threads at "
-                 "user-initiated QoS for CPU-bound game execution.",
+                 "user-initiated QoS for CPU-bound game execution. Uses more battery.",
                  true);
   AddStringChoiceSetting(scheduler.items, "ios_audio_worker_qos", "Audio Worker QoS",
-                         "Sets the audio worker host thread QoS.", "user_interactive",
+                         "Sets the audio worker host thread QoS. Higher priority keeps audio "
+                         "smoother and uses more battery.",
+                         "user_interactive",
                          {{"Default", "default"},
                           {"User-Initiated", "user_initiated"},
                           {"User-Interactive", "user_interactive"}});
@@ -384,7 +413,7 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
                  "Emulator Thread User-Initiated QoS",
                  "Runs the high-level emulator setup and launch thread at "
                  "user-initiated QoS. This usually matters less than GPU commands or "
-                 "guest threads.",
+                 "guest threads. Uses more battery.",
                  false);
   PushIfNotEmpty(sections, std::move(scheduler));
   return sections;
@@ -439,7 +468,8 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
                     {"16 Frames", 16},
                     {"32 Frames", 32},
                     {"48 Frames", 48},
-                    {"64 Frames", 64}});
+                    {"64 Frames", 64}},
+                   "Frames");
   AddStringChoiceSetting(audio.items, "xma_decoder", "XMA Decoder",
                          "Select the XMA decoder implementation. New is the current general "
                          "default; Old and Master are fallback paths for regressions, and Fake "
@@ -462,8 +492,7 @@ static std::vector<IOSConfigSection> BuildControlsSections() {
   std::vector<IOSConfigSection> sections;
   IOSConfigSection touch;
   touch.title = "Touch Behavior";
-  touch.footer = "Lower look points increase camera sensitivity. Hold timings help "
-                 "low-FPS games observe short touch input pulses.";
+  touch.footer = "Lower look points increase camera sensitivity.";
   AddBoolSetting(touch.items, "ios_touch_haptics", "Touch Haptics",
                  "Play haptic feedback on touch button presses, control selection, and "
                  "snap engagement.",
@@ -477,11 +506,16 @@ static std::vector<IOSConfigSection> BuildControlsSections() {
                    "Swipe distance needed to drive the touch look zone to full stick output.");
   AddDoubleSetting(touch.items, "ios_touch_look_vertical_scale", "Look Vertical Scale",
                    "Extra multiplier for vertical swipe-look motion.");
-  AddDoubleSetting(touch.items, "ios_touch_look_hold_seconds", "Look Hold Seconds",
-                   "How long touch look motion persists for low-FPS polling.");
-  AddDoubleSetting(touch.items, "ios_touch_button_tap_hold_seconds", "Button Tap Hold Seconds",
-                   "How long tap-style touch buttons stay active for low-FPS polling.");
   PushIfNotEmpty(sections, std::move(touch));
+
+  IOSConfigSection low_fps;
+  low_fps.title = "Low-FPS Games";
+  low_fps.footer = "Hold timings help low-FPS games observe short touch input pulses.";
+  AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold Seconds",
+                   "How long touch look motion persists for low-FPS polling.");
+  AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Button Tap Hold Seconds",
+                   "How long tap-style touch buttons stay active for low-FPS polling.");
+  PushIfNotEmpty(sections, std::move(low_fps));
   return sections;
 }
 
@@ -511,8 +545,8 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
   AddEnumSetting(gpu.items, "occlusion_query", "Occlusion Query",
                  "Selects the occlusion query implementation.");
   AddEnumSetting(gpu.items, "render_target_path", "Render Target Path",
-                 "Selects the render target implementation path. The Accuracy path is "
-                 "currently unavailable on Metal.");
+                 "Selects the render target implementation path after a relaunch. The "
+                 "Accuracy path is currently unavailable on Metal.");
   PushIfNotEmpty(sections, std::move(gpu));
 
   IOSConfigSection memory;
@@ -536,20 +570,25 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
                  "synchronized across calls. Leave this off unless a game specifically "
                  "needs it to boot or unwind correctly.",
                  false);
-  AddBoolSetting(jit.items, "ios_jit_brk_prepare_fallback",
+  PushIfNotEmpty(sections, std::move(jit));
+
+  IOSConfigSection broker;
+  broker.title = "External JIT Broker";
+  broker.footer = "Only for external JIT brokers.";
+  AddBoolSetting(broker.items, "ios_jit_brk_prepare_fallback",
                  "External JIT Prepare Fallback",
                  "iOS ARM64 only. If iOS denies JIT page protection changes, ask an "
                  "external broker or helper to prepare the region and retry. This is only "
                  "useful on TXM or broker setups; otherwise it is unnecessary.",
                  true);
-  AddBoolSetting(jit.items, "ios_jit_brk_use_universal_0xf00d",
+  AddBoolSetting(broker.items, "ios_jit_brk_use_universal_0xf00d",
                  "Universal 0xF00D JIT Breakpoint",
                  "Use the modern universal BRK command for the external JIT broker. Keep "
                  "this on for current broker scripts; disable it only if you are using an "
                  "older legacy 0x69-only setup. This only matters when External JIT "
                  "Prepare Fallback is enabled.",
                  true);
-  PushIfNotEmpty(sections, std::move(jit));
+  PushIfNotEmpty(sections, std::move(broker));
   return sections;
 }
 
@@ -594,15 +633,21 @@ static std::vector<IOSConfigSection> BuildDiagnosticsSections() {
                    "Open a live-updating xenia.log viewer so you can capture boot failures "
                    "without Xcode.");
   PushIfNotEmpty(sections, std::move(diagnostics));
+  return sections;
+}
 
+// Shown at the bottom of All Settings, where people look for it.
+static std::vector<IOSConfigSection> BuildResetSections() {
+  std::vector<IOSConfigSection> sections;
   IOSConfigSection reset;
   reset.title = "Reset";
+  reset.footer =
+      "To change settings for a single game, open Game Settings from that game's tile menu.";
   AddActionSetting(reset.items, IOSConfigAction::kResetAllSettings,
                    "Reset All Settings to Defaults",
                    "Puts every setting back to its default. Games, saves, profiles and "
                    "per-game overrides are kept.");
   PushIfNotEmpty(sections, std::move(reset));
-
   return sections;
 }
 
@@ -892,13 +937,7 @@ std::vector<IOSConfigSection> BuildAllCvarSections() {
         item.control_type = IOSConfigControlType::kEnum;
         item.enum_key = name;
         item.string_value = IOSConfigGetConfigVarString(name, "");
-        for (size_t i = 0; i < enum_it->second.size(); ++i) {
-          item.choices.push_back({enum_it->second[i], static_cast<int64_t>(i)});
-          item.choice_string_values.push_back(enum_it->second[i]);
-          if (enum_it->second[i] == item.string_value) {
-            item.choice_value = static_cast<int64_t>(i);
-          }
-        }
+        FillEnumChoices(&item, enum_it->second);
       } else {
         item.control_type = IOSConfigControlType::kString;
         item.string_value = IOSConfigGetConfigVarString(name, "");
@@ -912,6 +951,7 @@ std::vector<IOSConfigSection> BuildAllCvarSections() {
       item.string_value = TrimAscii(var->config_value());
     }
 
+    item.has_default = IOSConfigGetConfigVarDefaultString(name, &item.default_value);
     category_items[item.category].push_back(std::move(item));
   }
 
@@ -1003,68 +1043,125 @@ std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind) {
     case IOSConfigCatalogKind::kGraphicsCompat:
       return "Graphics Compatibility";
     case IOSConfigCatalogKind::kAllCvars:
-      return "All Config Settings";
+      return "Developer: All Config";
+    case IOSConfigCatalogKind::kAllSettings:
+      return "All Settings";
     case IOSConfigCatalogKind::kMain:
     default:
       return "Settings";
   }
 }
 
+// Every curated page, in hub order.
+static const IOSConfigCatalogKind kCuratedPages[] = {
+    IOSConfigCatalogKind::kDisplay,     IOSConfigCatalogKind::kGraphics,
+    IOSConfigCatalogKind::kAudio,       IOSConfigCatalogKind::kControls,
+    IOSConfigCatalogKind::kPerformance, IOSConfigCatalogKind::kCompatibility,
+    IOSConfigCatalogKind::kSystem,      IOSConfigCatalogKind::kDiagnostics,
+};
+
+static std::vector<IOSConfigSection> BuildCuratedPageSections(IOSConfigCatalogKind kind) {
+  switch (kind) {
+    case IOSConfigCatalogKind::kDisplay:
+      return BuildDisplaySections();
+    case IOSConfigCatalogKind::kGraphics:
+      return BuildGraphicsSections();
+    case IOSConfigCatalogKind::kAudio:
+      return BuildAudioSections();
+    case IOSConfigCatalogKind::kControls:
+      return BuildControlsSections();
+    case IOSConfigCatalogKind::kPerformance:
+      return BuildPerformanceSections();
+    case IOSConfigCatalogKind::kCompatibility:
+      return BuildCompatibilitySections();
+    case IOSConfigCatalogKind::kSystem:
+      return BuildSystemSections();
+    case IOSConfigCatalogKind::kDiagnostics:
+      return BuildDiagnosticsSections();
+    default:
+      return {};
+  }
+}
+
+// Every curated page in one list. A setting that appears on two pages is kept once, on the first.
+// Section titles carry their page ("Graphics · Graphics Backend").
+static std::vector<IOSConfigSection> BuildAllSettingsSections() {
+  std::vector<IOSConfigSection> result;
+  std::set<std::string> seen_keys;
+  for (IOSConfigCatalogKind kind : kCuratedPages) {
+    const std::string page = IOSConfigCatalogTitle(kind);
+    for (IOSConfigSection& section : BuildCuratedPageSections(kind)) {
+      std::vector<IOSConfigItem> kept;
+      for (IOSConfigItem& item : section.items) {
+        if (!item.key.empty() && !seen_keys.insert(item.key).second) {
+          continue;
+        }
+        kept.push_back(std::move(item));
+      }
+      if (kept.empty()) {
+        continue;
+      }
+      section.items = std::move(kept);
+      section.title = page + " \xC2\xB7 " + section.title;
+      result.push_back(std::move(section));
+    }
+  }
+  for (IOSConfigSection& section : BuildResetSections()) {
+    result.push_back(std::move(section));
+  }
+  return result;
+}
+
 std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind kind) {
-  std::vector<IOSConfigSection> all_sections = BuildAllIOSConfigSections();
   std::vector<IOSConfigSection> sections;
 
   switch (kind) {
     case IOSConfigCatalogKind::kDisplay:
-      return BuildDisplaySections();
-
     case IOSConfigCatalogKind::kGraphics:
-      return BuildGraphicsSections();
-
     case IOSConfigCatalogKind::kAudio:
-      return BuildAudioSections();
-
     case IOSConfigCatalogKind::kControls:
-      return BuildControlsSections();
-
     case IOSConfigCatalogKind::kPerformance:
-      return BuildPerformanceSections();
-
     case IOSConfigCatalogKind::kCompatibility:
-      return BuildCompatibilitySections();
+    case IOSConfigCatalogKind::kSystem:
+    case IOSConfigCatalogKind::kDiagnostics:
+      return BuildCuratedPageSections(kind);
 
     case IOSConfigCatalogKind::kAdvanced:
     case IOSConfigCatalogKind::kDebugSettings:
       return BuildDebugSettingsSections();
 
-    case IOSConfigCatalogKind::kDiagnostics:
-      return BuildDiagnosticsSections();
-
-    case IOSConfigCatalogKind::kSystem:
-      return BuildSystemSections();
-
-    case IOSConfigCatalogKind::kPerGame:
-      {
-        IOSConfigSection more;
-        more.title = "Search Overrides";
-        if (IOSDeveloperModeEnabled()) {
-          AddActionSetting(more.items, IOSConfigAction::kOpenAllConfigSettings,
-                           "Search All Config",
-                           "Find any non-transient cvar and save it as a title-specific "
-                           "override.");
-        }
-        AddActionSetting(more.items, IOSConfigAction::kResetGameSettings,
-                         "Reset Game Settings",
-                         "Delete saved overrides for this title and return to defaults.");
-        PushIfNotEmpty(sections, std::move(more));
-      }
+    case IOSConfigCatalogKind::kPerGame: {
+      // The per-title list: only settings the engine reads after the title's config is loaded
+      // at launch (or on every frame), so a saved override takes effect.
+      std::vector<IOSConfigSection> all_sections = BuildAllIOSConfigSections();
       PushFilteredSection(sections, all_sections, "Display",
-                          {"present_letterbox", "guest_display_refresh_cap", "use_50Hz_mode"});
+                          {"present_letterbox", "framerate_limit", "guest_display_refresh_cap",
+                           "use_50Hz_mode"});
       PushFilteredSection(sections, all_sections, "Graphics Backend", {"gpu"});
+      PushFilteredSection(sections, all_sections, "Caching & Compilation",
+                          {"async_shader_compilation"});
+      PushFilteredSection(sections, all_sections, "Audio",
+                          {"apu_max_queued_frames", "xma_decoder", "use_dedicated_xma_thread"});
       PushWholeSection(sections, all_sections, "GPU Workarounds");
       PushWholeSection(sections, all_sections, "Memory & Boot");
       PushWholeSection(sections, all_sections, "JIT & Codegen");
+      PushWholeSection(sections, all_sections, "External JIT Broker");
+      if (IOSDeveloperModeEnabled()) {
+        IOSConfigSection developer;
+        developer.title = "Developer";
+        AddActionSetting(developer.items, IOSConfigAction::kOpenAllConfigSettings,
+                         "Search All Config",
+                         "Find any non-transient cvar and save it as a title-specific "
+                         "override.");
+        PushIfNotEmpty(sections, std::move(developer));
+      }
+      IOSConfigSection reset;
+      reset.title = "Reset";
+      AddActionSetting(reset.items, IOSConfigAction::kResetGameSettings, "Reset Game Settings",
+                       "Delete saved overrides for this title and return to defaults.");
+      PushIfNotEmpty(sections, std::move(reset));
       return sections;
+    }
 
     case IOSConfigCatalogKind::kGraphicsCompat:
       return BuildGraphicsCompatSections();
@@ -1072,8 +1169,12 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
     case IOSConfigCatalogKind::kAllCvars:
       return BuildAllCvarSections();
 
+    case IOSConfigCatalogKind::kAllSettings:
+      return BuildAllSettingsSections();
+
     case IOSConfigCatalogKind::kMain:
-    default:
+    default: {
+      std::vector<IOSConfigSection> all_sections = BuildAllIOSConfigSections();
       PushFilteredSection(sections, all_sections, "Display",
                           {"present_letterbox", "framerate_limit",
                            "guest_display_refresh_cap"});
@@ -1081,9 +1182,253 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
                           {"mute"});
       PushWholeSection(sections, all_sections, "Automation");
       return sections;
+    }
   }
 }
 
 std::vector<IOSConfigSection> BuildIOSConfigSections() {
   return BuildIOSConfigSectionsForKind(IOSConfigCatalogKind::kMain);
+}
+
+bool IOSConfigKeyAllowsPerGame(const std::string& key) {
+  if (key.empty()) {
+    return false;
+  }
+  static const std::set<std::string> keys = []() {
+    std::set<std::string> result;
+    for (const IOSConfigSection& section :
+         BuildIOSConfigSectionsForKind(IOSConfigCatalogKind::kPerGame)) {
+      for (const IOSConfigItem& item : section.items) {
+        if (!item.key.empty()) {
+          result.insert(item.key);
+        }
+      }
+    }
+    return result;
+  }();
+  return keys.count(key) != 0;
+}
+
+static std::string FormatDoubleText(double value) {
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "%.6g", value);
+  return buffer;
+}
+
+static std::string OnOffText(bool on) {
+  return [(on ? NSLocalizedString(@"On", @"config catalog: toggle value")
+              : NSLocalizedString(@"Off", @"config catalog: toggle value")) UTF8String];
+}
+
+std::string IOSConfigItemValueText(const IOSConfigItem& item) {
+  switch (item.control_type) {
+    case IOSConfigControlType::kToggle:
+      return OnOffText(item.bool_value);
+    case IOSConfigControlType::kInteger:
+      return std::to_string(item.integer_value);
+    case IOSConfigControlType::kDouble:
+      return FormatDoubleText(item.double_value);
+    case IOSConfigControlType::kString:
+    case IOSConfigControlType::kPath:
+      return item.string_value;
+    case IOSConfigControlType::kAction:
+      return std::string();
+    default:
+      return ChoiceTitleForItem(item);
+  }
+}
+
+// The default as the row would show it. False when the default isn't known.
+bool IOSConfigItemDefaultText(const IOSConfigItem& item, std::string* text_out) {
+  if (!item.has_default || item.control_type == IOSConfigControlType::kAction) {
+    return false;
+  }
+  std::string text = item.default_value;
+  switch (item.control_type) {
+    case IOSConfigControlType::kToggle: {
+      bool value = false;
+      if (!IOSConfigParseBoolString(item.default_value, &value)) {
+        return false;
+      }
+      text = OnOffText(value);
+    } break;
+    case IOSConfigControlType::kChoiceInt32:
+    case IOSConfigControlType::kChoiceUInt32:
+    case IOSConfigControlType::kChoiceUInt64: {
+      int64_t value = 0;
+      if (!IOSConfigParseInt64String(item.default_value, &value)) {
+        return false;
+      }
+      for (const IOSConfigChoice& choice : item.choices) {
+        if (choice.value == value && !choice.is_custom) {
+          text = choice.title;
+        }
+      }
+    } break;
+    case IOSConfigControlType::kChoiceString:
+    case IOSConfigControlType::kEnum:
+      for (size_t i = 0; i < item.choice_string_values.size() && i < item.choices.size(); ++i) {
+        if (item.choice_string_values[i] == item.default_value && !item.choices[i].is_custom) {
+          text = item.choices[i].title;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+  if (text.empty()) {
+    text = [NSLocalizedString(@"Empty", @"config catalog: empty default value") UTF8String];
+  }
+  *text_out = text;
+  return true;
+}
+
+bool IOSConfigItemIsDefault(const IOSConfigItem& item) {
+  if (!item.has_default) {
+    return true;
+  }
+  switch (item.control_type) {
+    case IOSConfigControlType::kToggle: {
+      bool value = false;
+      return !IOSConfigParseBoolString(item.default_value, &value) || value == item.bool_value;
+    }
+    case IOSConfigControlType::kChoiceInt32:
+    case IOSConfigControlType::kChoiceUInt32:
+    case IOSConfigControlType::kChoiceUInt64: {
+      int64_t value = 0;
+      return !IOSConfigParseInt64String(item.default_value, &value) ||
+             value == item.choice_value;
+    }
+    case IOSConfigControlType::kInteger: {
+      int64_t value = 0;
+      return !IOSConfigParseInt64String(item.default_value, &value) ||
+             value == item.integer_value;
+    }
+    case IOSConfigControlType::kDouble: {
+      char* end = nullptr;
+      const double value = std::strtod(item.default_value.c_str(), &end);
+      return end == item.default_value.c_str() ||
+             FormatDoubleText(value) == FormatDoubleText(item.double_value);
+    }
+    case IOSConfigControlType::kChoiceString:
+    case IOSConfigControlType::kEnum:
+    case IOSConfigControlType::kString:
+    case IOSConfigControlType::kPath:
+      return item.string_value == item.default_value;
+    case IOSConfigControlType::kAction:
+      return true;
+  }
+  return true;
+}
+
+bool IOSConfigResetItemToDefault(IOSConfigItem* item) {
+  if (!item || !item->has_default || IOSConfigItemIsDefault(*item)) {
+    return false;
+  }
+  switch (item->control_type) {
+    case IOSConfigControlType::kToggle:
+      return IOSConfigParseBoolString(item->default_value, &item->bool_value);
+    case IOSConfigControlType::kChoiceInt32:
+    case IOSConfigControlType::kChoiceUInt32:
+    case IOSConfigControlType::kChoiceUInt64: {
+      int64_t value = 0;
+      if (!IOSConfigParseInt64String(item->default_value, &value)) {
+        return false;
+      }
+      for (const IOSConfigChoice& choice : item->choices) {
+        if (choice.value == value && !choice.is_custom) {
+          item->choice_value = value;
+          return true;
+        }
+      }
+      return false;
+    }
+    case IOSConfigControlType::kInteger:
+      return IOSConfigParseInt64String(item->default_value, &item->integer_value);
+    case IOSConfigControlType::kDouble: {
+      char* end = nullptr;
+      const double value = std::strtod(item->default_value.c_str(), &end);
+      if (end == item->default_value.c_str()) {
+        return false;
+      }
+      item->double_value = value;
+      return true;
+    }
+    case IOSConfigControlType::kChoiceString:
+    case IOSConfigControlType::kEnum:
+      for (size_t i = 0; i < item->choice_string_values.size() && i < item->choices.size(); ++i) {
+        if (item->choice_string_values[i] == item->default_value && !item->choices[i].is_custom) {
+          item->string_value = item->default_value;
+          item->choice_value = static_cast<int64_t>(i);
+          return true;
+        }
+      }
+      return false;
+    case IOSConfigControlType::kString:
+    case IOSConfigControlType::kPath:
+      item->string_value = item->default_value;
+      return true;
+    case IOSConfigControlType::kAction:
+      return false;
+  }
+  return false;
+}
+
+std::vector<IOSConfigSearchEntry> BuildIOSConfigSearchIndex() {
+  std::vector<IOSConfigSearchEntry> index;
+  std::set<std::string> seen_keys;
+  std::set<std::string> seen_actions;
+
+  auto add = [&](const IOSConfigItem& item, IOSConfigCatalogKind kind, const std::string& page,
+                 const std::string& section, bool advanced) {
+    if (item.key.empty()) {
+      if (!seen_actions.insert(item.title).second) {
+        return;
+      }
+    } else if (!seen_keys.insert(item.key).second) {
+      return;
+    }
+    IOSConfigSearchEntry entry;
+    entry.key = item.key;
+    entry.title = item.title;
+    entry.subtitle = item.subtitle;
+    entry.page = page;
+    entry.section = section;
+    entry.value_text = IOSConfigItemValueText(item);
+    entry.kind = kind;
+    entry.value_searchable = item.control_type != IOSConfigControlType::kToggle;
+    entry.per_game = IOSConfigKeyAllowsPerGame(item.key);
+    entry.advanced = advanced;
+    index.push_back(std::move(entry));
+  };
+
+  // Each curated setting once (the first page that lists it), then the settings that exist only
+  // in the developer pages.
+  for (IOSConfigCatalogKind kind : kCuratedPages) {
+    const std::string page = IOSConfigCatalogTitle(kind);
+    for (const IOSConfigSection& section : BuildCuratedPageSections(kind)) {
+      for (const IOSConfigItem& item : section.items) {
+        add(item, kind, page, section.title, false);
+      }
+    }
+  }
+  for (const IOSConfigSection& section : BuildResetSections()) {
+    for (const IOSConfigItem& item : section.items) {
+      add(item, IOSConfigCatalogKind::kAllSettings,
+          IOSConfigCatalogTitle(IOSConfigCatalogKind::kAllSettings), section.title, false);
+    }
+  }
+  for (const IOSConfigSection& section : BuildDebugSettingsSections()) {
+    for (const IOSConfigItem& item : section.items) {
+      add(item, IOSConfigCatalogKind::kDebugSettings,
+          IOSConfigCatalogTitle(IOSConfigCatalogKind::kDebugSettings), section.title, true);
+    }
+  }
+  for (const IOSConfigSection& section : BuildAllCvarSections()) {
+    for (const IOSConfigItem& item : section.items) {
+      add(item, IOSConfigCatalogKind::kAllCvars,
+          IOSConfigCatalogTitle(IOSConfigCatalogKind::kAllCvars), section.title, true);
+    }
+  }
+  return index;
 }

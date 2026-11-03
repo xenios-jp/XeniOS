@@ -13,6 +13,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/settings/ios_choice_list_view_controller.h"
+#import "xenia/ui/ios/settings/ios_config_catalog.h"
 #import "xenia/ui/ios/settings/ios_config_builder.h"
 #import "xenia/ui/ios/settings/ios_config_models.h"
 #import "xenia/ui/ios/settings/ios_config_storage.h"
@@ -221,7 +223,49 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
 
 }  // namespace
 
-@interface XeniaConfigViewController ()
+UIView* XeniaConfigMakeValueAccessoryView(NSString* value, CGFloat max_width, BOOL with_chevron) {
+  UILabel* label = [[[UILabel alloc] init] autorelease];
+  label.text = value;
+  label.textColor = [XeniaTheme textSecondary];
+  label.numberOfLines = 1;
+  label.lineBreakMode = NSLineBreakByTruncatingTail;
+  label.textAlignment = NSTextAlignmentRight;
+  xe_apply_label_font(label, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  [label setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                         forAxis:UILayoutConstraintAxisHorizontal];
+  [label.widthAnchor constraintLessThanOrEqualToConstant:MAX(max_width, 44.0)].active = YES;
+
+  NSMutableArray<UIView*>* views = [NSMutableArray arrayWithObject:label];
+  if (with_chevron) {
+    UIImageSymbolConfiguration* symbol_config = [UIImageSymbolConfiguration
+        configurationWithPointSize:13.0
+                            weight:UIImageSymbolWeightSemibold];
+    UIImageView* chevron = [[[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:@"chevron.right"
+                              withConfiguration:symbol_config]] autorelease];
+    chevron.tintColor = [UIColor tertiaryLabelColor];
+    [chevron setContentHuggingPriority:UILayoutPriorityRequired
+                               forAxis:UILayoutConstraintAxisHorizontal];
+    [views addObject:chevron];
+  }
+  UIStackView* stack = [[[UIStackView alloc] initWithArrangedSubviews:views] autorelease];
+  stack.axis = UILayoutConstraintAxisHorizontal;
+  stack.alignment = UIStackViewAlignmentCenter;
+  stack.spacing = 8.0;
+  // The row is the VoiceOver element and speaks the value; this view is only drawn.
+  stack.isAccessibilityElement = NO;
+  const CGSize size = [stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+  stack.frame = CGRectMake(0.0, 0.0, ceil(size.width), ceil(size.height));
+  return stack;
+}
+
+// Text fields reused across rows are told apart by tag so a row only reuses a field wired for its
+// own kind of value.
+static const NSInteger kXeniaConfigIntegerFieldTag = 9101;
+static const NSInteger kXeniaConfigDoubleFieldTag = 9102;
+static const NSInteger kXeniaConfigStringFieldTag = 9103;
+
+@interface XeniaConfigViewController () <UISearchResultsUpdating>
 - (void)confirmResetGameSettings;
 - (void)confirmResetAllSettings;
 @end
@@ -238,12 +282,32 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   NSString* game_title_;
   UIBarButtonItem* saveButton_;
   void (^dismissal_handler_)(void);
+  // Pages with search keep the unfiltered list here; sections_ is what the table shows.
+  std::vector<IOSConfigSection> full_sections_;
+  UISearchController* search_controller_;
+  NSString* focus_key_;
+  NSIndexPath* focus_path_;
+  BOOL focus_flash_pending_;
+  BOOL loading_game_config_;
+  std::shared_ptr<void> game_config_snapshot_;
 }
 
 @synthesize dismissalHandler = dismissal_handler_;
 @synthesize showsRootDismissButton = shows_root_dismiss_button_;
 @synthesize liveOverride = live_override_;
 @synthesize appContext = app_context_;
+
+- (NSString*)focusKey {
+  return focus_key_;
+}
+
+- (void)setFocusKey:(NSString*)focusKey {
+  if (focus_key_ == focusKey) {
+    return;
+  }
+  [focus_key_ release];
+  focus_key_ = [focusKey copy];
+}
 
 - (instancetype)initWithStyle:(UITableViewStyle)style {
   return [self initWithCatalogKind:IOSConfigCatalogKind::kMain style:style];
@@ -283,13 +347,31 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
 - (std::vector<IOSConfigSection>)buildSections {
   std::vector<IOSConfigSection> sections = BuildIOSConfigSectionsForKind(catalog_kind_);
   if (game_title_id_) {
-    OverlayIOSConfigSectionsFromGameConfig(&sections, game_title_id_);
+    // The first build uses the file read off the main thread; later ones (after a reset) read
+    // it again.
+    std::shared_ptr<void> snapshot = std::move(game_config_snapshot_);
+    game_config_snapshot_.reset();
+    OverlayIOSConfigSectionsFromGameConfig(&sections, game_title_id_, snapshot);
   }
   return sections;
 }
 
+// Game Settings, All Settings and the developer pages are long lists, so they get search.
+- (BOOL)supportsSearch {
+  switch (catalog_kind_) {
+    case IOSConfigCatalogKind::kPerGame:
+    case IOSConfigCatalogKind::kAllSettings:
+    case IOSConfigCatalogKind::kAllCvars:
+    case IOSConfigCatalogKind::kAdvanced:
+    case IOSConfigCatalogKind::kDebugSettings:
+      return YES;
+    default:
+      return NO;
+  }
+}
+
 - (std::vector<IOSConfigSection>)sectionsForSaving {
-  return sections_;
+  return [self supportsSearch] ? full_sections_ : sections_;
 }
 
 - (void)replaceSections:(std::vector<IOSConfigSection>)newSections {
@@ -297,7 +379,20 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   [self.tableView reloadData];
 }
 
+// Rebuilds the rows from the catalog (after a reset) and applies the current search again.
+- (void)reloadSectionsFromCatalog {
+  full_sections_ = [self buildSections];
+  if ([self supportsSearch] && search_controller_.searchBar.text.length) {
+    [self updateSearchResultsForSearchController:search_controller_];
+    return;
+  }
+  [self replaceSections:full_sections_];
+}
+
 - (void)dealloc {
+  [search_controller_ release];
+  [focus_key_ release];
+  [focus_path_ release];
   [game_title_ release];
   [saveButton_ release];
   [dismissal_handler_ release];
@@ -413,15 +508,18 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
                                        @"config view controller: title");
   label.textAlignment = NSTextAlignmentCenter;
   label.textColor = [XeniaTheme textMuted];
-  label.numberOfLines = 1;
+  // Wraps at large text sizes and in longer languages; the layout helper measures the height.
+  label.numberOfLines = 0;
   xe_apply_label_font(label, UIFontTextStyleCaption1, 12.0, UIFontWeightMedium);
+  [label setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                         forAxis:UILayoutConstraintAxisVertical];
   [container addSubview:label];
 
   [NSLayoutConstraint activateConstraints:@[
-    [label.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
-    [label.centerYAnchor constraintEqualToAnchor:container.centerYAnchor],
-    [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor constant:16.0],
-    [label.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-16.0],
+    [label.topAnchor constraintEqualToAnchor:container.topAnchor constant:14.0],
+    [label.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-14.0],
+    [label.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16.0],
+    [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16.0],
   ]];
 
   return container;
@@ -511,11 +609,46 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 132.0;
-  if (@available(iOS 15.0, *)) {
-    self.tableView.sectionHeaderTopPadding = 0;
-  }
-  sections_ = [self buildSections];
+  self.tableView.sectionHeaderTopPadding = 0;
   hasPendingChanges_ = NO;
+  if (game_title_id_) {
+    // Reading the title's saved overrides is a file read and a TOML parse; keep it off the main
+    // thread and show the rows when it is done.
+    loading_game_config_ = YES;
+    UIActivityIndicatorView* spinner = [[[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge] autorelease];
+    spinner.color = [XeniaTheme textSecondary];
+    [spinner startAnimating];
+    self.tableView.backgroundView = spinner;
+    const uint32_t title_id = game_title_id_;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      std::shared_ptr<void> snapshot = LoadIOSGameConfigSnapshot(title_id);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        game_config_snapshot_ = snapshot;
+        loading_game_config_ = NO;
+        self.tableView.backgroundView = nil;
+        [self reloadSectionsFromCatalog];
+        [self scrollToFocusRow];
+        [self flashFocusRow];
+      });
+    });
+  } else {
+    full_sections_ = [self buildSections];
+    sections_ = full_sections_;
+  }
+  focus_flash_pending_ = focus_key_.length > 0;
+
+  if ([self supportsSearch]) {
+    search_controller_ = [[UISearchController alloc] initWithSearchResultsController:nil];
+    search_controller_.searchResultsUpdater = self;
+    search_controller_.obscuresBackgroundDuringPresentation = NO;
+    search_controller_.hidesNavigationBarDuringPresentation = NO;
+    search_controller_.searchBar.placeholder =
+        NSLocalizedString(@"Search Settings", @"config view controller: placeholder");
+    self.navigationItem.searchController = search_controller_;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+  }
 
   if (live_override_) {
     self.tableView.tableHeaderView = [self liveOverrideHeaderView];
@@ -680,6 +813,73 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   [super viewWillAppear:animated];
   [self updateNavigationItems];
   [self updateTableHeaderAndFooterLayout];
+  [self scrollToFocusRow];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  [self flashFocusRow];
+}
+
+// Scrolls the row named by focusKey into view, once. Rows are found in the unfiltered list.
+- (void)scrollToFocusRow {
+  if (!focus_key_.length || focus_path_ || loading_game_config_) {
+    return;
+  }
+  const std::string key = [focus_key_ UTF8String];
+  const std::vector<IOSConfigSection>& sections =
+      [self supportsSearch] ? full_sections_ : sections_;
+  for (size_t section_index = 0; section_index < sections.size() && !focus_path_; ++section_index) {
+    const std::vector<IOSConfigItem>& items = sections[section_index].items;
+    for (size_t row = 0; row < items.size(); ++row) {
+      if (items[row].key.empty() ? items[row].title == key : items[row].key == key) {
+        focus_path_ = [[NSIndexPath indexPathForRow:static_cast<NSInteger>(row)
+                                          inSection:static_cast<NSInteger>(section_index)] retain];
+        break;
+      }
+    }
+  }
+  if (!focus_path_ || static_cast<size_t>(focus_path_.section) >= sections_.size()) {
+    return;
+  }
+  // Row heights are estimates until measured, so scroll, lay out and scroll again.
+  [self.tableView layoutIfNeeded];
+  [self.tableView scrollToRowAtIndexPath:focus_path_
+                        atScrollPosition:UITableViewScrollPositionMiddle
+                                animated:NO];
+  [self.tableView layoutIfNeeded];
+  [self.tableView scrollToRowAtIndexPath:focus_path_
+                        atScrollPosition:UITableViewScrollPositionMiddle
+                                animated:NO];
+}
+
+// Briefly tints the focused row so the eye finds it, and moves VoiceOver there.
+- (void)flashFocusRow {
+  if (!focus_flash_pending_ || !focus_path_ || loading_game_config_ || !self.tableView.window) {
+    return;
+  }
+  UITableViewCell* cell = [self.tableView cellForRowAtIndexPath:focus_path_];
+  if (!cell) {
+    return;
+  }
+  focus_flash_pending_ = NO;
+  UIView* flash = [[[UIView alloc] initWithFrame:cell.bounds] autorelease];
+  flash.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  flash.userInteractionEnabled = NO;
+  flash.isAccessibilityElement = NO;
+  flash.layer.cornerRadius = 10.0;
+  flash.backgroundColor = [self.view.tintColor colorWithAlphaComponent:0.28];
+  [cell addSubview:flash];
+  [UIView animateWithDuration:1.0
+      delay:0.5
+      options:UIViewAnimationOptionAllowUserInteraction
+      animations:^{
+        flash.alpha = 0.0;
+      }
+      completion:^(__unused BOOL finished) {
+        [flash removeFromSuperview];
+      }];
+  UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, cell);
 }
 
 - (void)viewSafeAreaInsetsDidChange {
@@ -689,6 +889,15 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
 
 - (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
   [super traitCollectionDidChange:previousTraitCollection];
+  if (self.isViewLoaded && previousTraitCollection &&
+      ![self.traitCollection.preferredContentSizeCategory
+          isEqualToString:previousTraitCollection.preferredContentSizeCategory]) {
+    // Text field widths are measured from the font, so lay the rows out again.
+    NSArray<NSIndexPath*>* visible = self.tableView.indexPathsForVisibleRows;
+    if (visible.count) {
+      [self.tableView reloadRowsAtIndexPaths:visible withRowAnimation:UITableViewRowAnimationNone];
+    }
+  }
   if ([self.traitCollection
           hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
     // Header card's CGColor border was captured against the prior style; the
@@ -715,7 +924,91 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   saveButton_.enabled = YES;
 }
 
-- (void)configItemDidChange:(const IOSConfigItem*)__unused item {
+// Pages with search edit a filtered copy of the rows; keep the unfiltered list (what Save writes)
+// in step.
+- (void)configItemDidChange:(const IOSConfigItem*)item {
+  if (!item || item->key.empty() || ![self supportsSearch]) {
+    return;
+  }
+  for (IOSConfigSection& section : full_sections_) {
+    for (IOSConfigItem& full_item : section.items) {
+      if (full_item.key == item->key) {
+        full_item = *item;
+        return;
+      }
+    }
+  }
+}
+
+// Updates the "Default: ..." line of a visible row after its value changed, without reloading
+// the row (a reload would cut the switch animation or the text field short).
+- (void)refreshSecondaryTextForItem:(const IOSConfigItem*)item {
+  if (!item || game_title_id_ || IsLetterboxBlockedByWindowStretch(*item)) {
+    return;
+  }
+  for (NSIndexPath* path in self.tableView.indexPathsForVisibleRows) {
+    if ([self itemAtIndexPath:path] != item) {
+      continue;
+    }
+    UITableViewCell* cell = [self.tableView cellForRowAtIndexPath:path];
+    UIListContentConfiguration* content =
+        [cell.contentConfiguration isKindOfClass:[UIListContentConfiguration class]]
+            ? [[(UIListContentConfiguration*)cell.contentConfiguration copy] autorelease]
+            : nil;
+    if (!content) {
+      return;
+    }
+    NSString* text = [self secondaryTextForItem:*item];
+    if ([content.secondaryText isEqualToString:text]) {
+      return;
+    }
+    content.secondaryText = text;
+    cell.contentConfiguration = content;
+    if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
+      cell.accessoryView.accessibilityHint = text;
+    }
+    [self.tableView beginUpdates];
+    [self.tableView endUpdates];
+    return;
+  }
+}
+
+#pragma mark - UISearchResultsUpdating
+
+- (void)updateSearchResultsForSearchController:(UISearchController*)searchController {
+  NSString* query = [searchController.searchBar.text
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (query.length == 0) {
+    [self replaceSections:full_sections_];
+    return;
+  }
+
+  // Matches the key, title, description and the current value ("Metal" finds the backend), and
+  // keeps each result under its section.
+  auto matches = [query](const std::string& text) {
+    if (text.empty()) {
+      return false;
+    }
+    return [ToNSString(text) rangeOfString:query
+                                   options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch]
+               .location != NSNotFound;
+  };
+  std::vector<IOSConfigSection> results;
+  for (const IOSConfigSection& section : full_sections_) {
+    IOSConfigSection filtered;
+    filtered.title = section.title;
+    for (const IOSConfigItem& item : section.items) {
+      if (matches(item.key) || matches(item.title) || matches(item.subtitle) ||
+          (item.control_type != IOSConfigControlType::kToggle &&
+           matches(IOSConfigItemValueText(item)))) {
+        filtered.items.push_back(item);
+      }
+    }
+    if (!filtered.items.empty()) {
+      results.push_back(std::move(filtered));
+    }
+  }
+  [self replaceSections:std::move(results)];
 }
 
 - (BOOL)isRootSettingsController {
@@ -780,6 +1073,78 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   return sections_[section].footer.empty() ? nil : ToNSString(sections_[section].footer);
 }
 
+// Description plus, for a setting that was changed, its default on a second line.
+- (NSString*)secondaryTextForItem:(const IOSConfigItem&)item {
+  NSString* base = ToNSString(item.subtitle);
+  if (game_title_id_ || item.control_type == IOSConfigControlType::kAction ||
+      IsLetterboxBlockedByWindowStretch(item) || IOSConfigItemIsDefault(item)) {
+    return base;
+  }
+  std::string default_text;
+  if (!IOSConfigItemDefaultText(item, &default_text)) {
+    return base;
+  }
+  NSString* note = [NSString
+      stringWithFormat:NSLocalizedString(@"Default: %@",
+                                         @"config view controller: default of a changed setting"),
+                       ToNSString(default_text)];
+  return base.length ? [NSString stringWithFormat:@"%@\n%@", base, note] : note;
+}
+
+// Width for a number or text field: grows with the text size and the text, up to half the row.
+- (CGFloat)fieldWidthForText:(NSString*)text font:(UIFont*)font baseWidth:(CGFloat)base_width {
+  UIFontMetrics* metrics = [UIFontMetrics metricsForTextStyle:UIFontTextStyleBody];
+  const CGFloat minimum = ceil([metrics scaledValueForValue:base_width]);
+  const CGFloat maximum = MAX(minimum, floor([self estimatedTableAccessoryWidth] * 0.5));
+  const CGFloat text_width =
+      ceil([text ?: @"" sizeWithAttributes:@{NSFontAttributeName : font}].width) + 8.0;
+  return MIN(MAX(minimum, text_width), maximum);
+}
+
+// The switch a toggle row shows. A cell that already holds one keeps it (the action is wired
+// once); only its state is updated.
+- (UISwitch*)switchForCell:(UITableViewCell*)cell {
+  if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
+    return (UISwitch*)cell.accessoryView;
+  }
+  UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+  [toggle addTarget:self
+                action:@selector(toggleChanged:)
+      forControlEvents:UIControlEventValueChanged];
+  return toggle;
+}
+
+// The text field a number or string row shows, reused when the cell already holds one wired for
+// the same kind of value and nobody is typing in it.
+- (UITextField*)fieldForCell:(UITableViewCell*)cell
+                         tag:(NSInteger)tag
+                   endAction:(SEL)end_action {
+  if ([cell.accessoryView isKindOfClass:[UITextField class]] && cell.accessoryView.tag == tag &&
+      !((UITextField*)cell.accessoryView).isFirstResponder) {
+    return (UITextField*)cell.accessoryView;
+  }
+  UITextField* field = [[[UITextField alloc] init] autorelease];
+  field.tag = tag;
+  [field addTarget:self action:end_action forControlEvents:UIControlEventEditingDidEnd];
+  [field addTarget:self
+                action:@selector(textFieldEditingChanged:)
+      forControlEvents:UIControlEventEditingChanged];
+  return field;
+}
+
+- (void)configureField:(UITextField*)field
+                  text:(NSString*)text
+                  font:(UIFont*)font
+             baseWidth:(CGFloat)base_width {
+  field.text = text;
+  field.textAlignment = NSTextAlignmentRight;
+  field.font = font;
+  field.adjustsFontForContentSizeCategory = YES;
+  field.textColor = [XeniaTheme textSecondary];
+  field.frame = CGRectMake(0, 0, [self fieldWidthForText:text font:font baseWidth:base_width],
+                           MAX(32.0, ceil(font.lineHeight) + 8.0));
+}
+
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   static NSString* const kCellIdentifier = @"XeniaConfigCell";
@@ -809,6 +1174,10 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   content.prefersSideBySideTextAndSecondaryText = NO;
   content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(12.0, 0.0, 12.0, 0.0);
 
+  UIFont* field_font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+      scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:16.0 weight:UIFontWeightRegular]];
+  UIFont* text_font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+
   if (item->control_type == IOSConfigControlType::kToggle) {
     const bool letterbox_blocked = IsLetterboxBlockedByWindowStretch(*item);
     if (letterbox_blocked) {
@@ -817,9 +1186,9 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
       content.secondaryText =
           ToNSString(item->subtitle + " Stretch screen mode disables this.");
     } else {
-      content.secondaryText = ToNSString(item->subtitle);
+      content.secondaryText = [self secondaryTextForItem:*item];
     }
-    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    UISwitch* toggle = [self switchForCell:cell];
     toggle.on = item->bool_value;
     toggle.enabled = !letterbox_blocked;
     toggle.accessibilityLabel = content.text;
@@ -827,29 +1196,21 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
         toggle.on ? NSLocalizedString(@"On", @"config view controller: accessibility value")
                   : NSLocalizedString(@"Off", @"config view controller: accessibility value");
     toggle.accessibilityHint = content.secondaryText;
-    [toggle addTarget:self
-                  action:@selector(toggleChanged:)
-        forControlEvents:UIControlEventValueChanged];
     cell.contentConfiguration = content;
     cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.isAccessibilityElement = NO;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kInteger) {
-    content.secondaryText = ToNSString(item->subtitle);
-    UITextField* field = [[[UITextField alloc] init] autorelease];
-    field.text = [NSString stringWithFormat:@"%lld", item->integer_value];
-    field.textAlignment = NSTextAlignmentRight;
+    content.secondaryText = [self secondaryTextForItem:*item];
+    UITextField* field = [self fieldForCell:cell
+                                        tag:kXeniaConfigIntegerFieldTag
+                                  endAction:@selector(integerFieldChanged:)];
     field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    field.font = [UIFont monospacedDigitSystemFontOfSize:16.0 weight:UIFontWeightRegular];
-    field.textColor = [XeniaTheme textSecondary];
-    field.frame = CGRectMake(0, 0, 100, 32);
-    [field addTarget:self
-                  action:@selector(integerFieldChanged:)
-        forControlEvents:UIControlEventEditingDidEnd];
-    [field addTarget:self
-                  action:@selector(textFieldEditingChanged:)
-        forControlEvents:UIControlEventEditingChanged];
+    [self configureField:field
+                    text:[NSString stringWithFormat:@"%lld", item->integer_value]
+                    font:field_font
+               baseWidth:100.0];
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -865,20 +1226,15 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kDouble) {
-    content.secondaryText = ToNSString(item->subtitle);
-    UITextField* field = [[[UITextField alloc] init] autorelease];
-    field.text = [NSString stringWithFormat:@"%.6g", item->double_value];
-    field.textAlignment = NSTextAlignmentRight;
+    content.secondaryText = [self secondaryTextForItem:*item];
+    UITextField* field = [self fieldForCell:cell
+                                        tag:kXeniaConfigDoubleFieldTag
+                                  endAction:@selector(doubleFieldChanged:)];
     field.keyboardType = UIKeyboardTypeDecimalPad;
-    field.font = [UIFont monospacedDigitSystemFontOfSize:16.0 weight:UIFontWeightRegular];
-    field.textColor = [XeniaTheme textSecondary];
-    field.frame = CGRectMake(0, 0, 100, 32);
-    [field addTarget:self
-                  action:@selector(doubleFieldChanged:)
-        forControlEvents:UIControlEventEditingDidEnd];
-    [field addTarget:self
-                  action:@selector(textFieldEditingChanged:)
-        forControlEvents:UIControlEventEditingChanged];
+    [self configureField:field
+                    text:[NSString stringWithFormat:@"%.6g", item->double_value]
+                    font:field_font
+               baseWidth:100.0];
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -895,21 +1251,13 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kString ||
              item->control_type == IOSConfigControlType::kPath) {
-    content.secondaryText = ToNSString(item->subtitle);
-    UITextField* field = [[[UITextField alloc] init] autorelease];
-    field.text = ToNSString(item->string_value);
-    field.textAlignment = NSTextAlignmentRight;
+    content.secondaryText = [self secondaryTextForItem:*item];
+    UITextField* field = [self fieldForCell:cell
+                                        tag:kXeniaConfigStringFieldTag
+                                  endAction:@selector(stringFieldChanged:)];
     field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     field.autocorrectionType = UITextAutocorrectionTypeNo;
-    field.font = [UIFont systemFontOfSize:16.0];
-    field.textColor = [XeniaTheme textSecondary];
-    field.frame = CGRectMake(0, 0, 120, 32);
-    [field addTarget:self
-                  action:@selector(stringFieldChanged:)
-        forControlEvents:UIControlEventEditingDidEnd];
-    [field addTarget:self
-                  action:@selector(textFieldEditingChanged:)
-        forControlEvents:UIControlEventEditingChanged];
+    [self configureField:field text:ToNSString(item->string_value) font:text_font baseWidth:120.0];
     cell.contentConfiguration = content;
     cell.accessoryView = field;
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -948,17 +1296,14 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   } else {
-    // kChoiceInt32, kChoiceUInt32, kChoiceUInt64, kChoiceString, kEnum
+    // kChoiceInt32, kChoiceUInt32, kChoiceUInt64, kChoiceString, kEnum: the value sits on the
+    // trailing edge, like in Settings; the description stays below the title.
     std::string value_title = ChoiceTitleForItem(*item);
-    std::string subtitle = item->subtitle;
-    if (!value_title.empty()) {
-      content.secondaryText = ToNSString(value_title + " · " + subtitle);
-    } else {
-      content.secondaryText = ToNSString(subtitle);
-    }
+    content.secondaryText = [self secondaryTextForItem:*item];
     cell.contentConfiguration = content;
-    cell.accessoryView = nil;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = XeniaConfigMakeValueAccessoryView(
+        ToNSString(value_title), [self estimatedTableAccessoryWidth] * 0.5, YES);
     cell.isAccessibilityElement = YES;
     cell.accessibilityLabel = ToNSString(item->title);
     cell.accessibilityValue = value_title.empty() ? nil : ToNSString(value_title);
@@ -969,6 +1314,40 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   }
 
   return cell;
+}
+
+// Swipe to put one changed setting back to its default.
+- (UISwipeActionsConfiguration*)tableView:(UITableView*)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  IOSConfigItem* item = [self itemAtIndexPath:indexPath];
+  if (!item || game_title_id_ || item->control_type == IOSConfigControlType::kAction ||
+      IsLetterboxBlockedByWindowStretch(*item)) {
+    return nil;
+  }
+  IOSConfigItem probe = *item;
+  if (!IOSConfigResetItemToDefault(&probe)) {
+    return nil;
+  }
+  UIContextualAction* reset = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleNormal
+                          title:NSLocalizedString(@"Reset",
+                                                  @"config view controller: swipe action title")
+                        handler:^(__unused UIContextualAction* action,
+                                  __unused UIView* source_view, void (^completion)(BOOL)) {
+                          IOSConfigItem* current = [self itemAtIndexPath:indexPath];
+                          if (current && IOSConfigResetItemToDefault(current)) {
+                            [self markPendingChangesForItem:current];
+                            if (live_override_) {
+                              [self applyLiveOverrideForItem:current];
+                            }
+                            [self configItemDidChange:current];
+                            [self.tableView reloadRowsAtIndexPaths:@[ indexPath ]
+                                                  withRowAnimation:UITableViewRowAnimationNone];
+                          }
+                          completion(YES);
+                        }];
+  reset.backgroundColor = [XeniaTheme sectionIconOrange];
+  return [UISwipeActionsConfiguration configurationWithActions:@[ reset ]];
 }
 
 - (void)toggleChanged:(UISwitch*)sender {
@@ -1002,6 +1381,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     [self applyLiveOverrideForItem:item];
   }
   [self configItemDidChange:item];
+  [self refreshSecondaryTextForItem:item];
 }
 
 - (void)textFieldEditingChanged:(UITextField*)sender {
@@ -1075,6 +1455,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
       [self applyLiveOverrideForItem:item];
     }
     [self configItemDidChange:item];
+    [self refreshSecondaryTextForItem:item];
     return;
   }
   sender.text = [NSString stringWithFormat:@"%lld", item->integer_value];
@@ -1109,6 +1490,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
       [self applyLiveOverrideForItem:item];
     }
     [self configItemDidChange:item];
+    [self refreshSecondaryTextForItem:item];
     return;
   }
   sender.text = [NSString stringWithFormat:@"%.6g", item->double_value];
@@ -1137,6 +1519,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     [self applyLiveOverrideForItem:item];
   }
   [self configItemDidChange:item];
+  [self refreshSecondaryTextForItem:item];
 }
 
 - (void)applyLiveOverrideForItem:(IOSConfigItem*)item {
@@ -1309,7 +1692,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
                           dirty_keys_.clear();
                           hasPendingChanges_ = NO;
                           saveButton_.enabled = NO;
-                          [self replaceSections:[self buildSections]];
+                          [self reloadSectionsFromCatalog];
                         }
 
                         NSString* title =
@@ -1370,7 +1753,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
                               dirty_keys_.clear();
                               hasPendingChanges_ = NO;
                               saveButton_.enabled = NO;
-                              [self replaceSections:[self buildSections]];
+                              [self reloadSectionsFromCatalog];
                               XEPresentOKAlert(
                                   self,
                                   ok ? NSLocalizedString(
