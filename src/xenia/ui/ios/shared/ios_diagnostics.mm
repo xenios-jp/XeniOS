@@ -45,14 +45,16 @@ void ReportTitleState(uint32_t title_id) {
   }
 }
 
-// Launches and the games they ran, oldest first: [{launch, title, at}], an
-// entry when a launch starts, a game starts or ends, or diagnostics are turned
-// on. Kept on the device and only while diagnostics can be sent: turning them
-// off, or a launch without them, clears it. So a non-empty log at launch means
-// the previous launch ended with diagnostics on, and an entry covering a time
-// means they were on then, which MetricKit's crash reports (a launch later,
-// with a time but no launch) need to be sent and placed.
-constexpr NSUInteger kLaunchLogEntries = 32;
+// Launches and the games they ran, oldest first: [{launch, title, at}], one
+// entry per launch, made when it starts or diagnostics are turned on and
+// updated in place with the last game it ran (so playing doesn't push the
+// launches of the last day or two out: a MetricKit crash report comes up to a
+// day late). Kept on the device and only while diagnostics can be sent:
+// turning them off, or a launch without them, clears it. So a non-empty log at
+// launch means the previous launch ended with diagnostics on, and an entry
+// covering a time means they were on then, which MetricKit's crash reports (a
+// launch later, with a time but no launch) need to be sent and placed.
+constexpr NSUInteger kLaunchLogEntries = 64;
 NSString* const kLaunchLogKey = @"XeniaDiagnosticsLaunchLog";
 // A MetricKit payload spanning longer than this can't be placed in a launch.
 constexpr NSTimeInterval kMaxPayloadSpanSeconds = 60;
@@ -75,11 +77,24 @@ void NoteLaunchLog() {
   @synchronized(LaunchLogLock()) {
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     NSMutableArray* log = [NSMutableArray arrayWithArray:[defaults arrayForKey:kLaunchLogKey] ?: @[]];
-    [log addObject:@{
-      @"launch" : g_launch_id,
-      @"title" : @(g_title_id.load(std::memory_order_relaxed)),
-      @"at" : @([NSDate date].timeIntervalSince1970),
-    }];
+    const uint32_t title_id = g_title_id.load(std::memory_order_relaxed);
+    NSDictionary* last = log.lastObject;
+    if ([last isKindOfClass:[NSDictionary class]] &&
+        [last[@"launch"] isEqual:g_launch_id]) {
+      // This launch's entry keeps its start time; it only learns the game.
+      if (!title_id || [last[@"title"] isEqual:@(title_id)]) {
+        return;
+      }
+      NSMutableDictionary* updated = [NSMutableDictionary dictionaryWithDictionary:last];
+      updated[@"title"] = @(title_id);
+      log[log.count - 1] = updated;
+    } else {
+      [log addObject:@{
+        @"launch" : g_launch_id,
+        @"title" : @(title_id),
+        @"at" : @([NSDate date].timeIntervalSince1970),
+      }];
+    }
     if (log.count > kLaunchLogEntries) {
       [log removeObjectsInRange:NSMakeRange(0, log.count - kLaunchLogEntries)];
     }
