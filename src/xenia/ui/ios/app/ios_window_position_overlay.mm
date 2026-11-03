@@ -29,14 +29,15 @@
   self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.20];
 
   _hintLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-  _hintLabel.text = @"Drag anywhere to reposition the game.";
+  _hintLabel.text = NSLocalizedString(@"Drag anywhere to reposition the game.",
+                                      @"Hint while repositioning the game window");
   _hintLabel.textColor = [UIColor whiteColor];
   _hintLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
   _hintLabel.backgroundColor = [UIColor clearColor];
   [self addSubview:_hintLabel];
 
   UIButtonConfiguration* done_config = [UIButtonConfiguration filledButtonConfiguration];
-  done_config.title = @"Done";
+  done_config.title = NSLocalizedString(@"Done", @"Button that finishes repositioning");
   done_config.baseBackgroundColor = [XeniaTheme accent];
   done_config.baseForegroundColor = [XeniaTheme accentFg];
   done_config.cornerStyle = UIButtonConfigurationCornerStyleLarge;

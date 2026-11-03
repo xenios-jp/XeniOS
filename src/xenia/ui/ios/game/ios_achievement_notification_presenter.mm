@@ -65,9 +65,14 @@ UIImage* ImageFromPayload(const xe::ui::AchievementNotificationPayload& payload)
 
 xe::ui::AchievementNotificationPayload MakeOverflowPayload(NSUInteger count) {
   xe::ui::AchievementNotificationPayload payload;
-  payload.title = "Achievements";
-  payload.description = [[NSString stringWithFormat:@"+%lu more unlocked",
-                                                    static_cast<unsigned long>(count)] UTF8String];
+  payload.title =
+      [NSLocalizedString(@"Achievements", @"Title of the grouped achievement toast") UTF8String];
+  payload.description = [[NSString
+      stringWithFormat:
+          NSLocalizedString(
+              @"+%lu more unlocked",
+              @"Toast text when several achievements unlock at once; %lu is the extra count"),
+          static_cast<unsigned long>(count)] UTF8String];
   return payload;
 }
 
@@ -219,8 +224,12 @@ ToastVerticalPosition VerticalPosition(uint8_t position_id) {
   ]];
 
   self.isAccessibilityElement = YES;
-  self.accessibilityLabel =
-      [NSString stringWithFormat:@"%@, %@", title_label.text, description_label.text];
+  self.accessibilityLabel = [NSString
+      stringWithFormat:
+          NSLocalizedString(
+              @"%1$@, %2$@",
+              @"VoiceOver label of an achievement toast; %1$@ is the title, %2$@ the description"),
+          title_label.text, description_label.text];
 
   return self;
 }

@@ -75,7 +75,7 @@
 
   _titleLabel = [[UILabel alloc] init];
   _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _titleLabel.text = @"In-Game Menu";
+  _titleLabel.text = NSLocalizedString(@"In-Game Menu", @"Title of the in-game pause menu");
   _titleLabel.textColor = [XeniaTheme textPrimary];
   xe_apply_label_font(_titleLabel, UIFontTextStyleTitle2, 22.0,
                       UIFontWeightSemibold);
@@ -84,59 +84,71 @@
 
   _subtitleLabel = [[UILabel alloc] init];
   _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _subtitleLabel.text = @"Tap anywhere to close";
+  _subtitleLabel.text =
+      NSLocalizedString(@"Tap anywhere to close", @"Subtitle of the in-game menu");
   _subtitleLabel.textColor = [XeniaTheme textMuted];
   xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline, 15.0,
                       UIFontWeightRegular);
   _subtitleLabel.textAlignment = NSTextAlignmentCenter;
 
-  _resumeButton = [self newButtonWithTitle:@"Resume"
-                                  imageName:nil
+  _resumeButton = [self newButtonWithTitle:NSLocalizedString(@"Resume", @"In-game menu button")
+                                 imageName:nil
                            backgroundColor:[XeniaTheme accent]
-                            foregroundColor:[XeniaTheme accentFg]
-                                     action:@selector(resumePressed:)];
+                           foregroundColor:[XeniaTheme accentFg]
+                                menuAction:XeniaIOSInGameMenuActionResume
+                                    action:@selector(resumePressed:)];
 
-  _editControlsButton = [self newButtonWithTitle:@"Edit Controls"
-                                       imageName:@"hand.tap"
-                                backgroundColor:[XeniaTheme bgSurface2]
-                                 foregroundColor:[XeniaTheme textPrimary]
-                                          action:@selector(editControlsPressed:)];
+  _editControlsButton =
+      [self newButtonWithTitle:NSLocalizedString(@"Edit Controls", @"In-game menu button")
+                     imageName:@"hand.tap"
+               backgroundColor:[XeniaTheme bgSurface2]
+               foregroundColor:[XeniaTheme textPrimary]
+                    menuAction:XeniaIOSInGameMenuActionEditControls
+                        action:@selector(editControlsPressed:)];
 
-  _achievementsButton = [self newButtonWithTitle:@"Achievements"
-                                        imageName:@"trophy"
-                                 backgroundColor:[XeniaTheme bgSurface2]
-                                  foregroundColor:[XeniaTheme textPrimary]
-                                           action:@selector(achievementsPressed:)];
+  _achievementsButton =
+      [self newButtonWithTitle:NSLocalizedString(@"Achievements", @"In-game menu button")
+                     imageName:@"trophy"
+               backgroundColor:[XeniaTheme bgSurface2]
+               foregroundColor:[XeniaTheme textPrimary]
+                    menuAction:XeniaIOSInGameMenuActionAchievements
+                        action:@selector(achievementsPressed:)];
 
-  _displayButton = [self newButtonWithTitle:@"Display"
-                                 imageName:@"rectangle.expand.vertical"
-                          backgroundColor:[XeniaTheme bgSurface2]
-                           foregroundColor:[XeniaTheme textPrimary]
-                                    action:nil];
+  _displayButton = [self newButtonWithTitle:NSLocalizedString(@"Display", @"In-game menu button")
+                                  imageName:@"rectangle.expand.vertical"
+                            backgroundColor:[XeniaTheme bgSurface2]
+                            foregroundColor:[XeniaTheme textPrimary]
+                                 menuAction:XeniaIOSInGameMenuActionDisplay
+                                     action:nil];
   _displayButton.showsMenuAsPrimaryAction = YES;
 
-  _settingsButton = [self newButtonWithTitle:@"Settings"
+  _settingsButton = [self newButtonWithTitle:NSLocalizedString(@"Settings", @"In-game menu button")
                                    imageName:@"slider.horizontal.3"
-                            backgroundColor:[XeniaTheme bgSurface2]
+                             backgroundColor:[XeniaTheme bgSurface2]
                              foregroundColor:[XeniaTheme textPrimary]
+                                  menuAction:XeniaIOSInGameMenuActionSettings
                                       action:@selector(settingsPressed:)];
 
-  _graphicsButton = [self newButtonWithTitle:@"Graphics"
+  _graphicsButton = [self newButtonWithTitle:NSLocalizedString(@"Graphics", @"In-game menu button")
                                    imageName:@"gearshape.2.fill"
-                            backgroundColor:[XeniaTheme bgSurface2]
+                             backgroundColor:[XeniaTheme bgSurface2]
                              foregroundColor:[XeniaTheme textPrimary]
+                                  menuAction:XeniaIOSInGameMenuActionGraphics
                                       action:@selector(graphicsPressed:)];
 
-  _liveLogButton = [self newButtonWithTitle:@"Live Log"
+  _liveLogButton = [self newButtonWithTitle:NSLocalizedString(@"Live Log", @"In-game menu button")
                                   imageName:@"doc.text"
-                           backgroundColor:[XeniaTheme bgSurface2]
+                            backgroundColor:[XeniaTheme bgSurface2]
                             foregroundColor:[XeniaTheme textPrimary]
+                                 menuAction:XeniaIOSInGameMenuActionLiveLog
                                      action:@selector(liveLogPressed:)];
 
-  _exitButton = [self newButtonWithTitle:@"Exit To Library"
+  _exitButton = [self newButtonWithTitle:NSLocalizedString(@"Exit To Library",
+                                                           @"In-game menu button, leaves the game")
                                imageName:@"rectangle.portrait.and.arrow.right"
-                        backgroundColor:[[XeniaTheme statusError] colorWithAlphaComponent:0.25]
+                         backgroundColor:[[XeniaTheme statusError] colorWithAlphaComponent:0.25]
                          foregroundColor:[XeniaTheme textPrimary]
+                              menuAction:XeniaIOSInGameMenuActionExit
                                   action:@selector(exitPressed:)];
 
   _rowOneStack = [self newMenuRowWithButtons:@[
@@ -253,8 +265,9 @@
 
 - (UIButton*)newButtonWithTitle:(NSString*)title
                       imageName:(NSString*)imageName
-               backgroundColor:(UIColor*)backgroundColor
+                backgroundColor:(UIColor*)backgroundColor
                 foregroundColor:(UIColor*)foregroundColor
+                     menuAction:(XeniaIOSInGameMenuAction)menuAction
                          action:(SEL)action {
   UIButtonConfiguration* config = [UIButtonConfiguration tintedButtonConfiguration];
   config.title = title;
@@ -266,7 +279,7 @@
   config.baseBackgroundColor = backgroundColor;
   config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
   config.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
-  if ([title isEqualToString:@"Resume"]) {
+  if (menuAction == XeniaIOSInGameMenuActionResume) {
     config = [UIButtonConfiguration filledButtonConfiguration];
     config.title = title;
     config.baseBackgroundColor = backgroundColor;
@@ -282,22 +295,43 @@
   button.titleLabel.adjustsFontSizeToFitWidth = YES;
   button.titleLabel.minimumScaleFactor = 0.72;
   button.accessibilityLabel = title;
-  if ([title isEqualToString:@"Resume"]) {
-    button.accessibilityHint = @"Returns to the game.";
-  } else if ([title isEqualToString:@"Edit Controls"]) {
-    button.accessibilityHint = @"Opens the touch control editor.";
-  } else if ([title isEqualToString:@"Achievements"]) {
-    button.accessibilityHint = @"Shows achievements for the current game.";
-  } else if ([title isEqualToString:@"Display"]) {
-    button.accessibilityHint = @"Opens display scaling and position options.";
-  } else if ([title isEqualToString:@"Graphics"]) {
-    button.accessibilityHint = @"Opens graphics compatibility settings.";
-  } else if ([title isEqualToString:@"Settings"]) {
-    button.accessibilityHint = @"Opens XeniOS settings.";
-  } else if ([title isEqualToString:@"Live Log"]) {
-    button.accessibilityHint = @"Opens the live emulator log.";
-  } else if ([title isEqualToString:@"Exit To Library"]) {
-    button.accessibilityHint = @"Stops the game and returns to the library.";
+  button.tag = menuAction;
+  switch (menuAction) {
+    case XeniaIOSInGameMenuActionResume:
+      button.accessibilityHint =
+          NSLocalizedString(@"Returns to the game.", @"VoiceOver hint for the Resume button");
+      break;
+    case XeniaIOSInGameMenuActionEditControls:
+      button.accessibilityHint = NSLocalizedString(@"Opens the touch control editor.",
+                                                   @"VoiceOver hint for the Edit Controls button");
+      break;
+    case XeniaIOSInGameMenuActionAchievements:
+      button.accessibilityHint = NSLocalizedString(@"Shows achievements for the current game.",
+                                                   @"VoiceOver hint for the Achievements button");
+      break;
+    case XeniaIOSInGameMenuActionDisplay:
+      button.accessibilityHint = NSLocalizedString(@"Opens display scaling and position options.",
+                                                   @"VoiceOver hint for the Display button");
+      break;
+    case XeniaIOSInGameMenuActionGraphics:
+      button.accessibilityHint = NSLocalizedString(@"Opens graphics compatibility settings.",
+                                                   @"VoiceOver hint for the Graphics button");
+      break;
+    case XeniaIOSInGameMenuActionSettings:
+      button.accessibilityHint =
+          NSLocalizedString(@"Opens XeniOS settings.", @"VoiceOver hint for the Settings button");
+      break;
+    case XeniaIOSInGameMenuActionLiveLog:
+      button.accessibilityHint = NSLocalizedString(@"Opens the live emulator log.",
+                                                   @"VoiceOver hint for the Live Log button");
+      break;
+    case XeniaIOSInGameMenuActionExit:
+      button.accessibilityHint = NSLocalizedString(@"Stops the game and returns to the library.",
+                                                   @"VoiceOver hint for the Exit button");
+      break;
+    case XeniaIOSInGameMenuActionNone:
+    default:
+      break;
   }
   if (action) {
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
@@ -362,29 +396,37 @@
   xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline,
                       compact ? 13.0 : 15.0, UIFontWeightRegular);
 
-  [self updateButton:_resumeButton title:@"Resume" compact:compact resume:YES];
-  [self updateButton:_editControlsButton
-               title:(compact ? @"Controls" : @"Edit Controls")
+  [self updateButton:_resumeButton
+               title:NSLocalizedString(@"Resume", @"In-game menu button")
              compact:compact
-              resume:NO];
+              resume:YES];
+  NSString* edit_controls_title =
+      compact ? NSLocalizedString(@"Controls", @"In-game menu button")
+              : NSLocalizedString(@"Edit Controls", @"In-game menu button");
+  [self updateButton:_editControlsButton title:edit_controls_title compact:compact resume:NO];
   [self updateButton:_graphicsButton
-               title:@"Graphics"
+               title:NSLocalizedString(@"Graphics", @"In-game menu button")
              compact:compact
               resume:NO];
-  [self updateButton:_displayButton title:@"Display" compact:compact resume:NO];
-  [self updateButton:_settingsButton title:@"Settings" compact:compact resume:NO];
+  [self updateButton:_displayButton
+               title:NSLocalizedString(@"Display", @"In-game menu button")
+             compact:compact
+              resume:NO];
+  [self updateButton:_settingsButton
+               title:NSLocalizedString(@"Settings", @"In-game menu button")
+             compact:compact
+              resume:NO];
   [self updateButton:_achievementsButton
-               title:@"Achievements"
+               title:NSLocalizedString(@"Achievements", @"In-game menu button")
              compact:compact
               resume:NO];
-  [self updateButton:_exitButton
-               title:(compact ? @"Exit" : @"Exit To Library")
-             compact:compact
-              resume:NO];
-  [self updateButton:_liveLogButton
-               title:(compact ? @"Log" : @"Live Log")
-             compact:compact
-              resume:NO];
+  NSString* exit_title =
+      compact ? NSLocalizedString(@"Exit", @"In-game menu button, leaves the game")
+              : NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
+  [self updateButton:_exitButton title:exit_title compact:compact resume:NO];
+  NSString* live_log_title = compact ? NSLocalizedString(@"Log", @"In-game menu button")
+                                     : NSLocalizedString(@"Live Log", @"In-game menu button");
+  [self updateButton:_liveLogButton title:live_log_title compact:compact resume:NO];
 }
 
 - (void)setDisplayMenu:(UIMenu*)displayMenu {
@@ -510,8 +552,11 @@
     for (GCController* controller in GCController.controllers) {
       has_controller = has_controller || controller.extendedGamepad != nil;
     }
-    _subtitleLabel.text = has_controller ? @"Press B or tap anywhere to close"
-                                         : @"Tap anywhere to close";
+    _subtitleLabel.text =
+        has_controller
+            ? NSLocalizedString(@"Press B or tap anywhere to close",
+                                @"Subtitle of the in-game menu when a controller is connected")
+            : NSLocalizedString(@"Tap anywhere to close", @"Subtitle of the in-game menu");
   }
   if (visible == !self.hidden) {
     if (completion) {

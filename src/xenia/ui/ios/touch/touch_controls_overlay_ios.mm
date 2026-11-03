@@ -334,7 +334,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
 @interface XeniaTouchAnalogTuningViewController : XESheetViewController
 - (instancetype)initWithOverlay:(XeniaTouchControlsOverlayView*)overlay;
-- (void)addSectionLabel:(NSString*)title;
+- (void)addSectionLabel:(NSString*)title section:(NSInteger)section;
 - (void)addSliderRow:(NSString*)title
                field:(TouchAnalogTuningField)field
                 kind:(NSInteger)kind
@@ -396,18 +396,18 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = @"Tune";
+  self.title = NSLocalizedString(@"Tune", @"Title of the touch analog tuning screen");
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   self.view.backgroundColor = [UIColor clearColor];
   self.navigationItem.rightBarButtonItem =
       [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                      target:self
                                                      action:@selector(donePressed:)] autorelease];
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:@"Reset"
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
-                                       action:@selector(resetTunePressed:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Reset", @"Button resetting the touch analog tuning values")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(resetTunePressed:)] autorelease];
 
   scroll_view_ = [[UIScrollView alloc] initWithFrame:CGRectZero];
   scroll_view_.alwaysBounceVertical = YES;
@@ -420,8 +420,11 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   preview_view_ = [[XeniaTouchAnalogPreviewView alloc] initWithFrame:CGRectZero];
   [content_view_ addSubview:preview_view_];
 
-  tuning_section_control_ =
-      [[UISegmentedControl alloc] initWithItems:@[ @"Basic", @"Feel", @"Advanced" ]];
+  tuning_section_control_ = [[UISegmentedControl alloc] initWithItems:@[
+    NSLocalizedString(@"Basic", @"Segment of the touch analog tuning screen"),
+    NSLocalizedString(@"Feel", @"Segment of the touch analog tuning screen"),
+    NSLocalizedString(@"Advanced", @"Segment of the touch analog tuning screen")
+  ]];
   tuning_section_control_.selectedSegmentIndex = active_section_;
   tuning_section_control_.backgroundColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySubtle]];
@@ -441,65 +444,90 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
                     forControlEvents:UIControlEventValueChanged];
   [content_view_ addSubview:tuning_section_control_];
 
-  [self addSectionLabel:@"Basic"];
-  [self addSliderRow:@"Deadzone" field:TouchAnalogTuningField::kDeadzone kind:0 min:0.0f max:0.95f];
-  [self addSliderRow:@"Radius"
+  [self addSectionLabel:NSLocalizedString(@"Basic",
+                                          @"Section label in the touch analog tuning screen")
+                section:kTuningSectionBasic];
+  [self
+      addSliderRow:NSLocalizedString(@"Deadzone", @"Slider label in the touch analog tuning screen")
+             field:TouchAnalogTuningField::kDeadzone
+              kind:0
+               min:0.0f
+               max:0.95f];
+  [self addSliderRow:NSLocalizedString(@"Radius", @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kActivationRadius
                 kind:0
                  min:0.05f
                  max:1.0f];
-  [self addSliderRow:@"Overall Sensitivity"
+  [self addSliderRow:NSLocalizedString(@"Overall Sensitivity",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kHorizontalScale
                 kind:kTuningSliderOverallSensitivity
                  min:0.25f
                  max:4.0f];
-  [self addSliderRow:@"Output Cap"
+  [self addSliderRow:NSLocalizedString(@"Output Cap",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kMaxOutput
                 kind:kTuningSliderAnalogField
                  min:0.1f
                  max:1.0f];
 
-  [self addSectionLabel:@"Feel"];
-  [self addSliderRow:@"Horizontal Sensitivity"
+  [self
+      addSectionLabel:NSLocalizedString(@"Feel", @"Section label in the touch analog tuning screen")
+              section:kTuningSectionFeel];
+  [self addSliderRow:NSLocalizedString(@"Horizontal Sensitivity",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kHorizontalScale
                 kind:kTuningSliderAnalogField
                  min:0.25f
                  max:4.0f];
-  [self addSliderRow:@"Vertical Sensitivity"
+  [self addSliderRow:NSLocalizedString(@"Vertical Sensitivity",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kVerticalScale
                 kind:kTuningSliderAnalogField
                  min:0.25f
                  max:4.0f];
-  [self addSliderRow:@"Response"
-               field:TouchAnalogTuningField::kResponseCurve
-                kind:0
-                 min:0.25f
-                 max:4.0f];
-  [self addSliderRow:@"Swipe Acceleration"
+  [self
+      addSliderRow:NSLocalizedString(@"Response", @"Slider label in the touch analog tuning screen")
+             field:TouchAnalogTuningField::kResponseCurve
+              kind:0
+               min:0.25f
+               max:4.0f];
+  [self addSliderRow:NSLocalizedString(@"Swipe Acceleration",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kAccelerationScale
                 kind:kTuningSliderAnalogField
                  min:0.0f
                  max:2.0f];
-  [self addSliderRow:@"Input Smoothing"
+  [self addSliderRow:NSLocalizedString(@"Input Smoothing",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kSmoothing
                 kind:kTuningSliderAnalogField
                  min:0.0f
                  max:0.95f];
 
-  [self addSectionLabel:@"Advanced"];
-  [self addSliderRow:@"Diagonal"
-               field:TouchAnalogTuningField::kDiagonalScale
-                kind:0
-                 min:0.25f
-                 max:4.0f];
-  [self addSwitchRow:@"Invert Horizontal" field:TouchAnalogTuningField::kInvertX];
-  [self addSwitchRow:@"Invert Vertical" field:TouchAnalogTuningField::kInvertY];
-  [self addSliderRow:@"Held Look"
+  [self addSectionLabel:NSLocalizedString(@"Advanced",
+                                          @"Section label in the touch analog tuning screen")
+                section:kTuningSectionAdvanced];
+  [self
+      addSliderRow:NSLocalizedString(@"Diagonal", @"Slider label in the touch analog tuning screen")
+             field:TouchAnalogTuningField::kDiagonalScale
+              kind:0
+               min:0.25f
+               max:4.0f];
+  [self addSwitchRow:NSLocalizedString(@"Invert Horizontal",
+                                       @"Switch label in the touch analog tuning screen")
+               field:TouchAnalogTuningField::kInvertX];
+  [self addSwitchRow:NSLocalizedString(@"Invert Vertical",
+                                       @"Switch label in the touch analog tuning screen")
+               field:TouchAnalogTuningField::kInvertY];
+  [self addSliderRow:NSLocalizedString(@"Held Look",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kHorizontalScale
                 kind:kTuningSliderHeldLook
                  min:0.25f
                  max:4.0f];
-  [self addSliderRow:@"Held Move"
+  [self addSliderRow:NSLocalizedString(@"Held Move",
+                                       @"Slider label in the touch analog tuning screen")
                field:TouchAnalogTuningField::kVerticalScale
                 kind:kTuningSliderHeldMove
                  min:0.25f
@@ -565,14 +593,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   scroll_view_.contentSize = CGSizeMake(available_width, content_height + 24.0);
 }
 
-- (void)addSectionLabel:(NSString*)title {
-  if ([title isEqualToString:@"Basic"]) {
-    building_section_ = kTuningSectionBasic;
-  } else if ([title isEqualToString:@"Feel"]) {
-    building_section_ = kTuningSectionFeel;
-  } else {
-    building_section_ = kTuningSectionAdvanced;
-  }
+- (void)addSectionLabel:(NSString*)title section:(NSInteger)section {
+  building_section_ = section;
   UILabel* label = [[[UILabel alloc] initWithFrame:CGRectZero] autorelease];
   label.tag = 9001;
   label.text = title;
@@ -958,7 +980,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   pause_button_ = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
   pause_button_.backgroundColor = [UIColor clearColor];
   pause_button_.hidden = YES;
-  pause_button_.accessibilityLabel = @"Pause game";
+  pause_button_.accessibilityLabel =
+      NSLocalizedString(@"Pause game", @"VoiceOver label of the on-screen pause button");
   pause_button_.accessibilityTraits = UIAccessibilityTraitButton;
   [pause_button_ addTarget:self
                     action:@selector(pauseButtonPressed:)
@@ -971,8 +994,11 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   direct_touch_view_.backgroundColor = [UIColor clearColor];
   direct_touch_view_.userInteractionEnabled = NO;
   direct_touch_view_.isAccessibilityElement = YES;
-  direct_touch_view_.accessibilityLabel = @"Touch controller";
-  direct_touch_view_.accessibilityHint = @"Touch the screen to use the on-screen controls.";
+  direct_touch_view_.accessibilityLabel =
+      NSLocalizedString(@"Touch controller", @"VoiceOver label of the on-screen controller area");
+  direct_touch_view_.accessibilityHint =
+      NSLocalizedString(@"Touch the screen to use the on-screen controls.",
+                        @"VoiceOver hint of the on-screen controller area");
   direct_touch_view_.accessibilityTraits = UIAccessibilityTraitAllowsDirectInteraction;
   [self insertSubview:direct_touch_view_ belowSubview:pause_button_];
 
@@ -1149,27 +1175,34 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   UIKeyCommand* undo = [UIKeyCommand keyCommandWithInput:@"z"
                                            modifierFlags:UIKeyModifierCommand
                                                   action:@selector(keyCommandUndo:)];
-  undo.discoverabilityTitle = @"Undo edit";
+  undo.discoverabilityTitle =
+      NSLocalizedString(@"Undo edit", @"Keyboard shortcut name shown in the shortcut overlay");
   UIKeyCommand* redo = [UIKeyCommand keyCommandWithInput:@"z"
                                            modifierFlags:UIKeyModifierCommand | UIKeyModifierShift
                                                   action:@selector(keyCommandRedo:)];
-  redo.discoverabilityTitle = @"Redo edit";
+  redo.discoverabilityTitle =
+      NSLocalizedString(@"Redo edit", @"Keyboard shortcut name shown in the shortcut overlay");
   UIKeyCommand* duplicate = [UIKeyCommand keyCommandWithInput:@"d"
                                                 modifierFlags:UIKeyModifierCommand
                                                        action:@selector(keyCommandDuplicate:)];
-  duplicate.discoverabilityTitle = @"Duplicate selected control";
+  duplicate.discoverabilityTitle = NSLocalizedString(
+      @"Duplicate selected control", @"Keyboard shortcut name shown in the shortcut overlay");
   UIKeyCommand* mirror = [UIKeyCommand keyCommandWithInput:@"m"
                                              modifierFlags:UIKeyModifierCommand
                                                     action:@selector(keyCommandMirror:)];
-  mirror.discoverabilityTitle = @"Mirror selected control horizontally";
+  mirror.discoverabilityTitle =
+      NSLocalizedString(@"Mirror selected control horizontally",
+                        @"Keyboard shortcut name shown in the shortcut overlay");
   UIKeyCommand* delete_command = [UIKeyCommand keyCommandWithInput:@"\b"
                                                      modifierFlags:UIKeyModifierCommand
                                                             action:@selector(keyCommandDelete:)];
-  delete_command.discoverabilityTitle = @"Delete selected control";
+  delete_command.discoverabilityTitle = NSLocalizedString(
+      @"Delete selected control", @"Keyboard shortcut name shown in the shortcut overlay");
   UIKeyCommand* done = [UIKeyCommand keyCommandWithInput:UIKeyInputEscape
                                            modifierFlags:0
                                                   action:@selector(keyCommandDone:)];
-  done.discoverabilityTitle = @"Exit edit mode";
+  done.discoverabilityTitle =
+      NSLocalizedString(@"Exit edit mode", @"Keyboard shortcut name shown in the shortcut overlay");
   return @[ undo, redo, duplicate, mirror, delete_command, done ];
 }
 
@@ -1229,22 +1262,28 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   if (label.length) {
     [text appendFormat:@"%@\n", label];
   }
-  [text appendFormat:@"Action: %s", xe::hid::touch::IOSTouchActionDisplayName(control.action)];
+  [text
+      appendFormat:NSLocalizedString(@"Action: %s", @"Control tooltip line; %s is the action name"),
+                   xe::hid::touch::IOSTouchActionDisplayName(control.action)];
   if (control.secondary_behavior.trigger != xe::hid::touch::IOSTouchInteractionTrigger::kNone &&
       control.secondary_behavior.action != xe::hid::touch::IOSTouchAction::kNone) {
-    [text
-        appendFormat:@"\n2nd: %s, %s",
-                     xe::hid::touch::IOSTouchInteractionTriggerDisplayName(
-                         control.secondary_behavior.trigger),
-                     xe::hid::touch::IOSTouchActionDisplayName(control.secondary_behavior.action)];
+    [text appendFormat:
+              NSLocalizedString(
+                  @"\n2nd: %s, %s",
+                  @"Control tooltip line; the first %s is the trigger, the second the action"),
+              xe::hid::touch::IOSTouchInteractionTriggerDisplayName(
+                  control.secondary_behavior.trigger),
+              xe::hid::touch::IOSTouchActionDisplayName(control.secondary_behavior.action)];
   }
   [text
-      appendFormat:@"\nTint: %s", xe::hid::touch::IOSTouchTintStyleDisplayName(control.tint_style)];
+      appendFormat:NSLocalizedString(@"\nTint: %s", @"Control tooltip line; %s is the tint style"),
+                   xe::hid::touch::IOSTouchTintStyleDisplayName(control.tint_style)];
   const bool tooltip_is_portrait = TouchOverlayIsPortraitForView(self);
   const xe::hid::touch::IOSTouchRect& tooltip_frame =
       xe::hid::touch::ActiveControlFrameForOrientation(control, tooltip_is_portrait);
-  [text appendFormat:@"\nFrame: %.2f, %.2f, %.2f x %.2f", tooltip_frame.x, tooltip_frame.y,
-                     tooltip_frame.width, tooltip_frame.height];
+  [text appendFormat:NSLocalizedString(@"\nFrame: %.2f, %.2f, %.2f x %.2f",
+                                       @"Control tooltip line; the numbers are the control frame"),
+                     tooltip_frame.x, tooltip_frame.y, tooltip_frame.width, tooltip_frame.height];
 
   tooltip_label_.text = text;
   const CGSize max_size = CGSizeMake(220.0f, 1000.0f);
@@ -1650,7 +1689,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 - (void)refreshEditChromeSelection {
   TouchOverlayEditChromeState state = [self currentEditChromeState];
   [edit_chrome_ applyState:state];
-  NSString* layout_name = @"Layout";
+  NSString* layout_name = NSLocalizedString(@"Layout", @"Fallback layout name");
   if (runtime_model_) {
     layout_name = [NSString stringWithUTF8String:runtime_model_->layout().display_name.c_str()];
   }
@@ -1950,24 +1989,28 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
   const auto& control = controls[selected_control_index_];
   NSString* current_label = XeniaTouchConfiguredControlLabelText(control, NO);
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"Control Label"
-                                          message:@"Leave blank to use the default label."
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Control Label",
+                                                 @"Alert title: edit a control's label")
+                       message:NSLocalizedString(@"Leave blank to use the default label.",
+                                                 @"Alert message: edit a control's label")
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
     text_field.text = current_label;
-    text_field.placeholder = @"Label";
+    text_field.placeholder =
+        NSLocalizedString(@"Label", @"Placeholder of the control label text field");
     text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
     text_field.returnKeyType = UIReturnKeyDone;
   }];
 
   __unsafe_unretained XeniaTouchControlsOverlayView* unsafe_self = self;
   __unsafe_unretained UIAlertController* unsafe_alert = alert;
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
   UIAlertAction* save_action =
-      [UIAlertAction actionWithTitle:@"Save"
+      [UIAlertAction actionWithTitle:NSLocalizedString(@"Save", @"Alert button: save the label")
                                style:UIAlertActionStyleDefault
                              handler:^(__unused UIAlertAction* action_handler) {
                                UITextField* text_field = unsafe_alert.textFields.firstObject;
@@ -2819,31 +2862,53 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
       xe::hid::touch::IOSTouchAction::kDpadUp,    xe::hid::touch::IOSTouchAction::kDpadDown,
       xe::hid::touch::IOSTouchAction::kDpadLeft,  xe::hid::touch::IOSTouchAction::kDpadRight};
   addActionEntries(system, @"dpad", system_actions, xe::countof(system_actions));
-  [system addObject:makeAction(@"Blank Button", @"square.dashed", at_limit, ^{
-            [unsafe_self addActionButtonWithAction:xe::hid::touch::IOSTouchAction::kNone];
-          })];
+  [system
+      addObject:makeAction(NSLocalizedString(@"Blank Button", @"Menu item in the Add Control menu"),
+                           @"square.dashed", at_limit, ^{
+                             [unsafe_self
+                                 addActionButtonWithAction:xe::hid::touch::IOSTouchAction::kNone];
+                           })];
 
   NSMutableArray<UIMenuElement*>* analog = [NSMutableArray arrayWithCapacity:5];
-  [analog addObject:makeAction(@"Move Stick", @"circle.grid.cross", at_limit || has_move_stick, ^{
-            [unsafe_self addJoystickWithAction:xe::hid::touch::IOSTouchAction::kMove];
-          })];
-  [analog addObject:makeAction(@"Look Stick", @"scope", at_limit || has_look_stick, ^{
-            [unsafe_self addJoystickWithAction:xe::hid::touch::IOSTouchAction::kLook];
-          })];
-  [analog addObject:makeAction(@"Look Zone", @"rectangle.dashed", at_limit || has_look_zone, ^{
-            [unsafe_self addControlOfType:xe::hid::touch::IOSTouchControlType::kLookSwipeZone];
-          })];
-  [analog addObject:makeAction(@"Pause Button", @"pause.fill", at_limit || has_pause_button, ^{
-            [unsafe_self addControlOfType:xe::hid::touch::IOSTouchControlType::kPauseButton];
-          })];
+  [analog addObject:makeAction(
+                        NSLocalizedString(@"Move Stick", @"Menu item in the Add Control menu"),
+                        @"circle.grid.cross", at_limit || has_move_stick, ^{
+                          [unsafe_self addJoystickWithAction:xe::hid::touch::IOSTouchAction::kMove];
+                        })];
+  [analog addObject:makeAction(
+                        NSLocalizedString(@"Look Stick", @"Menu item in the Add Control menu"),
+                        @"scope", at_limit || has_look_stick, ^{
+                          [unsafe_self addJoystickWithAction:xe::hid::touch::IOSTouchAction::kLook];
+                        })];
+  [analog addObject:makeAction(
+                        NSLocalizedString(@"Look Zone", @"Menu item in the Add Control menu"),
+                        @"rectangle.dashed", at_limit || has_look_zone, ^{
+                          [unsafe_self
+                              addControlOfType:xe::hid::touch::IOSTouchControlType::kLookSwipeZone];
+                        })];
+  [analog addObject:makeAction(
+                        NSLocalizedString(@"Pause Button", @"Menu item in the Add Control menu"),
+                        @"pause.fill", at_limit || has_pause_button, ^{
+                          [unsafe_self
+                              addControlOfType:xe::hid::touch::IOSTouchControlType::kPauseButton];
+                        })];
 
-  return [UIMenu menuWithTitle:@""
-                      children:@[
-                        [UIMenu menuWithTitle:@"Face Buttons" children:face],
-                        [UIMenu menuWithTitle:@"Shoulders / Triggers" children:shoulders],
-                        [UIMenu menuWithTitle:@"Menu / D-Pad" children:system],
-                        [UIMenu menuWithTitle:@"Analog / Utility" children:analog],
-                      ]];
+  return [UIMenu
+      menuWithTitle:@""
+           children:@[
+             [UIMenu menuWithTitle:NSLocalizedString(@"Face Buttons",
+                                                     @"Submenu title in the Add Control menu")
+                          children:face],
+             [UIMenu menuWithTitle:NSLocalizedString(@"Shoulders / Triggers",
+                                                     @"Submenu title in the Add Control menu")
+                          children:shoulders],
+             [UIMenu menuWithTitle:NSLocalizedString(@"Menu / D-Pad",
+                                                     @"Submenu title in the Add Control menu")
+                          children:system],
+             [UIMenu menuWithTitle:NSLocalizedString(@"Analog / Utility",
+                                                     @"Submenu title in the Add Control menu")
+                          children:analog],
+           ]];
 }
 
 - (void)addControlOfType:(xe::hid::touch::IOSTouchControlType)type {
@@ -3021,7 +3086,16 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
     NSString* label =
         XeniaTouchConfiguredControlLabelText(runtime_model_->layout().controls[match_index], YES);
     CGPoint anchor = CGPointMake(candidate.x + candidate.width * 0.5f, candidate.y);
-    [self setEditSnapFeedbackText:[NSString stringWithFormat:@"Matched %@", label ?: @"target"]
+    [self setEditSnapFeedbackText:
+              [NSString
+                  stringWithFormat:
+                      NSLocalizedString(
+                          @"Matched %@",
+                          @"Feedback while snapping; %@ is the name of the matched control"),
+                      label
+                          ?: NSLocalizedString(
+                                 @"target",
+                                 @"Feedback while snapping; %@ is the name of the matched control")]
                            anchor:anchor];
     [self updateEditSnapGuidesPath];
   }
@@ -3252,7 +3326,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 }
 
 - (NSString*)matchSizePickerPrompt {
-  return @"Tap target for size";
+  return NSLocalizedString(@"Tap target for size",
+                           @"Prompt while picking a control to copy the size from");
 }
 
 - (void)cancelMatchSizePicker {
@@ -3446,13 +3521,34 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
       const BOOL same_width = std::abs(peer.width - frame.width) <= epsilon;
       const BOOL same_height = std::abs(peer.height - frame.height) <= epsilon;
       if (same_width && same_height) {
-        return [NSString stringWithFormat:@"Same size as %@", label ?: @"peer"];
+        return [NSString
+            stringWithFormat:
+                NSLocalizedString(@"Same size as %@",
+                                  @"Feedback while resizing; %@ is the name of the other control"),
+                label
+                    ?: NSLocalizedString(
+                           @"peer",
+                           @"Feedback while resizing; %@ is the name of the other control")];
       }
       if (same_width) {
-        return [NSString stringWithFormat:@"Same width as %@", label ?: @"peer"];
+        return [NSString
+            stringWithFormat:
+                NSLocalizedString(@"Same width as %@",
+                                  @"Feedback while resizing; %@ is the name of the other control"),
+                label
+                    ?: NSLocalizedString(
+                           @"peer",
+                           @"Feedback while resizing; %@ is the name of the other control")];
       }
       if (same_height) {
-        return [NSString stringWithFormat:@"Same height as %@", label ?: @"peer"];
+        return [NSString
+            stringWithFormat:
+                NSLocalizedString(@"Same height as %@",
+                                  @"Feedback while resizing; %@ is the name of the other control"),
+                label
+                    ?: NSLocalizedString(
+                           @"peer",
+                           @"Feedback while resizing; %@ is the name of the other control")];
       }
       continue;
     }
@@ -3467,13 +3563,31 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
         std::abs(peer_center_y - frame_center_y) <= epsilon ||
         std::abs(peer.y + peer.height - (frame.y + frame.height)) <= epsilon;
     if (vertical_align && horizontal_align) {
-      return [NSString stringWithFormat:@"Aligned with %@", label ?: @"peer"];
+      return [NSString
+          stringWithFormat:
+              NSLocalizedString(@"Aligned with %@",
+                                @"Feedback while dragging; %@ is the name of the other control"),
+              label
+                  ?: NSLocalizedString(
+                         @"peer", @"Feedback while dragging; %@ is the name of the other control")];
     }
     if (vertical_align) {
-      return [NSString stringWithFormat:@"Same X as %@", label ?: @"peer"];
+      return [NSString
+          stringWithFormat:
+              NSLocalizedString(@"Same X as %@",
+                                @"Feedback while dragging; %@ is the name of the other control"),
+              label
+                  ?: NSLocalizedString(
+                         @"peer", @"Feedback while dragging; %@ is the name of the other control")];
     }
     if (horizontal_align) {
-      return [NSString stringWithFormat:@"Same Y as %@", label ?: @"peer"];
+      return [NSString
+          stringWithFormat:
+              NSLocalizedString(@"Same Y as %@",
+                                @"Feedback while dragging; %@ is the name of the other control"),
+              label
+                  ?: NSLocalizedString(
+                         @"peer", @"Feedback while dragging; %@ is the name of the other control")];
     }
   }
   return nil;
@@ -4659,7 +4773,10 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
       if (target_index == selected_control_index_ ||
           controls[target_index].type == xe::hid::touch::IOSTouchControlType::kLookSwipeZone) {
         CGPoint anchor = point;
-        [self setEditSnapFeedbackText:@"Tap another button" anchor:anchor];
+        [self setEditSnapFeedbackText:NSLocalizedString(
+                                          @"Tap another button",
+                                          @"Feedback while picking a control to copy the size from")
+                               anchor:anchor];
         [self updateEditSnapGuidesPath];
         continue;
       }

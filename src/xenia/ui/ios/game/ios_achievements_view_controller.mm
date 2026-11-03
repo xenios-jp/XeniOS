@@ -19,15 +19,20 @@
 namespace {
 
 NSString* ProgressText(const xe::ui::IOSAchievementsSnapshot& snapshot) {
-  return [NSString stringWithFormat:@"%u/%u unlocked",
-                                    snapshot.achievements_unlocked,
-                                    snapshot.achievements_total];
+  return [NSString
+      stringWithFormat:NSLocalizedString(
+                           @"%1$u/%2$u unlocked",
+                           @"Achievement progress; %1$u is the number unlocked, %2$u the total"),
+                       snapshot.achievements_unlocked, snapshot.achievements_total];
 }
 
 NSString* GamerscoreText(const xe::ui::IOSAchievementsSnapshot& snapshot) {
-  return [NSString stringWithFormat:@"%u/%u G",
-                                    snapshot.gamerscore_earned,
-                                    snapshot.gamerscore_total];
+  return
+      [NSString stringWithFormat:
+                    NSLocalizedString(
+                        @"%1$u/%2$u G",
+                        @"Gamerscore progress; %1$u is the score earned, %2$u the total possible"),
+                    snapshot.gamerscore_earned, snapshot.gamerscore_total];
 }
 
 UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL revealed) {
@@ -76,7 +81,7 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = @"Achievements";
+  self.title = NSLocalizedString(@"Achievements", @"Title of the achievements screen");
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 88.0;
@@ -100,11 +105,12 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
       [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                      target:self
                                                      action:@selector(closeTapped:)] autorelease];
-  self.navigationItem.rightBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:@"Show Hidden"
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
-                                       action:@selector(toggleHiddenInfo:)] autorelease];
+  self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Show Hidden",
+                                      @"Navigation bar button that reveals hidden achievements")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(toggleHiddenInfo:)] autorelease];
   self.tableView.tableHeaderView = [self summaryHeaderView];
 }
 
@@ -150,17 +156,26 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   title.textColor = [XeniaTheme textPrimary];
   title.numberOfLines = 2;
   title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-  title.text = snapshot_.title_name.empty()
-                   ? [NSString stringWithFormat:@"Title %08X", snapshot_.title_id]
-                   : ToNSString(snapshot_.title_name);
+  title.text =
+      snapshot_.title_name.empty()
+          ? [NSString
+                stringWithFormat:NSLocalizedString(
+                                     @"Title %08X",
+                                     @"Fallback heading; %08X is the title ID in hexadecimal"),
+                                 snapshot_.title_id]
+          : ToNSString(snapshot_.title_name);
   [card addSubview:title];
 
   UILabel* progress = [[[UILabel alloc] init] autorelease];
   progress.translatesAutoresizingMaskIntoConstraints = NO;
   progress.textColor = [XeniaTheme textSecondary];
   progress.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-  progress.text = [NSString stringWithFormat:@"%@  %@", ProgressText(snapshot_),
-                                             GamerscoreText(snapshot_)];
+  progress.text =
+      [NSString stringWithFormat:
+                    NSLocalizedString(
+                        @"%1$@  %2$@",
+                        @"Achievements summary; %1$@ is the unlocked count, %2$@ the gamerscore"),
+                    ProgressText(snapshot_), GamerscoreText(snapshot_)];
   [card addSubview:progress];
 
   UIProgressView* progress_view =
@@ -233,7 +248,11 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 - (void)toggleHiddenInfo:(id)sender {
   show_locked_info_ = !show_locked_info_;
   self.navigationItem.rightBarButtonItem.title =
-      show_locked_info_ ? @"Hide Hidden" : @"Show Hidden";
+      show_locked_info_
+          ? NSLocalizedString(@"Hide Hidden",
+                              @"Navigation bar button toggling hidden achievement details")
+          : NSLocalizedString(@"Show Hidden",
+                              @"Navigation bar button toggling hidden achievement details");
   [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
                  withRowAnimation:UITableViewRowAnimationAutomatic];
 }
@@ -272,8 +291,11 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   content.imageToTextPadding = 12.0;
 
   if (snapshot_.achievements.empty()) {
-    content.text = @"No achievements data";
-    content.secondaryText = @"This title has not published achievement metadata to the profile.";
+    content.text =
+        NSLocalizedString(@"No achievements data", @"Empty state title in the achievements screen");
+    content.secondaryText =
+        NSLocalizedString(@"This title has not published achievement metadata to the profile.",
+                          @"Empty state message in the achievements screen");
     content.image = [UIImage systemImageNamed:@"seal"];
     content.imageProperties.tintColor = [XeniaTheme textMuted];
     cell.contentConfiguration = content;
@@ -287,8 +309,10 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   const xe::ui::IOSAchievementEntry& entry =
       snapshot_.achievements[static_cast<size_t>(indexPath.row)];
   const BOOL revealed = entry.unlocked || show_locked_info_ || entry.show_unachieved;
-  NSString* title = revealed && !entry.title.empty() ? ToNSString(entry.title)
-                                                     : @"Secret Achievement";
+  NSString* title =
+      revealed && !entry.title.empty()
+          ? ToNSString(entry.title)
+          : NSLocalizedString(@"Secret Achievement", @"Name shown for a hidden achievement");
   std::string description;
   if (entry.unlocked) {
     description = entry.unlocked_description.empty() ? entry.locked_description
@@ -297,7 +321,11 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
     description = entry.locked_description;
   }
   if (description.empty()) {
-    description = revealed ? "No description available." : "Unlock to reveal details.";
+    description =
+        revealed ? [NSLocalizedString(@"No description available.",
+                                      @"Achievement row when there is no description") UTF8String]
+                 : [NSLocalizedString(@"Unlock to reveal details.",
+                                      @"Achievement row for a hidden achievement") UTF8String];
   }
 
   content.text = title;
@@ -310,17 +338,24 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   cell.contentConfiguration = content;
 
   UILabel* score = [[[UILabel alloc] init] autorelease];
-  score.text = [NSString stringWithFormat:@"%u G", entry.gamerscore];
+  score.text =
+      [NSString stringWithFormat:NSLocalizedString(
+                                     @"%u G", @"Gamerscore of one achievement; %u is the score"),
+                                 entry.gamerscore];
   score.textColor = entry.unlocked ? [XeniaTheme accent] : [XeniaTheme textMuted];
   score.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
   [score sizeToFit];
   cell.accessoryView = score;
   cell.isAccessibilityElement = YES;
   cell.accessibilityLabel = title;
-  cell.accessibilityValue =
-      [NSString stringWithFormat:@"%@, %u gamerscore, %@",
-                                 entry.unlocked ? @"Unlocked" : @"Locked", entry.gamerscore,
-                                 ToNSString(description)];
+  cell.accessibilityValue = [NSString
+      stringWithFormat:NSLocalizedString(@"%1$@, %2$u gamerscore, %3$@",
+                                         @"VoiceOver value of an achievement; %1$@ is Unlocked or "
+                                         @"Locked, %2$u the gamerscore, %3$@ the description"),
+                       entry.unlocked
+                           ? NSLocalizedString(@"Unlocked", @"Achievement state for VoiceOver")
+                           : NSLocalizedString(@"Locked", @"Achievement state for VoiceOver"),
+                       entry.gamerscore, ToNSString(description)];
   cell.accessibilityTraits = UIAccessibilityTraitStaticText;
   return cell;
 }
