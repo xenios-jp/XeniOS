@@ -26,21 +26,101 @@
       </array>
     </dict>
     <dict>
-      <key>CFBundleTypeExtensions</key>
-      <array>
-        <string>xex</string>
-        <string>zar</string>
-      </array>
       <key>CFBundleTypeName</key>
-      <string>Xbox 360 Executable</string>
+      <string>Xbox 360 Game</string>
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>LSHandlerRank</key>
       <string>Default</string>
       <key>LSItemContentTypes</key>
       <array>
+        <string>jp.xenios.xenios.xex</string>
+        <string>jp.xenios.xenios.zar</string>
+        <string>jp.xenios.xenios.god</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>XeniOS Touch Layout</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>jp.xenios.xenios.touchlayout</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>jp.xenios.xenios.xex</string>
+      <key>UTTypeDescription</key>
+      <string>Xbox 360 Executable</string>
+      <key>UTTypeConformsTo</key>
+      <array>
         <string>public.data</string>
       </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>xex</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>jp.xenios.xenios.zar</string>
+      <key>UTTypeDescription</key>
+      <string>ZAR Game Archive</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>zar</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>jp.xenios.xenios.god</string>
+      <key>UTTypeDescription</key>
+      <string>Xbox 360 Games on Demand Package</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>god</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>jp.xenios.xenios.touchlayout</string>
+      <key>UTTypeDescription</key>
+      <string>XeniOS Touch Layout</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.utf8-plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>toml</string>
+        </array>
+      </dict>
     </dict>
   </array>
   <key>CFBundleExecutable</key>

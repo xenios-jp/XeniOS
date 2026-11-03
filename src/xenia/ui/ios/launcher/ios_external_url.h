@@ -22,6 +22,10 @@ namespace ui {
 
 NSString* DecodeURLComponent(NSString* value);
 NSString* NormalizeURLToken(NSString* value);
+// True when |path| resolves to something below Documents or a linked library folder.
+bool IsPathUnderIOSLibraryRoots(const std::filesystem::path& path);
+// Launch targets named in non-file URLs are restricted to IsPathUnderIOSLibraryRoots.
+// file:// URLs (system "Open in" with in-place access) are returned as delivered.
 bool ExtractLaunchPathFromExternalURL(NSURL* url, std::filesystem::path* path_out);
 bool IsExternalGameInfoRequestURL(NSURL* url, NSString** callback_scheme_out);
 bool ExtractLaunchTitleIDFromExternalURL(NSURL* url, uint32_t* title_id_out,
