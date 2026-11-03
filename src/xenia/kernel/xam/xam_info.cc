@@ -623,8 +623,9 @@ static void StartTitle(XamModule::LoaderData& loader_data,
   // Handle title launch in-process via full Shutdown/Setup cycle. Disabled
   // on macOS — pthread_cancel there doesn't run C++ destructors, so
   // force-terminated guest threads leak locks and deadlock teardown; spawn a
-  // fresh process instead.
-#if !XE_PLATFORM_MAC
+  // fresh process instead. iOS, which can't, resets the title and launches the
+  // new one itself (on_launch_new_title).
+#if !XE_PLATFORM_APPLE
   if (cvars::in_process_title_relaunch) {
     auto emulator = kernel_state()->emulator();
 
@@ -654,7 +655,7 @@ static void StartTitle(XamModule::LoaderData& loader_data,
       xe::threading::NanoSleep(int64_t(1'000'000'000));
     }
   }
-#endif  // !XE_PLATFORM_MAC
+#endif  // !XE_PLATFORM_APPLE
 
   const std::string launch_data_hex =
       HexBytes(loader_data.launch_data, loader_data.launch_data.size());
