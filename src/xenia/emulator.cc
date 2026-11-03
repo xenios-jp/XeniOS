@@ -2286,8 +2286,13 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     return true;
   }
 
-  // Check to see if the exception occurred in guest code.
-  auto code_cache = processor()->backend()->code_cache();
+  // Check to see if the exception occurred in guest code. Before a title loads
+  // there is no code cache, so the fault is the host's own.
+  auto* backend = processor() ? processor()->backend() : nullptr;
+  auto* code_cache = backend ? backend->code_cache() : nullptr;
+  if (!code_cache) {
+    return false;
+  }
   auto code_base = code_cache->execute_base_address();
   auto code_end = code_base + code_cache->total_size();
 
