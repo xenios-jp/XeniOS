@@ -11,6 +11,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 #include <atomic>
 #include <mutex>
@@ -124,9 +125,16 @@ void HandleInterruption(NSNotification* notification) {
   XELOGI("iOS audio session: interruption ended (should_resume={})", should_resume);
   if (should_resume) {
     IOSAudioSessionRestore("interruption ended");
+    return;
   }
-  // Without shouldResume the session stays flagged and is restored when the app
-  // next becomes active, since the user went elsewhere.
+  // Without shouldResume the user went elsewhere, but an alarm or another app's audio can end
+  // while this app stays active and no scene change follows. Restore then; otherwise it is
+  // restored when the app next becomes active.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
+      IOSAudioSessionRestore("interruption ended while active");
+    }
+  });
 }
 
 void HandleRouteChange(NSNotification* notification) {
