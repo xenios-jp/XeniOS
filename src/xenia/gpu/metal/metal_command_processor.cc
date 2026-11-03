@@ -3566,6 +3566,7 @@ void MetalCommandProcessor::AddGpuTimeHandler(
 void MetalCommandProcessor::LogCommandBufferFailure(
     MTL::CommandBuffer* command_buffer, MTL::CommandBufferStatus status) {
   failed_command_buffers_.fetch_add(1, std::memory_order_relaxed);
+  command_buffer_failures.fetch_add(1, std::memory_order_relaxed);
   // A buffer aborted by the GPU (for example, work submitted from the
   // background) was silent before; its output is lost.
   NS::Error* error = command_buffer->error();
