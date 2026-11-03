@@ -73,6 +73,19 @@
   return static_cast<NSInteger>(choices_.size());
 }
 
+- (NSString*)tableView:(UITableView* __unused)tableView
+    titleForFooterInSection:(NSInteger)__unused section {
+  for (const IOSConfigChoice& choice : choices_) {
+    if (choice.is_custom) {
+      return NSLocalizedString(
+          @"The current value is not one of the listed choices. It was probably set by editing "
+          @"the config file by hand. Choose another entry to replace it.",
+          @"choice list view controller: footer for a value that is not in the list");
+    }
+  }
+  return nil;
+}
+
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   static NSString* const kChoiceCellIdentifier = @"XeniaChoiceCell";
@@ -96,8 +109,11 @@
       (choice.value == selected_value_)
           ? NSLocalizedString(@"Selected", @"choice list view controller: accessibility value")
           : NSLocalizedString(@"Not selected", @"choice list view controller: accessibility value");
+  // A custom value only marks what is stored now; it can't be picked.
+  cell.selectionStyle =
+      choice.is_custom ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
   cell.accessibilityTraits =
-      UIAccessibilityTraitButton |
+      (choice.is_custom ? UIAccessibilityTraitStaticText : UIAccessibilityTraitButton) |
       ((choice.value == selected_value_) ? UIAccessibilityTraitSelected : 0);
   return cell;
 }
@@ -108,6 +124,10 @@
     return;
   }
   const IOSConfigChoice& choice = choices_[indexPath.row];
+  if (choice.is_custom) {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    return;
+  }
   selected_value_ = choice.value;
   if (on_selection_) {
     on_selection_(selected_value_);

@@ -14,8 +14,9 @@
 
 #include "xenia/ui/ios/settings/ios_config_view_controller.h"
 
-// Searchable config controller for curated Advanced Debug and All Config pages.
-@interface XeniaIOSDebugSettingsViewController : XeniaConfigViewController <UISearchResultsUpdating>
+// Config controller for the Advanced Debug and Developer: All Config pages (searchable, like
+// every page that supports search in XeniaConfigViewController).
+@interface XeniaIOSDebugSettingsViewController : XeniaConfigViewController
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind
                        liveOverride:(BOOL)liveOverride;
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind
