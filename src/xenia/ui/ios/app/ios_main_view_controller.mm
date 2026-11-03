@@ -594,10 +594,16 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self presentPendingTouchLayoutInstallIfReady];
 }
 
-- (void)handleControllerConnectionChanged:(NSNotification* __unused)note {
+- (void)handleControllerConnectionChanged:(NSNotification*)note {
   [self.controllerNavigationCoordinator refreshLauncherFocus];
   [self.controllerNavigationCoordinator refreshInGameFocus];
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
+  // Losing the last controller mid-game opens the menu, which pauses the game, instead of
+  // leaving the player under fire while the touch controls come back.
+  if ([note.name isEqualToString:GCControllerDidDisconnectNotification] && self.gameRunning &&
+      self.launcherOverlayView.hidden && ![self hasConnectedGameplayController]) {
+    [self showInGameMenuOverlayAnimated:YES];
+  }
 }
 
 - (void)viewDidAppear:(BOOL)animated {

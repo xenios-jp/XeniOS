@@ -287,12 +287,13 @@ X_RESULT TouchInputDriver::GetState(uint32_t user_index,
   }
 
   IOSTouchResolvedState state = runtime_model_->LoadResolvedState();
-  if (!state.gameplay_enabled) {
-    return X_ERROR_DEVICE_NOT_CONNECTED;
-  }
-
   std::memset(out_state, 0, sizeof(*out_state));
   out_state->packet_number = state.packet_number;
+  // While the overlay is hidden (a controller is in use, or a menu or the layout editor is
+  // up), the touch pad stays connected at rest, so games don't see their controller unplugged.
+  if (!state.gameplay_enabled) {
+    return X_ERROR_SUCCESS;
+  }
   out_state->gamepad.buttons = state.buttons;
   out_state->gamepad.left_trigger = state.left_trigger;
   out_state->gamepad.right_trigger = state.right_trigger;
@@ -312,9 +313,8 @@ X_RESULT TouchInputDriver::SetState(uint32_t user_index,
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
-  IOSTouchResolvedState state = runtime_model_->LoadResolvedState();
-  return state.gameplay_enabled ? X_ERROR_SUCCESS
-                                : X_ERROR_DEVICE_NOT_CONNECTED;
+  // Touch has no rumble; accept it like a connected pad.
+  return X_ERROR_SUCCESS;
 }
 
 X_RESULT TouchInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
@@ -334,7 +334,7 @@ X_RESULT TouchInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
     pending_keystrokes_.clear();
     has_keystroke_state_ = false;
     last_keystroke_field_ = 0;
-    return X_ERROR_DEVICE_NOT_CONNECTED;
+    return X_ERROR_EMPTY;
   }
 
   const uint64_t current_field = TouchKeystrokeFieldFromState(state);
