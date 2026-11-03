@@ -493,7 +493,15 @@ void AudioSystem::Pause() {
 
   // Kind of a hack, but it works.
   pending_work_event_->Set();
-  pause_fence_.Wait();
+  // Bounded: the worker signals only between callbacks, and a callback blocked
+  // on a guest lock must not wedge the caller.
+  bool parked = false;
+  for (int i = 0; i < 2000 && !(parked = pause_fence_.TryWait()); ++i) {
+    xe::threading::Sleep(std::chrono::milliseconds(1));
+  }
+  if (!parked) {
+    XELOGW("AudioSystem: the worker didn't reach its pause point in 2 s");
+  }
 
   xma_decoder_->Pause();
 }

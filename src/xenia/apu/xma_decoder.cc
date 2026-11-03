@@ -404,7 +404,14 @@ void XmaDecoder::Pause() {
   }
   paused_ = true;
 
-  pause_fence_.Wait();
+  // Bounded, see AudioSystem::Pause.
+  bool parked = false;
+  for (int i = 0; i < 2000 && !(parked = pause_fence_.TryWait()); ++i) {
+    xe::threading::Sleep(std::chrono::milliseconds(1));
+  }
+  if (!parked) {
+    XELOGW("XmaDecoder: the worker didn't reach its pause point in 2 s");
+  }
 }
 
 void XmaDecoder::Resume() {

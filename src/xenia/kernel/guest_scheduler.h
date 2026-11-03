@@ -130,6 +130,26 @@ class GuestScheduler {
   // The fiber running alone after FreezeOthers, if any.
   XThread* freezer() const { return freezer_.load(std::memory_order_relaxed); }
 
+  // Stops every dispatch thread from starting another fiber slice. Running
+  // fibers are asked to yield at their next safepoint, waiting fibers stay
+  // parked, so once this returns true no guest code runs on any fiber until
+  // ResumeDispatch. Callable from any non-fiber host thread, also before
+  // EnsureStarted (the dispatch threads then start held). Waits at most
+  // |timeout| for the CPUs to settle. Returns false if some did not (a fiber
+  // inside a long global-lock/DISPATCH_LEVEL section or blocked on a host
+  // primitive): the pause stays requested, those CPUs settle whenever their
+  // fiber next reaches the dispatcher, and |out_pending_cpus| (bit per guest
+  // CPU) names them. Idempotent while paused. Also false, doing nothing, if a
+  // FreezeOthers freeze is active.
+  bool PauseDispatch(std::chrono::milliseconds timeout,
+                     uint32_t* out_pending_cpus = nullptr);
+  // Lets the dispatch threads run again. No-op if not paused. Guest time and
+  // host-uptime wait deadlines are not adjusted: they kept running.
+  void ResumeDispatch();
+  bool dispatch_paused() const {
+    return dispatch_paused_.load(std::memory_order_acquire);
+  }
+
   // Where each dispatch thread is executing, for a sampling profiler.
   void SampleProgramCounters(std::vector<uint64_t>* pcs) const;
 
@@ -276,6 +296,8 @@ class GuestScheduler {
   // Returns false if the count already reached zero, meaning run it instead.
   bool ParkSuspended(XThread* thread, int cpu_index);
   void RunLoop(int cpu_index);
+  // Called on a dispatch thread at the top of its loop while paused.
+  void HoldDispatchThread(int cpu_index);
   // Raises preempt_requested on any CPU whose running fiber outlived its
   // slice, since a dispatch thread cannot tick while it runs a fiber.
   void WatchdogLoop();
@@ -355,6 +377,16 @@ class GuestScheduler {
   int freezer_cpu_ = -1;
   std::atomic<int> frozen_cpus_{0};
   std::unique_ptr<xe::threading::Event> thaw_event_;
+
+  // PauseDispatch state. quiesced_mask_ has bit i set while dispatch thread i
+  // sits in HoldDispatchThread. pause_api_lock_ serialises Pause/Resume.
+  std::atomic<bool> dispatch_paused_{false};
+  std::atomic<uint32_t> quiesced_mask_{0};
+  std::unique_ptr<xe::threading::Event> resume_event_;
+  std::mutex pause_api_lock_;
+  // Debug: cvar guest_scheduler_pause_stress_ms.
+  std::unique_ptr<xe::threading::Thread> pause_stress_thread_;
+  void PauseStressLoop();
 
   std::atomic<bool> started_{false};
   std::atomic<bool> shutting_down_{false};
