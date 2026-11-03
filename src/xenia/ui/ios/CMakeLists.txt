@@ -125,6 +125,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_status_toast.mm
   shared/ios_update_check.h
   shared/ios_update_check.mm
+  shared/ios_crash_reporting.h
+  shared/ios_crash_reporting.mm
   shared/ios_hero_glow_palette.h
   shared/ios_hero_glow_palette.mm
   shared/ios_theme.h
