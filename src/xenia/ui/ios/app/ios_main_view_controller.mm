@@ -408,6 +408,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   uint64_t library_refresh_generation_;
   BOOL compat_fetch_started_;
   BOOL update_check_started_;
+  BOOL online_features_notice_presented_;
   BOOL external_title_launch_rescanned_;
   UIAlertController* pending_url_confirmation_;  // retained
   std::filesystem::path pending_external_launch_path_;
@@ -621,12 +622,57 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 - (void)viewDidAppear:(BOOL)animated {
   [super viewDidAppear:animated];
+  xe_request_current_orientation(self);
+  if ([self presentOnlineFeaturesNoticeIfNeeded]) {
+    return;
+  }
+  [self runAppearanceTasks];
+}
+
+- (void)runAppearanceTasks {
   [self startCompatFetchIfNeeded];
   [self startUpdateCheckIfNeeded];
-  xe_request_current_orientation(self);
   [self presentPendingTouchLayoutInstallIfReady];
   [self.zarConversionCoordinator checkPendingConversionOnLaunch];
   xe_ios_offer_previous_session_report_if_needed(self);
+}
+
+// Once, before the first launch fetches anything: what goes over the network and that
+// reports are public. The appearance tasks run when it closes.
+- (BOOL)presentOnlineFeaturesNoticeIfNeeded {
+  if (!xe_ios_online_features_notice_pending()) {
+    return NO;
+  }
+  if (online_features_notice_presented_) {
+    return YES;
+  }
+  online_features_notice_presented_ = YES;
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@"Online Features"
+                       message:@"XeniOS checks for updates and downloads compatibility information "
+                               @"and cover art. Compatibility reports you submit are public.\n\n"
+                               @"You can change this in Settings > About > Privacy."
+                preferredStyle:UIAlertControllerStyleAlert];
+  void (^answer)(BOOL) = ^(BOOL enabled) {
+    xe_ios_set_online_features_enabled(enabled);
+    xe_ios_set_online_features_notice_answered();
+    [self runAppearanceTasks];
+  };
+  [alert addAction:[UIAlertAction actionWithTitle:@"Turn Off"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            answer(NO);
+                                          }]];
+  UIAlertAction* keep_on = [UIAlertAction actionWithTitle:@"Continue"
+                                                    style:UIAlertActionStyleDefault
+                                                  handler:^(__unused UIAlertAction* action) {
+                                                    answer(YES);
+                                                  }];
+  [alert addAction:keep_on];
+  alert.preferredAction = keep_on;
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
+  return YES;
 }
 
 - (void)startUpdateCheckIfNeeded {
