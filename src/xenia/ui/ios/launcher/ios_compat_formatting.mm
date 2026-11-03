@@ -97,7 +97,8 @@ UIColor* xe_compat_status_color(NSString* status) {
 
 NSString* xe_compat_status_label(NSString* status) {
   const CompatTaxonomyEntry* entry = FindCompatStatus(status);
-  return entry ? entry->label : @"Unknown";
+  return entry ? entry->label
+               : NSLocalizedString(@"Unknown", @"compat formatting: user-visible text");
 }
 
 UIColor* xe_compat_perf_color(NSString* perf) {
@@ -107,7 +108,8 @@ UIColor* xe_compat_perf_color(NSString* perf) {
 
 NSString* xe_compat_perf_label(NSString* perf) {
   const CompatTaxonomyEntry* entry = FindCompatPerf(perf);
-  return entry ? entry->label : @"Unknown";
+  return entry ? entry->label
+               : NSLocalizedString(@"Unknown", @"compat formatting: user-visible text");
 }
 
 NSString* xe_format_iso_date(NSString* iso) {
@@ -194,7 +196,8 @@ UIColor* xe_compat_channel_color(NSString* channel) {
 NSString* xe_compat_channel_label(NSString* channel) {
   const CompatTaxonomyEntry* entry =
       FindByCode(kCompatChannels, std::size(kCompatChannels), channel);
-  return entry ? entry->label : @"Unknown";
+  return entry ? entry->label
+               : NSLocalizedString(@"Unknown", @"compat formatting: user-visible text");
 }
 
 static NSString* xe_release_stage_display_label(NSString* stage) {
@@ -227,7 +230,9 @@ NSString* xe_compat_build_label(NSDictionary* build_info) {
   }
   NSString* build_number = xe_string_from_object(build_info[@"buildNumber"]);
   if (build_number.length > 0) {
-    return [NSString stringWithFormat:@"Build %@", build_number];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
+                         build_number];
   }
   NSString* build_id = xe_string_from_object(build_info[@"buildId"]);
   return build_id.length > 0 ? build_id : nil;
@@ -235,7 +240,7 @@ NSString* xe_compat_build_label(NSDictionary* build_info) {
 
 NSString* xe_user_facing_build_label(NSDictionary* build_info) {
   if (!build_info) {
-    return @"Unknown Build";
+    return NSLocalizedString(@"Unknown Build", @"compat formatting: user-visible text");
   }
 
   NSString* channel = xe_string_from_object(build_info[@"channel"]);
@@ -246,9 +251,13 @@ NSString* xe_user_facing_build_label(NSDictionary* build_info) {
 
   if ([channel isEqualToString:@"preview"] && version_label.length > 0) {
     if (stage_label.length > 0) {
-      return [NSString stringWithFormat:@"%@ Preview %@", stage_label, version_label];
+      return [NSString stringWithFormat:NSLocalizedString(@"%@ Preview %@",
+                                                          @"compat formatting: user-visible text"),
+                                        stage_label, version_label];
     }
-    return [NSString stringWithFormat:@"Preview %@", version_label];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Preview %@", @"compat formatting: user-visible text"),
+                         version_label];
   }
   if ([channel isEqualToString:@"release"] && version_label.length > 0) {
     if (stage_label.length > 0) {
@@ -257,19 +266,29 @@ NSString* xe_user_facing_build_label(NSDictionary* build_info) {
     return version_label;
   }
   if (commit_short.length > 0) {
-    return [NSString stringWithFormat:@"Dev build %@", commit_short];
+    return [NSString stringWithFormat:NSLocalizedString(@"Dev build %@",
+                                                        @"compat formatting: user-visible text"),
+                                      commit_short];
   }
   if (version_label.length > 0) {
-    return [NSString stringWithFormat:@"Build %@", version_label];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
+                         version_label];
   }
 
   NSString* build_number = xe_string_from_object(build_info[@"buildNumber"]);
   if (build_number.length > 0) {
-    return [NSString stringWithFormat:@"Build %@", build_number];
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
+                         build_number];
   }
 
   NSString* build_id = xe_string_from_object(build_info[@"buildId"]);
-  return build_id.length > 0 ? [NSString stringWithFormat:@"Build %@", build_id] : @"Unknown Build";
+  return build_id.length > 0
+             ? [NSString stringWithFormat:NSLocalizedString(
+                                              @"Build %@", @"compat formatting: user-visible text"),
+                                          build_id]
+             : NSLocalizedString(@"Unknown Build", @"compat formatting: user-visible text");
 }
 
 static NSString* xe_sanitize_build_component(NSString* value) {
@@ -445,7 +464,13 @@ NSArray<NSString*>* xe_compat_perfs(void) {
 
 // Picker labels keep "OK" (vs. xe_compat_perf_label's "Okay") so the report
 // submission buttons show the short form the website also uses.
-NSArray<NSString*>* xe_compat_perf_labels(void) { return @[ @"Great", @"OK", @"Poor", @"N/A" ]; }
+NSArray<NSString*>* xe_compat_perf_labels(void) {
+  return @[
+    NSLocalizedString(@"Great", @"compat formatting: user-visible text"),
+    NSLocalizedString(@"OK", @"compat formatting: user-visible text"),
+    NSLocalizedString(@"Poor", @"compat formatting: user-visible text"), @"N/A"
+  ];
+}
 
 CGFloat xe_compat_hero_height_for_width(CGFloat width, UIImage* background_art) {
   CGFloat hero_width = MAX(width, 0.0);

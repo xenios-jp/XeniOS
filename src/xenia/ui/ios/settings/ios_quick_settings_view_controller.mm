@@ -45,7 +45,9 @@
 
   UIButton* debugButton = [UIButton buttonWithType:UIButtonTypeSystem];
   debugButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [debugButton setTitle:@"Show Advanced Debug" forState:UIControlStateNormal];
+  [debugButton
+      setTitle:NSLocalizedString(@"Show Advanced Debug", @"quick settings view controller: title")
+      forState:UIControlStateNormal];
   debugButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
   [debugButton addTarget:self
                   action:@selector(showDebugSettings)

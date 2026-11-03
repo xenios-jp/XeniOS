@@ -59,7 +59,9 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                     screenshots:(NSArray<UIImage*>*)screenshots
                      completion:(XeniaCompatReportSubmissionCompletion)completion {
   if (!xe_ios_online_features_enabled()) {
-    xe_finish_report_submission(completion, nil, nil, nil, @"Online Features Are Off",
+    xe_finish_report_submission(completion, nil, nil, nil,
+                                NSLocalizedString(@"Online Features Are Off",
+                                                  @"compat report submission: user-visible text"),
                                 xe_ios_online_features_off_message());
     return;
   }
@@ -107,9 +109,13 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                                                          options:0
                                                            error:&json_error];
   if (!request_body) {
-    NSString* message =
-        json_error.localizedDescription ?: @"Unable to serialize the report payload.";
-    xe_finish_report_submission(completion, nil, nil, nil, @"Submission Failed", message);
+    NSString* message = json_error.localizedDescription
+                            ?: NSLocalizedString(@"Unable to serialize the report payload.",
+                                                 @"compat report submission: message");
+    xe_finish_report_submission(
+        completion, nil, nil, nil,
+        NSLocalizedString(@"Submission Failed", @"compat report submission: user-visible text"),
+        message);
     return;
   }
 
@@ -136,9 +142,13 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
             if (error) {
               XELOGW("iOS compat submit: network error domain={} code={}",
                      [error.domain UTF8String], static_cast<long>(error.code));
-              xe_finish_report_submission(completion, nil, nil, nil, @"Couldn't Send Report",
-                                          @"XeniOS couldn't reach the report server. Check your "
-                                          @"connection and try again.");
+              xe_finish_report_submission(
+                  completion, nil, nil, nil,
+                  NSLocalizedString(@"Couldn't Send Report",
+                                    @"compat report submission: user-visible text"),
+                  NSLocalizedString(@"XeniOS couldn't reach the report server. Check your "
+                                    @"connection and try again.",
+                                    @"compat report submission: user-visible text"));
               return;
             }
 
@@ -154,13 +164,22 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                      static_cast<long>(status_code), static_cast<unsigned long>(data.length));
               NSString* message =
                   status_code == 429
-                      ? @"Too many reports were sent recently. Please try again later."
+                      ? NSLocalizedString(
+                            @"Too many reports were sent recently. Please try again later.",
+                            @"compat report submission: message")
                   : (status_code >= 400 && status_code < 500)
-                      ? @"The server didn't accept this report. Please try again later."
-                      : @"The report server is having trouble right now. Please try again "
-                        @"later.";
-              xe_finish_report_submission(completion, nil, nil, nil, @"Couldn't Send Report",
-                                          message);
+                      ? NSLocalizedString(
+                            @"The server didn't accept this report. Please try again later.",
+                            @"compat report submission: user-visible text")
+                      : NSLocalizedString(
+                            @"The report server is having trouble right now. Please try again "
+                            @"later.",
+                            @"compat report submission: user-visible text");
+              xe_finish_report_submission(
+                  completion, nil, nil, nil,
+                  NSLocalizedString(@"Couldn't Send Report",
+                                    @"compat report submission: user-visible text"),
+                  message);
               return;
             }
 

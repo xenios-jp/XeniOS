@@ -23,7 +23,11 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
     [parts addObject:ToNSString(patch.description)];
   }
   if (!patch.author.empty()) {
-    [parts addObject:[NSString stringWithFormat:@"by %@", ToNSString(patch.author)]];
+    [parts addObject:[NSString
+                         stringWithFormat:NSLocalizedString(
+                                              @"by %@",
+                                              @"game patches view controller: user-visible text"),
+                                          ToNSString(patch.author)]];
   }
   return [parts componentsJoinedByString:@"\n"];
 }
@@ -46,7 +50,7 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
     title_id_ = titleID;
     game_title_ = [title copy];
     app_context_ = appContext;
-    self.title = @"Patches";
+    self.title = NSLocalizedString(@"Patches", @"game patches view controller: title");
   }
   return self;
 }
@@ -61,11 +65,11 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 76.0;
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:@"Close"
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
-                                       action:@selector(doneTapped:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Close", @"game patches view controller: title")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(doneTapped:)] autorelease];
   [self reloadPatches];
 }
 
@@ -100,7 +104,8 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
   if (patch_files_.empty()) {
-    return game_title_.length ? game_title_ : @"Game";
+    return game_title_.length ? game_title_
+                              : NSLocalizedString(@"Game", @"game patches view controller: title");
   }
   const auto& file = patch_files_[static_cast<size_t>(section)];
   if (!file.title_name.empty()) {
@@ -115,16 +120,20 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
   if (patch_files_.empty()) {
     if (!discovery_summary_.directory_exists) {
-      return @"The patches folder was not found.";
+      return NSLocalizedString(@"The patches folder was not found.",
+                               @"game patches view controller: user-visible text");
     }
     if (discovery_summary_.candidate_files == 0 && discovery_summary_.bundled_files == 0) {
-      return @"The patches folder did not contain any .patch.toml files.";
+      return NSLocalizedString(@"The patches folder did not contain any .patch.toml files.",
+                               @"game patches view controller: user-visible text");
     }
-    return @"Patch files were found, but none matched this title ID.";
+    return NSLocalizedString(@"Patch files were found, but none matched this title ID.",
+                             @"game patches view controller: user-visible text");
   }
   if (section == static_cast<NSInteger>(patch_files_.size()) - 1) {
-    return @"Patch changes are saved immediately and take effect the next time "
-           @"the game launches.";
+    return NSLocalizedString(@"Patch changes are saved immediately and take effect the next time "
+                             @"the game launches.",
+                             @"game patches view controller: user-visible text");
   }
   return nil;
 }
@@ -141,22 +150,26 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   }
 
   if (patch_files_.empty()) {
-    cell.textLabel.text = @"No patches available";
+    cell.textLabel.text =
+        NSLocalizedString(@"No patches available", @"game patches view controller: label text");
     if (!discovery_summary_.directory_exists) {
-      cell.detailTextLabel.text =
-          [NSString stringWithFormat:@"Create a patches folder here:\n%@",
-                                     ToNSString(discovery_summary_.directory_path)];
+      cell.detailTextLabel.text = [NSString
+          stringWithFormat:NSLocalizedString(@"Create a patches folder here:\n%@",
+                                             @"game patches view controller: detail text"),
+                           ToNSString(discovery_summary_.directory_path)];
     } else if (discovery_summary_.candidate_files == 0 && discovery_summary_.bundled_files == 0) {
-      cell.detailTextLabel.text =
-          [NSString stringWithFormat:@"Scanned %zu files in:\n%@\n\nAdd xenia-canary "
-                                     @".patch.toml files for this title.",
-                                     discovery_summary_.scanned_files,
-                                     ToNSString(discovery_summary_.directory_path)];
+      cell.detailTextLabel.text = [NSString
+          stringWithFormat:NSLocalizedString(@"Scanned %zu files in:\n%@\n\nAdd xenia-canary "
+                                             @".patch.toml files for this title.",
+                                             @"game patches view controller: detail text"),
+                           discovery_summary_.scanned_files,
+                           ToNSString(discovery_summary_.directory_path)];
     } else {
       cell.detailTextLabel.text = [NSString
-          stringWithFormat:@"Title ID %08X did not match any discovered patch "
-                           @"file.\n\nFolder: %@\nPatch-looking files: %zu\n"
-                           @"Parse failures: %zu\nOther title IDs: %zu",
+          stringWithFormat:NSLocalizedString(@"Title ID %08X did not match any discovered patch "
+                                             @"file.\n\nFolder: %@\nPatch-looking files: %zu\n"
+                                             @"Parse failures: %zu\nOther title IDs: %zu",
+                                             @"game patches view controller: detail text"),
                            title_id_, ToNSString(discovery_summary_.directory_path),
                            discovery_summary_.candidate_files, discovery_summary_.parse_failures,
                            discovery_summary_.title_mismatches];
@@ -170,8 +183,10 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
 
   const auto& file = patch_files_[static_cast<size_t>(indexPath.section)];
   if (file.patches.empty()) {
-    cell.textLabel.text = @"No patch entries";
-    cell.detailTextLabel.text = @"This patch file did not contain any toggles.";
+    cell.textLabel.text =
+        NSLocalizedString(@"No patch entries", @"game patches view controller: label text");
+    cell.detailTextLabel.text = NSLocalizedString(@"This patch file did not contain any toggles.",
+                                                  @"game patches view controller: detail text");
     cell.textLabel.textColor = [XeniaTheme textMuted];
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.accessoryView = nil;
@@ -180,9 +195,13 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   }
 
   const auto& patch = file.patches[static_cast<size_t>(indexPath.row)];
-  cell.textLabel.text = patch.name.empty()
-                            ? [NSString stringWithFormat:@"Patch %zu", patch.patch_index + 1]
-                            : ToNSString(patch.name);
+  cell.textLabel.text =
+      patch.name.empty()
+          ? [NSString
+                stringWithFormat:NSLocalizedString(@"Patch %zu",
+                                                   @"game patches view controller: label text"),
+                                 patch.patch_index + 1]
+          : ToNSString(patch.name);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text = PatchDetailText(patch);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
@@ -195,8 +214,12 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
       forControlEvents:UIControlEventValueChanged];
   cell.accessoryView = toggle;
   cell.accessibilityLabel = cell.textLabel.text;
-  cell.accessibilityValue = toggle.on ? @"Enabled" : @"Disabled";
-  cell.accessibilityHint = @"Toggles this patch for the next launch.";
+  cell.accessibilityValue =
+      toggle.on
+          ? NSLocalizedString(@"Enabled", @"game patches view controller: accessibility value")
+          : NSLocalizedString(@"Disabled", @"game patches view controller: accessibility value");
+  cell.accessibilityHint = NSLocalizedString(@"Toggles this patch for the next launch.",
+                                             @"game patches view controller: accessibility hint");
   return cell;
 }
 
@@ -225,8 +248,12 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
                                                     sender.on, &status);
   if (!success) {
     sender.on = !sender.on;
-    XEPresentOKAlert(self, @"Patch Not Saved",
-                     status.empty() ? @"Failed to update patch state." : ToNSString(status));
+    XEPresentOKAlert(
+        self,
+        NSLocalizedString(@"Patch Not Saved", @"game patches view controller: user-visible text"),
+        status.empty() ? NSLocalizedString(@"Failed to update patch state.",
+                                           @"game patches view controller: user-visible text")
+                       : ToNSString(status));
     return;
   }
   [self reloadPatches];

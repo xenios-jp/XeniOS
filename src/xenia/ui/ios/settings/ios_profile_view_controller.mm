@@ -31,7 +31,7 @@
     app_context_ = app_context;
     on_status_ = [on_status copy];
     shows_dismiss_button_ = YES;
-    self.title = @"Profiles";
+    self.title = NSLocalizedString(@"Profiles", @"profile view controller: title");
   }
   return self;
 }
@@ -103,20 +103,23 @@
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
   if (section == 0) {
-    return @"Actions";
+    return NSLocalizedString(@"Actions", @"profile view controller: user-visible text");
   }
-  return @"Local Profiles";
+  return NSLocalizedString(@"Local Profiles", @"profile view controller: user-visible text");
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
   if (section == 0) {
-    return @"Create and sign in profiles used by Xbox Live emulation.";
+    return NSLocalizedString(@"Create and sign in profiles used by Xbox Live emulation.",
+                             @"profile view controller: user-visible text");
   }
   if (profiles_.empty()) {
     if (app_context_ && !app_context_->ProfileServicesReady()) {
-      return @"Loading profiles...";
+      return NSLocalizedString(@"Loading profiles...",
+                               @"profile view controller: user-visible text");
     }
-    return @"No profiles created yet.";
+    return NSLocalizedString(@"No profiles created yet.",
+                             @"profile view controller: user-visible text");
   }
   return nil;
 }
@@ -137,9 +140,11 @@
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
 
   if (indexPath.section == 0) {
-    cell.textLabel.text = @"Create Profile";
+    cell.textLabel.text =
+        NSLocalizedString(@"Create Profile", @"profile view controller: label text");
     cell.textLabel.textColor = [XeniaTheme accent];
-    cell.detailTextLabel.text = @"Create a new profile and sign in.";
+    cell.detailTextLabel.text = NSLocalizedString(@"Create a new profile and sign in.",
+                                                  @"profile view controller: detail text");
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     XEApplyAccessibility(cell, cell.textLabel.text, nil, cell.detailTextLabel.text,
@@ -162,10 +167,13 @@
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   if (profile.signed_in) {
     cell.detailTextLabel.text =
-        [NSString stringWithFormat:@"Signed in on slot %u", profile.signed_in_slot];
+        [NSString stringWithFormat:NSLocalizedString(@"Signed in on slot %u",
+                                                     @"profile view controller: detail text"),
+                                   profile.signed_in_slot];
     cell.accessoryType = UITableViewCellAccessoryCheckmark;
   } else {
-    cell.detailTextLabel.text = @"Not signed in";
+    cell.detailTextLabel.text =
+        NSLocalizedString(@"Not signed in", @"profile view controller: detail text");
   }
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   XEApplyAccessibility(cell, gamertag, cell.detailTextLabel.text, nil,
@@ -181,28 +189,34 @@
   if (!app_context_->ProfileServicesReady()) {
     app_context_->PrepareProfileServices();
     if (on_status_) {
-      on_status_(@"Initializing profile services...");
+      on_status_(NSLocalizedString(@"Initializing profile services...",
+                                   @"profile view controller: user-visible text"));
     }
     [self scheduleProfileServicesReload];
     return;
   }
 
-  __block UIAlertController* create_alert =
-      [UIAlertController alertControllerWithTitle:@"Create Profile"
-                                          message:@"Enter a gamertag (1-15 characters)."
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  __block UIAlertController* create_alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Create Profile",
+                                                 @"profile view controller: title")
+                       message:NSLocalizedString(@"Enter a gamertag (1-15 characters).",
+                                                 @"profile view controller: message")
+                preferredStyle:UIAlertControllerStyleAlert];
   [create_alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
-    text_field.placeholder = @"Gamertag";
+    text_field.placeholder =
+        NSLocalizedString(@"Gamertag", @"profile view controller: placeholder");
     text_field.autocapitalizationType = UITextAutocapitalizationTypeWords;
     text_field.autocorrectionType = UITextAutocorrectionTypeNo;
     text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
   }];
-  [create_alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                                   style:UIAlertActionStyleCancel
-                                                 handler:nil]];
   [create_alert
       addAction:[UIAlertAction
-                    actionWithTitle:@"Create"
+                    actionWithTitle:NSLocalizedString(@"Cancel", @"profile view controller: title")
+                              style:UIAlertActionStyleCancel
+                            handler:nil]];
+  [create_alert
+      addAction:[UIAlertAction
+                    actionWithTitle:NSLocalizedString(@"Create", @"profile view controller: title")
                               style:UIAlertActionStyleDefault
                             handler:^(__unused UIAlertAction* action) {
                               UITextField* text_field = create_alert.textFields.firstObject;
@@ -219,13 +233,19 @@
                                   app_context_->CreateProfile(std::string([gamertag UTF8String]));
                               if (!xuid || !app_context_->SignInProfile(xuid)) {
                                 if (on_status_) {
-                                  on_status_(@"Failed to create profile.");
+                                  on_status_(NSLocalizedString(
+                                      @"Failed to create profile.",
+                                      @"profile view controller: user-visible text"));
                                 }
                                 return;
                               }
                               if (on_status_) {
-                                on_status_(
-                                    [NSString stringWithFormat:@"Signed in as %@.", gamertag]);
+                                on_status_([NSString
+                                    stringWithFormat:
+                                        NSLocalizedString(
+                                            @"Signed in as %@.",
+                                            @"profile view controller: user-visible text"),
+                                        gamertag]);
                               }
                               [self reloadProfiles];
                             }]];
@@ -250,11 +270,15 @@
   const auto& profile = profiles_[indexPath.row];
   if (app_context_->SignInProfile(profile.xuid)) {
     if (on_status_) {
-      on_status_([NSString stringWithFormat:@"Signed in as %@.", ToNSString(profile.gamertag)]);
+      on_status_([NSString
+          stringWithFormat:NSLocalizedString(@"Signed in as %@.",
+                                             @"profile view controller: user-visible text"),
+                           ToNSString(profile.gamertag)]);
     }
     [self reloadProfiles];
   } else if (on_status_) {
-    on_status_(@"Failed to sign in profile.");
+    on_status_(NSLocalizedString(@"Failed to sign in profile.",
+                                 @"profile view controller: user-visible text"));
   }
 }
 
