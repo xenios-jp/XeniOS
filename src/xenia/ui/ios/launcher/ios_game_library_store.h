@@ -60,7 +60,13 @@ struct IOSExternalLibraryLocation {
   std::filesystem::path path;  // Folder path (resolved bookmark, or stored path).
   bool available = false;      // Bookmark resolved without going stale.
 };
+// Resolves every saved bookmark, which can block on an unreachable share or
+// drive: call it off the main thread.
 std::vector<IOSExternalLibraryLocation> ListIOSExternalLibraryLocations();
+// The listing from the last ListIOSExternalLibraryLocations (every library scan
+// runs one), without touching bookmarks, so it is cheap on the main thread.
+// False, and nothing written, until there is one or after the locations change.
+bool CachedIOSExternalLibraryLocations(std::vector<IOSExternalLibraryLocation>* locations_out);
 
 #ifdef __OBJC__
 

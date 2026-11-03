@@ -11,6 +11,7 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -71,11 +72,32 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   [self reloadFolders];
 }
 
+// Shows the last known list at once and refreshes it in the background:
+// resolving the bookmarks can block on an unreachable share or drive.
 - (void)reloadFolders {
-  folders_ = xe::ui::ListIOSExternalLibraryLocations();
+  std::vector<xe::ui::IOSExternalLibraryLocation> cached;
+  if (xe::ui::CachedIOSExternalLibraryLocations(&cached)) {
+    folders_ = std::move(cached);
+  }
   if (self.isViewLoaded) {
     [self.tableView reloadData];
   }
+  [self refreshFoldersInBackground];
+}
+
+- (void)refreshFoldersInBackground {
+  [self retain];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    std::vector<xe::ui::IOSExternalLibraryLocation> fresh =
+        xe::ui::ListIOSExternalLibraryLocations();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      folders_ = std::move(fresh);
+      if (self.isViewLoaded) {
+        [self.tableView reloadData];
+      }
+      [self release];
+    });
+  });
 }
 
 - (void)notifyExternalLibraryChanged {
@@ -120,8 +142,12 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   // the list collapses to the empty-state row when nothing is left. Reload
   // rather than animate a single-row delete, which would assert on a row-count
   // mismatch.
-  folders_ = xe::ui::ListIOSExternalLibraryLocations();
-  [self.tableView reloadData];
+  folders_.erase(std::remove_if(folders_.begin(), folders_.end(),
+                                [&path](const xe::ui::IOSExternalLibraryLocation& folder) {
+                                  return folder.path == path;
+                                }),
+                 folders_.end());
+  [self reloadFolders];
   [self notifyExternalLibraryChanged];
   return YES;
 }
