@@ -4359,6 +4359,10 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   return self.gameStopInProgress;
 }
 
+- (BOOL)documentImportCoordinatorGameRunning {
+  return self.gameRunning;
+}
+
 - (BOOL)documentImportCoordinatorJITAcquired {
   return self.jitAcquired;
 }
