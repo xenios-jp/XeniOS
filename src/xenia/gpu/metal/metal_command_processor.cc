@@ -2644,6 +2644,12 @@ void MetalCommandProcessor::ShutdownContext() {
 
   WaitForPendingCompletionHandlers();
 
+  if (uint64_t failed =
+          failed_command_buffers_.load(std::memory_order_relaxed)) {
+    XELOGW("MetalCommandProcessor: {} command buffer(s) didn't complete",
+           failed);
+  }
+
   // Deterministic for a given workload, so a single-frame trace replay can be
   // read from it - the 60-frame counter window never closes in one.
   std::string kind_breakdown;
@@ -3318,6 +3324,12 @@ void MetalCommandProcessor::AddGpuTimeHandler(
     MTL::CommandBuffer* command_buffer) {
   pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
   command_buffer->addCompletedHandler([this](MTL::CommandBuffer* completed) {
+    // Every accounted command buffer gets this handler, so a failure is seen
+    // once here, per command buffer, never per draw.
+    MTL::CommandBufferStatus status = completed->status();
+    if (status != MTL::CommandBufferStatusCompleted) {
+      LogCommandBufferFailure(completed, status);
+    }
     double gpu_seconds = completed->GPUEndTime() - completed->GPUStartTime();
     if (gpu_seconds > 0.0) {
       completed_gpu_time_ns_.fetch_add(uint64_t(gpu_seconds * 1e9),
@@ -3326,6 +3338,29 @@ void MetalCommandProcessor::AddGpuTimeHandler(
     gpu_time_command_buffers_.fetch_add(1, std::memory_order_relaxed);
     pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
   });
+}
+
+void MetalCommandProcessor::LogCommandBufferFailure(
+    MTL::CommandBuffer* command_buffer, MTL::CommandBufferStatus status) {
+  failed_command_buffers_.fetch_add(1, std::memory_order_relaxed);
+  // A buffer aborted by the GPU (for example, work submitted from the
+  // background) was silent before; its output is lost.
+  NS::Error* error = command_buffer->error();
+  uint64_t kind_bit =
+      status == MTL::CommandBufferStatusError && error
+          ? uint64_t(1) << (uint64_t(error->code()) & 31)
+          : uint64_t(1) << (32 + (uint64_t(status) & 31));
+  if (logged_command_buffer_failures_.fetch_or(
+          kind_bit, std::memory_order_relaxed) &
+      kind_bit) {
+    return;
+  }
+  NS::String* description = error ? error->localizedDescription() : nullptr;
+  XELOGE(
+      "MetalCommandProcessor: a command buffer finished with status {}, error "
+      "{}: {}. Further failures of this kind are only counted.",
+      uint32_t(status), error ? int64_t(error->code()) : int64_t(0),
+      description ? description->utf8String() : "no description");
 }
 
 void MetalCommandProcessor::AwaitSubmissionCompletion(uint64_t submission) {
