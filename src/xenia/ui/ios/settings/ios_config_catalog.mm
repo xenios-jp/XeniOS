@@ -1043,7 +1043,7 @@ std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind) {
     case IOSConfigCatalogKind::kGraphicsCompat:
       return "Graphics Compatibility";
     case IOSConfigCatalogKind::kAllCvars:
-      return "Developer: All Config";
+      return "All Config";
     case IOSConfigCatalogKind::kAllSettings:
       return "All Settings";
     case IOSConfigCatalogKind::kMain:
@@ -1146,15 +1146,13 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
       PushWholeSection(sections, all_sections, "Memory & Boot");
       PushWholeSection(sections, all_sections, "JIT & Codegen");
       PushWholeSection(sections, all_sections, "External JIT Broker");
-      if (IOSDeveloperModeEnabled()) {
-        IOSConfigSection developer;
-        developer.title = "Developer";
-        AddActionSetting(developer.items, IOSConfigAction::kOpenAllConfigSettings,
-                         "Search All Config",
-                         "Find any non-transient cvar and save it as a title-specific "
-                         "override.");
-        PushIfNotEmpty(sections, std::move(developer));
-      }
+      IOSConfigSection all_config;
+      all_config.title = "All Config";
+      AddActionSetting(all_config.items, IOSConfigAction::kOpenAllConfigSettings,
+                       "Search All Config",
+                       "Find any non-transient cvar and save it as a title-specific "
+                       "override.");
+      PushIfNotEmpty(sections, std::move(all_config));
       IOSConfigSection reset;
       reset.title = "Reset";
       AddActionSetting(reset.items, IOSConfigAction::kResetGameSettings, "Reset Game Settings",
