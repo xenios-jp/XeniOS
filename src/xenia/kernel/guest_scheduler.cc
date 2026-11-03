@@ -44,6 +44,13 @@ DEFINE_bool(
     "behind the single I/O worker.",
     "Kernel");
 
+DEFINE_uint32(
+    guest_scheduler_pause_stress_ms, 0,
+    "Debug, 0 = off. Pause and resume the scheduler in a loop, running for a "
+    "random 5..N ms and holding for a random 5..N ms, logging how long each "
+    "pause took to settle and checking that no fiber is dispatched while held.",
+    "Kernel");
+
 namespace xe {
 namespace kernel {
 
@@ -234,7 +241,8 @@ static double CalibrateTicksPerUs() {
 }
 
 GuestScheduler::GuestScheduler(KernelState* kernel_state)
-    : kernel_state_(kernel_state) {}
+    : kernel_state_(kernel_state),
+      resume_event_(xe::threading::Event::CreateManualResetEvent(true)) {}
 
 GuestScheduler::~GuestScheduler() { Shutdown(); }
 
@@ -296,6 +304,12 @@ void GuestScheduler::EnsureStarted() {
     cpus_[i].host_thread->set_name(std::string("Guest CPU ") +
                                    std::to_string(i));
   }
+  if (cvars::guest_scheduler_pause_stress_ms) {
+    xe::threading::Thread::CreationParameters params;
+    pause_stress_thread_ =
+        xe::threading::Thread::Create(params, [this]() { PauseStressLoop(); });
+    pause_stress_thread_->set_name("Guest Scheduler Pause Stress");
+  }
 }
 
 void GuestScheduler::Shutdown() {
@@ -307,6 +321,13 @@ void GuestScheduler::Shutdown() {
   }
   shutting_down_.store(true);
   Thaw();
+  // A paused dispatch thread waits on resume_event_, not ready_event.
+  dispatch_paused_.store(false, std::memory_order_release);
+  resume_event_->Set();
+  if (pause_stress_thread_) {
+    xe::threading::Wait(pause_stress_thread_.get(), false);
+    pause_stress_thread_.reset();
+  }
   for (Cpu& cpu : cpus_) {
     if (cpu.ready_event) {
       cpu.ready_event->Set();
@@ -1571,6 +1592,10 @@ void GuestScheduler::RunLoop(int cpu_index) {
       frozen_cpus_.fetch_sub(1);
       continue;
     }
+    if (dispatch_paused_.load(std::memory_order_acquire)) {
+      HoldDispatchThread(cpu_index);
+      continue;
+    }
     if (cpu_index == 0) {
       ReportStatsIfDue();
     }
@@ -1751,6 +1776,121 @@ bool GuestScheduler::Thaw() {
   }
   thaw_event_->Set();
   return true;
+}
+
+void GuestScheduler::HoldDispatchThread(int cpu_index) {
+  quiesced_mask_.fetch_or(uint32_t(1) << cpu_index);
+  xe::threading::Wait(resume_event_.get(), false);
+  quiesced_mask_.fetch_and(~(uint32_t(1) << cpu_index));
+}
+
+bool GuestScheduler::PauseDispatch(std::chrono::milliseconds timeout,
+                                   uint32_t* out_pending_cpus) {
+  if (out_pending_cpus) {
+    *out_pending_cpus = 0;
+  }
+  if (shutting_down_.load()) {
+    return true;  // Nothing is dispatching.
+  }
+  std::lock_guard<std::mutex> api(pause_api_lock_);
+  if (freezer_.load()) {
+    return false;
+  }
+  if (!dispatch_paused_.load()) {
+    resume_event_->Reset();
+    dispatch_paused_.store(true, std::memory_order_release);
+  }
+  if (!started_.load()) {
+    return true;  // The dispatch threads will start held.
+  }
+  constexpr uint32_t kAllCpus = (uint32_t(1) << kMaxCpus) - 1;
+  const uint64_t deadline = Clock::QueryHostUptimeMillis() + timeout.count();
+  while (true) {
+    // Re-raised every pass: a SwitchTo racing the raise clears the flag, and a
+    // deferred safepoint (global lock, IRQL >= DISPATCH) re-arms and retries on
+    // its own.
+    {
+      std::lock_guard<std::mutex> lock(lock_);
+      for (int i = 0; i < kMaxCpus; ++i) {
+        if (XThread* running = cpus_[i].current_thread) {
+          running->thread_state()->context()->preempt_requested = 1;
+        }
+      }
+    }
+    const uint32_t done = quiesced_mask_.load();
+    if ((done & kAllCpus) == kAllCpus) {
+      return true;
+    }
+    // Idle CPUs sleep on ready_event and see the pause only once woken.
+    for (int i = 0; i < kMaxCpus; ++i) {
+      if (!(done & (uint32_t(1) << i)) && cpus_[i].ready_event) {
+        cpus_[i].ready_event->Set();
+      }
+    }
+    if (Clock::QueryHostUptimeMillis() >= deadline) {
+      if (out_pending_cpus) {
+        *out_pending_cpus = kAllCpus & ~done;
+      }
+      return false;
+    }
+    xe::threading::Sleep(std::chrono::milliseconds(1));
+  }
+}
+
+void GuestScheduler::ResumeDispatch() {
+  std::lock_guard<std::mutex> api(pause_api_lock_);
+  if (!dispatch_paused_.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  resume_event_->Set();
+  for (int i = 0; i < kMaxCpus; ++i) {
+    if (cpus_[i].ready_event) {
+      cpus_[i].ready_event->Set();
+    }
+  }
+}
+
+void GuestScheduler::PauseStressLoop() {
+  const uint32_t max_ms = cvars::guest_scheduler_pause_stress_ms;
+  uint64_t rng = 0x9E3779B97F4A7C15ull;
+  auto rand_ms = [&]() {
+    rng ^= rng << 13;
+    rng ^= rng >> 7;
+    rng ^= rng << 17;
+    return uint32_t(5 + rng % (max_ms > 5 ? max_ms - 4 : 1));
+  };
+  auto sleep_ms = [&](uint32_t ms) {
+    for (uint32_t i = 0; i < ms && !shutting_down_.load(); ++i) {
+      xe::threading::Sleep(std::chrono::milliseconds(1));
+    }
+  };
+  auto total_switches = [&]() {
+    uint64_t sum = 0;
+    for (auto& cpu : cpus_) {
+      sum += cpu.switch_seq.load(std::memory_order_relaxed);
+    }
+    return sum;
+  };
+  uint64_t cycle = 0;
+  while (!shutting_down_.load()) {
+    sleep_ms(rand_ms());
+    const uint64_t t0 = Clock::QueryHostUptimeMillis();
+    uint32_t pending = 0;
+    const bool settled = PauseDispatch(std::chrono::milliseconds(2000), &pending);
+    const uint64_t settle_ms = Clock::QueryHostUptimeMillis() - t0;
+    const uint64_t before = total_switches();
+    sleep_ms(rand_ms());
+    const uint64_t after = total_switches();
+    XELOGI(
+        "GuestScheduler: pause stress #{} settled={} in {} ms pending={:#x} "
+        "switches_while_held={}",
+        cycle, settled ? 1 : 0, settle_ms, pending, after - before);
+    if (settled && after != before) {
+      XELOGE("GuestScheduler: pause stress #{}: a fiber ran while paused", cycle);
+    }
+    ++cycle;
+    ResumeDispatch();
+  }
 }
 
 void GuestScheduler::SampleProgramCounters(std::vector<uint64_t>* pcs) const {
@@ -1967,7 +2107,8 @@ void GuestScheduler::WatchdogLoop() {
     // Only meaningful once something has been dispatched, so a title still
     // loading is not reported.
     uint32_t frame = xe::logging::GetFrameNumber();
-    if (frame != last_frame_number_ || !dispatched_any_.load()) {
+    if (frame != last_frame_number_ || !dispatched_any_.load() ||
+        dispatch_paused_.load(std::memory_order_relaxed)) {
       last_frame_number_ = frame;
       no_progress_ticks_ = 0;
       no_progress_reported_ = false;
