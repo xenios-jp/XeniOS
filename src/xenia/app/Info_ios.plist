@@ -53,6 +53,10 @@
   <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>iPhoneOS</string>
+  </array>
   <key>CFBundleShortVersionString</key>
   <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
   <key>CFBundleVersion</key>
@@ -70,12 +74,16 @@
       </array>
     </dict>
   </array>
+  <key>DTPlatformName</key>
+  <string>iphoneos</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.games</string>
   <key>LSApplicationQueriesSchemes</key>
   <array>
     <string>stikjit</string>
   </array>
+  <key>MinimumOSVersion</key>
+  <string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
   <key>NSMotionUsageDescription</key>
   <string>Head tracking adjusts spatial audio to your head movement when using the PHASE audio backend with supported headphones.</string>
   <key>LSSupportsGameMode</key>
