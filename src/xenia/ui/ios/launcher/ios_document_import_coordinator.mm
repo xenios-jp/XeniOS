@@ -373,6 +373,15 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   if (conversionChosen) {
     return;
   }
+  if ([_host documentImportCoordinatorGameRunning] ||
+      [_host documentImportCoordinatorGameStopInProgress]) {
+    // Opening a file must not replace a running game (unsaved progress).
+    [_host documentImportCoordinatorSetStatusText:
+               [NSString stringWithFormat:NSLocalizedString(@"Imported %@.",
+                                                            @"document import coordinator: label text"),
+                                          displayName]];
+    return;
+  }
   if ([_host documentImportCoordinatorJITAcquired]) {
     [_host documentImportCoordinatorLaunchGameAtPath:path displayName:displayName];
   } else {
