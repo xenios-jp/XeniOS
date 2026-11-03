@@ -149,10 +149,7 @@ void AudioSystem::WorkerThreadMain() {
     // No clients yet: park until one registers or we're told to stop.
     if (client_index == kMaximumClientCount) {
       xe::threading::Wait(pending_work_event_.get(), true);
-      if (paused_) {
-        pause_fence_.Signal();
-        xe::threading::Wait(resume_event_.get(), false);
-      }
+      WaitWhilePaused();
       continue;
     }
 
@@ -165,10 +162,7 @@ void AudioSystem::WorkerThreadMain() {
       auto result =
           xe::threading::Wait(pending_work_event_.get(), true, timeout);
       if (result == xe::threading::WaitResult::kSuccess) {
-        if (paused_) {
-          pause_fence_.Signal();
-          xe::threading::Wait(resume_event_.get(), false);
-        }
+        WaitWhilePaused();
         continue;
       }
 
@@ -231,6 +225,16 @@ int AudioSystem::FindFreeClient() {
 }
 
 void AudioSystem::Initialize() {}
+
+void AudioSystem::WaitWhilePaused() {
+  // A loop, not a single wait: a Resume that came while the worker was still in
+  // a callback (the Pause timed out) leaves resume_event_ set, and the next
+  // Pause must not fall through it.
+  while (paused_ && worker_running_) {
+    pause_fence_.Signal();
+    xe::threading::Wait(resume_event_.get(), false);
+  }
+}
 
 void AudioSystem::StopWorker() {
   worker_running_ = false;
@@ -509,6 +513,8 @@ void AudioSystem::Pause() {
   if (paused_) {
     return;
   }
+  // A pause that timed out can leave the fence signaled; drop that first.
+  pause_fence_.TryWait();
   paused_ = true;
 
   // Kind of a hack, but it works.

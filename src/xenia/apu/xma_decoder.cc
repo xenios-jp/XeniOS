@@ -210,7 +210,8 @@ void XmaDecoder::WorkerThreadMain() {
       did_work = contexts_[n]->Work() || did_work;
     }
 
-    if (paused_) {
+    // A loop, see AudioSystem::WaitWhilePaused.
+    while (paused_ && worker_running_) {
       pause_fence_.Signal();
       resume_fence_.Wait();
     }
@@ -404,7 +405,12 @@ void XmaDecoder::Pause() {
   if (paused_) {
     return;
   }
+  pause_fence_.TryWait();
   paused_ = true;
+  // An idle worker waits for work and would never reach its pause point.
+  if (work_event_) {
+    work_event_->Set();
+  }
 
   // Bounded, see AudioSystem::Pause.
   bool parked = false;

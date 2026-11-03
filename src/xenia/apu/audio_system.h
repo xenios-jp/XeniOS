@@ -133,13 +133,15 @@ class AudioSystem {
   X_STATUS AddClient(uint32_t callback, uint32_t callback_arg,
                      uint32_t wrapped_callback_arg, HostClient* host_client,
                      size_t* out_index);
+  // Worker: parks while paused, signaling pause_fence_.
+  void WaitWhilePaused();
 
   std::unique_ptr<xe::threading::Semaphore>
       client_semaphores_[kMaximumClientCount];
   // Wakes the worker to re-scan clients on register, shutdown, and pause.
   std::unique_ptr<xe::threading::Event> pending_work_event_;
 
-  bool paused_ = false;
+  std::atomic<bool> paused_ = {false};
   threading::Fence pause_fence_;
   std::unique_ptr<threading::Event> resume_event_;
 };
