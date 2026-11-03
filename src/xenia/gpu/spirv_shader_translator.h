@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 26;
+    static constexpr uint32_t kVersion = 27;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -613,6 +613,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // Keep fragment derivatives within their primitive on Metal drivers that
     // otherwise reuse values from adjacent primitives in a merged quad.
     bool primitive_fragment_helpers = false;
+    // Interpolate centroid inputs at the first sample covered by the
+    // rasterized primitive, found from the barycentrics, instead of with the
+    // host's centroid. Apple GPUs remove hidden surfaces before shading within
+    // a render pass, and their centroid follows the coverage left after that,
+    // so a later draw covering a sample would move an earlier fragment's
+    // centroid.
+    bool centroid_from_raster_coverage = false;
   };
 
   SpirvShaderTranslator(const Features& features,
@@ -1256,6 +1263,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Whether point sampled fetches at an interpolated coordinate pick the guest
   // texel sampled at the guest pixel center, rather than at the host pixel.
   bool IsGuestPixelCenterFetchNeeded() const;
+  // Whether centroid interpolators are interpolated at the center and then
+  // again by InterpolateCentroidsFromRasterCoverage rather than with the
+  // Centroid decoration (Features::centroid_from_raster_coverage).
+  bool IsCentroidFromRasterCoverage() const;
+  void InterpolateCentroidsFromRasterCoverage(uint32_t interpolators);
+  spv::Id GetBarycentricCoordNoPerspInput();
 
   // For safety with different drivers (even though fragment shader interlock in
   // SPIR-V only has one control flow requirement - that both begin and end must

@@ -100,14 +100,6 @@ DEFINE_int32(
     "explicitly (up to the number of logical CPU cores), 0 to disable "
     "multithreaded compilation.",
     "Metal");
-DEFINE_bool(
-    metal_centroid_interpolation, true,
-    "Use centroid interpolation where the guest requests it. Apple GPUs remove "
-    "hidden surfaces before shading within a render pass, so a sample covered "
-    "by a later draw can move an earlier fragment's centroid, making the "
-    "result depend on where render passes end. Disable to check whether an "
-    "image difference comes only from render pass placement.",
-    "Metal");
 
 namespace xe {
 namespace gpu {
@@ -2564,6 +2556,10 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
       UseDxilPath() && device_->supportsFamily(MTL::GPUFamilyApple1) &&
       device_->supportsShaderBarycentricCoordinates();
   spirv_features.fragment_shader_barycentric = false;
+  // The host's centroid depends on hidden surface removal within the render
+  // pass, so it's computed from the rasterized coverage.
+  spirv_features.centroid_from_raster_coverage =
+      UseDxilPath() && device_->supportsShaderBarycentricCoordinates();
   // Metal fast-math doesn't guarantee IEEE NaN/Inf preservation.
   spirv_features.signed_zero_inf_nan_preserve_float32 = false;
   // Metal fast-math flushes denorms.
@@ -7953,9 +7949,6 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
           regs.Get<reg::RB_SURFACE_INFO>().msaa_samples,
           regs.Get<reg::SQ_CONTEXT_MISC>().sc_sample_cntl,
           regs.Get<reg::SQ_INTERPOLATOR_CNTL>().sampling_pattern);
-  if (!cvars::metal_centroid_interpolation) {
-    modification.pixel.interpolators_centroid = 0;
-  }
 
   if (param_gen_pos < xenos::kMaxInterpolators) {
     modification.pixel.param_gen_enable = 1;
