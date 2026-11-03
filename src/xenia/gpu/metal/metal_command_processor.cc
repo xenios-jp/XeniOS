@@ -48,6 +48,7 @@
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
+#include "xenia/gpu/metal/metal_compile_activity.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
 #include "xenia/gpu/metal/metal_tessellation_shaders.h"
 #include "xenia/gpu/packet_disassembler.h"
@@ -855,6 +856,11 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_tess_shaders_failed_.clear();
   async_compile_busy_ = 0;
   async_compile_shutdown_ = false;
+  // The dropped requests count as finished, so the backlog reads empty.
+  compile_activity.finished.store(
+      compile_activity.queued.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  compile_activity.storage_loading = false;
 }
 
 MTL::Function* MetalCommandProcessor::GetHostShaderFunction(
@@ -947,6 +953,7 @@ bool MetalCommandProcessor::EnqueueShaderCompilation(
     request.priority = priority;
     async_shader_pending_.insert(translation);
     async_shader_queue_.push(request);
+    compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
   }
   async_compile_cv_.notify_one();
   return true;
@@ -989,6 +996,7 @@ bool MetalCommandProcessor::EnqueuePipelineCompilation(
     }
     async_pipeline_pending_.insert(request.pipeline_key);
     async_pipeline_queue_.push(queued_request);
+    compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
   }
 
   async_compile_cv_.notify_one();
@@ -2932,6 +2940,15 @@ void MetalCommandProcessor::InitializeShaderStorage(
     return;
   }
 
+  compile_activity.storage_queued_end = 0;
+  compile_activity.storage_queued_begin =
+      compile_activity.queued.load(std::memory_order_relaxed);
+  compile_activity.storage_finished_begin =
+      compile_activity.finished.load(std::memory_order_relaxed);
+  compile_activity.storage_empty = false;
+  compile_activity.storage_loading = true;
+  ++compile_activity.storage_generation;
+
   // The SPIRV-Cross path's MSL text is a translation cache, not a record of
   // what to rebuild.
   SetMslShaderSourceCacheDirectory(GetShaderStorageLocalRoot(cache_root) /
@@ -2962,6 +2979,7 @@ void MetalCommandProcessor::InitializeShaderStorage(
           },
           stored_descriptions)) {
     XELOGW("Metal: persistent shader storage is disabled");
+    compile_activity.storage_loading = false;
     if (completion_callback) {
       completion_callback();
     }
@@ -2970,6 +2988,9 @@ void MetalCommandProcessor::InitializeShaderStorage(
 
   uint64_t start_ticks = xe::Clock::QueryHostTickCount();
   CreateStoredPipelines(stored_descriptions);
+  compile_activity.storage_empty = stored_descriptions.empty();
+  compile_activity.storage_queued_end =
+      compile_activity.queued.load(std::memory_order_relaxed);
   if (blocking) {
     // The caller is waiting on this, so finish rather than leaving the compile
     // threads to race the guest's first draws.
@@ -3231,6 +3252,7 @@ bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
 }
 
 void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
+  compile_activity.finished.fetch_add(1, std::memory_order_relaxed);
   if (async_compile_busy_) {
     --async_compile_busy_;
   }
@@ -5558,6 +5580,7 @@ MetalCommandProcessor::GetDxilTessellationShaders(
       std::lock_guard<std::mutex> lock(async_compile_mutex_);
       async_tess_shaders_pending_.insert(key);
       async_tess_shaders_queue_.push(request);
+      compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
     }
     async_compile_cv_.notify_one();
     *compile_status_out = ShaderCompileStatus::kPending;

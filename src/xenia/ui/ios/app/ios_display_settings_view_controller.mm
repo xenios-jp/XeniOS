@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/app/ios_display_settings_view_controller.h"
 
+#import "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
@@ -56,11 +57,18 @@ constexpr NSInteger kSectionOptions = 1;
   if (section == kSectionScreenMode) {
     return (NSInteger)(sizeof(kScreenModes) / sizeof(kScreenModes[0]));
   }
-  return 2;  // Letterbox, Uncapped.
+  return 3;  // Letterbox, Uncapped, Shader Compile Status.
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
   return section == kSectionScreenMode ? @"Screen Mode" : @"Options";
+}
+
+- (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
+  return section == kSectionOptions
+             ? @"Shader Compile Status shows when the game is building shaders, which causes "
+               @"stutter and missing effects until it finishes."
+             : nil;
 }
 
 - (UISwitch*)switchWithOn:(BOOL)on action:(SEL)action {
@@ -114,11 +122,16 @@ constexpr NSInteger kSectionOptions = 1;
                     action:@selector(letterboxChanged:)];
     letterbox_switch.enabled = letterbox_available;
     cell.accessoryView = letterbox_switch;
-  } else {
+  } else if (indexPath.row == 1) {
     cell.textLabel.text = @"Uncapped Emulated Display";
     cell.textLabel.enabled = YES;
     cell.accessoryView = [self switchWithOn:(host_ && [host_ isGuestDisplayUncapped])
                                      action:@selector(uncappedChanged:)];
+  } else {
+    cell.textLabel.text = @"Shader Compile Status";
+    cell.textLabel.enabled = YES;
+    cell.accessoryView = [self switchWithOn:xe_ios_shader_compile_status_enabled()
+                                     action:@selector(shaderCompileStatusChanged:)];
   }
   return cell;
 }
@@ -140,6 +153,10 @@ constexpr NSInteger kSectionOptions = 1;
 
 - (void)uncappedChanged:(UISwitch*)sender {
   [host_ setGuestDisplayUncapped:sender.on];
+}
+
+- (void)shaderCompileStatusChanged:(UISwitch*)sender {
+  xe_ios_set_shader_compile_status_enabled(sender.on);
 }
 
 @end
