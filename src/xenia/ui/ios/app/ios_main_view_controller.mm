@@ -3315,6 +3315,13 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (self.gameStopInProgress || self.gameRunning) {
     if (self.appContext) {
+      // The new game must not start under the old one's menu or user pause, and a guest thread
+      // waiting on a prompt would hold up the old game's teardown.
+      XeniaCancelGuestAlerts(self);
+      [self hideInGameMenuOverlay];
+      if (emulation_paused_by_user_) {
+        [self setEmulationPausedByUser:NO];
+      }
       self.gameRunning = YES;
       [self.launchStatusView beginLaunchWithTitle:display_name];
       if (self.gameStopInProgress) {
