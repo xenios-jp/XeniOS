@@ -445,9 +445,15 @@ build_attestation_payload() {
 sign_attestation_payload() {
   local payload="$1"
   local key="$2"
-  printf '%s' "$payload" | \
-    openssl dgst -sha256 -mac HMAC -macopt "key:$key" -binary | \
-    openssl base64 -A | tr '+/' '-_' | tr -d '='
+  # The key is read from a descriptor, never an argument: command lines are visible
+  # in ps and in the runner's process logs. Same bytes as openssl dgst -sha256 -mac
+  # HMAC, base64url without padding.
+  printf '%s' "$payload" | python3 -c '
+import base64, hashlib, hmac, sys
+key = open(3, "rb").read()
+mac = hmac.new(key, sys.stdin.buffer.read(), hashlib.sha256).digest()
+sys.stdout.write(base64.urlsafe_b64encode(mac).decode().rstrip("="))
+' 3< <(printf '%s' "$key")
 }
 
 stamp_bundle_attestation() {
@@ -580,6 +586,9 @@ stamp_bundle=""
 stamp_platform=""
 ios_min="26.0"
 attestation_key="${XENIOS_BUILD_ATTESTATION_KEY:-}"
+# Keep the key out of the environment of everything this script starts (cmake, the
+# compilers, codesign): only the stamping below uses it.
+unset XENIOS_BUILD_ATTESTATION_KEY
 attestation_key_id="${XENIOS_BUILD_ATTESTATION_KEY_ID:-ci-hmac-v1}"
 ios_bundle_id="${XENIOS_IOS_BUNDLE_ID:-}"
 force_random_ios_bundle_id=0
@@ -635,6 +644,7 @@ root="$(repo_root)"
 cd "$root"
 
 need_bin openssl
+need_bin python3
 
 case "$build_channel" in
   release|preview)

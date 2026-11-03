@@ -354,8 +354,12 @@ jobs:
         shell: bash
         env:
           # The diagnostics Worker counts a build as official only when its
-          # ATTESTATION_KEY secret holds this same key.
-          XENIOS_BUILD_ATTESTATION_KEY: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY }}"
+          # ATTESTATION_KEY secret holds this same key. Publishing runs and
+          # release candidates (a publish-off run on xenios, the exact IPA a
+          # publish would ship) get it; ci/** trials stay unofficial. The script
+          # drops it from its environment before the compilers start, keeping it
+          # for the stamping at the end.
+          XENIOS_BUILD_ATTESTATION_KEY: "${{ (needs.resolve-metadata.outputs.publish == 'true' || github.ref == 'refs/heads/xenios') && secrets.XENIOS_BUILD_ATTESTATION_KEY || '' }}"
           XENIOS_BUILD_ATTESTATION_KEY_ID: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY_ID }}"
           # Where the app sends diagnostics. The URL isn't secret, so a repository
           # variable can override the Worker's address.
