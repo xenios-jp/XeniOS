@@ -386,10 +386,7 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
   IOSConfigSection scheduler;
   scheduler.title = "Thread QoS";
   scheduler.footer = "Xenia's regular iOS threads use Default QoS unless promoted "
-                     "here. GPU Commands runs at User-Interactive QoS by default; "
-                     "guest CPU work runs at User-Initiated QoS by default; audio "
-                     "runs at User-Interactive QoS by default. Changes require a full "
-                     "relaunch.";
+                     "here. Changes require a full relaunch.";
   AddBoolSetting(scheduler.items, "ios_gpu_commands_user_interactive_qos",
                  "GPU Commands User-Interactive QoS",
                  "Runs the Metal command processor host thread at user-interactive QoS "
@@ -543,9 +540,6 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
                  "Controls CPU readback of render-to-texture resolve results.");
   AddEnumSetting(gpu.items, "occlusion_query", "Occlusion Query",
                  "Selects the occlusion query implementation.");
-  AddEnumSetting(gpu.items, "render_target_path", "Render Target Path",
-                 "Selects the render target implementation path after a relaunch. The "
-                 "Accuracy path is currently unavailable on Metal.");
   PushIfNotEmpty(sections, std::move(gpu));
 
   IOSConfigSection memory;
@@ -664,9 +658,6 @@ static std::vector<IOSConfigSection> BuildGraphicsCompatSections() {
                  "Controls CPU readback of render-to-texture resolve results.");
   AddEnumSetting(compat.items, "occlusion_query", "Occlusion Query",
                  "Selects the occlusion query implementation.");
-  AddEnumSetting(compat.items, "render_target_path", "Render Target Path",
-                 "Selects the render target implementation path. The Accuracy path is "
-                 "currently unavailable on Metal.");
   AddBoolSetting(compat.items, "half_pixel_offset", "Half-Pixel Offset",
                  "D3D9-style sampling behavior used by most Xbox 360 rendering.", true);
   AddBoolSetting(compat.items, "gpu_3d_to_2d_texture", "Treat 3D Textures as 2D",
