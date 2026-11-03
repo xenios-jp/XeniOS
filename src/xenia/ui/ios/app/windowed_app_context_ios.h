@@ -147,8 +147,10 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   using MessageBoxPromptCallback =
       std::function<bool(const std::string&, const std::string&, const std::vector<std::string>&,
                          uint32_t, uint32_t*)>;
-  using KeyboardPromptCallback = std::function<bool(const std::string&, const std::string&,
-                                                    const std::string&, std::string*, bool*)>;
+  // The text is at most max_length UTF-16 units, 0 for no limit.
+  using KeyboardPromptCallback =
+      std::function<bool(const std::string&, const std::string&, const std::string&, size_t,
+                         std::string*, bool*)>;
   using GameplayInputBlockedCallback = std::function<void(bool)>;
   using GuestDisplayAspectRatioCallback = std::function<std::pair<uint32_t, uint32_t>()>;
   using GuestDisplayRefreshCapGetter = std::function<bool()>;
@@ -224,8 +226,12 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     if (!game_terminate_callback_) {
       return false;
     }
+    // A guest thread waiting on a prompt would hold up the teardown.
+    CancelGuestPrompts();
     return game_terminate_callback_();
   }
+  // Answers every open guest prompt as cancelled.
+  void CancelGuestPrompts() const;
 
   void set_title_update_install_callback(TitleUpdateInstallCallback callback) {
     title_update_install_callback_ = std::move(callback);
@@ -348,12 +354,13 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     keyboard_prompt_callback_ = std::move(callback);
   }
   bool PromptKeyboardUI(const std::string& title, const std::string& description,
-                        const std::string& default_text, std::string* text_out,
-                        bool* cancelled_out) const {
+                        const std::string& default_text, size_t max_length,
+                        std::string* text_out, bool* cancelled_out) const {
     if (!keyboard_prompt_callback_) {
       return false;
     }
-    return keyboard_prompt_callback_(title, description, default_text, text_out, cancelled_out);
+    return keyboard_prompt_callback_(title, description, default_text, max_length, text_out,
+                                     cancelled_out);
   }
 
   void set_gameplay_input_blocked_callback(GameplayInputBlockedCallback callback) {

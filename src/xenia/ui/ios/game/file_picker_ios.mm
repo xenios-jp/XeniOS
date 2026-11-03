@@ -77,23 +77,32 @@ UIViewController* XeniaFilePickerTopPresenter() {
 
 // Delegate for handling document picker results.
 @interface XeniaDocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
-@property(nonatomic, assign) bool completed;
-@property(nonatomic, assign) bool cancelled;
-@property(nonatomic, strong) NSArray<NSURL*>* selectedURLs;
+// Called once, on the main thread, with the picked URLs, or nil if cancelled.
+@property(nonatomic, copy) void (^completion)(NSArray<NSURL*>*);
 @end
 
 @implementation XeniaDocumentPickerDelegate
 
+- (void)finishWithURLs:(NSArray<NSURL*>*)urls {
+  void (^completion)(NSArray<NSURL*>*) = [[self.completion retain] autorelease];
+  self.completion = nil;
+  if (completion) {
+    completion(urls);
+  }
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController*)controller
     didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-  self.selectedURLs = urls;
-  self.completed = true;
-  self.cancelled = false;
+  [self finishWithURLs:urls];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller {
-  self.completed = true;
-  self.cancelled = true;
+  [self finishWithURLs:nil];
+}
+
+- (void)dealloc {
+  [_completion release];
+  [super dealloc];
 }
 
 @end
@@ -141,48 +150,55 @@ bool IOSFilePicker::Show(Window* parent_window) {
       }
     }
 
-    UIDocumentPickerViewController* picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:content_types];
-    picker.allowsMultipleSelection = multi_selection_ ? YES : NO;
-
-    if (!initial_directory_.empty()) {
-      NSString* dir_path = [NSString stringWithUTF8String:initial_directory_.c_str()];
-      NSURL* dir_url = [NSURL fileURLWithPath:dir_path isDirectory:YES];
-      picker.directoryURL = dir_url;
-    }
-
-    XeniaDocumentPickerDelegate* delegate = [[XeniaDocumentPickerDelegate alloc] init];
-    delegate.completed = false;
-    delegate.cancelled = false;
-    picker.delegate = delegate;
-
-    UIViewController* presenting_vc = XeniaFilePickerTopPresenter();
-    if (!presenting_vc) {
-      XELOGE("IOSFilePicker: No presenting view controller available");
-      [picker release];
-      [delegate release];
+    // Show() returns the choice, which can't be waited for on the main
+    // thread without re-entering its run loop under the modal.
+    if ([NSThread isMainThread]) {
+      XELOGE("IOSFilePicker: Show() can't wait for the picker on the main thread");
       return false;
     }
 
-    // Present modally and run the run loop until the delegate fires.
-    [presenting_vc presentViewController:picker animated:YES completion:nil];
-
-    // Spin the main run loop until the picker completes.
-    // This matches the synchronous Show() API contract.
-    while (!delegate.completed) {
-      [[NSRunLoop mainRunLoop] runMode:NSDefaultRunLoopMode
-                            beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    NSURL* directory_url = nil;
+    if (!initial_directory_.empty()) {
+      NSString* dir_path = [NSString stringWithUTF8String:initial_directory_.c_str()];
+      directory_url = [NSURL fileURLWithPath:dir_path isDirectory:YES];
     }
+    const BOOL multiple = multi_selection_ ? YES : NO;
 
-    if (delegate.cancelled || !delegate.selectedURLs || delegate.selectedURLs.count == 0) {
+    __block NSArray<NSURL*>* picked_urls = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      UIViewController* presenting_vc = XeniaFilePickerTopPresenter();
+      if (!presenting_vc) {
+        XELOGE("IOSFilePicker: No presenting view controller available");
+        dispatch_semaphore_signal(done);
+        return;
+      }
+      UIDocumentPickerViewController* picker =
+          [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:content_types];
+      picker.allowsMultipleSelection = multiple;
+      picker.directoryURL = directory_url;
+      // The picker holds its delegate weakly; the completion keeps it alive
+      // until the picker answers.
+      XeniaDocumentPickerDelegate* delegate = [[XeniaDocumentPickerDelegate alloc] init];
+      delegate.completion = ^(NSArray<NSURL*>* urls) {
+        picked_urls = [urls copy];
+        [delegate autorelease];
+        dispatch_semaphore_signal(done);
+      };
+      picker.delegate = delegate;
+      [presenting_vc presentViewController:picker animated:YES completion:nil];
       [picker release];
-      [delegate release];
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    dispatch_release(done);
+    [picked_urls autorelease];
+    if (!picked_urls.count) {
       return false;
     }
 
     XeniaClearActiveFilePickerSecurityScopes();
     selected_files_.clear();
-    for (NSURL* url in delegate.selectedURLs) {
+    for (NSURL* url in picked_urls) {
       if (!url.fileURL) {
         continue;
       }
@@ -193,10 +209,7 @@ bool IOSFilePicker::Show(Window* parent_window) {
       selected_files_.push_back(std::filesystem::path(path_str));
     }
 
-    const bool has_selection = !selected_files_.empty();
-    [picker release];
-    [delegate release];
-    return has_selection;
+    return !selected_files_.empty();
   }
 }
 

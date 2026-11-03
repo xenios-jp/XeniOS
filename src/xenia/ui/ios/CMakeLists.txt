@@ -115,6 +115,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/apple_theme_tokens.h
   shared/apple_ui_navigation.cc
   shared/apple_ui_navigation.h
+  shared/ios_alert_actions.h
+  shared/ios_alert_actions.mm
   shared/ios_edge_adapter.h
   shared/ios_edge_adapter.cc
   shared/ios_system_utils.h

@@ -29,11 +29,17 @@ X_RESULT ShowMessageBox(std::string title, std::string text,
                        uint32_t default_button,
                        std::function<X_RESULT(uint32_t)> selected,
                        uint32_t overlapped = 0, bool already_active = false);
+// The text is at most max_length UTF-16 units.
 X_RESULT ShowKeyboard(uint32_t user_index, std::string title,
                       std::string description, std::string default_text,
+                      size_t max_length,
                       std::function<void(const std::u16string&)> write_text,
                       uint32_t overlapped);
 X_RESULT ShowSignIn(uint32_t user_index, uint32_t users_needed);
+// For the emulator's own questions to the user, such as a disc swap: the index
+// of the option chosen, or -1 if the prompt was cancelled or could not show.
+int ChooseOption(std::string title, std::string text,
+                 std::vector<std::string> options);
 X_RESULT ShowAchievements(uint32_t user_index, uint32_t title_id);
 void Notify(std::string text, uint32_t user_index, uint8_t position);
 void NotifyAchievement(KernelState* state, uint64_t xuid, uint32_t title_id,

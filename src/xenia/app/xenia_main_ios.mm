@@ -663,8 +663,7 @@ bool EmulatorAppIOS::OnInitialize() {
 
   emulator_->set_on_exit_to_dashboard([this]() { return RequestGameStop("Exit to dashboard"); });
 
-  // A disc swap mounts the library's copy of the requested disc; iOS has no
-  // disc prompt or file picker to fall back on.
+  // A disc swap offers the library's copies of the title's discs.
   emulator_->set_disc_provider([](uint32_t title_id) {
     std::vector<Emulator::TitleDisc> discs;
     @autoreleasepool {

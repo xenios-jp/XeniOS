@@ -15,6 +15,7 @@
 #include <chrono>
 
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
+#import "xenia/ui/ios/shared/ios_alert_actions.h"
 
 namespace {
 
@@ -79,6 +80,31 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
                                                     to:item.target
                                                   from:item
                                               forEvent:nil];
+}
+
+// B on a sheet, as a swipe down would: the presentation delegate may refuse,
+// and hears about the dismissal, so whoever waits on the sheet is told.
+void DismissLikeSwipe(UIViewController* presented) {
+  UIPresentationController* presentation = presented.presentationController;
+  id<UIAdaptivePresentationControllerDelegate> delegate = presentation.delegate;
+  if (presented.modalInPresentation ||
+      ([delegate respondsToSelector:@selector(presentationControllerShouldDismiss:)] &&
+       ![delegate presentationControllerShouldDismiss:presentation])) {
+    if ([delegate respondsToSelector:@selector(presentationControllerDidAttemptToDismiss:)]) {
+      [delegate presentationControllerDidAttemptToDismiss:presentation];
+    }
+    return;
+  }
+  if ([delegate respondsToSelector:@selector(presentationControllerWillDismiss:)]) {
+    [delegate presentationControllerWillDismiss:presentation];
+  }
+  [presented dismissViewControllerAnimated:YES
+                                completion:^{
+                                  if ([delegate respondsToSelector:@selector(
+                                                    presentationControllerDidDismiss:)]) {
+                                    [delegate presentationControllerDidDismiss:presentation];
+                                  }
+                                }];
 }
 
 }  // namespace
@@ -468,7 +494,7 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
     if (nav && nav.viewControllers.count > 1) {
       [nav popViewControllerAnimated:YES];
     } else {
-      [table_controller dismissViewControllerAnimated:YES completion:nil];
+      DismissLikeSwipe(nav ? nav : table_controller);
     }
     handled = YES;
   }
@@ -483,8 +509,23 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
   }
 
   if ([presented isKindOfClass:[UIAlertController class]]) {
+    // Answered through the actions' handlers, as a tap is: a guest prompt
+    // waits on them, and a bare dismiss would leave it waiting forever.
+    UIAlertController* alert = (UIAlertController*)presented;
     if (actions.back) {
-      [presented dismissViewControllerAnimated:YES completion:nil];
+      XeniaAlertCancel(alert);
+      return YES;
+    }
+    if (actions.accept) {
+      XeniaAlertAccept(alert);
+      return YES;
+    }
+    if (actions.navigate_up || actions.navigate_left) {
+      XeniaAlertMoveSelection(alert, -1);
+      return YES;
+    }
+    if (actions.navigate_down || actions.navigate_right) {
+      XeniaAlertMoveSelection(alert, 1);
       return YES;
     }
     return NO;
@@ -509,7 +550,7 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
       if (nav.viewControllers.count > 1) {
         [nav popViewControllerAnimated:YES];
       } else {
-        [nav dismissViewControllerAnimated:YES completion:nil];
+        DismissLikeSwipe(nav);
       }
       return YES;
     }
@@ -517,7 +558,7 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
   }
 
   if (actions.back) {
-    [presented dismissViewControllerAnimated:YES completion:nil];
+    DismissLikeSwipe(presented);
     return YES;
   }
   return NO;
