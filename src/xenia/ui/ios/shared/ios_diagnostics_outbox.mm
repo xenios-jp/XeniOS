@@ -303,6 +303,22 @@ NSDictionary* xe_ios_diagnostics_envelope_header(void) {
   };
 }
 
+// A file name may hold spaces ("Halo 3 Reach.iso") and a relative path may
+// start anywhere ("Alice Games/Halo/default.xex"), so the file rule replaces the
+// whole run of words up to the extension, from the first word that isn't plain
+// message text (kFileContextWords). Kept in step with the Worker's scrub()
+// (tools/ios/diagnostics/worker/lib.mjs).
+#define XE_FILE_EXTENSIONS \
+  "iso|xex|xexp|xbe|xcp|zar|god|stfs|svod|bin|dat|pkg|rar|zip|7z|cue|img|ini|toml|log|txt|json|plist|xml"
+#define XE_FILE_CONTEXT_WORDS                                                                   \
+  "a|an|the|this|that|to|of|in|on|at|from|for|with|by|and|or|not|no|is|are|was|were|be|been|"  \
+  "can|cannot|can't|could|couldn't|couldnt|unable|failed|failure|fail|error|invalid|missing|"   \
+  "corrupt|corrupted|unsupported|unknown|unexpected|bad|while|when|during|after|before|"        \
+  "open|opening|opened|load|loading|loaded|read|reading|mount|mounting|mounted|find|found|"     \
+  "parse|parsing|create|creating|created|access|accessing|extract|extracting|initialize|"       \
+  "file|files|image|disc|game|title|path|folder|directory|package|container|archive|"           \
+  "content|save|data|device|boot|booting|launch|launching|start|starting|run|running"
+
 NSString* xe_ios_diagnostics_redact(NSString* text) {
   static NSArray<NSArray*>* rules = [@[
     @[
@@ -333,7 +349,18 @@ NSString* xe_ios_diagnostics_redact(NSString* text) {
     ],
     @[
       [NSRegularExpression
-          regularExpressionWithPattern:@"[^\\s/\\\\'\"]+\\.(iso|xex|xcp|zar|god|stfs|svod)\\b"
+          regularExpressionWithPattern:
+              @"(^|\\s)(?:(?!(?:" XE_FILE_CONTEXT_WORDS ")[:,]?(?:\\s|$))"
+              @"[^\\s\"'<>|][^\\s\"<>|]*[ \\t]+)*"
+              @"[^\\s\"<>|]*\\.(?:" XE_FILE_EXTENSIONS ")\\b"
+                               options:NSRegularExpressionCaseInsensitive |
+                                       NSRegularExpressionAnchorsMatchLines
+                                 error:nil],
+      @"$1<file>"
+    ],
+    @[
+      [NSRegularExpression
+          regularExpressionWithPattern:@"[^\\s/\\\\'\"]+\\.(?:" XE_FILE_EXTENSIONS ")\\b"
                                options:NSRegularExpressionCaseInsensitive
                                  error:nil],
       @"<file>"
