@@ -111,6 +111,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   // state is only touched on readQueue_.
   dispatch_queue_t readQueue_;
   BOOL reading_;
+  BOOL forcePending_;
   off_t lastSize_;
   struct timespec lastMtime_;
 }
@@ -336,6 +337,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 // file's size or modification time changed (or force is set).
 - (void)reloadLogForced:(BOOL)force {
   if (reading_) {
+    forcePending_ = forcePending_ || force;
     return;
   }
   reading_ = YES;
@@ -369,6 +371,10 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
       dispatch_async(dispatch_get_main_queue(), ^{
         reading_ = NO;
         [self applyLogText:display_text footerPath:footer_path];
+        if (forcePending_) {
+          forcePending_ = NO;
+          [self reloadLogForced:YES];
+        }
       });
     }
   });
