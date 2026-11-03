@@ -579,6 +579,9 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   void BeginEmulationPauseSession();
   void EndEmulationPauseSession();
   void ArmStopWatchdog();
+  // Gives the Metal command processor the shader-wait compile boost the sheet
+  // asked for, unless the device is hot. Safe to repeat; needs a live title.
+  void ApplyCompileThreadBoost();
 
   static std::unique_ptr<apu::AudioSystem> CreateAudioSystem(cpu::Processor* processor);
   static std::unique_ptr<gpu::GraphicsSystem> CreateGraphicsSystem();
@@ -611,6 +614,9 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   // Pause reasons currently wanted (the context's EmulationPauseReason bits plus
   // kPauseReasonLiveSettings). Written on the main thread only.
   std::atomic<uint32_t> pause_desired_{0};
+  // The shader wait sheet is up, so the compile threads may use every core.
+  std::atomic<bool> shader_wait_boost_requested_{false};
+  id thermal_observer_ = nil;
   dispatch_queue_t pause_queue_ = nullptr;
   std::mutex pause_state_mutex_;
   bool pause_game_running_ = false;                     // pause_state_mutex_
@@ -995,6 +1001,8 @@ bool EmulatorAppIOS::OnInitialize() {
     SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kShaderPreparation,
                        waiting ? true : false);
     // The held game leaves the CPU to the shader compile threads: let them use every core.
+    // Kept as a request, which a title that has no GPU yet gets when it launches.
+    shader_wait_boost_requested_.store(waiting ? true : false, std::memory_order_release);
     dispatch_async(pause_queue_, ^{
       {
         std::lock_guard<std::mutex> lock(pause_state_mutex_);
@@ -1002,14 +1010,28 @@ bool EmulatorAppIOS::OnInitialize() {
           return;
         }
       }
-      Emulator* emulator = emulator_.get();
-      gpu::GraphicsSystem* graphics = emulator ? emulator->graphics_system() : nullptr;
-      if (graphics && g_graphics_is_metal.load(std::memory_order_acquire)) {
-        gpu::metal::MetalGraphicsSystem::SetShaderWaitCompileBoost(graphics->command_processor(),
-                                                                   waiting ? true : false);
-      }
+      ApplyCompileThreadBoost();
     });
   });
+  // A hot device gets no extra compile threads; a change applies at once.
+  thermal_observer_ = [[[NSNotificationCenter defaultCenter]
+      addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                  object:nil
+                   queue:nil
+              usingBlock:^(NSNotification*) {
+                if (!pause_queue_) {
+                  return;
+                }
+                dispatch_async(pause_queue_, ^{
+                  {
+                    std::lock_guard<std::mutex> lock(pause_state_mutex_);
+                    if (!pause_game_running_) {
+                      return;
+                    }
+                  }
+                  ApplyCompileThreadBoost();
+                });
+              }] retain];
   ios_context.set_live_settings_apply_callback(
       [this](const std::function<void()>& apply) { ApplyLiveSettings(apply); });
   ios_context.set_emulation_pause_settled_callback([this](std::function<void()> done) {
@@ -1646,6 +1668,7 @@ void EmulatorAppIOS::EndEmulationPauseSession() {
   pause_desired_.fetch_and(
       ~static_cast<uint32_t>(ui::IOSWindowedAppContext::EmulationPauseReason::kShaderPreparation),
       std::memory_order_acq_rel);
+  shader_wait_boost_requested_.store(false, std::memory_order_release);
   // Free the GPU worker even if the queue is wedged: teardown joins it.
   if (hold) {
     hold->Release();
@@ -1654,6 +1677,19 @@ void EmulatorAppIOS::EndEmulationPauseSession() {
   if (!WaitForEmulationPauseQueue(kResumeForTeardownTimeout)) {
     XELOGW("iOS: the pause queue did not drain before title teardown");
   }
+}
+
+void EmulatorAppIOS::ApplyCompileThreadBoost() {
+  Emulator* emulator = emulator_.get();
+  gpu::GraphicsSystem* graphics = emulator ? emulator->graphics_system() : nullptr;
+  if (!graphics || !graphics->command_processor() ||
+      !g_graphics_is_metal.load(std::memory_order_acquire)) {
+    return;
+  }
+  const bool hot = [NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious;
+  gpu::metal::MetalGraphicsSystem::SetCompileBoostAllowed(graphics->command_processor(), !hot);
+  gpu::metal::MetalGraphicsSystem::SetShaderWaitCompileBoost(
+      graphics->command_processor(), shader_wait_boost_requested_.load(std::memory_order_acquire));
 }
 
 void EmulatorAppIOS::ArmStopWatchdog() {
@@ -1817,6 +1853,11 @@ void EmulatorAppIOS::OnDestroy() {
   auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
   ios_context.set_emulation_pause_callback({});
   xe_ios_set_shader_wait_handler(nil);
+  if (thermal_observer_) {
+    [[NSNotificationCenter defaultCenter] removeObserver:thermal_observer_];
+    [thermal_observer_ release];
+    thermal_observer_ = nil;
+  }
   ios_context.set_live_settings_apply_callback({});
   ios_context.set_emulation_pause_settled_callback({});
   ios_context.set_game_launch_failed_callback({});
@@ -2132,6 +2173,8 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     }
 
     XELOGI("iOS: Game launched successfully");
+    // A shader wait that began before the GPU existed.
+    ApplyCompileThreadBoost();
     if (g_graphics_is_metal.load(std::memory_order_acquire)) {
       // Until the first frame, which only the Metal backend reports.
       ui::ios::SetLaunchStage(ui::ios::LaunchStage::kStarting);
