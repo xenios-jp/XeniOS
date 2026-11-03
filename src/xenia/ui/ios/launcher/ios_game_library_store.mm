@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 
+#include <strings.h>
+
 #include <map>
 #include <mutex>
 #include <set>
@@ -440,6 +442,27 @@ void ApplyScanRootSourceToGame(IOSDiscoveredGame* game, const IOSGameLibraryScan
   }
 }
 
+// False for the shared folders a loose file ends up in (Documents/Inbox from
+// AirDrop or Open-in, the top of Downloads or iCloud Drive): relocating one of
+// those would sweep up unrelated files.
+bool IsGameSpecificContainerFolder(const std::filesystem::path& container,
+                                   const std::filesystem::path& documents) {
+  if (container == documents / "Inbox") {
+    return false;
+  }
+  const std::string name = container.filename().string();
+  static const char* const kSharedFolderNames[] = {
+      "Inbox",        "Documents", "Downloads",        "Desktop",
+      "tmp",          "Library",   "iCloud Drive",     "com~apple~CloudDocs",
+      "Mobile Documents"};
+  for (const char* shared : kSharedFolderNames) {
+    if (strcasecmp(name.c_str(), shared) == 0) {
+      return false;
+    }
+  }
+  return !name.empty() && container != container.root_path();
+}
+
 }  // namespace
 
 std::filesystem::path IOSImportedGamesDirectory() {
@@ -562,8 +585,25 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, XeniaIOSFileTr
     const bool container_is_relocatable =
         !container.empty() && std::filesystem::is_directory(container, container_ec) &&
         weak_container != weak_documents && weak_container != weak_library &&
-        !PathIsInDirectory(weak_library, weak_container);
+        !PathIsInDirectory(weak_library, weak_container) &&
+        IsGameSpecificContainerFolder(weak_container, weak_documents);
     container_ec.clear();
+    if (!container_is_relocatable) {
+      // A lone default.xex can't boot without its folder, and the folder here
+      // is shared with other files.
+      if (error) {
+        *error = [NSError
+            errorWithDomain:@"XeniaIOSImport"
+                       code:1002
+                   userInfo:@{
+                     NSLocalizedDescriptionKey : NSLocalizedString(
+                         @"A game folder's default.xex needs the rest of its folder. Put the game "
+                         @"in its own folder, then import or link that folder.",
+                         @"game library store: user-visible text")
+                   }];
+      }
+      return {};
+    }
     if (container_is_relocatable) {
       std::filesystem::path destination_dir = library_path / container.filename();
       const std::string base_name = destination_dir.filename().string();
