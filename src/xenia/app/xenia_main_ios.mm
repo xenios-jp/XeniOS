@@ -531,6 +531,8 @@ constexpr const char kSubsystemSetupFailedMessage[] =
 constexpr const char kPresenterAttachFailedMessage[] =
     "Xenia couldn't attach the game to the screen. Close the app and open it again. If this "
     "keeps happening, share the log.";
+constexpr const char kTitleUpdateInstallBusyMessage[] =
+    "A title update is still installing. Wait for it to finish, then start the game again.";
 
 }  // namespace
 
@@ -966,6 +968,15 @@ bool EmulatorAppIOS::OnInitialize() {
       if (title_update_install_in_progress_) {
         XELOGW("iOS: Ignoring game launch while title update installation "
                "is in progress");
+        // The UI is waiting for this launch: tell it, as for a launch that
+        // failed. A game already running keeps its screen.
+        if (!game_path.empty() && !emulator_thread_running_.load(std::memory_order_acquire)) {
+          app_context().CallInUIThread([this]() {
+            auto& context = static_cast<ui::IOSWindowedAppContext&>(app_context());
+            context.NotifyGameExited();
+            context.NotifyGameLaunchFailed(kTitleUpdateInstallBusyMessage);
+          });
+        }
         return;
       }
       if (emulator_thread_running_.load(std::memory_order_acquire)) {
