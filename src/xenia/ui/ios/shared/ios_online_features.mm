@@ -56,8 +56,14 @@ BOOL xe_ios_online_features_notice_pending(void) {
 void xe_ios_set_online_features_notice_answered(void) {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   [defaults setInteger:kOnlineFeaturesNoticeRevision forKey:kOnlineFeaturesNoticeKey];
-  [defaults setBool:YES forKey:kDiagnosticsNoticeKey];
+  // The first-launch notice covers diagnostics only in a build that sends them; after
+  // one that doesn't, a later build still asks.
+  if (xe_ios_diagnostics_available()) {
+    [defaults setBool:YES forKey:kDiagnosticsNoticeKey];
+  }
 }
+
+BOOL xe_ios_diagnostics_available(void) { return xe_ios_diagnostics_endpoint() != nil; }
 
 BOOL xe_ios_share_diagnostics_enabled(void) {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
@@ -74,7 +80,8 @@ void xe_ios_set_share_diagnostics_enabled(BOOL enabled) {
 BOOL xe_ios_diagnostics_notice_pending(void) {
   // With Online Features off nothing is sent, so there is nothing to ask yet;
   // turning them back on in Settings shows the Share Diagnostics switch.
-  return !xe_ios_online_features_notice_pending() && xe_ios_online_features_enabled() &&
+  return xe_ios_diagnostics_available() && !xe_ios_online_features_notice_pending() &&
+         xe_ios_online_features_enabled() &&
          ![[NSUserDefaults standardUserDefaults] boolForKey:kDiagnosticsNoticeKey];
 }
 
@@ -83,6 +90,6 @@ void xe_ios_set_diagnostics_notice_answered(void) {
 }
 
 BOOL xe_ios_diagnostics_upload_allowed(void) {
-  return xe_ios_online_features_enabled() && xe_ios_share_diagnostics_enabled() &&
-         !xe_ios_diagnostics_notice_pending() && xe_ios_diagnostics_endpoint();
+  return xe_ios_diagnostics_available() && xe_ios_online_features_enabled() &&
+         xe_ios_share_diagnostics_enabled() && !xe_ios_diagnostics_notice_pending();
 }

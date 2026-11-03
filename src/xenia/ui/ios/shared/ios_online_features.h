@@ -29,14 +29,21 @@ BOOL xe_ios_online_features_notice_pending(void);
 // Also answers the diagnostics notice: the first-launch notice covers both.
 void xe_ios_set_online_features_notice_answered(void);
 
+// Whether this build can send diagnostics at all: it carries an endpoint
+// (XeniOSDiagnosticsURL). Without one, the notices don't mention diagnostics and
+// Settings has no Share Diagnostics switch.
+BOOL xe_ios_diagnostics_available(void);
+
 // Share Diagnostics: anonymous crash reports and performance statistics
 // (ios_diagnostics.h). On unless turned off, and only in effect while Online
-// Features is on too.
+// Features is on too. Turning it off leaves Online Features (and what they
+// cover, such as System Link over the internet) as they are.
 BOOL xe_ios_share_diagnostics_enabled(void);
 void xe_ios_set_share_diagnostics_enabled(BOOL enabled);
 
 // YES for an install that answered the first-launch notice before it covered
-// diagnostics, until the one-time diagnostics notice has been answered.
+// diagnostics, until the one-time diagnostics notice has been answered. Never
+// in a build without diagnostics.
 BOOL xe_ios_diagnostics_notice_pending(void);
 void xe_ios_set_diagnostics_notice_answered(void);
 

@@ -838,7 +838,7 @@ typedef NS_ENUM(NSInteger, XeniaAboutSection) {
   XeniaAboutSectionBuild = 0,
   XeniaAboutSectionUpdates,
   XeniaAboutSectionPrivacy,
-  XeniaAboutSectionDiagnostics,  // Under Privacy, with its own footer.
+  XeniaAboutSectionDiagnostics,  // Under Privacy, with its own footer; empty without an endpoint.
   XeniaAboutSectionLinks,
   XeniaAboutSectionCount,
 };
@@ -911,7 +911,7 @@ constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
     case XeniaAboutSectionPrivacy:
       return 1;
     case XeniaAboutSectionDiagnostics:
-      return 2;
+      return xe_ios_diagnostics_available() ? 2 : 0;
     default:
       return 5;  // Four links and Acknowledgements.
   }
@@ -936,18 +936,29 @@ titleForHeaderInSection:(NSInteger)section {
 - (NSString*)tableView:(UITableView* __unused)tableView
 titleForFooterInSection:(NSInteger)section {
   if (section == XeniaAboutSectionPrivacy) {
+    if (!xe_ios_diagnostics_available()) {
+      return NSLocalizedString(
+          @"Update checks, compatibility data, cover art, compatibility discussions and "
+          @"reports, and System Link over the internet. Turn this off and XeniOS does none of "
+          @"these. Games still run, without System Link.",
+          @"settings hub view controller: user-visible text");
+    }
     return NSLocalizedString(
         @"Update checks, compatibility data, cover art, compatibility discussions and "
         @"reports, System Link over the internet, and diagnostics. Turn this off and XeniOS "
-        @"does none of these. Games still run, without System Link.",
-        @"settings hub view controller: user-visible text");
+        @"does none of these. Games still run, without System Link. To stop only crash "
+        @"reports and statistics, turn off Share Diagnostics instead.",
+        @"settings hub view controller: footer of the Online Features switch");
   }
   if (section == XeniaAboutSectionDiagnostics) {
+    if (!xe_ios_diagnostics_available()) {
+      return nil;
+    }
     return NSLocalizedString(
         @"Sends crash reports and performance statistics: device model, iOS version, XeniOS "
-        @"version, the game's title ID, frame rate, temperature state and memory use. Never "
-        @"your files, file names, Apple Account or location. Logs are only sent when you share "
-        @"them yourself.",
+        @"version, the game's title ID, frame rate, load time, shader compiles, GPU errors, "
+        @"temperature, memory use and display settings. Never your files, file names, Apple "
+        @"Account or location. Logs are only sent when you share them yourself.",
         @"settings hub view controller: footer of the Share Diagnostics switch");
   }
   return nil;
@@ -1120,8 +1131,9 @@ titleForFooterInSection:(NSInteger)section {
 
 - (void)onlineFeaturesSwitchChanged:(UISwitch*)sender {
   xe_ios_set_online_features_enabled(sender.isOn);
-  if (sender.isOn) {
-    // Share Diagnostics and its footer are right below: no separate notice later.
+  if (sender.isOn && xe_ios_diagnostics_available()) {
+    // Share Diagnostics and its footer are right below: no separate notice later. A
+    // build without an endpoint shows neither, so a later one still asks.
     xe_ios_set_diagnostics_notice_answered();
   }
   xe_ios_diagnostics_settings_changed();

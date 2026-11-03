@@ -803,7 +803,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 // Once, before the first launch fetches anything: what goes over the network and that
 // reports are public. Installs that answered it before it covered diagnostics are asked
-// once about those instead. The appearance tasks run when it closes.
+// once about those instead. Diagnostics can be declined on their own, leaving the other
+// online features on. The appearance tasks run when it closes.
 - (BOOL)presentOnlineFeaturesNoticeIfNeeded {
   const BOOL first_launch = xe_ios_online_features_notice_pending();
   if (!first_launch && !xe_ios_diagnostics_notice_pending()) {
@@ -827,22 +828,29 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return YES;
   }
   online_features_notice_presented_ = YES;
+  const BOOL diagnostics = xe_ios_diagnostics_available();
+  NSString* first_launch_message =
+      diagnostics
+          ? NSLocalizedString(@"XeniOS checks for updates, downloads compatibility information "
+                              @"and cover art, and sends anonymous crash reports and performance "
+                              @"statistics to help fix problems. It also links System Link games "
+                              @"with other players over the internet, who can see your IP "
+                              @"address. Compatibility reports you submit are public.\n\nYou "
+                              @"can change this in Settings > About > Privacy.",
+                              @"Alert message: first-run online features notice")
+          : NSLocalizedString(@"XeniOS checks for updates, downloads compatibility information "
+                              @"and cover art, and links System Link games with other players "
+                              @"over the internet, who can see your IP address. Compatibility "
+                              @"reports you submit are public.\n\nYou can change this in "
+                              @"Settings > About > Privacy.",
+                              @"Alert message: first-run online features notice");
   UIAlertController* alert =
       first_launch
           ? [UIAlertController
                 alertControllerWithTitle:NSLocalizedString(
                                              @"Online Features",
                                              @"Alert title: first-run online features notice")
-                                 message:NSLocalizedString(
-                                             @"XeniOS checks for updates, downloads compatibility "
-                                             @"information and cover art, and sends anonymous "
-                                             @"crash reports and performance statistics to help "
-                                             @"fix problems. It also links System Link games with "
-                                             @"other players over the internet, who can see your "
-                                             @"IP address. Compatibility reports you submit are "
-                                             @"public.\n\nYou can change this in Settings > About "
-                                             @"> Privacy.",
-                                             @"Alert message: first-run online features notice")
+                                 message:first_launch_message
                           preferredStyle:UIAlertControllerStyleAlert]
           : [UIAlertController
                 alertControllerWithTitle:NSLocalizedString(
@@ -858,14 +866,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                              @"About > Privacy.",
                                              @"Alert message: one-time diagnostics notice")
                           preferredStyle:UIAlertControllerStyleAlert];
-  void (^answer)(BOOL) = ^(BOOL enabled) {
+  void (^answer)(BOOL, BOOL) = ^(BOOL online, BOOL share_diagnostics) {
     if (first_launch) {
-      xe_ios_set_online_features_enabled(enabled);
+      xe_ios_set_online_features_enabled(online);
       xe_ios_set_online_features_notice_answered();
     } else {
-      xe_ios_set_share_diagnostics_enabled(enabled);
       xe_ios_set_diagnostics_notice_answered();
     }
+    xe_ios_set_share_diagnostics_enabled(share_diagnostics);
     xe_ios_diagnostics_settings_changed();
     [self runAppearanceTasks];
   };
@@ -876,14 +884,27 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [alert addAction:[UIAlertAction actionWithTitle:decline
                                             style:UIAlertActionStyleDefault
                                           handler:^(__unused UIAlertAction* action) {
-                                            answer(NO);
+                                            // The one-time notice declines diagnostics only.
+                                            answer(!first_launch, NO);
                                           }]];
+  if (first_launch && diagnostics) {
+    // Declining diagnostics must not cost the rest, such as System Link over the internet.
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Don't Send Diagnostics",
+                                             @"Alert button: keeps online features on, without "
+                                             @"crash reports and statistics")
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction* action) {
+                                   answer(YES, NO);
+                                 }]];
+  }
   UIAlertAction* keep_on = [UIAlertAction
       actionWithTitle:NSLocalizedString(@"Continue",
                                         @"Alert button: keeps online features or diagnostics on")
                 style:UIAlertActionStyleDefault
               handler:^(__unused UIAlertAction* action) {
-                answer(YES);
+                answer(YES, YES);
               }];
   [alert addAction:keep_on];
   alert.preferredAction = keep_on;
