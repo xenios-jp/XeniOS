@@ -187,6 +187,9 @@
 /* zar conversion coordinator: user-visible text */
 "A few seconds remaining" = "A few seconds remaining";
 
+/* game library store: user-visible text */
+"A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder." = "A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder.";
+
 /* Alert message; %1$@ is the game to launch, %2$@ the running game */
 "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost." = "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost.";
 
@@ -1194,7 +1197,7 @@
 "Every setting in one list. Search by name or value." = "Every setting in one list. Search by name or value.";
 
 /* config view controller: message */
-"Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards.";
+"Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
 
 /* system link view controller: room row detail */
 "Everyone playing this game." = "Everyone playing this game.";
@@ -1610,7 +1613,8 @@
    Game source label: file is imported */
 "Imported" = "Imported";
 
-/* Toast; %@ is the layout name */
+/* document import coordinator: label text
+   Toast; %@ is the layout name */
 "Imported %@." = "Imported %@.";
 
 /* document import coordinator: label text */
@@ -1720,9 +1724,6 @@
 
 /* Switch label in the touch analog tuning screen */
 "Invert Vertical" = "Invert Vertical";
-
-/* Launch prompt for an invite link; %@ is the room code */
-"It also sets System Link for this game to room %@." = "It also sets System Link for this game to room %@.";
 
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
@@ -2484,7 +2485,7 @@
 "Play with others over the internet, in the public lobby or a private room." = "Play with others over the internet, in the public lobby or a private room.";
 
 /* system link view controller: footer */
-"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address.";
+"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
 
 /* system link view controller: footer */
 "Players in each game's public lobby, updated every minute. Private rooms aren't counted." = "Players in each game's public lobby, updated every minute. Private rooms aren't counted.";
@@ -2493,7 +2494,7 @@
 "Players in This Room" = "Players in This Room";
 
 /* system link status view controller: footer */
-"Players in your room can see your IP address." = "Players in your room can see your IP address.";
+"Players in your room can see your IP address and a profile ID." = "Players in your room can see your IP address and a profile ID.";
 
 /* online view controller: summary row detail */
 "Players show up here while they have XeniOS open with Online features on." = "Players show up here while they have XeniOS open with Online features on.";
@@ -2619,6 +2620,9 @@
 /* zar conversion coordinator: user-visible text */
 "Ready to convert" = "Ready to convert";
 
+/* system link status view controller: state */
+"Reconnecting…" = "Reconnecting…";
+
 /* VoiceOver label of the redo button */
 "Redo" = "Redo";
 
@@ -2658,6 +2662,9 @@
 
 /* Result message; %llu is the number of items removed */
 "Removed %llu cached item(s). Relaunch before testing." = "Removed %llu cached item(s). Relaunch before testing.";
+
+/* system software view controller: accessibility hint */
+"Removes the system software and the unrestored copy a failed install left. Asks first." = "Removes the system software and the unrestored copy a failed install left. Asks first.";
 
 /* system software view controller: accessibility hint */
 "Removes the system software. Asks first." = "Removes the system software. Asks first.";
@@ -2954,6 +2961,9 @@
 /* settings hub view controller: label text */
 "Share Diagnostics" = "Share Diagnostics";
 
+/* system link view controller: alert message */
+"Share Diagnostics is on, so anonymous crash reports and performance statistics are sent too." = "Share Diagnostics is on, so anonymous crash reports and performance statistics are sent too.";
+
 /* Alert title: another app asks for the game library */
 "Share Game Library?" = "Share Game Library?";
 
@@ -3174,6 +3184,9 @@
 /* system link status view controller: state detail */
 "System Link starts when the game looks for other players." = "System Link starts when the game looks for other players.";
 
+/* System Link toast: online features were turned off while a game was playing System Link */
+"System Link stopped: Online Features is off." = "System Link stopped: Online Features is off.";
+
 /* In-game menu: System Link card */
 "System Link · Can't Reach the Server" = "System Link · Can't Reach the Server";
 
@@ -3182,6 +3195,9 @@
 
 /* In-game menu: System Link card */
 "System Link · Online" = "System Link · Online";
+
+/* In-game menu: System Link card */
+"System Link · Reconnecting…" = "System Link · Reconnecting…";
 
 /* In-game menu: System Link card */
 "System Link · Turned Away" = "System Link · Turned Away";
@@ -3282,11 +3298,17 @@
 /* compat report submission: user-visible text */
 "The report server is having trouble right now. Please try again later." = "The report server is having trouble right now. Please try again later.";
 
+/* Launch prompt for an invite link to the game that is already running */
+"The running game restarts to join." = "The running game restarts to join.";
+
 /* file transfer: user-visible text */
 "The selected file is no longer available." = "The selected file is no longer available.";
 
 /* compat report submission: user-visible text */
 "The server didn't accept this report. Please try again later." = "The server didn't accept this report. Please try again later.";
+
+/* system link status view controller: state detail */
+"The server still holds your old connection. Rejoining." = "The server still holds your old connection. Rejoining.";
 
 /* Placeholder for the host name of a layout download source */
 "the source" = "the source";
@@ -3330,6 +3352,9 @@
 /* system link status view controller: row detail */
 "They show up here when they start this game in the same room." = "They show up here when they start this game in the same room.";
 
+/* system software view controller: message */
+"This also deletes the \"unrestored\" copy of the previous system software that a failed install left. The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay." = "This also deletes the \"unrestored\" copy of the previous system software that a failed install left. The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay.";
+
 /* Fallback for the current version text in the update notice */
 "this build" = "this build";
 
@@ -3357,6 +3382,9 @@
 /* Alert message: install link payload cannot be decoded */
 "This install link's payload could not be decoded." = "This install link's payload could not be decoded.";
 
+/* document import coordinator: message */
+"This is add-on content (DLC or a marketplace package), not a game. Install it from the game's Manage Content screen." = "This is add-on content (DLC or a marketplace package), not a game. Install it from the game's Manage Content screen.";
+
 /* Launch screen note: a launch step is slow */
 "This is taking longer than usual." = "This is taking longer than usual.";
 
@@ -3381,6 +3409,9 @@
 /* Alert message: patches need a title ID */
 "This item does not expose a title ID, so patches cannot be loaded." = "This item does not expose a title ID, so patches cannot be loaded.";
 
+/* Launch prompt for an invite link; %@ is the room code */
+"This launch joins System Link room %@, once. Players in the room can see your IP address and a profile ID. System Link needs Online Features to be on." = "This launch joins System Link room %@, once. Players in the room can see your IP address and a profile ID. System Link needs Online Features to be on.";
+
 /* Placeholder for a layout whose name is unknown, used in the install prompt */
 "this layout" = "this layout";
 
@@ -3404,6 +3435,9 @@
 
 /* Empty state message in the achievements screen */
 "This title has not published achievement metadata to the profile." = "This title has not published achievement metadata to the profile.";
+
+/* system link view controller: alert message */
+"This turns on all Online Features, not only System Link: update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet, where players can see your IP address and a profile ID." = "This turns on all Online Features, not only System Link: update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet, where players can see your IP address and a profile ID.";
 
 /* Row title in the touch control edit panel */
 "Tint" = "Tint";
@@ -3496,9 +3530,15 @@
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
 
+/* system link view controller: button */
+"Turn On" = "Turn On";
+
 /* online view controller: button row
    system link view controller: button row */
 "Turn On Online Features" = "Turn On Online Features";
+
+/* system link view controller: alert title */
+"Turn On Online Features?" = "Turn On Online Features?";
 
 /* system link status view controller: state */
 "Turned Away" = "Turned Away";
@@ -3723,10 +3763,10 @@
 "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it." = "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it.";
 
 /* Alert message: first-run online features notice */
-"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
 
 /* Alert message: first-run online features notice */
-"XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
 
 /* zar conversion coordinator: user-visible text */
 "XeniOS could not access the linked external folder for in-place conversion." = "XeniOS could not access the linked external folder for in-place conversion.";
@@ -3774,6 +3814,9 @@
 
 /* compat report view controller: message */
 "You can attach up to 5 screenshots." = "You can attach up to 5 screenshots.";
+
+/* system link view controller: alert message */
+"You can change this in Settings > About > Privacy." = "You can change this in Settings > About > Privacy.";
 
 /* config view controller: message */
 "You have unsaved setting changes." = "You have unsaved setting changes.";
