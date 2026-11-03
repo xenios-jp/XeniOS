@@ -94,7 +94,9 @@ enum InstallRow : NSInteger {
 #pragma mark - Table
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return info_.installed ? 3 : 2;
+  // Remove also clears the "unrestored" copy a failed install left, which is the
+  // only way back in the app when the dashboard itself is missing.
+  return (info_.installed || info_.has_unrestored_files) ? 3 : 2;
 }
 
 - (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
@@ -216,9 +218,14 @@ enum InstallRow : NSInteger {
   return [self actionCellWithTitle:NSLocalizedString(@"Remove System Software",
                                                      @"system software view controller: action")
                         symbolName:@"trash"
-                              hint:NSLocalizedString(
-                                       @"Removes the system software. Asks first.",
-                                       @"system software view controller: accessibility hint")
+                              hint:info_.has_unrestored_files
+                                       ? NSLocalizedString(
+                                             @"Removes the system software and the unrestored "
+                                             @"copy a failed install left. Asks first.",
+                                             @"system software view controller: accessibility hint")
+                                       : NSLocalizedString(
+                                             @"Removes the system software. Asks first.",
+                                             @"system software view controller: accessibility hint")
                            enabled:[self canChangeSystemSoftware]
                        destructive:YES];
 }
@@ -347,10 +354,19 @@ enum InstallRow : NSInteger {
   UIAlertController* confirm = [UIAlertController
       alertControllerWithTitle:NSLocalizedString(@"Remove System Software?",
                                                  @"system software view controller: title")
-                       message:NSLocalizedString(
-                                   @"The Xbox 360 Dashboard won't start until you install the "
-                                   @"system update again. Your games, profiles and saves stay.",
-                                   @"system software view controller: message")
+                       message:info_.has_unrestored_files
+                                   ? NSLocalizedString(
+                                         @"This also deletes the \"unrestored\" copy of the "
+                                         @"previous system software that a failed install left. "
+                                         @"The Xbox 360 Dashboard won't start until you install "
+                                         @"the system update again. Your games, profiles and "
+                                         @"saves stay.",
+                                         @"system software view controller: message")
+                                   : NSLocalizedString(
+                                         @"The Xbox 360 Dashboard won't start until you install "
+                                         @"the system update again. Your games, profiles and "
+                                         @"saves stay.",
+                                         @"system software view controller: message")
                 preferredStyle:UIAlertControllerStyleAlert];
   [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
                                               style:UIAlertActionStyleCancel
