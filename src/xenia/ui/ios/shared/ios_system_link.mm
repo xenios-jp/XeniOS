@@ -135,6 +135,10 @@ void OnStatus(const RelayStatus& status) {
         Toast(RejectMessage(status.reject), XeniaIOSStatusToastStyleError);
       }
       return;
+    case State::kReconnecting:
+      // The server still holds the old connection: told as back online once it clears.
+      g_told_offline = g_told_online;
+      return;
     case State::kConnecting:
       return;
     case State::kOnline:
@@ -177,6 +181,9 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void) {
     case State::kConnecting:
       snapshot.state = Snapshot::State::kConnecting;
       break;
+    case State::kReconnecting:
+      snapshot.state = Snapshot::State::kReconnecting;
+      break;
     case State::kOnline:
       snapshot.state = Snapshot::State::kOnline;
       break;
@@ -209,6 +216,9 @@ NSString* CardTitle(const Snapshot& s) {
   switch (s.state) {
     case Snapshot::State::kConnecting:
       return NSLocalizedString(@"System Link · Connecting…", @"In-game menu: System Link card");
+    case Snapshot::State::kReconnecting:
+      return NSLocalizedString(@"System Link · Reconnecting…",
+                               @"In-game menu: System Link card");
     case Snapshot::State::kOnline:
       return NSLocalizedString(@"System Link · Online", @"In-game menu: System Link card");
     case Snapshot::State::kOffline:
@@ -335,7 +345,8 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
   } else if (NSString* players = PlayersSummary(snapshot)) {
     detail = [NSString
         stringWithFormat:@"%@ · %@", xe_ios_system_link_room_name(snapshot.room_code), players];
-  } else if (snapshot.state == Snapshot::State::kConnecting) {
+  } else if (snapshot.state == Snapshot::State::kConnecting ||
+             snapshot.state == Snapshot::State::kReconnecting) {
     detail = xe_ios_system_link_room_name(snapshot.room_code);
   }
   if (snapshot.other_version) {

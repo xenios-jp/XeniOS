@@ -1338,6 +1338,14 @@ constexpr size_t kMaxStatusOtherGames = 10;
           symbol = @"network";
           tint = [XeniaTheme textSecondary];
           break;
+        case State::kReconnecting:
+          title =
+              NSLocalizedString(@"Reconnecting…", @"system link status view controller: state");
+          detail = NSLocalizedString(@"The server still holds your old connection. Rejoining.",
+                                     @"system link status view controller: state detail");
+          symbol = @"network";
+          tint = [XeniaTheme textSecondary];
+          break;
         case State::kOnline:
           title = NSLocalizedString(@"Online", @"system link status view controller: state");
           detail = NSLocalizedString(@"Connected to the System Link server.",
