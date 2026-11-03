@@ -828,6 +828,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   xe::hid::touch::IOSTouchRuntimeModel* runtime_model_;
   NSMutableArray<XeniaTouchControlShellView*>* control_views_;
   UIButton* pause_button_;
+  // Invisible, touch-transparent VoiceOver target that lets the user play by direct touch.
+  UIView* direct_touch_view_;
   UIView* edit_grid_overlay_;
   CAShapeLayer* edit_grid_dots_layer_;
   UIView* edit_snap_guides_overlay_;
@@ -962,6 +964,17 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
                     action:@selector(pauseButtonPressed:)
           forControlEvents:UIControlEventTouchUpInside];
   [self addSubview:pause_button_];
+
+  // Added behind the pause button so VoiceOver reads it first. hitTest: never returns it, so
+  // touches for sighted users are unchanged.
+  direct_touch_view_ = [[UIView alloc] initWithFrame:CGRectZero];
+  direct_touch_view_.backgroundColor = [UIColor clearColor];
+  direct_touch_view_.userInteractionEnabled = NO;
+  direct_touch_view_.isAccessibilityElement = YES;
+  direct_touch_view_.accessibilityLabel = @"Touch controller";
+  direct_touch_view_.accessibilityHint = @"Touch the screen to use the on-screen controls.";
+  direct_touch_view_.accessibilityTraits = UIAccessibilityTraitAllowsDirectInteraction;
+  [self insertSubview:direct_touch_view_ belowSubview:pause_button_];
 
   edit_grid_overlay_ = [[UIView alloc] initWithFrame:CGRectZero];
   edit_grid_overlay_.hidden = YES;
@@ -1339,6 +1352,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   [doneEditingHandler_ release];
   [pauseHandler_ release];
   [pause_button_ release];
+  [direct_touch_view_ release];
   [edit_snap_guides_layer_ release];
   [edit_snap_feedback_label_ release];
   [edit_snap_guides_overlay_ release];
@@ -3786,6 +3800,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
   editing_controls_enabled_ = enabled;
   edit_opacity_slider_active_ = NO;
+  direct_touch_view_.isAccessibilityElement = !enabled;
   [self resetInteractionState];
   if (enabled) {
     [self resetEditLayoutHistory];
@@ -4960,6 +4975,9 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
 - (void)layoutSubviews {
   [super layoutSubviews];
+
+  direct_touch_view_.frame = self.bounds;
+  direct_touch_view_.isAccessibilityElement = !editing_controls_enabled_;
 
   if (!runtime_model_) {
     return;
