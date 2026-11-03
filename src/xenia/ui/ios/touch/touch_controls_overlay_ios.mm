@@ -978,8 +978,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   pause_button_ = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
   pause_button_.backgroundColor = [UIColor clearColor];
   pause_button_.hidden = YES;
-  pause_button_.accessibilityLabel =
-      NSLocalizedString(@"Pause game", @"VoiceOver label of the on-screen pause button");
+  pause_button_.accessibilityLabel = NSLocalizedString(
+      @"Game menu", @"VoiceOver label of the on-screen button that opens the in-game menu");
   pause_button_.accessibilityTraits = UIAccessibilityTraitButton;
   [pause_button_ addTarget:self
                     action:@selector(pauseButtonPressed:)

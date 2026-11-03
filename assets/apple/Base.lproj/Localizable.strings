@@ -1233,6 +1233,9 @@
 /* Alert title: the game is not stopping */
 "Game Isn't Responding" = "Game Isn't Responding";
 
+/* VoiceOver label of the on-screen button that opens the in-game menu */
+"Game menu" = "Game menu";
+
 /* Fallback title of the pause menu */
 "Game Menu" = "Game Menu";
 
@@ -1621,6 +1624,9 @@
 
 /* zar conversion coordinator: title */
 "Leave the original game in place alongside the new .zar archive." = "Leave the original game in place alongside the new .zar archive.";
+
+/* VoiceOver hint for the Resume Emulator button */
+"Lets the game run again." = "Lets the game run again.";
 
 /* Display menu item
    Display settings toggle */
@@ -2106,8 +2112,8 @@
 /* Menu item in the Add Control menu */
 "Pause Button" = "Pause Button";
 
-/* VoiceOver label of the on-screen pause button */
-"Pause game" = "Pause game";
+/* In-game menu button, stops the game while the menu is open */
+"Pause Emulator" = "Pause Emulator";
 
 /* log view controller: accessibility label */
 "Pause live log" = "Pause live log";
@@ -2341,6 +2347,9 @@
 
 /* In-game menu button */
 "Resume" = "Resume";
+
+/* In-game menu button, runs the game again after a pause */
+"Resume Emulator" = "Resume Emulator";
 
 /* Pause menu row */
 "Resume Game" = "Resume Game";
@@ -2631,6 +2640,9 @@
 
 /* VoiceOver hint for the Exit button */
 "Stops the game and returns to the library." = "Stops the game and returns to the library.";
+
+/* VoiceOver hint for the Pause Emulator button */
+"Stops the game until you resume it or close the menu." = "Stops the game until you resume it or close the menu.";
 
 /* file transfer: user-visible text */
 "Storage is full. Free up space on this device and try again." = "Storage is full. Free up space on this device and try again.";
