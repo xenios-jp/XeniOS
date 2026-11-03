@@ -1533,7 +1533,11 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     apply();
   }
 
-  if (game_title_id_) {
+  // Advanced Debug toggles last for this session only: a harmful one would otherwise stick to
+  // the title until its settings are reset, with nothing asking the player to keep it.
+  const BOOL session_only = catalog_kind_ == IOSConfigCatalogKind::kDebugSettings ||
+                            catalog_kind_ == IOSConfigCatalogKind::kAdvanced;
+  if (game_title_id_ && !session_only) {
     IOSConfigSection section;
     section.items.push_back(*item);
     std::vector<IOSConfigSection> sections;
