@@ -109,10 +109,10 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindDiagnostics,
   XeniaSettingsHubCategoryKindAdvancedDebug,
   XeniaSettingsHubCategoryKindAllCvars,
+  XeniaSettingsHubCategoryKindAllSettings,
   XeniaSettingsHubCategoryKindCacheCleanup,
   XeniaSettingsHubCategoryKindLibrary,
   XeniaSettingsHubCategoryKindGameContent,
-  XeniaSettingsHubCategoryKindPerGameSettings,
   XeniaSettingsHubCategoryKindAutomation,
   XeniaSettingsHubCategoryKindAbout,
 };
@@ -123,6 +123,13 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
 @property(nonatomic, copy) NSString* subtitle;
 @property(nonatomic, copy) NSString* symbolName;
 @property(nonatomic, retain) UIColor* tintColor;
+// Search results: the current value (shown on the trailing edge and read by VoiceOver), the row to
+// scroll to on the page it opens, and a VoiceOver hint that names that page.
+@property(nonatomic, copy) NSString* valueText;
+@property(nonatomic, copy) NSString* focusKey;
+@property(nonatomic, copy) NSString* hintText;
+// A Controls action that does nothing unless a game is running.
+@property(nonatomic, assign) BOOL needsRunningGame;
 + (instancetype)itemWithKind:(XeniaSettingsHubCategoryKind)kind
                        title:(NSString*)title
                     subtitle:(NSString*)subtitle
@@ -151,6 +158,9 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   [_subtitle release];
   [_symbolName release];
   [_tintColor release];
+  [_valueText release];
+  [_focusKey release];
+  [_hintText release];
   [super dealloc];
 }
 
@@ -200,28 +210,14 @@ static BOOL XeniaSettingsHubItemMatches(XeniaSettingsHubItem* item,
          XeniaSettingsStringMatches(section_title, query);
 }
 
-static NSString* XeniaSettingsCatalogResultSubtitle(IOSConfigCatalogKind kind,
-                                                    const IOSConfigItem& item) {
-  NSString* catalog_title =
-      [NSString stringWithUTF8String:IOSConfigCatalogTitle(kind).c_str()];
-  NSString* item_subtitle =
-      item.subtitle.empty() ? nil : [NSString stringWithUTF8String:item.subtitle.c_str()];
-  return item_subtitle.length
-             ? [NSString stringWithFormat:@"%@ · %@", catalog_title, item_subtitle]
-             : catalog_title;
-}
-
-static BOOL XeniaSettingsConfigItemMatches(const IOSConfigItem& item,
-                                           const IOSConfigSection& section,
-                                           NSString* query) {
-  NSString* item_title = [NSString stringWithUTF8String:item.title.c_str()];
-  NSString* item_subtitle = [NSString stringWithUTF8String:item.subtitle.c_str()];
-  NSString* item_key = [NSString stringWithUTF8String:item.key.c_str()];
-  NSString* section_title = [NSString stringWithUTF8String:section.title.c_str()];
-  return XeniaSettingsStringMatches(item_title, query) ||
-         XeniaSettingsStringMatches(item_subtitle, query) ||
-         XeniaSettingsStringMatches(item_key, query) ||
-         XeniaSettingsStringMatches(section_title, query);
+static BOOL XeniaSettingsSearchEntryMatches(const IOSConfigSearchEntry& entry,
+                                            NSString* query) {
+  auto matches = [query](const std::string& text) {
+    return !text.empty() && XeniaSettingsStringMatches(ToNSString(text), query);
+  };
+  return matches(entry.title) || matches(entry.subtitle) || matches(entry.key) ||
+         matches(entry.section) || matches(entry.page) ||
+         (entry.value_searchable && matches(entry.value_text));
 }
 
 static XeniaSettingsHubCategoryKind XeniaSettingsKindForCatalog(
@@ -245,6 +241,8 @@ static XeniaSettingsHubCategoryKind XeniaSettingsKindForCatalog(
       return XeniaSettingsHubCategoryKindAdvancedDebug;
     case IOSConfigCatalogKind::kSystem:
       return XeniaSettingsHubCategoryKindAutomation;
+    case IOSConfigCatalogKind::kAllSettings:
+      return XeniaSettingsHubCategoryKindAllSettings;
     default:
       return XeniaSettingsHubCategoryKindAllCvars;
   }
@@ -270,6 +268,8 @@ static NSString* XeniaSettingsSymbolForCatalog(IOSConfigCatalogKind kind) {
       return @"slider.horizontal.3";
     case IOSConfigCatalogKind::kSystem:
       return @"wand.and.stars";
+    case IOSConfigCatalogKind::kAllSettings:
+      return @"list.bullet";
     default:
       return @"tablecells";
   }
@@ -297,24 +297,32 @@ static UIColor* XeniaSettingsTintForCatalog(IOSConfigCatalogKind kind) {
   }
 }
 
-static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
-                                            IOSConfigCatalogKind kind,
-                                            NSString* query) {
-  std::vector<IOSConfigSection> sections = BuildIOSConfigSectionsForKind(kind);
-  for (const IOSConfigSection& section : sections) {
-    for (const IOSConfigItem& item : section.items) {
-      if (!XeniaSettingsConfigItemMatches(item, section, query)) {
-        continue;
-      }
-      NSString* title = [NSString stringWithUTF8String:item.title.c_str()];
-      [results addObject:[XeniaSettingsHubItem
-                             itemWithKind:XeniaSettingsKindForCatalog(kind)
-                                    title:title
-                                 subtitle:XeniaSettingsCatalogResultSubtitle(kind, item)
-                               symbolName:XeniaSettingsSymbolForCatalog(kind)
-                                tintColor:XeniaSettingsTintForCatalog(kind)]];
-    }
+// A search result for one setting: title, "Page › Section" path (plus a note when the setting can
+// be set per game), the current value on the trailing edge, and the row to scroll to.
+static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry& entry) {
+  NSString* page = ToNSString(entry.page);
+  NSString* section = ToNSString(entry.section);
+  NSString* path = section.length ? [NSString stringWithFormat:@"%@ \u203A %@", page, section]
+                                  : page;
+  if (entry.per_game) {
+    path = [path stringByAppendingFormat:@"\n%@",
+                 NSLocalizedString(@"Can be overridden per game",
+                                   @"settings hub view controller: search result note")];
   }
+  XeniaSettingsHubItem* item =
+      [XeniaSettingsHubItem itemWithKind:XeniaSettingsKindForCatalog(entry.kind)
+                                   title:ToNSString(entry.title)
+                                subtitle:path
+                              symbolName:XeniaSettingsSymbolForCatalog(entry.kind)
+                               tintColor:XeniaSettingsTintForCatalog(entry.kind)];
+  item.valueText = entry.value_text.empty() ? nil : ToNSString(entry.value_text);
+  item.focusKey = ToNSString(entry.key.empty() ? entry.title : entry.key);
+  item.hintText = [NSString
+      stringWithFormat:NSLocalizedString(@"Opens %1$@, %2$@.",
+                                         @"settings hub view controller: hint of a search result "
+                                         @"(page, then section)"),
+                       page, section];
+  return item;
 }
 
 @interface XeniaSettingsAppearanceViewController : XESheetTableViewController
@@ -434,7 +442,14 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
                         }
                         return;
                       }
-                      [self.tableView reloadData];
+                      // Only the checkmarks move, so reload the three rows, not the table.
+                      [self.tableView
+                          reloadRowsAtIndexPaths:@[
+                            [NSIndexPath indexPathForRow:0 inSection:0],
+                            [NSIndexPath indexPathForRow:1 inSection:0],
+                            [NSIndexPath indexPathForRow:2 inSection:0],
+                          ]
+                            withRowAnimation:UITableViewRowAnimationNone];
                       if (on_status_) {
                         on_status_(
                             [NSString stringWithFormat:
@@ -601,99 +616,98 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
 
 @end
 
+// The touch layout actions, in the order the Controls and Touch Layouts pages list them. The
+// three that act on the running game are left out when no game is running.
+static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
+  UIColor* blue = [XeniaTheme sectionIconBlue];
+  NSMutableArray* items = [NSMutableArray array];
+  [items addObject:[XeniaSettingsActionListItem
+                       itemWithAction:XeniaSettingsHubActionChooseGameTouchLayout
+                                title:NSLocalizedString(@"Edit Game Touch Layout",
+                                                        @"settings hub view controller: title")
+                             subtitle:NSLocalizedString(
+                                          @"Choose an installed title and edit its touch "
+                                          @"controls before launch.",
+                                          @"settings hub view controller: title")
+                           symbolName:@"gamecontroller.fill"
+                            tintColor:blue]];
+  [items addObject:[XeniaSettingsActionListItem
+                       itemWithAction:XeniaSettingsHubActionOpenTouchLayoutLibrary
+                                title:NSLocalizedString(@"Layout Library",
+                                                        @"settings hub view controller: title")
+                             subtitle:NSLocalizedString(
+                                          @"Browse, rename, duplicate, import, export, and reset "
+                                          @"touch layouts.",
+                                          @"settings hub view controller: title")
+                           symbolName:@"rectangle.grid.2x2.fill"
+                            tintColor:blue]];
+  if (!no_game_running) {
+    [items addObject:[XeniaSettingsActionListItem
+                         itemWithAction:XeniaSettingsHubActionEditTouchControls
+                                  title:NSLocalizedString(@"Edit Running Touch Layout",
+                                                          @"settings hub view controller: title")
+                               subtitle:NSLocalizedString(
+                                            @"Open the in-game touch editor for the currently "
+                                            @"running title.",
+                                            @"settings hub view controller: title")
+                             symbolName:@"hand.draw.fill"
+                              tintColor:blue]];
+  }
+  [items addObject:[XeniaSettingsActionListItem
+                       itemWithAction:XeniaSettingsHubActionImportTouchLayout
+                                title:NSLocalizedString(@"Import Layout",
+                                                        @"settings hub view controller: title")
+                             subtitle:NSLocalizedString(@"Install a .toml layout from Files.",
+                                                        @"settings hub view controller: title")
+                           symbolName:@"square.and.arrow.down.fill"
+                            tintColor:blue]];
+  if (!no_game_running) {
+    [items addObject:[XeniaSettingsActionListItem
+                         itemWithAction:XeniaSettingsHubActionExportTouchLayout
+                                  title:NSLocalizedString(@"Export Running Layout",
+                                                          @"settings hub view controller: title")
+                               subtitle:NSLocalizedString(
+                                            @"Share the layout currently loaded in the running "
+                                            @"game.",
+                                            @"settings hub view controller: title")
+                             symbolName:@"square.and.arrow.up.fill"
+                              tintColor:blue]];
+    [items addObject:[XeniaSettingsActionListItem
+                         itemWithAction:XeniaSettingsHubActionResetTouchLayout
+                                  title:NSLocalizedString(@"Reset Running Layout",
+                                                          @"settings hub view controller: title")
+                               subtitle:NSLocalizedString(
+                                            @"Restore the running game's layout to the built-in "
+                                            @"XeniOS preset.",
+                                            @"settings hub view controller: title")
+                             symbolName:@"arrow.counterclockwise"
+                              tintColor:[XeniaTheme sectionIconOrange]]];
+  }
+  return items;
+}
+
 @interface XeniaSettingsControlsViewController : XESheetTableViewController
-- (instancetype)initWithActionHandler:(XeniaSettingsHubActionHandler)action_handler;
+- (instancetype)initWithActionHandler:(XeniaSettingsHubActionHandler)action_handler
+                        noGameRunning:(BOOL)no_game_running;
 @end
 
 @implementation XeniaSettingsControlsViewController {
-  NSArray* setup_items_;
   NSArray* layout_items_;
   XeniaSettingsHubActionHandler action_handler_;
 }
 
-- (instancetype)initWithActionHandler:(XeniaSettingsHubActionHandler)action_handler {
+- (instancetype)initWithActionHandler:(XeniaSettingsHubActionHandler)action_handler
+                        noGameRunning:(BOOL)no_game_running {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
     self.title = NSLocalizedString(@"Controls", @"settings hub view controller: title");
-    UIColor* blue = [XeniaTheme sectionIconBlue];
-    setup_items_ = [@[
-      [XeniaSettingsActionListItem
-          infoItemWithTitle:NSLocalizedString(@"Hardware Controllers",
-                                              @"settings hub view controller: title")
-                   subtitle:NSLocalizedString(@"Connect a controller before or during gameplay; "
-                                              @"XeniOS binds it automatically.",
-                                              @"settings hub view controller: title")
-                 symbolName:@"gamecontroller.fill"],
-      [XeniaSettingsActionListItem
-          infoItemWithTitle:NSLocalizedString(@"Touch Controls",
-                                              @"settings hub view controller: title")
-                   subtitle:NSLocalizedString(@"Pick a game layout before launch, then use Edit "
-                                              @"Running Touch Layout for final placement.",
-                                              @"settings hub view controller: title")
-                 symbolName:@"hand.tap.fill"],
-    ] retain];
-    layout_items_ = [@[
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionChooseGameTouchLayout
-                   title:NSLocalizedString(@"Edit Game Touch Layout",
-                                           @"settings hub view controller: title")
-                subtitle:
-                    NSLocalizedString(
-                        @"Choose an installed title and edit its touch controls before launch.",
-                        @"settings hub view controller: title")
-              symbolName:@"gamecontroller.fill"
-               tintColor:blue],
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionOpenTouchLayoutLibrary
-                   title:NSLocalizedString(@"Layout Library",
-                                           @"settings hub view controller: title")
-                subtitle:NSLocalizedString(
-                             @"Browse, rename, duplicate, import, export, and reset touch layouts.",
-                             @"settings hub view controller: title")
-              symbolName:@"rectangle.grid.2x2.fill"
-               tintColor:blue],
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionEditTouchControls
-                   title:NSLocalizedString(@"Edit Running Touch Layout",
-                                           @"settings hub view controller: title")
-                subtitle:NSLocalizedString(
-                             @"Open the in-game touch editor for the currently running title.",
-                             @"settings hub view controller: title")
-              symbolName:@"hand.draw.fill"
-               tintColor:blue],
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionImportTouchLayout
-                   title:NSLocalizedString(@"Import Layout", @"settings hub view controller: title")
-                subtitle:NSLocalizedString(@"Install a .toml layout from Files.",
-                                           @"settings hub view controller: title")
-              symbolName:@"square.and.arrow.down.fill"
-               tintColor:blue],
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionExportTouchLayout
-                   title:NSLocalizedString(@"Export Running Layout",
-                                           @"settings hub view controller: title")
-                subtitle:NSLocalizedString(
-                             @"Share the layout currently loaded in the running game.",
-                             @"settings hub view controller: title")
-              symbolName:@"square.and.arrow.up.fill"
-               tintColor:blue],
-      [XeniaSettingsActionListItem
-          itemWithAction:XeniaSettingsHubActionResetTouchLayout
-                   title:NSLocalizedString(@"Reset Running Layout",
-                                           @"settings hub view controller: title")
-                subtitle:NSLocalizedString(
-                             @"Restore the running game's layout to the built-in XeniOS preset.",
-                             @"settings hub view controller: title")
-              symbolName:@"arrow.counterclockwise"
-               tintColor:[XeniaTheme sectionIconOrange]],
-    ] retain];
+    layout_items_ = [XeniaTouchLayoutActionItems(no_game_running) retain];
     action_handler_ = [action_handler copy];
   }
   return self;
 }
 
 - (void)dealloc {
-  [setup_items_ release];
   [layout_items_ release];
   [action_handler_ release];
   [super dealloc];
@@ -707,26 +721,36 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 3;
+  return 2;
 }
 
 - (NSInteger)tableView:(UITableView* __unused)tableView
  numberOfRowsInSection:(NSInteger)section {
-  if (section == 0) {
-    return static_cast<NSInteger>(setup_items_.count);
-  }
-  return section == 1 ? static_cast<NSInteger>(layout_items_.count) : 1;
+  return section == 0 ? static_cast<NSInteger>(layout_items_.count) : 1;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForHeaderInSection:(NSInteger)section {
-  if (section == 0) {
-    return NSLocalizedString(@"Setup", @"settings hub view controller: user-visible text");
-  }
-  return section == 1 ? NSLocalizedString(@"Touch Layouts",
+  return section == 0 ? NSLocalizedString(@"Touch Layouts",
                                           @"settings hub view controller: user-visible text")
                       : NSLocalizedString(@"Touch Behavior",
                                           @"settings hub view controller: user-visible text");
+}
+
+// The setup advice is a footer under the layouts it refers to, not two rows that do nothing.
+- (NSString*)tableView:(UITableView* __unused)tableView
+    titleForFooterInSection:(NSInteger)section {
+  if (section != 0) {
+    return nil;
+  }
+  return [NSString
+      stringWithFormat:@"%@ %@",
+                       NSLocalizedString(@"Connect a controller before or during gameplay; "
+                                         @"XeniOS binds it automatically.",
+                                         @"settings hub view controller: title"),
+                       NSLocalizedString(@"Pick a game layout before launch, then use Edit "
+                                         @"Running Touch Layout for final placement.",
+                                         @"settings hub view controller: title")];
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -746,12 +770,6 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
   NSString* symbol_name = nil;
   UIColor* tint_color = nil;
   if (indexPath.section == 0) {
-    XeniaSettingsActionListItem* item = [setup_items_ objectAtIndex:indexPath.row];
-    title = item.title;
-    subtitle = item.subtitle;
-    symbol_name = item.symbolName;
-    tint_color = item.tintColor;
-  } else if (indexPath.section == 1) {
     XeniaSettingsActionListItem* item = [layout_items_ objectAtIndex:indexPath.row];
     title = item.title;
     subtitle = item.subtitle;
@@ -781,25 +799,16 @@ static void XeniaAppendCatalogSearchResults(NSMutableArray* results,
                            withConfiguration:icon_config];
   cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
   cell.imageView.tintColor = tint_color;
-  const BOOL selectable = indexPath.section != 0;
-  cell.accessoryType = selectable ? UITableViewCellAccessoryDisclosureIndicator
-                                  : UITableViewCellAccessoryNone;
-  cell.selectionStyle = selectable ? UITableViewCellSelectionStyleDefault
-                                   : UITableViewCellSelectionStyleNone;
   XEApplyAccessibility(cell, title, subtitle,
-                       selectable ? NSLocalizedString(@"Opens this controls option.",
-                                                      @"settings hub view controller: title")
-                                  : nil,
-                       selectable ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText);
+                       NSLocalizedString(@"Opens this controls option.",
+                                         @"settings hub view controller: title"),
+                       UIAccessibilityTraitButton);
   return cell;
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   if (indexPath.section == 0) {
-    return;
-  }
-  if (indexPath.section == 1) {
     XeniaSettingsActionListItem* item = [layout_items_ objectAtIndex:indexPath.row];
     if (action_handler_) {
       action_handler_(item.action);
@@ -841,6 +850,7 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
   XeniaUpdateInfo* update_info_;
   BOOL update_checking_;
   NSInteger version_tap_count_;
+  BOOL version_hint_shown_;
   NSTimeInterval last_version_tap_time_;
   XeniaIOSStatusToastPresenter* toast_presenter_;
 }
@@ -864,7 +874,7 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
   toast_presenter_ = [[XeniaIOSStatusToastPresenter alloc] init];
-  // Another path (the switch below, or Reset) can change developer mode.
+  // Another path (the switch below) can change developer mode.
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(developerModeChanged:)
                                                name:kXeniaDeveloperModeChangedNotification
@@ -873,7 +883,17 @@ constexpr NSTimeInterval kDeveloperModeTapWindowSeconds = 2.0;
 }
 
 - (void)developerModeChanged:(NSNotification*)__unused notification {
-  [self.tableView reloadData];
+  // The Developer section appears or disappears; the Build footer (the tap hint) follows.
+  const NSInteger wanted = [self sectionCount];
+  const NSInteger shown = self.tableView.numberOfSections;
+  NSIndexSet* developer_section = [NSIndexSet indexSetWithIndex:XeniaAboutSectionDeveloper];
+  if (wanted > shown) {
+    [self.tableView insertSections:developer_section withRowAnimation:UITableViewRowAnimationFade];
+  } else if (wanted < shown) {
+    [self.tableView deleteSections:developer_section withRowAnimation:UITableViewRowAnimationFade];
+  }
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaAboutSectionBuild]
+                withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (NSInteger)sectionCount {
@@ -950,9 +970,13 @@ titleForFooterInSection:(NSInteger)section {
   }
   if (section == XeniaAboutSectionDeveloper) {
     return NSLocalizedString(
-        @"Shows Advanced Debug and All Config under Settings > Advanced. These change "
-        @"emulator internals and can break games.",
+        @"Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets "
+        @"search find raw config settings. These change emulator internals and can break games.",
         @"settings hub view controller: user-visible text");
+  }
+  if (section == XeniaAboutSectionBuild && !IOSDeveloperModeEnabled()) {
+    return NSLocalizedString(@"Tap Version seven times to show developer options.",
+                             @"settings hub view controller: user-visible text");
   }
   return nil;
 }
@@ -968,9 +992,16 @@ titleForFooterInSection:(NSInteger)section {
     cell.detailTextLabel.isAccessibilityElement = NO;
     return cell;
   }
-  const BOOL actionable = cell.selectionStyle != UITableViewCellSelectionStyleNone;
+  const BOOL version_row = indexPath.section == XeniaAboutSectionBuild &&
+                           indexPath.row == kAboutVersionRow && version_hint_shown_;
+  const BOOL actionable = version_row || cell.selectionStyle != UITableViewCellSelectionStyleNone;
   NSString* value = cell.detailTextLabel.text.length ? cell.detailTextLabel.text : nil;
-  XEApplyAccessibility(cell, cell.textLabel.text, value, nil,
+  // Once the Version row has been tapped, tell VoiceOver users it counts taps.
+  NSString* hint = version_row
+                       ? NSLocalizedString(@"Tap seven times to show developer options.",
+                                           @"settings hub view controller: accessibility hint")
+                       : nil;
+  XEApplyAccessibility(cell, cell.textLabel.text, value, hint,
                        actionable ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText);
   cell.isAccessibilityElement = YES;
   return cell;
@@ -1118,6 +1149,13 @@ titleForFooterInSection:(NSInteger)section {
   }
   last_version_tap_time_ = now;
   ++version_tap_count_;
+  if (!version_hint_shown_) {
+    version_hint_shown_ = YES;
+    [self.tableView
+        reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:kAboutVersionRow
+                                                     inSection:XeniaAboutSectionBuild] ]
+              withRowAnimation:UITableViewRowAnimationNone];
+  }
   if (version_tap_count_ < kDeveloperModeTapCount) {
     return;
   }
@@ -1191,7 +1229,7 @@ titleForFooterInSection:(NSInteger)section {
 
 @end
 
-@interface XeniaSettingsHubViewController () <UISearchResultsUpdating>
+@interface XeniaSettingsHubViewController () <UISearchResultsUpdating, UISearchControllerDelegate>
 - (UIViewController*)makeDetailControllerForItem:(XeniaSettingsHubItem*)item;
 - (UIViewController*)makeRawDetailControllerForItem:(XeniaSettingsHubItem*)item;
 @end
@@ -1206,11 +1244,16 @@ titleForFooterInSection:(NSInteger)section {
   UISearchController* search_controller_;
   void (^dismissal_handler_)(void);
   BOOL shows_close_button_;
+  BOOL no_game_running_;
+  // Every searchable setting with its current value, built once per search session.
+  std::vector<IOSConfigSearchEntry> search_index_;
+  BOOL search_index_valid_;
 }
 
 @synthesize dismissalHandler = dismissal_handler_;
 @synthesize actionHandler = action_handler_;
 @synthesize showsCloseButton = shows_close_button_;
+@synthesize noGameRunning = no_game_running_;
 
 - (instancetype)initWithAppContext:(xe::ui::IOSWindowedAppContext*)app_context
                           onStatus:(XeniaSettingsStatusHandler)on_status {
@@ -1239,6 +1282,7 @@ titleForFooterInSection:(NSInteger)section {
 }
 
 - (void)developerModeChanged:(NSNotification*)__unused notification {
+  search_index_valid_ = NO;
   [all_sections_ release];
   all_sections_ = [[self buildSections] retain];
   if (!search_controller_.active) {
@@ -1265,6 +1309,21 @@ titleForFooterInSection:(NSInteger)section {
   UIColor* purple = [XeniaTheme sectionIconPurple];
   UIColor* red = [XeniaTheme sectionIconRed];
   UIColor* gray = [XeniaTheme sectionIconGray];
+
+  // Every setting in one searchable list; the pages below group the same settings by topic.
+  XeniaSettingsHubSection* all_settings = [XeniaSettingsHubSection
+      sectionWithTitle:NSLocalizedString(@"Settings", @"settings hub view controller: title")
+                 items:@[
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindAllSettings
+                              title:NSLocalizedString(@"All Settings",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(
+                                        @"Every setting in one list. Search by name or value.",
+                                        @"settings hub view controller: title")
+                         symbolName:@"list.bullet"
+                          tintColor:mint],
+                 ]];
 
   XeniaSettingsHubSection* account = [XeniaSettingsHubSection
       sectionWithTitle:NSLocalizedString(@"Profile", @"settings hub view controller: title")
@@ -1321,7 +1380,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Backend, quality, shader pipeline, and render target path.",
+                                   @"Backend and anisotropic filtering.",
                                    @"settings hub view controller: title")
                          symbolName:@"gearshape.2.fill"
                           tintColor:purple],
@@ -1370,16 +1429,6 @@ titleForFooterInSection:(NSInteger)section {
                                    @"settings hub view controller: title")
                          symbolName:@"puzzlepiece.extension.fill"
                           tintColor:gray],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindPerGameSettings
-                              title:NSLocalizedString(@"Per-Game Settings",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Title-specific overrides, search, reset, and batched saves.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"gamecontroller.fill"
-                          tintColor:indigo],
                  ]];
 
   XeniaSettingsHubSection* compatibility = [XeniaSettingsHubSection
@@ -1434,10 +1483,10 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:gray],
                  ]];
 
-  // Advanced Debug and All Config edit emulator internals; they appear only in developer
-  // mode (About > Version, seven taps).
+  // Advanced Debug and Developer: All Config edit emulator internals; they appear only in
+  // developer mode (About > Version, seven taps). Search finds the settings either way.
   if (!IOSDeveloperModeEnabled()) {
-    return @[ account, gameplay, graphics_performance, games, compatibility, app ];
+    return @[ all_settings, account, gameplay, graphics_performance, games, compatibility, app ];
   }
 
   XeniaSettingsHubSection* advanced = [XeniaSettingsHubSection
@@ -1454,7 +1503,7 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:purple],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAllCvars
-                              title:NSLocalizedString(@"All Config",
+                              title:NSLocalizedString(@"Developer: All Config",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(@"Search and edit every registered cvar.",
                                                       @"settings hub view controller: title")
@@ -1463,7 +1512,7 @@ titleForFooterInSection:(NSInteger)section {
                  ]];
 
   return @[
-    account, gameplay, graphics_performance, games, compatibility, app, advanced
+    all_settings, account, gameplay, graphics_performance, games, compatibility, app, advanced
   ];
 }
 
@@ -1476,6 +1525,7 @@ titleForFooterInSection:(NSInteger)section {
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
   search_controller_ = [[UISearchController alloc] initWithSearchResultsController:nil];
   search_controller_.searchResultsUpdater = self;
+  search_controller_.delegate = self;
   search_controller_.obscuresBackgroundDuringPresentation = NO;
   search_controller_.hidesNavigationBarDuringPresentation = NO;
   search_controller_.searchBar.placeholder =
@@ -1490,6 +1540,18 @@ titleForFooterInSection:(NSInteger)section {
                target:self
                action:@selector(closeTapped:)] autorelease];
   }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  // A page may have changed values while this list was out of sight.
+  search_index_valid_ = NO;
+}
+
+#pragma mark - UISearchControllerDelegate
+
+- (void)willPresentSearchController:(UISearchController* __unused)searchController {
+  search_index_valid_ = NO;
 }
 
 - (void)closeTapped:(id)sender {
@@ -1584,7 +1646,16 @@ titleForFooterInSection:(NSInteger)section {
           symbolName:@"arrow.counterclockwise"
            tintColor:[XeniaTheme sectionIconOrange]],
   ];
+  // These act on the running game, so they only show while one can be running.
+  // (Items 4, 6 and 7: Edit, Export and Reset Running Layout.)
+  [items enumerateObjectsUsingBlock:^(XeniaSettingsHubItem* item, NSUInteger index,
+                                      __unused BOOL* stop) {
+    item.needsRunningGame = index == 4 || index == 6 || index == 7;
+  }];
   for (XeniaSettingsHubItem* item in items) {
+    if (no_game_running_ && item.needsRunningGame) {
+      continue;
+    }
     if (XeniaSettingsHubItemMatches(
             item,
             NSLocalizedString(@"Controls", @"settings hub view controller: user-visible text"),
@@ -1641,14 +1712,6 @@ titleForFooterInSection:(NSInteger)section {
                                        @"settings hub view controller: title")
           symbolName:@"puzzlepiece.extension.fill"
            tintColor:[XeniaTheme sectionIconGray]],
-    [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindPerGameSettings
-               title:NSLocalizedString(@"Per-Game Settings", @"settings hub view controller: title")
-            subtitle:NSLocalizedString(
-                         @"Games · Title-specific overrides, search, reset, and batched saves.",
-                         @"settings hub view controller: title")
-          symbolName:@"gamecontroller.fill"
-           tintColor:[XeniaTheme sectionIconIndigo]],
   ];
   for (XeniaSettingsHubItem* item in items) {
     if (XeniaSettingsHubItemMatches(
@@ -1687,18 +1750,23 @@ titleForFooterInSection:(NSInteger)section {
   NSMutableArray* setting_results = [NSMutableArray array];
   [self appendTouchLayoutSearchResults:setting_results query:query];
   [self appendLibrarySearchResults:setting_results query:query];
-  const IOSConfigCatalogKind kCatalogs[] = {
-      IOSConfigCatalogKind::kDisplay,       IOSConfigCatalogKind::kGraphics,
-      IOSConfigCatalogKind::kAudio,         IOSConfigCatalogKind::kControls,
-      IOSConfigCatalogKind::kPerformance,   IOSConfigCatalogKind::kCompatibility,
-      IOSConfigCatalogKind::kDiagnostics,   IOSConfigCatalogKind::kDebugSettings,
-      IOSConfigCatalogKind::kSystem,
-  };
-  for (IOSConfigCatalogKind kind : kCatalogs) {
-    if (kind == IOSConfigCatalogKind::kDebugSettings && !IOSDeveloperModeEnabled()) {
+
+  // Every curated setting, by title, description, key, page, section and current value. Settings
+  // that exist only as raw config are listed in developer mode and counted otherwise.
+  if (!search_index_valid_) {
+    search_index_ = BuildIOSConfigSearchIndex();
+    search_index_valid_ = YES;
+  }
+  NSMutableArray* advanced_results = [NSMutableArray array];
+  for (const IOSConfigSearchEntry& entry : search_index_) {
+    if (!XeniaSettingsSearchEntryMatches(entry, query)) {
       continue;
     }
-    XeniaAppendCatalogSearchResults(setting_results, kind, query);
+    if (entry.advanced) {
+      [advanced_results addObject:XeniaSettingsResultItem(entry)];
+    } else {
+      [setting_results addObject:XeniaSettingsResultItem(entry)];
+    }
   }
   if (setting_results.count) {
     [filtered_sections
@@ -1706,6 +1774,38 @@ titleForFooterInSection:(NSInteger)section {
                       sectionWithTitle:NSLocalizedString(@"Settings",
                                                          @"settings hub view controller: title")
                                  items:setting_results]];
+  }
+  if (advanced_results.count && IOSDeveloperModeEnabled()) {
+    [filtered_sections
+        addObject:[XeniaSettingsHubSection
+                      sectionWithTitle:NSLocalizedString(@"Advanced (cvars)",
+                                                         @"settings hub view controller: title")
+                                 items:advanced_results]];
+  } else if (advanced_results.count) {
+    // Say that the setting exists instead of showing nothing; About holds the switch.
+    const NSUInteger count = advanced_results.count;
+    XeniaSettingsHubItem* pointer = [XeniaSettingsHubItem
+        itemWithKind:XeniaSettingsHubCategoryKindAbout
+               title:count == 1
+                         ? NSLocalizedString(@"1 more advanced result",
+                                             @"settings hub view controller: search pointer row")
+                         : [NSString
+                               stringWithFormat:
+                                   NSLocalizedString(@"%1$lu more advanced results",
+                                                     @"settings hub view controller: search "
+                                                     @"pointer row, count of raw config matches"),
+                                   static_cast<unsigned long>(count)]
+            subtitle:NSLocalizedString(@"Turn on Developer Mode in About to edit them.",
+                                       @"settings hub view controller: search pointer row")
+          symbolName:@"lock.fill"
+           tintColor:[XeniaTheme sectionIconGray]];
+    pointer.hintText = NSLocalizedString(@"Opens About, where Developer Mode is turned on.",
+                                         @"settings hub view controller: hint of the pointer row");
+    [filtered_sections
+        addObject:[XeniaSettingsHubSection
+                      sectionWithTitle:NSLocalizedString(@"Advanced",
+                                                         @"settings hub view controller: title")
+                                 items:@[ pointer ]]];
   }
 
   [self replaceVisibleSections:filtered_sections];
@@ -1749,44 +1849,59 @@ titleForFooterInSection:(NSInteger)section {
   if (!cell) {
     cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                    reuseIdentifier:kCellIdentifier] autorelease];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    cell.textLabel.numberOfLines = 1;
-    cell.detailTextLabel.numberOfLines = 2;
   }
 
   XeniaSettingsHubItem* item = [self itemAtIndexPath:indexPath];
   if (!item) {
-    cell.textLabel.text = @"";
-    cell.detailTextLabel.text = @"";
-    cell.imageView.image = nil;
+    cell.contentConfiguration = nil;
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.isAccessibilityElement = NO;
     return cell;
   }
 
-  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-  cell.textLabel.text = item.title;
-  cell.textLabel.textColor = [XeniaTheme textPrimary];
-  cell.detailTextLabel.text = item.subtitle;
-  cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  xe_apply_label_font(cell.textLabel, UIFontTextStyleBody, 17.0,
-                      UIFontWeightSemibold);
-  xe_apply_label_font(cell.detailTextLabel, UIFontTextStyleSubheadline, 15.0,
-                      UIFontWeightRegular);
-
+  // List content configuration so titles and subtitles wrap at large text sizes (a search result
+  // carries a path and a per-game note as well as a description).
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  content.text = item.title;
+  content.textProperties.color = [XeniaTheme textPrimary];
+  content.textProperties.numberOfLines = 0;
+  content.textProperties.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
+                                                      UIFontWeightSemibold);
+  content.secondaryText = item.subtitle;
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  content.secondaryTextProperties.numberOfLines = 0;
+  content.secondaryTextProperties.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0,
+                                                               UIFontWeightRegular);
+  content.prefersSideBySideTextAndSecondaryText = NO;
   UIImageSymbolConfiguration* image_config =
       [UIImageSymbolConfiguration configurationWithPointSize:20.0
                                                       weight:UIImageSymbolWeightSemibold];
-  UIImage* image = [UIImage systemImageNamed:item.symbolName
-                           withConfiguration:image_config];
-  cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  cell.imageView.tintColor = item.tintColor;
+  content.image = [[UIImage systemImageNamed:item.symbolName withConfiguration:image_config]
+      imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  content.imageProperties.tintColor = item.tintColor;
+  cell.contentConfiguration = content;
 
-  NSString* value = item.subtitle.length ? item.subtitle : nil;
-  XEApplyAccessibility(
-      cell, item.title, value,
-      NSLocalizedString(@"Opens this settings section.", @"settings hub view controller: title"),
-      UIAccessibilityTraitButton);
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  if (item.valueText.length) {
+    // The current value, on the trailing edge like in Settings.
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = XeniaConfigMakeValueAccessoryView(
+        item.valueText, CGRectGetWidth(tableView.bounds) * 0.4, YES);
+  } else {
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  }
+
+  // A result reads as: setting, current value, and where it opens.
+  const BOOL is_result = item.focusKey.length > 0;
+  NSString* value = is_result ? item.valueText : (item.subtitle.length ? item.subtitle : nil);
+  NSString* hint = item.hintText.length
+                       ? item.hintText
+                       : NSLocalizedString(@"Opens this settings section.",
+                                           @"settings hub view controller: title");
+  XEApplyAccessibility(cell, item.title, value, hint, UIAccessibilityTraitButton);
   return cell;
 }
 
@@ -1835,7 +1950,10 @@ titleForFooterInSection:(NSInteger)section {
   UIViewController* detail = [self makeRawDetailControllerForItem:item];
   // Live setting changes pause the running game through the app context.
   if ([detail isKindOfClass:[XeniaConfigViewController class]]) {
-    ((XeniaConfigViewController*)detail).appContext = app_context_;
+    XeniaConfigViewController* config = (XeniaConfigViewController*)detail;
+    config.appContext = app_context_;
+    // A search result opens its page scrolled to the setting.
+    config.focusKey = item.focusKey;
   }
   return detail;
 }
@@ -1858,71 +1976,13 @@ titleForFooterInSection:(NSInteger)section {
           autorelease];
     case XeniaSettingsHubCategoryKindControls:
       return [[[XeniaSettingsControlsViewController alloc]
-          initWithActionHandler:action_handler_] autorelease];
-    case XeniaSettingsHubCategoryKindTouchLayouts: {
-      UIColor* blue = [XeniaTheme sectionIconBlue];
-      NSArray* items = @[
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionChooseGameTouchLayout
-                     title:NSLocalizedString(@"Edit Game Touch Layout",
-                                             @"settings hub view controller: title")
-                  subtitle:
-                      NSLocalizedString(
-                          @"Choose an installed title and edit its touch controls before launch.",
-                          @"settings hub view controller: title")
-                symbolName:@"gamecontroller.fill"
-                 tintColor:blue],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionOpenTouchLayoutLibrary
-                     title:NSLocalizedString(@"Layout Library",
-                                             @"settings hub view controller: title")
-                  subtitle:
-                      NSLocalizedString(
-                          @"Browse, rename, duplicate, import, export, and reset touch layouts.",
-                          @"settings hub view controller: title")
-                symbolName:@"rectangle.grid.2x2.fill"
-                 tintColor:blue],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionEditTouchControls
-                     title:NSLocalizedString(@"Edit Running Touch Layout",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(
-                               @"Open the in-game touch editor for the currently running title.",
-                               @"settings hub view controller: title")
-                symbolName:@"hand.draw.fill"
-                 tintColor:blue],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionImportTouchLayout
-                     title:NSLocalizedString(@"Import Layout",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Install a .toml layout from Files.",
-                                             @"settings hub view controller: title")
-                symbolName:@"square.and.arrow.down.fill"
-                 tintColor:blue],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionExportTouchLayout
-                     title:NSLocalizedString(@"Export Running Layout",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(
-                               @"Share the layout currently loaded in the running game.",
-                               @"settings hub view controller: title")
-                symbolName:@"square.and.arrow.up.fill"
-                 tintColor:blue],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionResetTouchLayout
-                     title:NSLocalizedString(@"Reset Running Layout",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(
-                               @"Restore the running game's layout to the built-in XeniOS preset.",
-                               @"settings hub view controller: title")
-                symbolName:@"arrow.counterclockwise"
-                 tintColor:[XeniaTheme sectionIconOrange]],
-      ];
+          initWithActionHandler:action_handler_
+                  noGameRunning:no_game_running_] autorelease];
+    case XeniaSettingsHubCategoryKindTouchLayouts:
       return [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:NSLocalizedString(@"Touch Layouts", @"settings hub view controller: title")
-                  items:items
+                  items:XeniaTouchLayoutActionItems(no_game_running_)
           actionHandler:action_handler_] autorelease];
-    }
     case XeniaSettingsHubCategoryKindTouchBehavior: {
       XeniaConfigViewController* config = [[[XeniaConfigViewController alloc]
           initWithCatalogKind:IOSConfigCatalogKind::kControls
@@ -2020,43 +2080,6 @@ titleForFooterInSection:(NSInteger)section {
                   items:items
           actionHandler:action_handler_] autorelease];
     }
-    case XeniaSettingsHubCategoryKindPerGameSettings: {
-      NSMutableArray* items = [NSMutableArray
-          arrayWithObject:[XeniaSettingsActionListItem
-                              infoItemWithTitle:NSLocalizedString(
-                                                    @"Title Overrides",
-                                                    @"settings hub view controller: title")
-                                       subtitle:NSLocalizedString(
-                                                    @"Open Game Settings from a game tile to edit "
-                                                    @"settings that apply only to that title.",
-                                                    @"settings hub view controller: title")
-                                     symbolName:@"slider.horizontal.3"]];
-      if (IOSDeveloperModeEnabled()) {
-        [items addObject:[XeniaSettingsActionListItem
-                             infoItemWithTitle:NSLocalizedString(
-                                                   @"Search Overrides",
-                                                   @"settings hub view controller: title")
-                                      subtitle:NSLocalizedString(
-                                                   @"Search All Config appears at the top of each "
-                                                   @"title's settings sheet.",
-                                                   @"settings hub view controller: title")
-                                    symbolName:@"magnifyingglass"]];
-      }
-      [items addObjectsFromArray:@[
-        [XeniaSettingsActionListItem
-            infoItemWithTitle:NSLocalizedString(@"Reset Game Settings",
-                                                @"settings hub view controller: title")
-                     subtitle:NSLocalizedString(@"Reset appears in the same title settings sheet "
-                                                @"and deletes saved overrides for that title.",
-                                                @"settings hub view controller: title")
-                   symbolName:@"arrow.counterclockwise"],
-      ]];
-      return [[[XeniaSettingsActionListViewController alloc]
-          initWithTitle:NSLocalizedString(@"Per-Game Settings",
-                                          @"settings hub view controller: title")
-                  items:items
-          actionHandler:action_handler_] autorelease];
-    }
     case XeniaSettingsHubCategoryKindPerformance: {
       XeniaConfigViewController* config = [[[XeniaConfigViewController alloc]
           initWithCatalogKind:IOSConfigCatalogKind::kPerformance
@@ -2099,6 +2122,16 @@ titleForFooterInSection:(NSInteger)section {
       XeniaIOSDebugSettingsViewController* config =
           [[[XeniaIOSDebugSettingsViewController alloc]
               initWithCatalogKind:IOSConfigCatalogKind::kAllCvars
+                     liveOverride:NO] autorelease];
+      config.showsRootDismissButton = NO;
+      return config;
+    }
+    case XeniaSettingsHubCategoryKindAllSettings: {
+      // Searchable and editable, like the developer pages (XeniaConfigViewController owns the
+      // search); the debug subclass only sets the page up as a pushed, non-live page.
+      XeniaIOSDebugSettingsViewController* config =
+          [[[XeniaIOSDebugSettingsViewController alloc]
+              initWithCatalogKind:IOSConfigCatalogKind::kAllSettings
                      liveOverride:NO] autorelease];
       config.showsRootDismissButton = NO;
       return config;
@@ -2186,6 +2219,14 @@ titleForFooterInSection:(NSInteger)section {
   [action_handler_ release];
   action_handler_ = [actionHandler copy];
   hub_controller_.actionHandler = action_handler_;
+}
+
+- (BOOL)noGameRunning {
+  return hub_controller_.noGameRunning;
+}
+
+- (void)setNoGameRunning:(BOOL)noGameRunning {
+  hub_controller_.noGameRunning = noGameRunning;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {

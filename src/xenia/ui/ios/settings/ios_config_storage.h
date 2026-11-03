@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -41,8 +42,13 @@ bool IOSConfigValidateDoubleValue(const std::string& key, double value, std::str
 extern NSString* const kXeniaDeveloperModeChangedNotification;
 bool IOSDeveloperModeEnabled(void);
 void IOSSetDeveloperModeEnabled(bool enabled);
+// Reads a title's saved overrides from disk. Only file I/O, no cvar access, so it may run off the
+// main thread; hand the result to OverlayIOSConfigSectionsFromGameConfig on the main thread.
+std::shared_ptr<void> LoadIOSGameConfigSnapshot(uint32_t title_id);
+// Shows a title's saved overrides in |sections|. Loads them now when |snapshot| is null.
 void OverlayIOSConfigSectionsFromGameConfig(std::vector<IOSConfigSection>* sections,
-                                            uint32_t title_id);
+                                            uint32_t title_id,
+                                            const std::shared_ptr<void>& snapshot = nullptr);
 bool ApplyIOSConfigSectionsToGameConfig(const std::vector<IOSConfigSection>& sections,
                                         uint32_t title_id, const std::set<std::string>& dirty_keys);
 
@@ -64,6 +70,11 @@ bool IOSConfigHasConfigVar(const std::string& key);
 std::string IOSConfigGetConfigVarString(const std::string& key, const std::string& fallback);
 std::string IOSConfigDecodeTomlStringValue(const std::string& value);
 std::string IOSConfigNormalizeEditableStringLikeValue(const std::string& value);
+// The cvar's default value as text (string defaults are unquoted). False without such a cvar.
+bool IOSConfigGetConfigVarDefaultString(const std::string& key, std::string* value_out);
+// Titles of a choice row for a stored value the list doesn't offer, e.g. "40 FPS (custom)".
+std::string IOSConfigCustomChoiceTitle(int64_t value, const std::string& unit);
+std::string IOSConfigCustomChoiceTitle(const std::string& value);
 bool IOSConfigParseBoolString(const std::string& text, bool* value_out);
 bool IOSConfigParseInt64String(const std::string& text, int64_t* value_out);
 

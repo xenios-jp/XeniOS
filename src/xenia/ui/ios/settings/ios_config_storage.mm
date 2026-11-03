@@ -69,6 +69,17 @@ static cvar::IConfigVar* GetConfigVar(const std::string& key) {
 
 bool IOSConfigHasConfigVar(const std::string& key) { return GetConfigVar(key) != nullptr; }
 
+std::string IOSConfigCustomChoiceTitle(int64_t value, const std::string& unit) {
+  if (unit.empty()) {
+    return "Custom (" + std::to_string(value) + ")";
+  }
+  return std::to_string(value) + " " + unit + " (custom)";
+}
+
+std::string IOSConfigCustomChoiceTitle(const std::string& value) {
+  return "Custom (" + value + ")";
+}
+
 bool IOSConfigIsHiddenKey(const std::string& key) {
   return key == "storage_root" || key == "content_root" || key == "cache_root" ||
          key == "log_file";
@@ -136,6 +147,15 @@ std::string IOSConfigGetConfigVarString(const std::string& key, const std::strin
   return IOSConfigDecodeTomlStringValue(var->config_value());
 }
 
+bool IOSConfigGetConfigVarDefaultString(const std::string& key, std::string* value_out) {
+  cvar::IConfigVar* var = GetConfigVar(key);
+  if (!var || !value_out) {
+    return false;
+  }
+  *value_out = IOSConfigDecodeTomlStringValue(var->default_value());
+  return true;
+}
+
 bool IOSConfigParseBoolString(const std::string& text, bool* value_out) {
   if (!value_out) {
     return false;
@@ -188,6 +208,12 @@ void SetChoiceValueForInteger(IOSConfigItem* item, int64_t value) {
       return;
     }
   }
+  // A saved override the list doesn't offer: show it as it is instead of the first entry.
+  IOSConfigChoice custom{IOSConfigCustomChoiceTitle(value, item->value_unit), value, true};
+  item->choices.erase(std::remove_if(item->choices.begin(), item->choices.end(),
+                                     [](const IOSConfigChoice& c) { return c.is_custom; }),
+                      item->choices.end());
+  item->choices.insert(item->choices.begin(), std::move(custom));
 }
 
 void SetChoiceValueForString(IOSConfigItem* item, const std::string& value) {
@@ -198,6 +224,19 @@ void SetChoiceValueForString(IOSConfigItem* item, const std::string& value) {
       return;
     }
   }
+  if (value.empty()) {
+    return;
+  }
+  // Same for a string the list doesn't offer; the new entry goes last so indexes stay valid.
+  if (!item->choices.empty() && item->choices.back().is_custom &&
+      item->choices.size() == item->choice_string_values.size()) {
+    item->choices.pop_back();
+    item->choice_string_values.pop_back();
+  }
+  item->choices.push_back({IOSConfigCustomChoiceTitle(value),
+                           static_cast<int64_t>(item->choice_string_values.size()), true});
+  item->choice_string_values.push_back(value);
+  item->choice_value = static_cast<int64_t>(item->choice_string_values.size() - 1);
 }
 
 bool ApplyTomlNodeToConfigItem(const toml::node* node, IOSConfigItem* item) {
@@ -682,13 +721,25 @@ bool IOSConfigValidateDoubleValue(const std::string& key, double value, std::str
   return false;
 }
 
+std::shared_ptr<void> LoadIOSGameConfigSnapshot(uint32_t title_id) {
+  if (!title_id) {
+    return nullptr;
+  }
+  return std::make_shared<toml::table>(config::LoadGameConfig(title_id));
+}
+
 void OverlayIOSConfigSectionsFromGameConfig(std::vector<IOSConfigSection>* sections,
-                                            uint32_t title_id) {
+                                            uint32_t title_id,
+                                            const std::shared_ptr<void>& snapshot) {
   if (!sections || !title_id) {
     return;
   }
 
-  toml::table game_config = config::LoadGameConfig(title_id);
+  std::shared_ptr<toml::table> loaded = std::static_pointer_cast<toml::table>(snapshot);
+  if (!loaded) {
+    loaded = std::make_shared<toml::table>(config::LoadGameConfig(title_id));
+  }
+  const toml::table& game_config = *loaded;
   for (IOSConfigSection& section : *sections) {
     for (IOSConfigItem& item : section.items) {
       if (item.storage != IOSConfigStorage::kConfigVar || item.key.empty()) {

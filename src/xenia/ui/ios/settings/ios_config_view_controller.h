@@ -30,6 +30,9 @@
 // Lets live overrides and resets run with the game paused (ApplyLiveSettings). Not retained.
 // Nil when no game can be running; pushed controllers inherit it.
 @property(nonatomic, assign) xe::ui::IOSWindowedAppContext* appContext;
+// Row to scroll to and highlight when the page first appears (a search result): the setting's
+// key, or the title of a row that has no key (an action). Set before the page is shown.
+@property(nonatomic, copy) NSString* focusKey;
 
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind style:(UITableViewStyle)style;
 - (instancetype)initWithCatalogKind:(IOSConfigCatalogKind)catalogKind
@@ -38,12 +41,18 @@
                           gameTitle:(NSString*)gameTitle;
 
 // Replaces the section list and reloads the table. Intended for subclasses
-// that need dynamic filtering (e.g. search controllers).
+// that need dynamic filtering. Pages that search (Game Settings, All Settings, the developer
+// pages) filter themselves; Save always writes the unfiltered list.
 - (void)replaceSections:(std::vector<IOSConfigSection>)newSections;
 
 // Subclass hooks for dynamic catalogs and filtered save surfaces.
 - (std::vector<IOSConfigSection>)buildSections;
 - (std::vector<IOSConfigSection>)sectionsForSaving;
 @end
+
+// A settings-style trailing value for a table cell's accessoryView: grey text, truncated at
+// |max_width|, optionally followed by a disclosure chevron. Autoreleased; the cell stays the
+// VoiceOver element.
+UIView* XeniaConfigMakeValueAccessoryView(NSString* value, CGFloat max_width, BOOL with_chevron);
 
 #endif  // XENIA_UI_IOS_CONFIG_VIEW_CONTROLLER_H_
