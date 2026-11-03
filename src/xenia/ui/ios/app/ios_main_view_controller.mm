@@ -734,8 +734,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 // A title the emulator starts itself, like a game the dashboard launches, gets
 // what a launch from the library sets up: its touch layout and access to the
-// folder it is in (to every linked folder, for the dashboard). A game the
-// dashboard starts exits back to it.
+// folder it is in and to every linked folder. A game the dashboard starts exits
+// back to it.
 - (void)onTitleWillStart:(NSNotification*)note {
   NSString* path_ns = note.userInfo[XeniaIOSTitlePathKey];
   if (![path_ns isKindOfClass:[NSString class]] || !path_ns.length) {
@@ -749,9 +749,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [accesses addObject:access];
   }
   const BOOL starts_dashboard = xe::ui::IsIOSInstalledDashboardPath(path);
-  if (starts_dashboard) {
-    [accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
-  }
+  // Every linked folder, as at a launch from the library, so a disc swap in a
+  // game the dashboard starts can reach the other folders too.
+  [accesses addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
   self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
   active_game_title_id_ = [self titleIDForGamePath:path];
   [self appendLinkedContentAccessesForTitleID:active_game_title_id_
@@ -3293,11 +3293,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (external_access) {
     [launch_external_accesses addObject:external_access];
   }
-  // The dashboard reads and starts the games in every linked folder.
+  // Hold every linked folder for the session: the dashboard starts the games in
+  // them, and a disc swap can pick a disc from a folder other than this game's.
   const BOOL launches_dashboard = xe::ui::IsIOSInstalledDashboardPath(launch_path);
-  if (launches_dashboard) {
-    [launch_external_accesses addObjectsFromArray:xe::ui::StartIOSDashboardLibraryAccess()];
-  }
+  [launch_external_accesses
+      addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
   NSString* linked_content_access_error = nil;
   if (![self appendLinkedContentAccessesForTitleID:launch_title_id
                                           accesses:launch_external_accesses

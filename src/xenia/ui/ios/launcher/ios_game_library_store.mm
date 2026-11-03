@@ -1026,6 +1026,29 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
   return nil;
 }
 
+NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSExternalLibraryAccessForAllLocations() {
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [NSMutableArray array];
+  NSArray<NSDictionary*>* records = ExternalLibraryLocationRecords();
+  // Skip the folders the last scan found unreachable: resolving one on the main
+  // thread (this runs at launch) can block for a long time.
+  std::vector<IOSExternalLibraryLocation> cached;
+  const bool use_cache =
+      CachedIOSExternalLibraryLocations(&cached) && cached.size() == records.count;
+  NSUInteger index = 0;
+  for (NSDictionary* record in records) {
+    if (use_cache && !cached[index++].available) {
+      continue;
+    }
+    BOOL stale = NO;
+    NSURL* url = ResolveExternalLibraryRecord(record, &stale, nullptr);
+    if (!url || stale || url.path.length == 0) {
+      continue;
+    }
+    [accesses addObject:[[[XeniaIOSExternalLibraryAccess alloc] initWithURL:url] autorelease]];
+  }
+  return accesses;
+}
+
 namespace {
 
 NSString* const kScanCacheVersionKey = @"version";
