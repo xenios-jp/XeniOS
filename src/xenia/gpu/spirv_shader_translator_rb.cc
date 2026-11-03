@@ -427,26 +427,250 @@ spv::Id SpirvShaderTranslator::Depth20e4To32(SpirvBuilder& builder,
   return f32;
 }
 
+spv::Id SpirvShaderTranslator::GetBarycentricCoordNoPerspInput() {
+  if (input_barycentric_coord_no_persp_ == spv::NoResult) {
+    builder_->addExtension("SPV_KHR_fragment_shader_barycentric");
+    builder_->addCapability(spv::CapabilityFragmentBarycentricKHR);
+    input_barycentric_coord_no_persp_ = builder_->createVariable(
+        spv::NoPrecision, spv::StorageClassInput, type_float3_,
+        "xe_primitive_helper_barycentrics");
+    builder_->addDecoration(input_barycentric_coord_no_persp_,
+                            spv::DecorationBuiltIn,
+                            int(spv::BuiltInBaryCoordNoPerspKHR));
+    main_interface_.push_back(input_barycentric_coord_no_persp_);
+  }
+  return input_barycentric_coord_no_persp_;
+}
+
+bool SpirvShaderTranslator::IsCentroidFromRasterCoverage() const {
+  if (!features_.centroid_from_raster_coverage || !is_pixel_shader() ||
+      edram_fragment_shader_interlock_ || is_depth_only_fragment_shader_ ||
+      IsSampleRate() ||
+      (precise_interpolation_ && features_.fragment_shader_barycentric)) {
+    return false;
+  }
+  Modification modification = GetSpirvShaderModification();
+  return (modification.pixel.interpolators_centroid &
+          modification.pixel.interpolator_mask) != 0;
+}
+
+void SpirvShaderTranslator::InterpolateCentroidsFromRasterCoverage(
+    uint32_t interpolators) {
+  // Xenos centroid interpolation uses the coverage of the rasterized
+  // primitive. On Apple GPUs, both the input sample mask and the centroid are
+  // what's left after hidden surface removal, which a later draw in the same
+  // render pass may reduce. The geometric coverage is found here from the
+  // linear barycentrics at the host sample positions, and the centroid is the
+  // first covered sample, as the host picks it without anything hidden, or
+  // the pixel center if all are covered. Lines and points have no area
+  // barycentrics and keep the host's centroid.
+  assert_true(input_sample_mask_ != spv::NoResult);
+  builder_->addCapability(spv::CapabilityInterpolationFunction);
+  builder_->addCapability(spv::CapabilityGroupNonUniformVote);
+
+  spv::Id msaa_samples = LoadMsaaSamplesFromFlags();
+  spv::Id multisampled = builder_->createBinOp(spv::OpINotEqual, type_bool_,
+                                               msaa_samples, const_uint_0_);
+  spv::Id polygonal = builder_->createBinOp(
+      spv::OpINotEqual, type_bool_,
+      builder_->createBinOp(
+          spv::OpBitwiseAnd, type_uint_, main_system_constant_flags_,
+          builder_->makeUintConstant(kSysFlag_PrimitivePolygonal)),
+      const_uint_0_);
+  // Without native 2x MSAA, 2x is drawn to 4x host render targets.
+  spv::Id host_4x =
+      native_2x_msaa_with_attachments_
+          ? builder_->createBinOp(
+                spv::OpIEqual, type_bool_, msaa_samples,
+                builder_->makeUintConstant(uint32_t(xenos::MsaaSamples::k4X)))
+          : builder_->makeBoolConstant(true);
+  spv::Id full_mask =
+      builder_->createTriOp(spv::OpSelect, type_uint_, host_4x,
+                            builder_->makeUintConstant(0b1111),
+                            builder_->makeUintConstant(0b11));
+  id_vector_temp_.clear();
+  id_vector_temp_.push_back(const_int_0_);
+  spv::Id input_mask = builder_->createBinOp(
+      spv::OpBitwiseAnd, type_uint_,
+      builder_->createUnaryOp(
+          spv::OpBitcast, type_uint_,
+          builder_->createLoad(
+              builder_->createAccessChain(spv::StorageClassInput,
+                                          input_sample_mask_, id_vector_temp_),
+              spv::NoPrecision)),
+      full_mask);
+  spv::Id partial = builder_->createBinOp(
+      spv::OpLogicalAnd, type_bool_,
+      builder_->createBinOp(spv::OpLogicalAnd, type_bool_, multisampled,
+                            polygonal),
+      builder_->createBinOp(spv::OpINotEqual, type_bool_, input_mask,
+                            full_mask));
+  // Fully covered, unhidden fragments are interpolated at the center. The
+  // branch is uniform across the subgroup so the derivatives in it are
+  // defined.
+  spv::Id any_partial = builder_->createBinOp(
+      spv::OpGroupNonUniformAny, type_bool_,
+      builder_->makeUintConstant(static_cast<unsigned int>(spv::ScopeSubgroup)),
+      partial);
+  spv::Id centroid_sample;
+  {
+    SpirvBuilder::IfBuilder partial_if(any_partial,
+                                       spv::SelectionControlMaskNone,
+                                       *builder_);
+    spv::Id barycentrics =
+        builder_->createLoad(GetBarycentricCoordNoPerspInput(),
+                             spv::NoPrecision);
+    spv::Id barycentrics_dx =
+        builder_->createUnaryOp(spv::OpDPdx, type_float3_, barycentrics);
+    spv::Id barycentrics_dy =
+        builder_->createUnaryOp(spv::OpDPdy, type_float3_, barycentrics);
+    // A sample on an edge, within the rounding of the barycentrics, is covered
+    // by the top-left rule like the rasterizer does: only if the edge is a left
+    // one, or a top one, with the interior to the right or below.
+    spv::Id gradient_lengths = builder_->createUnaryBuiltinCall(
+        type_float3_, ext_inst_glsl_std_450_, GLSLstd450Sqrt,
+        builder_->createBinOp(
+            spv::OpFAdd, type_float3_,
+            builder_->createBinOp(spv::OpFMul, type_float3_, barycentrics_dx,
+                                  barycentrics_dx),
+            builder_->createBinOp(spv::OpFMul, type_float3_, barycentrics_dy,
+                                  barycentrics_dy)));
+    spv::Id edge_tolerances = builder_->createBinOp(
+        spv::OpVectorTimesScalar, type_float3_, gradient_lengths,
+        builder_->makeFloatConstant(1.0f / 65536.0f));
+    spv::Id horizontal_tolerances = builder_->createBinOp(
+        spv::OpVectorTimesScalar, type_float3_, gradient_lengths,
+        builder_->makeFloatConstant(1.0f / 1024.0f));
+    spv::Id top_left_edges = builder_->createBinOp(
+        spv::OpLogicalOr, type_bool3_,
+        builder_->createBinOp(spv::OpFOrdGreaterThan, type_bool3_,
+                              barycentrics_dx, horizontal_tolerances),
+        builder_->createBinOp(
+            spv::OpLogicalAnd, type_bool3_,
+            builder_->createBinOp(
+                spv::OpFOrdLessThanEqual, type_bool3_,
+                builder_->createUnaryBuiltinCall(type_float3_,
+                                                 ext_inst_glsl_std_450_,
+                                                 GLSLstd450FAbs,
+                                                 barycentrics_dx),
+                horizontal_tolerances),
+            builder_->createBinOp(spv::OpFOrdGreaterThan, type_bool3_,
+                                  barycentrics_dy,
+                                  builder_->makeNullConstant(type_float3_))));
+    // Metal's default sample positions.
+    static const float kPositions2x[2][2] = {{0.75f, 0.75f}, {0.25f, 0.25f}};
+    static const float kPositions4x[4][2] = {
+        {0.375f, 0.125f}, {0.875f, 0.375f}, {0.125f, 0.625f},
+        {0.625f, 0.875f}};
+    spv::Id covered = input_mask;
+    for (uint32_t i = 0; i < 4; ++i) {
+      spv::Id offsets[2];
+      for (uint32_t j = 0; j < 2; ++j) {
+        spv::Id offset_4x = builder_->makeFloatConstant(kPositions4x[i][j] -
+                                                        0.5f);
+        offsets[j] =
+            i < 2 ? builder_->createTriOp(
+                        spv::OpSelect, type_float_, host_4x, offset_4x,
+                        builder_->makeFloatConstant(kPositions2x[i][j] - 0.5f))
+                  : offset_4x;
+      }
+      spv::Id sample_barycentrics = builder_->createBinOp(
+          spv::OpFAdd, type_float3_, barycentrics,
+          builder_->createBinOp(
+              spv::OpFAdd, type_float3_,
+              builder_->createBinOp(spv::OpVectorTimesScalar, type_float3_,
+                                    barycentrics_dx, offsets[0]),
+              builder_->createBinOp(spv::OpVectorTimesScalar, type_float3_,
+                                    barycentrics_dy, offsets[1])));
+      spv::Id inside = builder_->createUnaryOp(
+          spv::OpAll, type_bool_,
+          builder_->createBinOp(
+              spv::OpLogicalOr, type_bool3_,
+              builder_->createBinOp(spv::OpFOrdGreaterThan, type_bool3_,
+                                    sample_barycentrics, edge_tolerances),
+              builder_->createBinOp(
+                  spv::OpLogicalAnd, type_bool3_,
+                  builder_->createBinOp(
+                      spv::OpFOrdLessThanEqual, type_bool3_,
+                      builder_->createUnaryBuiltinCall(
+                          type_float3_, ext_inst_glsl_std_450_,
+                          GLSLstd450FAbs, sample_barycentrics),
+                      edge_tolerances),
+                  top_left_edges)));
+      covered = builder_->createBinOp(
+          spv::OpBitwiseOr, type_uint_, covered,
+          builder_->createTriOp(spv::OpSelect, type_uint_, inside,
+                                builder_->makeUintConstant(UINT32_C(1) << i),
+                                const_uint_0_));
+    }
+    covered =
+        builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, covered, full_mask);
+    spv::Id partial_sample = builder_->createTriOp(
+        spv::OpSelect, type_int_,
+        builder_->createBinOp(
+            spv::OpLogicalAnd, type_bool_, partial,
+            builder_->createBinOp(spv::OpINotEqual, type_bool_, covered,
+                                  full_mask)),
+        builder_->createUnaryBuiltinCall(type_int_, ext_inst_glsl_std_450_,
+                                         GLSLstd450FindILsb, covered),
+        builder_->makeIntConstant(-1));
+    partial_if.makeEndIf();
+    centroid_sample = partial_if.createMergePhi(partial_sample,
+                                                builder_->makeIntConstant(-1));
+  }
+
+  auto interpolate = [&](int entry_point, spv::Id sample) {
+    uint32_t interpolators_remaining = interpolators;
+    uint32_t interpolator_index;
+    while (xe::bit_scan_forward(interpolators_remaining, &interpolator_index)) {
+      interpolators_remaining &= ~(UINT32_C(1) << interpolator_index);
+      spv::Id interpolator = input_output_interpolators_[interpolator_index];
+      spv::Id value =
+          sample != spv::NoResult
+              ? builder_->createBinBuiltinCall(type_float4_,
+                                               ext_inst_glsl_std_450_,
+                                               entry_point, interpolator,
+                                               sample)
+              : builder_->createUnaryBuiltinCall(type_float4_,
+                                                 ext_inst_glsl_std_450_,
+                                                 entry_point, interpolator);
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(int(interpolator_index)));
+      builder_->createStore(
+          value, builder_->createAccessChain(spv::StorageClassFunction,
+                                             var_main_registers_,
+                                             id_vector_temp_));
+    }
+  };
+  {
+    SpirvBuilder::IfBuilder sample_if(
+        builder_->createBinOp(spv::OpSGreaterThanEqual, type_bool_,
+                              centroid_sample, const_int_0_),
+        spv::SelectionControlMaskNone, *builder_);
+    interpolate(GLSLstd450InterpolateAtSample, centroid_sample);
+    sample_if.makeEndIf();
+  }
+  {
+    SpirvBuilder::IfBuilder not_polygonal_if(
+        builder_->createBinOp(
+            spv::OpLogicalAnd, type_bool_, multisampled,
+            builder_->createUnaryOp(spv::OpLogicalNot, type_bool_, polygonal)),
+        spv::SelectionControlMaskNone, *builder_);
+    interpolate(GLSLstd450InterpolateAtCentroid, spv::NoResult);
+    not_polygonal_if.makeEndIf();
+  }
+}
+
 spv::Id SpirvShaderTranslator::AnchorFragmentDerivativeInput(spv::Id operand) {
   if (features_.primitive_fragment_helpers && is_pixel_shader() &&
       !edram_fragment_shader_interlock_) {
     // Keep a primitive-specific input live where helper lanes evaluate
     // derivatives. Metal can change those results when neighboring primitives
     // are batched; include texture operations that derive their own LOD.
-    builder_->addExtension("SPV_KHR_fragment_shader_barycentric");
-    builder_->addCapability(spv::CapabilityFragmentBarycentricKHR);
-    if (input_barycentric_coord_no_persp_ == spv::NoResult) {
-      input_barycentric_coord_no_persp_ = builder_->createVariable(
-          spv::NoPrecision, spv::StorageClassInput, type_float3_,
-          "xe_primitive_helper_barycentrics");
-      builder_->addDecoration(input_barycentric_coord_no_persp_,
-                              spv::DecorationBuiltIn,
-                              int(spv::BuiltInBaryCoordNoPerspKHR));
-      main_interface_.push_back(input_barycentric_coord_no_persp_);
-    }
     auto barycentrics = builder_->createUnaryOp(
         spv::OpBitcast, type_uint3_,
-        builder_->createLoad(input_barycentric_coord_no_persp_,
+        builder_->createLoad(GetBarycentricCoordNoPerspInput(),
                              spv::NoPrecision));
     auto bits = builder_->createBinOp(
         spv::OpBitwiseXor, type_uint_,

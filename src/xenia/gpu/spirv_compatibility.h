@@ -388,6 +388,8 @@ namespace spv {
   Capability::DemoteToHelperInvocationEXT
 #define CapabilityStencilExportEXT Capability::StencilExportEXT
 #define CapabilityFragmentBarycentricKHR Capability::FragmentBarycentricKHR
+#define CapabilityInterpolationFunction Capability::InterpolationFunction
+#define CapabilityGroupNonUniformVote Capability::GroupNonUniformVote
 
 // Backward compatibility for AddressingModel
 #define AddressingModelLogical AddressingModel::Logical
@@ -470,9 +472,11 @@ namespace spv {
 #define OpBeginInvocationInterlockEXT Op::OpBeginInvocationInterlockEXT
 #define OpEndInvocationInterlockEXT Op::OpEndInvocationInterlockEXT
 #define OpIsHelperInvocationEXT Op::OpIsHelperInvocationEXT
+#define OpGroupNonUniformAny Op::OpGroupNonUniformAny
 
 // Backward compatibility for Scope
 #define ScopeDevice Scope::Device
+#define ScopeSubgroup Scope::Subgroup
 
 // Fragment barycentric BuiltIn values
 #define BuiltInBaryCoordKHR BuiltIn::BaryCoordKHR
