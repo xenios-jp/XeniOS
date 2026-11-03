@@ -3397,6 +3397,10 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   if (rectangles.empty()) {
     return false;
   }
+  const xenos::MsaaSamples resolve_msaa_samples =
+      resolve_info.IsCopyingDepth()
+          ? resolve_info.depth_edram_info.msaa_samples
+          : resolve_info.color_edram_info.msaa_samples;
 
   // The 2_10_10_10 four-sample average reads the samples from the one 4x
   // render target owning the whole source with the exact arithmetic of the
@@ -3535,6 +3539,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     shader_key.direct_resolve_average =
         IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants) ||
         IsFull32RGBA8TwoSampleAverage(copy_shader, copy_shader_constants);
+    shader_key.direct_resolve_samples_as_pixels =
+        rt_key.msaa_samples != resolve_msaa_samples;
     Source source;
     source.pipeline = GetOrCreateDumpPipeline(shader_key);
     // The source is the ownership transfer view, whose format the shader was
@@ -3736,13 +3742,14 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     push_constants[kEdramDumpShaderPushConstantPitches] = pitches.pitches;
 
     // Tiles cover this many destination pixels, which is what the dispatch is
-    // sized in.
+    // sized in - in the resolve's layout, which differs from the render
+    // target's when a 1x resolve reads a 4x one's samples as pixels.
     uint32_t tile_pixels_x =
         (xenos::kEdramTileWidthSamples >> uint32_t(rt_key.Is64bpp())) >>
-        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k4X);
+        uint32_t(resolve_msaa_samples >= xenos::MsaaSamples::k4X);
     uint32_t tile_pixels_y =
         xenos::kEdramTileHeightSamples >>
-        uint32_t(rt_key.msaa_samples >= xenos::MsaaSamples::k2X);
+        uint32_t(resolve_msaa_samples >= xenos::MsaaSamples::k2X);
     uint32_t pixels_per_thread =
         GetEdramDumpShaderResolvePixelsPerThread(rt_key.Is64bpp());
 
@@ -4569,7 +4576,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                   /*allow_cross_depth_color=*/true,
                                   /*allow_full32_rgb10f_1x=*/true,
                                   /*allow_full64_rgba16_1x=*/true,
-                                  /*allow_full64_rgb10f_rgba16_1x=*/true) ==
+                                  /*allow_full64_rgb10f_rgba16_1x=*/true,
+                                  /*allow_samples_as_pixels=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
