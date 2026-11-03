@@ -3363,12 +3363,15 @@ void MetalCommandProcessor::LogCommandBufferFailure(
       kind_bit) {
     return;
   }
+  // Metal's completion queue may have no pool of its own.
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   NS::String* description = error ? error->localizedDescription() : nullptr;
   XELOGE(
       "MetalCommandProcessor: a command buffer finished with status {}, error "
       "{}: {}. Further failures of this kind are only counted.",
       uint32_t(status), error ? int64_t(error->code()) : int64_t(0),
       description ? description->utf8String() : "no description");
+  pool->release();
 }
 
 void MetalCommandProcessor::AwaitSubmissionCompletion(uint64_t submission) {
