@@ -1074,6 +1074,9 @@
 /* Alert button: turns off crash reports and statistics */
 "Don't Send" = "Don't Send";
 
+/* Alert button: keeps online features on, without crash reports and statistics */
+"Don't Send Diagnostics" = "Don't Send Diagnostics";
+
 /* Button that finishes repositioning
    Button that leaves touch control editing
    config view controller: title */
@@ -2885,7 +2888,7 @@
 "Selects this app icon." = "Selects this app icon.";
 
 /* settings hub view controller: footer of the Share Diagnostics switch */
-"Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, temperature state and memory use. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself." = "Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, temperature state and memory use. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself.";
+"Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, load time, shader compiles, GPU errors, temperature, memory use and display settings. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself." = "Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, load time, shader compiles, GPU errors, temperature, memory use and display settings. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself.";
 
 /* Toast; %1$lu is the number of games, %2$@ the receiving app */
 "Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
@@ -3591,7 +3594,10 @@
 "Update available: %@" = "Update available: %@";
 
 /* settings hub view controller: user-visible text */
-"Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link." = "Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link.";
+"Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link." = "Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link.";
+
+/* settings hub view controller: footer of the Online Features switch */
+"Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link. To stop only crash reports and statistics, turn off Share Diagnostics instead." = "Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link. To stop only crash reports and statistics, turn off Share Diagnostics instead.";
 
 /* settings hub view controller: label text
    settings hub view controller: user-visible text */
@@ -3715,6 +3721,9 @@
 
 /* external folders view controller: message */
 "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it." = "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it.";
+
+/* Alert message: first-run online features notice */
+"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
 
 /* Alert message: first-run online features notice */
 "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
