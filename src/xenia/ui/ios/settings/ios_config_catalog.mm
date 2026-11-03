@@ -429,10 +429,9 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
   // tracking silently falls back to a fixed listener without it.
   if (phase_selected && !head_pose_entitlement) {
     audio.footer =
-        "PHASE backend selected. Head tracking is UNAVAILABLE: the head-pose entitlement "
-        "(com.apple.developer.coremotion.head-pose) is not present in this build's code "
-        "signature, so AirPods head tracking can't run — spatial audio still works with a "
-        "fixed listener. Re-sign with a profile that grants that entitlement to enable it.";
+        "Spatial audio uses a fixed listener. AirPods head tracking needs the head-pose "
+        "entitlement (com.apple.developer.coremotion.head-pose), which this install's "
+        "signing profile doesn't include; SideStore can't add it.";
   }
   AddStringChoiceSetting(audio.items, "apu", "Audio Backend",
                          "Select the audio output backend, applied after the next full "
