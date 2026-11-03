@@ -27,16 +27,6 @@
 
 DECLARE_path(log_file);
 
-namespace {
-// The launcher clears this status text once profile services are ready, but only if it is still
-// showing, so the clear compares against this one string rather than an English literal.
-NSString* ProfileInitStatusText() {
-  static NSString* text = [NSLocalizedString(@"Initializing profile services...",
-                                             @"Status line while profile services start") copy];
-  return text;
-}
-}  // namespace
-
 @implementation XeniaAppDelegate {
   std::unique_ptr<xe::ui::IOSWindowedAppContext> app_context_;
   std::unique_ptr<xe::ui::WindowedApp> app_;
@@ -60,18 +50,10 @@ NSString* ProfileInitStatusText() {
   if (launchOptions) {
     launch_url = [launchOptions objectForKey:UIApplicationLaunchOptionsURLKey];
   }
-  if (@available(iOS 13.0, *)) {
-    if (launch_url) {
-      XELOGI("iOS: launch URL deferred to scene bootstrap");
-    }
-    return YES;
+  if (launch_url) {
+    XELOGI("iOS: launch URL deferred to scene bootstrap");
   }
-
-  UIWindow* legacy_window =
-      [[[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]] autorelease];
-  return [self bootstrapApplicationWithWindow:legacy_window
-                                    launchURL:launch_url
-                                    sourceTag:"launchOptions"];
+  return YES;
 }
 
 - (BOOL)bootstrapApplicationWithWindow:(UIWindow*)window
@@ -218,9 +200,6 @@ NSString* ProfileInitStatusText() {
   app_context_->set_profile_services_ready_callback([vc]() {
     dispatch_async(dispatch_get_main_queue(), ^{
       [vc refreshSignedInProfileUI];
-      if ([vc.statusLabel.text isEqualToString:ProfileInitStatusText()]) {
-        vc.statusLabel.text = @"";
-      }
     });
   });
   XELOGI("iOS: Metal view ready ({}x{})",
@@ -251,7 +230,6 @@ NSString* ProfileInitStatusText() {
 
   [vc refreshSignedInProfileUI];
   if (vc.appContext) {
-    vc.statusLabel.text = ProfileInitStatusText();
     vc.appContext->LaunchGame(std::string());
   }
 
@@ -324,14 +302,11 @@ NSString* ProfileInitStatusText() {
                                    options:(UISceneConnectionOptions*)options {
   (void)application;
   (void)options;
-  if (@available(iOS 13.0, *)) {
-    UISceneConfiguration* configuration =
-        [[[UISceneConfiguration alloc] initWithName:@"Default Configuration"
-                                        sessionRole:connectingSceneSession.role] autorelease];
-    configuration.delegateClass = [XeniaSceneDelegate class];
-    return configuration;
-  }
-  return nil;
+  UISceneConfiguration* configuration =
+      [[[UISceneConfiguration alloc] initWithName:@"Default Configuration"
+                                      sessionRole:connectingSceneSession.role] autorelease];
+  configuration.delegateClass = [XeniaSceneDelegate class];
+  return configuration;
 }
 
 - (UIInterfaceOrientationMask)application:(UIApplication*)application

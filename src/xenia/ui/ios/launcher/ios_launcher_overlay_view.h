@@ -30,11 +30,14 @@
 @property(nonatomic, assign) BOOL supportsRemoteArt;
 @property(nonatomic, assign) NSUInteger discCount;
 @property(nonatomic, strong) NSData* iconData;
+// Filled in by the launcher view: the decoded `iconData`, decoded once off the
+// main thread and carried across refreshes. The root controller leaves it nil.
+@property(nonatomic, strong) UIImage* decodedIcon;
 @end
 
 // Replaces the launcher overlay previously constructed inline in
-// XeniaViewController. Owns the nav bar, JIT status indicators,
-// game collection view, and status label. Communicates with the root
+// XeniaViewController. Owns the nav bar, JIT status card,
+// game collection view, and the (detached) status label. Communicates with the root
 // controller exclusively through callback blocks and typed data snapshots.
 @interface XeniaIOSLauncherOverlayView : UIView
 
@@ -44,6 +47,9 @@
 @property(nonatomic, copy) void (^profileHandler)(void);
 @property(nonatomic, copy) void (^importHandler)(void);
 @property(nonatomic, copy) void (^bulkZarConversionHandler)(void);
+// Backs the "Open StikDebug" button on the JIT card. The button is hidden
+// while this is nil.
+@property(nonatomic, copy) void (^openStikDebugHandler)(void);
 @property(nonatomic, copy) void (^gameLaunchedHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^copyLaunchURLHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^gameSettingsHandler)(NSUInteger gameIndex);
@@ -76,7 +82,6 @@
 
 #pragma mark - Read-only accessors for root layout/state queries
 
-@property(nonatomic, readonly) UILabel* statusLabel;
 @property(nonatomic, readonly) UICollectionView* gamesCollectionView;
 @property(nonatomic, readonly) BOOL isOverlayVisible;
 - (NSInteger)columnCount;

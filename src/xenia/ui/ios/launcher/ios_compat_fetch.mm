@@ -18,9 +18,7 @@ static NSURLSession* xe_compat_url_session(void) {
   static dispatch_once_t once_token;
   dispatch_once(&once_token, ^{
     NSURLSessionConfiguration* config = [NSURLSessionConfiguration defaultSessionConfiguration];
-    if (@available(iOS 11.0, *)) {
-      config.waitsForConnectivity = YES;
-    }
+    config.waitsForConnectivity = YES;
     config.timeoutIntervalForRequest = 20.0;
     config.timeoutIntervalForResource = 45.0;
     session = [[NSURLSession sessionWithConfiguration:config] retain];

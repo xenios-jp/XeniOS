@@ -2206,9 +2206,6 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 @interface XeniaIOSZarConversionCoordinator ()
 - (UIViewController*)topPresentedControllerForModalPresentation;
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
-- (void)showPersistentStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
-- (void)updateStatusToast:(NSString*)message;
-- (void)dismissStatusToast;
 - (void)refreshImportedGamesAsync;
 - (void)refreshImportedGamesAsyncWithCompletion:(void (^)(void))completion;
 - (void)presentZarConversionOptionsForIndex:(size_t)game_index;
@@ -2287,18 +2284,6 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style {
   [host_ zarConversionCoordinatorShowStatusToast:message style:style];
-}
-
-- (void)showPersistentStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style {
-  [host_ zarConversionCoordinatorShowPersistentStatusToast:message style:style];
-}
-
-- (void)updateStatusToast:(NSString*)message {
-  [host_ zarConversionCoordinatorUpdateStatusToast:message];
-}
-
-- (void)dismissStatusToast {
-  [host_ zarConversionCoordinatorDismissStatusToast];
 }
 
 - (void)refreshImportedGamesAsync {
