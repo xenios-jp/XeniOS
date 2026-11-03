@@ -54,6 +54,11 @@ constexpr int kShutdownDrainMaxPolls = 250;  // ~0.5s
 // Heartbeat cadence for the steady-state stats log (~5s at 48kHz/256).
 constexpr uint64_t kHeartbeatFrames = 1000;
 
+// Posted by the app (xenia_main_ios) once the audio session is active again
+// after an interruption, a media services reset or a return from the
+// background. The engine does not recover from those on its own.
+constexpr const char* kAudioSessionRestoredNotification = "XeniaAudioSessionRestored";
+
 const char* NSErrorCStr(NSError* error) {
   return error ? [[error localizedDescription] UTF8String] : "unknown error";
 }
@@ -66,6 +71,10 @@ struct PHASEAudioDriverShared {
   std::vector<AVAudioPCMBuffer*> free_pool;
   std::atomic<int> outstanding{0};
   xe::threading::Semaphore* semaphore = nullptr;
+  // Bumped (under |mutex|) when buffers scheduled on a stopped graph are given
+  // up on, so their completion blocks, if they ever run, only recycle the
+  // buffer.
+  uint64_t epoch = 0;
 
   // Diagnostics.
   std::atomic<uint64_t> frames_submitted{0};
@@ -94,6 +103,18 @@ struct PHASEAudioDriver::Impl {
   PHASEListener* listener = nil;
   AVAudioFormat* format = nil;
 
+  // Serializes SubmitFrame against a graph restart.
+  std::mutex graph_mutex;
+  // Audio session recovery (see xenia/ui/ios/app/ios_lifecycle_audio_session).
+  id session_observer = nil;
+  NSOperationQueue* session_queue = nil;
+
+  bool BuildGraph();
+  void TeardownGraph();
+  void Restart();
+  void InstallSessionObserver();
+  void RemoveSessionObserver();
+
   void ReleaseSemaphore() {
     std::lock_guard<std::mutex> lock(shared->mutex);
     if (xe::threading::Semaphore* semaphore = shared->semaphore) {
@@ -111,13 +132,9 @@ PHASEAudioDriver::PHASEAudioDriver(xe::threading::Semaphore* semaphore,
 }
 
 PHASEAudioDriver::~PHASEAudioDriver() = default;
-
-bool PHASEAudioDriver::Initialize() {
-  @autoreleasepool {
-   @try {
-    Impl* d = impl_.get();
-    NSError* error = nil;
-
+bool PHASEAudioDriver::Impl::BuildGraph() {
+  Impl* d = this;
+  NSError* error = nil;
     XELOGI("PHASEAudioDriver::Initialize begin (freq={}, channels={}, samples={})",
            d->frequency, d->channels, d->channel_samples);
 
@@ -213,25 +230,6 @@ bool PHASEAudioDriver::Initialize() {
       return false;
     }
 
-    // Pre-allocate the recycled buffer pool (no allocation on the guest thread
-    // in steady state).
-    {
-      std::lock_guard<std::mutex> lock(d->shared->mutex);
-      d->shared->free_pool.reserve(kBufferPoolSize);
-      for (size_t i = 0; i < kBufferPoolSize; ++i) {
-        AVAudioPCMBuffer* buf =
-            [[AVAudioPCMBuffer alloc] initWithPCMFormat:d->format
-                                          frameCapacity:d->channel_samples];
-        if (!buf) {
-          XELOGE("PHASEAudioDriver: failed to allocate PCM buffer {} of {}", i,
-                 kBufferPoolSize);
-          return false;
-        }
-        d->shared->free_pool.push_back(buf);
-      }
-    }
-    XELOGI("PHASEAudioDriver: allocated {} pooled PCM buffers", kBufferPoolSize);
-
     if (![d->engine startAndReturnError:&error]) {
       XELOGE("PHASEAudioDriver: engine start failed: {}", NSErrorCStr(error));
       return false;
@@ -251,6 +249,134 @@ bool PHASEAudioDriver::Initialize() {
              static_cast<uint32_t>(d->sound_event.pushStreamNodes.count));
       return false;
     }
+
+  return true;
+}
+
+void PHASEAudioDriver::Impl::TeardownGraph() {
+  @try {
+    if (sound_event) {
+      [sound_event stopAndInvalidate];
+    }
+    if (engine) {
+      [engine stop];
+    }
+  } @catch (NSException* ex) {
+    XELOGE("PHASEAudioDriver: exception during PHASE teardown: {} — {}",
+           ex.name ? [ex.name UTF8String] : "(no name)",
+           ex.reason ? [ex.reason UTF8String] : "(no reason)");
+  }
+  stream_node = nil;
+  sound_event = nil;
+  listener = nil;
+  format = nil;
+  engine = nil;
+}
+
+void PHASEAudioDriver::Impl::Restart() {
+  @autoreleasepool {
+    std::lock_guard<std::mutex> graph_lock(graph_mutex);
+    if (shutting_down.load(std::memory_order_acquire)) {
+      return;
+    }
+    XELOGI("PHASEAudioDriver: restarting the engine after an audio session loss");
+    TeardownGraph();
+
+    // Buffers scheduled on the old graph may never report back. Give up on
+    // them so the audio worker's permits aren't lost, and replace them in the
+    // pool.
+    int leaked = 0;
+    {
+      std::lock_guard<std::mutex> lock(shared->mutex);
+      ++shared->epoch;
+      leaked = shared->outstanding.exchange(0, std::memory_order_acq_rel);
+    }
+    for (int i = 0; i < leaked; ++i) {
+      ReleaseSemaphore();
+    }
+
+    bool built = false;
+    @try {
+      built = BuildGraph();
+    } @catch (NSException* ex) {
+      XELOGE("PHASEAudioDriver: ObjC exception during restart: {} — {}",
+             ex.name ? [ex.name UTF8String] : "(no name)",
+             ex.reason ? [ex.reason UTF8String] : "(no reason)");
+    }
+    if (!built) {
+      // Frames are dropped (and their permits released) until the next restart.
+      TeardownGraph();
+      XELOGE("PHASEAudioDriver: restart failed, audio stays silent");
+      return;
+    }
+    if (leaked > 0) {
+      std::lock_guard<std::mutex> lock(shared->mutex);
+      for (int i = 0; i < leaked; ++i) {
+        AVAudioPCMBuffer* buf = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
+                                                              frameCapacity:channel_samples];
+        if (buf) {
+          shared->free_pool.push_back(buf);
+        }
+      }
+    }
+    XELOGI("PHASEAudioDriver: engine restarted");
+  }
+}
+
+void PHASEAudioDriver::Impl::InstallSessionObserver() {
+  session_queue = [[NSOperationQueue alloc] init];
+  session_queue.maxConcurrentOperationCount = 1;
+  session_queue.name = @"xenia.phase.session";
+  Impl* d = this;
+  session_observer = [[NSNotificationCenter defaultCenter]
+      addObserverForName:[NSString stringWithUTF8String:kAudioSessionRestoredNotification]
+                  object:nil
+                   queue:session_queue
+              usingBlock:^(NSNotification*) {
+                d->Restart();
+              }];
+}
+
+void PHASEAudioDriver::Impl::RemoveSessionObserver() {
+  if (session_observer) {
+    [[NSNotificationCenter defaultCenter] removeObserver:session_observer];
+    session_observer = nil;
+  }
+  if (session_queue) {
+    // A restart that is already running finishes before teardown goes on.
+    [session_queue waitUntilAllOperationsAreFinished];
+    session_queue = nil;
+  }
+}
+
+bool PHASEAudioDriver::Initialize() {
+  @autoreleasepool {
+   @try {
+    Impl* d = impl_.get();
+    if (!d->BuildGraph()) {
+      return false;
+    }
+
+    // Pre-allocate the recycled buffer pool (no allocation on the guest thread
+    // in steady state).
+    {
+      std::lock_guard<std::mutex> lock(d->shared->mutex);
+      d->shared->free_pool.reserve(kBufferPoolSize);
+      for (size_t i = 0; i < kBufferPoolSize; ++i) {
+        AVAudioPCMBuffer* buf =
+            [[AVAudioPCMBuffer alloc] initWithPCMFormat:d->format
+                                          frameCapacity:d->channel_samples];
+        if (!buf) {
+          XELOGE("PHASEAudioDriver: failed to allocate PCM buffer {} of {}", i,
+                 kBufferPoolSize);
+          return false;
+        }
+        d->shared->free_pool.push_back(buf);
+      }
+    }
+    XELOGI("PHASEAudioDriver: allocated {} pooled PCM buffers", kBufferPoolSize);
+
+    d->InstallSessionObserver();
 
     XELOGI("PHASEAudioDriver: INITIALIZED OK — spatial 5.1 over PHASE, "
            "waiting for frames");
@@ -277,6 +403,7 @@ void PHASEAudioDriver::Shutdown() {
            s->outstanding.load());
 
     d->shutting_down.store(true, std::memory_order_release);
+    d->RemoveSessionObserver();
 
     // PHASESoundEvent stops via stopAndInvalidate(); the engine via stop().
     // Guard against any selector/state surprises so teardown can't crash.
@@ -332,7 +459,9 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
   auto& s = *d->shared;
 
   // Backpressure invariant: exactly one semaphore release per SubmitFrame.
-  if (!d->stream_node || d->shutting_down.load(std::memory_order_acquire) ||
+  // A restart in progress owns the graph, so drop the frame instead of waiting.
+  std::unique_lock<std::mutex> graph_lock(d->graph_mutex, std::try_to_lock);
+  if (!graph_lock.owns_lock() || !d->stream_node || d->shutting_down.load(std::memory_order_acquire) ||
       d->paused.load(std::memory_order_acquire)) {
     s.dropped_inactive.fetch_add(1, std::memory_order_relaxed);
     d->ReleaseSemaphore();
@@ -386,6 +515,11 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
 
   s.outstanding.fetch_add(1, std::memory_order_relaxed);
   std::shared_ptr<PHASEAudioDriverShared> shared = d->shared;
+  uint64_t epoch;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    epoch = shared->epoch;
+  }
   [d->stream_node
         scheduleBuffer:buf
         completionCallbackType:PHASEPushStreamCompletionDataRendered
@@ -394,6 +528,10 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                {
                  std::lock_guard<std::mutex> lock(shared->mutex);
                  shared->free_pool.push_back(buf);
+                 // A buffer from before a restart was already given up on.
+                 if (epoch != shared->epoch) {
+                   return;
+                 }
                  if (shared->semaphore) {
                    shared->semaphore->Release(1, nullptr);
                  }

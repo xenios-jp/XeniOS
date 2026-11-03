@@ -435,6 +435,80 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     touch_runtime_model_ = runtime_model;
   }
 
+  // Why the running game is paused. It runs only while no reason is active.
+  enum class EmulationPauseReason : uint32_t {
+    // The in-game menu, or a sheet presented over the game, is up.
+    kInGameMenu = 1u << 0,
+    // The scene resigned active (Control Center, Slide Over, an alert from the system).
+    kInactive = 1u << 1,
+    // The scene is in the background.
+    kBackground = 1u << 2,
+  };
+  using EmulationPauseCallback = std::function<void(EmulationPauseReason, bool)>;
+  void set_emulation_pause_callback(EmulationPauseCallback callback) {
+    emulation_pause_callback_ = std::move(callback);
+  }
+  // Main thread only. Adds (|paused|) or removes |reason|.
+  void SetEmulationPaused(EmulationPauseReason reason, bool paused) {
+    if (emulation_pause_callback_) {
+      emulation_pause_callback_(reason, paused);
+    }
+  }
+
+  // Runs |apply| where emulator threads don't read cvars: with the game paused while one runs,
+  // directly otherwise. Main thread only.
+  using LiveSettingsApplyCallback = std::function<void(const std::function<void()>&)>;
+  void set_live_settings_apply_callback(LiveSettingsApplyCallback callback) {
+    live_settings_apply_callback_ = std::move(callback);
+  }
+  void ApplyLiveSettings(const std::function<void()>& apply) {
+    if (live_settings_apply_callback_) {
+      live_settings_apply_callback_(apply);
+    } else {
+      apply();
+    }
+  }
+
+  // Runs |done| on the main thread once every pause or resume requested so far
+  // has taken effect (the GPU drained, audio and guest threads stopped). Used to
+  // end a background task. |done| runs at once when no game is running; it may
+  // never run if the emulator is wedged, so callers keep their own timeout.
+  using EmulationPauseSettledCallback = std::function<void(std::function<void()>)>;
+  void set_emulation_pause_settled_callback(EmulationPauseSettledCallback callback) {
+    emulation_pause_settled_callback_ = std::move(callback);
+  }
+  void RunWhenEmulationPauseSettled(std::function<void()> done) {
+    if (emulation_pause_settled_callback_) {
+      emulation_pause_settled_callback_(std::move(done));
+    } else {
+      done();
+    }
+  }
+
+  // Called on the main thread, just before NotifyGameExited, when a game failed
+  // to start. |reason| is a short user-facing sentence without host paths.
+  using GameLaunchFailedCallback = std::function<void(const std::string& reason)>;
+  void set_game_launch_failed_callback(GameLaunchFailedCallback callback) {
+    game_launch_failed_callback_ = std::move(callback);
+  }
+  void NotifyGameLaunchFailed(const std::string& reason) {
+    if (game_launch_failed_callback_) {
+      game_launch_failed_callback_(reason);
+    }
+  }
+
+  // Called on the main thread when stopping the game has taken too long (the
+  // guest is wedged): tell the user to force-quit. Once per stop request.
+  using GameStopStuckCallback = std::function<void()>;
+  void set_game_stop_stuck_callback(GameStopStuckCallback callback) {
+    game_stop_stuck_callback_ = std::move(callback);
+  }
+  void NotifyGameStopStuck() {
+    if (game_stop_stuck_callback_) {
+      game_stop_stuck_callback_();
+    }
+  }
+
  private:
   UIView* metal_view_ = nullptr;
   UIViewController* view_controller_ = nullptr;
@@ -466,6 +540,11 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   PresentLetterboxSetter present_letterbox_setter_;
   GuestDisplayAspectRatioCallback guest_display_aspect_ratio_callback_;
   LayoutChangedCallback layout_changed_callback_;
+  EmulationPauseCallback emulation_pause_callback_;
+  LiveSettingsApplyCallback live_settings_apply_callback_;
+  EmulationPauseSettledCallback emulation_pause_settled_callback_;
+  GameLaunchFailedCallback game_launch_failed_callback_;
+  GameStopStuckCallback game_stop_stuck_callback_;
 };
 
 }  // namespace ui

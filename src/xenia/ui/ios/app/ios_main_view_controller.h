@@ -63,6 +63,8 @@ class IOSWindowedAppContext;
                                   completion:(void (^)(BOOL cancelled, NSString* text))completion;
 - (BOOL)handleExternalLaunchURL:(NSURL*)url;
 - (void)evaluateAutomaticStikDebugJITHandoffIfNeeded;
+- (void)presentGameLaunchFailureAlertWithMessage:(NSString*)message;
+- (void)presentGameStopStuckAlert;
 
 // Returns the IOSTouchRuntimeModel owned by this controller. Used by the app
 // delegate to publish the runtime model into the iOS app context so the touch
