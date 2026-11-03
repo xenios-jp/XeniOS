@@ -3645,6 +3645,7 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
     }
   } else {
     // Standard hardware interpolation path.
+    bool centroid_from_raster_coverage = IsCentroidFromRasterCoverage();
     uint32_t interpolators_remaining = GetModificationInterpolatorMask();
     uint32_t interpolator_index;
     while (xe::bit_scan_forward(interpolators_remaining, &interpolator_index)) {
@@ -3655,8 +3656,9 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
       input_output_interpolators_[interpolator_index] = interpolator;
       builder_->addDecoration(interpolator, spv::DecorationLocation,
                               int(input_location));
-      if (shader_modification.pixel.interpolators_centroid &
-          (UINT32_C(1) << interpolator_index)) {
+      if ((shader_modification.pixel.interpolators_centroid &
+           (UINT32_C(1) << interpolator_index)) &&
+          !centroid_from_raster_coverage) {
         builder_->addDecoration(interpolator, spv::DecorationCentroid);
       }
       main_interface_.push_back(interpolator);
@@ -3718,7 +3720,8 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
   }
 
   // Sample mask input.
-  if (edram_fragment_shader_interlock_ || IsZpdTotal()) {
+  if (edram_fragment_shader_interlock_ || IsZpdTotal() ||
+      IsCentroidFromRasterCoverage()) {
     // SampleMask depends on SampleRateShading in some SPIR-V revisions.
     builder_->addCapability(spv::CapabilitySampleRateShading);
     input_sample_mask_ = builder_->createVariable(
@@ -4153,6 +4156,12 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
         interpolated_value,
         builder_->createAccessChain(spv::StorageClassFunction,
                                     var_main_registers_, id_vector_temp_));
+  }
+
+  if (!use_barycentric_interpolation && IsCentroidFromRasterCoverage()) {
+    InterpolateCentroidsFromRasterCoverage(
+        interpolator_mask &
+        GetSpirvShaderModification().pixel.interpolators_centroid);
   }
 
   // The beginning of the shader may be jumped back to.
