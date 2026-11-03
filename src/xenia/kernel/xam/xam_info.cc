@@ -674,7 +674,14 @@ static void StartTitle(XamModule::LoaderData& loader_data,
   }
 
   XELOGI("XamLoaderLaunchTitle: terminating to launch new title");
+#if XE_PLATFORM_IOS
+  // TerminateTitle ends the process, which iOS can't start again. The app
+  // resets the title and starts the queued one in this process, as it does to
+  // exit to the dashboard.
+  kernel_state()->ExitToDashboard();
+#else
   kernel_state()->TerminateTitle();  // Does not return.
+#endif  // XE_PLATFORM_IOS
 }
 
 // The console's XamLoaderLaunchTitleEx, which XamLoaderLaunchTitle calls with
