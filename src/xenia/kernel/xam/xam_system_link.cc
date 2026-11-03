@@ -96,7 +96,7 @@ DEFINE_string(systemlink_lobby, std::string(xe::net::relay::kDefaultLobby),
 DEFINE_string(systemlink_room, "",
               "The relay room to play in: a private room's 6-character code, "
               "or empty for the title's public lobby. Players in a room can "
-              "see each other's IP addresses.",
+              "see each other's IP addresses and profile IDs.",
               "Network");
 
 namespace xe {
