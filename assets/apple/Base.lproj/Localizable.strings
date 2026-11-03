@@ -1,0 +1,3179 @@
+/* Achievements summary; %1$@ is the unlocked count, %2$@ the gamerscore */
+"%1$@  %2$@" = "%1$@  %2$@";
+
+/* Disc picker title; %1$@ is the game title, %2$@ the disc label */
+"%1$@ (%2$@)" = "%1$@ (%2$@)";
+
+/* Version text; %1$@ is the version, %2$lld the build number */
+"%1$@ (%2$lld)" = "%1$@ (%2$lld)";
+
+/* Touch control summary; %1$@ is the control type, %2$.0f its width in units, %3$.0f its opacity percentage */
+"%1$@, %2$.0fu, %3$.0f%%" = "%1$@, %2$.0fu, %3$.0f%%";
+
+/* VoiceOver label of an achievement toast; %1$@ is the title, %2$@ the description */
+"%1$@, %2$@" = "%1$@, %2$@";
+
+/* VoiceOver value of an achievement; %1$@ is Unlocked or Locked, %2$u the gamerscore, %3$@ the description */
+"%1$@, %2$u gamerscore, %3$@" = "%1$@, %2$u gamerscore, %3$@";
+
+/* Alert message; %1$@ is the guidance text, %2$@ the game title */
+"%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@." = "%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@.";
+
+/* Alert message; %1$@ is the guidance text, %2$@ the game title */
+"%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
+
+/* Gamerscore progress; %1$u is the score earned, %2$u the total possible */
+"%1$u/%2$u G" = "%1$u/%2$u G";
+
+/* Achievement progress; %1$u is the number unlocked, %2$u the total */
+"%1$u/%2$u unlocked" = "%1$u/%2$u unlocked";
+
+/* Profile picker row; %@ is the gamertag */
+"%@ (Signed In)" = "%@ (Signed In)";
+
+/* game disc view controller: user-visible text */
+"%@ - %@ - Media %08X" = "%@ - %@ - Media %08X";
+
+/* zar conversion coordinator: detail text */
+"%@ - estimated savings unavailable" = "%@ - estimated savings unavailable";
+
+/* game content view controller: detail text */
+"%@ - Linked" = "%@ - Linked";
+
+/* zar conversion coordinator: user-visible text */
+"%@ can't be deleted because %@. Delete it in Files if you want it gone." = "%@ can't be deleted because %@. Delete it in Files if you want it gone.";
+
+/* zar conversion coordinator: user-visible text */
+"%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed." = "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed.";
+
+/* acknowledgements view controller: accessibility label */
+"%@ license" = "%@ license";
+
+/* zar conversion coordinator: label text */
+"%@ of %@" = "%@ of %@";
+
+/* compat formatting: user-visible text */
+"%@ Preview %@" = "%@ Preview %@";
+
+/* config view controller: user-visible text */
+"%@ was not changed. %@" = "%@ was not changed. %@";
+
+/* zar conversion coordinator: detail text */
+"%@, %u file%@ packed" = "%@, %u file%@ packed";
+
+/* zar conversion coordinator: user-visible text */
+"%@: %lu." = "%@: %lu.";
+
+/* file transfer: message */
+"%@\n%@ of %@\n" = "%@\n%@ of %@\n";
+
+/* document import coordinator: message */
+"%@\nFor very large files, Link Folder plays them in place without copying." = "%@\nFor very large files, Link Folder plays them in place without copying.";
+
+/* zar conversion coordinator: user-visible text */
+"%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
+
+/* document import coordinator: message */
+"%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete." = "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete.";
+
+/* zar conversion coordinator: detail text */
+"%u file(s), %@ packed before cancellation." = "%u file(s), %@ packed before cancellation.";
+
+/* Gamerscore of one achievement; %u is the score */
+"%u G" = "%u G";
+
+/* Game detail label; %zu is the number of discs */
+"%zu Discs" = "%zu Discs";
+
+/* Picker row detail; %zu is the number of discs */
+"%zu discs" = "%zu discs";
+
+/* zar conversion coordinator: user-visible text */
+"%zu items" = "%zu items";
+
+/* Toast text when several achievements unlock at once; %lu is the extra count */
+"+%lu more unlocked" = "+%lu more unlocked";
+
+/* zar conversion coordinator: user-visible text */
+"...and %lu more" = "...and %lu more";
+
+/* zar conversion coordinator: user-visible text */
+"1 item" = "1 item";
+
+/* Control tooltip line; the first %s is the trigger, the second the action */
+"\n2nd: %s, %s" = "\n2nd: %s, %s";
+
+/* compat report view controller: appended issue link line in alert message */
+"\n\nGitHub issue: %@" = "\n\nGitHub issue: %@";
+
+/* Message box addendum when the app must close */
+"\n\nXeniOS has to close. The log is saved; open XeniOS again to share it." = "\n\nXeniOS has to close. The log is saved; open XeniOS again to share it.";
+
+/* Control tooltip line; the numbers are the control frame */
+"\nFrame: %.2f, %.2f, %.2f x %.2f" = "\nFrame: %.2f, %.2f, %.2f x %.2f";
+
+/* Control tooltip line; %s is the tint style */
+"\nTint: %s" = "\nTint: %s";
+
+/* zar conversion coordinator: user-visible text */
+"A few seconds remaining" = "A few seconds remaining";
+
+/* Alert message; %@ is the game title */
+"A link wants to launch \"%@\"." = "A link wants to launch \"%@\".";
+
+/* Alert message; %1$@ is the game to launch, %2$@ the running game */
+"A link wants to launch \"%@\". This will stop \"%@\", and unsaved progress will be lost." = "A link wants to launch \"%@\". This will stop \"%@\", and unsaved progress will be lost.";
+
+/* Alert message; %@ is the game to launch */
+"A link wants to launch \"%@\". This will stop the running game, and unsaved progress will be lost." = "A link wants to launch \"%@\". This will stop the running game, and unsaved progress will be lost.";
+
+/* Fallback version text in the update notice */
+"a new version" = "a new version";
+
+/* settings hub view controller: title */
+"About" = "About";
+
+/* zar conversion coordinator: user-visible text */
+"About %ld hour%@ remaining" = "About %ld hour%@ remaining";
+
+/* zar conversion coordinator: user-visible text */
+"About %ld minute%@ remaining" = "About %ld minute%@ remaining";
+
+/* zar conversion coordinator: user-visible text */
+"About %ld seconds remaining" = "About %ld seconds remaining";
+
+/* In-game menu button
+   Pause menu row
+   Title of the achievements screen
+   Title of the grouped achievement toast */
+"Achievements" = "Achievements";
+
+/* acknowledgements view controller: title
+   settings hub view controller: title */
+"Acknowledgements" = "Acknowledgements";
+
+/* Control tooltip line; %s is the action name */
+"Action: %s" = "Action: %s";
+
+/* game content view controller: user-visible text
+   profile view controller: user-visible text */
+"Actions" = "Actions";
+
+/* Layout library row detail: the layout in use */
+"Active" = "Active";
+
+/* game content view controller: detail text */
+"Add a title update or DLC package from Files." = "Add a title update or DLC package from Files.";
+
+/* game content view controller: label text */
+"Add Content" = "Add Content";
+
+/* VoiceOver label of the add control button */
+"Add control" = "Add control";
+
+/* compat report cells: label text */
+"Add Screenshot" = "Add Screenshot";
+
+/* Action sheet title: add games to the library */
+"Add to Library" = "Add to Library";
+
+/* game content view controller: title */
+"Adding Content" = "Adding Content";
+
+/* Value shown in the Tune response row */
+"Adjust" = "Adjust";
+
+/* Section label in the touch analog tuning screen
+   Segment of the touch analog tuning screen
+   settings hub view controller: title */
+"Advanced" = "Advanced";
+
+/* settings hub view controller: title */
+"Advanced Debug" = "Advanced Debug";
+
+/* zar conversion coordinator: message */
+"After each successful conversion, these will be permanently deleted:\n%@" = "After each successful conversion, these will be permanently deleted:\n%@";
+
+/* Feedback while dragging; %@ is the name of the other control */
+"Aligned with %@" = "Aligned with %@";
+
+/* settings hub view controller: title */
+"All Config" = "All Config";
+
+/* Swipe action in the layout library: use for all games */
+"All Games" = "All Games";
+
+/* config view controller: user-visible text */
+"All settings are back to their defaults. Relaunch XeniOS before testing." = "All settings are back to their defaults. Relaunch XeniOS before testing.";
+
+/* zar conversion coordinator: user-visible text */
+"Already ZAR" = "Already ZAR";
+
+/* Alert title: offers to enable JIT through StikDebug automatically */
+"Always Auto-Enable JIT?" = "Always Auto-Enable JIT?";
+
+/* Alert button: turn on automatic StikDebug JIT */
+"Always Enable" = "Always Enable";
+
+/* Submenu title in the Add Control menu */
+"Analog / Utility" = "Analog / Utility";
+
+/* Touch control type */
+"Analog Stick" = "Analog Stick";
+
+/* settings hub view controller: title */
+"App" = "App";
+
+/* Error text: app context is unavailable */
+"App context unavailable." = "App context unavailable.";
+
+/* settings hub view controller: user-visible text */
+"App Icon" = "App Icon";
+
+/* settings hub view controller: title */
+"App icon selection and interface presentation." = "App icon selection and interface presentation.";
+
+/* settings hub view controller: user-visible text */
+"App icon set to %@." = "App icon set to %@.";
+
+/* settings hub view controller: user-visible text */
+"App icon: %@" = "App icon: %@";
+
+/* Section header in the touch control edit panel
+   settings hub view controller: title */
+"Appearance" = "Appearance";
+
+/* Toast; %@ is the layout name */
+"Applied %@." = "Applied %@.";
+
+/* Subtitle of the touch layout library */
+"Apply a layout or manage saved copies" = "Apply a layout or manage saved copies";
+
+/* compat report cells: label text */
+"Architecture" = "Architecture";
+
+/* zar conversion coordinator: user-visible text */
+"Archive is %@ larger (%@ -> %@)." = "Archive is %@ larger (%@ -> %@).";
+
+/* config view controller: accessibility hint */
+"Asks before putting every setting back to its default." = "Asks before putting every setting back to its default.";
+
+/* VoiceOver label; %@ is the extra assignment of the control */
+"Assigned %@" = "Assigned %@";
+
+/* Submenu title in the touch control edit panel */
+"Assignments" = "Assignments";
+
+/* settings hub view controller: title */
+"Audio" = "Audio";
+
+/* Toast: automatic StikDebug JIT was turned on */
+"Auto-enable JIT is on." = "Auto-enable JIT is on.";
+
+/* settings hub view controller: user-visible text */
+"Automatic" = "Automatic";
+
+/* settings hub view controller: title */
+"Automation" = "Automation";
+
+/* zar conversion coordinator: detail text */
+"Available once the estimate finishes." = "Available once the estimate finishes.";
+
+/* Button leaving the touch layout library
+   Name of a controller button in a touch control preview */
+"Back" = "Back";
+
+/* settings hub view controller: title */
+"Backend, quality, shader pipeline, and render target path." = "Backend, quality, shader pipeline, and render target path.";
+
+/* game compatibility cells: user-visible text */
+"Based on available compatibility data." = "Based on available compatibility data.";
+
+/* game compatibility cells: user-visible text */
+"Based on the current official release summary." = "Based on the current official release summary.";
+
+/* game compatibility cells: user-visible text */
+"Based on the latest official release summary from %@." = "Based on the latest official release summary from %@.";
+
+/* game compatibility cells: user-visible text */
+"Based on the latest report from %@." = "Based on the latest report from %@.";
+
+/* Section label in the touch analog tuning screen
+   Segment of the touch analog tuning screen */
+"Basic" = "Basic";
+
+/* Section header in the touch control edit panel */
+"Behavior" = "Behavior";
+
+/* Touch control edit panel summary; %1$@ is the trigger, %2$@ the outputs */
+"Behavior: %1$@ -> %2$@" = "Behavior: %1$@ -> %2$@";
+
+/* Touch control edit panel summary of a disabled secondary behavior */
+"Behavior: Off" = "Behavior: Off";
+
+/* Row title in the touch control edit panel */
+"Binding" = "Binding";
+
+/* Very short badge on a touch control: Back button */
+"Bk" = "Bk";
+
+/* Menu item in the Add Control menu */
+"Blank Button" = "Blank Button";
+
+/* settings hub view controller: title */
+"Browse, rename, duplicate, import, export, and reset touch layouts." = "Browse, rename, duplicate, import, export, and reset touch layouts.";
+
+/* compat report cells: label text
+   settings hub view controller: user-visible text */
+"Build" = "Build";
+
+/* compat formatting: user-visible text */
+"Build %@" = "Build %@";
+
+/* Version text when only a build number is known; %lld is the build number */
+"build %lld" = "build %lld";
+
+/* settings hub view controller: title */
+"Build information and project links." = "Build information and project links.";
+
+/* Shader compile indicator title, expanded */
+"Building shaders for this game" = "Building shaders for this game";
+
+/* VoiceOver text for the shader compile indicator */
+"Building shaders for this game. Expect stutter and missing effects for a few minutes." = "Building shaders for this game. Expect stutter and missing effects for a few minutes.";
+
+/* settings hub view controller: title */
+"Bundle" = "Bundle";
+
+/* Submenu title in the touch control edit panel */
+"Button Shape" = "Button Shape";
+
+/* game patches view controller: user-visible text */
+"by %@" = "by %@";
+
+/* settings hub view controller: title */
+"Cache Cleanup" = "Cache Cleanup";
+
+/* zar conversion coordinator: user-visible text */
+"Can't Delete" = "Can't Delete";
+
+/* zar conversion coordinator: title */
+"Can't Delete These Originals" = "Can't Delete These Originals";
+
+/* Action sheet button: cancel
+   Alert button: cancel
+   config view controller: title
+   document import coordinator: title
+   external folders view controller: title
+   file transfer: title
+   game content view controller: title
+   profile view controller: title
+   zar conversion coordinator: title */
+"Cancel" = "Cancel";
+
+/* file transfer: error message */
+"Cancelled." = "Cancelled.";
+
+/* zar conversion coordinator: detail text */
+"Cancelled. Partial .zar output was removed." = "Cancelled. Partial .zar output was removed.";
+
+/* zar conversion coordinator: user-visible text */
+"Cancelled: %lu." = "Cancelled: %lu.";
+
+/* zar conversion coordinator: label text */
+"Cancelling after the current file" = "Cancelling after the current file";
+
+/* config view controller: title */
+"Change Settings Before Launch" = "Change Settings Before Launch";
+
+/* config view controller: title */
+"Changes apply immediately and are saved for this game" = "Changes apply immediately and are saved for this game";
+
+/* config view controller: title */
+"Changes apply immediately for this session" = "Changes apply immediately for this session";
+
+/* settings hub view controller: label text */
+"Check for Updates" = "Check for Updates";
+
+/* settings hub view controller: detail text */
+"Check Now" = "Check Now";
+
+/* settings hub view controller: label text */
+"Checking for Updates…" = "Checking for Updates…";
+
+/* game content view controller: message */
+"Checking the package..." = "Checking the package...";
+
+/* Alert message: choose a layout to delete */
+"Choose a local layout to delete." = "Choose a local layout to delete.";
+
+/* Alert message: choose a layout to rename */
+"Choose a local layout to rename." = "Choose a local layout to rename.";
+
+/* Prompt of the per-game touch layout picker */
+"Choose a title to edit before launch." = "Choose a title to edit before launch.";
+
+/* settings hub view controller: title */
+"Choose an installed title and edit its touch controls before launch." = "Choose an installed title and edit its touch controls before launch.";
+
+/* game disc view controller: user-visible text */
+"Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID." = "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID.";
+
+/* Name of a touch control shape */
+"Circle" = "Circle";
+
+/* zar conversion coordinator: user-visible text */
+"Cleaned originals" = "Cleaned originals";
+
+/* zar conversion coordinator: detail text */
+"Cleanup failed: %@" = "Cleanup failed: %@";
+
+/* Alert button: confirm clearing the shader cache */
+"Clear" = "Clear";
+
+/* Alert button: confirm clearing all shader caches */
+"Clear All" = "Clear All";
+
+/* settings hub view controller: title */
+"Clear All Shader Caches" = "Clear All Shader Caches";
+
+/* Alert title: confirm clearing all shader caches */
+"Clear All Shader Caches?" = "Clear All Shader Caches?";
+
+/* settings hub view controller: title */
+"Clear Current Game Shader Cache" = "Clear Current Game Shader Cache";
+
+/* settings hub view controller: title */
+"Clear current-title or all-title persistent shader caches." = "Clear current-title or all-title persistent shader caches.";
+
+/* Alert title: confirm clearing the current game's shader cache */
+"Clear Shader Cache?" = "Clear Shader Cache?";
+
+/* game content view controller: title
+   game patches view controller: title
+   Message box button
+   Navigation bar button that closes the touch layout editor
+   settings hub view controller: title */
+"Close" = "Close";
+
+/* VoiceOver label of the panel's expand/collapse button */
+"Collapse" = "Collapse";
+
+/* game actions view controller: user-visible text
+   game compatibility hero view: title
+   game compatibility view controller: title
+   launcher overlay view: title
+   settings hub view controller: title */
+"Compatibility" = "Compatibility";
+
+/* compat report view controller: user-visible text */
+"Compatibility Status" = "Compatibility Status";
+
+/* settings hub view controller: title */
+"Compatibility Workarounds" = "Compatibility Workarounds";
+
+/* Shader compile indicator title; %llu is the number of shaders waiting */
+"Compiling shaders · %llu" = "Compiling shaders · %llu";
+
+/* VoiceOver text for the shader compile indicator */
+"Compiling shaders. Expect stutter and missing effects until they finish." = "Compiling shaders. Expect stutter and missing effects until they finish.";
+
+/* settings hub view controller: title */
+"Connect a controller before or during gameplay; XeniOS binds it automatically." = "Connect a controller before or during gameplay; XeniOS binds it automatically.";
+
+/* content management: user-visible text */
+"Content" = "Content";
+
+/* game content view controller: message */
+"Content type 0x%08X is not a title update or DLC." = "Content type 0x%08X is not a title update or DLC.";
+
+/* Alert button: keeps online features on */
+"Continue" = "Continue";
+
+/* Fallback name of a touch control
+   Touch control type */
+"Control" = "Control";
+
+/* Alert title: edit a control's label */
+"Control Label" = "Control Label";
+
+/* settings hub view controller: title */
+"Controller setup, touch layouts, haptics, and look tuning." = "Controller setup, touch layouts, haptics, and look tuning.";
+
+/* In-game menu button
+   settings hub view controller: title
+   settings hub view controller: user-visible text */
+"Controls" = "Controls";
+
+/* settings hub view controller: title */
+"Controls · Auto-bind controllers connected before or during gameplay." = "Controls · Auto-bind controllers connected before or during gameplay.";
+
+/* settings hub view controller: title */
+"Controls · Browse, rename, duplicate, import, export, and reset touch layouts." = "Controls · Browse, rename, duplicate, import, export, and reset touch layouts.";
+
+/* settings hub view controller: title */
+"Controls · Choose a layout before launch or adjust it while a game is running." = "Controls · Choose a layout before launch or adjust it while a game is running.";
+
+/* settings hub view controller: title */
+"Controls · Choose an installed title and edit its touch controls before launch." = "Controls · Choose an installed title and edit its touch controls before launch.";
+
+/* settings hub view controller: title */
+"Controls · Install a .toml layout from Files." = "Controls · Install a .toml layout from Files.";
+
+/* settings hub view controller: title */
+"Controls · Open the in-game touch editor for the currently running title." = "Controls · Open the in-game touch editor for the currently running title.";
+
+/* settings hub view controller: title */
+"Controls · Restore the running game's layout to the built-in XeniOS preset." = "Controls · Restore the running game's layout to the built-in XeniOS preset.";
+
+/* settings hub view controller: title */
+"Controls · Share the layout currently loaded in the running game." = "Controls · Share the layout currently loaded in the running game.";
+
+/* zar conversion coordinator: detail text */
+"Conversion complete." = "Conversion complete.";
+
+/* zar conversion coordinator: detail text
+   zar conversion coordinator: message */
+"Conversion failed." = "Conversion failed.";
+
+/* zar conversion coordinator: user-visible text */
+"Convert Added Games to ZAR" = "Convert Added Games to ZAR";
+
+/* zar conversion coordinator: title */
+"Convert and Delete" = "Convert and Delete";
+
+/* zar conversion coordinator: user-visible text */
+"Convert and Delete Original Copies" = "Convert and Delete Original Copies";
+
+/* zar conversion coordinator: title */
+"Convert and Delete Originals" = "Convert and Delete Originals";
+
+/* zar conversion coordinator: title */
+"Convert and Import" = "Convert and Import";
+
+/* zar conversion coordinator: title */
+"Convert and Keep Originals" = "Convert and Keep Originals";
+
+/* zar conversion coordinator: title */
+"Convert and Unlink Originals" = "Convert and Unlink Originals";
+
+/* zar conversion coordinator: title */
+"Convert External Library to ZAR" = "Convert External Library to ZAR";
+
+/* zar conversion coordinator: user-visible text */
+"Convert Imported Game to ZAR" = "Convert Imported Game to ZAR";
+
+/* zar conversion coordinator: title */
+"Convert in Place" = "Convert in Place";
+
+/* zar conversion coordinator: title */
+"Convert In Place and Delete Original" = "Convert In Place and Delete Original";
+
+/* zar conversion coordinator: title */
+"Convert Library to ZAR" = "Convert Library to ZAR";
+
+/* launcher overlay view: user-visible text */
+"Convert library to ZAR" = "Convert library to ZAR";
+
+/* zar conversion coordinator: user-visible text */
+"Convert Options" = "Convert Options";
+
+/* game actions view controller: user-visible text
+   launcher overlay view: title
+   zar conversion coordinator: title */
+"Convert to ZAR" = "Convert to ZAR";
+
+/* zar conversion coordinator: user-visible text */
+"Converted: %lu of %lu." = "Converted: %lu of %lu.";
+
+/* zar conversion coordinator: user-visible text */
+"Converting" = "Converting";
+
+/* zar conversion coordinator: item status */
+"Converting..." = "Converting...";
+
+/* launcher overlay view: user-visible text */
+"Converts non-ZAR games in the library." = "Converts non-ZAR games in the library.";
+
+/* Toast; %@ is the game title */
+"Copied launch URL for %@." = "Copied launch URL for %@.";
+
+/* Toast: launch URL copied */
+"Copied launch URL." = "Copied launch URL.";
+
+/* log view controller: title */
+"Copy" = "Copy";
+
+/* game actions view controller: user-visible text
+   launcher overlay view: title */
+"Copy Launch URL" = "Copy Launch URL";
+
+/* game actions view controller: user-visible text */
+"Copy the xenia:// URL for this title." = "Copy the xenia:// URL for this title.";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not close layout file: %s" = "Could not close layout file: %s";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not create layout folder: %s" = "Could not create layout folder: %s";
+
+/* file transfer: error message */
+"Could not create the destination file." = "Could not create the destination file.";
+
+/* external folders view controller: user-visible text */
+"Could not link the selected folder." = "Could not link the selected folder.";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not open temporary layout file: %s" = "Could not open temporary layout file: %s";
+
+/* content management: error message */
+"Could not read the content package header." = "Could not read the content package header.";
+
+/* game content view controller: message */
+"Could not read the selected content package." = "Could not read the selected content package.";
+
+/* file transfer: error message */
+"Could not read the selected file." = "Could not read the selected file.";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not replace layout file: %s" = "Could not replace layout file: %s";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not sync layout file: %s" = "Could not sync layout file: %s";
+
+/* external folders view controller: user-visible text */
+"Could not unlink the selected folder." = "Could not unlink the selected folder.";
+
+/* Error shown when saving a touch layout; %s is the system error */
+"Could not write layout file: %s" = "Could not write layout file: %s";
+
+/* compat report submission: user-visible text */
+"Couldn't Send Report" = "Couldn't Send Report";
+
+/* Alert title: the game failed to start */
+"Couldn't Start Game" = "Couldn't Start Game";
+
+/* Alert button: create the profile
+   profile view controller: title */
+"Create" = "Create";
+
+/* zar conversion coordinator: title */
+"Create .zar archives in XeniOS, then decide how to handle the originals." = "Create .zar archives in XeniOS, then decide how to handle the originals.";
+
+/* game actions view controller: user-visible text */
+"Create a compressed .zar copy in the XeniOS library." = "Create a compressed .zar copy in the XeniOS library.";
+
+/* profile view controller: detail text */
+"Create a new profile and sign in." = "Create a new profile and sign in.";
+
+/* game patches view controller: detail text */
+"Create a patches folder here:\n%@" = "Create a patches folder here:\n%@";
+
+/* profile view controller: user-visible text */
+"Create and sign in profiles used by Xbox Live emulation." = "Create and sign in profiles used by Xbox Live emulation.";
+
+/* Action sheet button: create a profile
+   Alert title: create a profile
+   profile view controller: label text
+   profile view controller: title */
+"Create Profile" = "Create Profile";
+
+/* zar conversion coordinator: title */
+"Create the archive and clean up the old library entry after a successful conversion." = "Create the archive and clean up the old library entry after a successful conversion.";
+
+/* zar conversion coordinator: title */
+"Create the archive in XeniOS, then choose what to do with the original." = "Create the archive in XeniOS, then choose what to do with the original.";
+
+/* zar conversion coordinator: detail text */
+"Created %@." = "Created %@.";
+
+/* Subtitle of the Fill screen mode */
+"Crop edges to fill the screen" = "Crop edges to fill the screen";
+
+/* Very short badge on a touch control: generic controller input */
+"Ctrl" = "Ctrl";
+
+/* settings hub view controller: title */
+"Curated F8-style debug and compatibility overrides." = "Curated F8-style debug and compatibility overrides.";
+
+/* zar conversion coordinator: label text */
+"Current item" = "Current item";
+
+/* game compatibility cells: label text */
+"CURRENT SUMMARY" = "CURRENT SUMMARY";
+
+/* Default name suggested when saving a layout copy */
+"Custom Layout" = "Custom Layout";
+
+/* Name of a controller button in a touch control preview */
+"D-Down" = "D-Down";
+
+/* Name of a controller button in a touch control preview */
+"D-Left" = "D-Left";
+
+/* Badge text when a stick has no extra assignment */
+"D-Pad + Extra" = "D-Pad + Extra";
+
+/* Assignment summary chip */
+"D-Pad Ring" = "D-Pad Ring";
+
+/* Menu item toggling the D-pad ring */
+"D-Pad Ring Off" = "D-Pad Ring Off";
+
+/* Menu item toggling the D-pad ring */
+"D-Pad Ring On" = "D-Pad Ring On";
+
+/* Name of a controller button in a touch control preview */
+"D-Right" = "D-Right";
+
+/* Name of a controller button in a touch control preview */
+"D-Up" = "D-Up";
+
+/* settings hub view controller: user-visible text */
+"Dark" = "Dark";
+
+/* Slider label in the touch analog tuning screen */
+"Deadzone" = "Deadzone";
+
+/* Row subtitle in the touch control edit panel */
+"Deadzone, curve, smoothing" = "Deadzone, curve, smoothing";
+
+/* VoiceOver label of a touch control edit button */
+"Decrease size" = "Decrease size";
+
+/* Value shown in the Label row of the touch control edit panel */
+"Default" = "Default";
+
+/* Layout library row detail */
+"Default for all games" = "Default for all games";
+
+/* Toast; %@ is the layout name */
+"Default for all games is %@." = "Default for all games is %@.";
+
+/* Layout library row detail */
+"Default for this game" = "Default for this game";
+
+/* Toast; %@ is the layout name */
+"Default for this game is %@." = "Default for this game is %@.";
+
+/* Alert button: confirm deleting a layout
+   Context menu item in the layout library
+   game content view controller: title
+   Swipe action in the layout library
+   VoiceOver label of a touch control edit button
+   zar conversion coordinator: title */
+"Delete" = "Delete";
+
+/* game content view controller: user-visible text */
+"Delete \"%@\"? This cannot be undone." = "Delete \"%@\"? This cannot be undone.";
+
+/* game content view controller: title */
+"Delete Content" = "Delete Content";
+
+/* zar conversion coordinator: title */
+"Delete External Files" = "Delete External Files";
+
+/* zar conversion coordinator: title */
+"Delete External Files?" = "Delete External Files?";
+
+/* game content view controller: user-visible text */
+"Delete Failed" = "Delete Failed";
+
+/* Alert title: confirm deleting a layout */
+"Delete Layout?" = "Delete Layout?";
+
+/* zar conversion coordinator: title */
+"Delete Original Copy" = "Delete Original Copy";
+
+/* zar conversion coordinator: title */
+"Delete Originals?" = "Delete Originals?";
+
+/* Alert message: confirm clearing all shader caches */
+"Delete persistent shader storage for every title. Games, saves, content, and settings are not removed." = "Delete persistent shader storage for every title. Games, saves, content, and settings are not removed.";
+
+/* settings hub view controller: title */
+"Delete persistent shader storage for every title. This does not remove games or saves." = "Delete persistent shader storage for every title. This does not remove games or saves.";
+
+/* Alert message: confirm clearing the current game's shader cache
+   settings hub view controller: title */
+"Delete persistent shaders for the running title. Relaunch the game before testing." = "Delete persistent shaders for the running title. Relaunch the game before testing.";
+
+/* Alert title: choose a layout to delete */
+"Delete Saved Layout" = "Delete Saved Layout";
+
+/* config view controller: message */
+"Delete saved overrides for %@ and discard unsaved changes in this sheet?" = "Delete saved overrides for %@ and discard unsaved changes in this sheet?";
+
+/* Alert message; %@ is the game title */
+"Delete saved overrides for %@ and return this title to defaults." = "Delete saved overrides for %@ and return this title to defaults.";
+
+/* game actions view controller: user-visible text */
+"Delete saved overrides for this title and return to defaults." = "Delete saved overrides for this title and return to defaults.";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Delete selected control" = "Delete selected control";
+
+/* zar conversion coordinator: title */
+"Delete the imported source file now that the .zar archive exists." = "Delete the imported source file now that the .zar archive exists.";
+
+/* Toast; %@ is the layout name */
+"Deleted %@." = "Deleted %@.";
+
+/* zar conversion coordinator: user-visible text */
+"Deleted originals" = "Deleted originals";
+
+/* Alert message: game settings were reset */
+"Deleted title-specific overrides. Relaunch before testing." = "Deleted title-specific overrides. Relaunch before testing.";
+
+/* config view controller: user-visible text */
+"Deleted title-specific overrides. Relaunch the game before testing." = "Deleted title-specific overrides. Relaunch the game before testing.";
+
+/* config view controller: user-visible text */
+"Deletes saved game-specific overrides." = "Deletes saved game-specific overrides.";
+
+/* compat report view controller: placeholder */
+"Describe your experience (e.g. crashes, graphical glitches, audio issues, performance drops)..." = "Describe your experience (e.g. crashes, graphical glitches, audio issues, performance drops)...";
+
+/* game compatibility cells: label text */
+"Details" = "Details";
+
+/* compat formatting: user-visible text */
+"Dev build %@" = "Dev build %@";
+
+/* settings hub view controller: user-visible text */
+"Developer" = "Developer";
+
+/* settings hub view controller: label text */
+"Developer Mode" = "Developer Mode";
+
+/* settings hub view controller: message */
+"Developer mode is already on." = "Developer mode is already on.";
+
+/* settings hub view controller: message */
+"Developer mode is on. You can turn it off at the bottom of this page." = "Developer mode is on. You can turn it off at the bottom of this page.";
+
+/* settings hub view controller: build name shown when no version is available
+   Version text of a development build */
+"Development Build" = "Development Build";
+
+/* compat report cells: label text */
+"Device" = "Device";
+
+/* game compatibility cells: detail text */
+"DEVICE" = "DEVICE";
+
+/* Pause menu row
+   settings hub view controller: title */
+"Diagnostics" = "Diagnostics";
+
+/* Slider label in the touch analog tuning screen */
+"Diagonal" = "Diagonal";
+
+/* game patches view controller: accessibility value */
+"Disabled" = "Disabled";
+
+/* config view controller: title */
+"Discard" = "Discard";
+
+/* config view controller: title */
+"Discard Changes?" = "Discard Changes?";
+
+/* settings hub view controller: title */
+"Discord" = "Discord";
+
+/* game compatibility cells: label text */
+"Discussion" = "Discussion";
+
+/* Alert button: dismiss */
+"Dismiss" = "Dismiss";
+
+/* In-game menu button
+   settings hub view controller: title
+   Title of the Display menu
+   Title of the display settings screen */
+"Display" = "Display";
+
+/* Pause menu row */
+"Display Mode" = "Display Mode";
+
+/* content management: user-visible text */
+"DLC" = "DLC";
+
+/* game content view controller: message */
+"DLC installed successfully." = "DLC installed successfully.";
+
+/* game content view controller: message */
+"DLC installed. " = "DLC installed. ";
+
+/* game content view controller: message */
+"DLC linked from the external folder." = "DLC linked from the external folder.";
+
+/* Button that finishes repositioning
+   Button that leaves touch control editing
+   config view controller: title */
+"Done" = "Done";
+
+/* Submenu title in the touch control edit panel */
+"Double Tap" = "Double Tap";
+
+/* Menu item; %@ is a button name */
+"Double Tap %@" = "Double Tap %@";
+
+/* Submenu title in the touch control edit panel */
+"Double Tap Forward" = "Double Tap Forward";
+
+/* Menu item; %@ is a button name */
+"Double Tap Forward %@" = "Double Tap Forward %@";
+
+/* config view controller: accessibility hint */
+"Double tap to edit. " = "Double tap to edit. ";
+
+/* Alert button: opens the download page
+   Alert button: start the download */
+"Download" = "Download";
+
+/* Alert message; %@ is the host name of the download source */
+"Download a touch layout from %@?" = "Download a touch layout from %@?";
+
+/* Error text; %ld is the HTTP status code */
+"Download failed with HTTP %ld." = "Download failed with HTTP %ld.";
+
+/* Toast; %@ is the host name of the download source */
+"Downloading touch layout from %@..." = "Downloading touch layout from %@...";
+
+/* Very short badge on a touch control: D-pad ring */
+"DPad" = "DPad";
+
+/* Hint while repositioning the game window */
+"Drag anywhere to reposition the game." = "Drag anywhere to reposition the game.";
+
+/* VoiceOver label of a touch control edit button */
+"Duplicate" = "Duplicate";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Duplicate selected control" = "Duplicate selected control";
+
+/* Title of the touch control edit panel */
+"Edit" = "Edit";
+
+/* In-game menu button */
+"Edit Controls" = "Edit Controls";
+
+/* settings hub view controller: title */
+"Edit Game Touch Layout" = "Edit Game Touch Layout";
+
+/* game actions view controller: user-visible text */
+"Edit or assign the touch controls used by this title." = "Edit or assign the touch controls used by this title.";
+
+/* settings hub view controller: title */
+"Edit Running Touch Layout" = "Edit Running Touch Layout";
+
+/* Display menu item */
+"Emulated Display Uncapped" = "Emulated Display Uncapped";
+
+/* Alert button: enable JIT through StikDebug */
+"Enable via StikDebug" = "Enable via StikDebug";
+
+/* game patches view controller: accessibility value */
+"Enabled" = "Enabled";
+
+/* Alert message: gamertag rules
+   profile view controller: message */
+"Enter a gamertag (1-15 characters)." = "Enter a gamertag (1-15 characters).";
+
+/* Prompt text: save a copy of the layout */
+"Enter a name for the saved local layout." = "Enter a name for the saved local layout.";
+
+/* Prompt text: rename a layout */
+"Enter a new name for the saved local layout." = "Enter a new name for the saved local layout.";
+
+/* compat report view controller: user-visible text */
+"Environment" = "Environment";
+
+/* zar conversion coordinator: user-visible text */
+"Estimated .zar is %@ larger (%@ -> %@)." = "Estimated .zar is %@ larger (%@ -> %@).";
+
+/* zar conversion coordinator: detail text
+   zar conversion coordinator: user-visible text */
+"Estimated savings unavailable." = "Estimated savings unavailable.";
+
+/* zar conversion coordinator: user-visible text */
+"Estimated savings: %@ (%@ -> %@)." = "Estimated savings: %@ (%@ -> %@).";
+
+/* zar conversion coordinator: user-visible text */
+"Estimating savings..." = "Estimating savings...";
+
+/* zar conversion coordinator: label text */
+"Estimating time remaining..." = "Estimating time remaining...";
+
+/* config view controller: message */
+"Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards.";
+
+/* In-game menu button, leaves the game */
+"Exit" = "Exit";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Exit edit mode" = "Exit edit mode";
+
+/* In-game menu button, leaves the game */
+"Exit To Library" = "Exit To Library";
+
+/* Pause menu row */
+"Exit to Library" = "Exit to Library";
+
+/* VoiceOver label of the panel's expand/collapse button */
+"Expand" = "Expand";
+
+/* Detail line of the expanded shader compile indicator */
+"Expect stutter and missing effects for a few minutes." = "Expect stutter and missing effects for a few minutes.";
+
+/* Context menu item in the layout library
+   Swipe action in the layout library */
+"Export" = "Export";
+
+/* settings hub view controller: title */
+"Export Running Layout" = "Export Running Layout";
+
+/* game disc view controller: user-visible text
+   Game source label: file is external */
+"External" = "External";
+
+/* zar conversion coordinator: user-visible text */
+"External Folder Unavailable" = "External Folder Unavailable";
+
+/* external folders view controller: title */
+"External Folders" = "External Folders";
+
+/* external folders view controller: label text
+   game library store: user-visible text */
+"External Library" = "External Library";
+
+/* game library store: user-visible text */
+"External library folder is no longer available." = "External library folder is no longer available.";
+
+/* Error text: the external library folder cannot be reached */
+"External library folder is unavailable." = "External library folder is unavailable.";
+
+/* zar conversion coordinator: detail text */
+"External library item." = "External library item.";
+
+/* Badge text when a button has no extra assignment */
+"Extra" = "Extra";
+
+/* Submenu title in the touch control edit panel */
+"Extra Function" = "Extra Function";
+
+/* VoiceOver label of a touch control edit button */
+"Extra function" = "Extra function";
+
+/* Row title in the touch control edit panel */
+"Extra gesture" = "Extra gesture";
+
+/* Assignment summary chip
+   Submenu title in the touch control edit panel */
+"Extra Hold Drag" = "Extra Hold Drag";
+
+/* Menu item that removes an extra function */
+"Extra Off" = "Extra Off";
+
+/* Touch control type */
+"Face Button" = "Face Button";
+
+/* Submenu title in the Add Control menu */
+"Face Buttons" = "Face Buttons";
+
+/* game library store: user-visible text */
+"Failed creating library folder: %s" = "Failed creating library folder: %s";
+
+/* game content view controller: user-visible text */
+"Failed deleting %@: %s" = "Failed deleting %@: %s";
+
+/* Toast: developer-facing error about the library callback */
+"Failed to build gameInfo callback URL." = "Failed to build gameInfo callback URL.";
+
+/* Toast: developer-facing error about the library payload */
+"Failed to build gameInfo payload." = "Failed to build gameInfo payload.";
+
+/* Toast: building the launch URL failed */
+"Failed to build launch URL." = "Failed to build launch URL.";
+
+/* Result message; %s is an error description */
+"Failed to clear shader cache: %s" = "Failed to clear shader cache: %s";
+
+/* profile view controller: user-visible text */
+"Failed to create profile." = "Failed to create profile.";
+
+/* Toast: deleting a layout failed */
+"Failed to delete saved layout." = "Failed to delete saved layout.";
+
+/* Alert message: game settings could not be reset
+   config view controller: user-visible text */
+"Failed to delete title-specific overrides. Check xenia.log." = "Failed to delete title-specific overrides. Check xenia.log.";
+
+/* Toast: developer-facing error about the library payload */
+"Failed to encode gameInfo payload." = "Failed to encode gameInfo payload.";
+
+/* Toast: exporting a layout failed */
+"Failed to export touch layout." = "Failed to export touch layout.";
+
+/* document import coordinator: message */
+"Failed to import selected game." = "Failed to import selected game.";
+
+/* Toast: importing a layout failed */
+"Failed to import touch layout." = "Failed to import touch layout.";
+
+/* document import coordinator: message */
+"Failed to link selected folder." = "Failed to link selected folder.";
+
+/* Toast: could not open StikDebug */
+"Failed to open StikDebug." = "Failed to open StikDebug.";
+
+/* Error text; %s is the parser's description */
+"Failed to parse touch layout: %s" = "Failed to parse touch layout: %s";
+
+/* Toast: renaming a layout failed */
+"Failed to rename saved layout." = "Failed to rename saved layout.";
+
+/* Toast; %@ is the name of the app */
+"Failed to return library to %@." = "Failed to return library to %@.";
+
+/* Toast: saving an imported layout failed */
+"Failed to save imported touch layout." = "Failed to save imported touch layout.";
+
+/* Toast: saving a layout copy failed */
+"Failed to save layout copy." = "Failed to save layout copy.";
+
+/* profile view controller: user-visible text */
+"Failed to sign in profile." = "Failed to sign in profile.";
+
+/* Toast: signing in to the new profile failed */
+"Failed to sign in with the new profile." = "Failed to sign in with the new profile.";
+
+/* zar conversion coordinator: message */
+"Failed to unlink original game." = "Failed to unlink original game.";
+
+/* game patches view controller: user-visible text */
+"Failed to update patch state." = "Failed to update patch state.";
+
+/* zar conversion coordinator: user-visible text */
+"Failed: %lu." = "Failed: %lu.";
+
+/* Context menu item in the layout library
+   Layout library row detail
+   Swipe action in the layout library */
+"Favorite" = "Favorite";
+
+/* Toast; %@ is the layout name */
+"Favorited %@." = "Favorited %@.";
+
+/* Layout library filter: favorite layouts */
+"Favorites" = "Favorites";
+
+/* Section header in the touch control edit panel
+   Section label in the touch analog tuning screen
+   Segment of the touch analog tuning screen */
+"Feel" = "Feel";
+
+/* Screen mode option: crop to fill the screen */
+"Fill" = "Fill";
+
+/* zar conversion coordinator: label text */
+"Finalizing" = "Finalizing";
+
+/* zar conversion coordinator: item status */
+"Finalizing..." = "Finalizing...";
+
+/* file transfer: error message */
+"Finishing the copy failed." = "Finishing the copy failed.";
+
+/* zar conversion coordinator: label text */
+"Finishing the current file..." = "Finishing the current file...";
+
+/* zar conversion coordinator: label text
+   zar conversion coordinator: user-visible text */
+"Finishing up..." = "Finishing up...";
+
+/* Screen mode option: keep the aspect ratio */
+"Fit" = "Fit";
+
+/* Display menu item */
+"Fit (Preserve Aspect)" = "Fit (Preserve Aspect)";
+
+/* Row subtitle in the touch control edit panel */
+"Flick for a 2nd input" = "Flick for a 2nd input";
+
+/* file transfer: error message */
+"Flushing the copy failed." = "Flushing the copy failed.";
+
+/* external folders view controller: title */
+"Folder Unavailable" = "Folder Unavailable";
+
+/* compat report view controller: user-visible text
+   game disc view controller: title
+   game patches view controller: title
+   Section header in the pause menu
+   zar conversion coordinator: user-visible text */
+"Game" = "Game";
+
+/* game actions view controller: title */
+"Game Actions" = "Game Actions";
+
+/* settings hub view controller: title */
+"Game Content & Patches" = "Game Content & Patches";
+
+/* settings hub view controller: title */
+"Game Content and Patches" = "Game Content and Patches";
+
+/* Toast: the game file is gone */
+"Game file is no longer available." = "Game file is no longer available.";
+
+/* Alert title: the game is not stopping */
+"Game Isn't Responding" = "Game Isn't Responding";
+
+/* Fallback title of the pause menu */
+"Game Menu" = "Game Menu";
+
+/* Alert title: no game running */
+"Game Required" = "Game Required";
+
+/* game actions view controller: user-visible text
+   launcher overlay view: title */
+"Game Settings" = "Game Settings";
+
+/* Alert title: result of resetting game settings
+   config view controller: user-visible text */
+"Game Settings Not Reset" = "Game Settings Not Reset";
+
+/* Alert title: result of resetting game settings
+   config view controller: title */
+"Game Settings Reset" = "Game Settings Reset";
+
+/* config view controller: title */
+"Game Settings Saved" = "Game Settings Saved";
+
+/* Title of the per-game touch layout picker */
+"Game Touch Layout" = "Game Touch Layout";
+
+/* config view controller: title */
+"Game-Specific Settings" = "Game-Specific Settings";
+
+/* Toast: developer-facing error about a library request */
+"gameInfo callback scheme cannot point back to XeniOS." = "gameInfo callback scheme cannot point back to XeniOS.";
+
+/* Toast: developer-facing error about a library request */
+"gameInfo request is missing a callback scheme." = "gameInfo request is missing a callback scheme.";
+
+/* settings hub view controller: title */
+"Gameplay" = "Gameplay";
+
+/* Placeholder of the gamertag text field
+   profile view controller: placeholder */
+"Gamertag" = "Gamertag";
+
+/* settings hub view controller: title */
+"Games" = "Games";
+
+/* external folders view controller: user-visible text */
+"Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected." = "Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected.";
+
+/* settings hub view controller: title */
+"Games · Manage title-specific content from a game tile." = "Games · Manage title-specific content from a game tile.";
+
+/* settings hub view controller: title */
+"Games · Open Files and copy a game or content package into XeniOS storage." = "Games · Open Files and copy a game or content package into XeniOS storage.";
+
+/* settings hub view controller: title */
+"Games · Rescan XeniOS storage and update the launcher grid." = "Games · Rescan XeniOS storage and update the launcher grid.";
+
+/* settings hub view controller: title */
+"Games · Title-specific overrides, search, reset, and batched saves." = "Games · Title-specific overrides, search, reset, and batched saves.";
+
+/* game compatibility cells: detail text */
+"GPU" = "GPU";
+
+/* compat report cells: label text */
+"GPU Backend" = "GPU Backend";
+
+/* settings hub view controller: title */
+"GPU, memory, boot, and JIT title workarounds." = "GPU, memory, boot, and JIT title workarounds.";
+
+/* In-game menu button
+   Pause menu row
+   settings hub view controller: title */
+"Graphics" = "Graphics";
+
+/* settings hub view controller: title */
+"Graphics & Performance" = "Graphics & Performance";
+
+/* settings hub view controller: title */
+"Graphics & Performance · Delete persistent shader storage for every title." = "Graphics & Performance · Delete persistent shader storage for every title.";
+
+/* settings hub view controller: title */
+"Graphics & Performance · Delete persistent shaders for the running title." = "Graphics & Performance · Delete persistent shaders for the running title.";
+
+/* compat formatting: user-visible text */
+"Great" = "Great";
+
+/* VoiceOver label of the grid snap button */
+"Grid snap" = "Grid snap";
+
+/* settings hub view controller: title */
+"Haptics, overlay visibility, and touch-look tuning." = "Haptics, overlay visibility, and touch-look tuning.";
+
+/* settings hub view controller: title */
+"Hardware Controllers" = "Hardware Controllers";
+
+/* Slider label in the touch analog tuning screen */
+"Held Look" = "Held Look";
+
+/* Slider label in the touch analog tuning screen */
+"Held Move" = "Held Move";
+
+/* Row title in the touch control edit panel
+   Submenu title in the touch control edit panel */
+"Held Slide" = "Held Slide";
+
+/* Assignment summary; %@ is an analog output such as Look or Move */
+"Held Slide: %@" = "Held Slide: %@";
+
+/* game compatibility cells: label text */
+"Help the community by sharing how well this title runs on your device." = "Help the community by sharing how well this title runs on your device.";
+
+/* Value shown in the Label row of the touch control edit panel */
+"Hidden" = "Hidden";
+
+/* Navigation bar button toggling hidden achievement details */
+"Hide Hidden" = "Hide Hidden";
+
+/* Menu item in the touch control label menu */
+"Hide Label" = "Hide Label";
+
+/* Submenu title in the touch control edit panel */
+"Hold" = "Hold";
+
+/* Menu item; %@ is a button name */
+"Hold %@" = "Hold %@";
+
+/* Slider label in the touch analog tuning screen */
+"Horizontal Sensitivity" = "Horizontal Sensitivity";
+
+/* Subtitle of the Stretch screen mode */
+"Ignore aspect ratio" = "Ignore aspect ratio";
+
+/* document import coordinator: title
+   Layout library button that imports a layout file */
+"Import" = "Import";
+
+/* Alert message: no games for the touch layout picker */
+"Import a game with a title ID before editing a per-game touch layout." = "Import a game with a title ID before editing a per-game touch layout.";
+
+/* game content view controller: detail text */
+"Import a title update or DLC package for this game. Large packages can be linked from a Link Folder instead of copied." = "Import a title update or DLC package for this game. Large packages can be linked from a Link Folder instead of copied.";
+
+/* document import coordinator: label text */
+"Import cancelled." = "Import cancelled.";
+
+/* document import coordinator: message */
+"Import copies it into XeniOS (needs the file's size in free storage). Link Folder plays it from its current folder without copying." = "Import copies it into XeniOS (needs the file's size in free storage). Link Folder plays it from its current folder without copying.";
+
+/* Action sheet button: copies a game into the app */
+"Import Copy" = "Import Copy";
+
+/* Action sheet message: explains the two import options */
+"Import Copy duplicates the game into XeniOS storage and needs that much free space. For very large images, Link External Folder plays them in place without copying." = "Import Copy duplicates the game into XeniOS storage and needs that much free space. For very large images, Link External Folder plays them in place without copying.";
+
+/* document import coordinator: title */
+"Import Failed" = "Import Failed";
+
+/* document import coordinator: message */
+"Import failed." = "Import failed.";
+
+/* settings hub view controller: title */
+"Import Game" = "Import Game";
+
+/* launcher overlay view: user-visible text */
+"Import game" = "Import game";
+
+/* settings hub view controller: title */
+"Import games, refresh the library, and manage local storage." = "Import games, refresh the library, and manage local storage.";
+
+/* document import coordinator: title */
+"Import In Progress" = "Import In Progress";
+
+/* document import coordinator: user-visible text */
+"Import it into the XeniOS library." = "Import it into the XeniOS library.";
+
+/* settings hub view controller: title */
+"Import Layout" = "Import Layout";
+
+/* game disc view controller: user-visible text
+   Game source label: file is imported */
+"Imported" = "Imported";
+
+/* Toast; %@ is the layout name */
+"Imported %@." = "Imported %@.";
+
+/* document import coordinator: label text */
+"Imported %@. Waiting for JIT." = "Imported %@. Waiting for JIT.";
+
+/* game disc view controller: user-visible text
+   Game source label: file is both imported and external */
+"Imported + External" = "Imported + External";
+
+/* document import coordinator: title */
+"Imported With Warnings" = "Imported With Warnings";
+
+/* document import coordinator: title */
+"Importing" = "Importing";
+
+/* Title of the in-game pause menu */
+"In-Game Menu" = "In-Game Menu";
+
+/* zar conversion coordinator: user-visible text */
+"Incomplete ZAR Conversion Removed" = "Incomplete ZAR Conversion Removed";
+
+/* VoiceOver label of a touch control edit button */
+"Increase size" = "Increase size";
+
+/* launcher overlay view: accessibility value
+   launcher overlay view: user-visible text */
+"Increased memory entitlement is enabled" = "Increased memory entitlement is enabled";
+
+/* profile view controller: user-visible text
+   Status line while profile services start */
+"Initializing profile services..." = "Initializing profile services...";
+
+/* Fallback alert title for a guest text prompt
+   Fallback alert title for a text prompt */
+"Input Required" = "Input Required";
+
+/* Slider label in the touch analog tuning screen */
+"Input Smoothing" = "Input Smoothing";
+
+/* Alert button: install
+   Fallback alert button: install */
+"Install" = "Install";
+
+/* Alert message; %@ is the layout name */
+"Install \"%@\" into your XeniOS touch layout library?" = "Install \"%@\" into your XeniOS touch layout library?";
+
+/* Alert message; %@ is the layout name */
+"Install \"%@\"?" = "Install \"%@\"?";
+
+/* settings hub view controller: title */
+"Install a .toml layout from Files." = "Install a .toml layout from Files.";
+
+/* game content view controller: title */
+"Install Failed" = "Install Failed";
+
+/* Alert message; %@ is the host name of the download source */
+"Install the touch layout from %@?" = "Install the touch layout from %@?";
+
+/* Alert message: install a layout from a link */
+"Install the touch layout from this link?" = "Install the touch layout from this link?";
+
+/* game content view controller: user-visible text */
+"Install title updates or DLC packages for %@." = "Install title updates or DLC packages for %@.";
+
+/* game content view controller: user-visible text */
+"Install title updates or DLC packages for this game." = "Install title updates or DLC packages for this game.";
+
+/* Alert title: install a touch layout
+   Fallback alert title: install a touch layout */
+"Install Touch Layout" = "Install Touch Layout";
+
+/* game content view controller: title */
+"Installed" = "Installed";
+
+/* game content view controller: user-visible text */
+"Installed Content" = "Installed Content";
+
+/* document import coordinator: message */
+"Installed title update." = "Installed title update.";
+
+/* game content view controller: title */
+"Invalid Package" = "Invalid Package";
+
+/* Switch label in the touch analog tuning screen */
+"Invert Horizontal" = "Invert Horizontal";
+
+/* Switch label in the touch analog tuning screen */
+"Invert Vertical" = "Invert Vertical";
+
+/* zar conversion coordinator: user-visible text */
+"Item" = "Item";
+
+/* zar conversion coordinator: label text */
+"Item %lu of %lu" = "Item %lu of %lu";
+
+/* zar conversion coordinator: user-visible text */
+"Items" = "Items";
+
+/* launcher overlay view: label text
+   Launcher status: JIT is enabled */
+"JIT Enabled" = "JIT Enabled";
+
+/* launcher overlay view: accessibility label
+   launcher overlay view: accessibility value
+   launcher overlay view: user-visible text */
+"JIT is enabled" = "JIT is enabled";
+
+/* Guidance when JIT is not active */
+"JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker." = "JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker.";
+
+/* Guidance when JIT is not active before launching a game */
+"JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool attached until the game has started." = "JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool attached until the game has started.";
+
+/* launcher overlay view: accessibility label */
+"JIT is not enabled" = "JIT is not enabled";
+
+/* Toast: JIT did not become available after waiting */
+"JIT is still unavailable. Open StikDebug, then return here to retry." = "JIT is still unavailable. Open StikDebug, then return here to retry.";
+
+/* Alert title: JIT was not detected */
+"JIT Not Detected" = "JIT Not Detected";
+
+/* launcher overlay view: user-visible text */
+"JIT status" = "JIT status";
+
+/* Launcher status: JIT is unavailable */
+"JIT unavailable. Open StikDebug, then restart polling." = "JIT unavailable. Open StikDebug, then restart polling.";
+
+/* config view controller: title */
+"Keep Editing" = "Keep Editing";
+
+/* zar conversion coordinator: title */
+"Keep Original" = "Keep Original";
+
+/* Alert button: keep waiting for the game to stop */
+"Keep Waiting" = "Keep Waiting";
+
+/* zar conversion coordinator: user-visible text */
+"Keep XeniOS open during conversion. Canceling removes partial output." = "Keep XeniOS open during conversion. Canceling removes partial output.";
+
+/* zar conversion coordinator: label text */
+"Keep XeniOS open until conversion finishes. Cancel removes partial output." = "Keep XeniOS open until conversion finishes. Cancel removes partial output.";
+
+/* Placeholder of the control label text field
+   Row title in the touch control edit panel
+   Submenu title in the touch control edit panel */
+"Label" = "Label";
+
+/* game compatibility hero view: label text */
+"Last updated: %@" = "Last updated: %@";
+
+/* Alert button: dismisses the update notice */
+"Later" = "Later";
+
+/* game compatibility cells: label text */
+"LATEST REPORT" = "LATEST REPORT";
+
+/* Alert button: replace the running game */
+"Launch" = "Launch";
+
+/* Alert message: clearing the shader cache needs a running game */
+"Launch a game before clearing the current game's shader cache." = "Launch a game before clearing the current game's shader cache.";
+
+/* Alert message: touch layout editing needs a running game */
+"Launch a game before editing the running touch layout." = "Launch a game before editing the running touch layout.";
+
+/* Alert button: launch despite the warning */
+"Launch Anyway" = "Launch Anyway";
+
+/* game actions view controller: user-visible text
+   game disc view controller: title
+   launcher overlay view: title */
+"Launch Disc" = "Launch Disc";
+
+/* Alert title: a link wants to launch a game */
+"Launch Game?" = "Launch Game?";
+
+/* game actions view controller: user-visible text */
+"Launch the selected title." = "Launch the selected title.";
+
+/* Toast: a launch link names no usable game */
+"Launch URL missing a valid game target." = "Launch URL missing a valid game target.";
+
+/* Toast: no launch URL exists for the game */
+"Launch URL unavailable for this game." = "Launch URL unavailable for this game.";
+
+/* game disc view controller: accessibility hint */
+"Launches this disc." = "Launches this disc.";
+
+/* Fallback layout name
+   Placeholder layout name until a layout is known
+   Submenu title in the touch control edit panel */
+"Layout" = "Layout";
+
+/* Toast: a layout failed to load */
+"Layout could not be loaded." = "Layout could not be loaded.";
+
+/* Alert message: layout downloads need an https URL */
+"Layout downloads must use a valid https:// URL." = "Layout downloads must use a valid https:// URL.";
+
+/* settings hub view controller: title */
+"Layout Library" = "Layout Library";
+
+/* VoiceOver label of the layout name button in the touch edit bar */
+"Layout menu" = "Layout menu";
+
+/* VoiceOver label of the layout name button; %@ is the layout name */
+"Layout: %@" = "Layout: %@";
+
+/* Button opening the touch layout library
+   Title of the touch layout library */
+"Layouts" = "Layouts";
+
+/* Alert message: edit a control's label */
+"Leave blank to use the default label." = "Leave blank to use the default label.";
+
+/* zar conversion coordinator: title */
+"Leave the original game in place alongside the new .zar archive." = "Leave the original game in place alongside the new .zar archive.";
+
+/* Display menu item
+   Display settings toggle */
+"Letterbox" = "Letterbox";
+
+/* launcher overlay view: label text */
+"Library" = "Library";
+
+/* settings hub view controller: title
+   settings hub view controller: user-visible text */
+"Library & Storage" = "Library & Storage";
+
+/* acknowledgements view controller: title */
+"License" = "License";
+
+/* settings hub view controller: user-visible text */
+"Light" = "Light";
+
+/* compat report view controller: title */
+"Limit Reached" = "Limit Reached";
+
+/* Action sheet button: links a folder in place */
+"Link External Folder" = "Link External Folder";
+
+/* document import coordinator: title
+   external folders view controller: user-visible text
+   game content view controller: title */
+"Link Failed" = "Link Failed";
+
+/* document import coordinator: title */
+"Link Folder..." = "Link Folder...";
+
+/* game content view controller: title */
+"Linked" = "Linked";
+
+/* Error text: linked content cannot be reached */
+"Linked content external folder is unavailable." = "Linked content external folder is unavailable.";
+
+/* Error text: linked content cannot be reached */
+"Linked content external folder path is unavailable." = "Linked content external folder path is unavailable.";
+
+/* Error text: linked content cannot be reached */
+"Linked content is unavailable." = "Linked content is unavailable.";
+
+/* Error text: linked content source is gone */
+"Linked content source file is no longer available." = "Linked content source file is no longer available.";
+
+/* game content view controller: user-visible text */
+"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it." = "Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.";
+
+/* game library store: user-visible text */
+"Linked external folder was not found." = "Linked external folder was not found.";
+
+/* game library store: user-visible text */
+"Linked external game was not found." = "Linked external game was not found.";
+
+/* document import coordinator: label text */
+"Linked external library: %@" = "Linked external library: %@";
+
+/* external folders view controller: user-visible text */
+"Linked Folders" = "Linked Folders";
+
+/* config view controller: label text
+   settings hub view controller: user-visible text */
+"Links" = "Links";
+
+/* In-game menu button
+   log view controller: title */
+"Live Log" = "Live Log";
+
+/* log view controller: section footer */
+"Live tail (0.5s). Showing last %zu KB from %@" = "Live tail (0.5s). Showing last %zu KB from %@";
+
+/* Very short badge on a touch control: Look */
+"Lk" = "Lk";
+
+/* game compatibility cells: label text */
+"Loading discussion..." = "Loading discussion...";
+
+/* profile view controller: user-visible text */
+"Loading profiles..." = "Loading profiles...";
+
+/* Shader compile indicator title while loading the cache */
+"Loading shader cache" = "Loading shader cache";
+
+/* VoiceOver text for the shader compile indicator */
+"Loading shader cache. Expect stutter until it finishes." = "Loading shader cache. Expect stutter until it finishes.";
+
+/* acknowledgements view controller: user-visible text */
+"Loading…" = "Loading…";
+
+/* settings hub view controller: title */
+"Local iOS automation options." = "Local iOS automation options.";
+
+/* profile view controller: user-visible text */
+"Local Profiles" = "Local Profiles";
+
+/* Achievement state for VoiceOver */
+"Locked" = "Locked";
+
+/* In-game menu button */
+"Log" = "Log";
+
+/* Alert title: the log file to share does not exist */
+"Log Not Found" = "Log Not Found";
+
+/* settings hub view controller: title */
+"Log verbosity and live log viewer." = "Log verbosity and live log viewer.";
+
+/* Menu item that assigns a hold-and-drag output */
+"Look" = "Look";
+
+/* Menu item in the Add Control menu */
+"Look Stick" = "Look Stick";
+
+/* Menu item in the Add Control menu
+   Touch control type */
+"Look Zone" = "Look Zone";
+
+/* game actions view controller: user-visible text
+   game content view controller: title
+   launcher overlay view: title */
+"Manage Content" = "Manage Content";
+
+/* Action sheet button: manages linked folders */
+"Manage External Folders…" = "Manage External Folders…";
+
+/* game actions view controller: user-visible text */
+"Manage installed title updates and related content." = "Manage installed title updates and related content.";
+
+/* settings hub view controller: title */
+"Manage local profiles and sign-in slots." = "Manage local profiles and sign-in slots.";
+
+/* settings hub view controller: title */
+"Manage title-specific installed content, discs, and patches from a game tile's context menu." = "Manage title-specific installed content, discs, and patches from a game tile's context menu.";
+
+/* VoiceOver label of a touch control edit button */
+"Match size" = "Match size";
+
+/* Menu item in the touch control layout menu */
+"Match Size..." = "Match Size...";
+
+/* Feedback while snapping; %@ is the name of the matched control */
+"Matched %@" = "Matched %@";
+
+/* Alert title: the increased memory entitlement is missing */
+"Memory Entitlement Missing" = "Memory Entitlement Missing";
+
+/* Short status line when the memory entitlement is missing */
+"Memory entitlement missing. Games will likely crash. Enable Get More RAM, then refresh XeniOS." = "Memory entitlement missing. Games will likely crash. Enable Get More RAM, then refresh XeniOS.";
+
+/* launcher overlay view: user-visible text */
+"Memory entitlement status" = "Memory entitlement status";
+
+/* Submenu title in the Add Control menu */
+"Menu / D-Pad" = "Menu / D-Pad";
+
+/* Touch control type */
+"Menu Button" = "Menu Button";
+
+/* Menu item in the touch control layout menu */
+"Mirror" = "Mirror";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Mirror selected control horizontally" = "Mirror selected control horizontally";
+
+/* Alert title: GOD package lacks its .data folder */
+"Missing Game Data" = "Missing Game Data";
+
+/* compat report view controller: title */
+"Missing Notes" = "Missing Notes";
+
+/* compat report view controller: title */
+"Missing Performance" = "Missing Performance";
+
+/* compat report view controller: title */
+"Missing Status" = "Missing Status";
+
+/* Section header in the pause menu */
+"More" = "More";
+
+/* Menu item that assigns a hold-and-drag output */
+"Move" = "Move";
+
+/* Menu item in the Add Control menu */
+"Move Stick" = "Move Stick";
+
+/* Very short badge on a touch control: Move */
+"Mv" = "Mv";
+
+/* settings hub view controller: title */
+"Name" = "Name";
+
+/* Alert message; %s is the log file name */
+"No %s file exists yet." = "No %s file exists yet.";
+
+/* Empty state title in the achievements screen */
+"No achievements data" = "No achievements data";
+
+/* Toast: no game is active, so no per-game default can be set */
+"No active game title for this layout default." = "No active game title for this layout default.";
+
+/* game disc view controller: user-visible text */
+"No alternate discs were found for this title." = "No alternate discs were found for this title.";
+
+/* game content view controller: label text */
+"No content installed" = "No content installed";
+
+/* Achievement row when there is no description */
+"No description available." = "No description available.";
+
+/* game compatibility cells: user-visible text */
+"No details provided." = "No details provided.";
+
+/* game disc view controller: label text */
+"No discs available" = "No discs available";
+
+/* external folders view controller: label text */
+"No external folders linked" = "No external folders linked";
+
+/* Alert title: no games for the touch layout picker */
+"No Games Available" = "No Games Available";
+
+/* zar conversion coordinator: user-visible text */
+"No Games to Convert" = "No Games to Convert";
+
+/* launcher overlay view: label text */
+"No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +." = "No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +.";
+
+/* Launcher label: no profile exists */
+"No local profile yet" = "No local profile yet";
+
+/* Result message: no shader cache files found */
+"No matching shader cache files were found." = "No matching shader cache files were found.";
+
+/* zar conversion coordinator: user-visible text */
+"No non-.zar games were available for in-place conversion." = "No non-.zar games were available for in-place conversion.";
+
+/* zar conversion coordinator: user-visible text */
+"No non-.zar games were found in the current library." = "No non-.zar games were found in the current library.";
+
+/* zar conversion coordinator: user-visible text */
+"No non-.zar games were selected for conversion." = "No non-.zar games were selected for conversion.";
+
+/* game compatibility cells: user-visible text */
+"No official release reports yet. Preview or self-built reports may still appear below." = "No official release reports yet. Preview or self-built reports may still appear below.";
+
+/* game patches view controller: label text */
+"No patch entries" = "No patch entries";
+
+/* game patches view controller: label text */
+"No patches available" = "No patches available";
+
+/* Launcher label: a profile exists but none is signed in */
+"No profile signed in" = "No profile signed in";
+
+/* profile view controller: user-visible text */
+"No profiles created yet." = "No profiles created yet.";
+
+/* log view controller: label text */
+"No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically." = "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically.";
+
+/* game compatibility cells: label text */
+"No reports yet. Be the first to submit one." = "No reports yet. Be the first to submit one.";
+
+/* Alert title: no game running */
+"No Running Game" = "No Running Game";
+
+/* Toast: there is no saved layout to delete */
+"No saved local layouts to delete." = "No saved local layouts to delete.";
+
+/* Toast: there is no saved layout to rename */
+"No saved local layouts to rename." = "No saved local layouts to rename.";
+
+/* game compatibility hero view: title */
+"No title ID available" = "No title ID available";
+
+/* game content view controller: user-visible text */
+"No title updates or DLC are installed for this title." = "No title updates or DLC are installed for this title.";
+
+/* file transfer: user-visible text */
+"Not enough storage: need %@, have %@. Free up space on this device, or use Link Folder to play from the original location without copying." = "Not enough storage: need %@, have %@. Free up space on this device, or use Link Folder to play from the original location without copying.";
+
+/* Alert button: dismiss without enabling */
+"Not Now" = "Not Now";
+
+/* choice list view controller: accessibility value */
+"Not selected" = "Not selected";
+
+/* profile view controller: detail text */
+"Not signed in" = "Not signed in";
+
+/* zar conversion coordinator: detail text */
+"Not started. Cancelled before reaching this item." = "Not started. Cancelled before reaching this item.";
+
+/* zar conversion coordinator: user-visible text */
+"Not started: %lu." = "Not started: %lu.";
+
+/* compat report view controller: user-visible text */
+"Notes" = "Notes";
+
+/* Fallback title of a plain alert */
+"Notice" = "Notice";
+
+/* config view controller: accessibility value
+   Very short badge on a touch control: action is off
+   Very short badge on a touch control: analog output is off */
+"Off" = "Off";
+
+/* Layout library filter: layouts bundled with the app */
+"Official" = "Official";
+
+/* Layout library row detail: layout bundled with the app */
+"Official preset" = "Official preset";
+
+/* Toast: bundled presets cannot be deleted */
+"Official presets cannot be deleted." = "Official presets cannot be deleted.";
+
+/* Toast: bundled presets cannot be renamed */
+"Official presets cannot be renamed." = "Official presets cannot be renamed.";
+
+/* Alert button: confirm
+   Alert button: dismiss
+   compat formatting: user-visible text
+   compat report view controller: title
+   Message box button */
+"OK" = "OK";
+
+/* config view controller: accessibility value */
+"On" = "On";
+
+/* Alert title: first-run online features notice
+   settings hub view controller: label text */
+"Online Features" = "Online Features";
+
+/* compat report submission: user-visible text
+   settings hub view controller: user-visible text */
+"Online Features Are Off" = "Online Features Are Off";
+
+/* Message shown when a feature needs online features turned on */
+"Online features are turned off. Turn them on in Settings > About > Privacy." = "Online features are turned off. Turn them on in Settings > About > Privacy.";
+
+/* settings hub view controller: detail text */
+"Online features off" = "Online features off";
+
+/* Row title in the touch control edit panel */
+"Opacity" = "Opacity";
+
+/* document import coordinator: title */
+"Open \"%@\"" = "Open \"%@\"";
+
+/* game compatibility cells: title */
+"Open comment" = "Open comment";
+
+/* game actions view controller: user-visible text */
+"Open compatibility status, reports, and notes." = "Open compatibility status, reports, and notes.";
+
+/* settings hub view controller: title */
+"Open Files and copy a game or content package into XeniOS storage." = "Open Files and copy a game or content package into XeniOS storage.";
+
+/* settings hub view controller: title */
+"Open Game Settings from a game tile to edit settings that apply only to that title." = "Open Game Settings from a game tile to edit settings that apply only to that title.";
+
+/* Alert button: opens the Settings app */
+"Open Settings" = "Open Settings";
+
+/* settings hub view controller: title */
+"Open the in-game touch editor for the currently running title." = "Open the in-game touch editor for the currently running title.";
+
+/* Toast: opening StikDebug */
+"Opening StikDebug for JIT..." = "Opening StikDebug for JIT...";
+
+/* Toast: opening StikDebug before a launch */
+"Opening StikDebug to enable JIT..." = "Opening StikDebug to enable JIT...";
+
+/* config view controller: user-visible text */
+"Opens another settings page." = "Opens another settings page.";
+
+/* config view controller: accessibility hint */
+"Opens choices for this setting." = "Opens choices for this setting.";
+
+/* VoiceOver hint for the Display button */
+"Opens display scaling and position options." = "Opens display scaling and position options.";
+
+/* VoiceOver hint for the Graphics button */
+"Opens graphics compatibility settings." = "Opens graphics compatibility settings.";
+
+/* VoiceOver hint of a link button */
+"Opens in Safari." = "Opens in Safari.";
+
+/* launcher overlay view: user-visible text */
+"Opens profile management." = "Opens profile management.";
+
+/* launcher overlay view: user-visible text */
+"Opens the document picker to import a game." = "Opens the document picker to import a game.";
+
+/* launcher overlay view: accessibility hint */
+"Opens the game. Long press for more actions." = "Opens the game. Long press for more actions.";
+
+/* VoiceOver hint for the Live Log button */
+"Opens the live emulator log." = "Opens the live emulator log.";
+
+/* VoiceOver hint for the Edit Controls button */
+"Opens the touch control editor." = "Opens the touch control editor.";
+
+/* settings hub view controller: title */
+"Opens this controls option." = "Opens this controls option.";
+
+/* game picker view controller: title */
+"Opens this game's touch layout editor." = "Opens this game's touch layout editor.";
+
+/* settings hub view controller: title */
+"Opens this settings section." = "Opens this settings section.";
+
+/* launcher overlay view: user-visible text
+   VoiceOver hint for the Settings button */
+"Opens XeniOS settings." = "Opens XeniOS settings.";
+
+/* Section header in display settings */
+"Options" = "Options";
+
+/* zar conversion coordinator: message */
+"Original cleanup finished." = "Original cleanup finished.";
+
+/* zar conversion coordinator: user-visible text */
+"Original Files" = "Original Files";
+
+/* compat report cells: label text */
+"OS Version" = "OS Version";
+
+/* settings hub view controller: title */
+"Output and decoder preferences." = "Output and decoder preferences.";
+
+/* Slider label in the touch analog tuning screen */
+"Output Cap" = "Output Cap";
+
+/* zar conversion coordinator: detail text */
+"Output size: %@." = "Output size: %@.";
+
+/* zar conversion coordinator: detail text */
+"Output: %@" = "Output: %@";
+
+/* Slider label in the touch analog tuning screen */
+"Overall Sensitivity" = "Overall Sensitivity";
+
+/* config view controller: label text */
+"Overrides here apply only to %@ (%@). They are read when the title launches, so relaunch the game after saving." = "Overrides here apply only to %@ (%@). They are read when the title launches, so relaunch the game after saving.";
+
+/* Very short badge on a touch control: Pause */
+"P" = "P";
+
+/* zar conversion coordinator: user-visible text */
+"Partial .zar output from the cancelled item was removed." = "Partial .zar output from the cancelled item was removed.";
+
+/* game patches view controller: label text */
+"Patch %zu" = "Patch %zu";
+
+/* game patches view controller: user-visible text */
+"Patch changes are saved immediately and take effect the next time the game launches." = "Patch changes are saved immediately and take effect the next time the game launches.";
+
+/* game patches view controller: user-visible text */
+"Patch files were found, but none matched this title ID." = "Patch files were found, but none matched this title ID.";
+
+/* Alert title and message: patches unavailable */
+"Patch management is unavailable." = "Patch management is unavailable.";
+
+/* game patches view controller: user-visible text */
+"Patch Not Saved" = "Patch Not Saved";
+
+/* game actions view controller: user-visible text
+   game patches view controller: title
+   launcher overlay view: title */
+"Patches" = "Patches";
+
+/* Binding name of the pause button */
+"Pause" = "Pause";
+
+/* Menu item in the Add Control menu */
+"Pause Button" = "Pause Button";
+
+/* VoiceOver label of the on-screen pause button */
+"Pause game" = "Pause game";
+
+/* log view controller: accessibility label */
+"Pause live log" = "Pause live log";
+
+/* log view controller: section footer */
+"Paused. Resume to continue the live tail." = "Paused. Resume to continue the live tail.";
+
+/* Feedback while dragging; %@ is the name of the other control
+   Feedback while resizing; %@ is the name of the other control */
+"peer" = "peer";
+
+/* settings hub view controller: title */
+"Per-Game Settings" = "Per-Game Settings";
+
+/* compat report view controller: user-visible text
+   settings hub view controller: title */
+"Performance" = "Performance";
+
+/* Pause menu row */
+"Performance Overlay" = "Performance Overlay";
+
+/* settings hub view controller: title */
+"Performs this settings action." = "Performs this settings action.";
+
+/* zar conversion coordinator: title */
+"Permanently delete the original files from the external drive." = "Permanently delete the original files from the external drive.";
+
+/* settings hub view controller: title */
+"Pick a game layout before launch, then use Edit Running Touch Layout for final placement." = "Pick a game layout before launch, then use Edit Running Touch Layout for final placement.";
+
+/* game actions view controller: user-visible text */
+"Pick which disc to start for multi-disc games." = "Pick which disc to start for multi-disc games.";
+
+/* game compatibility cells: detail text */
+"PLATFORM" = "PLATFORM";
+
+/* game actions view controller: user-visible text
+   launcher overlay view: title */
+"Play" = "Play";
+
+/* compat report view controller: message */
+"Please add a short note about your experience." = "Please add a short note about your experience.";
+
+/* compat report view controller: message */
+"Please select a compatibility status." = "Please select a compatibility status.";
+
+/* compat report view controller: message */
+"Please select a performance tier." = "Please select a performance tier.";
+
+/* compat formatting: user-visible text */
+"Poor" = "Poor";
+
+/* Title of the Position submenu */
+"Position" = "Position";
+
+/* Display menu item */
+"Position in Portrait..." = "Position in Portrait...";
+
+/* zar conversion coordinator: user-visible text */
+"Preparing archive" = "Preparing archive";
+
+/* zar conversion coordinator: detail text */
+"Preparing file list." = "Preparing file list.";
+
+/* Title of the Presentation submenu */
+"Presentation" = "Presentation";
+
+/* Title of the Presentation submenu */
+"Presentation: Letterbox" = "Presentation: Letterbox";
+
+/* settings hub view controller: title */
+"Presenter output, aspect, and frame pacing." = "Presenter output, aspect, and frame pacing.";
+
+/* Subtitle of the Fit screen mode */
+"Preserve aspect ratio" = "Preserve aspect ratio";
+
+/* Row subtitle in the touch control edit panel */
+"Press & release" = "Press & release";
+
+/* Subtitle of the in-game menu when a controller is connected */
+"Press B or tap anywhere to close" = "Press B or tap anywhere to close";
+
+/* compat formatting: user-visible text */
+"Preview %@" = "Preview %@";
+
+/* VoiceOver label; %@ is the button the control presses */
+"Primary binding %@" = "Primary binding %@";
+
+/* settings hub view controller: user-visible text */
+"Privacy" = "Privacy";
+
+/* launcher overlay view: user-visible text
+   Pause menu row
+   settings hub view controller: title */
+"Profile" = "Profile";
+
+/* Alert message: profile creation failed
+   Toast: profile creation failed */
+"Profile could not be created. Please try again." = "Profile could not be created. Please try again.";
+
+/* Alert title: profile creation failed */
+"Profile Not Created" = "Profile Not Created";
+
+/* Launcher label: profile services unavailable */
+"Profile system unavailable" = "Profile system unavailable";
+
+/* profile view controller: title */
+"Profiles" = "Profiles";
+
+/* Section header in the pause menu */
+"Quick Settings" = "Quick Settings";
+
+/* Slider label in the touch analog tuning screen */
+"Radius" = "Radius";
+
+/* external folders view controller: title */
+"Re-link" = "Re-link";
+
+/* external folders view controller: user-visible text */
+"Re-link Failed" = "Re-link Failed";
+
+/* file transfer: error message */
+"Reading the selected file failed." = "Reading the selected file failed.";
+
+/* zar conversion coordinator: user-visible text */
+"Ready to convert" = "Ready to convert";
+
+/* VoiceOver label of the redo button */
+"Redo" = "Redo";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Redo edit" = "Redo edit";
+
+/* log view controller: title
+   Title of the Refresh submenu */
+"Refresh" = "Refresh";
+
+/* settings hub view controller: title */
+"Refresh Library" = "Refresh Library";
+
+/* Title of the Refresh submenu */
+"Refresh: Uncapped" = "Refresh: Uncapped";
+
+/* game compatibility cells: label text */
+"RELEASE SUMMARY" = "RELEASE SUMMARY";
+
+/* zar conversion coordinator: title */
+"Remove the linked library entry. The source files stay on the external drive." = "Remove the linked library entry. The source files stay on the external drive.";
+
+/* Result message; %llu is the number of items removed */
+"Removed %llu cached item(s). Relaunch before testing." = "Removed %llu cached item(s). Relaunch before testing.";
+
+/* Context menu item in the layout library
+   Swipe action in the layout library */
+"Rename" = "Rename";
+
+/* Prompt title: rename a layout */
+"Rename Layout" = "Rename Layout";
+
+/* Alert title: choose a layout to rename */
+"Rename Saved Layout" = "Rename Saved Layout";
+
+/* Menu item in the touch control label menu */
+"Rename..." = "Rename...";
+
+/* Toast; %@ is the new layout name */
+"Renamed %@, but the old file could not be removed." = "Renamed %@, but the old file could not be removed.";
+
+/* Toast; %@ is the new layout name */
+"Renamed %@." = "Renamed %@.";
+
+/* Alert button: replace the running game */
+"Replace" = "Replace";
+
+/* Alert title: a link wants to replace the running game */
+"Replace Running Game?" = "Replace Running Game?";
+
+/* compat report view controller: title */
+"Report Submitted" = "Report Submitted";
+
+/* compat report view controller: user-visible text */
+"Reports are tagged as %@." = "Reports are tagged as %@.";
+
+/* settings hub view controller: title */
+"Rescan XeniOS storage and update the launcher grid." = "Rescan XeniOS storage and update the launcher grid.";
+
+/* Alert button: confirm resetting game settings
+   Button resetting the touch analog tuning values
+   config view controller: title
+   Layout library button that resets the layout */
+"Reset" = "Reset";
+
+/* config view controller: title */
+"Reset All Settings?" = "Reset All Settings?";
+
+/* settings hub view controller: title */
+"Reset appears in the same title settings sheet and deletes saved overrides for that title." = "Reset appears in the same title settings sheet and deletes saved overrides for that title.";
+
+/* config view controller: user-visible text */
+"Reset Failed" = "Reset Failed";
+
+/* game actions view controller: user-visible text
+   settings hub view controller: title */
+"Reset Game Settings" = "Reset Game Settings";
+
+/* Alert title: confirm resetting game settings
+   config view controller: title */
+"Reset Game Settings?" = "Reset Game Settings?";
+
+/* Display menu item */
+"Reset Position" = "Reset Position";
+
+/* settings hub view controller: title */
+"Reset Running Layout" = "Reset Running Layout";
+
+/* Slider label in the touch analog tuning screen */
+"Response" = "Response";
+
+/* settings hub view controller: title */
+"Restore the running game's layout to the built-in XeniOS preset." = "Restore the running game's layout to the built-in XeniOS preset.";
+
+/* Toast; %@ is the layout name */
+"Restored %@." = "Restored %@.";
+
+/* In-game menu button */
+"Resume" = "Resume";
+
+/* Pause menu row */
+"Resume Game" = "Resume Game";
+
+/* log view controller: accessibility label */
+"Resume live log" = "Resume live log";
+
+/* VoiceOver hint for the Resume button */
+"Returns to the game." = "Returns to the game.";
+
+/* Name of a touch control shape */
+"Round" = "Round";
+
+/* Name of a touch control shape */
+"Rounded Rectangle" = "Rounded Rectangle";
+
+/* Feedback while resizing; %@ is the name of the other control */
+"Same height as %@" = "Same height as %@";
+
+/* Feedback while resizing; %@ is the name of the other control */
+"Same size as %@" = "Same size as %@";
+
+/* Feedback while resizing; %@ is the name of the other control */
+"Same width as %@" = "Same width as %@";
+
+/* Feedback while dragging; %@ is the name of the other control */
+"Same X as %@" = "Same X as %@";
+
+/* Feedback while dragging; %@ is the name of the other control */
+"Same Y as %@" = "Same Y as %@";
+
+/* Alert button: save the label
+   config view controller: title */
+"Save" = "Save";
+
+/* zar conversion coordinator: user-visible text */
+"Save about %@" = "Save about %@";
+
+/* config view controller: title */
+"Save Completed With Warnings" = "Save Completed With Warnings";
+
+/* Layout library button that saves a copy of the current layout */
+"Save Copy" = "Save Copy";
+
+/* game actions view controller: user-visible text */
+"Save display, compatibility, and cvar overrides for this title." = "Save display, compatibility, and cvar overrides for this title.";
+
+/* Prompt title: save a copy of the layout */
+"Save Layout Copy" = "Save Layout Copy";
+
+/* Layout library filter: layouts the user saved */
+"Saved" = "Saved";
+
+/* zar conversion coordinator: user-visible text */
+"Saved %@ (%@ -> %@)." = "Saved %@ (%@ -> %@).";
+
+/* Toast; %@ is the new layout name */
+"Saved copy %@." = "Saved copy %@.";
+
+/* Layout library row detail: layout the user saved */
+"Saved local copy" = "Saved local copy";
+
+/* config view controller: message */
+"Saved title-specific overrides. Relaunch the game before testing them." = "Saved title-specific overrides. Relaunch the game before testing them.";
+
+/* config view controller: message */
+"Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing." = "Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing.";
+
+/* Title of the Scaling submenu */
+"Scaling" = "Scaling";
+
+/* Title of the Scaling submenu with Fill active */
+"Scaling: Fill" = "Scaling: Fill";
+
+/* Title of the Scaling submenu with Fit active */
+"Scaling: Fit" = "Scaling: Fit";
+
+/* Title of the Scaling submenu with Stretch active */
+"Scaling: Stretch" = "Scaling: Stretch";
+
+/* zar conversion coordinator: detail text */
+"Scanned %lu of %lu item%@ (%.0f%%)" = "Scanned %lu of %lu item%@ (%.0f%%)";
+
+/* game patches view controller: detail text */
+"Scanned %zu files in:\n%@\n\nAdd xenia-canary .patch.toml files for this title." = "Scanned %zu files in:\n%@\n\nAdd xenia-canary .patch.toml files for this title.";
+
+/* zar conversion coordinator: detail text */
+"Scanning %lu item%@..." = "Scanning %lu item%@...";
+
+/* Section header in display settings */
+"Screen Mode" = "Screen Mode";
+
+/* compat report cells: label text */
+"Screenshot %ld" = "Screenshot %ld";
+
+/* compat report view controller: user-visible text */
+"Screenshots" = "Screenshots";
+
+/* settings hub view controller: title */
+"Search All Config appears at the top of each title's settings sheet." = "Search All Config appears at the top of each title's settings sheet.";
+
+/* settings hub view controller: title */
+"Search and edit every registered cvar." = "Search and edit every registered cvar.";
+
+/* settings hub view controller: title */
+"Search Overrides" = "Search Overrides";
+
+/* settings hub view controller: placeholder */
+"Search Settings" = "Search Settings";
+
+/* Name shown for a hidden achievement */
+"Secret Achievement" = "Secret Achievement";
+
+/* Placeholder shown in the pause workspace before a choice is made */
+"Select an option" = "Select an option";
+
+/* Action sheet title: choose a profile */
+"Select Profile" = "Select Profile";
+
+/* Profile picker message; %u is the number of users needed (2 or more) */
+"Select profile (needs %u users)." = "Select profile (needs %u users).";
+
+/* Profile picker message when exactly one user is needed */
+"Select profile (needs 1 user)." = "Select profile (needs 1 user).";
+
+/* choice list view controller: accessibility value
+   VoiceOver value for the selected screen mode */
+"Selected" = "Selected";
+
+/* document import coordinator: user-visible text */
+"Selected file" = "Selected file";
+
+/* Toast: GOD package lacks its .data folder */
+"Selected game is missing its .data folder." = "Selected game is missing its .data folder.";
+
+/* Toast: the chosen layout is gone */
+"Selected layout is no longer available." = "Selected layout is no longer available.";
+
+/* game library store: user-visible text */
+"Selected location is not a folder." = "Selected location is not a folder.";
+
+/* settings hub view controller: detail text */
+"Selects this app icon." = "Selects this app icon.";
+
+/* Toast; %1$lu is the number of games, %2$@ the receiving app */
+"Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
+
+/* In-game menu button
+   launcher overlay view: user-visible text
+   settings hub view controller: title */
+"Settings" = "Settings";
+
+/* config view controller: user-visible text */
+"Settings could not be reset. Check xenia.log." = "Settings could not be reset. Check xenia.log.";
+
+/* config view controller: user-visible text */
+"Settings Reset" = "Settings Reset";
+
+/* config view controller: title */
+"Settings Saved" = "Settings Saved";
+
+/* settings hub view controller: user-visible text */
+"Setup" = "Setup";
+
+/* Alert title: shader cache clear result */
+"Shader Cache Cleared" = "Shader Cache Cleared";
+
+/* Alert title: shader cache clear result */
+"Shader Cache Not Cleared" = "Shader Cache Not Cleared";
+
+/* Alert title: all shader caches clear result */
+"Shader Caches Cleared" = "Shader Caches Cleared";
+
+/* Alert title: all shader caches clear result */
+"Shader Caches Not Cleared" = "Shader Caches Not Cleared";
+
+/* settings hub view controller: title */
+"Shader compilation behavior and experimental iOS thread QoS." = "Shader compilation behavior and experimental iOS thread QoS.";
+
+/* Display settings toggle */
+"Shader Compile Status" = "Shader Compile Status";
+
+/* Footer under the display options */
+"Shader Compile Status shows when the game is building shaders, which causes stutter and missing effects until it finishes." = "Shader Compile Status shows when the game is building shaders, which causes stutter and missing effects until it finishes.";
+
+/* Row title in the touch control edit panel */
+"Shape" = "Shape";
+
+/* Alert button: share the game library
+   log view controller: title */
+"Share" = "Share";
+
+/* Alert title: another app asks for the game library */
+"Share Game Library?" = "Share Game Library?";
+
+/* Alert button: shares the log file */
+"Share Log" = "Share Log";
+
+/* settings hub view controller: title */
+"Share the layout currently loaded in the running game." = "Share the layout currently loaded in the running game.";
+
+/* Submenu title in the Add Control menu */
+"Shoulders / Triggers" = "Shoulders / Triggers";
+
+/* quick settings view controller: title */
+"Show Advanced Debug" = "Show Advanced Debug";
+
+/* game compatibility cells: user-visible text */
+"Show all %ld reports" = "Show all %ld reports";
+
+/* game compatibility cells: title */
+"Show fewer reports" = "Show fewer reports";
+
+/* Navigation bar button that reveals hidden achievements
+   Navigation bar button toggling hidden achievement details */
+"Show Hidden" = "Show Hidden";
+
+/* Menu item in the touch control label menu */
+"Show Label" = "Show Label";
+
+/* game compatibility cells: title */
+"Show less" = "Show less";
+
+/* game compatibility cells: title */
+"Show more" = "Show more";
+
+/* game compatibility cells: label text */
+"Showing all %ld reports." = "Showing all %ld reports.";
+
+/* game compatibility cells: user-visible text */
+"Showing latest %ld of %ld reports." = "Showing latest %ld of %ld reports.";
+
+/* VoiceOver hint for the Achievements button */
+"Shows achievements for the current game." = "Shows achievements for the current game.";
+
+/* settings hub view controller: user-visible text */
+"Shows Advanced Debug and All Config under Settings > Advanced. These change emulator internals and can break games." = "Shows Advanced Debug and All Config under Settings > Advanced. These change emulator internals and can break games.";
+
+/* acknowledgements view controller: accessibility hint */
+"Shows the license." = "Shows the license.";
+
+/* profile view controller: user-visible text
+   Toast; %@ is the gamertag */
+"Signed in as %@." = "Signed in as %@.";
+
+/* profile view controller: detail text */
+"Signed in on slot %u" = "Signed in on slot %u";
+
+/* Launcher label; %@ is the signed-in gamertag */
+"Signed in: %@" = "Signed in: %@";
+
+/* Row subtitle in the touch control edit panel */
+"Slide while holding" = "Slide while holding";
+
+/* config view controller: user-visible text */
+"Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game." = "Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game.";
+
+/* config view controller: message */
+"Some title-specific overrides could not be saved. Check xenia.log." = "Some title-specific overrides could not be saved. Check xenia.log.";
+
+/* zar conversion coordinator: user-visible text */
+"Source" = "Source";
+
+/* zar conversion coordinator: detail text */
+"Source: %@" = "Source: %@";
+
+/* zar conversion coordinator: user-visible text */
+"Space saved could not be estimated." = "Space saved could not be estimated.";
+
+/* Very short badge on a touch control: Start button */
+"St" = "St";
+
+/* Name of a controller button in a touch control preview */
+"Start" = "Start";
+
+/* game compatibility cells: detail text */
+"STATUS" = "STATUS";
+
+/* Alert message: offers to enable JIT through StikDebug automatically */
+"StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing." = "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing.";
+
+/* Toast: StikDebug is unavailable */
+"StikDebug is not installed or unavailable." = "StikDebug is not installed or unavailable.";
+
+/* Toast: the game is being stopped */
+"Stopping game..." = "Stopping game...";
+
+/* document import coordinator: label text
+   Toast: a stop request is already in progress */
+"Stopping game... Please wait." = "Stopping game... Please wait.";
+
+/* VoiceOver hint for the Exit button */
+"Stops the game and returns to the library." = "Stops the game and returns to the library.";
+
+/* file transfer: user-visible text */
+"Storage is full. Free up space on this device and try again." = "Storage is full. Free up space on this device and try again.";
+
+/* Screen mode option: ignore the aspect ratio */
+"Stretch" = "Stretch";
+
+/* Display menu item */
+"Stretch (Fill, Ignore Aspect)" = "Stretch (Fill, Ignore Aspect)";
+
+/* compat report submission: user-visible text */
+"Submission Failed" = "Submission Failed";
+
+/* compat report cells: label text
+   compat report view controller: title
+   game compatibility cells: title */
+"Submit Report" = "Submit Report";
+
+/* compat report view controller: user-visible text */
+"Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information." = "Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information.";
+
+/* settings hub view controller: title */
+"Support" = "Support";
+
+/* Slider label in the touch analog tuning screen */
+"Swipe Acceleration" = "Swipe Acceleration";
+
+/* Row title in the touch control edit panel */
+"Tap" = "Tap";
+
+/* external folders view controller: detail text */
+"Tap + to link a folder from Files, a USB drive, or a network share." = "Tap + to link a folder from Files, a USB drive, or a network share.";
+
+/* Feedback while picking a control to copy the size from */
+"Tap another button" = "Tap another button";
+
+/* Subtitle of the in-game menu */
+"Tap anywhere to close" = "Tap anywhere to close";
+
+/* Prompt while picking a control to copy the size from */
+"Tap target for size" = "Tap target for size";
+
+/* Feedback while snapping; %@ is the name of the matched control */
+"target" = "target";
+
+/* game compatibility cells: label text */
+"Tested this game?" = "Tested this game?";
+
+/* Alert message; %@ is the name of the requesting app */
+"The app \"%@\" is asking for the titles and icons of your game library." = "The app \"%@\" is asking for the titles and icons of your game library.";
+
+/* Alert message: download URL is too long */
+"The download URL is too long to be safe and was rejected." = "The download URL is too long to be safe and was rejected.";
+
+/* Error text: downloaded layout could not be inspected */
+"The downloaded layout could not be inspected." = "The downloaded layout could not be inspected.";
+
+/* Error text: downloaded layout could not be read */
+"The downloaded layout could not be read." = "The downloaded layout could not be read.";
+
+/* Error text: downloaded layout is too large */
+"The downloaded layout is larger than 64 KB and was rejected." = "The downloaded layout is larger than 64 KB and was rejected.";
+
+/* Error text: downloaded layout is empty */
+"The downloaded layout was empty." = "The downloaded layout was empty.";
+
+/* Alert message: embedded layout is too large */
+"The embedded layout is larger than 64 KB and was rejected." = "The embedded layout is larger than 64 KB and was rejected.";
+
+/* Alert message when the emulator fails to initialize */
+"The emulator could not be initialized. Sharing the log helps find out why." = "The emulator could not be initialized. Sharing the log helps find out why.";
+
+/* Alert message: the game is not stopping */
+"The game is taking too long to stop. You can wait a little longer, or force-quit XeniOS from the app switcher and open it again." = "The game is taking too long to stop. You can wait a little longer, or force-quit XeniOS from the app switcher and open it again.";
+
+/* Alert message when the memory entitlement is missing */
+"The increased-memory entitlement is not enabled in the installed app. Most games will likely crash without it.\n\nEnable Get More RAM for XeniOS, then refresh or reinstall the app so it is signed with increased memory." = "The increased-memory entitlement is not enabled in the installed app. Most games will likely crash without it.\n\nEnable Get More RAM for XeniOS, then refresh or reinstall the app so it is signed with increased memory.";
+
+/* acknowledgements: fallback text shown when the license file is missing */
+"The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS" = "The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS";
+
+/* game patches view controller: user-visible text */
+"The patches folder did not contain any .patch.toml files." = "The patches folder did not contain any .patch.toml files.";
+
+/* game patches view controller: user-visible text */
+"The patches folder was not found." = "The patches folder was not found.";
+
+/* compat report submission: user-visible text */
+"The report server is having trouble right now. Please try again later." = "The report server is having trouble right now. Please try again later.";
+
+/* file transfer: user-visible text */
+"The selected file is no longer available." = "The selected file is no longer available.";
+
+/* compat report submission: user-visible text */
+"The server didn't accept this report. Please try again later." = "The server didn't accept this report. Please try again later.";
+
+/* Placeholder for the host name of a layout download source */
+"the source" = "the source";
+
+/* Error text: download failed */
+"The touch layout could not be downloaded." = "The touch layout could not be downloaded.";
+
+/* Error text: layout could not be saved */
+"The touch layout could not be saved." = "The touch layout could not be saved.";
+
+/* Error text: layout payload is empty */
+"The touch layout payload was empty." = "The touch layout payload was empty.";
+
+/* Row title in the touch control edit panel */
+"Then button" = "Then button";
+
+/* Row title in the touch control edit panel */
+"Then drag" = "Then drag";
+
+/* Fallback for the current version text in the update notice */
+"this build" = "this build";
+
+/* settings hub view controller: user-visible text */
+"This build does not include alternate app icons." = "This build does not include alternate app icons.";
+
+/* content management: error message */
+"This content package is missing its required .data sidecar folder." = "This content package is missing its required .data sidecar folder.";
+
+/* external folders view controller: user-visible text */
+"this folder" = "this folder";
+
+/* config view controller: title */
+"this game" = "this game";
+
+/* zar conversion coordinator: user-visible text */
+"This game is already a .zar archive and does not need conversion." = "This game is already a .zar archive and does not need conversion.";
+
+/* Alert message: GOD package lacks its .data folder */
+"This GOD package needs its matching .data folder in the same directory. Transfer both the GOD file and its .data folder, then try again." = "This GOD package needs its matching .data folder in the same directory. Transfer both the GOD file and its .data folder, then try again.";
+
+/* Alert message: install link is too long */
+"This install link is too long to be safe and was rejected." = "This install link is too long to be safe and was rejected.";
+
+/* Alert message: install link payload cannot be decoded */
+"This install link's payload could not be decoded." = "This install link's payload could not be decoded.";
+
+/* Alert message: touch layout needs a title ID */
+"This item does not expose a title ID, so a title-specific touch layout cannot be saved." = "This item does not expose a title ID, so a title-specific touch layout cannot be saved.";
+
+/* Alert message: compatibility details need a title ID */
+"This item does not expose a title ID, so compatibility details cannot be loaded." = "This item does not expose a title ID, so compatibility details cannot be loaded.";
+
+/* Alert message: game settings need a title ID */
+"This item does not expose a title ID, so game settings cannot be reset." = "This item does not expose a title ID, so game settings cannot be reset.";
+
+/* Alert message: game settings need a title ID */
+"This item does not expose a title ID, so game settings cannot be saved." = "This item does not expose a title ID, so game settings cannot be saved.";
+
+/* Alert message: installed content needs a title ID */
+"This item does not expose a title ID, so installed content cannot be managed." = "This item does not expose a title ID, so installed content cannot be managed.";
+
+/* Alert message: patches need a title ID */
+"This item does not expose a title ID, so patches cannot be loaded." = "This item does not expose a title ID, so patches cannot be loaded.";
+
+/* Placeholder for a layout whose name is unknown, used in the install prompt */
+"this layout" = "this layout";
+
+/* Alert message: install link has no source or file */
+"This link is missing a 'source' URL or 'file' payload." = "This link is missing a 'source' URL or 'file' payload.";
+
+/* game content view controller: message */
+"This package is for title %08X, but the current game is %08X." = "This package is for title %08X, but the current game is %08X.";
+
+/* game patches view controller: detail text */
+"This patch file did not contain any toggles." = "This patch file did not contain any toggles.";
+
+/* zar conversion coordinator: message */
+"This permanently deletes:\n%@" = "This permanently deletes:\n%@";
+
+/* Alert message: confirm deleting a layout */
+"This removes the saved local layout file." = "This removes the saved local layout file.";
+
+/* Empty state message in the achievements screen */
+"This title has not published achievement metadata to the profile." = "This title has not published achievement metadata to the profile.";
+
+/* Row title in the touch control edit panel */
+"Tint" = "Tint";
+
+/* compat report cells: label text */
+"Title" = "Title";
+
+/* Fallback heading; %08X is the title ID in hexadecimal */
+"Title %08X" = "Title %08X";
+
+/* settings hub view controller: title */
+"Title content, discs, packages, and patches from game tiles." = "Title content, discs, packages, and patches from game tiles.";
+
+/* compat report cells: label text */
+"Title ID" = "Title ID";
+
+/* game patches view controller: detail text */
+"Title ID %08X did not match any discovered patch file.\n\nFolder: %@\nPatch-looking files: %zu\nParse failures: %zu\nOther title IDs: %zu" = "Title ID %08X did not match any discovered patch file.\n\nFolder: %@\nPatch-looking files: %zu\nParse failures: %zu\nOther title IDs: %zu";
+
+/* Toast; %08X is the title ID in hexadecimal */
+"Title ID %08X was not found in Library." = "Title ID %08X was not found in Library.";
+
+/* Picker row detail; %@ is a title ID in hexadecimal */
+"Title ID %@" = "Title ID %@";
+
+/* game compatibility hero view: title */
+"Title ID: %08X" = "Title ID: %08X";
+
+/* settings hub view controller: title */
+"Title Overrides" = "Title Overrides";
+
+/* content management: title */
+"Title Update" = "Title Update";
+
+/* document import coordinator: message
+   game content view controller: message */
+"Title update installation failed." = "Title update installation failed.";
+
+/* document import coordinator: title */
+"Title Update Installed" = "Title Update Installed";
+
+/* game content view controller: message */
+"Title update installed successfully." = "Title update installed successfully.";
+
+/* settings hub view controller: title */
+"Title-specific overrides, search, reset, and batched saves." = "Title-specific overrides, search, reset, and batched saves.";
+
+/* config view controller: label text */
+"To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them." = "To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them.";
+
+/* game patches view controller: accessibility hint */
+"Toggles this patch for the next launch." = "Toggles this patch for the next launch.";
+
+/* compat report submission: message */
+"Too many reports were sent recently. Please try again later." = "Too many reports were sent recently. Please try again later.";
+
+/* settings hub view controller: title
+   settings hub view controller: user-visible text */
+"Touch Behavior" = "Touch Behavior";
+
+/* VoiceOver label of the on-screen controller area */
+"Touch controller" = "Touch controller";
+
+/* Pause menu row
+   settings hub view controller: title */
+"Touch Controls" = "Touch Controls";
+
+/* Alert title for touch layout downloads
+   Alert title for touch layout install problems
+   game actions view controller: user-visible text
+   launcher overlay view: title
+   Title of the touch layout editor */
+"Touch Layout" = "Touch Layout";
+
+/* Error shown when loading a touch layout
+   Error text: layout file could not be applied */
+"Touch layout file could not be applied." = "Touch layout file could not be applied.";
+
+/* Toast: the user cancelled a touch layout import */
+"Touch layout import cancelled." = "Touch layout import cancelled.";
+
+/* settings hub view controller: title
+   settings hub view controller: user-visible text */
+"Touch Layouts" = "Touch Layouts";
+
+/* VoiceOver hint of the on-screen controller area */
+"Touch the screen to use the on-screen controls." = "Touch the screen to use the on-screen controls.";
+
+/* Title of the touch analog tuning screen */
+"Tune" = "Tune";
+
+/* Row title in the touch control edit panel
+   VoiceOver label of a touch control edit button */
+"Tune response" = "Tune response";
+
+/* Alert button: disables online features */
+"Turn Off" = "Turn Off";
+
+/* Toast: launch failed */
+"Unable to launch game (app context unavailable)." = "Unable to launch game (app context unavailable).";
+
+/* Toast: launch could not be queued */
+"Unable to queue launch (app context unavailable)." = "Unable to queue launch (app context unavailable).";
+
+/* compat report submission: message */
+"Unable to serialize the report payload." = "Unable to serialize the report payload.";
+
+/* Alert title and message: patches unavailable
+   Alert title: item cannot be configured */
+"Unavailable" = "Unavailable";
+
+/* external folders view controller: detail text */
+"Unavailable - tap to re-link\n%@" = "Unavailable - tap to re-link\n%@";
+
+/* Display settings toggle */
+"Uncapped Emulated Display" = "Uncapped Emulated Display";
+
+/* VoiceOver label of the undo button */
+"Undo" = "Undo";
+
+/* Keyboard shortcut name shown in the shortcut overlay */
+"Undo edit" = "Undo edit";
+
+/* Context menu item in the layout library
+   Swipe action in the layout library */
+"Unfavorite" = "Unfavorite";
+
+/* Toast; %@ is the layout name */
+"Unfavorited %@." = "Unfavorited %@.";
+
+/* compat formatting: user-visible text
+   game compatibility cells: label text
+   game compatibility cells: user-visible text */
+"Unknown" = "Unknown";
+
+/* compat formatting: user-visible text */
+"Unknown Build" = "Unknown Build";
+
+/* zar conversion coordinator: message */
+"Unknown error." = "Unknown error.";
+
+/* game compatibility hero view: title */
+"Unknown Title" = "Unknown Title";
+
+/* external folders view controller: title
+   game content view controller: title */
+"Unlink" = "Unlink";
+
+/* game content view controller: message */
+"Unlink \"%@\"? The source files in the external folder will not be deleted." = "Unlink \"%@\"? The source files in the external folder will not be deleted.";
+
+/* game content view controller: title */
+"Unlink Content" = "Unlink Content";
+
+/* external folders view controller: user-visible text */
+"Unlink Failed" = "Unlink Failed";
+
+/* zar conversion coordinator: title */
+"Unlink Original" = "Unlink Original";
+
+/* zar conversion coordinator: message */
+"Unlinked %@." = "Unlinked %@.";
+
+/* zar conversion coordinator: user-visible text */
+"Unlinked original game." = "Unlinked original game.";
+
+/* Achievement row for a hidden achievement */
+"Unlock to reveal details." = "Unlock to reveal details.";
+
+/* Achievement state for VoiceOver */
+"Unlocked" = "Unlocked";
+
+/* game content view controller: title */
+"Unsupported Content" = "Unsupported Content";
+
+/* launcher overlay view: accessibility label */
+"Untitled game" = "Untitled game";
+
+/* Touch control preview when nothing is mapped */
+"Unused" = "Unused";
+
+/* settings hub view controller: label text */
+"Up to Date" = "Up to Date";
+
+/* Alert title: update available
+   settings hub view controller: label text */
+"Update Available" = "Update Available";
+
+/* Toast: an update is available; %@ is a version */
+"Update available: %@" = "Update available: %@";
+
+/* settings hub view controller: user-visible text */
+"Update checks, compatibility data, cover art, and compatibility discussions and reports. Turn this off and XeniOS does none of these. Games are not affected." = "Update checks, compatibility data, cover art, and compatibility discussions and reports. Turn this off and XeniOS does none of these. Games are not affected.";
+
+/* settings hub view controller: label text
+   settings hub view controller: user-visible text */
+"Updates" = "Updates";
+
+/* Menu item in the touch control label menu */
+"Use Default Label" = "Use Default Label";
+
+/* Context menu item in the layout library */
+"Use for All Games" = "Use for All Games";
+
+/* Context menu item in the layout library */
+"Use for This Game" = "Use for This Game";
+
+/* settings hub view controller: user-visible text */
+"Use the adaptive primary icon." = "Use the adaptive primary icon.";
+
+/* settings hub view controller: user-visible text */
+"Use the dark icon." = "Use the dark icon.";
+
+/* settings hub view controller: user-visible text */
+"Use the light icon." = "Use the light icon.";
+
+/* zar conversion coordinator: user-visible text */
+"Uses about %@ more" = "Uses about %@ more";
+
+/* config view controller: user-visible text */
+"Value Not Accepted" = "Value Not Accepted";
+
+/* settings hub view controller: title */
+"Version" = "Version";
+
+/* Slider label in the touch analog tuning screen */
+"Vertical Sensitivity" = "Vertical Sensitivity";
+
+/* game actions view controller: user-visible text */
+"View and manage title patches." = "View and manage title patches.";
+
+/* game compatibility cells: title */
+"View Issue #%ld" = "View Issue #%ld";
+
+/* game compatibility cells: user-visible text */
+"View on GitHub" = "View on GitHub";
+
+/* document import coordinator: message */
+"Wait for the current import to finish, or cancel it first." = "Wait for the current import to finish, or cancel it first.";
+
+/* zar conversion coordinator: user-visible text */
+"Waiting" = "Waiting";
+
+/* zar conversion coordinator: detail text */
+"Waiting for estimate." = "Waiting for estimate.";
+
+/* Toast; %@ is the game title */
+"Waiting for JIT to launch: %@" = "Waiting for JIT to launch: %@";
+
+/* launcher overlay view: label text */
+"Waiting for JIT..." = "Waiting for JIT...";
+
+/* config view controller: section footer
+   settings hub view controller: title */
+"Website" = "Website";
+
+/* zar conversion coordinator: title */
+"Write .zar archives beside the source games and keep the originals." = "Write .zar archives beside the source games and keep the originals.";
+
+/* zar conversion coordinator: title */
+"Write archives beside the source games and delete the original files after success." = "Write archives beside the source games and delete the original files after success.";
+
+/* zar conversion coordinator: title */
+"Write the archive beside the external source, then delete the original files." = "Write the archive beside the external source, then delete the original files.";
+
+/* zar conversion coordinator: detail text */
+"Writing archive index and validating output." = "Writing archive index and validating output.";
+
+/* file transfer: error message */
+"Writing the copy failed." = "Writing the copy failed.";
+
+/* game content view controller: title */
+"Wrong Game" = "Wrong Game";
+
+/* Title of an information message box */
+"XeniOS" = "XeniOS";
+
+/* Alert message: update available; %1$@ is the new version, %2$@ the current one */
+"XeniOS %1$@ is available. You're on %2$@." = "XeniOS %1$@ is available. You're on %2$@.";
+
+/* external folders view controller: message */
+"XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it." = "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it.";
+
+/* Alert message: first-run online features notice */
+"XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+
+/* Alert title: shown after the app crashed in the previous session */
+"XeniOS closed unexpectedly last time" = "XeniOS closed unexpectedly last time";
+
+/* zar conversion coordinator: user-visible text */
+"XeniOS could not access the linked external folder for in-place conversion." = "XeniOS could not access the linked external folder for in-place conversion.";
+
+/* game content view controller: message
+   zar conversion coordinator: user-visible text */
+"XeniOS could not access the linked external folder." = "XeniOS could not access the linked external folder.";
+
+/* Alert title: the emulator failed to start */
+"XeniOS could not start" = "XeniOS could not start";
+
+/* compat report submission: user-visible text */
+"XeniOS couldn't reach the report server. Check your connection and try again." = "XeniOS couldn't reach the report server. Check your connection and try again.";
+
+/* Title of a fatal or error message box */
+"XeniOS Error" = "XeniOS Error";
+
+/* acknowledgements view controller: label text */
+"XeniOS is based on Xenia and uses the open-source software listed above." = "XeniOS is based on Xenia and uses the open-source software listed above.";
+
+/* config view controller: label text */
+"XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023" = "XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023";
+
+/* zar conversion coordinator: user-visible text */
+"XeniOS removed the partial .zar output from the interrupted conversion." = "XeniOS removed the partial .zar output from the interrupted conversion.";
+
+/* Alert message after a crash outside a game; %@ is the app version */
+"XeniOS stopped while it was open (version %@). Sharing its log helps get this fixed." = "XeniOS stopped while it was open (version %@). Sharing its log helps get this fixed.";
+
+/* Alert message after a crash during a game; %@ is the app version */
+"XeniOS stopped while it was open during a game (version %@). Sharing its log helps get this fixed." = "XeniOS stopped while it was open during a game (version %@). Sharing its log helps get this fixed.";
+
+/* Title of a warning message box */
+"XeniOS Warning" = "XeniOS Warning";
+
+/* zar conversion coordinator: message */
+"XeniOS won't delete:\n%@\n\nThey are or contain folders XeniOS or you rely on. You can still convert and keep the originals." = "XeniOS won't delete:\n%@\n\nThey are or contain folders XeniOS or you rely on. You can still convert and keep the originals.";
+
+/* compat report view controller: message */
+"You can attach up to 5 screenshots." = "You can attach up to 5 screenshots.";
+
+/* config view controller: message */
+"You have unsaved setting changes." = "You have unsaved setting changes.";
+
+/* compat report view controller: message */
+"Your compatibility report has been submitted." = "Your compatibility report has been submitted.";
+
+/* Toast shown when the device is thermally throttled */
+"Your device is warm. The game may run slower until it cools down." = "Your device is warm. The game may run slower until it cools down.";
+
+/* zar conversion coordinator: title */
+"ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";
+
+/* zar conversion coordinator: message */
+"ZAR conversion cancelled." = "ZAR conversion cancelled.";
+
+/* zar conversion coordinator: title */
+"ZAR Conversion Complete" = "ZAR Conversion Complete";
+
+/* zar conversion coordinator: title */
+"ZAR Conversion Failed" = "ZAR Conversion Failed";
+
+/* zar conversion coordinator: message */
+"ZAR conversion failed." = "ZAR conversion failed.";
+
+/* zar conversion coordinator: user-visible text */
+"ZAR Conversion Finished" = "ZAR Conversion Finished";
+
+/* zar conversion coordinator: title */
+"ZAR Conversion Finished with Errors" = "ZAR Conversion Finished with Errors";
+
+/* zar conversion coordinator: message */
+"ZAR conversion finished with errors." = "ZAR conversion finished with errors.";
+
+/* zar conversion coordinator: message */
+"ZAR conversion finished." = "ZAR conversion finished.";
+
+/* Display menu item */
+"Zoom (Fill, Crop)" = "Zoom (Fill, Crop)";
+
