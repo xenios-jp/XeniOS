@@ -139,6 +139,54 @@ add_custom_command(TARGET xenia-app POST_BUILD
           -o "$<TARGET_BUNDLE_DIR:xenia-app>/Base.lproj/Localizable.strings"
           "${PROJECT_SOURCE_DIR}/assets/apple/Base.lproj/Localizable.strings"
   VERBATIM)
+# The crash reporter extension (iOS 27): the system runs it after XeniOS
+# crashes, and it reads xe_ios_crash_context from the crashed process. It goes in
+# Extensions/, where iOS 26 ignores it; packaging signs it apart from the app.
+option(XENIA_IOS_CRASH_REPORTER "Embed the iOS 27 crash reporter extension" ON)
+if(XENIA_IOS_CRASH_REPORTER)
+  execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path
+    OUTPUT_VARIABLE _xe_ios_sdk OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY)
+  set(_xe_crash_reporter_src "${PROJECT_SOURCE_DIR}/src/xenia/ui/ios/crash_reporter")
+  set(_xe_crash_reporter_header
+      "${PROJECT_SOURCE_DIR}/src/xenia/ui/ios/shared/ios_crash_context.h")
+  set(_xe_crash_reporter_appex "${CMAKE_CURRENT_BINARY_DIR}/XeniOSCrashReporter.appex")
+  add_custom_command(
+    OUTPUT "${_xe_crash_reporter_appex}/XeniOSCrashReporter"
+           "${_xe_crash_reporter_appex}/Info.plist"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_xe_crash_reporter_appex}"
+    COMMAND xcrun --sdk iphoneos swiftc
+            -target arm64-apple-ios27.0 -sdk "${_xe_ios_sdk}"
+            -swift-version 5 -parse-as-library -O -application-extension
+            -module-name XeniOSCrashReporter
+            -import-objc-header "${_xe_crash_reporter_header}"
+            "${_xe_crash_reporter_src}/crash_reporter_extension.swift"
+            -Xlinker -application_extension
+            # As Xcode links extensions: NSExtensionMain sets up the launch
+            # before the Swift @main runs, and AppExtension.main traps without it.
+            -Xlinker -e -Xlinker _NSExtensionMain
+            -o "${_xe_crash_reporter_appex}/XeniOSCrashReporter"
+    COMMAND plutil -convert binary1 -o "${_xe_crash_reporter_appex}/Info.plist"
+            "${_xe_crash_reporter_src}/Info.plist"
+    # Signed whole here so the app's own ad-hoc signature can seal it.
+    COMMAND codesign --force --sign - "${_xe_crash_reporter_appex}"
+    DEPENDS "${_xe_crash_reporter_src}/crash_reporter_extension.swift"
+            "${_xe_crash_reporter_src}/Info.plist"
+            "${_xe_crash_reporter_header}"
+    COMMENT "Building XeniOSCrashReporter.appex"
+    VERBATIM)
+  add_custom_target(xenia-ios-crash-reporter
+    DEPENDS "${_xe_crash_reporter_appex}/XeniOSCrashReporter"
+            "${_xe_crash_reporter_appex}/Info.plist")
+  add_dependencies(xenia-app xenia-ios-crash-reporter)
+  # POST_BUILD runs only when the app links: relink it when the extension changes.
+  set_property(TARGET xenia-app APPEND PROPERTY LINK_DEPENDS
+               "${_xe_crash_reporter_appex}/XeniOSCrashReporter")
+  add_custom_command(TARGET xenia-app POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${_xe_crash_reporter_appex}"
+            "$<TARGET_BUNDLE_DIR:xenia-app>/Extensions/XeniOSCrashReporter.appex"
+    VERBATIM)
+endif()
 set(_xe_ios_package_command
   /bin/bash "${PROJECT_SOURCE_DIR}/tools/package_ios_ipa.sh"
   "$<TARGET_BUNDLE_DIR:xenia-app>"
