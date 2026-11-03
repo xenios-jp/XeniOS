@@ -75,6 +75,9 @@ struct PHASEAudioDriverShared {
   // up on, so their completion blocks, if they ever run, only recycle the
   // buffer.
   uint64_t epoch = 0;
+  // steady_clock ns of the last buffer PHASE finished rendering; 0 if none yet. A recent value
+  // means the engine is still consuming audio.
+  std::atomic<int64_t> last_completion_ns{0};
 
   // Diagnostics.
   std::atomic<uint64_t> frames_submitted{0};
@@ -279,6 +282,16 @@ void PHASEAudioDriver::Impl::Restart() {
     if (shutting_down.load(std::memory_order_acquire)) {
       return;
     }
+    // A foreground return or a category change does not always stop the engine. Rebuilding it
+    // then only drops queued audio, so leave a graph alone that is still rendering.
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+    const int64_t last_ns = shared->last_completion_ns.load(std::memory_order_acquire);
+    if (stream_node && last_ns != 0 && now_ns - last_ns < 300 * 1000 * 1000) {
+      XELOGI("PHASEAudioDriver: engine is still rendering; restart skipped");
+      return;
+    }
     XELOGI("PHASEAudioDriver: restarting the engine after an audio session loss");
     TeardownGraph();
 
@@ -311,7 +324,9 @@ void PHASEAudioDriver::Impl::Restart() {
     }
     if (leaked > 0) {
       std::lock_guard<std::mutex> lock(shared->mutex);
-      for (int i = 0; i < leaked; ++i) {
+      // Late completions of the old graph's buffers also return to the pool, so refill only up
+      // to its size.
+      for (int i = 0; i < leaked && shared->free_pool.size() < kBufferPoolSize; ++i) {
         AVAudioPCMBuffer* buf = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
                                                               frameCapacity:channel_samples];
         if (buf) {
@@ -527,11 +542,20 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                (void)condition;
                {
                  std::lock_guard<std::mutex> lock(shared->mutex);
-                 shared->free_pool.push_back(buf);
-                 // A buffer from before a restart was already given up on.
+                 // A buffer from before a restart was already given up on. Keep the pool at its
+                 // size; the restart refilled it.
                  if (epoch != shared->epoch) {
+                   if (shared->free_pool.size() < kBufferPoolSize) {
+                     shared->free_pool.push_back(buf);
+                   }
                    return;
                  }
+                 shared->free_pool.push_back(buf);
+                 shared->last_completion_ns.store(
+                     std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count(),
+                     std::memory_order_release);
                  if (shared->semaphore) {
                    shared->semaphore->Release(1, nullptr);
                  }

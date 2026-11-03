@@ -450,6 +450,9 @@ constexpr uint32_t kPauseReasonLiveSettings = 1u << 8;
 // few milliseconds; the wait is bounded because a worker blocked on the guest
 // (a memory wait that only a guest thread can satisfy) would never get there.
 constexpr std::chrono::milliseconds kGpuPauseTimeout{3000};
+// A live settings change keeps the game paused this long after the last change, so a slider
+// drag pauses once instead of once per tick.
+constexpr int64_t kLiveSettingsHoldNs = 250 * 1000 * 1000;
 // How long the emulator thread waits for a resume before tearing down.
 constexpr std::chrono::milliseconds kResumeForTeardownTimeout{8000};
 // How long the main thread waits for a pause before applying live settings.
@@ -548,6 +551,8 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   void BeginEmulationPauseSession();
   void EndEmulationPauseSession();
   void ArmStopWatchdog();
+  // Runs on pause_queue_. Suspends guest threads created since the pause was applied.
+  void SuspendRunningGuestThreads();
 
   static std::unique_ptr<apu::AudioSystem> CreateAudioSystem(cpu::Processor* processor);
   static std::unique_ptr<gpu::GraphicsSystem> CreateGraphicsSystem();
@@ -580,6 +585,8 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   bool pause_game_running_ = false;                     // pause_state_mutex_
   std::shared_ptr<GpuPauseHold> gpu_pause_hold_;       // pause_state_mutex_
   bool pause_applied_ = false;                         // pause_queue_ only
+  std::atomic<bool> pause_applied_visible_{false};     // mirrors pause_applied_
+  uint64_t live_settings_generation_ = 0;              // main thread only
   std::vector<kernel::object_ref<kernel::XThread>> paused_threads_;  // pause_queue_ only
 
   // Stop watchdog (S17). The state outlives the app object for a delayed block.
@@ -1307,14 +1314,28 @@ void EmulatorAppIOS::ApplyLiveSettings(const std::function<void()>& apply) {
     apply();
     return;
   }
+  // The caller needs |apply| to have run on return, so the first change of a burst waits
+  // (bounded) for the pause. The pause is then held until kLiveSettingsHoldNs after the last
+  // change, so the following changes find the game already paused and do not wait.
+  const uint64_t generation = ++live_settings_generation_;
   pause_desired_.fetch_or(kPauseReasonLiveSettings, std::memory_order_acq_rel);
   ScheduleEmulationPauseReconcile();
-  if (!WaitForEmulationPauseQueue(kLiveSettingsPauseTimeout)) {
+  if (!pause_applied_visible_.load(std::memory_order_acquire) &&
+      !WaitForEmulationPauseQueue(kLiveSettingsPauseTimeout)) {
     XELOGW("iOS: the game did not pause in time; applying live settings anyway");
   }
   apply();
-  pause_desired_.fetch_and(~kPauseReasonLiveSettings, std::memory_order_acq_rel);
-  ScheduleEmulationPauseReconcile();
+  auto watchdog = stop_watchdog_;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kLiveSettingsHoldNs), dispatch_get_main_queue(),
+                 ^{
+                   std::lock_guard<std::mutex> lock(watchdog->mutex);
+                   // |this| is valid while |alive|: OnDestroy clears it on the main thread.
+                   if (!watchdog->alive || generation != live_settings_generation_) {
+                     return;
+                   }
+                   pause_desired_.fetch_and(~kPauseReasonLiveSettings, std::memory_order_acq_rel);
+                   ScheduleEmulationPauseReconcile();
+                 });
 }
 
 void EmulatorAppIOS::ScheduleEmulationPauseReconcile() {
@@ -1356,6 +1377,7 @@ void EmulatorAppIOS::ReconcileEmulationPause() {
       ResumeEmulationNow();
     }
     pause_applied_ = want;
+    pause_applied_visible_.store(want, std::memory_order_release);
   }
 }
 
@@ -1410,25 +1432,30 @@ void EmulatorAppIOS::PauseEmulationNow() {
   // it wakes. A second pass catches threads the first pass's threads created.
   // Host threads (dispatch, DPC, frame limiter, GPU, audio) are not touched:
   // suspending a host thread that holds a lock can deadlock the process.
-  for (int pass = 0; pass < 2; ++pass) {
-    auto threads = emulator->kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
-        kernel::XObject::Type::Thread);
-    for (auto& thread : threads) {
-      if (!thread->fiber() || !thread->is_running()) {
-        continue;
-      }
-      if (std::any_of(paused_threads_.begin(), paused_threads_.end(),
-                      [&thread](const auto& paused) { return paused.get() == thread.get(); })) {
-        continue;
-      }
-      thread->Suspend(nullptr);
-      paused_threads_.push_back(thread);
-    }
-    if (pass == 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-  }
+  SuspendRunningGuestThreads();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  SuspendRunningGuestThreads();
   XELOGI("iOS: emulation paused ({} guest threads)", paused_threads_.size());
+}
+
+void EmulatorAppIOS::SuspendRunningGuestThreads() {
+  Emulator* emulator = emulator_.get();
+  if (!emulator || !emulator->kernel_state()) {
+    return;
+  }
+  auto threads = emulator->kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
+      kernel::XObject::Type::Thread);
+  for (auto& thread : threads) {
+    if (!thread->fiber() || !thread->is_running()) {
+      continue;
+    }
+    if (std::any_of(paused_threads_.begin(), paused_threads_.end(),
+                    [&thread](const auto& paused) { return paused.get() == thread.get(); })) {
+      continue;
+    }
+    thread->Suspend(nullptr);
+    paused_threads_.push_back(thread);
+  }
 }
 
 void EmulatorAppIOS::ResumeEmulationNow() {
@@ -1711,10 +1738,12 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
       // A menu left up by the game that just ended must not pause the next one.
       SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, false);
+      // The exit first: it shows the library and dismisses sheets, which would take the alert
+      // with them.
+      ios_context.NotifyGameExited();
       if (!reason.empty()) {
         ios_context.NotifyGameLaunchFailed(reason);
       }
-      ios_context.NotifyGameExited();
     });
   };
 
@@ -1886,6 +1915,9 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     };
 
     xe_ios_session_note_game_running(YES);
+    // Pauses (a covered or backgrounded scene) apply from here on, not only once the title is up:
+    // LaunchPath starts the guest threads and the GPU.
+    BeginEmulationPauseSession();
     X_STATUS launch_result = emulator_->LaunchPath(abs_path);
     cvars::launch_module = "";
     cvars::launch_flags = 0;
@@ -1902,12 +1934,20 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       }
 #endif  // XE_PLATFORM_IOS
       XELOGE("iOS: Failed to launch game: {:08X}", launch_result);
+      EndEmulationPauseSession();
       notify_game_exited(LaunchFailureMessage(launch_result).c_str());
       return;
     }
 
     XELOGI("iOS: Game launched successfully");
-    BeginEmulationPauseSession();
+    // Threads created by LaunchPath after a pause was applied are suspended now.
+    if (pause_queue_) {
+      dispatch_async(pause_queue_, ^{
+        if (pause_applied_) {
+          SuspendRunningGuestThreads();
+        }
+      });
+    }
     // Hold the main thread object while waiting. Both user stop requests and
     // guest dashboard requests are serviced here, on a non-guest thread.
     auto main_thread = emulator_->kernel_state()->GetThreadByID(emulator_->main_thread_id());

@@ -1412,6 +1412,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   self.gameStopInProgress = YES;
   self.gameRunning = NO;
+  // A guest thread waiting on a sheet (achievements) would hold up the title's teardown.
+  if (self.presentedViewController) {
+    [self dismissViewControllerAnimated:NO completion:nil];
+  }
   self.launcherOverlayView.hidden = NO;
   self.launcherOverlayView.alpha = 1.0;
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
@@ -3918,6 +3922,12 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self clearActiveExternalGameAccesses];
   self.gameRunning = NO;
   self.gameStopInProgress = NO;
+  // A sheet or alert left up by the game that ended: the "Game Isn't Responding" alert, or the
+  // achievements sheet a guest thread is still waiting on (its dismissal reports completion).
+  // The launch-failure alert is presented after this runs.
+  if (self.presentedViewController) {
+    [self dismissViewControllerAnimated:NO completion:nil];
+  }
   [self hideInGameMenuOverlay];
   self.launcherOverlayView.hidden = NO;
   self.statusLabel.text = @"";
