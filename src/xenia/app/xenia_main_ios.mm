@@ -39,6 +39,7 @@
 #include "xenia/ui/ios/app/ios_lifecycle_audio_session.h"
 #include "xenia/ui/ios/app/ios_window_layout.h"
 #include "xenia/ui/ios/app/windowed_app_context_ios.h"
+#include "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #include "xenia/ui/ios/game/window_ios.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_crash_reporting.h"
@@ -911,6 +912,11 @@ bool EmulatorAppIOS::OnInitialize() {
       [this](ui::IOSWindowedAppContext::EmulationPauseReason reason, bool paused) {
         SetEmulationPaused(reason, paused);
       });
+  // The shader wait sheet holds the guest with its own reason (main thread).
+  xe_ios_set_shader_wait_handler(^(BOOL waiting) {
+    SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kShaderPreparation,
+                       waiting ? true : false);
+  });
   ios_context.set_live_settings_apply_callback(
       [this](const std::function<void()>& apply) { ApplyLiveSettings(apply); });
   ios_context.set_emulation_pause_settled_callback([this](std::function<void()> done) {
@@ -1513,6 +1519,10 @@ void EmulatorAppIOS::EndEmulationPauseSession() {
     pause_game_running_ = false;
     hold = gpu_pause_hold_;
   }
+  // A shader wait must not outlive its title: the next one would start paused.
+  pause_desired_.fetch_and(
+      ~static_cast<uint32_t>(ui::IOSWindowedAppContext::EmulationPauseReason::kShaderPreparation),
+      std::memory_order_acq_rel);
   // Free the GPU worker even if the queue is wedged: teardown joins it.
   if (hold) {
     hold->Release();
@@ -1671,6 +1681,7 @@ void EmulatorAppIOS::OnDestroy() {
   }
   auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
   ios_context.set_emulation_pause_callback({});
+  xe_ios_set_shader_wait_handler(nil);
   ios_context.set_live_settings_apply_callback({});
   ios_context.set_emulation_pause_settled_callback({});
   ios_context.set_game_launch_failed_callback({});

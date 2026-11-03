@@ -15,6 +15,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <deque>
+#include <utility>
 
 #include "xenia/gpu/metal/metal_compile_activity.h"
 
@@ -50,6 +52,67 @@ constexpr CGFloat kMaxCornerRadius = 24.0;
 
 enum class Phase { kNone, kLoadingCache, kCompiling };
 
+enum class WaitState { kIdle, kOffered, kWaiting };
+
+// The live rate is the completions over this long a window, smoothed over about this
+// many seconds.
+constexpr CFTimeInterval kRateWindowSeconds = 10.0;
+constexpr CFTimeInterval kRateSmoothingSeconds = 3.0;
+
+void (^g_shader_wait_handler)(BOOL) = nil;
+
+NSString* DurationString(NSTimeInterval seconds, NSDateComponentsFormatterUnitsStyle style,
+                         NSCalendarUnit unit) {
+  NSDateComponentsFormatter* formatter = [[[NSDateComponentsFormatter alloc] init] autorelease];
+  formatter.unitsStyle = style;
+  formatter.maximumUnitCount = 1;
+  formatter.allowedUnits = unit;
+  return [formatter stringFromTimeInterval:seconds];
+}
+
+// "About 40 seconds left", "About 3 minutes left", or the over-10-minutes line; nil when
+// there is nothing to say.
+NSString* EtaSentence(const xe::ui::ios::ShaderEta& eta) {
+  using Kind = xe::ui::ios::ShaderEta::Kind;
+  switch (eta.kind) {
+    case Kind::kNone:
+      return nil;
+    case Kind::kOver:
+      return NSLocalizedString(
+          @"Over 10 minutes. This is a one-time cost per game and update.",
+          @"Shader preparation estimate when it will take more than ten minutes");
+    case Kind::kSeconds:
+      return [NSString
+          stringWithFormat:NSLocalizedString(@"About %@ left",
+                                             @"Shader preparation time left; %@ is a duration "
+                                             @"such as 40 seconds or 3 minutes"),
+                           DurationString(eta.value, NSDateComponentsFormatterUnitsStyleFull,
+                                          NSCalendarUnitSecond)];
+    case Kind::kMinutes:
+      return [NSString
+          stringWithFormat:NSLocalizedString(@"About %@ left",
+                                             @"Shader preparation time left; %@ is a duration "
+                                             @"such as 40 seconds or 3 minutes"),
+                           DurationString(eta.value * 60, NSDateComponentsFormatterUnitsStyleFull,
+                                          NSCalendarUnitMinute)];
+  }
+  return nil;
+}
+
+// The short form for the capsule's title ("40 sec", "3 min"); nil for none or over 10 minutes.
+NSString* EtaShort(const xe::ui::ios::ShaderEta& eta) {
+  using Kind = xe::ui::ios::ShaderEta::Kind;
+  if (eta.kind == Kind::kSeconds) {
+    return DurationString(eta.value, NSDateComponentsFormatterUnitsStyleShort,
+                          NSCalendarUnitSecond);
+  }
+  if (eta.kind == Kind::kMinutes) {
+    return DurationString(eta.value * 60, NSDateComponentsFormatterUnitsStyleShort,
+                          NSCalendarUnitMinute);
+  }
+  return nil;
+}
+
 UIFont* CappedFont(UIFontTextStyle style, CGFloat size, UIFontWeight weight, CGFloat maximum) {
   UIFont* font = [UIFont monospacedDigitSystemFontOfSize:size weight:weight];
   return [[UIFontMetrics metricsForTextStyle:style] scaledFontForFont:font
@@ -62,12 +125,9 @@ constexpr CGFloat kMaxFontSize = 17.0;
 // Always dark, like the system's Game Mode banner, and tinted so the text keeps
 // WCAG AA contrast (4.5:1) even over a white frame.
 UIVisualEffect* BackdropEffect() {
-  if (@available(iOS 26.0, *)) {
-    UIGlassEffect* glass = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-    glass.tintColor = [UIColor colorWithWhite:0.0 alpha:0.7];
-    return glass;
-  }
-  return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark];
+  UIGlassEffect* glass = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+  glass.tintColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+  return glass;
 }
 
 // The explanation and the icon: dimmer than the title, brighter than the system's
@@ -77,6 +137,12 @@ UIColor* SecondaryColor() {
 }
 
 }  // namespace
+
+void xe_ios_set_shader_wait_handler(void (^handler)(BOOL waiting)) {
+  void (^old)(BOOL) = g_shader_wait_handler;
+  g_shader_wait_handler = handler ? [handler copy] : nil;
+  [old release];
+}
 
 BOOL xe_ios_shader_compile_status_enabled(void) {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
@@ -190,6 +256,178 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 
 @end
 
+// The "Preparing shaders" sheet: shown over the game when the stored shaders are forecast to take
+// a long while. Wait holds the game; Play now (or swiping the sheet away) lets it run while the
+// shaders keep building. The indicator feeds it progress and owns the decision.
+@interface XeniaShaderPrepareViewController : UIViewController <UIAdaptivePresentationControllerDelegate>
+@property(nonatomic, copy) void (^onWait)(void);
+@property(nonatomic, copy) void (^onPlayNow)(void);
+// |eta| may be nil; |note| is the footnote. progress < 0: unknown.
+- (void)setProgress:(CGFloat)progress
+                eta:(NSString*)eta
+               note:(NSString*)note
+            waiting:(BOOL)waiting;
+@end
+
+@implementation XeniaShaderPrepareViewController {
+  UILabel* title_label_;
+  UILabel* eta_label_;
+  UILabel* note_label_;
+  UIProgressView* progress_view_;
+  UIButton* wait_button_;
+  UIButton* play_button_;
+  CGFloat pending_progress_;
+  NSString* pending_eta_;
+  NSString* pending_note_;
+  BOOL pending_waiting_;
+}
+
+- (instancetype)initWithNibName:(NSString*)name bundle:(NSBundle*)bundle {
+  self = [super initWithNibName:name bundle:bundle];
+  if (self) {
+    pending_progress_ = -1.0;
+    self.modalPresentationStyle = UIModalPresentationPageSheet;
+    UISheetPresentationController* sheet = self.sheetPresentationController;
+    sheet.detents = @[ [UISheetPresentationControllerDetent mediumDetent] ];
+    sheet.prefersGrabberVisible = YES;
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [_onWait release];
+  [_onPlayNow release];
+  [title_label_ release];
+  [eta_label_ release];
+  [note_label_ release];
+  [progress_view_ release];
+  [wait_button_ release];
+  [play_button_ release];
+  [pending_eta_ release];
+  [pending_note_ release];
+  [super dealloc];
+}
+
+- (UILabel*)labelWithStyle:(UIFontTextStyle)style weight:(UIFontWeight)weight {
+  UILabel* label = [[[UILabel alloc] init] autorelease];
+  UIFont* base = [UIFont preferredFontForTextStyle:style];
+  label.font = [[UIFontMetrics metricsForTextStyle:style]
+      scaledFontForFont:[UIFont systemFontOfSize:base.pointSize weight:weight]];
+  label.adjustsFontForContentSizeCategory = YES;
+  label.numberOfLines = 0;
+  label.textAlignment = NSTextAlignmentCenter;
+  return label;
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.view.backgroundColor = [UIColor systemBackgroundColor];
+  // A swipe-down reports through the presentation controller.
+  self.presentationController.delegate = self;
+
+  title_label_ = [[self labelWithStyle:UIFontTextStyleTitle2 weight:UIFontWeightSemibold] retain];
+  title_label_.text = NSLocalizedString(@"Preparing shaders", @"Shader preparation sheet title");
+  title_label_.accessibilityTraits |= UIAccessibilityTraitHeader;
+  eta_label_ = [[self labelWithStyle:UIFontTextStyleBody weight:UIFontWeightRegular] retain];
+  note_label_ = [[self labelWithStyle:UIFontTextStyleFootnote weight:UIFontWeightRegular] retain];
+  note_label_.textColor = [UIColor secondaryLabelColor];
+
+  progress_view_ = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+
+  UIButtonConfiguration* wait_config = [UIButtonConfiguration filledButtonConfiguration];
+  wait_config.title = NSLocalizedString(@"Wait", @"Button that waits for shaders to finish building");
+  wait_config.buttonSize = UIButtonConfigurationSizeLarge;
+  wait_config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  wait_button_ = [[UIButton buttonWithConfiguration:wait_config primaryAction:nil] retain];
+  [wait_button_ addTarget:self action:@selector(waitTapped) forControlEvents:UIControlEventTouchUpInside];
+
+  UIButtonConfiguration* play_config = [UIButtonConfiguration plainButtonConfiguration];
+  play_config.title = NSLocalizedString(@"Play now", @"Button that starts the game while shaders keep building");
+  play_config.buttonSize = UIButtonConfigurationSizeLarge;
+  play_button_ = [[UIButton buttonWithConfiguration:play_config primaryAction:nil] retain];
+  [play_button_ addTarget:self action:@selector(playTapped) forControlEvents:UIControlEventTouchUpInside];
+
+  UIStackView* stack = [[[UIStackView alloc] initWithArrangedSubviews:@[
+    title_label_, progress_view_, eta_label_, note_label_, wait_button_, play_button_
+  ]] autorelease];
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.spacing = 14.0;
+  stack.alignment = UIStackViewAlignmentFill;
+  [stack setCustomSpacing:22.0 afterView:note_label_];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  [self.view addSubview:stack];
+  UILayoutGuide* guide = self.view.readableContentGuide;
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:28.0],
+    [stack.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor],
+    [stack.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor],
+  ]];
+  [self applyState];
+}
+
+- (void)setProgress:(CGFloat)progress
+                eta:(NSString*)eta
+               note:(NSString*)note
+            waiting:(BOOL)waiting {
+  pending_progress_ = progress;
+  if (![pending_eta_ isEqualToString:eta] && pending_eta_ != eta) {
+    [pending_eta_ release];
+    pending_eta_ = [eta copy];
+  }
+  if (![pending_note_ isEqualToString:note] && pending_note_ != note) {
+    [pending_note_ release];
+    pending_note_ = [note copy];
+  }
+  pending_waiting_ = waiting;
+  if (self.isViewLoaded) {
+    [self applyState];
+  }
+}
+
+- (void)applyState {
+  progress_view_.progress = pending_progress_ >= 0.0 ? pending_progress_ : 0.0;
+  NSString* percent =
+      [NSNumberFormatter localizedStringFromNumber:@(pending_progress_ >= 0.0 ? pending_progress_ : 0.0)
+                                       numberStyle:NSNumberFormatterPercentStyle];
+  progress_view_.accessibilityValue =
+      pending_eta_ ? [NSString stringWithFormat:@"%@, %@", percent, pending_eta_] : percent;
+  eta_label_.text = pending_eta_ ? pending_eta_
+                                 : NSLocalizedString(@"Estimating…",
+                                                     @"Shader preparation time left while it is not known yet");
+  note_label_.text = pending_note_;
+  if (pending_waiting_ != !wait_button_.enabled) {
+    wait_button_.enabled = !pending_waiting_;
+    UIButtonConfiguration* config = wait_button_.configuration;
+    config.title = pending_waiting_
+                       ? NSLocalizedString(@"Waiting…", @"Wait button once the user chose to wait")
+                       : NSLocalizedString(@"Wait", @"Button that waits for shaders to finish building");
+    config.showsActivityIndicator = pending_waiting_;
+    wait_button_.configuration = config;
+  }
+}
+
+// The handlers may drop the callbacks, so each runs from its own copy.
+- (void)waitTapped {
+  void (^callback)(void) = [[_onWait copy] autorelease];
+  if (callback) {
+    callback();
+  }
+}
+
+- (void)playTapped {
+  void (^callback)(void) = [[_onPlayNow copy] autorelease];
+  if (callback) {
+    callback();
+  }
+}
+
+// A swipe-down is Play now. (A dismissal by the indicator doesn't come through here.)
+- (void)presentationControllerDidDismiss:(UIPresentationController*)presentationController {
+  [self playTapped];
+}
+
+@end
+
 // Holds the indicator unretained, so the display link (which retains its target)
 // doesn't keep the indicator alive; the indicator invalidates the link when it goes.
 @interface XeniaCompileDisplayLinkTarget : NSObject
@@ -292,6 +530,18 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   uint32_t storage_generation_;
   // The first-run explanation already opened for this storage generation.
   BOOL explained_generation_;
+
+  // The shader wait: the sheet, the user's choice, and the forecast behind the offer.
+  XeniaShaderPrepareViewController* sheet_;
+  WaitState wait_state_;
+  // The sheet was already offered (and answered or finished) for this storage generation.
+  BOOL offered_generation_;
+  // < 0: no forecast.
+  double forecast_seconds_;
+  double live_ms_per_request_;
+  std::deque<std::pair<CFTimeInterval, uint64_t>> rate_samples_;
+  CFTimeInterval last_rate_time_;
+  BOOL cooling_down_;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -304,6 +554,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   self.hidden = YES;
   progress_ = -1.0;
+  forecast_seconds_ = -1.0;
 
   capsule_ = [[XeniaCompileCapsuleView alloc] init];
   capsule_.alpha = 0.0;
@@ -330,7 +581,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   detail_label_.adjustsFontForContentSizeCategory = YES;
   detail_label_.textColor = SecondaryColor();
   detail_label_.numberOfLines = 0;
-  detail_label_.text = NSLocalizedString(@"Expect stutter and missing effects for a few minutes.",
+  detail_label_.text = NSLocalizedString(@"Games may stutter until this finishes.",
                                          @"Detail line of the expanded shader compile indicator");
   detail_label_.alpha = 0.0;
   [capsule_ addSubview:detail_label_];
@@ -344,12 +595,14 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 }
 
 - (void)dealloc {
+  [self endShaderWaitAnimated:NO];
   [display_link_ invalidate];
   [display_link_ release];
   [capsule_ release];
   [icon_ release];
   [title_label_ release];
   [detail_label_ release];
+  [sheet_ release];
   [super dealloc];
 }
 
@@ -442,6 +695,10 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   backlog_since_ = 0.0;
   cache_since_ = 0.0;
   idle_since_ = 0.0;
+  // The title ended: nothing is left to wait for.
+  [self endShaderWaitAnimated:NO];
+  [self resetForecast];
+  cooling_down_ = NO;
   [self hideAnimated:NO];
 }
 
@@ -458,6 +715,9 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   if (generation != storage_generation_) {
     storage_generation_ = generation;
     explained_generation_ = NO;
+    offered_generation_ = NO;
+    [self resetForecast];
+    [self endShaderWaitAnimated:YES];
   }
   bool storage_empty = activity.storage_empty.load(std::memory_order_relaxed);
   uint64_t storage_queued_end = activity.storage_queued_end.load(std::memory_order_relaxed);
@@ -485,6 +745,19 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   } else {
     cache_since_ = 0.0;
   }
+
+  // Thermal state, read directly: Critical stops any wait and the capsule says it is cooling.
+  NSProcessInfoThermalState thermal = [NSProcessInfo processInfo].thermalState;
+  BOOL critical = thermal == NSProcessInfoThermalStateCritical;
+  cooling_down_ = critical && phase != Phase::kNone;
+  if (cooling_down_) {
+    progress = -1.0;
+  }
+  [self updateShaderWaitNow:now
+                   finished:finished
+                loadingCache:phase == Phase::kLoadingCache
+                    progress:progress
+                     thermal:thermal];
   if (backlog) {
     backlog_since_ = backlog_since_ ? backlog_since_ : now;
   } else {
@@ -548,36 +821,211 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   [self applyContentAnimated:layout_changed];
 }
 
+- (void)resetForecast {
+  forecast_seconds_ = -1.0;
+  live_ms_per_request_ = 0.0;
+  last_rate_time_ = 0.0;
+  rate_samples_.clear();
+}
+
+// The rebuild forecast and the Wait / Play now offer, once per poll.
+- (void)updateShaderWaitNow:(CFTimeInterval)now
+                   finished:(uint64_t)finished
+               loadingCache:(BOOL)loading_cache
+                   progress:(CGFloat)progress
+                    thermal:(NSProcessInfoThermalState)thermal {
+  const xe::gpu::metal::CompileActivity& activity = xe::gpu::metal::compile_activity;
+  // A new storage generation is a new title (or a reload): forget the old answer.
+  if (!loading_cache) {
+    [self resetForecast];
+    if (wait_state_ != WaitState::kIdle) {
+      // The rebuild is over: the wait is too.
+      [self endShaderWaitAnimated:YES];
+    }
+    return;
+  }
+  uint64_t queued_begin = activity.storage_queued_begin.load(std::memory_order_relaxed);
+  uint64_t finished_begin = activity.storage_finished_begin.load(std::memory_order_relaxed);
+  uint64_t queued_end = activity.storage_queued_end.load(std::memory_order_relaxed);
+
+  // The live rate: completions over a sliding window, smoothed.
+  rate_samples_.emplace_back(now, finished);
+  while (rate_samples_.size() > 2 && now - rate_samples_.front().first > kRateWindowSeconds) {
+    rate_samples_.pop_front();
+  }
+  CFTimeInterval span = rate_samples_.back().first - rate_samples_.front().first;
+  uint64_t delta = rate_samples_.back().second - rate_samples_.front().second;
+  if (span >= 1.0 && delta > 0) {
+    double instant_ms = span * 1000.0 / double(delta);
+    double dt = last_rate_time_ ? now - last_rate_time_ : 0.0;
+    double alpha = live_ms_per_request_ > 0.0 ? 1.0 - std::exp(-dt / kRateSmoothingSeconds) : 1.0;
+    live_ms_per_request_ += alpha * (instant_ms - live_ms_per_request_);
+  }
+  last_rate_time_ = now;
+
+  xe::ui::ios::ShaderForecastInput input;
+  input.stored_total = activity.storage_total.load(std::memory_order_relaxed);
+  input.requests_total = queued_end > queued_begin ? queued_end - queued_begin : 0;
+  input.done = finished > finished_begin ? finished - finished_begin : 0;
+  input.observed_seconds = cache_since_ ? now - cache_since_ : 0.0;
+  input.live_ms_per_request = live_ms_per_request_;
+  input.seed_us_per_stored =
+      double(activity.storage_seed_us_per_stored.load(std::memory_order_relaxed));
+  // Low Power Mode makes the compile threads slower than the last launch's record.
+  input.seed_slowdown = [NSProcessInfo processInfo].lowPowerModeEnabled ? 2.0 : 1.0;
+  // A first run has nothing stored to rebuild: compiles are found as draws arrive.
+  forecast_seconds_ = activity.storage_empty.load(std::memory_order_relaxed)
+                          ? -1.0
+                          : xe::ui::ios::ForecastShaderSeconds(input);
+
+  if (wait_state_ == WaitState::kIdle) {
+    if (!offered_generation_ && forecast_seconds_ >= xe::ui::ios::kShaderWaitOfferSeconds &&
+        thermal != NSProcessInfoThermalStateCritical && xe_ios_shader_compile_status_enabled()) {
+      [self offerShaderWait];
+    }
+    return;
+  }
+  if (thermal == NSProcessInfoThermalStateCritical || !xe_ios_shader_compile_status_enabled()) {
+    // Too hot to hold the game and keep the compile threads busy: let it play.
+    [self endShaderWaitAnimated:YES];
+    return;
+  }
+  [self refreshSheetWithProgress:progress];
+}
+
+- (NSString*)sheetNote {
+  NSMutableArray<NSString*>* lines = [NSMutableArray array];
+  [lines addObject:NSLocalizedString(
+                       @"Waiting avoids stutter at the start. You can also play now; it keeps "
+                       @"building in the background.",
+                       @"Footnote of the shader preparation sheet")];
+  if ([NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) {
+    [lines addObject:NSLocalizedString(@"Your device is warm. This will take longer.",
+                                       @"Shader preparation sheet while the device is hot")];
+  }
+  if ([NSProcessInfo processInfo].lowPowerModeEnabled) {
+    [lines addObject:NSLocalizedString(@"Low Power Mode makes this slower.",
+                                       @"Shader preparation sheet in Low Power Mode")];
+  }
+  return [lines componentsJoinedByString:@"\n"];
+}
+
+- (void)refreshSheetWithProgress:(CGFloat)progress {
+  if (!sheet_) {
+    return;
+  }
+  NSString* eta = EtaSentence(xe::ui::ios::ClassifyShaderEta(forecast_seconds_));
+  [sheet_ setProgress:progress
+                  eta:eta
+                 note:[self sheetNote]
+              waiting:wait_state_ == WaitState::kWaiting];
+}
+
+- (void)offerShaderWait {
+  UIViewController* top = self.window.rootViewController;
+  // Not over a menu or another sheet, and not before the view is on screen; retried next poll.
+  if (!top || top.presentedViewController || top.isBeingPresented || top.isBeingDismissed) {
+    return;
+  }
+  offered_generation_ = YES;
+  wait_state_ = WaitState::kOffered;
+  sheet_ = [[XeniaShaderPrepareViewController alloc] initWithNibName:nil bundle:nil];
+  __block XeniaShaderCompileIndicator* indicator = self;
+  sheet_.onWait = ^{
+    [indicator chooseWait];
+  };
+  sheet_.onPlayNow = ^{
+    [indicator choosePlayNow];
+  };
+  [self refreshSheetWithProgress:progress_];
+  [top presentViewController:sheet_ animated:!UIAccessibilityIsReduceMotionEnabled() completion:nil];
+  UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, nil);
+}
+
+// Wait: hold the game, with the compile threads still running, until the rebuild is done or
+// Play now.
+- (void)chooseWait {
+  if (wait_state_ != WaitState::kOffered) {
+    return;
+  }
+  wait_state_ = WaitState::kWaiting;
+  if (g_shader_wait_handler) {
+    g_shader_wait_handler(YES);
+  }
+  [self refreshSheetWithProgress:progress_];
+}
+
+- (void)choosePlayNow {
+  // The sheet is gone already on a swipe; dismiss it otherwise. The queue keeps draining and the
+  // capsule shows it.
+  [self endShaderWaitAnimated:YES];
+}
+
+// Releases the hold and takes the sheet down. Safe in any state.
+- (void)endShaderWaitAnimated:(BOOL)animated {
+  if (wait_state_ == WaitState::kWaiting && g_shader_wait_handler) {
+    g_shader_wait_handler(NO);
+  }
+  wait_state_ = WaitState::kIdle;
+  if (sheet_) {
+    // The callbacks capture the indicator; drop them so a late swipe can't reach it.
+    sheet_.onWait = nil;
+    sheet_.onPlayNow = nil;
+    if (sheet_.presentingViewController) {
+      [sheet_ dismissViewControllerAnimated:animated && !UIAccessibilityIsReduceMotionEnabled()
+                                 completion:nil];
+    }
+    [sheet_ release];
+    sheet_ = nil;
+  }
+}
+
 - (NSString*)titleText {
+  if (cooling_down_) {
+    return NSLocalizedString(@"Cooling down", @"Shader compile indicator title while the device is "
+                                              @"too hot to keep building at full speed");
+  }
   if (expanded_) {
-    return NSLocalizedString(@"Building shaders for this game",
+    return NSLocalizedString(@"Building shaders",
                              @"Shader compile indicator title, expanded");
   }
   if (phase_ == Phase::kLoadingCache) {
-    return NSLocalizedString(@"Loading shader cache",
-                             @"Shader compile indicator title while loading the cache");
+    NSString* title = NSLocalizedString(@"Preparing shaders",
+                                        @"Shader compile indicator title while loading the cache");
+    NSString* eta = EtaShort(xe::ui::ios::ClassifyShaderEta(forecast_seconds_));
+    return eta ? [NSString stringWithFormat:@"%@ · %@", title, eta] : title;
   }
   return
       [NSString stringWithFormat:
                     NSLocalizedString(
-                        @"Compiling shaders · %llu",
+                        @"Building shaders · %llu",
                         @"Shader compile indicator title; %llu is the number of shaders waiting"),
                     (unsigned long long)backlog_];
 }
 
 - (NSString*)spokenText {
-  if (expanded_) {
-    return NSLocalizedString(
-        @"Building shaders for this game. Expect stutter and missing effects for a few minutes.",
-        @"VoiceOver text for the shader compile indicator");
+  NSString* stutter = NSLocalizedString(@"Games may stutter until this finishes.",
+                                        @"Detail line of the expanded shader compile indicator");
+  if (cooling_down_) {
+    return [NSString stringWithFormat:@"%@. %@", [self titleText], stutter];
   }
+  NSString* title =
+      expanded_ || phase_ != Phase::kLoadingCache
+          ? NSLocalizedString(@"Building shaders", @"Shader compile indicator title, expanded")
+          : NSLocalizedString(@"Preparing shaders",
+                              @"Shader compile indicator title while loading the cache");
+  NSMutableString* text = [NSMutableString stringWithFormat:@"%@. %@", title, stutter];
   if (phase_ == Phase::kLoadingCache) {
-    return NSLocalizedString(@"Loading shader cache. Expect stutter until it finishes.",
-                             @"VoiceOver text for the shader compile indicator");
+    NSString* eta = EtaSentence(xe::ui::ios::ClassifyShaderEta(forecast_seconds_));
+    if (eta) {
+      [text appendFormat:@" %@", eta];
+    }
   }
-  return NSLocalizedString(
-      @"Compiling shaders. Expect stutter and missing effects until they finish.",
-      @"VoiceOver text for the shader compile indicator");
+  if ([NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) {
+    [text appendFormat:@" %@", NSLocalizedString(@"Your device is warm. This will take longer.",
+                                                 @"Shader preparation sheet while the device is hot")];
+  }
+  return text;
 }
 
 - (void)contentSizeCategoryChanged {
@@ -595,10 +1043,12 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
       [UIImageSymbolConfiguration configurationWithPointSize:size
                                                       weight:UIImageSymbolWeightSemibold
                                                        scale:UIImageSymbolScaleMedium];
-  icon_.image = [UIImage systemImageNamed:phase_ == Phase::kLoadingCache
-                                              ? @"square.stack.3d.down.right"
-                                              : @"cube.transparent"
-                        withConfiguration:config];
+  NSString* symbol = phase_ == Phase::kLoadingCache ? @"square.stack.3d.down.right"
+                                                    : @"cube.transparent";
+  if ([NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) {
+    symbol = @"thermometer.high";
+  }
+  icon_.image = [UIImage systemImageNamed:symbol withConfiguration:config];
 }
 
 - (void)applyContentAnimated:(BOOL)animated {
@@ -616,6 +1066,13 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
           ? [NSNumberFormatter localizedStringFromNumber:@(progress_)
                                              numberStyle:NSNumberFormatterPercentStyle]
           : nil;
+  NSString* eta = phase_ == Phase::kLoadingCache && progress_ >= 0.0 && !cooling_down_
+                      ? EtaSentence(xe::ui::ios::ClassifyShaderEta(forecast_seconds_))
+                      : nil;
+  if (eta) {
+    capsule_.accessibilityValue =
+        [NSString stringWithFormat:@"%@, %@", capsule_.accessibilityValue, eta];
+  }
 
   void (^layout)(void) = ^{
     detail_label_.alpha = expanded_ ? 1.0 : 0.0;
