@@ -110,7 +110,9 @@ thread_local char thread_log_buffer_[64_KiB];
 // $USER is "mobile" or empty on iOS, so redact the app container instead:
 // replace its path (in both the /var and /private/var spellings) with "~" and
 // UUID path components (containers, app groups, File Provider storage) with
-// a placeholder. File names are kept, support needs them.
+// a placeholder. Folder and file names the user made under Documents (or a
+// cloud or external root) become placeholders, keeping file extensions and
+// the app's own folders: StripUserNames.
 static bool IsHexChar(char c) {
   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
          (c >= 'A' && c <= 'F');
@@ -154,6 +156,158 @@ static const std::vector<std::string>& IOSHomePrefixes() {
     return result;
   }();
   return prefixes;
+}
+
+// Directly under ~/Documents the app makes these; any other name is the user's.
+static bool IsAppDocumentsEntry(std::string_view name) {
+  static constexpr std::string_view kNames[] = {
+      "games",   "content",       "config",   "system",
+      "cache",   "cache_host",    "library",  "patches",
+      "Inbox",   "screenshots",   "touch-layouts",
+      "xenia.log", "xenia.previous.log"};
+  for (const std::string_view known : kNames) {
+    if (name == known) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Title, user and content type IDs (content/<xuid>/<title>/<type>).
+static bool IsHexId(std::string_view name) {
+  if (name.size() < 8 || name.size() > 16) {
+    return false;
+  }
+  for (const char c : name) {
+    if (!IsHexChar(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The length of a file name's ".ext" (1 to 6 letters or digits), or 0.
+static size_t ExtensionLength(std::string_view name) {
+  const size_t dot = name.rfind('.');
+  if (dot == std::string_view::npos || dot == 0 || name.size() - dot < 2 ||
+      name.size() - dot > 7) {
+    return 0;
+  }
+  for (size_t i = dot + 1; i < name.size(); ++i) {
+    if (!std::isalnum(static_cast<unsigned char>(name[i]))) {
+      return 0;
+    }
+  }
+  return name.size() - dot;
+}
+
+// Without the punctuation that ends a sentence rather than a name.
+static std::string_view TrimSentenceEnd(std::string_view name) {
+  while (!name.empty()) {
+    const char c = name.back();
+    const bool unbalanced_close =
+        (c == ')' && std::count(name.begin(), name.end(), '(') <
+                         std::count(name.begin(), name.end(), ')')) ||
+        (c == ']' && std::count(name.begin(), name.end(), '[') <
+                         std::count(name.begin(), name.end(), ']'));
+    if (c == '.' || c == ',' || c == ';' || c == '!' || unbalanced_close) {
+      name.remove_suffix(1);
+    } else {
+      break;
+    }
+  }
+  return name;
+}
+
+// Rewrites the path in |text| that continues at |pos| (after "~/Documents/",
+// or a cloud or volume placeholder) into |out|, returning where it ends. Names
+// may hold spaces, so a component runs on until a '/', a character a path
+// can't hold, or a space that follows a complete name (one of the app's own,
+// an ID or a file with an extension). A name that isn't the app's becomes
+// <folder>, <file> (keeping the extension) or <name> (the last one, unknown).
+// |app_root|: this is ~/Documents itself, so the app's own folders are kept.
+// An apostrophe ends a path only when no letter follows it ("Alice's" is a
+// name, "...x.iso' missing" is a quote).
+static size_t RewriteUserPath(const std::string& text, size_t pos, bool app_root,
+                              std::string* out) {
+  for (size_t depth = 0;; ++depth) {
+    const auto keep = [&](std::string_view name) {
+      return IsHexId(name) || (depth == 0 && app_root && IsAppDocumentsEntry(name));
+    };
+    size_t end = pos;
+    while (end < text.size()) {
+      const char c = text[end];
+      if (c == '/' || c == '\n' || c == '\r' || c == '\t' || c == '\0' || c == '"' ||
+          c == '`' || c == '<' || c == '>' || c == '|' || c == '*' || c == '?' || c == ':' ||
+          (c == '\'' && (end + 1 >= text.size() ||
+                         !std::isalnum(static_cast<unsigned char>(text[end + 1]))))) {
+        break;
+      }
+      if (c == ' ') {
+        const std::string_view so_far =
+            TrimSentenceEnd(std::string_view(text).substr(pos, end - pos));
+        if (so_far.empty() || keep(so_far) || ExtensionLength(so_far)) {
+          break;
+        }
+      }
+      ++end;
+    }
+    const bool last = end >= text.size() || text[end] != '/';
+    size_t name_end = end;
+    if (last) {
+      name_end = pos + TrimSentenceEnd(std::string_view(text).substr(pos, end - pos)).size();
+    }
+    const std::string_view name = std::string_view(text).substr(pos, name_end - pos);
+    if (name.empty() || keep(name)) {
+      out->append(name);
+    } else if (const size_t extension = ExtensionLength(name)) {
+      *out += last ? "<file>" : "<folder>";
+      if (last) {
+        out->append(name.substr(name.size() - extension));
+      }
+    } else {
+      *out += last ? "<name>" : "<folder>";
+    }
+    out->append(text, name_end, end - name_end);
+    if (last) {
+      return end;
+    }
+    out->push_back('/');
+    pos = end + 1;
+  }
+}
+
+// Replaces the user's folder and file names after "~/Documents/" and after the
+// placeholders StripIOSPaths leaves for cloud and external roots.
+static std::string StripUserNames(const std::string& text) {
+  struct Marker {
+    std::string_view text;
+    bool app_root;
+  };
+  static constexpr Marker kMarkers[] = {
+      {"~/Documents/", true}, {"/<cloud>/", false}, {"/<volume>/", false}};
+  std::string out;
+  out.reserve(text.size());
+  size_t i = 0;
+  while (i < text.size()) {
+    size_t at = std::string::npos;
+    const Marker* found = nullptr;
+    for (const Marker& marker : kMarkers) {
+      const size_t candidate = text.find(marker.text, i);
+      if (candidate < at) {
+        at = candidate;
+        found = &marker;
+      }
+    }
+    if (!found) {
+      break;
+    }
+    const size_t start = at + found->text.size();
+    out.append(text, i, start - i);
+    i = RewriteUserPath(text, start, found->app_root, &out);
+  }
+  out.append(text, i, std::string::npos);
+  return out;
 }
 
 static std::string StripIOSPaths(const std::string_view text) {
@@ -222,7 +376,7 @@ static std::string StripIOSPaths(const std::string_view text) {
     }
     stripped += c;
   }
-  return stripped;
+  return StripUserNames(stripped);
 }
 #else
 static std::string FindUserName() {
