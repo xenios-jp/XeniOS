@@ -645,8 +645,9 @@ static std::vector<IOSConfigSection> BuildResetSections() {
       "To change settings for a single game, open Game Settings from that game's tile menu.";
   AddActionSetting(reset.items, IOSConfigAction::kResetAllSettings,
                    "Reset All Settings to Defaults",
-                   "Puts every setting back to its default. Games, saves, profiles and "
-                   "per-game overrides are kept.");
+                   "Puts every setting back to its default. Games, saves, profiles, "
+                   "per-game overrides, the shader compile indicator, Online Features and "
+                   "Share Diagnostics are kept.");
   PushIfNotEmpty(sections, std::move(reset));
   return sections;
 }

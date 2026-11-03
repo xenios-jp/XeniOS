@@ -26,6 +26,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/config.h"
 
+#import "xenia/ui/ios/app/ios_window_layout.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
@@ -657,8 +658,9 @@ bool ResetAllIOSConfigToDefaults(void) {
   if (cvar::ConfigVars) {
     for (const auto& entry : *cvar::ConfigVars) {
       cvar::IConfigVar* var = entry.second;
+      // Profiles holds which profile is signed in to each slot, not a setting.
       if (!var || var->is_transient() || var->category() == "Config" ||
-          IOSConfigIsHiddenKey(entry.first) ||
+          var->category() == "Profiles" || IOSConfigIsHiddenKey(entry.first) ||
           dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(var)) {
         continue;
       }
@@ -668,6 +670,9 @@ bool ResetAllIOSConfigToDefaults(void) {
   }
   // iOS-only switches that live in NSUserDefaults rather than cvars.
   [GetUserDefaults() removeObjectForKey:kXeniaAutoOpenStikDebugOnLaunchPreferenceKey];
+  // Display scaling is a display setting; Stretch would otherwise keep letterboxing off after
+  // present_letterbox goes back to its default.
+  XeniaIOSSetCurrentWindowScalingMode(XeniaIOSWindowScalingModeFit);
   config::SaveConfigValues(reset_keys);
   return true;
 }
