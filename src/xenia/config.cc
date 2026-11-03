@@ -580,18 +580,10 @@ void ReloadConfig() {
   }
 }
 
-void SaveConfig() {
-  if (config_path.empty()) {
-    return;
-  }
-
-  // All cvar defaults have been updated on loading - store the current date.
-  auto defaults_date_cvar =
-      dynamic_cast<cvar::ConfigVar<uint32_t>*>(cv::cv_defaults_date);
-  assert_not_null(defaults_date_cvar);
-  defaults_date_cvar->SetConfigValue(
-      cvar::IConfigVarUpdate::GetLastUpdateDate());
-
+// Writes every non-transient cvar to the config file, with the value
+// |value_of| gives for it.
+static void WriteConfig(
+    const std::function<std::string(const cvar::IConfigVar&)>& value_of) {
   std::vector<cvar::IConfigVar*> vars;
   if (cvar::ConfigVars) {
     for (const auto& s : *cvar::ConfigVars) {
@@ -633,11 +625,10 @@ void SaveConfig() {
       sb.Append('\n');
     }
 
-    auto value = config_var->config_value();
+    auto value = value_of(*config_var);
     size_t line_count;
     if (xe::utf8::find_any_of(value, "\n") == std::string_view::npos) {
-      auto line = fmt::format("{} = {}", config_var->name(),
-                              config_var->config_value());
+      auto line = fmt::format("{} = {}", config_var->name(), value);
       sb.Append(line);
       line_count = xe::utf8::count(line);
     } else {
@@ -694,6 +685,55 @@ void SaveConfig() {
   if (config_saved_callback) {
     config_saved_callback();
   }
+}
+
+void SaveConfig() {
+  if (config_path.empty()) {
+    return;
+  }
+
+  // All cvar defaults have been updated on loading - store the current date.
+  auto defaults_date_cvar =
+      dynamic_cast<cvar::ConfigVar<uint32_t>*>(cv::cv_defaults_date);
+  assert_not_null(defaults_date_cvar);
+  defaults_date_cvar->SetConfigValue(
+      cvar::IConfigVarUpdate::GetLastUpdateDate());
+
+  WriteConfig(
+      [](const cvar::IConfigVar& var) { return var.config_value(); });
+}
+
+void SaveConfigValues(const std::set<std::string>& names) {
+  if (config_path.empty()) {
+    return;
+  }
+  toml::table on_disk;
+  if (std::filesystem::exists(config_path)) {
+    try {
+      on_disk = ParseFile(config_path);
+    } catch (const toml::parse_error& e) {
+      XELOGW("Config: '{}' can't be read ({}); writing every value",
+             xe::strip_pii(xe::path_to_utf8(config_path)),
+             xe::strip_pii(e.what()));
+      SaveConfig();
+      return;
+    }
+  } else {
+    SaveConfig();
+    return;
+  }
+  WriteConfig([&names, &on_disk](const cvar::IConfigVar& var) {
+    if (names.find(var.name()) == names.end()) {
+      const auto node =
+          on_disk.at_path(toml::path(var.category() + "." + var.name()));
+      if (node) {
+        if (auto value = var.FormatConfigValue(node.node())) {
+          return *value;
+        }
+      }
+    }
+    return var.config_value();
+  });
 }
 
 void SetConfigSavedCallback(std::function<void()> callback) {
