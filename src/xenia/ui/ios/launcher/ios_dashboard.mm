@@ -138,6 +138,9 @@ std::vector<uint8_t> CoverThumbnail(uint32_t title_id) {
           png.length <= vfs::XContentMetadata::kThumbLengthV2) {
         const auto* bytes = static_cast<const uint8_t*>(png.bytes);
         thumbnail.assign(bytes, bytes + png.length);
+      } else {
+        XELOGW("iOS: the dashboard thumbnail for {:08X} is too large ({} bytes)", title_id,
+               png.length);
       }
     }
     if (destination) {
@@ -419,9 +422,12 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
         }
       }
       const auto& icon = cover.empty() ? game.icon_data : cover;
-      if (!icon.empty() && !icons_path.empty()) {
+      if (!icons_path.empty()) {
         auto icon_path = LibraryIconPath(icons_path, game.title_id, game.media_id);
-        if (WriteIcon(icon_path, icon)) {
+        // Also for a game with no icon or cover yet: the emulator takes its copy of the
+        // library when a title starts, and a cover fetched later (UseFetchedCover) reaches
+        // the dashboard only through the path that copy already holds.
+        if (icon.empty() || WriteIcon(icon_path, icon)) {
           title.icon_path = std::move(icon_path);
         }
       }
