@@ -501,17 +501,7 @@ std::filesystem::path PickIOSDashboardDisc() {
 }
 
 NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess() {
-  NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [NSMutableArray array];
-  for (const auto& location : ListIOSExternalLibraryLocations()) {
-    if (!location.available) {
-      continue;
-    }
-    if (XeniaIOSExternalLibraryAccess* access =
-            StartIOSExternalLibraryAccessForPath(location.path, nullptr, nil)) {
-      [accesses addObject:access];
-    }
-  }
-  return accesses;
+  return StartIOSExternalLibraryAccessForAllLocations();
 }
 
 }  // namespace ui
