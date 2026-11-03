@@ -402,7 +402,7 @@ bool CommandProcessor::IsReadbackResolveEnabled() const {
   return cvars::readback_resolve;
 }
 
-void CommandProcessor::SetZPDMode(ZPDMode mode) {
+void CommandProcessor::ApplyZPDMode(ZPDMode mode) {
   if (cached_zpd_mode_ == mode) {
     return;
   }
@@ -413,8 +413,42 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
   if (active_segment_.segment_active) {
     CloseQuerySegment();
   }
+  // Queued reports retire by the rules of the mode that queued them: a strict
+  // report holds the queue, and the guest may be waiting on it, while a fast
+  // one corrects a guess. Retire them all now, with what has resolved and at
+  // least one visible sample, so the new mode starts with an empty queue.
+  PollCompletedSubmission();
+  for (ZPDReport& report : zpd_reports_) {
+    if (report.pending_segments) {
+      report.delta.z_pass = std::max<uint64_t>(report.delta.z_pass, 1);
+      report.pending_segments = 0;
+      zpd_stats_.retires_abandoned++;
+    }
+  }
+  PumpPendingRetire();
+  if (mode == ZPDMode::kFake) {
+    // Fake mode counts no report, as when it is set at startup.
+    zpd_current_report_ = {};
+    active_segment_.segment_pending_begin = false;
+  } else if (zpd_mode_ == ZPDMode::kFake) {
+    // Start counting with the next handle, so queued handles stay consecutive.
+    zpd_current_report_ = {};
+    zpd_current_report_.handle = zpd_next_report_handle_++;
+    active_segment_.segment_pending_begin = true;
+  }
   cached_zpd_mode_ = mode;
   zpd_mode_ = mode;
+}
+
+void CommandProcessor::ReloadZPDMode() {
+  CallInThread([this, mode = ParseZPDMode()]() { ApplyZPDMode(mode); });
+}
+
+void CommandProcessor::SetZPDMode(ZPDMode mode) {
+  if (cached_zpd_mode_ == mode) {
+    return;
+  }
+  ApplyZPDMode(mode);
   const char* mode_str = "fake";
   switch (mode) {
     case ZPDMode::kFast:
