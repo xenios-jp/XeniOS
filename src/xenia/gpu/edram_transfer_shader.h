@@ -194,6 +194,11 @@ union EdramTransferShaderKey {
     // EDRAM period from the base. Source and destination texture coordinates
     // are identical.
     uint32_t color_identity_layout : 1;
+    // A uint bit copy written through the destination's float view, each
+    // component bit-reinterpreted: the form a backend can draw inside the
+    // guest's own pass, whose attachment is the float view. Only for formats
+    // whose float view the backend has proven to keep every bit pattern.
+    uint32_t dest_float_bits : 1;
 
     // Last bits because this affects the pipeline layout - after sorting,
     // only change it as fewer times as possible. Depth buffers have an
@@ -271,6 +276,12 @@ struct EdramTransferShaderOptions {
   // comes in rather than being derived here.
   bool source_color_is_uint = false;
   bool dest_color_is_uint = false;
+  // With dest_color_is_uint, whether the bit copy goes out through a float
+  // view of the destination instead: the uint value is bit-reinterpreted at
+  // the end, as half components for the 16-bit formats and float ones for
+  // the 32-bit formats. For a backend that has proven its float view keeps
+  // every bit pattern of the format.
+  bool dest_color_float_bits = false;
 
   // Whether the host can write the stencil reference from the fragment shader,
   // which turns the 8 per-bit stencil passes into part of the depth draw.
