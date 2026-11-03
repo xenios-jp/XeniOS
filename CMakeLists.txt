@@ -3,7 +3,11 @@ set(CMAKE_TRY_COMPILE_CONFIGURATION Release)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
   set(XE_PLATFORM_IOS TRUE)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "18.0" CACHE STRING "Minimum iOS version")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum iOS version")
+  # XeniOS supports iOS 26 and later. Raise a build dir configured earlier.
+  if(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 26.0)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum iOS version" FORCE)
+  endif()
 endif()
 
 # Must be set before project() so the toolchain bakes -mmacosx-version-min
