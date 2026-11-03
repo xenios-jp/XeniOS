@@ -77,6 +77,7 @@ target_link_libraries(xenia-app PRIVATE
   "-framework GameController"
   "-framework Metal"
   "-framework MetalKit"
+  "-framework MetricKit"
   "-framework QuartzCore"
   "-framework Security"
   "-framework UIKit"

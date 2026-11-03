@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 
+#include <sys/stat.h>
+
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +18,8 @@
 #include <string>
 
 #include "xenia/base/cvar.h"
+#include "xenia/base/logging.h"
+#include "xenia/ui/ios/shared/ios_crash_reporting.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_theme.h"
 #include "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -66,14 +70,17 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   }
 
   NSData* log_data = [NSData dataWithBytes:content.data() length:content.size()];
-  NSString* decoded = [[NSString alloc] initWithData:log_data encoding:NSUTF8StringEncoding];
+  NSString* decoded =
+      [[[NSString alloc] initWithData:log_data encoding:NSUTF8StringEncoding] autorelease];
   if (!decoded) {
-    decoded = [[NSString alloc]
+    decoded = [[[NSString alloc]
         initWithData:log_data
-            encoding:CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingWindowsLatin1)];
+            encoding:CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingWindowsLatin1)]
+        autorelease];
   }
   if (!decoded) {
-    decoded = [[NSString alloc] initWithData:log_data encoding:NSISOLatin1StringEncoding];
+    decoded =
+        [[[NSString alloc] initWithData:log_data encoding:NSISOLatin1StringEncoding] autorelease];
   }
   if (decoded) {
     return decoded;
@@ -100,11 +107,19 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   NSTimer* autoRefreshTimer_;
   UIBarButtonItem* pauseButton_;
   BOOL paused_;
+  // Reads run on readQueue_; reading_ is main-thread only, the last-seen file
+  // state is only touched on readQueue_.
+  dispatch_queue_t readQueue_;
+  BOOL reading_;
+  off_t lastSize_;
+  struct timespec lastMtime_;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.title = @"Live Log";
+  readQueue_ = dispatch_queue_create("xenia.log-view.read", DISPATCH_QUEUE_SERIAL);
+  lastSize_ = -1;
   self.view.backgroundColor = [UIColor systemBackgroundColor];
 
   pauseButton_ =
@@ -152,7 +167,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
   [self updateCloseButton];
-  [self reloadLog];
+  [self reloadLogForced:YES];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -168,11 +183,16 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 - (void)dealloc {
   [self stopAutoRefresh];
   [pauseButton_ release];
+  [textView_ release];
+  [footerLabel_ release];
+  if (readQueue_) {
+    dispatch_release(readQueue_);
+  }
   [super dealloc];
 }
 
 - (void)reloadLogTapped:(id)sender {
-  [self reloadLog];
+  [self reloadLogForced:YES];
 }
 
 - (UIMenu*)buildActionsMenu {
@@ -191,7 +211,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
       [UIAction actionWithTitle:@"Refresh"
                           image:[UIImage systemImageNamed:@"arrow.clockwise"]
                      identifier:nil
-                        handler:^(__unused UIAction* action) { [weak_self reloadLog]; }];
+                        handler:^(__unused UIAction* action) { [weak_self reloadLogForced:YES]; }];
   return [UIMenu menuWithTitle:@"" children:@[ copy_action, share_action, refresh_action ]];
 }
 
@@ -202,7 +222,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
     footerLabel_.text = @"Paused. Resume to continue the live tail.";
   } else {
     [self startAutoRefresh];
-    [self reloadLog];
+    [self reloadLogForced:YES];
   }
   [self updatePauseButton];
 }
@@ -231,9 +251,9 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 - (void)updateCloseButton {
   if ([self shouldShowCloseButton]) {
     self.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                      target:self
-                                                      action:@selector(closeTapped:)];
+        [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                       target:self
+                                                       action:@selector(closeTapped:)] autorelease];
   } else {
     self.navigationItem.leftBarButtonItem = nil;
   }
@@ -260,7 +280,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 }
 
 - (void)autoRefreshTick:(NSTimer* __unused)timer {
-  [self reloadLog];
+  [self reloadLogForced:NO];
 }
 
 - (BOOL)handleControllerActions:(const xe::ui::apple::ControllerActionSet&)actions {
@@ -307,61 +327,66 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 }
 
 - (void)shareLogTapped:(id)sender {
-  std::filesystem::path log_path = GetLogFilePath();
-  NSString* log_path_ns = ToNSString(log_path.string());
-  if (![[NSFileManager defaultManager] fileExistsAtPath:log_path_ns]) {
-    UIAlertController* alert =
-        [UIAlertController alertControllerWithTitle:@"Log Not Found"
-                                            message:@"No xenia.log file exists yet."
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                              style:UIAlertActionStyleDefault
-                                            handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-    return;
-  }
-
-  NSURL* log_url = [NSURL fileURLWithPath:log_path_ns];
-  UIActivityViewController* share_controller =
-      [[UIActivityViewController alloc] initWithActivityItems:@[ log_url ]
-                                        applicationActivities:nil];
-  UIPopoverPresentationController* popover = share_controller.popoverPresentationController;
-  if (popover) {
-    popover.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
-  }
-  [self presentViewController:share_controller animated:YES completion:nil];
+  // Shares a redacted copy (container paths and UUIDs removed).
+  xe_ios_present_log_share_from_bar_button(
+      self, self.navigationItem.rightBarButtonItems.firstObject, NO);
 }
 
-- (void)reloadLog {
+// Reads the tail off the main thread and only touches the text view when the
+// file's size or modification time changed (or force is set).
+- (void)reloadLogForced:(BOOL)force {
+  if (reading_) {
+    return;
+  }
+  reading_ = YES;
   static constexpr size_t kMaxLogBytes = 256 * 1024;
-  BOOL should_follow_tail = [self isNearBottom];
-  std::filesystem::path log_path = GetLogFilePath();
-  std::string content = ReadFileTail(log_path, kMaxLogBytes);
-  NSString* log_path_ns = ToNSString(log_path.string());
+  const std::filesystem::path log_path = GetLogFilePath();
+  dispatch_async(readQueue_, ^{
+    @autoreleasepool {
+      struct stat info;
+      const bool have_file = stat(log_path.c_str(), &info) == 0;
+      const off_t size = have_file ? info.st_size : -1;
+      const struct timespec mtime = have_file ? info.st_mtimespec : timespec{};
+      NSString* display_text = nil;
+      if (force || size != lastSize_ || mtime.tv_sec != lastMtime_.tv_sec ||
+          mtime.tv_nsec != lastMtime_.tv_nsec) {
+        lastSize_ = size;
+        lastMtime_ = mtime;
+        std::string content = ReadFileTail(log_path, kMaxLogBytes);
+        if (content.empty()) {
+          NSString* path_ns = ToNSString(xe::strip_pii(log_path.string()));
+          display_text =
+              [NSString stringWithFormat:@"No recent log data found.\n\nExpected file:\n%@\n\n"
+                                         @"Launch a game and keep this open. This view updates "
+                                         @"automatically.",
+                                         path_ns];
+        } else {
+          // Older log lines can still carry container paths.
+          display_text = DecodeLogBytesToNSString(xe::strip_pii(content));
+        }
+      }
+      NSString* footer_path = ToNSString(xe::strip_pii(log_path.string()));
+      dispatch_async(dispatch_get_main_queue(), ^{
+        reading_ = NO;
+        [self applyLogText:display_text footerPath:footer_path];
+      });
+    }
+  });
+}
 
-  NSString* display_text = nil;
-  if (content.empty()) {
-    display_text =
-        [NSString stringWithFormat:@"No recent log data found.\n\nExpected file:\n%@\n\n"
-                                   @"Launch a game and keep this open. This view updates "
-                                   @"automatically.",
-                                   log_path_ns];
-  } else {
-    display_text = DecodeLogBytesToNSString(content);
-  }
-
-  if (!display_text) {
-    display_text = @"";
-  }
-  if (![textView_.text isEqualToString:display_text]) {
+- (void)applyLogText:(NSString*)display_text footerPath:(NSString*)footer_path {
+  static constexpr size_t kMaxLogBytes = 256 * 1024;
+  if (display_text) {
+    BOOL should_follow_tail = [self isNearBottom];
     textView_.text = display_text;
+    if (should_follow_tail) {
+      [textView_ scrollRangeToVisible:NSMakeRange(textView_.text.length, 0)];
+    }
   }
-  if (should_follow_tail) {
-    [textView_ scrollRangeToVisible:NSMakeRange(textView_.text.length, 0)];
+  if (!paused_) {
+    footerLabel_.text = [NSString stringWithFormat:@"Live tail (0.5s). Showing last %zu KB from %@",
+                                                   kMaxLogBytes / 1024, footer_path];
   }
-
-  footerLabel_.text = [NSString stringWithFormat:@"Live tail (0.5s). Showing last %zu KB from %@",
-                                                 kMaxLogBytes / 1024, log_path_ns];
 }
 
 @end
