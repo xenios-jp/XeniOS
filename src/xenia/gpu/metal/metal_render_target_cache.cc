@@ -1995,6 +1995,27 @@ bool MetalRenderTargetCache::BuildTransferRectanglePlans(
   return true;
 }
 
+namespace {
+// Color formats whose ownership transfer is a uint bit copy that the guest's
+// float view of the destination still writes exactly when each component is
+// bit-reinterpreted, so the copy can be drawn inside the guest's pass. Measured
+// on an M-series GPU, 1x and 4x, every half pattern and every float32 exponent
+// with NaN payloads and denormals: float32 bitcasts keep every pattern, and so
+// do halves written as half, but not halves written as float, which quiets
+// NaNs.
+bool IsColorTransferFloatBitsExact(xenos::ColorRenderTargetFormat format) {
+  switch (format) {
+    case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_32_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
+      return true;
+    default:
+      return false;
+  }
+}
+}  // namespace
+
 bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
     uint32_t render_target_index, RenderTarget* const* render_targets,
     const std::vector<Transfer>& transfers) const {
@@ -2024,11 +2045,19 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
   } else {
     MTL::PixelFormat transfer_format = GetColorOwnershipTransferPixelFormat(
         dest_key.GetColorFormat(), &dest_is_uint);
-    if (dest_is_uint || !dest_draw_texture ||
-        dest_draw_texture != dest_metal_rt->transfer_texture() ||
-        GetColorResourcePixelFormat(dest_key.GetColorFormat()) !=
-            transfer_format ||
-        dest_draw_texture->pixelFormat() != transfer_format) {
+    if (dest_is_uint &&
+        IsColorTransferFloatBitsExact(dest_key.GetColorFormat())) {
+      // Written as bits through the float view the pass binds.
+      if (!dest_draw_texture ||
+          dest_draw_texture->pixelFormat() !=
+              GetColorResourcePixelFormat(dest_key.GetColorFormat())) {
+        return false;
+      }
+    } else if (dest_is_uint || !dest_draw_texture ||
+               dest_draw_texture != dest_metal_rt->transfer_texture() ||
+               GetColorResourcePixelFormat(dest_key.GetColorFormat()) !=
+                   transfer_format ||
+               dest_draw_texture->pixelFormat() != transfer_format) {
       return false;
     }
   }
@@ -2240,6 +2269,7 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
     RenderTargetKey dest_key = dest_metal_rt->key();
     uint32_t dest_sample_count = MsaaSamplesToCount(dest_key.msaa_samples);
     bool dest_is_uint = false;
+    bool dest_float_bits = false;
     uint32_t color_attachment_index = 0;
     MTL::PixelFormat dest_format = MTL::PixelFormatInvalid;
     if (dest_key.is_depth) {
@@ -2273,6 +2303,12 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
       color_attachment_index = i - 1;
       dest_format = GetColorOwnershipTransferPixelFormat(
           dest_key.GetColorFormat(), &dest_is_uint);
+      if (dest_is_uint &&
+          IsColorTransferFloatBitsExact(dest_key.GetColorFormat())) {
+        dest_float_bits = true;
+        dest_is_uint = false;
+        dest_format = GetColorResourcePixelFormat(dest_key.GetColorFormat());
+      }
       if (dest_is_uint ||
           attachment_formats.color_attachment_formats[color_attachment_index] !=
               dest_format ||
@@ -2310,6 +2346,7 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
             source_key, dest_key,
             (has_host_depth && !stencil_bit) ? &host_depth_key : nullptr, false,
             stencil_bit != 0, color_attachment_index, transfer);
+        shader_key.dest_float_bits = dest_float_bits ? 1 : 0;
         if (!GetOrCreateTransferPipelines(
                 shader_key, dest_format, dest_is_uint,
                 native_stencil_output && !stencil_bit, color_attachment_index,
@@ -5760,8 +5797,18 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         dest_is_depth ? GetDepthPixelFormat(dest_key.GetDepthFormat())
                       : GetColorOwnershipTransferPixelFormat(
                             dest_key.GetColorFormat(), &dest_is_uint);
+    // Inside the guest's pass, a bit copy the float view keeps exact is drawn
+    // through that view, the attachment the pass binds.
+    const bool dest_float_bits =
+        use_active_render_encoder && !dest_is_depth && dest_is_uint &&
+        IsColorTransferFloatBitsExact(dest_key.GetColorFormat());
+    if (dest_float_bits) {
+      dest_is_uint = false;
+      dest_pixel_format =
+          GetColorResourcePixelFormat(dest_key.GetColorFormat());
+    }
 
-    MTL::Texture* dest_texture = dest_is_depth
+    MTL::Texture* dest_texture = dest_is_depth || dest_float_bits
                                      ? dest_metal_rt->texture()
                                      : dest_metal_rt->transfer_texture();
     if (!dest_texture) {
@@ -6299,6 +6346,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               host_depth_rt == dest_metal_rt &&
                   dest_metal_rt != renamed_depth_dest,
               pass != 0, active_color_attachment_index, transfer);
+          shader_key.dest_float_bits = dest_float_bits ? 1 : 0;
 
           transfer_invocations_.emplace_back(transfer, shader_key);
           if (pass) {
@@ -7228,6 +7276,7 @@ MTL::Function* MetalRenderTargetCache::GetOrCreateTransferFragmentFunction(
         xenos::ColorRenderTargetFormat(key.dest_resource_format),
         &options.dest_color_is_uint);
   }
+  options.dest_color_float_bits = key.dest_float_bits;
   options.stencil_reference_output_supported =
       UseNativeStencilOutputInTransfers();
   const bool draws_samples_separately = TransferDrawsSamplesSeparately(key);
