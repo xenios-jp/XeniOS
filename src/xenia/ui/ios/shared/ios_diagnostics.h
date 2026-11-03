@@ -46,8 +46,9 @@ void xe_ios_diagnostics_note_title(uint32_t title_id, uint64_t jit_base, uint64_
 void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, NSDate* end);
 
 // Online Features, Share Diagnostics or a notice answer changed. Turning
-// either switch off stops the running session's statistics and deletes
-// everything recorded or queued.
+// either switch off stops the running session's statistics, deletes
+// everything recorded or queued and clears the running title from iOS 27 state
+// reporting.
 void xe_ios_diagnostics_settings_changed(void);
 
 @class UIViewController;
