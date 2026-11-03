@@ -34,6 +34,8 @@ struct RelayConfig {
   uint32_t title_version = 0;
   // Off sends every frame through the TURN relay.
   bool direct_paths = true;
+  // Probes loopback and link-local candidates too, for tests on one machine.
+  bool probe_local_candidates = false;
   // Asked about once a second when set. False leaves the room, and the
   // transport sends nothing until it's true again.
   std::function<bool()> allowed;
@@ -128,6 +130,8 @@ class RelayClient {
     uint32_t title_version = 0;
     std::vector<Endpoint> candidates;
     std::optional<Endpoint> relay;
+    // Which network the lobby saw the player on, when it says.
+    std::optional<uint64_t> net;
     bool operator==(const Listed&) const = default;
   };
 
@@ -186,6 +190,9 @@ class RelayClient {
   static bool Probed(const Peer& peer, const Endpoint& from);
   // Whether the peer is behind the public address this instance is.
   bool SharesPublicAddress(const Peer& peer) const;
+  // Whether the peer's local addresses are worth probing: the lobby saw both
+  // on one network, or without its word, both show one public address.
+  bool SameNetwork(const Peer& peer) const;
   std::vector<Endpoint> Candidates() const;
   std::optional<Endpoint> RelayAddress() const;
   std::string Presence(bool join) const;
@@ -202,6 +209,8 @@ class RelayClient {
   uint32_t failures_ = 0;
   std::optional<uint64_t> down_since_ms_;
   uint64_t lobby_heard_ms_ = 0;
+  // The lobby's name for this player's network, when it gives one.
+  std::optional<uint64_t> net_;
   uint64_t next_lobby_ping_ms_ = 0;
   bool joined_ = false;
   bool rejected_ = false;

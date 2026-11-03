@@ -353,15 +353,22 @@ class FakeLobby {
   // Everything clients sent, in order.
   std::vector<std::string> received;
   size_t connects = 0;
+  // Appended to every player's candidates, as a forged presence could, and a
+  // relay address that replaces every player's own.
+  std::vector<std::string> extra_candidates;
+  std::string forged_relay;
 
   // The connection's id, or none while the lobby is down.
-  std::optional<int> Connect(const std::string& path, Socket socket) {
+  // |net| is the network the lobby saw the player on, if it says.
+  std::optional<int> Connect(const std::string& path, Socket socket,
+                             std::string net = {}) {
     ++connects;
     if (!up) {
       return std::nullopt;
     }
     const int id = next_id_++;
     connections_[id] = {path, std::move(socket)};
+    connections_[id].net = std::move(net);
     return id;
   }
 
@@ -417,7 +424,11 @@ class FakeLobby {
       }
       connection.joined = true;
       connection.socket.message(fmt::format(
-          R"({{"t":"welcome","v":1,"secret":"{}","ice":{}}})", secret, ice()));
+          R"({{"t":"welcome","v":1,"secret":"{}",{}"ice":{}}})", secret,
+          connection.net.empty()
+              ? std::string()
+              : fmt::format(R"("net":"{}",)", connection.net),
+          ice()));
       Broadcast(connection.path);
     } else if (type == "update" && connection.joined) {
       Place(connection, message);
@@ -468,6 +479,7 @@ class FakeLobby {
     uint32_t version = 0;
     std::vector<std::string> candidates;
     std::string relay;
+    std::string net;
   };
 
   static void Place(Connection& connection, const rapidjson::Value& message) {
@@ -502,16 +514,26 @@ class FakeLobby {
           continue;
         }
         std::string candidates;
-        for (const std::string& candidate : other.candidates) {
+        auto add = [&](const std::string& candidate) {
           candidates +=
               fmt::format("{}\"{}\"", candidates.empty() ? "" : ",", candidate);
+        };
+        for (const std::string& candidate : other.candidates) {
+          add(candidate);
         }
+        for (const std::string& candidate : extra_candidates) {
+          add(candidate);
+        }
+        const std::string& relay =
+            forged_relay.empty() ? other.relay : forged_relay;
         peers += fmt::format(
-            R"({}{{"mac":"{}","title":"{}","version":{},"candidates":[{}]{}}})",
+            R"({}{{"mac":"{}","title":"{}","version":{},"candidates":[{}]{}{}}})",
             peers.empty() ? "" : ",", other.mac, other.title, other.version,
             candidates,
-            other.relay.empty() ? std::string()
-                                : fmt::format(R"(,"relay":"{}")", other.relay));
+            relay.empty() ? std::string()
+                          : fmt::format(R"(,"relay":"{}")", relay),
+            other.net.empty() ? std::string()
+                              : fmt::format(R"(,"net":"{}")", other.net));
       }
       to.socket.message(fmt::format(R"({{"t":"peers","peers":[{}]}})", peers));
     }
@@ -609,6 +631,10 @@ class Network {
   FakeLobby lobby;
   FakeTurn turn{V4(203, 0, 113, 1, 3478)};
   bool block_direct = false;
+  // The lobby names each player's network, which is its public address.
+  bool send_net = false;
+  // Where datagrams were sent, but not to the TURN server.
+  std::set<Endpoint> sent_to;
   size_t direct_frames = 0;
   // Datagrams sent to a LAN address on another network.
   size_t foreign_lan_sends = 0;
@@ -637,7 +663,9 @@ class Network {
            },
            [this, n = &node](std::string reason) {
              events_.push_back({n, Event::kClosed, std::move(reason)});
-           }});
+           }},
+          send_net ? fmt::format("{:016x}", uint64_t(node.at.address[3]))
+                   : std::string());
       if (node.lobby) {
         node.client.LobbyOpened(now_, out);
       } else {
@@ -693,6 +721,9 @@ class Network {
       Sent sent = std::move(queue_.front());
       queue_.pop_front();
       const Endpoint to = sent.datagram.to;
+      if (to != turn.at() && !turn.Relays(to)) {
+        sent_to.insert(to);
+      }
       if (to == turn.at() || turn.Relays(to)) {
         std::vector<Sent> out;
         if (to == turn.at()) {
@@ -1424,6 +1455,112 @@ TEST_CASE("Relay lobby turns players away", "[relay]") {
   CHECK(newer.lobby.connects == 1);
 }
 
+TEST_CASE("Relay players never probe addresses a peer made up", "[relay]") {
+  // Everyone lists the others' public addresses and local ones of its own
+  // choosing, as a hostile player could.
+  const std::vector<std::string> forged = {
+      "198.51.100.101:9", "198.51.100.102:9", "192.168.77.5:4000",
+      "127.0.0.1:4000",   "169.254.9.9:4000", "[fe80::9]:4000"};
+  const Endpoint lan = V4(192, 168, 77, 5, 4000);
+  const Endpoint loopback = V4(127, 0, 0, 1, 4000);
+  const Endpoint link_local = V4(169, 254, 9, 9, 4000);
+  const Endpoint link_local_v6 = *ParseEndpoint("[fe80::9]:4000");
+  auto run = [&](bool send_net, uint8_t network) {
+    auto network_ = std::make_unique<Network>();
+    network_->send_net = send_net;
+    network_->lobby.extra_candidates = forged;
+    network_->Add(kMacA, Config(), network);
+    network_->Add(kMacB, Config(), network);
+    network_->Run(3000);
+    return network_;
+  };
+  auto never_loopback_or_link_local = [&](const Network& network) {
+    return !network.sent_to.count(loopback) &&
+           !network.sent_to.count(link_local) &&
+           !network.sent_to.count(link_local_v6);
+  };
+
+  // The lobby says they're on different networks, whatever they list.
+  auto apart = run(true, 0);
+  CHECK(!apart->sent_to.count(lan));
+  CHECK(never_loopback_or_link_local(*apart));
+  // On one network, private addresses are worth trying.
+  auto together = run(true, 7);
+  CHECK(together->sent_to.count(lan));
+  CHECK(never_loopback_or_link_local(*together));
+  // An old lobby doesn't say, so the listed addresses decide as before.
+  auto unsaid = run(false, 0);
+  CHECK(unsaid->sent_to.count(lan));
+  CHECK(never_loopback_or_link_local(*unsaid));
+}
+
+TEST_CASE("Relay players only use a peer's public relay address", "[relay]") {
+  for (const char* relay : {"192.168.1.5:49152", "127.0.0.1:49152",
+                            "169.254.1.1:49152", "10.0.0.7:49152",
+                            "100.64.0.9:49152", "[fe80::1]:49152"}) {
+    Network network;
+    network.block_direct = true;
+    network.lobby.forged_relay = relay;
+    auto& a = network.Add(kMacA);
+    network.Add(kMacB);
+    network.Run(3000);
+    CHECK(a.client.status().players == 1);
+    CHECK(a.client.status().relayed == 0);
+  }
+  Network network;
+  network.block_direct = true;
+  auto& a = network.Add(kMacA);
+  network.Add(kMacB);
+  network.Run(3000);
+  CHECK(a.client.status().relayed == 1);
+}
+
+namespace {
+
+// Opens the lobby connection of |client| and welcomes it, 'net' when given.
+void JoinRoom(RelayClient& client, uint64_t now, const char* net = nullptr) {
+  Outbox out;
+  client.LobbyConnecting(now);
+  client.LobbyOpened(now, out);
+  client.LobbyMessage(
+      fmt::format(
+          R"({{"t":"welcome","v":1,"secret":"0123456789abcdef",{}"ice":{{}}}})",
+          net ? fmt::format(R"("net":"{}",)", net) : std::string()),
+      now, out);
+}
+
+}  // namespace
+
+TEST_CASE("Relay players take the lobby's word for who shares a network",
+          "[relay]") {
+  // Private addresses are probed when the lobby saw both players on one
+  // network, even before a public address of their own is known, and never
+  // when it saw them apart.
+  auto probes_private = [](const char* mine, const char* theirs) {
+    RelayClient client(kMacA, Config());
+    Outbox out;
+    uint64_t now = 100000;
+    JoinRoom(client, now, mine);
+    client.LobbyMessage(
+        fmt::format(
+            R"({{"t":"peers","peers":[{{"mac":"{}","title":"{:08X}","version":1,)"
+            R"("candidates":["192.168.5.5:4000","198.51.100.9:5000"],)"
+            R"("net":"{}"}}]}})",
+            Hex(kMacB), kTitle, theirs),
+        now, out);
+    std::set<Endpoint> probed;
+    for (int i = 0; i < 40; ++i, now += 25) {
+      client.Tick(now, out);
+      for (const Datagram& datagram : std::exchange(out.datagrams, {})) {
+        probed.insert(datagram.to);
+      }
+    }
+    return probed.count(V4(192, 168, 5, 5, 4000)) != 0;
+  };
+  CHECK(probes_private("00000000000000aa", "00000000000000aa"));
+  CHECK(!probes_private("00000000000000aa", "00000000000000bb"));
+}
+
 TEST_CASE("Relay players see another version of the title", "[relay]") {
   Network network;
   auto& a = network.Add(kMacA, Config(1));
@@ -1672,6 +1809,8 @@ TEST_CASE("Relay transports meet on loopback", "[relay]") {
     RelayConfig config = Config(1, PrivateRoom(NewRoomCode()));
     config.lobby = std::string(kLobbyUrl);
     config.direct_paths = direct;
+    // The fake TURN server and the players share the loopback network.
+    config.probe_local_candidates = true;
     std::string error;
     auto a = secure::OpenRelayTransport(kMacA, config, error);
     REQUIRE(a);
@@ -1747,6 +1886,8 @@ TEST_CASE("Relay transport leaves while it isn't allowed online", "[relay]") {
 
   RelayConfig config = Config(1, PrivateRoom(NewRoomCode()));
   config.lobby = std::string(kLobbyUrl);
+  // The fake TURN server and the players share the loopback network.
+  config.probe_local_candidates = true;
   std::string error;
   auto b = secure::OpenRelayTransport(kMacB, config, error);
   REQUIRE(b);
@@ -1817,6 +1958,8 @@ TEST_CASE("Relay transport changes rooms while it runs", "[relay]") {
   const Room elsewhere = PublicLobby(kTitle);
   RelayConfig config = Config(1, room);
   config.lobby = std::string(kLobbyUrl);
+  // The fake TURN server and the players share the loopback network.
+  config.probe_local_candidates = true;
   std::string error;
   auto b = secure::OpenRelayTransport(kMacB, config, error);
   REQUIRE(b);
@@ -2019,6 +2162,7 @@ TEST_CASE("Relay transports meet in a real lobby", "[.lobby]") {
     RelayConfig config = Config(1, PrivateRoom(NewRoomCode()));
     config.lobby = lobby;
     config.direct_paths = direct;
+    config.probe_local_candidates = true;
     std::string error;
     auto a = secure::OpenRelayTransport(kMacA, config, error);
     REQUIRE(a);

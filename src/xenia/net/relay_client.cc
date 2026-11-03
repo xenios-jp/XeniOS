@@ -55,6 +55,24 @@ bool IsLocal(const Endpoint& endpoint) {
          (a[0] == 192 && a[1] == 168) || (a[0] == 169 && a[1] == 254);
 }
 
+bool IsLoopback(const Endpoint& endpoint) {
+  const auto& a = endpoint.address;
+  if (endpoint.v6) {
+    return std::all_of(a.begin(), a.end() - 1,
+                       [](uint8_t b) { return !b; }) &&
+           a[15] == 1;
+  }
+  return a[0] == 127;
+}
+
+bool IsLinkLocal(const Endpoint& endpoint) {
+  const auto& a = endpoint.address;
+  if (endpoint.v6) {
+    return a[0] == 0xFE && (a[1] & 0xC0) == 0x80;
+  }
+  return a[0] == 169 && a[1] == 254;
+}
+
 // An address worth sending to: not unspecified, multicast or broadcast, and
 // with a port.
 bool Usable(const Endpoint& endpoint) {
@@ -67,6 +85,22 @@ bool Usable(const Endpoint& endpoint) {
            std::any_of(a.begin(), a.end(), [](uint8_t b) { return b != 0; });
   }
   return a[0] != 0 && a[0] < 224;
+}
+
+// A routable unicast address, which is all a TURN relay can have. Private,
+// shared, loopback, link-local, multicast and reserved ranges are not.
+bool IsPublicUnicast(const Endpoint& endpoint) {
+  if (!Usable(endpoint)) {
+    return false;
+  }
+  const auto& a = endpoint.address;
+  if (endpoint.v6) {
+    // Global unicast, 2000::/3.
+    return (a[0] & 0xE0) == 0x20;
+  }
+  return !IsLocal(endpoint) && !(a[0] == 100 && (a[1] & 0xC0) == 64) &&
+         !(a[0] == 192 && a[1] == 0 && a[2] == 0) &&
+         !(a[0] == 198 && (a[1] & 0xFE) == 18);
 }
 
 bool SameAddress(const Endpoint& a, const Endpoint& b) {
@@ -135,7 +169,11 @@ std::optional<IceServers> ReadIce(const rapidjson::Value& welcome) {
   return servers;
 }
 
-std::optional<RelayClient::Listed> ReadListed(const rapidjson::Value& peer) {
+// Another player's word is not trusted with where this one sends probes: its
+// loopback and link-local candidates, and a relay that isn't public, are
+// dropped unless |probe_local| says it's a test.
+std::optional<RelayClient::Listed> ReadListed(const rapidjson::Value& peer,
+                                              bool probe_local) {
   if (!peer.IsObject()) {
     return std::nullopt;
   }
@@ -155,14 +193,16 @@ std::optional<RelayClient::Listed> ReadListed(const rapidjson::Value& peer) {
   for (const std::string& text : Strings(peer, "candidates")) {
     auto endpoint = ParseEndpoint(text);
     if (endpoint && Usable(*endpoint) &&
+        (probe_local || (!IsLoopback(*endpoint) && !IsLinkLocal(*endpoint))) &&
         listed.candidates.size() < kMaxListedCandidates) {
       listed.candidates.push_back(*endpoint);
     }
   }
   if (auto relay = ParseEndpoint(String(peer, "relay"));
-      relay && Usable(*relay)) {
+      relay && IsPublicUnicast(*relay)) {
     listed.relay = *relay;
   }
+  listed.net = ParseHex<uint64_t>(String(peer, "net"), 16);
   return listed;
 }
 
@@ -213,6 +253,8 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
   const std::string_view type = String(message, "t");
   if (type == "welcome") {
     if (auto secret = ParseHex<uint64_t>(String(message, "secret"), 16)) {
+      // Old lobbies don't name the network.
+      net_ = ParseHex<uint64_t>(String(message, "net"), 16);
       OnWelcome(*secret, ReadIce(message), now_ms);
     }
   } else if (type == "peers") {
@@ -220,7 +262,7 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
     if (joined_ && peers != message.MemberEnd() && peers->value.IsArray()) {
       std::vector<Listed> listed;
       for (const auto& peer : peers->value.GetArray()) {
-        if (auto read = ReadListed(peer)) {
+        if (auto read = ReadListed(peer, config_.probe_local_candidates)) {
           listed.push_back(std::move(*read));
         }
       }
@@ -627,6 +669,13 @@ bool RelayClient::SharesPublicAddress(const Peer& peer) const {
                      });
 }
 
+bool RelayClient::SameNetwork(const Peer& peer) const {
+  if (net_ && peer.listed.net) {
+    return *net_ == *peer.listed.net;
+  }
+  return SharesPublicAddress(peer);
+}
+
 void RelayClient::SendProbe(const Peer& peer, const Endpoint& to, Outbox& out) {
   out.datagrams.push_back({to, Encode(Probe{room_secret_, mac_, peer.listed.mac,
                                             peer.nonces[0], false})});
@@ -729,8 +778,9 @@ void RelayClient::TickPeers(uint64_t now_ms, Outbox& out) {
       continue;
     }
     // Local addresses are only worth trying behind the same public address,
-    // and trying them makes iOS ask for local network access.
-    const bool same_network = SharesPublicAddress(peer);
+    // and trying them makes iOS ask for local network access. The lobby's word
+    // on the network counts, not the addresses the peer lists.
+    const bool same_network = SameNetwork(peer);
     NewProbeRound(peer);
     for (const Endpoint& candidate : peer.listed.candidates) {
       if (same_network || !IsLocal(candidate)) {
