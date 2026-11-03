@@ -461,6 +461,9 @@ class MetalCommandProcessor : public CommandProcessor {
   // Writes how long the stored pipelines took to rebuild, once, when the last of
   // them has finished. Under async_compile_mutex_.
   void RecordStorageRebuildStatsLocked();
+  // A pipeline task that ended (compiled, failed or taken by a draw), for the
+  // rebuild timing record.
+  void NoteStoredPipelineDoneLocked(uint64_t pipeline_key);
   // Formats, write masks and blend state, shared by the render and mesh
   // pipeline descriptors.
   static void ApplyColorAttachmentState(
@@ -865,6 +868,11 @@ class MetalCommandProcessor : public CommandProcessor {
   // The guest was held for the rebuild with every core compiling for a while,
   // so its time would forecast the next one short. Not recorded then.
   bool storage_stats_boosted_ = false;
+  // The stored pipelines still compiling, and whether all were queued. The
+  // record waits for these alone: compile_activity counts every task, and a
+  // draw's pipelines, which go first, finish within it.
+  std::unordered_set<uint64_t> storage_stats_keys_;
+  bool storage_stats_queued_all_ = false;
   std::filesystem::path storage_stats_path_;
   // Guest ucode (.xsh, shared with the other backends) and this backend's
   // pipeline descriptions (.metal.xpso), replayed at startup.
