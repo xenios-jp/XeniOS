@@ -282,6 +282,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // Blocks until the compile threads have drained. For work that needs the
   // guest's exact shaders rather than a placeholder or a skipped draw.
   void AwaitAsyncCompiles();
+  // Blocks until the pipeline the last pipeline lookup on this thread found
+  // pending is built or has failed, moving it to the front of the queue. For a
+  // draw that needs the guest's exact shaders.
+  void AwaitPendingPipeline();
   // Blocks until the given submission's command buffer has completed. The
   // submission must already be committed.
   void AwaitSubmissionCompletion(uint64_t submission);
@@ -436,9 +440,24 @@ class MetalCommandProcessor : public CommandProcessor {
                                  const Shader::Translation* pixel_translation);
   void LogPlaceholderDraw(const Shader::Translation* vertex_translation,
                           const Shader::Translation* pixel_translation);
-  // Both require async_compile_mutex_ held.
+  // All require async_compile_mutex_ held.
   bool IsAsyncCompileIdleLocked() const;
   void FinishAsyncCompileTaskLocked();
+  // Counts a request as finished for the progress and the rebuild record.
+  void CountAsyncCompileTaskFinishedLocked();
+  // Blocks until |done|, checked under async_compile_mutex_ after each finished
+  // task, holds. The compile threads may use every core meanwhile.
+  template <typename Done>
+  void AwaitAsyncCompilesUntil(const Done& done);
+  // Sets the compile thread limit from the configured count and whatever waits
+  // on the threads.
+  void UpdateCompileThreadLimitLocked();
+  // Raises a queued pipeline to |priority| if that's higher. Does nothing to
+  // one a thread is building or that isn't queued.
+  void PromoteQueuedPipelineLocked(uint64_t key, uint8_t priority);
+  // Takes a queued pipeline out of the queue for the caller to build. False if
+  // it isn't queued.
+  bool TakeQueuedPipelineLocked(uint64_t key);
   // Writes how long the stored pipelines took to rebuild, once, when the last of
   // them has finished. Under async_compile_mutex_.
   void RecordStorageRebuildStatsLocked();
@@ -739,6 +758,15 @@ class MetalCommandProcessor : public CommandProcessor {
     PipelineDescription description;
   });
   static constexpr uint32_t kPipelineStorageAPIMagicMetal = 'MTLP';
+  // Pipeline compile priorities, highest first. What a draw needs goes before
+  // what a launch rebuilds from storage, so a game isn't left skipping draws
+  // until the whole rebuild is done, and what a draw blocks on goes first.
+  // Pipelines with a pixel shader first within each.
+  static constexpr uint8_t kPipelinePriorityStoredDepthOnly = 1;
+  static constexpr uint8_t kPipelinePriorityStored = 2;
+  static constexpr uint8_t kPipelinePriorityDrawDepthOnly = 3;
+  static constexpr uint8_t kPipelinePriorityDraw = 4;
+  static constexpr uint8_t kPipelinePriorityAwaited = 5;
 
   struct PipelineCompileRequest {
     PipelineDescription description;
@@ -774,12 +802,6 @@ class MetalCommandProcessor : public CommandProcessor {
       return a.priority < b.priority;
     }
   };
-  struct PipelineCompileRequestCompare {
-    bool operator()(const PipelineCompileRequest& a,
-                    const PipelineCompileRequest& b) const {
-      return a.priority < b.priority;
-    }
-  };
   memexport_format_profile::ProfilePool memexport_format_profiles_;
   // Accessed only while assembling requests on the command thread.
   mutable std::unordered_map<const Shader*, FiniteMultiplyInfo>
@@ -792,10 +814,13 @@ class MetalCommandProcessor : public CommandProcessor {
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
                       ShaderCompileRequestCompare>
       async_shader_queue_;
-  std::priority_queue<PipelineCompileRequest,
-                      std::vector<PipelineCompileRequest>,
-                      PipelineCompileRequestCompare>
-      async_pipeline_queue_;
+  // Queued pipelines in the order the compile threads take them: by priority,
+  // highest first (the order's first is the negated priority), then by when
+  // they reached it. Indexed by key so a draw can promote or take one.
+  using PipelineQueueOrder = std::pair<int, uint64_t>;
+  std::map<PipelineQueueOrder, PipelineCompileRequest> async_pipeline_queue_;
+  std::unordered_map<uint64_t, PipelineQueueOrder> async_pipeline_queued_;
+  uint64_t async_pipeline_queue_arrivals_ = 0;
   std::unordered_set<Shader::Translation*> async_shader_pending_;
   std::unordered_set<Shader::Translation*> async_shader_failed_;
   std::unordered_set<uint64_t> async_pipeline_pending_;
@@ -816,6 +841,13 @@ class MetalCommandProcessor : public CommandProcessor {
   std::condition_variable async_compile_boost_cv_;
   size_t async_compile_base_thread_count_ = 0;
   size_t async_compile_thread_limit_ = 0;
+  // What raises the limit to every core: the guest held for a rebuild
+  // (SetCompileThreadBoost), and threads blocked on the compile threads.
+  bool async_compile_hold_boost_ = false;
+  size_t async_compile_awaiters_ = 0;
+  // The last pipeline AcquirePipelineState reported pending, for
+  // AwaitPendingPipeline. Command processor thread only.
+  uint64_t last_pending_pipeline_key_ = 0;
   size_t async_compile_busy_ = 0;
   bool async_compile_shutdown_ = false;
   std::atomic<int64_t> async_shader_failure_last_log_ns_{0};
@@ -830,8 +862,8 @@ class MetalCommandProcessor : public CommandProcessor {
   uint64_t storage_stats_start_ticks_ = 0;
   uint64_t storage_stats_stored_ = 0;
   uint32_t storage_stats_version_ = 0;
-  // The rebuild ran boosted for a while, so its time would forecast the next
-  // one short. Not recorded then.
+  // The guest was held for the rebuild with every core compiling for a while,
+  // so its time would forecast the next one short. Not recorded then.
   bool storage_stats_boosted_ = false;
   std::filesystem::path storage_stats_path_;
   // Guest ucode (.xsh, shared with the other backends) and this backend's
