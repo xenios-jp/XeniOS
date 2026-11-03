@@ -228,7 +228,8 @@ UIButton* xe_make_settings_footer_button(NSString* asset_name, NSString* fallbac
   button.adjustsImageWhenHighlighted = YES;
   button.imageView.contentMode = UIViewContentModeScaleAspectFit;
   button.accessibilityLabel = accessibility_label;
-  button.accessibilityHint = @"Opens in Safari.";
+  button.accessibilityHint =
+      NSLocalizedString(@"Opens in Safari.", @"VoiceOver hint of a link button");
   button.accessibilityTraits |= UIAccessibilityTraitLink;
   button.largeContentTitle = accessibility_label;
   button.showsLargeContentViewer = YES;

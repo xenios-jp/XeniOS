@@ -50,16 +50,17 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  self.title = @"Touch Layout";
+  self.title = NSLocalizedString(@"Touch Layout", @"Title of the touch layout editor");
   if (game_title_.length) {
     self.navigationItem.prompt = game_title_;
   }
   self.view.backgroundColor = [UIColor blackColor];
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:@"Close"
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
-                                       action:@selector(doneTapped:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Close",
+                                      @"Navigation bar button that closes the touch layout editor")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(doneTapped:)] autorelease];
   self.navigationItem.rightBarButtonItem =
       [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                      target:self
@@ -242,7 +243,8 @@
   [overlay_ showLayoutLibraryWithItems:items currentLayoutLocalID:currentLayoutLocalID];
 }
 
-- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text {
+- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text style:(XeniaIOSStatusToastStyle)style {
+  (void)style;
   NSString* prompt = text.length ? text : game_title_;
   self.navigationItem.prompt = prompt;
   if (!text.length) {
@@ -267,24 +269,28 @@
                                                 defaultText:(NSString*)defaultText
                                                  completion:(void (^)(BOOL cancelled,
                                                                       NSString* text))completion {
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:title.length ? title : @"Input Required"
-                                          message:description
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:title.length
+                                   ? title
+                                   : NSLocalizedString(@"Input Required",
+                                                       @"Fallback alert title for a text prompt")
+                       message:description
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
     text_field.text = defaultText ?: @"";
     text_field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     text_field.autocorrectionType = UITextAutocorrectionTypeNo;
     text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
   }];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            if (completion) {
-                                              completion(YES, @"");
-                                            }
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(__unused UIAlertAction* action) {
+                                         if (completion) {
+                                           completion(YES, @"");
+                                         }
+                                       }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: confirm")
                                             style:UIAlertActionStyleDefault
                                           handler:^(__unused UIAlertAction* action) {
                                             UITextField* text_field = alert.textFields.firstObject;
@@ -326,7 +332,10 @@
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller {
   (void)controller;
-  [self touchLayoutCoordinatorSetStatusText:@"Touch layout import cancelled."];
+  [self touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                @"Touch layout import cancelled.",
+                                                @"Toast: the user cancelled a touch layout import")
+                                      style:XeniaIOSStatusToastStyleInfo];
 }
 
 @end

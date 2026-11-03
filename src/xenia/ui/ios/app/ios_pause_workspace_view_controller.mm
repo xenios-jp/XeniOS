@@ -64,7 +64,8 @@
   placeholder.view.backgroundColor = [UIColor systemBackgroundColor];
   UILabel* hint = [[[UILabel alloc] init] autorelease];
   hint.translatesAutoresizingMaskIntoConstraints = NO;
-  hint.text = @"Select an option";
+  hint.text = NSLocalizedString(
+      @"Select an option", @"Placeholder shown in the pause workspace before a choice is made");
   hint.textColor = [XeniaTheme textMuted];
   hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
   [placeholder.view addSubview:hint];

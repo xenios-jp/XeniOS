@@ -395,16 +395,24 @@ void HookShowMessageBox(xe::SimpleMessageBoxType type, std::string_view message)
       std::lock_guard<std::mutex> lock(StateMutex());
       fatal = g_fatal_in_progress;
     }
-    NSString* title = type == xe::SimpleMessageBoxType::Error     ? @"XeniOS Error"
-                      : type == xe::SimpleMessageBoxType::Warning ? @"XeniOS Warning"
-                                                                  : @"XeniOS";
+    NSString* title =
+        type == xe::SimpleMessageBoxType::Error
+            ? NSLocalizedString(@"XeniOS Error", @"Title of a fatal or error message box")
+        : type == xe::SimpleMessageBoxType::Warning
+            ? NSLocalizedString(@"XeniOS Warning", @"Title of a warning message box")
+            : NSLocalizedString(@"XeniOS", @"Title of an information message box");
     // Messages can carry host paths from exceptions and config errors.
     NSString* body = ToNS(xe::strip_pii(message));
     if (fatal) {
-      body = [body stringByAppendingString:@"\n\nXeniOS has to close. The log is saved; open "
-                                           @"XeniOS again to share it."];
+      body = [body
+          stringByAppendingString:
+              NSLocalizedString(
+                  @"\n\nXeniOS has to close. The log is saved; open XeniOS again to share it.",
+                  @"Message box addendum when the app must close")];
     }
-    ShowBlockingAlert(title, body, fatal ? @"Close" : @"OK");
+    ShowBlockingAlert(title, body,
+                      fatal ? NSLocalizedString(@"Close", @"Message box button")
+                            : NSLocalizedString(@"OK", @"Message box button"));
   }
 }
 
@@ -489,12 +497,19 @@ void PresentShare(UIViewController* presenter, UIView* source_view,
   const char* log_name = previous_session ? "xenia.previous.log" : "xenia.log";
   if (![[NSFileManager defaultManager] fileExistsAtPath:source_log]) {
     UIAlertController* alert = [UIAlertController
-        alertControllerWithTitle:@"Log Not Found"
-                         message:[NSString stringWithFormat:@"No %s file exists yet.", log_name]
+        alertControllerWithTitle:NSLocalizedString(
+                                     @"Log Not Found",
+                                     @"Alert title: the log file to share does not exist")
+                         message:[NSString stringWithFormat:
+                                               NSLocalizedString(
+                                                   @"No %s file exists yet.",
+                                                   @"Alert message; %s is the log file name"),
+                                               log_name]
                   preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                              style:UIAlertActionStyleDefault
-                                            handler:nil]];
+    [alert
+        addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
+                                           style:UIAlertActionStyleDefault
+                                         handler:nil]];
     [top presentViewController:alert animated:YES completion:nil];
     return;
   }
@@ -741,13 +756,20 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
     }
     NSString* version = g_state[@"prev_version"];
     NSString* message = g_state[@"prev_message"];
-    NSMutableString* text = [NSMutableString
-        stringWithString:@"XeniOS stopped while it was open"];
+    NSMutableString* text = [NSMutableString string];
     if ([g_state[@"prev_game"] boolValue]) {
-      [text appendString:@" during a game"];
+      [text appendFormat:NSLocalizedString(
+                             @"XeniOS stopped while it was open during a game (version %@). "
+                             @"Sharing its log helps get this fixed.",
+                             @"Alert message after a crash during a game; %@ is the app version"),
+                         version ? version : @"?"];
+    } else {
+      [text appendFormat:NSLocalizedString(
+                             @"XeniOS stopped while it was open (version %@). Sharing its log "
+                             @"helps get this fixed.",
+                             @"Alert message after a crash outside a game; %@ is the app version"),
+                         version ? version : @"?"];
     }
-    [text appendFormat:@" (version %@). Sharing its log helps get this fixed.",
-                       version ? version : @"?"];
     if (message.length) {
       [text appendFormat:@"\n\n%s", xe::strip_pii([message UTF8String]).c_str()];
     }
@@ -762,19 +784,24 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
     return;
   }
 
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"XeniOS closed unexpectedly last time"
-                                          message:summary_text
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:
+          NSLocalizedString(@"XeniOS closed unexpectedly last time",
+                            @"Alert title: shown after the app crashed in the previous session")
+                       message:summary_text
+                preferredStyle:UIAlertControllerStyleAlert];
   UIViewController* weak_presenter = presenter;
-  [alert addAction:[UIAlertAction actionWithTitle:@"Dismiss"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(UIAlertAction* __unused action) {
-                                            xe_ios_present_log_share(weak_presenter, nil, YES);
-                                          }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Dismiss", @"Alert button: dismiss")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Share Log",
+                                                         @"Alert button: shares the log file")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(UIAlertAction* __unused action) {
+                                 xe_ios_present_log_share(weak_presenter, nil, YES);
+                               }]];
   alert.preferredAction = alert.actions.lastObject;
   // Offered once per crash, whatever the user picks, but only counted once the
   // alert is really on screen; a failed present is retried at the next appearance.
@@ -804,17 +831,20 @@ void xe_ios_present_init_failure_alert(UIViewController* presenter, NSString* me
   if (!top) {
     return;
   }
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"XeniOS could not start"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"XeniOS could not start",
+                                                 @"Alert title: the emulator failed to start")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(UIAlertAction* __unused action) {
-                                            xe_ios_present_log_share(presenter, nil, NO);
-                                          }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Share Log",
+                                                         @"Alert button: shares the log file")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(UIAlertAction* __unused action) {
+                                 xe_ios_present_log_share(presenter, nil, NO);
+                               }]];
   [top presentViewController:alert animated:YES completion:nil];
 }

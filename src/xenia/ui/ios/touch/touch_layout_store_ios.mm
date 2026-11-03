@@ -42,8 +42,11 @@ bool WriteTextFileAtomically(const std::filesystem::path& path, const std::strin
   int fd = ::open(tmp_path_utf8.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
   if (fd < 0) {
     if (error_out) {
-      *error_out = [NSString stringWithFormat:@"Could not open temporary layout file: %s",
-                                              std::strerror(errno)];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not open temporary layout file: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           std::strerror(errno)];
     }
     return false;
   }
@@ -53,8 +56,11 @@ bool WriteTextFileAtomically(const std::filesystem::path& path, const std::strin
   while (remaining > 0) {
     ssize_t written = ::write(fd, bytes, remaining);
     if (written < 0) {
-      NSString* message =
-          [NSString stringWithFormat:@"Could not write layout file: %s", std::strerror(errno)];
+      NSString* message = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not write layout file: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           std::strerror(errno)];
       ::close(fd);
       std::error_code remove_ec;
       std::filesystem::remove(tmp_path, remove_ec);
@@ -68,8 +74,11 @@ bool WriteTextFileAtomically(const std::filesystem::path& path, const std::strin
   }
 
   if (::fsync(fd) != 0) {
-    NSString* message =
-        [NSString stringWithFormat:@"Could not sync layout file: %s", std::strerror(errno)];
+    NSString* message = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"Could not sync layout file: %s",
+                             @"Error shown when saving a touch layout; %s is the system error"),
+                         std::strerror(errno)];
     ::close(fd);
     std::error_code remove_ec;
     std::filesystem::remove(tmp_path, remove_ec);
@@ -80,8 +89,11 @@ bool WriteTextFileAtomically(const std::filesystem::path& path, const std::strin
   }
   if (::close(fd) != 0) {
     if (error_out) {
-      *error_out = [NSString stringWithFormat:@"Could not close layout file: %s",
-                                              std::strerror(errno)];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not close layout file: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           std::strerror(errno)];
     }
     std::error_code remove_ec;
     std::filesystem::remove(tmp_path, remove_ec);
@@ -104,9 +116,11 @@ bool WriteTextFileAtomically(const std::filesystem::path& path, const std::strin
     std::error_code remove_ec;
     std::filesystem::remove(tmp_path, remove_ec);
     if (error_out) {
-      *error_out =
-          [NSString stringWithFormat:@"Could not replace layout file: %s",
-                                     rename_error.c_str()];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not replace layout file: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           rename_error.c_str()];
     }
     return false;
   }
@@ -120,7 +134,8 @@ bool LoadIOSTouchLayoutModelAtPathInternal(
   xe::hid::touch::IOSTouchLayoutModel layout = MakeTouchLayoutSeedModelForTable(table);
   if (!xe::hid::touch::ApplyIOSTouchLayoutModel(table, &layout)) {
     if (error_out) {
-      *error_out = @"Touch layout file could not be applied.";
+      *error_out = NSLocalizedString(@"Touch layout file could not be applied.",
+                                     @"Error shown when loading a touch layout");
     }
     return false;
   }
@@ -144,9 +159,11 @@ bool EnsureIOSTouchLayoutsDirectory(NSString** error_out) {
   std::filesystem::create_directories(IOSTouchLayoutsDirectory(), ec);
   if (ec) {
     if (error_out) {
-      *error_out =
-          [NSString stringWithFormat:@"Could not create layout folder: %s",
-                                     ec.message().c_str()];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not create layout folder: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           ec.message().c_str()];
     }
     XELOGE("iOS: failed to create touch layout directory: {}", ec.message());
     return false;
@@ -161,9 +178,11 @@ bool WriteIOSTouchLayoutModel(
   std::filesystem::create_directories(layout_path.parent_path(), ec);
   if (ec) {
     if (error_out) {
-      *error_out =
-          [NSString stringWithFormat:@"Could not create layout folder: %s",
-                                     ec.message().c_str()];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(
+                               @"Could not create layout folder: %s",
+                               @"Error shown when saving a touch layout; %s is the system error"),
+                           ec.message().c_str()];
     }
     return false;
   }
