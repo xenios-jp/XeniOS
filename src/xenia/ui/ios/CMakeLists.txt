@@ -9,6 +9,10 @@ target_sources(xenia-ui-ios PRIVATE
   app/ios_in_game_menu_overlay.mm
   app/ios_landscape_navigation_controller.h
   app/ios_landscape_navigation_controller.mm
+  app/ios_lifecycle_audio_session.h
+  app/ios_lifecycle_audio_session.mm
+  app/ios_lifecycle_observer.h
+  app/ios_lifecycle_observer.mm
   app/ios_main_view_controller.h
   app/ios_main_view_controller.mm
   app/ios_pause_dashboard_view_controller.h
@@ -129,6 +133,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_crash_reporting.mm
   shared/ios_hero_glow_palette.h
   shared/ios_hero_glow_palette.mm
+  shared/ios_idle_timer.h
+  shared/ios_idle_timer.mm
   shared/ios_theme.h
   shared/ios_theme.mm
   shared/ios_theme_controls.h

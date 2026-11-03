@@ -17,6 +17,7 @@
 #include "xenia/ui/windowed_app.h"
 
 #import "xenia/ui/ios/app/windowed_app_context_ios.h"
+#import "xenia/ui/ios/app/ios_lifecycle_observer.h"
 #import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/app/ios_main_view_controller.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
@@ -198,6 +199,11 @@ DECLARE_path(log_file);
         return true;
       });
   app_context_->set_game_exited_callback([vc]() { [vc showLauncherOverlay]; });
+  app_context_->set_game_launch_failed_callback([vc](const std::string& reason) {
+    [vc presentGameLaunchFailureAlertWithMessage:ToNSString(reason)];
+  });
+  app_context_->set_game_stop_stuck_callback([vc]() { [vc presentGameStopStuckAlert]; });
+  xe::ui::IOSLifecycleObserverInstall(app_context_.get());
   app_context_->set_profile_services_ready_callback([vc]() {
     dispatch_async(dispatch_get_main_queue(), ^{
       [vc refreshSignedInProfileUI];
@@ -321,6 +327,7 @@ DECLARE_path(log_file);
 
 - (void)applicationWillTerminate:(UIApplication*)application {
   XELOGI("iOS lifecycle: applicationWillTerminate");
+  xe::ui::IOSLifecycleObserverRemove();
   if (app_) {
     app_->InvokeOnDestroy();
     app_.reset();
