@@ -666,6 +666,20 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (online_features_notice_presented_) {
     return YES;
   }
+  // Only when nothing else is presented from the root: an alert shown over another one is
+  // dismissed with it and would never be answered. Alerts don't trigger viewDidAppear, so
+  // retry until the screen is free.
+  if (self.presentedViewController || !self.view.window) {
+    online_features_notice_presented_ = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     online_features_notice_presented_ = NO;
+                     if (![self presentOnlineFeaturesNoticeIfNeeded]) {
+                       [self runAppearanceTasks];
+                     }
+                   });
+    return YES;
+  }
   online_features_notice_presented_ = YES;
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:@"Online Features"
@@ -761,7 +775,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (compat_fetch_started_) {
     return;
   }
-  compat_fetch_started_ = YES;
+  // Online features off: the cached list still loads, and turning them on later starts the
+  // fetch on the next appearance.
+  if (xe_ios_online_features_enabled()) {
+    compat_fetch_started_ = YES;
+  }
   xe_fetch_compat_data(^(NSDictionary* data) {
     if (!data) {
       return;
@@ -2656,7 +2674,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)presentURLConfirmation:(UIAlertController*)alert {
   UIAlertController* older = pending_url_confirmation_;
   pending_url_confirmation_ = [alert retain];
+  // An older prompt's queued present must not show once a newer one has replaced it.
   void (^present)(void) = ^{
+    if (pending_url_confirmation_ != alert) {
+      return;
+    }
     UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
     [presenter presentViewController:alert animated:YES completion:nil];
   };

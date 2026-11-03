@@ -20,6 +20,10 @@ NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeAnswered";
 }  // namespace
 
 BOOL xe_ios_online_features_enabled(void) {
+  // Nothing goes online before the first-launch notice has been answered.
+  if (xe_ios_online_features_notice_pending()) {
+    return NO;
+  }
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   if ([defaults objectForKey:kOnlineFeaturesKey] == nil) {
     return kOnlineFeaturesDefault;
