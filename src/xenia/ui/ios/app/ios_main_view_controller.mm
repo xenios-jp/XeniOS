@@ -776,11 +776,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self.controllerNavigationCoordinator refreshLauncherFocus];
   [self.controllerNavigationCoordinator refreshInGameFocus];
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
-  // Losing the last controller mid-game opens the menu, where the player can pause the game,
-  // instead of leaving them under fire while the touch controls come back.
+  // Losing the last controller mid-game opens the menu and pauses the game, instead of leaving
+  // the player under fire (the menu blocks input but doesn't pause). Closing the menu resumes it.
   if ([note.name isEqualToString:GCControllerDidDisconnectNotification] && self.gameRunning &&
       self.launcherOverlayView.hidden && ![self hasConnectedGameplayController]) {
+    const BOOL menu_was_hidden = self.inGameMenuOverlay.hidden;
     [self showInGameMenuOverlayAnimated:YES];
+    if (menu_was_hidden) {
+      [self setEmulationPausedByUser:YES];
+    }
   }
 }
 
