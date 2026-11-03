@@ -2027,8 +2027,8 @@ void Emulator::MountStandardDrives() {
   }
 }
 
-const std::filesystem::path Emulator::GetNewDiscPath(
-    std::string window_message) {
+const std::filesystem::path Emulator::GetNewDiscPath(std::string window_message,
+                                                     uint32_t disc_number) {
   std::filesystem::path path = "";
 
   uint32_t current_title_id = !title_id_.has_value() ? 0 : title_id_.value();
@@ -2069,22 +2069,47 @@ const std::filesystem::path Emulator::GetNewDiscPath(
   // the title's discs in the library, or leaving the game. Every disc is
   // offered, the requested one may be the one first launched.
   if (kernel_state_) {
-    std::string text = window_message;
-    while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) {
-      text.pop_back();
+    // The requested disc is listed first. When the library has exactly one
+    // copy of it, it goes in without asking, unless it was just tried: the
+    // message then carries XamSwapDisc's error, and asking keeps a disc that
+    // doesn't mount from being inserted again and again.
+    auto requested_end = std::stable_partition(
+        saved_discs.begin(), saved_discs.end(),
+        [disc_number](const TitleDisc& disc) {
+          return disc_number && disc.disc_number == disc_number;
+        });
+    const size_t requested_count = requested_end - saved_discs.begin();
+    int choice = -1;
+    if (requested_count == 1 &&
+        window_message.find("ERROR:") == std::string::npos) {
+      choice = 0;
+      XELOGI("GetNewDiscPath: Inserting disc {} from the library",
+             disc_number);
+    } else {
+      std::string text = window_message;
+      while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) {
+        text.pop_back();
+      }
+      if (saved_discs.empty()) {
+        text +=
+            "\n\nNo disc of this game is in the library. Add the disc, then "
+            "start the game again.";
+      } else if (disc_number && !requested_count) {
+        text += fmt::format(
+            "\n\nDisc {} of this game is not in the library. Add it, then "
+            "start the game again.",
+            disc_number);
+      }
+      std::vector<std::string> options;
+      for (const auto& disc : saved_discs) {
+        options.push_back(disc.label);
+      }
+      options.push_back("Exit Game");
+      choice = kernel::xam::ios::ChooseOption(
+          disc_number ? fmt::format("Insert Disc {}", disc_number)
+                      : std::string("Insert Disc"),
+          text, options);
     }
-    if (saved_discs.empty()) {
-      text +=
-          "\n\nNo disc of this game is in the library. Add the disc, then "
-          "start the game again.";
-    }
-    std::vector<std::string> options;
-    for (const auto& disc : saved_discs) {
-      options.push_back(disc.label);
-    }
-    options.push_back("Exit Game");
-    int choice =
-        kernel::xam::ios::ChooseOption("Insert Disc", text, options);
     if (choice >= 0 && choice < int(saved_discs.size())) {
       // A disc folder can lack Default.xex. Mount it through any executable
       // in its root, the mount takes the parent directory.

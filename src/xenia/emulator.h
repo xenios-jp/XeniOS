@@ -472,6 +472,8 @@ class Emulator {
   struct TitleDisc {
     std::string label;
     std::filesystem::path path;
+    // 1-based, 0 when unknown.
+    uint8_t disc_number = 0;
   };
   // The app sets these so the core can reach the game library it can't include.
   using DiscProvider = std::function<std::vector<TitleDisc>(uint32_t title_id)>;
@@ -520,8 +522,10 @@ class Emulator {
     current_disc_number_ = disc_number;
   }
 
-  // The game can request another title to be loaded.
-  const std::filesystem::path GetNewDiscPath(std::string window_message = "");
+  // The game can request another title to be loaded. disc_number is the disc
+  // the title asks for, 1-based, or 0 when unknown.
+  const std::filesystem::path GetNewDiscPath(std::string window_message = "",
+                                             uint32_t disc_number = 0);
 
   // The disc a system title finds in the drive, which goes in through its open
   // tray. A launch starts with the drive empty.
