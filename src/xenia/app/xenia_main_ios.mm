@@ -64,6 +64,7 @@
 #include "xenia/hid/nop/nop_hid.h"
 #include "xenia/hid/sdl/sdl_hid.h"
 #include "xenia/hid/touch/touch_hid_ios.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam.h"
@@ -450,6 +451,10 @@ constexpr uint32_t kPauseReasonLiveSettings = 1u << 8;
 // few milliseconds; the wait is bounded because a worker blocked on the guest
 // (a memory wait that only a guest thread can satisfy) would never get there.
 constexpr std::chrono::milliseconds kGpuPauseTimeout{3000};
+// How long a pause waits for the six guest dispatch threads to settle. A fiber
+// normally yields within one scheduler quantum; the long tail is a fiber inside a
+// global-lock or DISPATCH_LEVEL section.
+constexpr std::chrono::milliseconds kSchedulerPauseTimeout{1500};
 // A live settings change keeps the game paused this long after the last change, so a slider
 // drag pauses once instead of once per tick.
 constexpr int64_t kLiveSettingsHoldNs = 250 * 1000 * 1000;
@@ -551,8 +556,6 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   void BeginEmulationPauseSession();
   void EndEmulationPauseSession();
   void ArmStopWatchdog();
-  // Runs on pause_queue_. Suspends guest threads created since the pause was applied.
-  void SuspendRunningGuestThreads();
 
   static std::unique_ptr<apu::AudioSystem> CreateAudioSystem(cpu::Processor* processor);
   static std::unique_ptr<gpu::GraphicsSystem> CreateGraphicsSystem();
@@ -587,7 +590,8 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   bool pause_applied_ = false;                         // pause_queue_ only
   std::atomic<bool> pause_applied_visible_{false};     // mirrors pause_applied_
   uint64_t live_settings_generation_ = 0;              // main thread only
-  std::vector<kernel::object_ref<kernel::XThread>> paused_threads_;  // pause_queue_ only
+  std::thread pause_stress_thread_;                    // XENIA_PAUSE_STRESS_MS, debug
+  std::atomic<bool> pause_stress_stop_{false};
 
   // Stop watchdog (S17). The state outlives the app object for a delayed block.
   struct StopWatchdog {
@@ -1426,36 +1430,22 @@ void EmulatorAppIOS::PauseEmulationNow() {
     audio->Pause();
   }
 
-  // Guest threads run on fibers. Suspend bumps the guest suspend count and the
-  // scheduler parks each thread at its next yield (the watchdog preempts a
-  // running one within a quantum); a thread blocked in a wait is parked when
-  // it wakes. A second pass catches threads the first pass's threads created.
-  // Host threads (dispatch, DPC, frame limiter, GPU, audio) are not touched:
-  // suspending a host thread that holds a lock can deadlock the process.
-  SuspendRunningGuestThreads();
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  SuspendRunningGuestThreads();
-  XELOGI("iOS: emulation paused ({} guest threads)", paused_threads_.size());
-}
-
-void EmulatorAppIOS::SuspendRunningGuestThreads() {
-  Emulator* emulator = emulator_.get();
-  if (!emulator || !emulator->kernel_state()) {
-    return;
-  }
-  auto threads = emulator->kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
-      kernel::XObject::Type::Thread);
-  for (auto& thread : threads) {
-    if (!thread->fiber() || !thread->is_running()) {
-      continue;
+  // Guest threads run as fibers on six dispatch threads. Stop the dispatch
+  // threads: running fibers yield at their next safepoint and nothing new starts,
+  // including threads created while launching (the scheduler may not have started
+  // yet, its dispatch threads then start held). No guest suspend counts are
+  // touched and the object table (global critical region) is not walked, so a
+  // fiber parked holding the global lock cannot wedge this queue. Host threads
+  // (GPU, audio, vblank, kernel dispatch) are not touched: suspending a host
+  // thread that holds a lock can deadlock the process.
+  if (auto* scheduler = emulator->kernel_state()->guest_scheduler()) {
+    uint32_t pending_cpus = 0;
+    if (!scheduler->PauseDispatch(kSchedulerPauseTimeout, &pending_cpus)) {
+      XELOGW("iOS: guest CPUs {:#x} did not settle in {} ms; they hold at their next slice",
+             pending_cpus, static_cast<int>(kSchedulerPauseTimeout.count()));
     }
-    if (std::any_of(paused_threads_.begin(), paused_threads_.end(),
-                    [&thread](const auto& paused) { return paused.get() == thread.get(); })) {
-      continue;
-    }
-    thread->Suspend(nullptr);
-    paused_threads_.push_back(thread);
   }
+  XELOGI("iOS: emulation paused");
 }
 
 void EmulatorAppIOS::ResumeEmulationNow() {
@@ -1466,13 +1456,11 @@ void EmulatorAppIOS::ResumeEmulationNow() {
       audio->Resume();
     }
   }
-  for (auto& thread : paused_threads_) {
-    // A thread that exited while parked (terminated) has nothing to resume.
-    if (thread->is_running()) {
-      thread->Resume(nullptr);
+  if (emulator && emulator->kernel_state()) {
+    if (auto* scheduler = emulator->kernel_state()->guest_scheduler()) {
+      scheduler->ResumeDispatch();
     }
   }
-  paused_threads_.clear();
   std::shared_ptr<GpuPauseHold> hold;
   {
     std::lock_guard<std::mutex> lock(pause_state_mutex_);
@@ -1489,9 +1477,36 @@ void EmulatorAppIOS::BeginEmulationPauseSession() {
     pause_game_running_ = true;
   }
   ScheduleEmulationPauseReconcile();
+  // Debug: XENIA_PAUSE_STRESS_MS=N toggles the in-game-menu pause reason at random
+  // 20..N ms intervals until the session ends, logging each cycle.
+  if (const char* stress = std::getenv("XENIA_PAUSE_STRESS_MS")) {
+    const int max_ms = std::max(40, std::atoi(stress));
+    pause_stress_stop_.store(false);
+    pause_stress_thread_ = std::thread([this, max_ms]() {
+      uint32_t rng = 2463534242u;
+      auto next_ms = [&]() {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        return 20 + int(rng % uint32_t(max_ms - 19));
+      };
+      uint64_t cycle = 0;
+      while (!pause_stress_stop_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(next_ms()));
+        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(next_ms()));
+        SetEmulationPaused(ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, false);
+        XELOGI("iOS: pause stress cycle {}", cycle++);
+      }
+    });
+  }
 }
 
 void EmulatorAppIOS::EndEmulationPauseSession() {
+  pause_stress_stop_.store(true);
+  if (pause_stress_thread_.joinable()) {
+    pause_stress_thread_.join();
+  }
   std::shared_ptr<GpuPauseHold> hold;
   {
     std::lock_guard<std::mutex> lock(pause_state_mutex_);
@@ -1940,14 +1955,6 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     }
 
     XELOGI("iOS: Game launched successfully");
-    // Threads created by LaunchPath after a pause was applied are suspended now.
-    if (pause_queue_) {
-      dispatch_async(pause_queue_, ^{
-        if (pause_applied_) {
-          SuspendRunningGuestThreads();
-        }
-      });
-    }
     // Hold the main thread object while waiting. Both user stop requests and
     // guest dashboard requests are serviced here, on a non-guest thread.
     auto main_thread = emulator_->kernel_state()->GetThreadByID(emulator_->main_thread_id());
