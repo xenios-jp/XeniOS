@@ -65,6 +65,10 @@ inline const std::vector<CvarAlias>& GetCvarAliases() {
       {"gpu", "any", "gpu", "metal"},
       {"apu", "any", "apu", "sdl"},
       {"hid", "any", "hid", "sdl"},
+#elif XE_PLATFORM_IOS
+      {"gpu", "any", "gpu", "metal"},
+      {"apu", "any", "apu", "phase"},
+      {"hid", "any", "hid", "sdl"},
 #else
       {"gpu", "any", "gpu", "vulkan"},
       {"apu", "any", "apu", "sdl"},
