@@ -15,7 +15,8 @@
 // iOS 27 state reporting, so MetricKit splits its daily metrics and labels its
 // diagnostics by game: domain jp.xenios.title, state "game" with the title ID
 // as stable metadata while one runs, no state otherwise. Does nothing before
-// iOS 27.
+// iOS 27. Only ios_diagnostics.mm calls it, and only while diagnostics can be
+// sent (Share Diagnostics on): the title is not told to Apple otherwise.
 
 #define XE_IOS_STATE_DOMAIN_TITLE "jp.xenios.title"
 
