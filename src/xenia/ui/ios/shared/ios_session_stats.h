@@ -33,6 +33,12 @@ BOOL xe_ios_session_stats_running(void);
 // its checkpoint.
 void xe_ios_session_stats_discard(void);
 
+// The emulator's count of guest faults it claimed and halted a thread for, so
+// the game froze with no crash report: recorded in the running session as
+// "haltedFaults" (left out when 0). The total for the session; call it before
+// the game-running note that ends the session.
+void xe_ios_session_stats_note_halted_faults(uint32_t count);
+
 // One guest frame was presented (Presenter's refresh observer). Lock-free.
 void xe_ios_session_stats_note_guest_frame(void);
 
