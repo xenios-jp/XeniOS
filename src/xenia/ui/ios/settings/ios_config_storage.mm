@@ -277,20 +277,14 @@ bool ApplyTomlNodeToConfigItem(const toml::node* node, IOSConfigItem* item) {
   }
 }
 
+// Dotted categories ("GPU.Debug") are nested tables; a table under the literal key would never
+// be found by the loaders, which walk toml::path.
 toml::table* EnsureGameConfigCategoryTable(toml::table* config_table,
                                            const std::string& category) {
   if (!config_table || category.empty()) {
     return nullptr;
   }
-  if (!config_table->contains(category)) {
-    config_table->insert(category, toml::table{});
-  }
-  toml::table* category_table = (*config_table)[category].as_table();
-  if (!category_table) {
-    config_table->insert_or_assign(category, toml::table{});
-    category_table = (*config_table)[category].as_table();
-  }
-  return category_table;
+  return config::ResolveSectionTable(*config_table, category);
 }
 
 int64_t IntegerValueForConfigItem(const IOSConfigItem& item) {
@@ -740,10 +734,8 @@ void OverlayIOSConfigSectionsFromGameConfig(std::vector<IOSConfigSection>* secti
       if (!var) {
         continue;
       }
-      toml::path config_key = toml::path(var->category() + "." + var->name());
-      const auto config_key_node = game_config.at_path(config_key);
-      if (config_key_node) {
-        ApplyTomlNodeToConfigItem(config_key_node.node(), &item);
+      if (const toml::node* config_key_node = config::FindConfigNode(game_config, *var)) {
+        ApplyTomlNodeToConfigItem(config_key_node, &item);
       }
     }
   }
