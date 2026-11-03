@@ -48,6 +48,8 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_rgba8_2x_cs.h"
@@ -269,6 +271,24 @@ bool IsFull64RGB10FloatToRGBA16OneSample(
   return (key.edram == 0x03000000u || key.edram == 0x0C000000u) &&
          ((key.dest & 0x1F80u) == (26u << 7) ||
           (key.dest & 0x1F80u) == (32u << 7)) &&
+         key.sample == 0;
+}
+
+// Any other one-sample copy of an 8_8_8_8, 2_10_10_10 (or
+// 2_10_10_10_AS_10_10_10_10) or 2_10_10_10_FLOAT (or
+// 2_10_10_10_FLOAT_AS_16_16_16_16) source into a 32bpp destination, with any
+// exponent bias and number format.
+bool IsFull32OneSampleConversion(
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& constants) {
+  if (copy_shader != draw_util::ResolveCopyShaderIndex::kFull32bpp ||
+      IsFull32RGB10FloatOneSample(copy_shader, constants)) {
+    return false;
+  }
+  const ResolveCopyKey key = GetResolveCopyKey(constants);
+  return (key.edram == 0x00000000u || key.edram == 0x02000000u ||
+          key.edram == 0x0A000000u || key.edram == 0x03000000u ||
+          key.edram == 0x0C000000u) &&
          key.sample == 0;
 }
 
@@ -1022,6 +1042,16 @@ bool MetalRenderTargetCache::InitializeEdramComputeShaders() {
           device_, resolve_full_32bpp_rgb10_4x_direct_refresh_cs_metallib,
           sizeof(resolve_full_32bpp_rgb10_4x_direct_refresh_cs_metallib),
           "resolve_full_32bpp_rgb10_4x_direct_refresh");
+  resolve_full_32bpp_1x_direct_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_32bpp_1x_direct_cs_metallib,
+          sizeof(resolve_full_32bpp_1x_direct_cs_metallib),
+          "resolve_full_32bpp_1x_direct");
+  resolve_full_32bpp_1x_direct_refresh_pipeline_ =
+      CreateComputePipelineFromEmbeddedLibrary(
+          device_, resolve_full_32bpp_1x_direct_refresh_cs_metallib,
+          sizeof(resolve_full_32bpp_1x_direct_refresh_cs_metallib),
+          "resolve_full_32bpp_1x_direct_refresh");
   resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
       CreateComputePipelineFromEmbeddedLibrary(
           device_, resolve_full_32bpp_rgb10f_1x_direct_cs_metallib,
@@ -1214,6 +1244,14 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
   if (resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_) {
     resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_->release();
     resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ = nullptr;
+  }
+  if (resolve_full_32bpp_1x_direct_pipeline_) {
+    resolve_full_32bpp_1x_direct_pipeline_->release();
+    resolve_full_32bpp_1x_direct_pipeline_ = nullptr;
+  }
+  if (resolve_full_32bpp_1x_direct_refresh_pipeline_) {
+    resolve_full_32bpp_1x_direct_refresh_pipeline_->release();
+    resolve_full_32bpp_1x_direct_refresh_pipeline_ = nullptr;
   }
   if (resolve_full_32bpp_rgb10f_1x_direct_pipeline_) {
     resolve_full_32bpp_rgb10f_1x_direct_pipeline_->release();
@@ -3448,12 +3486,19 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       !rgb10_4x_average &&
       (rgb10f_rgba16_1x ||
        IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants));
+  // Any other conversion of one 8_8_8_8, 2_10_10_10 or 2_10_10_10_FLOAT sample
+  // into a 32bpp destination goes the same way, with the arithmetic of the
+  // generic 32bpp copy.
+  const bool full32_1x = !rgb10_4x_average && !rgb10f_1x &&
+                         IsFull32OneSampleConversion(copy_shader,
+                                                     copy_shader_constants);
   // So is the 16_16_16_16 to 16_16_16_16 conversion, with that of the generic
   // 64bpp copy, from the render target's integer ownership transfer view.
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
   const bool copy_from_render_target =
-      rgb10_4x_average || rgb10f_1x || rgba16_1x || rgb10f_rgba16_average;
+      rgb10_4x_average || rgb10f_1x || rgba16_1x || rgb10f_rgba16_average ||
+      full32_1x;
   // The dump shader's direct resolve only copies bits.
   if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull64bpp &&
       !rgba16_1x && !rgb10f_rgba16_1x && !rgb10f_rgba16_average) {
@@ -3479,6 +3524,10 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       rgb10_pipeline =
           refresh_texture ? resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_
                           : resolve_full_32bpp_rgb10_4x_direct_pipeline_;
+    } else if (full32_1x) {
+      rgb10_pipeline = refresh_texture
+                           ? resolve_full_32bpp_1x_direct_refresh_pipeline_
+                           : resolve_full_32bpp_1x_direct_pipeline_;
     } else {
       rgb10_pipeline =
           refresh_texture
@@ -3520,10 +3569,34 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       // The guest 4x sample numbering matches the host one.
       rgb10_host_samples = 0x03020100u;
     }
+    // The generic 1x conversion packs the pixels as the resolve's source
+    // format, so the render target has to hold that format, apart from the
+    // variants with the same packing.
+    const auto source_format =
+        xenos::ColorRenderTargetFormat(edram_info.format);
+    const xenos::ColorRenderTargetFormat rt_format = rt_key.GetColorFormat();
+    auto is_rgb10 = [](xenos::ColorRenderTargetFormat format) {
+      return format == xenos::ColorRenderTargetFormat::k_2_10_10_10 ||
+             format ==
+                 xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10;
+    };
+    auto is_rgb10f = [](xenos::ColorRenderTargetFormat format) {
+      return format == xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT ||
+             format == xenos::ColorRenderTargetFormat::
+                           k_2_10_10_10_FLOAT_AS_16_16_16_16;
+    };
+    const bool full32_1x_format_matches =
+        source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8
+            ? rt_format == xenos::ColorRenderTargetFormat::k_8_8_8_8
+        : is_rgb10(source_format) ? is_rgb10(rt_format)
+                                  : is_rgb10f(rt_format);
     const MTL::PixelFormat source_pixel_format =
-        rgba16_1x          ? MTL::PixelFormatRGBA16Uint
-        : rgb10_4x_average ? MTL::PixelFormatRGB10A2Unorm
-                           : MTL::PixelFormatRGBA16Float;
+        rgba16_1x ? MTL::PixelFormatRGBA16Uint
+        : rgb10_4x_average || (full32_1x && is_rgb10(source_format))
+            ? MTL::PixelFormatRGB10A2Unorm
+        : full32_1x && source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8
+            ? MTL::PixelFormatRGBA8Unorm
+            : MTL::PixelFormatRGBA16Float;
     if (!rgb10_source || rt_key.is_depth ||
         rt_key.msaa_samples != source_msaa_samples ||
         rt_key.Is64bpp() != rgba16_1x ||
@@ -3534,6 +3607,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
              xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT &&
          rt_key.GetColorFormat() != xenos::ColorRenderTargetFormat::
                                         k_2_10_10_10_FLOAT_AS_16_16_16_16) ||
+        (full32_1x && !full32_1x_format_matches) ||
         (rgba16_1x && rt_key.GetColorFormat() !=
                           xenos::ColorRenderTargetFormat::k_16_16_16_16) ||
         !edram_info.pitch_tiles ||
@@ -4636,7 +4710,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                   /*allow_full64_rgba16_1x=*/true,
                                   /*allow_full64_rgb10f_rgba16_1x=*/true,
                                   /*allow_samples_as_pixels=*/true,
-                                  /*allow_full64_rgb10f_rgba16_average=*/true) ==
+                                  /*allow_full64_rgb10f_rgba16_average=*/true,
+                                  /*allow_full32_1x_conversion=*/true) ==
           DirectResolveEligibility::kEligible) {
     const auto& dest_info = resolve_info.copy_dest_info;
     const auto& dest_coordinates = resolve_info.copy_dest_coordinate_info;
@@ -4651,7 +4726,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
         (!IsFull32RGB10FourSampleAverage(copy_shader, copy_constants) ||
          command_processor_.primitive_fragment_helpers_enabled()) &&
         (!dest_info.copy_dest_exp_bias ||
-         IsFull32RGB10FloatOneSample(copy_shader, copy_constants)) &&
+         IsFull32RGB10FloatOneSample(copy_shader, copy_constants) ||
+         IsFull32OneSampleConversion(copy_shader, copy_constants)) &&
         uint32_t(dest_info.copy_dest_endian) <=
             uint32_t(xenos::Endian::k16in32) &&
         !dest_coordinates.offset_x_div_8 && !dest_coordinates.offset_y_div_8) {
