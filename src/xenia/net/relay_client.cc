@@ -230,6 +230,8 @@ void RelayClient::LobbyConnecting(uint64_t now_ms) {
 void RelayClient::LobbyOpened(uint64_t now_ms, Outbox& out) {
   lobby_ = Lobby::kOpen;
   lobby_heard_ms_ = now_ms;
+  join_sent_ms_ = now_ms;
+  answered_ = false;
   next_lobby_ping_ms_ = now_ms + kLobbyPingMs;
   out.lobby.push_back(Presence(true));
   sent_candidates_ = Candidates();
@@ -281,6 +283,7 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
     }
     joined_ = false;
     rejected_ = true;
+    answered_ = true;
     reject_ = reason;
   }
   UpdateStatus(now_ms);
@@ -294,6 +297,7 @@ void RelayClient::OnWelcome(uint64_t room_secret, std::optional<IceServers> ice,
   }
   room_secret_ = room_secret;
   joined_ = true;
+  answered_ = true;
   rejected_ = false;
   failures_ = 0;
   down_since_ms_.reset();
@@ -374,6 +378,9 @@ void RelayClient::LobbyClosed(uint64_t now_ms) {
 
 bool RelayClient::LobbyStale(uint64_t now_ms) const {
   return (lobby_ == Lobby::kOpen && now_ms - lobby_heard_ms_ > kLobbyLostMs) ||
+         // A join that is neither welcomed nor rejected.
+         (lobby_ == Lobby::kOpen && !answered_ &&
+          now_ms - join_sent_ms_ > kWelcomeMs) ||
          (lobby_ == Lobby::kConnecting &&
           now_ms - lobby_heard_ms_ > kLobbyOpenMs);
 }

@@ -357,6 +357,8 @@ class FakeLobby {
   // relay address that replaces every player's own.
   std::vector<std::string> extra_candidates;
   std::string forged_relay;
+  // Joins are neither welcomed nor rejected.
+  bool silent = false;
 
   // The connection's id, or none while the lobby is down.
   // |net| is the network the lobby saw the player on, if it says.
@@ -390,6 +392,9 @@ class FakeLobby {
     }
     const std::string_view type = String(message, "t");
     if (type == "join") {
+      if (silent) {
+        return;
+      }
       auto v = message.FindMember("v");
       if (connection.joined || v == message.MemberEnd() || !v->value.IsUint()) {
         return Reject(id, "bad_request");
@@ -1530,6 +1535,29 @@ void JoinRoom(RelayClient& client, uint64_t now, const char* net = nullptr) {
 }
 
 }  // namespace
+
+TEST_CASE("Relay players wait for a welcome only so long", "[relay]") {
+  RelayClient client(kMacA, Config());
+  Outbox out;
+  uint64_t now = 100000;
+  client.LobbyConnecting(now);
+  client.LobbyOpened(now, out);
+  // A join that is neither welcomed nor rejected is given up on.
+  CHECK(!client.LobbyStale(now + 15000));
+  CHECK(client.LobbyStale(now + 15001));
+  client.LobbyClosed(now + 15001);
+  CHECK(client.WantsLobby(now + 16001));
+
+  // A welcome or a rejection answers it.
+  RelayClient welcomed(kMacA, Config());
+  JoinRoom(welcomed, now);
+  CHECK(!welcomed.LobbyStale(now + 30000));
+  RelayClient rejected(kMacA, Config());
+  rejected.LobbyConnecting(now);
+  rejected.LobbyOpened(now, out);
+  rejected.LobbyMessage(R"({"t":"reject","reason":"full"})", now + 100, out);
+  CHECK(!rejected.LobbyStale(now + 30000));
+}
 
 TEST_CASE("Relay players take the lobby's word for who shares a network",
           "[relay]") {
