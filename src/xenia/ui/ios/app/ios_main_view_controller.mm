@@ -3650,12 +3650,23 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   return YES;
 }
 
+// Only a running game defers the system edge gestures and hides the home indicator,
+// so the launcher's home swipe works on the first try.
 - (BOOL)prefersHomeIndicatorAutoHidden {
-  return YES;
+  return self.gameRunning;
 }
 
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures {
-  return UIRectEdgeAll;
+  return self.gameRunning ? UIRectEdgeAll : UIRectEdgeNone;
+}
+
+- (void)setGameRunning:(BOOL)gameRunning {
+  if (_gameRunning == gameRunning) {
+    return;
+  }
+  _gameRunning = gameRunning;
+  [self setNeedsUpdateOfHomeIndicatorAutoHidden];
+  [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
 }
 
 #pragma mark - Public API

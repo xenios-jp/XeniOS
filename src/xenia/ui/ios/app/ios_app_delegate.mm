@@ -297,11 +297,17 @@ DECLARE_path(log_file);
 
 - (UIInterfaceOrientationMask)application:(UIApplication*)application
     supportedInterfaceOrientationsForWindow:(UIWindow*)window {
+  // This replaces the Info.plist list, so keep its iPhone exclusion of upside-down portrait,
+  // which Face ID iPhones don't support.
+  UIInterfaceOrientationMask allowed =
+      UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone
+          ? UIInterfaceOrientationMaskAllButUpsideDown
+          : UIInterfaceOrientationMaskAll;
   UIViewController* root = window.rootViewController;
   if (root) {
-    return [root supportedInterfaceOrientations];
+    return [root supportedInterfaceOrientations] & allowed;
   }
-  return UIInterfaceOrientationMaskAll;
+  return allowed;
 }
 
 - (void)applicationWillTerminate:(UIApplication*)application {
