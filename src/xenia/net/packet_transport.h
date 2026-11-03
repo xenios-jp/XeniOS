@@ -39,6 +39,9 @@ class PacketTransport {
   virtual void Wake() = 0;
   // Moves a transport on the host network to another UDP port.
   virtual bool SetPort(uint16_t port) { return false; }
+  // The title started System Link play. A transport that reaches strangers
+  // stays quiet until then. Thread safe, and cheap to call again.
+  virtual void Activate() {}
 };
 
 // Host byte order.
@@ -90,8 +93,10 @@ void SetLobbySocketFactory(LobbySocketFactory factory);
 
 // Exchanges frames with the other instances in a room the lobby names,
 // directly with those whose NATs let a probe through and through a TURN relay
-// with the others. A player's local addresses are only tried when it's behind
-// the same public address, so internet play needs no local network access.
+// with the others. A player's local addresses are only tried when the lobby
+// saw them behind the same public address, so internet play needs no local
+// network access. It joins the lobby once Activate() is called or a frame is
+// sent, not before.
 std::unique_ptr<PacketTransport> OpenRelayTransport(
     const Mac& mac, const relay::RelayConfig& config, std::string& error);
 

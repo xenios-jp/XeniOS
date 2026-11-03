@@ -1121,6 +1121,8 @@ class SystemLink::Port final : public SystemLinkPort {
     Packet packet;
     bool sent;
     if (destination.address == kBroadcast) {
+      // A search for games, which is System Link play.
+      state_->transport->Activate();
       packet.source_port = port_;
       packet.destination_port = destination.port;
       packet.encrypted.assign(bytes.begin(), bytes.end());
@@ -1638,6 +1640,8 @@ uint32_t SystemLink::RegisterKey(const KeyId& id, const Key& key) {
     return kWsaNoBuffers;
   }
   state_->keys.emplace(id, key);
+  // A title registers a System Link key to host or join a game.
+  state_->transport->Activate();
   return 0;
 }
 
@@ -1800,6 +1804,7 @@ void SystemLink::QosLookup(
   }
   lookup.done = std::move(done);
   state_->qos_lookups[tag] = std::move(lookup);
+  state_->transport->Activate();
   state_->transport->Wake();
 }
 
@@ -1900,6 +1905,9 @@ void SystemLink::SetFrameReceiver(
     std::function<void(std::span<const uint8_t>)> receive) {
   // The old receiver goes once the lock is released.
   std::lock_guard lock(state_->mutex);
+  if (receive) {
+    state_->transport->Activate();
+  }
   std::swap(state_->frame_receiver, receive);
 }
 
@@ -1914,6 +1922,7 @@ uint32_t SystemLink::SendFrame(std::span<const uint8_t> frame) {
     return kWsaNoBuffers;
   }
   state_->frames_out.emplace_back(frame.begin(), frame.end());
+  state_->transport->Activate();
   state_->transport->Wake();
   return 0;
 }

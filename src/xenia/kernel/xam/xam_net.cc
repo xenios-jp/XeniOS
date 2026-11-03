@@ -202,7 +202,8 @@ dword_result_t NetDll_XNetStartup_entry(dword_t caller,
   XELOGI("NetDll_XNetStartup: caller={}, params={:08X}", caller.value(),
          params.guest_address());
 
-  // Gives the transport time to come up before the title looks for peers.
+  // Sockets bind to the System Link from here on. Its transport stays off the
+  // internet until the title registers a key or searches for games.
   GetSystemLink(kernel_state());
 
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");

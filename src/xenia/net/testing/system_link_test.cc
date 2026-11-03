@@ -111,6 +111,10 @@ class TestTransport : public PacketTransport {
     ports_.push_back(port);
     return true;
   }
+
+  void Activate() override { ++activations_; }
+  // How often the System Link said it plays.
+  int activations() const { return activations_; }
   // Every port SetPort moved to.
   std::vector<uint16_t> Ports() const {
     std::lock_guard lock(wire_->mutex);
@@ -155,6 +159,7 @@ class TestTransport : public PacketTransport {
   std::atomic<bool> stall_{false};
   std::atomic<int> stalled_{0};
   std::atomic<int> held_{0};
+  std::atomic<int> activations_{0};
   // Guarded by the wire's mutex.
   bool woken_ = false;
   bool hold_ = false;
@@ -170,7 +175,8 @@ struct Pair {
   std::shared_ptr<TestTransport> transports[2];
   std::unique_ptr<SystemLink> a, b;
 
-  Pair() {
+  // Without |register_keys|, neither side plays System Link yet.
+  explicit Pair(bool register_keys = true) {
     auto derived = DeriveBroadcast(key, [&](auto input, auto& digest) {
       digest = HmacSha1(key, {input});
       return true;
@@ -179,8 +185,10 @@ struct Pair {
     broadcast = *derived;
     a = Make(0, broadcast);
     b = Make(1, broadcast);
-    REQUIRE(a->RegisterKey(id, key) == 0);
-    REQUIRE(b->RegisterKey(id, key) == 0);
+    if (register_keys) {
+      REQUIRE(a->RegisterKey(id, key) == 0);
+      REQUIRE(b->RegisterKey(id, key) == 0);
+    }
   }
 
   std::unique_ptr<SystemLink> Make(unsigned side,
@@ -488,6 +496,49 @@ TEST_CASE("System Link ports deliver broadcasts and secure datagrams",
     tx->Close();
     rx->Close();
   }
+}
+
+TEST_CASE("System Link activates its transport on System Link play",
+          "[net][system_link]") {
+  Pair pair(false);
+  auto& transport = *pair.transports[0];
+  // Ports and sockets alone are what any networked game opens.
+  auto port = Bind(*pair.a, 3074, false);
+  REQUIRE(port);
+  auto stream = Stream(*pair.a);
+  REQUIRE(stream);
+  CHECK(stream->Bind(0) == 0);
+  uint32_t error = 0;
+  const std::vector<uint8_t> data{0, 1, 2, 3};
+  CHECK(port->Send({0x0A000001, 3074}, data, error) == -1);
+  CHECK(error == kWsaHostUnreachable);
+  CHECK(pair.a->SetSystemLinkPort(3075) == 0);
+  CHECK(pair.a->SendFrame(std::vector<uint8_t>(13)) == kWsaNoBuffers);
+  CHECK(transport.activations() == 0);
+
+  // Searching for games broadcasts.
+  CHECK(port->Send({0xFFFFFFFF, 3074}, data, error) ==
+        static_cast<int>(data.size()));
+  CHECK(transport.activations() > 0);
+
+  // Hosting registers the session's key.
+  auto& host = *pair.transports[1];
+  CHECK(host.activations() == 0);
+  CHECK(pair.b->RegisterKey(pair.id, pair.key) == 0);
+  CHECK(host.activations() > 0);
+
+  // A key a System Link can't use isn't System Link play.
+  Pair other(false);
+  KeyId online = pair.id;
+  online[0] = 0x20;
+  CHECK(other.a->RegisterKey(online, pair.key) == kWsaInvalid);
+  CHECK(other.transports[0]->activations() == 0);
+
+  // A title with its own network stack hands over and sends raw frames.
+  other.a->SetFrameReceiver(nullptr);
+  CHECK(other.transports[0]->activations() == 0);
+  other.a->SetFrameReceiver([](std::span<const uint8_t>) {});
+  CHECK(other.transports[0]->activations() > 0);
 }
 
 TEST_CASE("System Link VDP ports keep the guest prefix", "[net][system_link]") {
