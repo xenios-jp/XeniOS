@@ -847,18 +847,17 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
                       ShaderCompileRequestCompare>
       empty_queue;
   std::swap(async_shader_queue_, empty_queue);
-  while (!async_pipeline_queue_.empty()) {
-    auto request = async_pipeline_queue_.top();
-    async_pipeline_queue_.pop();
+  for (auto& [order, request] : async_pipeline_queue_) {
     if (request.vertex_function) {
       request.vertex_function->release();
-      request.vertex_function = nullptr;
     }
     if (request.fragment_function) {
       request.fragment_function->release();
-      request.fragment_function = nullptr;
     }
   }
+  async_pipeline_queue_.clear();
+  async_pipeline_queued_.clear();
+  async_pipeline_queue_arrivals_ = 0;
   while (!async_tess_shaders_queue_.empty()) {
     async_tess_shaders_queue_.pop();
   }
@@ -872,6 +871,8 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_compile_shutdown_ = false;
   async_compile_base_thread_count_ = 0;
   async_compile_thread_limit_ = 0;
+  async_compile_hold_boost_ = false;
+  async_compile_awaiters_ = 0;
   storage_stats_pending_ = false;
   storage_stats_boosted_ = false;
   // The dropped requests count as finished, so the backlog reads empty.
@@ -1013,7 +1014,10 @@ bool MetalCommandProcessor::EnqueuePipelineCompilation(
       queued_request.fragment_function->retain();
     }
     async_pipeline_pending_.insert(request.pipeline_key);
-    async_pipeline_queue_.push(queued_request);
+    PipelineQueueOrder order(-int(queued_request.priority),
+                             async_pipeline_queue_arrivals_++);
+    async_pipeline_queue_.emplace(order, std::move(queued_request));
+    async_pipeline_queued_.emplace(request.pipeline_key, order);
     compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
   }
 
@@ -1055,8 +1059,11 @@ Shader::Translation* MetalCommandProcessor::GetOrCreateHostTranslation(
   }
   if (status == ShaderCompileStatus::kPending && !allow_async) {
     // An earlier draw that could wait for this queued it. This caller can't, so
-    // the only way to get it is to let the compile threads finish.
-    AwaitAsyncCompiles();
+    // it waits for the compile threads to get to it.
+    AwaitAsyncCompilesUntil([this, translation]() {
+      return async_shader_pending_.find(translation) ==
+             async_shader_pending_.end();
+    });
     status = GetShaderCompileStatus(translation);
   }
   *compile_status_out = status;
@@ -1743,11 +1750,18 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
         continue;
       }
       // Pipelines first: they are the nearly finished work, and everything
-      // else exists to unblock one.
-      if (!async_pipeline_queue_.empty()) {
+      // else exists to unblock one. Except the stored ones a launch rebuilds:
+      // the shaders and tessellation stages draws are waiting for go first.
+      if (!async_pipeline_queue_.empty() &&
+          (async_pipeline_queue_.begin()->second.priority >
+               kPipelinePriorityStored ||
+           (async_shader_queue_.empty() &&
+            async_tess_shaders_queue_.empty()))) {
         request_kind = RequestKind::kPipeline;
-        pipeline_request = async_pipeline_queue_.top();
-        async_pipeline_queue_.pop();
+        auto queue_it = async_pipeline_queue_.begin();
+        pipeline_request = std::move(queue_it->second);
+        async_pipeline_queued_.erase(pipeline_request.pipeline_key);
+        async_pipeline_queue_.erase(queue_it);
       } else if (!async_shader_queue_.empty()) {
         request_kind = RequestKind::kShader;
         shader_request = async_shader_queue_.top();
@@ -2912,7 +2926,8 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
   PipelineCompileRequest request = {};
   request.description = description;
   request.pipeline_key = description.GetHash();
-  request.priority = pixel_translation ? 2 : 1;
+  request.priority = pixel_translation ? kPipelinePriorityStored
+                                       : kPipelinePriorityStoredDepthOnly;
   Shader::Translation* vertex_translation = nullptr;
   if (PipelineKind(description.kind) == PipelineKind::kDxilTessellation) {
     // The domain modification never becomes a standalone vertex function, so
@@ -3050,8 +3065,7 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_pending_ = !stored_descriptions.empty();
-    storage_stats_boosted_ =
-        async_compile_thread_limit_ > async_compile_base_thread_count_;
+    storage_stats_boosted_ = async_compile_hold_boost_;
     storage_stats_start_ticks_ = start_ticks;
     storage_stats_stored_ = stored_descriptions.size();
     storage_stats_version_ = config.version;
@@ -3355,7 +3369,7 @@ void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
   }
 }
 
-void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
+void MetalCommandProcessor::CountAsyncCompileTaskFinishedLocked() {
   uint64_t finished =
       compile_activity.finished.fetch_add(1, std::memory_order_relaxed) + 1;
   if (storage_stats_pending_) {
@@ -3365,29 +3379,30 @@ void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
       RecordStorageRebuildStatsLocked();
     }
   }
+}
+
+void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
+  CountAsyncCompileTaskFinishedLocked();
   if (async_compile_busy_) {
     --async_compile_busy_;
   }
-  if (IsAsyncCompileIdleLocked()) {
+  // A waiter may be after this task rather than the whole queue.
+  if (async_compile_awaiters_ || IsAsyncCompileIdleLocked()) {
     async_compile_idle_cv_.notify_all();
   }
 }
 
-void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
-  std::lock_guard<std::mutex> lock(async_compile_mutex_);
+void MetalCommandProcessor::UpdateCompileThreadLimitLocked() {
   if (async_compile_shutdown_ || !async_compile_base_thread_count_) {
     return;
   }
   size_t limit = async_compile_base_thread_count_;
-  if (boost) {
-    // The held guest and GPU worker leave the CPU to the compile threads.
+  if (async_compile_hold_boost_ || async_compile_awaiters_) {
+    // Whatever is waiting for the compile threads leaves the CPU to them.
     limit = std::max<size_t>(limit, std::thread::hardware_concurrency());
   }
   if (limit == async_compile_thread_limit_) {
     return;
-  }
-  if (limit > async_compile_base_thread_count_ && storage_stats_pending_) {
-    storage_stats_boosted_ = true;
   }
   async_compile_thread_limit_ = limit;
   for (size_t i =
@@ -3400,22 +3415,78 @@ void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
   // back to park when it falls.
   async_compile_boost_cv_.notify_all();
   async_compile_cv_.notify_all();
-  XELOGI("Metal: {} shader/pipeline compile thread(s){}", limit,
+}
+
+void MetalCommandProcessor::PromoteQueuedPipelineLocked(uint64_t key,
+                                                        uint8_t priority) {
+  auto queued_it = async_pipeline_queued_.find(key);
+  if (queued_it == async_pipeline_queued_.end() ||
+      -queued_it->second.first >= int(priority)) {
+    return;
+  }
+  auto node = async_pipeline_queue_.extract(queued_it->second);
+  node.key() =
+      PipelineQueueOrder(-int(priority), async_pipeline_queue_arrivals_++);
+  node.mapped().priority = priority;
+  queued_it->second = node.key();
+  async_pipeline_queue_.insert(std::move(node));
+}
+
+bool MetalCommandProcessor::TakeQueuedPipelineLocked(uint64_t key) {
+  auto queued_it = async_pipeline_queued_.find(key);
+  if (queued_it == async_pipeline_queued_.end()) {
+    return false;
+  }
+  auto queue_it = async_pipeline_queue_.find(queued_it->second);
+  PipelineCompileRequest& request = queue_it->second;
+  if (request.vertex_function) {
+    request.vertex_function->release();
+  }
+  if (request.fragment_function) {
+    request.fragment_function->release();
+  }
+  async_pipeline_queue_.erase(queue_it);
+  async_pipeline_queued_.erase(queued_it);
+  async_pipeline_pending_.erase(key);
+  CountAsyncCompileTaskFinishedLocked();
+  if (IsAsyncCompileIdleLocked()) {
+    async_compile_idle_cv_.notify_all();
+  }
+  return true;
+}
+
+void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
+  std::lock_guard<std::mutex> lock(async_compile_mutex_);
+  if (async_compile_shutdown_ || !async_compile_base_thread_count_ ||
+      async_compile_hold_boost_ == boost) {
+    return;
+  }
+  async_compile_hold_boost_ = boost;
+  if (boost && storage_stats_pending_) {
+    storage_stats_boosted_ = true;
+  }
+  UpdateCompileThreadLimitLocked();
+  XELOGI("Metal: {} shader/pipeline compile thread(s){}",
+         async_compile_thread_limit_,
          boost ? " while the game waits for shaders" : "");
 }
 
-void MetalCommandProcessor::AwaitAsyncCompiles() {
+template <typename Done>
+void MetalCommandProcessor::AwaitAsyncCompilesUntil(const Done& done) {
   if (async_compile_threads_.empty()) {
     return;
   }
-  SCOPE_profile_cpu_i("gpu", "MetalCommandProcessor::AwaitAsyncCompiles");
+  SCOPE_profile_cpu_i("gpu", "MetalCommandProcessor::AwaitAsyncCompilesUntil");
   {
     std::unique_lock<std::mutex> lock(async_compile_mutex_);
-    if (IsAsyncCompileIdleLocked()) {
+    if (done()) {
       return;
     }
-    async_compile_idle_cv_.wait(
-        lock, [this]() { return IsAsyncCompileIdleLocked(); });
+    ++async_compile_awaiters_;
+    UpdateCompileThreadLimitLocked();
+    async_compile_idle_cv_.wait(lock, done);
+    --async_compile_awaiters_;
+    UpdateCompileThreadLimitLocked();
   }
   if (ShouldLogRateLimited(async_compile_drain_last_log_ns_,
                            kAsyncCompileLogIntervalNs)) {
@@ -3423,6 +3494,21 @@ void MetalCommandProcessor::AwaitAsyncCompiles() {
         "Metal: blocked the draw thread on async compilation - a draw needed "
         "the guest's exact shaders");
   }
+}
+
+void MetalCommandProcessor::AwaitAsyncCompiles() {
+  AwaitAsyncCompilesUntil([this]() { return IsAsyncCompileIdleLocked(); });
+}
+
+void MetalCommandProcessor::AwaitPendingPipeline() {
+  const uint64_t key = last_pending_pipeline_key_;
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    PromoteQueuedPipelineLocked(key, kPipelinePriorityAwaited);
+  }
+  AwaitAsyncCompilesUntil([this, key]() {
+    return async_pipeline_pending_.find(key) == async_pipeline_pending_.end();
+  });
 }
 
 MTL::CommandBuffer* MetalCommandProcessor::CreateAccountedCommandBuffer(
@@ -4604,7 +4690,7 @@ bool MetalCommandProcessor::IssueDrawMsl(
   }
   if (!pipeline && exact_shaders_required &&
       pipeline_compile_status == PipelineCompileStatus::kPending) {
-    AwaitAsyncCompiles();
+    AwaitPendingPipeline();
     pipeline =
         is_tessellated
             ? GetOrCreateMslTessPipelineState(
@@ -5932,7 +6018,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
         pixel_translation, regs, &tess_pipeline_status);
     if (!pipeline && exact_shaders_required &&
         tess_pipeline_status == PipelineCompileStatus::kPending) {
-      AwaitAsyncCompiles();
+      AwaitPendingPipeline();
       pipeline = GetOrCreateDxilTessellationPipelineState(
           *tessellation_shaders, domain_translation,
           primitive_processing_result.tessellation_mode,
@@ -5983,7 +6069,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
                                           regs, &pipeline_compile_status);
       if (!pipeline && exact_shaders_required &&
           pipeline_compile_status == PipelineCompileStatus::kPending) {
-        AwaitAsyncCompiles();
+        AwaitPendingPipeline();
         pipeline =
             GetOrCreatePipelineState(vertex_translation, pixel_translation,
                                      regs, &pipeline_compile_status);
@@ -5998,7 +6084,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
                                           regs, &pipeline_compile_status);
       if (!pipeline &&
           pipeline_compile_status == PipelineCompileStatus::kPending) {
-        AwaitAsyncCompiles();
+        AwaitPendingPipeline();
         pipeline =
             GetOrCreatePipelineState(vertex_translation, pixel_translation,
                                      regs, &pipeline_compile_status);
@@ -8103,7 +8189,8 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
                              description.pixel_finite_multiply_state);
     }
   }
-  request.priority = pixel_translation ? 2 : 1;
+  request.priority = pixel_translation ? kPipelinePriorityDraw
+                                       : kPipelinePriorityDrawDepthOnly;
   request.pipeline_key = description.GetHash();
   return request.pipeline_key;
 }
@@ -8219,7 +8306,13 @@ MTL::RenderPipelineState* MetalCommandProcessor::AcquirePipelineState(
       }
       return it->second;
     }
-    if (async_pipeline_pending_.find(key) != async_pipeline_pending_.end()) {
+    // Most likely queued by the storage load, behind the rest of the rebuild.
+    // A caller that builds its pipelines here takes it back, as it would have
+    // without the storage. One that queues moves it up to its own priority.
+    if (async_pipeline_pending_.find(key) != async_pipeline_pending_.end() &&
+        (allow_async || !TakeQueuedPipelineLocked(key))) {
+      PromoteQueuedPipelineLocked(key, request.priority);
+      last_pending_pipeline_key_ = key;
       if (compile_status_out) {
         *compile_status_out = PipelineCompileStatus::kPending;
       }
@@ -8243,6 +8336,7 @@ MTL::RenderPipelineState* MetalCommandProcessor::AcquirePipelineState(
       if (async_pipeline_failed_.find(key) != async_pipeline_failed_.end()) {
         return nullptr;
       }
+      last_pending_pipeline_key_ = key;
       if (compile_status_out) {
         *compile_status_out = PipelineCompileStatus::kPending;
       }
