@@ -189,10 +189,11 @@ NSString* xe_current_app_version_text(void) {
 }
 
 BOOL xe_is_development_build(void) {
-  // The CMake placeholder (1.0 / build 1) means the bundle was not stamped by
-  // tools/build_apple_release.sh. Real builds carry the commit-count build
-  // number, so a build number of 1 (or 0) marks a local/dev build.
-  return xe_current_app_build_number() <= 1;
+  // The build step stamps the commit count as the build number and the newest
+  // release tag as the version (tools/build/stamp_ios_version.py). Build 1 is the
+  // unstamped CMake placeholder; version 0.0.0 means no release tag was reachable.
+  return xe_current_app_build_number() <= 1 ||
+         [xe_current_app_version_string() isEqualToString:@"0.0.0"];
 }
 
 NSInteger xe_compare_app_versions(NSString* lhs_version, long long lhs_build, NSString* rhs_version,
