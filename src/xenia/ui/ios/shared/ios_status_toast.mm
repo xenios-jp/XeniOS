@@ -66,6 +66,10 @@ NSString* SymbolForStyle(XeniaIOSStatusToastStyle style) {
   label_ = nil;
 }
 
+- (void)dismissGesture:(UIGestureRecognizer*)recognizer {
+  [self dismiss];
+}
+
 - (void)timerFired:(NSTimer*)timer {
   if (timer != timer_) {
     return;
@@ -107,7 +111,17 @@ NSString* SymbolForStyle(XeniaIOSStatusToastStyle style) {
 
   UIView* toast = [[[UIView alloc] init] autorelease];
   toast.translatesAutoresizingMaskIntoConstraints = NO;
-  toast.userInteractionEnabled = NO;
+  // Tap or swipe up dismisses early; the toast never carries an action.
+  toast.userInteractionEnabled = YES;
+  UITapGestureRecognizer* tap =
+      [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissGesture:)]
+          autorelease];
+  [toast addGestureRecognizer:tap];
+  UISwipeGestureRecognizer* swipe =
+      [[[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(dismissGesture:)]
+          autorelease];
+  swipe.direction = UISwipeGestureRecognizerDirectionUp;
+  [toast addGestureRecognizer:swipe];
   // Glass on iOS 26+, SystemMaterial on iOS 18-25. The card chrome sets
   // backgroundColor=clear, cornerRadius=XeniaRadiusLg, the hairline border,
   // and inserts the visual-effect backdrop at index 0 — content subviews
@@ -160,11 +174,23 @@ NSString* SymbolForStyle(XeniaIOSStatusToastStyle style) {
   UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
 
   toast_ = [toast retain];
-  UINotificationFeedbackGenerator* feedback =
-      [[[UINotificationFeedbackGenerator alloc] init] autorelease];
-  [feedback notificationOccurred:style == XeniaIOSStatusToastStyleError
-                                     ? UINotificationFeedbackTypeError
-                                     : UINotificationFeedbackTypeWarning];
+  switch (style) {
+    case XeniaIOSStatusToastStyleSuccess:
+    case XeniaIOSStatusToastStyleWarning:
+    case XeniaIOSStatusToastStyleError: {
+      UINotificationFeedbackGenerator* feedback =
+          [[[UINotificationFeedbackGenerator alloc] init] autorelease];
+      [feedback notificationOccurred:style == XeniaIOSStatusToastStyleError
+                                         ? UINotificationFeedbackTypeError
+                                     : style == XeniaIOSStatusToastStyleSuccess
+                                         ? UINotificationFeedbackTypeSuccess
+                                         : UINotificationFeedbackTypeWarning];
+      break;
+    }
+    case XeniaIOSStatusToastStyleInfo:
+    default:
+      break;  // Info is silent.
+  }
   [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.12 : 0.22
                    animations:^{
                      toast.alpha = 1.0;
