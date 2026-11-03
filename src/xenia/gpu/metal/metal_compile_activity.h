@@ -54,6 +54,10 @@ inline CompileActivity compile_activity;
 // picture. Bumped once per swap with an image.
 inline std::atomic<uint64_t> guest_frames_presented{0};
 
+// Command buffers that failed on the GPU (a fault, a timeout, out of memory)
+// since launch, for diagnostics.
+inline std::atomic<uint64_t> command_buffer_failures{0};
+
 }  // namespace metal
 }  // namespace gpu
 }  // namespace xe
