@@ -115,9 +115,18 @@ void OnStatus(const RelayStatus& status) {
   const RelayStatus last = g_last;
   g_last = status;
   const bool chose_room = g_room_code.length != 0;
-  g_active = status.state != State::kStopped;
+  const bool was_active = g_active;
+  g_active = status.state != State::kStopped && status.state != State::kPaused;
   switch (status.state) {
+    case State::kPaused:
     case State::kStopped:
+      // Online Features went off while the game plays: say so, as the card goes away.
+      if (status.state == State::kPaused && was_active) {
+        Toast(NSLocalizedString(@"System Link stopped: Online Features is off.",
+                                @"System Link toast: online features were turned off while a "
+                                @"game was playing System Link"),
+              XeniaIOSStatusToastStyleWarning);
+      }
       g_last = {};
       g_told_online = false;
       g_told_offline = false;
@@ -194,6 +203,7 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void) {
       snapshot.state = Snapshot::State::kRejected;
       snapshot.problem = RejectMessage(status.reject);
       break;
+    case State::kPaused:
     case State::kStopped:
       return snapshot;
   }
@@ -522,6 +532,15 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
           }
         },
     });
+    // Games ask whether System Link is allowed on every frame, so the answer is kept and read
+    // again when the defaults change, which covers Online Features and its notice.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSUserDefaultsDidChangeNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification* __unused note) {
+                  xe::kernel::xam::SystemLinkAllowedChanged();
+                }];
     xe::net::secure::SetRelayStatusListener([](const RelayStatus& status) {
       dispatch_async(dispatch_get_main_queue(), ^{
         OnStatus(status);

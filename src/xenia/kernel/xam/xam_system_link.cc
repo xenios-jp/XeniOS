@@ -184,9 +184,14 @@ SystemLinkRelayPolicy relay_policy;
 // How many times the room may have changed.
 std::atomic<uint32_t> relay_room_changes{0};
 
-bool RelayAllowed() {
+// What the policy last said, which games ask for on every frame.
+std::atomic<bool> relay_allowed{true};
+
+bool RelayAllowed() { return relay_allowed.load(std::memory_order_relaxed); }
+
+void RefreshRelayAllowed() {
   std::lock_guard lock(relay_policy_mutex);
-  return !relay_policy.allowed || relay_policy.allowed();
+  relay_allowed = !relay_policy.allowed || relay_policy.allowed();
 }
 
 std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
@@ -325,9 +330,14 @@ bool SystemLinkEnabled() {
 }
 
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy) {
-  std::lock_guard lock(relay_policy_mutex);
-  relay_policy = std::move(policy);
+  {
+    std::lock_guard lock(relay_policy_mutex);
+    relay_policy = std::move(policy);
+  }
+  RefreshRelayAllowed();
 }
+
+void SystemLinkAllowedChanged() { RefreshRelayAllowed(); }
 
 void SystemLinkRoomChanged() { ++relay_room_changes; }
 

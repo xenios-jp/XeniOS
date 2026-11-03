@@ -374,7 +374,7 @@ class RelayTransport final : public PacketTransport {
     }
     RelayStatus status;
     if (paused_) {
-      status.state = RelayStatus::State::kStopped;
+      status.state = RelayStatus::State::kPaused;
     } else {
       status = client_.status();
     }
