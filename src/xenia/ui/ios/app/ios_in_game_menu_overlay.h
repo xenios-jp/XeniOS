@@ -40,6 +40,8 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, strong) UIMenu* displayMenu;
 // Whether the user paused the game from the menu: the pause button then offers to resume.
 @property(nonatomic, assign) BOOL emulatorPaused;
+// A game the Xbox 360 Dashboard started exits to the dashboard, not the library.
+@property(nonatomic) BOOL exitsToDashboard;
 
 - (BOOL)isOverlayVisible;
 - (BOOL)isActionEnabled:(XeniaIOSInGameMenuAction)action;

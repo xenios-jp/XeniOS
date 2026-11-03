@@ -23,6 +23,8 @@
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact;
 - (NSString*)pauseEmulatorTitle;
 - (NSString*)pauseEmulatorHint;
+- (NSString*)exitTitle;
+- (NSString*)exitAccessibilityHint;
 @end
 
 @implementation XeniaIOSInGameMenuOverlay {
@@ -176,8 +178,7 @@
                                        menuAction:XeniaIOSInGameMenuActionPauseEmulator
                                            action:@selector(pauseEmulatorPressed:)];
 
-  _exitButton = [self newButtonWithTitle:NSLocalizedString(@"Exit To Library",
-                                                           @"In-game menu button, leaves the game")
+  _exitButton = [self newButtonWithTitle:[self exitTitle]
                                imageName:@"rectangle.portrait.and.arrow.right"
                          backgroundColor:[[XeniaTheme statusError] colorWithAlphaComponent:0.25]
                          foregroundColor:[XeniaTheme textPrimary]
@@ -378,8 +379,7 @@
                                                    @"VoiceOver hint for the Live Log button");
       break;
     case XeniaIOSInGameMenuActionExit:
-      button.accessibilityHint = NSLocalizedString(@"Stops the game and returns to the library.",
-                                                   @"VoiceOver hint for the Exit button");
+      button.accessibilityHint = [self exitAccessibilityHint];
       break;
     case XeniaIOSInGameMenuActionPauseEmulator:
       button.accessibilityHint = [self pauseEmulatorHint];
@@ -474,9 +474,7 @@
                title:NSLocalizedString(@"Achievements", @"In-game menu button")
              compact:compact
               resume:NO];
-  NSString* exit_title =
-      NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
-  [self updateButton:_exitButton title:exit_title compact:compact resume:NO];
+  [self updateButton:_exitButton title:[self exitTitle] compact:compact resume:NO];
   NSString* live_log_title = NSLocalizedString(@"Live Log", @"In-game menu button");
   [self updateButton:_liveLogButton title:live_log_title compact:compact resume:NO];
   [self updateButton:_pauseEmulatorButton
@@ -778,6 +776,34 @@
   if (_pauseEmulatorHandler) {
     _pauseEmulatorHandler();
   }
+}
+
+- (NSString*)exitTitle {
+  return _exitsToDashboard
+             ? NSLocalizedString(@"Exit To Dashboard",
+                                 @"In-game menu button, leaves a game the Xbox 360 Dashboard "
+                                 @"started for the dashboard")
+             : NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
+}
+
+- (NSString*)exitAccessibilityHint {
+  return _exitsToDashboard
+             ? NSLocalizedString(@"Stops the game and returns to the Xbox 360 Dashboard.",
+                                 @"VoiceOver hint for the Exit button in a game the dashboard "
+                                 @"started")
+             : NSLocalizedString(@"Stops the game and returns to the library.",
+                                 @"VoiceOver hint for the Exit button");
+}
+
+- (void)setExitsToDashboard:(BOOL)exitsToDashboard {
+  if (_exitsToDashboard == exitsToDashboard) {
+    return;
+  }
+  _exitsToDashboard = exitsToDashboard;
+  UIButtonConfiguration* config = _exitButton.configuration;
+  config.title = [self exitTitle];
+  _exitButton.configuration = config;
+  _exitButton.accessibilityHint = [self exitAccessibilityHint];
 }
 
 - (void)exitPressed:(UIButton*)__unused sender {

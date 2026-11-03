@@ -1054,6 +1054,9 @@
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
 
+/* In-game menu button, leaves a game the Xbox 360 Dashboard started for the dashboard */
+"Exit To Dashboard" = "Exit To Dashboard";
+
 /* In-game menu button, leaves the game */
 "Exit To Library" = "Exit To Library";
 
@@ -2725,6 +2728,9 @@
 
 /* VoiceOver hint for the Exit button */
 "Stops the game and returns to the library." = "Stops the game and returns to the library.";
+
+/* VoiceOver hint for the Exit button in a game the dashboard started */
+"Stops the game and returns to the Xbox 360 Dashboard." = "Stops the game and returns to the Xbox 360 Dashboard.";
 
 /* VoiceOver hint for the Pause Emulator button */
 "Stops the game until you resume it or close the menu." = "Stops the game until you resume it or close the menu.";
