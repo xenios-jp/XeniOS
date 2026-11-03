@@ -43,6 +43,7 @@
 #include "xenia/ui/ios/game/ios_launch_status.h"
 #include "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #include "xenia/ui/ios/game/window_ios.h"
+#include "xenia/ui/ios/launcher/ios_dashboard.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_crash_reporting.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
@@ -579,6 +580,10 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   std::atomic<bool> gameplay_input_blocker_applied_{false};
   std::mutex launch_mutex_;
   std::optional<std::filesystem::path> queued_launch_path_;
+  // Set by each launch from the library: whether it is the dashboard, which
+  // boots with the console's animation and which a game it starts goes back to.
+  std::atomic<bool> dashboard_session_{false};
+  std::atomic<bool> boot_animation_pending_{false};
   bool title_update_install_in_progress_ = false;
   std::atomic<bool> emulator_initialized_{false};
   std::atomic<bool> emulator_cpu_initialized_{false};
@@ -703,7 +708,19 @@ bool EmulatorAppIOS::OnInitialize() {
   // Create the emulator instance.
   emulator_ = std::make_unique<Emulator>("", storage_root, content_root, cache_root);
 
-  emulator_->set_on_exit_to_dashboard([this]() { return RequestGameStop("Exit to dashboard"); });
+  emulator_->set_on_exit_to_dashboard([this]() {
+    // A game the dashboard started goes back to it, as on a console, unless the
+    // app is already stopping it.
+    if (dashboard_session_.load(std::memory_order_acquire) &&
+        !game_stop_requested_.load(std::memory_order_acquire) &&
+        xe::ui::IsIOSDashboardInstalled()) {
+      std::lock_guard<std::mutex> lock(launch_mutex_);
+      if (!queued_launch_path_.has_value()) {
+        queued_launch_path_ = xe::ui::IOSInstalledDashboardPath();
+      }
+    }
+    return RequestGameStop("Exit to dashboard");
+  });
 
   // A disc swap offers the library's copies of the title's discs.
   emulator_->set_disc_provider([](uint32_t title_id) {
@@ -875,6 +892,9 @@ bool EmulatorAppIOS::OnInitialize() {
       cvars::launch_module = "";
       cvars::launch_flags = 0;
       cvars::launch_data = "";
+      const bool is_dashboard = xe::ui::IsIOSInstalledDashboardPath(game_path);
+      dashboard_session_.store(is_dashboard, std::memory_order_release);
+      boot_animation_pending_.store(is_dashboard, std::memory_order_release);
     }
 
     bool should_queue_launch = false;
@@ -1709,6 +1729,16 @@ void EmulatorAppIOS::StartQueuedLaunchIfIdle() {
   }
 
   XELOGI("iOS: Starting queued game launch: {}", xe::strip_pii(xe::path_to_utf8(*queued_path)));
+  @autoreleasepool {
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:XeniaIOSTitleWillStartNotification
+                      object:nil
+                    userInfo:@{
+                      XeniaIOSTitlePathKey : [NSString
+                          stringWithUTF8String:xe::path_to_utf8(*queued_path).c_str()]
+                          ?: @""
+                    }];
+  }
   StartEmulatorThread(std::move(*queued_path), true);
 }
 
@@ -1996,6 +2026,11 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     // Pauses (a covered or backgrounded scene) apply from here on, not only once the title is up:
     // LaunchPath starts the guest threads and the GPU.
     BeginEmulationPauseSession();
+    // The dashboard lists the library as its games.
+    emulator_->SetLibraryTitles(xe::ui::IOSDashboardLibraryTitles());
+    if (boot_animation_pending_.exchange(false, std::memory_order_acq_rel)) {
+      emulator_->RequestBootAnimation();
+    }
     ui::ios::SetLaunchStage(ui::ios::LaunchStage::kLoading);
     X_STATUS launch_result = emulator_->LaunchPath(abs_path);
     cvars::launch_module = "";
