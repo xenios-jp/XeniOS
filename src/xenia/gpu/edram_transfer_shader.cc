@@ -497,6 +497,9 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
   spv::Id type_fragment_data_component = spv::NoResult;
   spv::Id type_fragment_data = spv::NoResult;
   spv::Id output_fragment_data = spv::NoResult;
+  // With dest_color_float_bits, the output itself, output_fragment_data being
+  // the uint bits.
+  spv::Id output_fragment_float_bits = spv::NoResult;
   spv::Id output_fragment_depth = spv::NoResult;
   spv::Id output_fragment_stencil_ref = spv::NoResult;
   switch (mode.output) {
@@ -511,6 +514,35 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
               ? builder.makeVectorType(type_fragment_data_component,
                                        dest_color_component_count)
               : type_fragment_data_component;
+      if (dest_color_is_uint && options.dest_color_float_bits) {
+        // The copy below writes the uint bits to a private variable, and the
+        // end of the shader reinterprets them for the float output.
+        output_fragment_data = builder.createVariable(
+            spv::NoPrecision, spv::StorageClass::Private, type_fragment_data,
+            "xe_transfer_fragment_bits");
+        bool float16 =
+            dest_color_format != xenos::ColorRenderTargetFormat::k_32_FLOAT &&
+            dest_color_format != xenos::ColorRenderTargetFormat::k_32_32_FLOAT;
+        spv::Id type_float_bits_component = type_float;
+        if (float16) {
+          builder.addCapability(spv::Capability::Float16);
+          builder.addExtension("SPV_KHR_16bit_storage");
+          builder.addCapability(spv::Capability::StorageInputOutput16);
+          type_float_bits_component = builder.makeFloatType(16);
+        }
+        output_fragment_float_bits = builder.createVariable(
+            spv::NoPrecision, spv::StorageClassOutput,
+            dest_color_component_count > 1
+                ? builder.makeVectorType(type_float_bits_component,
+                                         dest_color_component_count)
+                : type_float_bits_component,
+            "xe_transfer_fragment_data");
+        builder.addDecoration(output_fragment_float_bits,
+                              spv::DecorationLocation,
+                              key.dest_color_rt_index);
+        main_interface.push_back(output_fragment_float_bits);
+        break;
+      }
       output_fragment_data = builder.createVariable(
           spv::NoPrecision, spv::StorageClassOutput, type_fragment_data,
           "xe_transfer_fragment_data");
@@ -2318,6 +2350,42 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
         }
       } break;
     }
+  }
+
+  if (output_fragment_float_bits != spv::NoResult) {
+    spv::Id bits =
+        builder.createLoad(output_fragment_data, spv::NoPrecision);
+    spv::Id output_type = builder.getDerefTypeId(output_fragment_float_bits);
+    spv::Id output_component_type = builder.getScalarTypeId(output_type);
+    spv::Id value;
+    if (builder.getScalarTypeWidth(output_component_type) == 16) {
+      // Each uint component holds 16 bits: pack them in pairs, and
+      // reinterpret each pair as two halves.
+      spv::Id type_half2 = builder.makeVectorType(output_component_type, 2);
+      spv::Id const_uint_16 = builder.makeUintConstant(16);
+      spv::Id half_pairs[2];
+      uint32_t pair_count = (dest_color_component_count + 1) >> 1;
+      for (uint32_t i = 0; i < pair_count; ++i) {
+        spv::Id low = builder.createCompositeExtract(bits, type_uint, i << 1);
+        spv::Id high =
+            builder.createCompositeExtract(bits, type_uint, (i << 1) + 1);
+        half_pairs[i] = builder.createUnaryOp(
+            spv::OpBitcast, type_half2,
+            builder.createQuadOp(spv::OpBitFieldInsert, type_uint, low, high,
+                                 const_uint_16, const_uint_16));
+      }
+      if (pair_count == 1) {
+        value = half_pairs[0];
+      } else {
+        id_vector_temp.clear();
+        id_vector_temp.push_back(half_pairs[0]);
+        id_vector_temp.push_back(half_pairs[1]);
+        value = builder.createCompositeConstruct(output_type, id_vector_temp);
+      }
+    } else {
+      value = builder.createUnaryOp(spv::OpBitcast, output_type, bits);
+    }
+    builder.createStore(value, output_fragment_float_bits);
   }
 
   // End the main function and make it the entry point.
