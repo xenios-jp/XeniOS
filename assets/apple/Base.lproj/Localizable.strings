@@ -46,6 +46,9 @@
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
+/* settings hub view controller: search pointer row, count of raw config matches */
+"%1$lu more advanced results" = "%1$lu more advanced results";
+
 /* zar conversion coordinator: detail text */
 "%1$u file(s), %2$@ packed before cancellation." = "%1$u file(s), %2$@ packed before cancellation.";
 
@@ -100,6 +103,9 @@
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
 
+/* settings hub view controller: search pointer row */
+"1 more advanced result" = "1 more advanced result";
+
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
 
@@ -139,6 +145,9 @@
 /* zar conversion coordinator: user-visible text */
 "About %1$ld minute%2$@ remaining" = "About %1$ld minute%2$@ remaining";
 
+/* Shader preparation time left; %@ is a duration such as 40 seconds or 3 minutes */
+"About %@ left" = "About %@ left";
+
 /* zar conversion coordinator: user-visible text */
 "About %ld seconds remaining" = "About %ld seconds remaining";
 
@@ -171,6 +180,9 @@
 /* VoiceOver label of the add control button */
 "Add control" = "Add control";
 
+/* launcher overlay view: empty library message */
+"Add games with Files or Finder." = "Add games with Files or Finder.";
+
 /* compat report cells: label text */
 "Add Screenshot" = "Add Screenshot";
 
@@ -189,6 +201,9 @@
 "Advanced" = "Advanced";
 
 /* settings hub view controller: title */
+"Advanced (cvars)" = "Advanced (cvars)";
+
+/* settings hub view controller: title */
 "Advanced Debug" = "Advanced Debug";
 
 /* zar conversion coordinator: message */
@@ -197,11 +212,11 @@
 /* Feedback while dragging; %@ is the name of the other control */
 "Aligned with %@" = "Aligned with %@";
 
-/* settings hub view controller: title */
-"All Config" = "All Config";
-
 /* Swipe action in the layout library: use for all games */
 "All Games" = "All Games";
+
+/* settings hub view controller: title */
+"All Settings" = "All Settings";
 
 /* config view controller: user-visible text */
 "All settings are back to their defaults. Relaunch XeniOS before testing." = "All settings are back to their defaults. Relaunch XeniOS before testing.";
@@ -284,7 +299,7 @@
 "Back" = "Back";
 
 /* settings hub view controller: title */
-"Backend, quality, shader pipeline, and render target path." = "Backend, quality, shader pipeline, and render target path.";
+"Backend and anisotropic filtering." = "Backend and anisotropic filtering.";
 
 /* game compatibility cells: user-visible text */
 "Based on available compatibility data." = "Based on available compatibility data.";
@@ -337,10 +352,10 @@
 "Build information and project links." = "Build information and project links.";
 
 /* Shader compile indicator title, expanded */
-"Building shaders for this game" = "Building shaders for this game";
+"Building shaders" = "Building shaders";
 
-/* VoiceOver text for the shader compile indicator */
-"Building shaders for this game. Expect stutter and missing effects for a few minutes." = "Building shaders for this game. Expect stutter and missing effects for a few minutes.";
+/* Shader compile indicator title; %llu is the number of shaders waiting */
+"Building shaders · %llu" = "Building shaders · %llu";
 
 /* settings hub view controller: title */
 "Bundle" = "Bundle";
@@ -354,11 +369,17 @@
 /* settings hub view controller: title */
 "Cache Cleanup" = "Cache Cleanup";
 
+/* settings hub view controller: search result note */
+"Can be overridden per game" = "Can be overridden per game";
+
 /* zar conversion coordinator: user-visible text */
 "Can't Delete" = "Can't Delete";
 
 /* zar conversion coordinator: title */
 "Can't Delete These Originals" = "Can't Delete These Originals";
+
+/* Alert title: a link failed */
+"Can't Open Link" = "Can't Open Link";
 
 /* Action sheet button: cancel
    Alert button: cancel
@@ -472,12 +493,6 @@
 /* settings hub view controller: title */
 "Compatibility Workarounds" = "Compatibility Workarounds";
 
-/* Shader compile indicator title; %llu is the number of shaders waiting */
-"Compiling shaders · %llu" = "Compiling shaders · %llu";
-
-/* VoiceOver text for the shader compile indicator */
-"Compiling shaders. Expect stutter and missing effects until they finish." = "Compiling shaders. Expect stutter and missing effects until they finish.";
-
 /* settings hub view controller: title */
 "Connect a controller before or during gameplay; XeniOS binds it automatically." = "Connect a controller before or during gameplay; XeniOS binds it automatically.";
 
@@ -500,8 +515,7 @@
 /* settings hub view controller: title */
 "Controller setup, touch layouts, haptics, and look tuning." = "Controller setup, touch layouts, haptics, and look tuning.";
 
-/* In-game menu button
-   settings hub view controller: title
+/* settings hub view controller: title
    settings hub view controller: user-visible text */
 "Controls" = "Controls";
 
@@ -594,6 +608,9 @@
 
 /* launcher overlay view: user-visible text */
 "Converts non-ZAR games in the library." = "Converts non-ZAR games in the library.";
+
+/* Shader compile indicator title while the device is too hot to keep building at full speed */
+"Cooling down" = "Cooling down";
 
 /* Toast; %@ is the game title */
 "Copied launch URL for %@." = "Copied launch URL for %@.";
@@ -756,6 +773,9 @@
 /* Toast; %@ is the layout name */
 "Default for this game is %@." = "Default for this game is %@.";
 
+/* config view controller: default of a changed setting */
+"Default: %@" = "Default: %@";
+
 /* Alert button: confirm deleting a layout
    Context menu item in the layout library
    game content view controller: title
@@ -852,6 +872,9 @@
 /* settings hub view controller: message */
 "Developer mode is on. You can turn it off at the bottom of this page." = "Developer mode is on. You can turn it off at the bottom of this page.";
 
+/* settings hub view controller: title */
+"Developer: All Config" = "Developer: All Config";
+
 /* settings hub view controller: build name shown when no version is available
    Version text of a development build */
 "Development Build" = "Development Build";
@@ -861,6 +884,9 @@
 
 /* game compatibility cells: detail text */
 "DEVICE" = "DEVICE";
+
+/* In-game menu notice while thermally limited */
+"Device is warm. The game may run slower." = "Device is warm. The game may run slower.";
 
 /* Pause menu row
    settings hub view controller: title */
@@ -968,6 +994,9 @@
 /* settings hub view controller: title */
 "Edit Running Touch Layout" = "Edit Running Touch Layout";
 
+/* config catalog: empty default value */
+"Empty" = "Empty";
+
 /* Display menu item */
 "Emulated Display Uncapped" = "Emulated Display Uncapped";
 
@@ -1006,11 +1035,14 @@
 /* zar conversion coordinator: label text */
 "Estimating time remaining..." = "Estimating time remaining...";
 
+/* Shader preparation time left while it is not known yet */
+"Estimating…" = "Estimating…";
+
+/* settings hub view controller: title */
+"Every setting in one list. Search by name or value." = "Every setting in one list. Search by name or value.";
+
 /* config view controller: message */
 "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default. Games, saves, profiles, touch layouts and per-game overrides are kept. Relaunch XeniOS afterwards.";
-
-/* In-game menu button, leaves the game */
-"Exit" = "Exit";
 
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
@@ -1023,9 +1055,6 @@
 
 /* VoiceOver label of the panel's expand/collapse button */
 "Expand" = "Expand";
-
-/* Detail line of the expanded shader compile indicator */
-"Expect stutter and missing effects for a few minutes." = "Expect stutter and missing effects for a few minutes.";
 
 /* Context menu item in the layout library
    Swipe action in the layout library */
@@ -1088,13 +1117,7 @@
 /* game content view controller: user-visible text */
 "Failed deleting %1$@: %2$s" = "Failed deleting %1$@: %2$s";
 
-/* Toast: developer-facing error about the library callback */
-"Failed to build gameInfo callback URL." = "Failed to build gameInfo callback URL.";
-
-/* Toast: developer-facing error about the library payload */
-"Failed to build gameInfo payload." = "Failed to build gameInfo payload.";
-
-/* Toast: building the launch URL failed */
+/* Alert message: building the launch URL failed */
 "Failed to build launch URL." = "Failed to build launch URL.";
 
 /* Result message; %s is an error description */
@@ -1110,9 +1133,6 @@
    config view controller: user-visible text */
 "Failed to delete title-specific overrides. Check xenia.log." = "Failed to delete title-specific overrides. Check xenia.log.";
 
-/* Toast: developer-facing error about the library payload */
-"Failed to encode gameInfo payload." = "Failed to encode gameInfo payload.";
-
 /* Toast: exporting a layout failed */
 "Failed to export touch layout." = "Failed to export touch layout.";
 
@@ -1125,7 +1145,7 @@
 /* document import coordinator: message */
 "Failed to link selected folder." = "Failed to link selected folder.";
 
-/* Toast: could not open StikDebug */
+/* Alert message: could not open StikDebug */
 "Failed to open StikDebug." = "Failed to open StikDebug.";
 
 /* Error text; %s is the parser's description */
@@ -1224,7 +1244,7 @@
 /* settings hub view controller: title */
 "Game Content and Patches" = "Game Content and Patches";
 
-/* Toast: the game file is gone */
+/* Alert message: the game file is gone */
 "Game file is no longer available." = "Game file is no longer available.";
 
 /* Alert title: the game is not stopping */
@@ -1257,12 +1277,6 @@
 /* config view controller: title */
 "Game-Specific Settings" = "Game-Specific Settings";
 
-/* Toast: developer-facing error about a library request */
-"gameInfo callback scheme cannot point back to XeniOS." = "gameInfo callback scheme cannot point back to XeniOS.";
-
-/* Toast: developer-facing error about a library request */
-"gameInfo request is missing a callback scheme." = "gameInfo request is missing a callback scheme.";
-
 /* settings hub view controller: title */
 "Gameplay" = "Gameplay";
 
@@ -1276,6 +1290,9 @@
 /* external folders view controller: user-visible text */
 "Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected." = "Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected.";
 
+/* Detail line of the expanded shader compile indicator */
+"Games may stutter until this finishes." = "Games may stutter until this finishes.";
+
 /* settings hub view controller: title */
 "Games · Manage title-specific content from a game tile." = "Games · Manage title-specific content from a game tile.";
 
@@ -1284,9 +1301,6 @@
 
 /* settings hub view controller: title */
 "Games · Rescan XeniOS storage and update the launcher grid." = "Games · Rescan XeniOS storage and update the launcher grid.";
-
-/* settings hub view controller: title */
-"Games · Title-specific overrides, search, reset, and batched saves." = "Games · Title-specific overrides, search, reset, and batched saves.";
 
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
@@ -1394,6 +1408,9 @@
 /* launcher overlay view: user-visible text */
 "Import game" = "Import game";
 
+/* launcher overlay view: button title */
+"Import Games" = "Import Games";
+
 /* settings hub view controller: title */
 "Import games, refresh the library, and manage local storage." = "Import games, refresh the library, and manage local storage.";
 
@@ -1439,8 +1456,7 @@
    launcher overlay view: user-visible text */
 "Increased memory entitlement is enabled" = "Increased memory entitlement is enabled";
 
-/* profile view controller: user-visible text
-   Status line while profile services start */
+/* profile view controller: user-visible text */
 "Initializing profile services..." = "Initializing profile services...";
 
 /* Fallback alert title for a guest text prompt
@@ -1514,7 +1530,6 @@
 "JIT Enabled" = "JIT Enabled";
 
 /* launcher overlay view: accessibility label
-   launcher overlay view: accessibility value
    launcher overlay view: user-visible text */
 "JIT is enabled" = "JIT is enabled";
 
@@ -1527,14 +1542,11 @@
 /* launcher overlay view: accessibility label */
 "JIT is not enabled" = "JIT is not enabled";
 
-/* Toast: JIT did not become available after waiting */
-"JIT is still unavailable. Open StikDebug, then return here to retry." = "JIT is still unavailable. Open StikDebug, then return here to retry.";
-
 /* Alert title: JIT was not detected */
 "JIT Not Detected" = "JIT Not Detected";
 
-/* launcher overlay view: user-visible text */
-"JIT status" = "JIT status";
+/* launcher overlay view: JIT card title */
+"JIT Required" = "JIT Required";
 
 /* Launcher status: JIT is unavailable */
 "JIT unavailable. Open StikDebug, then restart polling." = "JIT unavailable. Open StikDebug, then restart polling.";
@@ -1591,10 +1603,7 @@
 /* game actions view controller: user-visible text */
 "Launch the selected title." = "Launch the selected title.";
 
-/* Toast: a launch link names no usable game */
-"Launch URL missing a valid game target." = "Launch URL missing a valid game target.";
-
-/* Toast: no launch URL exists for the game */
+/* Alert message: no launch URL exists for the game */
 "Launch URL unavailable for this game." = "Launch URL unavailable for this game.";
 
 /* game disc view controller: accessibility hint */
@@ -1711,12 +1720,6 @@
 /* profile view controller: user-visible text */
 "Loading profiles..." = "Loading profiles...";
 
-/* Shader compile indicator title while loading the cache */
-"Loading shader cache" = "Loading shader cache";
-
-/* VoiceOver text for the shader compile indicator */
-"Loading shader cache. Expect stutter until it finishes." = "Loading shader cache. Expect stutter until it finishes.";
-
 /* acknowledgements view controller: user-visible text */
 "Loading…" = "Loading…";
 
@@ -1728,9 +1731,6 @@
 
 /* Achievement state for VoiceOver */
 "Locked" = "Locked";
-
-/* In-game menu button */
-"Log" = "Log";
 
 /* Alert title: the log file to share does not exist */
 "Log Not Found" = "Log Not Found";
@@ -1747,6 +1747,9 @@
 /* Menu item in the Add Control menu
    Touch control type */
 "Look Zone" = "Look Zone";
+
+/* Shader preparation sheet in Low Power Mode */
+"Low Power Mode makes this slower." = "Low Power Mode makes this slower.";
 
 /* game actions view controller: user-visible text
    game content view controller: title
@@ -1849,14 +1852,14 @@
 /* external folders view controller: label text */
 "No external folders linked" = "No external folders linked";
 
+/* launcher overlay view: empty library title */
+"No Games" = "No Games";
+
 /* Alert title: no games for the touch layout picker */
 "No Games Available" = "No Games Available";
 
 /* zar conversion coordinator: user-visible text */
 "No Games to Convert" = "No Games to Convert";
-
-/* launcher overlay view: label text */
-"No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +." = "No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +.";
 
 /* Launcher label: no profile exists */
 "No local profile yet" = "No local profile yet";
@@ -1933,7 +1936,8 @@
 /* Fallback title of a plain alert */
 "Notice" = "Notice";
 
-/* config view controller: accessibility value
+/* config catalog: toggle value
+   config view controller: accessibility value
    Very short badge on a touch control: action is off
    Very short badge on a touch control: analog output is off */
 "Off" = "Off";
@@ -1957,7 +1961,8 @@
    Message box button */
 "OK" = "OK";
 
-/* config view controller: accessibility value */
+/* config catalog: toggle value
+   config view controller: accessibility value */
 "On" = "On";
 
 /* Alert title: first-run online features notice
@@ -1989,11 +1994,11 @@
 /* settings hub view controller: title */
 "Open Files and copy a game or content package into XeniOS storage." = "Open Files and copy a game or content package into XeniOS storage.";
 
-/* settings hub view controller: title */
-"Open Game Settings from a game tile to edit settings that apply only to that title." = "Open Game Settings from a game tile to edit settings that apply only to that title.";
-
 /* Alert button: opens the Settings app */
 "Open Settings" = "Open Settings";
+
+/* launcher overlay view: button title */
+"Open StikDebug" = "Open StikDebug";
 
 /* settings hub view controller: title */
 "Open the in-game touch editor for the currently running title." = "Open the in-game touch editor for the currently running title.";
@@ -2003,6 +2008,12 @@
 
 /* Toast: opening StikDebug before a launch */
 "Opening StikDebug to enable JIT..." = "Opening StikDebug to enable JIT...";
+
+/* settings hub view controller: hint of a search result (page, then section) */
+"Opens %1$@, %2$@." = "Opens %1$@, %2$@.";
+
+/* settings hub view controller: hint of the pointer row */
+"Opens About, where Developer Mode is turned on." = "Opens About, where Developer Mode is turned on.";
 
 /* config view controller: user-visible text */
 "Opens another settings page." = "Opens another settings page.";
@@ -2071,6 +2082,9 @@
 /* zar conversion coordinator: detail text */
 "Output: %@" = "Output: %@";
 
+/* Shader preparation estimate when it will take more than ten minutes */
+"Over 10 minutes. This is a one-time cost per game and update." = "Over 10 minutes. This is a one-time cost per game and update.";
+
 /* Slider label in the touch analog tuning screen */
 "Overall Sensitivity" = "Overall Sensitivity";
 
@@ -2122,9 +2136,6 @@
    Feedback while resizing; %@ is the name of the other control */
 "peer" = "peer";
 
-/* settings hub view controller: title */
-"Per-Game Settings" = "Per-Game Settings";
-
 /* compat report view controller: user-visible text
    settings hub view controller: title */
 "Performance" = "Performance";
@@ -2151,6 +2162,9 @@
    launcher overlay view: title */
 "Play" = "Play";
 
+/* Button that starts the game while shaders keep building */
+"Play now" = "Play now";
+
 /* compat report view controller: message */
 "Please add a short note about your experience." = "Please add a short note about your experience.";
 
@@ -2174,6 +2188,10 @@
 
 /* zar conversion coordinator: detail text */
 "Preparing file list." = "Preparing file list.";
+
+/* Shader compile indicator title while loading the cache
+   Shader preparation sheet title */
+"Preparing shaders" = "Preparing shaders";
 
 /* Title of the Presentation submenu */
 "Presentation" = "Presentation";
@@ -2299,6 +2317,7 @@
 
 /* Alert button: confirm resetting game settings
    Button resetting the touch analog tuning values
+   config view controller: swipe action title
    config view controller: title
    Layout library button that resets the layout */
 "Reset" = "Reset";
@@ -2306,14 +2325,10 @@
 /* config view controller: title */
 "Reset All Settings?" = "Reset All Settings?";
 
-/* settings hub view controller: title */
-"Reset appears in the same title settings sheet and deletes saved overrides for that title." = "Reset appears in the same title settings sheet and deletes saved overrides for that title.";
-
 /* config view controller: user-visible text */
 "Reset Failed" = "Reset Failed";
 
-/* game actions view controller: user-visible text
-   settings hub view controller: title */
+/* game actions view controller: user-visible text */
 "Reset Game Settings" = "Reset Game Settings";
 
 /* Alert title: confirm resetting game settings
@@ -2436,15 +2451,10 @@
 "Screenshots" = "Screenshots";
 
 /* settings hub view controller: title */
-"Search All Config appears at the top of each title's settings sheet." = "Search All Config appears at the top of each title's settings sheet.";
-
-/* settings hub view controller: title */
 "Search and edit every registered cvar." = "Search and edit every registered cvar.";
 
-/* settings hub view controller: title */
-"Search Overrides" = "Search Overrides";
-
-/* settings hub view controller: placeholder */
+/* config view controller: placeholder
+   settings hub view controller: placeholder */
 "Search Settings" = "Search Settings";
 
 /* Name shown for a hidden achievement */
@@ -2468,9 +2478,6 @@
 
 /* document import coordinator: user-visible text */
 "Selected file" = "Selected file";
-
-/* Toast: GOD package lacks its .data folder */
-"Selected game is missing its .data folder." = "Selected game is missing its .data folder.";
 
 /* Toast: the chosen layout is gone */
 "Selected layout is no longer available." = "Selected layout is no longer available.";
@@ -2497,9 +2504,6 @@
 
 /* config view controller: title */
 "Settings Saved" = "Settings Saved";
-
-/* settings hub view controller: user-visible text */
-"Setup" = "Setup";
 
 /* Alert title: shader cache clear result */
 "Shader Cache Cleared" = "Shader Cache Cleared";
@@ -2573,7 +2577,7 @@
 "Shows achievements for the current game." = "Shows achievements for the current game.";
 
 /* settings hub view controller: user-visible text */
-"Shows Advanced Debug and All Config under Settings > Advanced. These change emulator internals and can break games." = "Shows Advanced Debug and All Config under Settings > Advanced. These change emulator internals and can break games.";
+"Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets search find raw config settings. These change emulator internals and can break games." = "Shows Advanced Debug and Developer: All Config under Settings > Advanced, and lets search find raw config settings. These change emulator internals and can break games.";
 
 /* acknowledgements view controller: accessibility hint */
 "Shows the license." = "Shows the license.";
@@ -2597,6 +2601,9 @@
 /* config view controller: message */
 "Some title-specific overrides could not be saved. Check xenia.log." = "Some title-specific overrides could not be saved. Check xenia.log.";
 
+/* Alert title: a game or link failed */
+"Something Went Wrong" = "Something Went Wrong";
+
 /* zar conversion coordinator: user-visible text */
 "Source" = "Source";
 
@@ -2618,14 +2625,13 @@
 /* Alert message: offers to enable JIT through StikDebug automatically */
 "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing." = "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing.";
 
-/* Toast: StikDebug is unavailable */
+/* Alert message: StikDebug is unavailable */
 "StikDebug is not installed or unavailable." = "StikDebug is not installed or unavailable.";
 
-/* Toast: the game is being stopped */
+/* Status while the game is being stopped */
 "Stopping game..." = "Stopping game...";
 
-/* document import coordinator: label text
-   Toast: a stop request is already in progress */
+/* document import coordinator: label text */
 "Stopping game... Please wait." = "Stopping game... Please wait.";
 
 /* VoiceOver hint for the Exit button */
@@ -2657,6 +2663,9 @@
 /* Slider label in the touch analog tuning screen */
 "Swipe Acceleration" = "Swipe Acceleration";
 
+/* launcher overlay view: accessibility hint */
+"Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
+
 /* Row title in the touch control edit panel */
 "Tap" = "Tap";
 
@@ -2669,8 +2678,14 @@
 /* Subtitle of the in-game menu */
 "Tap anywhere to close" = "Tap anywhere to close";
 
+/* settings hub view controller: accessibility hint */
+"Tap seven times to show developer options." = "Tap seven times to show developer options.";
+
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
+
+/* settings hub view controller: user-visible text */
+"Tap Version seven times to show developer options." = "Tap Version seven times to show developer options.";
 
 /* Feedback while snapping; %@ is the name of the matched control */
 "target" = "target";
@@ -2678,8 +2693,14 @@
 /* game compatibility cells: label text */
 "Tested this game?" = "Tested this game?";
 
+/* Alert message: an incoming link was not usable */
+"That link could not be opened." = "That link could not be opened.";
+
 /* Alert message; %@ is the name of the requesting app */
 "The app \"%@\" is asking for the titles and icons of your game library." = "The app \"%@\" is asking for the titles and icons of your game library.";
+
+/* choice list view controller: footer for a value that is not in the list */
+"The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it." = "The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it.";
 
 /* Alert message: download URL is too long */
 "The download URL is too long to be safe and was rejected." = "The download URL is too long to be safe and was rejected.";
@@ -2825,7 +2846,7 @@
 /* compat report cells: label text */
 "Title ID" = "Title ID";
 
-/* Toast; %08X is the title ID in hexadecimal */
+/* Alert message; %08X is the title ID in hexadecimal */
 "Title ID %08X was not found in Library." = "Title ID %08X was not found in Library.";
 
 /* game patches view controller: detail text */
@@ -2836,9 +2857,6 @@
 
 /* game compatibility hero view: title */
 "Title ID: %08X" = "Title ID: %08X";
-
-/* settings hub view controller: title */
-"Title Overrides" = "Title Overrides";
 
 /* content management: title */
 "Title Update" = "Title Update";
@@ -2852,9 +2870,6 @@
 
 /* game content view controller: message */
 "Title update installed successfully." = "Title update installed successfully.";
-
-/* settings hub view controller: title */
-"Title-specific overrides, search, reset, and batched saves." = "Title-specific overrides, search, reset, and batched saves.";
 
 /* config view controller: label text */
 "To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them." = "To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them.";
@@ -2907,11 +2922,8 @@
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
 
-/* Toast: launch failed */
-"Unable to launch game (app context unavailable)." = "Unable to launch game (app context unavailable).";
-
-/* Toast: launch could not be queued */
-"Unable to queue launch (app context unavailable)." = "Unable to queue launch (app context unavailable).";
+/* settings hub view controller: search pointer row */
+"Turn on Developer Mode in About to edit them." = "Turn on Developer Mode in About to edit them.";
 
 /* compat report submission: message */
 "Unable to serialize the report payload." = "Unable to serialize the report payload.";
@@ -3046,11 +3058,17 @@
 /* game compatibility cells: user-visible text */
 "View on GitHub" = "View on GitHub";
 
+/* Button that waits for shaders to finish building */
+"Wait" = "Wait";
+
 /* document import coordinator: message */
 "Wait for the current import to finish, or cancel it first." = "Wait for the current import to finish, or cancel it first.";
 
 /* zar conversion coordinator: user-visible text */
 "Waiting" = "Waiting";
+
+/* Footnote of the shader preparation sheet */
+"Waiting avoids stutter at the start. You can also play now; it keeps building in the background." = "Waiting avoids stutter at the start. You can also play now; it keeps building in the background.";
 
 /* zar conversion coordinator: detail text */
 "Waiting for estimate." = "Waiting for estimate.";
@@ -3060,6 +3078,9 @@
 
 /* launcher overlay view: label text */
 "Waiting for JIT..." = "Waiting for JIT...";
+
+/* Wait button once the user chose to wait */
+"Waiting…" = "Waiting…";
 
 /* config view controller: section footer
    settings hub view controller: title */
@@ -3095,9 +3116,6 @@
 /* Alert message: first-run online features notice */
 "XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates and downloads compatibility information and cover art. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
 
-/* Alert title: shown after the app crashed in the previous session */
-"XeniOS closed unexpectedly last time" = "XeniOS closed unexpectedly last time";
-
 /* zar conversion coordinator: user-visible text */
 "XeniOS could not access the linked external folder for in-place conversion." = "XeniOS could not access the linked external folder for in-place conversion.";
 
@@ -3120,14 +3138,21 @@
 /* config view controller: label text */
 "XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023" = "XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023";
 
+/* Alert message: launch could not be queued
+   Alert message: launch failed */
+"XeniOS isn't ready yet. Try again." = "XeniOS isn't ready yet. Try again.";
+
+/* Alert message after a crash during a game */
+"XeniOS quit during a game. Share the log to help fix it." = "XeniOS quit during a game. Share the log to help fix it.";
+
+/* Alert title: shown after the app crashed in the previous session */
+"XeniOS Quit Unexpectedly" = "XeniOS Quit Unexpectedly";
+
+/* Alert message after a crash outside a game */
+"XeniOS quit unexpectedly. Share the log to help fix it." = "XeniOS quit unexpectedly. Share the log to help fix it.";
+
 /* zar conversion coordinator: user-visible text */
 "XeniOS removed the partial .zar output from the interrupted conversion." = "XeniOS removed the partial .zar output from the interrupted conversion.";
-
-/* Alert message after a crash outside a game; %@ is the app version */
-"XeniOS stopped while it was open (version %@). Sharing its log helps get this fixed." = "XeniOS stopped while it was open (version %@). Sharing its log helps get this fixed.";
-
-/* Alert message after a crash during a game; %@ is the app version */
-"XeniOS stopped while it was open during a game (version %@). Sharing its log helps get this fixed." = "XeniOS stopped while it was open during a game (version %@). Sharing its log helps get this fixed.";
 
 /* Title of a warning message box */
 "XeniOS Warning" = "XeniOS Warning";
@@ -3146,6 +3171,9 @@
 
 /* Toast shown when the device is thermally throttled */
 "Your device is warm. The game may run slower until it cools down." = "Your device is warm. The game may run slower until it cools down.";
+
+/* Shader preparation sheet while the device is hot */
+"Your device is warm. This will take longer." = "Your device is warm. This will take longer.";
 
 /* zar conversion coordinator: title */
 "ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";
