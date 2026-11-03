@@ -51,6 +51,9 @@ struct RelayStatus {
     // The lobby can't be reached. Still trying.
     kOffline,
     kRejected,
+    // Turned away as a duplicate soon after this player was in the room, so the
+    // lobby most likely still holds its old connection. Still trying.
+    kReconnecting,
     // System Link closed.
     kStopped,
   };
@@ -139,6 +142,10 @@ class RelayClient {
   static constexpr uint64_t kLobbyPingMs = 20000;
   static constexpr uint64_t kLobbyLostMs = 60000;
   static constexpr uint64_t kRejectRetryMs = 10000;
+  // The lobby drops a connection that went quiet after this long, so a
+  // duplicate this soon after leaving is this player's own.
+  static constexpr uint64_t kRejoinGraceMs = 70000;
+  static constexpr uint64_t kRejoinRetryMs = 5000;
   // A joined lobby connection is welcomed or rejected within this long.
   static constexpr uint64_t kWelcomeMs = 15000;
   static constexpr uint64_t kMaxBackoffMs = 15000;
@@ -195,6 +202,8 @@ class RelayClient {
   // Whether the peer's local addresses are worth probing: the lobby saw both
   // on one network, or without its word, both show one public address.
   bool SameNetwork(const Peer& peer) const;
+  // A duplicate join that is most likely this player's own old connection.
+  bool Reconnecting(uint64_t now_ms) const;
   std::vector<Endpoint> Candidates() const;
   std::optional<Endpoint> RelayAddress() const;
   std::string Presence(bool join) const;
@@ -214,6 +223,8 @@ class RelayClient {
   uint64_t join_sent_ms_ = 0;
   // The lobby answered this connection's join.
   bool answered_ = false;
+  // When this player was last in the room, if it was.
+  std::optional<uint64_t> last_joined_ms_;
   // The lobby's name for this player's network, when it gives one.
   std::optional<uint64_t> net_;
   uint64_t next_lobby_ping_ms_ = 0;
