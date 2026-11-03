@@ -68,6 +68,8 @@ uint8_t* MapBelowExecuteRegionLimit(size_t size, int prot) {
 uint8_t* execute_region_reservation =
     MapBelowExecuteRegionLimit(kExecuteRegionReserveSize, PROT_NONE);
 
+std::atomic<IOSJitMemory::ExternalPrepareHook> external_prepare_hook{nullptr};
+
 }  // namespace
 
 // Device detection and the external JIT preparation protocol originate in
@@ -590,8 +592,16 @@ struct IOSJitMemory::Impl {
           "broker) is no longer attached, so games can't run. Enable JIT again "
           "and keep the tool attached until the game has started.");
     }
+    const IOSJitMemory::ExternalPrepareHook hook =
+        external_prepare_hook.load(std::memory_order_acquire);
+    if (hook) {
+      hook(true);
+    }
     const uint64_t prepared =
         InvokeUniversalPrepareBreakpoint(aligned_start, aligned_length);
+    if (hook) {
+      hook(false);
+    }
     if (prepared != aligned_start) {
       XELOGE("iOS JIT: asked the debugger to prepare 0x{:X}, it prepared 0x{:X}",
              aligned_start, prepared);
@@ -697,6 +707,10 @@ struct IOSJitMemory::Impl {
 };
 
 IOSJitMemory::IOSJitMemory() : impl_(std::make_unique<Impl>()) {}
+
+void IOSJitMemory::SetExternalPrepareHook(ExternalPrepareHook hook) {
+  external_prepare_hook.store(hook, std::memory_order_release);
+}
 
 IOSJitMemory::~IOSJitMemory() {
   if (impl_->persistent) {

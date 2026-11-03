@@ -50,6 +50,10 @@ struct CompileActivity {
 
 inline CompileActivity compile_activity;
 
+// Guest frames handed to the presenter, for UI that waits for a title's first
+// picture. Bumped once per swap with an image.
+inline std::atomic<uint64_t> guest_frames_presented{0};
+
 }  // namespace metal
 }  // namespace gpu
 }  // namespace xe
