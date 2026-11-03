@@ -9,6 +9,10 @@
 
 #import "xenia/ui/ios/launcher/ios_dashboard_disc_tray_view_controller.h"
 
+#include <algorithm>
+#include <cmath>
+
+#import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
@@ -16,7 +20,24 @@ namespace {
 // A longer library gets a search field.
 constexpr NSUInteger kSearchableDiscCount = 8;
 constexpr CGFloat kIconSize = 44.0;
+// Box art is as wide as an icon, and taller.
+constexpr CGFloat kCoverHeight = 60.0;
 NSString* const kDiscCellIdentifier = @"disc";
+
+// |cover| whole, at the size a row shows it.
+UIImage* DrawCover(UIImage* cover, UIGraphicsImageRendererFormat* format) {
+  if (!cover || cover.size.width <= 0.0 || cover.size.height <= 0.0) {
+    return nil;
+  }
+  const CGFloat scale = std::min(kIconSize / cover.size.width, kCoverHeight / cover.size.height);
+  const CGSize size =
+      CGSizeMake(std::round(cover.size.width * scale), std::round(cover.size.height * scale));
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
+    [cover drawInRect:CGRectMake(0.0, 0.0, size.width, size.height)];
+  }];
+}
 
 }  // namespace
 
@@ -40,6 +61,9 @@ NSString* const kDiscCellIdentifier = @"disc";
   NSArray<XeniaDashboardDisc*>* shown_discs_;
   // Icon path to its image, or NSNull for one that didn't load.
   NSMutableDictionary<NSString*, id>* icons_;
+  // Title id to its cover, drawn small, or NSNull for a game without one.
+  NSMutableDictionary<NSNumber*, id>* covers_;
+  NSMutableSet<NSNumber*>* loading_covers_;
   void (^completion_)(NSString* path);
   UISearchController* search_controller_;
 }
@@ -51,6 +75,8 @@ NSString* const kDiscCellIdentifier = @"disc";
     discs_ = [discs copy];
     shown_discs_ = [discs_ retain];
     icons_ = [[NSMutableDictionary alloc] init];
+    covers_ = [[NSMutableDictionary alloc] init];
+    loading_covers_ = [[NSMutableSet alloc] init];
     completion_ = [completion copy];
     self.title = NSLocalizedString(@"Insert Disc", @"dashboard disc tray: title");
   }
@@ -65,6 +91,8 @@ NSString* const kDiscCellIdentifier = @"disc";
   [discs_ release];
   [shown_discs_ release];
   [icons_ release];
+  [covers_ release];
+  [loading_covers_ release];
   [super dealloc];
 }
 
@@ -143,6 +171,50 @@ NSString* const kDiscCellIdentifier = @"disc";
   return [icon isKindOfClass:[UIImage class]] ? icon : nil;
 }
 
+// The cover the library fetched for the disc's game, drawn off the main
+// thread: nil until it is, and for a game without one.
+- (UIImage*)coverForDisc:(XeniaDashboardDisc*)disc {
+  if (!disc.titleId) {
+    return nil;
+  }
+  NSNumber* key = @(disc.titleId);
+  id cover = covers_[key];
+  if (cover) {
+    return [cover isKindOfClass:[UIImage class]] ? cover : nil;
+  }
+  if ([loading_covers_ containsObject:key]) {
+    return nil;
+  }
+  [loading_covers_ addObject:key];
+  const uint32_t title_id = disc.titleId;
+  UIGraphicsImageRendererFormat* format =
+      [UIGraphicsImageRendererFormat formatForTraitCollection:self.traitCollection];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    UIImage* drawn = DrawCover(xe_cached_game_art(title_id), format);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [loading_covers_ removeObject:key];
+      covers_[key] = drawn ?: [NSNull null];
+      if (drawn) {
+        [self reconfigureDiscsWithTitleId:title_id];
+      }
+    });
+  });
+  return nil;
+}
+
+- (void)reconfigureDiscsWithTitleId:(uint32_t)title_id {
+  NSMutableArray<NSIndexPath*>* rows = [NSMutableArray array];
+  [shown_discs_ enumerateObjectsUsingBlock:^(XeniaDashboardDisc* disc, NSUInteger index,
+                                             BOOL* __unused stop) {
+    if (disc.titleId == title_id) {
+      [rows addObject:[NSIndexPath indexPathForRow:static_cast<NSInteger>(index) inSection:0]];
+    }
+  }];
+  if (rows.count) {
+    [self.tableView reconfigureRowsAtIndexPaths:rows];
+  }
+}
+
 - (void)updateEmptyState {
   if (shown_discs_.count) {
     self.contentUnavailableConfiguration = nil;
@@ -192,7 +264,8 @@ NSString* const kDiscCellIdentifier = @"disc";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kDiscCellIdentifier
                                                           forIndexPath:indexPath];
   XeniaDashboardDisc* disc = shown_discs_[static_cast<NSUInteger>(indexPath.row)];
-  UIImage* icon = [self iconForDisc:disc];
+  UIImage* cover = [self coverForDisc:disc];
+  UIImage* icon = cover ?: [self iconForDisc:disc];
 
   UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
   content.text = disc.title;
@@ -204,9 +277,10 @@ NSString* const kDiscCellIdentifier = @"disc";
   content.textToSecondaryTextVerticalPadding = 2.0;
   content.image = icon ?: [UIImage systemImageNamed:@"opticaldisc"];
   content.imageProperties.tintColor = [XeniaTheme textSecondary];
-  content.imageProperties.reservedLayoutSize = CGSizeMake(kIconSize, kIconSize);
-  content.imageProperties.maximumSize = CGSizeMake(kIconSize, kIconSize);
-  content.imageProperties.cornerRadius = icon ? 8.0 : 0.0;
+  // Every row has room for a cover, so one arriving doesn't move the rows.
+  content.imageProperties.reservedLayoutSize = CGSizeMake(kIconSize, kCoverHeight);
+  content.imageProperties.maximumSize = CGSizeMake(kIconSize, cover ? kCoverHeight : kIconSize);
+  content.imageProperties.cornerRadius = cover ? 4.0 : (icon ? 8.0 : 0.0);
   content.imageToTextPadding = 12.0;
   cell.contentConfiguration = content;
   cell.accessibilityTraits = UIAccessibilityTraitButton;
