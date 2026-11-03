@@ -731,6 +731,8 @@ class RenderTargetCache {
   // source into a 16_16_16_16 destination, allow_full64_rgb10f_rgba16_1x that
   // of a 2_10_10_10_FLOAT source. allow_samples_as_pixels admits bitwise 1x
   // copies of 4x render targets, each sample read as a pixel.
+  // allow_full64_rgb10f_rgba16_average admits the 2x two-sample and 4x
+  // four-sample averages of a 2_10_10_10_FLOAT source into 16_16_16_16.
   DirectResolveEligibility GetDirectResolveEligibility(
       const draw_util::ResolveInfo& resolve_info,
       draw_util::ResolveCopyShaderIndex copy_shader,
@@ -739,7 +741,8 @@ class RenderTargetCache {
       bool allow_full32_rgb10f_1x = false,
       bool allow_full64_rgba16_1x = false,
       bool allow_full64_rgb10f_rgba16_1x = false,
-      bool allow_samples_as_pixels = false) const;
+      bool allow_samples_as_pixels = false,
+      bool allow_full64_rgb10f_rgba16_average = false) const;
 
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected
