@@ -95,6 +95,37 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     bool needs_initial_clear() const { return needs_initial_clear_; }
     void SetNeedsInitialClear(bool needs_initial_clear) {
       needs_initial_clear_ = needs_initial_clear;
+      if (!needs_initial_clear) {
+        clear_deferred_ = false;
+        clear_depth_ = 1.0f;
+        clear_stencil_ = 0;
+        clear_color_[0] = clear_color_[1] = clear_color_[2] =
+            clear_color_[3] = 0.0f;
+      }
+    }
+    // A full resolve clear left for the next pass to perform as its clear load
+    // action. Unlike a first-bind clear, the target owns EDRAM ranges, so
+    // anything reading its backing first has to encode the clear.
+    bool clear_deferred() const { return clear_deferred_; }
+    void DeferDepthClear(float depth, uint32_t stencil) {
+      needs_initial_clear_ = true;
+      clear_deferred_ = true;
+      clear_depth_ = depth;
+      clear_stencil_ = stencil;
+    }
+    void DeferColorClear(const float color[4]) {
+      needs_initial_clear_ = true;
+      clear_deferred_ = true;
+      for (uint32_t i = 0; i < 4; ++i) {
+        clear_color_[i] = color[i];
+      }
+    }
+    // The values the clear load action writes.
+    float clear_depth() const { return clear_depth_; }
+    uint32_t clear_stencil() const { return clear_stencil_; }
+    MTL::ClearColor clear_color() const {
+      return MTL::ClearColor(clear_color_[0], clear_color_[1], clear_color_[2],
+                             clear_color_[3]);
     }
     // Changes whenever the backing's content may have changed: draws that may
     // write it, clears, transfers into it, backing swaps. Values come from one
@@ -117,6 +148,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     uint32_t temporary_sort_index_ = UINT32_MAX;
     uint64_t content_generation_ = 0;
     bool needs_initial_clear_ = true;
+    bool clear_deferred_ = false;
+    float clear_depth_ = 1.0f;
+    uint32_t clear_stencil_ = 0;
+    float clear_color_[4] = {};
   };
 
  public:
@@ -178,6 +213,22 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // after a render encoder has been created successfully from the descriptor.
   void ConsumeRenderPassDescriptorClears(
       MTL::RenderPassDescriptor* pass_descriptor);
+  // Sets the store actions the descriptor left undecided, right before the
+  // command processor ends the encoder: DontCare for the attachments a
+  // resolve is about to clear whole without reading, Store for the rest.
+  void FinalizeRenderPassStoreActions(
+      MTL::RenderCommandEncoder* encoder,
+      MTL::RenderPassDescriptor* pass_descriptor);
+  // Whether the descriptor's depth clear is a deferred resolve clear, whose
+  // value has to stay as the descriptor has it.
+  bool HasDeferredDepthClear(MTL::RenderPassDescriptor* pass_descriptor) const {
+    return pass_descriptor &&
+           pass_descriptor == cached_render_pass_descriptor_ &&
+           current_depth_target_ && current_depth_target_->clear_deferred() &&
+           pass_descriptor->depthAttachment() &&
+           pass_descriptor->depthAttachment()->loadAction() ==
+               MTL::LoadActionClear;
+  }
 
   bool IsRenderPassDescriptorDirty() const {
     return render_pass_descriptor_dirty_;
@@ -687,6 +738,23 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* transfers, const uint64_t* clear_values,
       const Transfer::Rectangle& rectangle, MTL::CommandBuffer* cmd);
+  // Encodes the clears deferred to the next pass's load actions, for anything
+  // about to read the backings or write them outside a whole-attachment pass.
+  // There must be no render encoder open on cmd.
+  void PerformDeferredClears(MTL::CommandBuffer* cmd = nullptr);
+  // Whether another color key's view shares the target's allocation.
+  bool IsColorStorageShared(const MetalRenderTarget* render_target) const;
+  // Before a resolve ends the guest's pass: the attachments of that pass the
+  // resolve clears whole and doesn't read, for FinalizeRenderPassStoreActions.
+  void PlanResolveStoreActions(const draw_util::ResolveInfo& resolve_info);
+  std::vector<MetalRenderTarget*> dead_store_render_targets_;
+  bool AnyDeferredClear(const RenderTarget* render_target) const {
+    return render_target &&
+           static_cast<const MetalRenderTarget*>(render_target)
+               ->clear_deferred();
+  }
+  // Keys of the render targets that may have a deferred clear.
+  std::vector<RenderTargetKey> deferred_clear_targets_;
 
   bool PerformTransfersAndResolveClears(
       uint32_t render_target_count, RenderTarget* const* render_targets,

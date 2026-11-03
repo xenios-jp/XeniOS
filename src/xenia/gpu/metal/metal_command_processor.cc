@@ -2628,6 +2628,10 @@ void MetalCommandProcessor::ShutdownContext() {
   dxil_binder_.ResetUploadCaches();
   // End any active render encoder before shutdown
   if (current_render_encoder_) {
+    if (render_target_cache_) {
+      render_target_cache_->FinalizeRenderPassStoreActions(
+          current_render_encoder_, current_render_pass_descriptor_);
+    }
     current_render_encoder_->endEncoding();
     // Don't release yet - wait until command buffer completes
   }
@@ -6324,8 +6328,11 @@ bool MetalCommandProcessor::IssueDrawDxil(
 bool MetalCommandProcessor::IssueCopy() {
   SCOPE_profile_cpu_f("gpu");
   // Finish any in-flight rendering so render target contents are visible to
-  // resolve logic.
-  EndRenderEncoder();
+  // resolve logic. The render target cache ends the pass itself, once it
+  // knows which of its attachments the resolve reads and clears.
+  if (!render_target_cache_) {
+    EndRenderEncoder();
+  }
   MTL::CommandBuffer* copy_command_buffer = EnsureCommandBuffer();
   if (!copy_command_buffer) {
     XELOGE("MetalCommandProcessor::IssueCopy: failed to get command buffer");
@@ -6770,6 +6777,10 @@ void MetalCommandProcessor::EndRenderEncoder() {
     CloseQuerySegment();
   }
   render_encoder_shared_memory_hazards_.End();
+  if (render_target_cache_) {
+    render_target_cache_->FinalizeRenderPassStoreActions(
+        current_render_encoder_, current_render_pass_descriptor_);
+  }
   current_render_encoder_->endEncoding();
   if (render_encoder_has_zpd_visibility_) {
     zpd_visibility_pool_->EndRenderPass(current_command_buffer_);
@@ -6905,7 +6916,10 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   }
 
   // Detect Reverse-Z usage and update clear depth.
-  if (register_file_) {
+  // A resolve clear deferred to this pass brings its own clear depth.
+  if (register_file_ &&
+      !(render_target_cache_ &&
+        render_target_cache_->HasDeferredDepthClear(pass_descriptor))) {
     auto depth_control = register_file_->Get<reg::RB_DEPTHCONTROL>();
     bool reverse_z =
         depth_control.z_enable &&
