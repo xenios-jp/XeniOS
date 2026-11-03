@@ -557,7 +557,7 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
                  "loop issues in games like Halo 3, ODST, Reach, etc.",
                  true);
   AddBoolSetting(memory.items, "clear_memory_page_state", "Clear Memory Page State",
-                 "Clear memory page tracking state between frames.", true);
+                 "Clear memory page tracking state between frames.", false);
   AddBoolSetting(memory.items, "submit_on_primary_buffer_end", "Submit on Primary Buffer End",
                  "Submit command buffers at primary buffer end boundaries.", true);
   PushIfNotEmpty(sections, std::move(memory));
@@ -567,9 +567,10 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
   AddBoolSetting(jit.items, "a64_enable_host_guest_stack_synchronization",
                  "A64 Stack Synchronization",
                  "ARM64-only compatibility path that keeps host and guest stacks "
-                 "synchronized across calls. Leave this off unless a game specifically "
-                 "needs it to boot or unwind correctly.",
-                 false);
+                 "synchronized across calls. Fixes crashes in games that use "
+                 "setjmp/longjmp, at a slight performance cost. Leave this on unless "
+                 "you are diagnosing a problem.",
+                 true);
   PushIfNotEmpty(sections, std::move(jit));
 
   IOSConfigSection broker;
@@ -628,7 +629,7 @@ static std::vector<IOSConfigSection> BuildDiagnosticsSections() {
                    "Log Verbosity",
                    "Controls how much goes into xenia.log. Higher levels help debug issues "
                    "but increase log size and background overhead.",
-                   1, {{"Errors Only", 0}, {"Warnings", 1}, {"Info", 2}, {"Debug", 3}});
+                   2, {{"Errors Only", 0}, {"Warnings", 1}, {"Info", 2}, {"Debug", 3}});
   AddActionSetting(diagnostics.items, IOSConfigAction::kViewRecentLog, "View Live Log",
                    "Open a live-updating xenia.log viewer so you can capture boot failures "
                    "without Xcode.");
@@ -752,13 +753,13 @@ static std::vector<IOSConfigSection> BuildDebugSettingsSectionsRaw() {
   scaling.title = "Resolution Scaling / Resolve";
   AddBoolSetting(scaling.items, "draw_resolution_scaled_texture_offsets",
                  "draw_resolution_scaled_texture_offsets",
-                 "Adjust texture offsets when draw resolution scaling is active.", false);
+                 "Adjust texture offsets when draw resolution scaling is active.", true);
   AddBoolSetting(scaling.items, "readback_resolve_half_pixel_offset",
                  "readback_resolve_half_pixel_offset",
                  "Use centered sampling for scaled readback resolves.", false);
   AddBoolSetting(scaling.items, "resolve_resolution_scale_fill_half_pixel_offset",
                  "resolve_resolution_scale_fill_half_pixel_offset",
-                 "Fill half-pixel offset when resolution scale changes.", false);
+                 "Fill half-pixel offset when resolution scale changes.", true);
   PushIfNotEmpty(sections, std::move(scaling));
 
   IOSConfigSection shader;
@@ -776,16 +777,16 @@ static std::vector<IOSConfigSection> BuildDebugSettingsSectionsRaw() {
   edram.title = "EDRAM / Draw Heuristics";
   AddBoolSetting(edram.items, "execute_unclipped_draw_vs_on_cpu",
                  "execute_unclipped_draw_vs_on_cpu",
-                 "Execute unclipped draw vertex shader work on the CPU.", false);
+                 "Execute unclipped draw vertex shader work on the CPU.", true);
   AddBoolSetting(edram.items, "execute_unclipped_draw_vs_on_cpu_for_psi_render_backend",
                  "execute_unclipped_draw_vs_on_cpu_for_psi_render_backend",
-                 "CPU unclipped-draw path for pixel-shader interlock render backends.", false);
+                 "CPU unclipped-draw path for pixel-shader interlock render backends.", true);
   AddBoolSetting(edram.items, "execute_unclipped_draw_vs_on_cpu_with_scissor",
                  "execute_unclipped_draw_vs_on_cpu_with_scissor",
                  "Use CPU unclipped-draw handling with scissor state.", false);
   AddBoolSetting(edram.items, "mrt_edram_used_range_clamp_to_min",
                  "mrt_edram_used_range_clamp_to_min",
-                 "Clamp MRT EDRAM used range to minimum bounds.", false);
+                 "Clamp MRT EDRAM used range to minimum bounds.", true);
   PushIfNotEmpty(sections, std::move(edram));
 
   IOSConfigSection depth;
@@ -797,7 +798,7 @@ static std::vector<IOSConfigSection> BuildDebugSettingsSectionsRaw() {
                  "Round float24 depth values.", false);
   AddBoolSetting(depth.items, "depth_transfer_not_equal_test",
                  "depth_transfer_not_equal_test",
-                 "Use not-equal testing for depth transfers.", false);
+                 "Use not-equal testing for depth transfers.", true);
   PushIfNotEmpty(sections, std::move(depth));
 
   IOSConfigSection primitive;
