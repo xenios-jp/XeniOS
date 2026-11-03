@@ -432,6 +432,9 @@
 /* system software view controller: status */
 "Checking…" = "Checking…";
 
+/* dashboard disc tray: prompt text */
+"Choose a game from the library to put in the drive." = "Choose a game from the library to put in the drive.";
+
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -1479,6 +1482,9 @@
 /* Slider label in the touch analog tuning screen */
 "Input Smoothing" = "Input Smoothing";
 
+/* dashboard disc tray: prompt title */
+"Insert a Disc" = "Insert a Disc";
+
 /* Alert button: install
    Fallback alert button: install */
 "Install" = "Install";
@@ -1658,6 +1664,9 @@
 
 /* Alert message: edit a control's label */
 "Leave blank to use the default label." = "Leave blank to use the default label.";
+
+/* dashboard disc tray: option for no disc */
+"Leave Empty" = "Leave Empty";
 
 /* zar conversion coordinator: title */
 "Leave the original game in place alongside the new .zar archive." = "Leave the original game in place alongside the new .zar archive.";
@@ -2859,6 +2868,9 @@
 
 /* Row title in the touch control edit panel */
 "Then drag" = "Then drag";
+
+/* dashboard disc tray: prompt text, empty library */
+"There are no games in the library to put in the drive." = "There are no games in the library to put in the drive.";
 
 /* Fallback for the current version text in the update notice */
 "this build" = "this build";

@@ -71,6 +71,11 @@ bool RemoveIOSSystemSoftware();
 void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games);
 std::vector<Emulator::LibraryTitle> IOSDashboardLibraryTitles();
 
+// The dashboard's Open Tray: asks which of the library's discs to put in the
+// drive, or none. Waits for the answer, so it can't be asked on the main
+// thread, and gives none there.
+std::filesystem::path PickIOSDashboardDisc();
+
 #ifdef __OBJC__
 // Starts access to every linked library folder, which the dashboard's games
 // are in, for as long as the dashboard runs.

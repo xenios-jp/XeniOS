@@ -739,6 +739,9 @@ bool EmulatorAppIOS::OnInitialize() {
     return discs;
   });
 
+  // The dashboard's Open Tray offers the library's discs.
+  emulator_->set_disc_picker(xe::ui::PickIOSDashboardDisc);
+
   // iOS title-to-title relaunch flow:
   // 1. XamLoaderLaunchTitle invokes this callback with relaunch parameters.
   // 2. We queue the resolved target and preserve launch metadata in cvars.

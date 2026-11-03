@@ -19,6 +19,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/kernel/title_id_utils.h"
+#include "xenia/kernel/xam/xam_ui_ios.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/vfs/xex_metadata.h"
@@ -37,8 +38,14 @@ namespace ui {
 
 namespace {
 
+struct LibraryDisc {
+  std::string label;
+  std::filesystem::path path;
+};
+
 std::mutex library_titles_mutex;
 std::vector<Emulator::LibraryTitle> library_titles;
+std::vector<LibraryDisc> library_discs;
 
 dispatch_queue_t LibraryQueue() {
   static dispatch_queue_t queue =
@@ -147,7 +154,8 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
     }
     std::vector<Emulator::LibraryTitle> titles;
     titles.reserve(games_owner->size());
-    for (const auto& game : *games_owner) {
+    std::vector<LibraryDisc> discs;
+    for (auto& game : *games_owner) {
       // The dashboard doesn't list itself, nor anything without a title.
       if (!game.title_id || kernel::IsSystemTitle(game.title_id) || game.title.empty()) {
         continue;
@@ -168,15 +176,54 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
         }
       }
       titles.push_back(std::move(title));
+      // Every copy of every disc can go in the tray.
+      EnsureDiscoveredGameDiscList(&game);
+      for (const auto& disc : game.discs) {
+        discs.push_back(
+            {game.discs.size() > 1 ? fmt::format("{} ({})", game.title, disc.label) : game.title,
+             disc.path});
+      }
     }
     std::lock_guard<std::mutex> lock(library_titles_mutex);
     library_titles = std::move(titles);
+    library_discs = std::move(discs);
   });
 }
 
 std::vector<Emulator::LibraryTitle> IOSDashboardLibraryTitles() {
   std::lock_guard<std::mutex> lock(library_titles_mutex);
   return library_titles;
+}
+
+std::filesystem::path PickIOSDashboardDisc() {
+  std::vector<LibraryDisc> discs;
+  {
+    std::lock_guard<std::mutex> lock(library_titles_mutex);
+    discs = library_discs;
+  }
+  std::vector<std::string> options;
+  options.reserve(discs.size() + 1);
+  for (const auto& disc : discs) {
+    options.push_back(disc.label);
+  }
+  std::string title, text;
+  @autoreleasepool {
+    title = NSLocalizedString(@"Insert a Disc", @"dashboard disc tray: prompt title").UTF8String;
+    text = (discs.empty()
+                ? NSLocalizedString(@"There are no games in the library to put in the drive.",
+                                    @"dashboard disc tray: prompt text, empty library")
+                : NSLocalizedString(@"Choose a game from the library to put in the drive.",
+                                    @"dashboard disc tray: prompt text"))
+               .UTF8String;
+    options.push_back(
+        NSLocalizedString(@"Leave Empty", @"dashboard disc tray: option for no disc").UTF8String);
+  }
+  // ChooseOption gives -1 on the main thread, as for a cancel.
+  const int choice = kernel::xam::ios::ChooseOption(title, text, options);
+  if (choice < 0 || static_cast<size_t>(choice) >= discs.size()) {
+    return {};
+  }
+  return discs[choice].path;
 }
 
 NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess() {
