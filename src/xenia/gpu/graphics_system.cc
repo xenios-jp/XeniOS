@@ -117,7 +117,9 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                             internal_display_resolution_entries[8].first);
     OVERRIDE_PERSIST_uint32(internal_display_resolution_y,
                             internal_display_resolution_entries[8].second);
-    config::SaveConfig();
+    // Only these changed; a full save would rewrite every other key.
+    config::SaveConfigValues(
+        {"internal_display_resolution_x", "internal_display_resolution_y"});
     xe::FatalError(fmt::format(
         "Invalid custom resolution specified: {}x{}\n"
         "Width must be between 1-1920.\nHeight must be between 1-1080.",
