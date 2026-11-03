@@ -177,6 +177,10 @@ class Emulator {
   bool is_title_open() const { return title_id_.has_value(); }
   // Whether a relaunch or reset is between titles.
   bool is_relaunching() const { return relaunching_; }
+  // Guest threads halted by a host fault since the title launched.
+  uint32_t halted_fault_count() const {
+    return halted_fault_count_.load(std::memory_order_relaxed);
+  }
 
   uint32_t main_thread_id();
 
@@ -660,6 +664,8 @@ class Emulator {
   bool paused_;
   bool restoring_;
   std::atomic<bool> relaunching_{false};
+  // Bumped by the exception handler, so only atomic operations.
+  std::atomic<uint32_t> halted_fault_count_{0};
   bool boot_animation_requested_ = false;
   // Held across a launch and a whole relaunch so title teardown waits for a
   // launch to finish. Recursive, as a relaunch launches under it.

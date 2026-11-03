@@ -752,6 +752,7 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path,
                               std::string_view package_path) {
   // A relaunch must not tear down what this mounts into and loads from.
   std::lock_guard<std::recursive_mutex> launch_lock(launch_mutex_);
+  halted_fault_count_.store(0, std::memory_order_relaxed);
   // Remember for relaunch fallback
   if (!path.empty()) {
     last_launch_path_ = path;
@@ -2270,6 +2271,7 @@ bool Emulator::ExceptionCallback(Exception* ex) {
           fiber_self->handle(), fiber_self->thread_id(), code_name,
           fault_detail, ex->pc(), module_offset, guest_lr, host_sp,
           host_sp % 16);
+      halted_fault_count_.fetch_add(1, std::memory_order_relaxed);
       DivertToThunk(ex, &HaltCrashedFiberThunk);
       return true;
     }
@@ -2359,6 +2361,7 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   // Halt the crashed thread without unwinding the rest of the emulator. Host
   // mode suspends self. Fiber mode diverts the resume PC to a halt thunk, since
   // calling Suspend here would yield from inside the exception handler.
+  halted_fault_count_.fetch_add(1, std::memory_order_relaxed);
   if (current_thread->fiber()) {
     DivertToThunk(ex, &HaltCrashedFiberThunk);
     return true;

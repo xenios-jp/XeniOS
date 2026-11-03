@@ -49,6 +49,7 @@
 #include "xenia/ui/ios/shared/ios_crash_reporting.h"
 #include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
+#include "xenia/ui/ios/shared/ios_session_stats.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/window.h"
@@ -1810,6 +1811,9 @@ void EmulatorAppIOS::OnDestroy() {
     pause_queue_ = nullptr;
   }
   xe_ios_idle_timer_release(@"game");
+  if (emulator_) {
+    xe_ios_session_stats_note_halted_faults(emulator_->halted_fault_count());
+  }
   xe_ios_session_note_game_running(NO);
   emulator_.reset();
   window_.reset();
@@ -1861,6 +1865,9 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
   // |failure_reason|, when given, is a short user-facing sentence (no host paths)
   // shown by the UI before it returns to the library.
   auto notify_game_exited = [this, &game_exit_notified](const char* failure_reason = nullptr) {
+    if (emulator_) {
+      xe_ios_session_stats_note_halted_faults(emulator_->halted_fault_count());
+    }
     xe_ios_session_note_game_running(NO);
     if (game_exit_notified) {
       return;
@@ -2030,6 +2037,9 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     }
 
     auto teardown_title_session = [this]() {
+      // Faults that halted a guest thread leave the game running, so the
+      // session would not otherwise show them.
+      xe_ios_session_stats_note_halted_faults(emulator_->halted_fault_count());
       xe_ios_session_note_game_running(NO);
       // Resume first: ResetTitle joins the GPU worker and terminates guest
       // threads, and neither can finish while held at a pause point.

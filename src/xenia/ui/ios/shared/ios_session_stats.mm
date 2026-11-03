@@ -99,6 +99,8 @@ std::atomic<uint32_t> g_frames{0};
 std::atomic<uint32_t> g_gaps{0};
 std::atomic<uint32_t> g_long_frames{0};
 std::atomic<uint32_t> g_long_frames_compiling{0};
+// Guest faults the emulator halted the thread for (a frozen game, no crash).
+std::atomic<uint32_t> g_halted_faults{0};
 std::atomic<uint64_t> g_active_ticks{0};
 // From the start of the session to the game's first frame; 0 until then.
 std::atomic<uint64_t> g_first_frame_ticks{0};
@@ -167,6 +169,9 @@ NSMutableDictionary* RecordLocked(NSString* end) {
     } else if (stored) {
       record[@"storedPipelines"] = @(stored);
     }
+  }
+  if (const uint32_t halted = g_halted_faults.load(std::memory_order_relaxed)) {
+    record[@"haltedFaults"] = @(halted);
   }
   record[@"gpuErrors"] =
       @(xe::gpu::metal::command_buffer_failures.load(std::memory_order_relaxed) -
@@ -271,6 +276,7 @@ void xe_ios_session_stats_begin(void) {
     g_gaps.store(0, std::memory_order_relaxed);
     g_long_frames.store(0, std::memory_order_relaxed);
     g_long_frames_compiling.store(0, std::memory_order_relaxed);
+    g_halted_faults.store(0, std::memory_order_relaxed);
     g_active_ticks.store(0, std::memory_order_relaxed);
     g_first_frame_ticks.store(0, std::memory_order_relaxed);
     g_begin_ticks = mach_absolute_time();
@@ -345,6 +351,12 @@ void xe_ios_session_stats_discard(void) {
 
 BOOL xe_ios_session_stats_running(void) {
   return g_running.load(std::memory_order_relaxed);
+}
+
+void xe_ios_session_stats_note_halted_faults(uint32_t count) {
+  if (g_running.load(std::memory_order_relaxed)) {
+    g_halted_faults.store(count, std::memory_order_relaxed);
+  }
 }
 
 void xe_ios_session_stats_note_guest_frame(void) {
