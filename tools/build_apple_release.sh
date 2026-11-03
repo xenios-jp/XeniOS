@@ -17,7 +17,7 @@ Options:
   --out DIR            Output directory (default: scratch/artifacts)
   --config NAME        checked|debug|release|valgrind (default: release)
   --ios-build-dir DIR  Configured iOS CMake build tree (default: build-ios)
-  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.1)
+  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.2)
   --build-number NUM   Build number override (defaults to git commit count)
   --channel NAME       release|preview (default: release)
   --stage NAME         alpha|beta|rc|stable (default: stable)
@@ -48,7 +48,7 @@ Notes:
   -G "Ninja Multi-Config" -DCMAKE_SYSTEM_NAME=iOS ...); this script builds
   its xenia-app target.
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
-- If no matching tag is available, the marketing version falls back to 2.1.
+- If no matching tag is available, the marketing version falls back to 2.2.
 - Public release stage defaults to stable.
 - Official build numbers default to git rev-list --count HEAD.
 - The crash symbol map for the diagnostics Worker is written to
@@ -91,7 +91,7 @@ trim_string() {
 }
 
 default_marketing_version() {
-  printf '%s' "2.1"
+  printf '%s' "2.2"
 }
 
 validate_marketing_version() {
