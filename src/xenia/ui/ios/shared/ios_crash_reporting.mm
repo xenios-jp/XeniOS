@@ -10,6 +10,7 @@
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -63,6 +64,8 @@ NSMutableDictionary* g_state = nil;
 std::filesystem::path g_log_path;
 BOOL g_session_started = NO;
 BOOL g_fatal_in_progress = NO;
+// Set on a thread that hit FatalError after another thread already had.
+thread_local bool t_fatal_secondary = false;
 
 // Main thread only.
 BOOL g_offered_this_launch = NO;
@@ -71,6 +74,11 @@ NSString* ToNS(std::string_view text) {
   NSString* result = [[[NSString alloc] initWithBytes:text.data()
                                                length:text.size()
                                              encoding:NSUTF8StringEncoding] autorelease];
+  if (!result) {
+    result = [[[NSString alloc] initWithBytes:text.data()
+                                       length:text.size()
+                                     encoding:NSISOLatin1StringEncoding] autorelease];
+  }
   return result ? result : @"";
 }
 
@@ -349,9 +357,15 @@ void HookNoteFatalError(std::string_view message) {
   @autoreleasepool {
     NSString* text = ToNS(message);
     if (text.length > kMaxNoteChars) {
-      text = [text substringToIndex:kMaxNoteChars];
+      const NSRange cut = [text rangeOfComposedCharacterSequenceAtIndex:kMaxNoteChars - 1];
+      text = [text substringToIndex:NSMaxRange(cut)];
     }
     std::lock_guard<std::mutex> lock(StateMutex());
+    if (g_fatal_in_progress) {
+      // Keep the first error's message; this thread waits in the message box hook.
+      t_fatal_secondary = true;
+      return;
+    }
     g_fatal_in_progress = YES;
     if (g_state) {
       g_state[@"state"] = kStateFatal;
@@ -362,6 +376,19 @@ void HookNoteFatalError(std::string_view message) {
 }
 
 void HookShowMessageBox(xe::SimpleMessageBoxType type, std::string_view message) {
+  if (t_fatal_secondary) {
+    // The first fataling thread owns the alert and the exit; exiting here would
+    // close its alert while the user reads it.
+    for (;;) {
+      if ([NSThread isMainThread]) {
+        @autoreleasepool {
+          CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+        }
+      } else {
+        sleep(3600);
+      }
+    }
+  }
   @autoreleasepool {
     BOOL fatal;
     {
@@ -432,6 +459,7 @@ void HookOpenFileExplorer(const std::filesystem::path& path) {
       }
       NSURLComponents* components = [[[NSURLComponents alloc] init] autorelease];
       components.scheme = @"shareddocuments";
+      components.host = @"";  // shareddocuments:///path; unverified, needs a device check
       components.path = resolved;
       NSURL* url = components.URL;
       if (!url) {
@@ -725,15 +753,12 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
     }
     summary_text = text;
   }
-  g_offered_this_launch = YES;
-  {
-    // Offered once per crash, whatever the user picks.
+  if (![[NSFileManager defaultManager]
+          fileExistsAtPath:ToNS(PreviousLogPath(CurrentLogPath()).string())]) {
+    g_offered_this_launch = YES;
     std::lock_guard<std::mutex> lock(StateMutex());
     [g_state removeObjectForKey:@"pending"];
     WriteStateLocked();
-  }
-  if (![[NSFileManager defaultManager]
-          fileExistsAtPath:ToNS(PreviousLogPath(CurrentLogPath()).string())]) {
     return;
   }
 
@@ -751,7 +776,16 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
                                             xe_ios_present_log_share(weak_presenter, nil, YES);
                                           }]];
   alert.preferredAction = alert.actions.lastObject;
-  [presenter presentViewController:alert animated:YES completion:nil];
+  // Offered once per crash, whatever the user picks, but only counted once the
+  // alert is really on screen; a failed present is retried at the next appearance.
+  [presenter presentViewController:alert
+                          animated:YES
+                        completion:^{
+                          g_offered_this_launch = YES;
+                          std::lock_guard<std::mutex> lock(StateMutex());
+                          [g_state removeObjectForKey:@"pending"];
+                          WriteStateLocked();
+                        }];
 }
 
 void xe_ios_present_log_share(UIViewController* presenter, UIView* source_view,

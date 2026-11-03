@@ -178,6 +178,37 @@ static std::string StripIOSPaths(const std::string_view text) {
       if (replaced) {
         continue;
       }
+      // File Provider and external roots: the next component is an account,
+      // provider or volume name (often an e-mail address or a personal label).
+      struct Root {
+        std::string_view marker;
+        std::string_view placeholder;
+      };
+      static constexpr Root kRoots[] = {{"/CloudStorage/", "<cloud>"},
+                                        {"/Mobile Documents/", "<cloud>"},
+                                        {"/Volumes/", "<volume>"}};
+      for (const Root& root : kRoots) {
+        if (text.compare(i, root.marker.size(), root.marker) != 0) {
+          continue;
+        }
+        size_t end = i + root.marker.size();
+        const size_t name_start = end;
+        while (end < text.size() && text[end] != '/' && text[end] != '"' &&
+               text[end] != '\'' && !std::isspace(static_cast<unsigned char>(text[end]))) {
+          ++end;
+        }
+        if (end == name_start) {
+          break;
+        }
+        stripped += root.marker;
+        stripped += root.placeholder;
+        i = end - 1;
+        replaced = true;
+        break;
+      }
+      if (replaced) {
+        continue;
+      }
       if (IsUuidAt(text, i + 1) &&
           (i + 37 >= text.size() || !IsHexChar(text[i + 37]))) {
         stripped += "/<uuid>";
