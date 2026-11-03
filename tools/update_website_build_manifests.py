@@ -32,6 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macos-x86_64-download-url")
     parser.add_argument("--macos-universal-dmg")
     parser.add_argument("--macos-universal-download-url")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an iOS slot with a lower build number, or the release slot with a non-stable stage",
+    )
     return parser.parse_args()
 
 
@@ -197,6 +202,33 @@ def upsert_history_entry(history: list[dict[str, Any]], entry: dict[str, Any], c
     history.append(history_entry)
 
 
+def build_number_key(value: Any) -> tuple[int, ...] | None:
+    """Orders build numbers such as "11283" and "11283.2"; None when unparseable."""
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return None
+
+
+def check_ios_slot(existing: Any, entry: dict[str, Any], channel: str) -> None:
+    """Refuses to regress the iOS slot unless --force is given."""
+    if channel == "release" and entry["stage"] != "stable":
+        raise SystemExit(
+            f"refusing to put the {entry['stage']} build {entry['buildNumber']} in the ios release slot: "
+            "the release slot holds stable builds only (use --force to override)"
+        )
+    if not isinstance(existing, dict) or existing.get("buildNumber") in (None, ""):
+        return
+    old_key = build_number_key(existing["buildNumber"])
+    new_key = build_number_key(entry["buildNumber"])
+    if old_key is None or new_key is None or new_key < old_key:
+        raise SystemExit(
+            f"refusing to replace ios {channel} build {existing['buildNumber']} with build "
+            f"{entry['buildNumber']}: the new build number is lower or can't be compared "
+            "(use --force to override)"
+        )
+
+
 def main() -> int:
     args = parse_args()
     metadata = parse_metadata_file(Path(args.metadata_file).expanduser().resolve())
@@ -299,6 +331,11 @@ def main() -> int:
         )))
 
     release_manifest["generatedAt"] = now_iso()
+    if not args.force:
+        for platform, entry in entries:
+            if platform == "ios":
+                check_ios_slot(release_manifest["platforms"][platform].get(args.channel), entry, args.channel)
+
     for platform, entry in entries:
         release_manifest["platforms"][platform][args.channel] = entry
 
