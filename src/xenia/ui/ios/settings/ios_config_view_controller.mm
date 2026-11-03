@@ -1850,12 +1850,21 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   [self.view endEditing:YES];
   [self.tableView endEditing:YES];
   const std::vector<IOSConfigSection> sections_for_save = [self sectionsForSaving];
-  BOOL saved = game_title_id_
-                   ? (ApplyIOSConfigSectionsToGameConfig(sections_for_save, game_title_id_,
-                                                         dirty_keys_)
-                          ? YES
-                          : NO)
-                   : (ApplyIOSConfigSections(sections_for_save, &dirty_keys_) ? YES : NO);
+  BOOL saved = NO;
+  if (game_title_id_) {
+    saved = ApplyIOSConfigSectionsToGameConfig(sections_for_save, game_title_id_, dirty_keys_) ? YES
+                                                                                              : NO;
+  } else {
+    // The running game's threads read these cvars, so assign them while it is paused.
+    bool applied = false;
+    auto apply = [&]() { applied = ApplyIOSConfigSections(sections_for_save, &dirty_keys_); };
+    if (app_context_) {
+      app_context_->ApplyLiveSettings(apply);
+    } else {
+      apply();
+    }
+    saved = applied ? YES : NO;
+  }
   hasPendingChanges_ = NO;
   dirty_keys_.clear();
   saveButton_.enabled = NO;
