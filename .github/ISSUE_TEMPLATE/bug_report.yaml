@@ -11,8 +11,6 @@ body:
 
         Only file issues specific to Xenia Edge. If you're using Xenia Master, Canary, Netplay, etc. file the issue on those bug trackers.
 
-        DO NOT post issues with the macOS port, it's experimental and many games don't work. Once it reaches higher compatibility it will be better supported, for now it is best effort only.
-        
         If the issue is for a specific game, ONLY file it here if it is a regression in a particular version of Xenia Edge. This means that
         YOU need to verify it does not occur in some earlier Xenia Edge build or works correctly in Xenia Canary or another Xenia fork.
         If none of these apply proceed to https://github.com/xenia-canary/game-compatibility#game-compatibility and file the game-specific
@@ -29,8 +27,6 @@ body:
       - label: I've read the [FAQ](https://github.com/xenia-canary/xenia-canary/wiki/FAQ).
         required: true
       - label: The Xenia build used is from a Xenia Edge branch. (not Canary/master/netplay/pull requests, etc)
-        required: true
-      - label: The issue is on Windows or Linux, and NOT macOS which is currently unsupported.
         required: true
       - label: This issue isn't for tech support (help with Xenia).
         required: true
