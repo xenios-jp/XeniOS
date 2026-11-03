@@ -34,6 +34,9 @@ Options:
   --random-ios-bundle-id
                        Force a random iOS bundle identifier for this package
   --ios-min VERSION    iOS minimum version (default: 26.0)
+  --diagnostics-url URL
+                       https endpoint the app sends crash reports and
+                       performance statistics to (default: none, nothing is sent)
   --attestation-key-id ID
                        Optional key id embedded in the attestation payload
   --print-metadata     Print resolved version/build/channel/attestation data and exit
@@ -48,6 +51,8 @@ Notes:
 - If no matching tag is available, the marketing version falls back to 2.1.
 - Public release stage defaults to stable.
 - Official build numbers default to git rev-list --count HEAD.
+- The crash symbol map for the diagnostics Worker is written to
+  OUT/symbols/<UUID>.map.gz; upload it with the release.
 USAGE
 }
 
@@ -578,6 +583,7 @@ attestation_key="${XENIOS_BUILD_ATTESTATION_KEY:-}"
 attestation_key_id="${XENIOS_BUILD_ATTESTATION_KEY_ID:-ci-hmac-v1}"
 ios_bundle_id="${XENIOS_IOS_BUNDLE_ID:-}"
 force_random_ios_bundle_id=0
+diagnostics_url="${XENIOS_DIAGNOSTICS_URL:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -616,6 +622,8 @@ while [ $# -gt 0 ]; do
       print_metadata_only=1; shift;;
     --ios-min)
       ios_min="${2:-}"; shift 2;;
+    --diagnostics-url)
+      diagnostics_url="${2:-}"; shift 2;;
     -h|--help)
       usage; exit 0;;
     *)
@@ -654,6 +662,9 @@ elif [ -z "$ios_bundle_id" ]; then
   fi
 fi
 validate_bundle_identifier "$ios_bundle_id" || die "invalid iOS bundle identifier: $ios_bundle_id"
+if [ -n "$diagnostics_url" ] && [[ ! "$diagnostics_url" =~ ^https://[^/[:space:]]+(/[^[:space:]]*)?$ ]]; then
+  die "the diagnostics URL must be https: $diagnostics_url"
+fi
 
 if [ -n "$attestation_key" ]; then
   [ -n "$release_version" ] || die "official attestation requires a marketing version (tag the repo or pass --version)"
@@ -684,6 +695,9 @@ if [ -n "$stamp_bundle" ]; then
   stamp_bundle_stage_metadata "$stamp_bundle" "$release_stage"
   stamp_bundle_attestation "$stamp_bundle" "$stamp_platform" "$build_channel" "$release_version" \
     "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
+  if [ -n "$diagnostics_url" ] && [ "$stamp_platform" = "ios" ]; then
+    plist_set_string "$(bundle_plist_path "$stamp_bundle")" "XeniOSDiagnosticsURL" "$diagnostics_url"
+  fi
   exit 0
 fi
 
@@ -711,6 +725,7 @@ echo "Build channel: $build_channel"
 echo "Release stage: $release_stage"
 echo "iOS min: $ios_min"
 echo "iOS bundle ID: $ios_bundle_id"
+echo "Diagnostics: ${diagnostics_url:-off (no endpoint)}"
 if [ -n "$attestation_key" ]; then
   echo "Attestation: enabled (${attestation_key_id})"
 else
@@ -727,6 +742,11 @@ app_bundle="$(find_first_app "$ios_dir")" || die "iOS app not found in $ios_dir"
 
 stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
 stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
+if [ -n "$diagnostics_url" ]; then
+  plist_set_string "$(bundle_plist_path "$app_bundle")" "XeniOSDiagnosticsURL" "$diagnostics_url"
+fi
+# The map the diagnostics Worker symbolicates this build's crash frames with.
+"$root/tools/ios/make_symbol_map.sh" "$app_bundle" "$out_dir/symbols"
 # Not compile_bundle_icon_assets: in this tree the CMake build already compiled the whole
 # asset catalog (alternate icons, launch color, settings images) into the bundle, and
 # recompiling only the app icon would drop the rest.
