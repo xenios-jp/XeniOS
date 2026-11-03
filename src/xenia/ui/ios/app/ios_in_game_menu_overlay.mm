@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/app/ios_in_game_menu_overlay.h"
 
+#import <GameController/GameController.h>
+
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -503,6 +505,14 @@
                  animated:(BOOL)animated
                completion:(void (^)(BOOL finished))completion {
   self.userInteractionEnabled = visible;
+  if (visible) {
+    BOOL has_controller = NO;
+    for (GCController* controller in GCController.controllers) {
+      has_controller = has_controller || controller.extendedGamepad != nil;
+    }
+    _subtitleLabel.text = has_controller ? @"Press B or tap anywhere to close"
+                                         : @"Tap anywhere to close";
+  }
   if (visible == !self.hidden) {
     if (completion) {
       completion(YES);
