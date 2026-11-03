@@ -37,6 +37,8 @@ inline const std::vector<CvarAlias>& GetCvarAliases() {
       {"use_old_decoder", "true", "xma_decoder", "old"},
       {"readback_resolve", "fast", "readback_resolve", "true"},
       {"readback_resolve", "all", "readback_resolve", "true"},
+      {"readback_resolve", "some", "readback_resolve", "true"},
+      {"readback_resolve", "full", "readback_resolve", "true"},
       {"readback_resolve", "none", "readback_resolve", "false"},
       {"render_target_path_d3d12", "rtv", "render_target_path", "performance"},
       {"render_target_path_d3d12", "rov", "render_target_path", "accuracy"},

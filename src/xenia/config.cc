@@ -229,6 +229,33 @@ void MigrateLegacyCvars(const toml::table& config) {
   }
 }
 
+// Finds a cvar's value in a parsed config. Besides its current "category.name",
+// this looks where older files kept it: in a table stored under the literal
+// dotted key ("GPU.Debug", which toml::path never walks; XeniOS wrote per-game
+// files that way before 2.2), and in [GPU] for the cvars that moved from there
+// to [GPU.Debug] or [Logging] (cvar names are unique, so no other key matches).
+const toml::node* FindConfigNode(const toml::table& root,
+                                 const cvar::IConfigVar& var) {
+  const std::string& category = var.category();
+  const std::string& name = var.name();
+  if (const auto node = root.at_path(toml::path(category + "." + name))) {
+    return node.node();
+  }
+  if (category.find('.') != std::string::npos) {
+    if (const auto* table = root.get_as<toml::table>(category)) {
+      if (const auto* node = table->get(name)) {
+        return node;
+      }
+    }
+  }
+  if (category == "GPU.Debug" || category == "Logging") {
+    if (const auto* table = root.get_as<toml::table>("GPU")) {
+      return table->get(name);
+    }
+  }
+  return nullptr;
+}
+
 void ReadConfig(const std::filesystem::path& file_path,
                 bool update_if_no_version_stored) {
   if (!cvar::ConfigVars) {
@@ -248,12 +275,9 @@ void ReadConfig(const std::filesystem::path& file_path,
   defaults_date_cvar->SetConfigValue(0);
   for (auto& it : *cvar::ConfigVars) {
     auto config_var = static_cast<cvar::IConfigVar*>(it.second);
-    toml::path config_key =
-        toml::path(config_var->category() + "." + config_var->name());
-
-    const auto config_key_node = config.at_path(config_key);
-    if (config_key_node) {
-      config_var->LoadConfigValue(config_key_node.node());
+    if (const toml::node* config_key_node =
+            FindConfigNode(config, *config_var)) {
+      config_var->LoadConfigValue(config_key_node);
     }
   }
 
@@ -385,18 +409,15 @@ uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
     size_t override_count = 0;
     for (auto& it : *cvar::ConfigVars) {
       auto config_var = static_cast<cvar::IConfigVar*>(it.second);
-      toml::path config_key =
-          toml::path(config_var->category() + "." + config_var->name());
-
-      const auto config_key_node = config.at_path(config_key);
-      if (config_key_node) {
-        if (!LoadAliasedGameConfigValue(config_var, *config_key_node.node())) {
-          config_var->LoadGameConfigValue(config_key_node.node());
+      if (const toml::node* config_key_node =
+              FindConfigNode(config, *config_var)) {
+        if (!LoadAliasedGameConfigValue(config_var, *config_key_node)) {
+          config_var->LoadGameConfigValue(config_key_node);
         }
         override_count++;
 
         std::stringstream ss;
-        ss << config_key_node;
+        ss << toml::default_formatter{*config_key_node};
         XELOGI("  {} = {}", config_var->name(), ss.str());
       }
     }
@@ -720,10 +741,8 @@ void SaveConfigValues(const std::set<std::string>& names) {
   }
   WriteConfig([&names, &on_disk](const cvar::IConfigVar& var) {
     if (names.find(var.name()) == names.end()) {
-      const auto node =
-          on_disk.at_path(toml::path(var.category() + "." + var.name()));
-      if (node) {
-        if (auto value = var.FormatConfigValue(node.node())) {
+      if (const toml::node* node = FindConfigNode(on_disk, var)) {
+        if (auto value = var.FormatConfigValue(node)) {
           return *value;
         }
       }
