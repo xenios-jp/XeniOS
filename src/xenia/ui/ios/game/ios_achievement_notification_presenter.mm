@@ -40,6 +40,7 @@ UIImage* ImageFromPayload(const xe::ui::AchievementNotificationPayload& payload)
   dispatch_once(&once, ^{
     icon_cache = [[NSCache alloc] init];
     icon_cache.countLimit = 32;
+    icon_cache.totalCostLimit = 8 * 1024 * 1024;
   });
 
   NSString* cache_key = [NSString stringWithFormat:@"%08X:%u", payload.title_id,
@@ -53,14 +54,11 @@ UIImage* ImageFromPayload(const xe::ui::AchievementNotificationPayload& payload)
     NSData* data = [NSData dataWithBytes:payload.icon_data.data() length:payload.icon_data.size()];
     UIImage* image = [UIImage imageWithData:data];
     if (image) {
-      [icon_cache setObject:image forKey:cache_key];
+      [icon_cache setObject:image forKey:cache_key cost:payload.icon_data.size()];
       return image;
     }
   }
-  if (@available(iOS 13.0, *)) {
-    return [UIImage systemImageNamed:@"trophy.fill"];
-  }
-  return nil;
+  return [UIImage systemImageNamed:@"trophy.fill"];
 }
 
 xe::ui::AchievementNotificationPayload MakeOverflowPayload(NSUInteger count) {
@@ -457,6 +455,7 @@ ToastVerticalPosition VerticalPosition(uint8_t position_id) {
     return;
   }
   UIView* banner = (UIView*)timer.userInfo;
+  [dismissal_timer_ invalidate];
   [dismissal_timer_ release];
   dismissal_timer_ = nil;
   if (banner != active_banner_) {
