@@ -16,13 +16,10 @@ re-signs it with a provisioning profile that permits the requested entitlements.
 The source .app bundle is not modified.
 
 The app must carry the keys a device install checks (MinimumOSVersion,
-CFBundleSupportedPlatforms, DTPlatformName) and a stamped build number; the
-CMake build writes them (tools/build/stamp_ios_version.py).
+CFBundleSupportedPlatforms, DTPlatformName); Info_ios.plist has them.
 
 Options:
   --bundle-id ID      Override CFBundleIdentifier in the copied Payload app
-  --allow-dev-build   Package a development build (unstamped, or version 0.0.0
-                      because no release tag was reachable)
 EOF
 }
 
@@ -41,13 +38,8 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 fi
 
 bundle_identifier=""
-allow_dev_build=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --allow-dev-build)
-      allow_dev_build=1
-      shift
-      ;;
     --bundle-id)
       bundle_identifier="${2:-}"
       [ -n "$bundle_identifier" ] || die "missing value for --bundle-id"
@@ -92,14 +84,6 @@ for key in MinimumOSVersion CFBundleSupportedPlatforms DTPlatformName; do
 done
 build_number="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$app_info")"
 short_version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app_info")"
-if [ "$allow_dev_build" -eq 0 ]; then
-  if ! [ "$build_number" -gt 1 ] 2>/dev/null; then
-    die "CFBundleVersion is $build_number, an unstamped development build (--allow-dev-build to package it anyway)"
-  fi
-  if [ "$short_version" = "0.0.0" ]; then
-    die "version is 0.0.0: no release tag (v*) is reachable from the built commit (--allow-dev-build to package it anyway)"
-  fi
-fi
 
 ipa_dir="$(cd "$(dirname "$ipa_out")" && pwd)"
 ipa_base="$(basename "$ipa_out")"
