@@ -172,6 +172,26 @@ void PruneLocked() {
   }
 }
 
+}  // namespace
+
+// Reports go to the one endpoint and nowhere else: a redirect (a captive
+// portal, an Access login page) is not followed, so its 3xx reaches the upload
+// code as a failure to retry later.
+@interface XeniaDiagnosticsSessionDelegate : NSObject <NSURLSessionTaskDelegate>
+@end
+
+@implementation XeniaDiagnosticsSessionDelegate
+- (void)URLSession:(NSURLSession*)session
+                          task:(NSURLSessionTask*)task
+    willPerformHTTPRedirection:(NSHTTPURLResponse*)response
+                    newRequest:(NSURLRequest*)request
+             completionHandler:(void (^)(NSURLRequest*))completionHandler {
+  completionHandler(nil);
+}
+@end
+
+namespace {
+
 NSURLSession* Session() {
   static NSURLSession* session = [] {
     NSURLSessionConfiguration* configuration =
@@ -182,7 +202,11 @@ NSURLSession* Session() {
     configuration.timeoutIntervalForResource = 60;
     configuration.HTTPShouldSetCookies = NO;
     configuration.URLCache = nil;
-    return [[NSURLSession sessionWithConfiguration:configuration] retain];
+    XeniaDiagnosticsSessionDelegate* delegate =
+        [[[XeniaDiagnosticsSessionDelegate alloc] init] autorelease];
+    return [[NSURLSession sessionWithConfiguration:configuration
+                                          delegate:delegate
+                                     delegateQueue:nil] retain];
   }();
   return session;
 }
@@ -225,11 +249,12 @@ void SendNextLocked(NSArray<NSString*>* names, NSUInteger index, NSURL* url) {
                                        ? static_cast<NSHTTPURLResponse*>(response).statusCode
                                        : 0;
           dispatch_async(Queue(), ^{
-            // Accepted, or rejected for good (malformed, too large): either
-            // way it's done. Anything else, including a proxy or captive
-            // portal answering for the server: later.
-            const bool done = (status >= 200 && status < 300) || status == 400 || status == 413 ||
-                              status == 415 || status == 422;
+            // Accepted (the Worker answers 204), or rejected for good
+            // (malformed, too large): either way it's done. Anything else,
+            // including a 200 from a proxy or captive portal answering for the
+            // server, or a redirect: later.
+            const bool done = status == 204 || status == 400 || status == 413 || status == 415 ||
+                              status == 422;
             if (!done) {
               XELOGW("iOS: Diagnostics upload failed ({}), retrying later", status);
               NoteUploadFailedLocked();
