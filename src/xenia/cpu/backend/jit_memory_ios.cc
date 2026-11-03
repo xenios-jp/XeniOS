@@ -499,6 +499,20 @@ struct IOSJitMemory::Impl {
     return (actual_bits & desired_bits) == desired_bits;
   }
 
+  // The prepare and detach requests are brk instructions that the attached JIT
+  // tool handles. A tool that sets CS_DEBUGGED and then detaches leaves no one to
+  // handle them, and the brk becomes a SIGTRAP crash with no message.
+  static bool IsDebuggerAttached() {
+    struct kinfo_proc info = {};
+    size_t size = sizeof(info);
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    if (sysctl(mib, 4, &info, &size, nullptr, 0) != 0 || size < sizeof(info)) {
+      // Unknown: keep requesting, as before this check existed.
+      return true;
+    }
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
+  }
+
   // Returns the region the debugger prepared.
   static uint64_t InvokeUniversalPrepareBreakpoint(uintptr_t aligned_start,
                                                    size_t aligned_length) {
@@ -520,6 +534,10 @@ struct IOSJitMemory::Impl {
             expected, true, std::memory_order_acq_rel)) {
       return true;
     }
+    if (!IsDebuggerAttached()) {
+      XELOGW("iOS JIT: the JIT tool already detached; no detach request needed");
+      return true;
+    }
     InvokeUniversalDetachBreakpoint();
     return true;
   }
@@ -531,6 +549,12 @@ struct IOSJitMemory::Impl {
                                           aligned_length) ||
         !aligned_length) {
       return true;
+    }
+    if (!IsDebuggerAttached()) {
+      xe::FatalError(
+          "JIT is not available: the tool that enabled it (StikDebug or a JIT "
+          "broker) is no longer attached, so games can't run. Enable JIT again "
+          "and keep the tool attached until the game has started.");
     }
     const uint64_t prepared =
         InvokeUniversalPrepareBreakpoint(aligned_start, aligned_length);
