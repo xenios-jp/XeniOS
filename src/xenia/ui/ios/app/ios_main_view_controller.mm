@@ -555,7 +555,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                            selector:@selector(onExternalLibraryDidChange:)
                                                name:kXeniaIOSExternalLibraryDidChangeNotification
                                              object:nil];
-  [self refreshImportedGames];
+  // Show the last scan's result at once (read from disk, no folder walk), then
+  // rescan in the background.
+  discovered_games_ = xe::ui::LoadCachedIOSGameLibrary();
+  [self finishImportedGamesRefresh];
+  [self refreshImportedGamesAsync];
 
   // Start polling for JIT.
   [self startJITPoll];
@@ -1587,7 +1591,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [self presentLibraryAddSheetFromView:nil];
       break;
     case XeniaSettingsHubActionRefreshLibrary:
-      [self refreshImportedGames];
+      [self refreshImportedGamesAsync];
       break;
     case XeniaSettingsHubActionClearCurrentGameShaderCache:
       [self confirmClearCurrentGameShaderCache];
@@ -3350,7 +3354,10 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   UIAlertController* alert =
       [UIAlertController alertControllerWithTitle:@"Add to Library"
-                                          message:nil
+                                          message:@"Import Copy duplicates the game into "
+                                                  @"XeniOS storage and needs that much free "
+                                                  @"space. For very large images, Link External "
+                                                  @"Folder plays them in place without copying."
                                    preferredStyle:UIAlertControllerStyleActionSheet];
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;

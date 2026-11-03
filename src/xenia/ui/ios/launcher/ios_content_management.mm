@@ -320,6 +320,8 @@ bool xe_copy_directory_recursive(const std::filesystem::path& source,
 
 bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
+                                       XeniaIOSFileTransfer* transfer,
+                                       XeniaIOSFileTransferProgress progress,
                                        std::string* error_message_out) {
   if (error_message_out) {
     *error_message_out = "";
@@ -328,6 +330,7 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
   const std::filesystem::path package_directory =
       destination_root / xe_content_package_directory_name(package_info.path);
   std::error_code ec;
+  const bool package_directory_existed = std::filesystem::exists(package_directory, ec);
   std::filesystem::create_directories(package_directory, ec);
   if (ec) {
     if (error_message_out) {
@@ -335,28 +338,62 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
     }
     return false;
   }
+  XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:destination_root.c_str()]);
 
   const std::filesystem::path destination_file = package_directory / package_info.path.filename();
-  std::filesystem::copy_file(package_info.path, destination_file,
-                             std::filesystem::copy_options::overwrite_existing, ec);
-  if (ec) {
-    if (error_message_out) {
-      *error_message_out = "Failed copying package: " + ec.message();
-    }
-    return false;
-  }
-
+  // The package file is first so it is renamed into place last, after its
+  // ".data" sidecar folder.
+  NSMutableArray<NSArray<NSString*>*>* pairs = [NSMutableArray
+      arrayWithObject:@[
+        [NSString stringWithUTF8String:package_info.path.c_str()],
+        [NSString stringWithUTF8String:destination_file.c_str()]
+      ]];
   if (HasContentSidecarDataDirectory(package_info.path)) {
     std::filesystem::path source_sidecar = package_info.path;
     source_sidecar += ".data";
     std::filesystem::path destination_sidecar = destination_file;
     destination_sidecar += ".data";
-    if (!xe_copy_directory_recursive(source_sidecar, destination_sidecar, error_message_out)) {
-      return false;
-    }
+    [pairs addObject:@[
+      [NSString stringWithUTF8String:source_sidecar.c_str()],
+      [NSString stringWithUTF8String:destination_sidecar.c_str()]
+    ]];
   }
 
+  transfer.replacesExisting = YES;
+  NSError* copy_error = nil;
+  if (![transfer copyPairs:pairs progress:progress error:&copy_error]) {
+    if (!package_directory_existed) {
+      std::filesystem::remove_all(package_directory, ec);
+    }
+    if (error_message_out) {
+      *error_message_out = copy_error.localizedDescription
+                               ? std::string([copy_error.localizedDescription UTF8String])
+                               : std::string("Failed copying package.");
+    }
+    return false;
+  }
   return true;
+}
+
+void xe_exclude_installed_content_from_backup() {
+  @autoreleasepool {
+    const std::filesystem::path user_root =
+        xe_get_ios_documents_path() / "content" / "0000000000000000";
+    std::error_code ec;
+    std::filesystem::directory_iterator it(user_root, ec);
+    std::filesystem::directory_iterator end;
+    for (; !ec && it != end; it.increment(ec)) {
+      if (!it->is_directory(ec)) {
+        continue;
+      }
+      for (const char* type_directory : {"000B0000", "00000002"}) {
+        const std::filesystem::path root = it->path() / type_directory;
+        if (std::filesystem::is_directory(root, ec)) {
+          XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:root.c_str()]);
+        }
+      }
+    }
+  }
 }
 
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
@@ -386,6 +423,7 @@ bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_
     return false;
   }
 
+  XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:destination_root.c_str()]);
   return true;
 }
 

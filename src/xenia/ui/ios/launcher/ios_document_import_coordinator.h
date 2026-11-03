@@ -59,6 +59,10 @@
 - (instancetype)initWithHost:(id<XeniaIOSDocumentImportCoordinatorHost>)host;
 - (void)presentGameImportPicker;
 - (void)presentExternalLibraryFolderPicker;
+// A file opened from Files or AirDrop (scene:openURLContexts:). Takes the
+// security scope, offers Import (copy, or an instant rename for an Inbox copy)
+// or Link Folder, and deletes the Documents/Inbox copy afterwards.
+- (void)handleOpenedDocumentURL:(NSURL*)url openInPlace:(BOOL)openInPlace;
 - (void)presentTouchLayoutImportPickerFromViewController:(UIViewController*)presenter;
 
 @end

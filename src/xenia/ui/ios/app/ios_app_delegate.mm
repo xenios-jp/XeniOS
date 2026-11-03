@@ -236,7 +236,6 @@ DECLARE_path(log_file);
     return NO;
   }
 
-  [vc refreshImportedGames];
   [vc refreshSignedInProfileUI];
   if (vc.appContext) {
     vc.statusLabel.text = @"Initializing profile services...";

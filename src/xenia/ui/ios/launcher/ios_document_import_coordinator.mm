@@ -16,7 +16,10 @@
 #include "xenia/base/logging.h"
 
 #import "xenia/ui/ios/launcher/ios_content_management.h"
+#import "xenia/ui/ios/launcher/ios_file_transfer.h"
 #import "xenia/ui/ios/launcher/ios_game_library.h"
+#import "xenia/ui/ios/launcher/ios_game_library_store.h"
+#import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
@@ -42,6 +45,7 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
 @implementation XeniaIOSDocumentImportCoordinator {
   id<XeniaIOSDocumentImportCoordinatorHost> _host;
   IOSDocumentImportMode _mode;
+  BOOL _importInProgress;
 }
 
 - (instancetype)initWithHost:(id<XeniaIOSDocumentImportCoordinatorHost>)host {
@@ -168,119 +172,254 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
 }
 
 - (void)importGameAtURL:(NSURL*)url {
+  [self importGameAtURL:url removeSourceWhenDone:NO];
+}
+
+// Imports a game, DLC or title-update file. The copy runs on a background queue
+// behind a progress alert with Cancel; the security scope stays open until it
+// has finished. `removeSource` deletes the source afterwards (an Inbox copy of
+// a file opened from Files or AirDrop).
+- (void)importGameAtURL:(NSURL*)url removeSourceWhenDone:(BOOL)removeSource {
+  if (_importInProgress) {
+    [_host documentImportCoordinatorPresentAlertWithTitle:@"Import In Progress"
+                                                  message:@"Wait for the current import to "
+                                                          @"finish, or cancel it first."];
+    return;
+  }
+  _importInProgress = YES;
   BOOL access_granted = [url startAccessingSecurityScopedResource];
-  XELOGI("iOS: User selected game file: {} (security-scoped: {})", [url.path UTF8String],
-         access_granted ? "yes" : "no");
+  XELOGI("iOS: User selected game file: {} (security-scoped: {})",
+         xe::strip_pii(url.path ? [url.path UTF8String] : ""), access_granted ? "yes" : "no");
 
-  void (^import_selected_game)(void) = ^{
-    NSError* import_error = nil;
-    std::filesystem::path imported_path =
-        [_host documentImportCoordinatorImportGameAtURL:url error:&import_error];
-    if (access_granted) {
-      [url stopAccessingSecurityScopedResource];
+  const BOOL can_install_title_updates = [_host documentImportCoordinatorCanInstallTitleUpdates];
+  XeniaIOSFileTransfer* transfer = [[XeniaIOSFileTransfer alloc] init];
+  XeniaIOSTransferProgressAlert* progress_alert = [[XeniaIOSTransferProgressAlert
+      presentFrom:[_host documentImportCoordinatorPresenter]
+            title:@"Importing"
+          message:[NSString stringWithFormat:@"%@\nFor very large files, Link Folder plays them "
+                                             @"in place without copying.",
+                                             url.lastPathComponent ?: @"Selected file"]
+    cancelHandler:^{
+      [transfer cancel];
+    }] retain];
+
+  enum class Outcome { kImported, kUpdateInstalled, kFailed, kCancelled };
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    Outcome outcome = Outcome::kFailed;
+    std::filesystem::path imported_path;
+    NSString* message = nil;
+    @autoreleasepool {
+      const std::filesystem::path selected_path([url.path UTF8String]);
+      const BOOL likely_direct_game = xe::ui::IsISOPath(selected_path) ||
+                                      xe::ui::IsZarPath(selected_path) ||
+                                      xe::ui::IsDefaultXexPath(selected_path);
+      IOSSelectedContentPackage package_info;
+      const BOOL has_content_package_info =
+          !likely_direct_game &&
+          xe_read_selected_content_package(selected_path, &package_info, nullptr);
+      const BOOL is_launchable_package =
+          has_content_package_info && xe::ui::IsIOSLaunchableContentType(package_info.content_type);
+      BOOL handled = NO;
+      if (can_install_title_updates && !likely_direct_game && !is_launchable_package) {
+        // The emulator copies and installs the update itself: check space up
+        // front, and the Cancel button no longer applies.
+        NSError* space_error = nil;
+        if (!XeniaIOSCheckFreeSpace(ToNSString((xe_get_ios_documents_path() / "content").string()),
+                                    XeniaIOSItemByteSize(url.path), &space_error)) {
+          outcome = Outcome::kFailed;
+          message = space_error.localizedDescription;
+          handled = YES;
+        } else {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [progress_alert setCancelAvailable:NO];
+            [progress_alert updateCopiedBytes:0 totalBytes:0];
+          });
+          std::string status;
+          bool not_title_update = false;
+          const bool success =
+              [_host documentImportCoordinatorInstallTitleUpdateAtPath:selected_path
+                                                                status:&status
+                                                        notTitleUpdate:&not_title_update];
+          if (success) {
+            outcome = Outcome::kUpdateInstalled;
+            message = status.empty() ? @"Installed title update." : ToNSString(status);
+            handled = YES;
+          } else if (!not_title_update) {
+            outcome = Outcome::kFailed;
+            message = status.empty() ? @"Title update installation failed." : ToNSString(status);
+            handled = YES;
+          }
+        }
+      }
+      if (!handled) {
+        NSError* import_error = nil;
+        imported_path = xe::ui::ImportGameIntoIOSLibrary(
+            url, transfer,
+            ^(uint64_t copied, uint64_t total) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [progress_alert updateCopiedBytes:copied totalBytes:total];
+              });
+            },
+            &import_error);
+        if (!imported_path.empty()) {
+          outcome = Outcome::kImported;
+        } else if (transfer.cancelled) {
+          outcome = Outcome::kCancelled;
+        } else {
+          outcome = Outcome::kFailed;
+          message = import_error.localizedDescription ?: @"Failed to import selected game.";
+        }
+      }
+      if (removeSource) {
+        // Gone already if the import was a rename.
+        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+      }
+      [message retain];
     }
 
-    if (imported_path.empty()) {
-      NSString* message = import_error.localizedDescription ?: @"Failed to import selected game.";
-      [_host documentImportCoordinatorPresentAlertWithTitle:@"Import Failed" message:message];
-      return;
-    }
-
-    NSString* imported_name = ToNSString(imported_path.filename().string());
-    [self refreshImportedGamesWithScannedGamesCompletion:^(
-              const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {
-      [self
-          promptForZarConversionAfterAddingPath:imported_path
-                                          games:scanned_games
-                                externalLibrary:NO
-                                     completion:^(BOOL conversionChosen) {
-                                       if (conversionChosen) {
-                                         return;
-                                       }
-                                       if ([_host documentImportCoordinatorJITAcquired]) {
-                                         [_host
-                                             documentImportCoordinatorLaunchGameAtPath:imported_path
-                                                                           displayName:
-                                                                               imported_name];
-                                       } else {
-                                         [_host documentImportCoordinatorSetStatusText:
-                                                    [NSString stringWithFormat:
-                                                                  @"Imported %@. Waiting for JIT.",
-                                                                  imported_name]];
-                                       }
-                                     }];
-    }];
-  };
-
-  const std::filesystem::path selected_path([url.path UTF8String]);
-  const BOOL likely_direct_game = xe::ui::IsISOPath(selected_path) ||
-                                  xe::ui::IsZarPath(selected_path) ||
-                                  xe::ui::IsDefaultXexPath(selected_path);
-  IOSSelectedContentPackage package_info;
-  const BOOL has_content_package_info =
-      xe_read_selected_content_package(selected_path, &package_info, nullptr);
-  const BOOL is_launchable_package =
-      has_content_package_info && xe::ui::IsIOSLaunchableContentType(package_info.content_type);
-  const BOOL should_try_title_update_install =
-      [_host documentImportCoordinatorCanInstallTitleUpdates] && !likely_direct_game &&
-      !is_launchable_package;
-  if (should_try_title_update_install) {
-    [_host documentImportCoordinatorSetStatusText:@"Checking content package..."];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      std::string status;
-      bool not_title_update = false;
-      bool success = [_host documentImportCoordinatorInstallTitleUpdateAtPath:selected_path
-                                                                       status:&status
-                                                               notTitleUpdate:&not_title_update];
-
-      dispatch_async(dispatch_get_main_queue(), ^{
-        if (success) {
-          if (access_granted) {
-            [url stopAccessingSecurityScopedResource];
-          }
-          NSString* message = status.empty() ? @"Installed title update." : ToNSString(status);
-          [_host documentImportCoordinatorSetStatusText:message];
-          [_host documentImportCoordinatorRefreshImportedGames];
-          [_host documentImportCoordinatorPresentAlertWithTitle:@"Title Update Installed"
-                                                        message:message];
-          return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (access_granted) {
+        [url stopAccessingSecurityScopedResource];
+      }
+      _importInProgress = NO;
+      [progress_alert dismissWithCompletion:^{
+        switch (outcome) {
+          case Outcome::kCancelled:
+            [_host documentImportCoordinatorSetStatusText:@"Import cancelled."];
+            break;
+          case Outcome::kFailed:
+            [_host documentImportCoordinatorPresentAlertWithTitle:@"Import Failed"
+                                                          message:message ?: @"Import failed."];
+            break;
+          case Outcome::kUpdateInstalled:
+            [_host documentImportCoordinatorSetStatusText:message];
+            [_host documentImportCoordinatorRefreshImportedGames];
+            [_host documentImportCoordinatorPresentAlertWithTitle:@"Title Update Installed"
+                                                          message:message];
+            break;
+          case Outcome::kImported: {
+            NSString* imported_name = ToNSString(imported_path.filename().string());
+            const std::filesystem::path launch_path = imported_path;
+            [self refreshImportedGamesWithScannedGamesCompletion:^(
+                      const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {
+              [self promptForZarConversionAfterAddingPath:launch_path
+                                                    games:scanned_games
+                                          externalLibrary:NO
+                                               completion:^(BOOL conversionChosen) {
+                                                 [self launchOrWaitForImportedPath:launch_path
+                                                                       displayName:imported_name
+                                                                  conversionChosen:conversionChosen];
+                                               }];
+            }];
+          } break;
         }
-
-        if (!not_title_update) {
-          if (access_granted) {
-            [url stopAccessingSecurityScopedResource];
-          }
-          NSString* message =
-              status.empty() ? @"Title update installation failed." : ToNSString(status);
-          [_host documentImportCoordinatorSetStatusText:message];
-          [_host documentImportCoordinatorPresentAlertWithTitle:@"Installation Failed"
-                                                        message:message];
-          return;
-        }
-
-        import_selected_game();
-      });
+        [message release];
+        [progress_alert release];
+        [transfer release];
+      }];
     });
+  });
+}
+
+- (void)launchOrWaitForImportedPath:(const std::filesystem::path&)path
+                        displayName:(NSString*)displayName
+                   conversionChosen:(BOOL)conversionChosen {
+  if (conversionChosen) {
+    return;
+  }
+  if ([_host documentImportCoordinatorJITAcquired]) {
+    [_host documentImportCoordinatorLaunchGameAtPath:path displayName:displayName];
+  } else {
+    [_host documentImportCoordinatorSetStatusText:
+               [NSString stringWithFormat:@"Imported %@. Waiting for JIT.", displayName]];
+  }
+}
+
+// A file opened from Files, AirDrop or another app. With open-in-place the URL
+// points at the original (security scoped); otherwise it is a private copy in
+// Documents/Inbox that nothing else cleans up.
+- (void)handleOpenedDocumentURL:(NSURL*)url openInPlace:(BOOL)openInPlace {
+  if (!url.fileURL) {
+    return;
+  }
+  const BOOL is_inbox_copy = xe::ui::IsPathInIOSDocumentsInbox(
+      std::filesystem::path([url.path UTF8String]));
+  XELOGI("iOS: Opened document {} (in place: {}, inbox copy: {})",
+         xe::strip_pii(url.path ? [url.path UTF8String] : ""), openInPlace ? "yes" : "no",
+         is_inbox_copy ? "yes" : "no");
+  if ([_host documentImportCoordinatorGameStopInProgress]) {
+    [_host documentImportCoordinatorSetStatusText:@"Stopping game... Please wait."];
+    if (is_inbox_copy) {
+      [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    }
     return;
   }
 
-  import_selected_game();
+  // Hold the scope while the sheet is up; the import takes its own.
+  BOOL access_granted = [url startAccessingSecurityScopedResource];
+  NSString* name = url.lastPathComponent ?: @"file";
+  UIAlertController* sheet = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:@"Open \"%@\"", name]
+                       message:openInPlace
+                                   ? @"Import copies it into XeniOS (needs the file's size in "
+                                     @"free storage). Link Folder plays it from its current "
+                                     @"folder without copying."
+                                   : @"Import it into the XeniOS library."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [url retain];
+  void (^finish)(void) = ^{
+    if (access_granted) {
+      [url stopAccessingSecurityScopedResource];
+    }
+  };
+  [sheet addAction:[UIAlertAction
+                       actionWithTitle:@"Import"
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 // The import takes its own scope; drop ours after.
+                                 [self importGameAtURL:url removeSourceWhenDone:is_inbox_copy];
+                                 finish();
+                                 [url release];
+                               }]];
+  if (openInPlace && !is_inbox_copy) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Link Folder..."
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction* action) {
+                                              finish();
+                                              [url release];
+                                              [self presentExternalLibraryFolderPicker];
+                                            }]];
+  }
+  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(__unused UIAlertAction* action) {
+                                            finish();
+                                            if (is_inbox_copy) {
+                                              [[NSFileManager defaultManager] removeItemAtURL:url
+                                                                                        error:nil];
+                                            }
+                                            [url release];
+                                          }]];
+  [[_host documentImportCoordinatorPresenter] presentViewController:sheet
+                                                           animated:YES
+                                                         completion:nil];
 }
 
 - (void)linkExternalLibraryAtURL:(NSURL*)url {
   XELOGI("iOS library action: linking external folder path='{}'",
-         url.path ? [url.path UTF8String] : "");
+         xe::strip_pii(url.path ? [url.path UTF8String] : ""));
   NSError* error = nil;
   if (![_host documentImportCoordinatorLinkExternalLibraryAtURL:url error:&error]) {
     XELOGI("iOS library action: external folder link failed path='{}' error='{}'",
-           url.path ? [url.path UTF8String] : "",
-           error.localizedDescription ? [error.localizedDescription UTF8String] : "unknown");
+           xe::strip_pii(url.path ? [url.path UTF8String] : ""),
+           error.localizedDescription ? xe::strip_pii([error.localizedDescription UTF8String])
+                                      : "unknown");
     NSString* message = error.localizedDescription ?: @"Failed to link selected folder.";
     [_host documentImportCoordinatorPresentAlertWithTitle:@"Link Failed" message:message];
     return;
   }
   XELOGI("iOS library action: external folder linked path='{}'",
-         url.path ? [url.path UTF8String] : "");
+         xe::strip_pii(url.path ? [url.path UTF8String] : ""));
 
   NSString* folder_name = url.lastPathComponent.length > 0 ? url.lastPathComponent : url.path;
   [_host documentImportCoordinatorSetStatusText:[NSString

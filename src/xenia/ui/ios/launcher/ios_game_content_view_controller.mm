@@ -19,6 +19,7 @@
 #include "xenia/xbox.h"
 
 #import "xenia/ui/ios/launcher/ios_content_management.h"
+#import "xenia/ui/ios/launcher/ios_file_transfer.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
@@ -79,7 +80,14 @@
 
 - (void)refreshLauncherContentState {
   if (host_) {
-    [host_ refreshImportedGames];
+    // The scan walks every linked folder; keep it off the main thread when the
+    // host offers the async form (the installed-content list below doesn't
+    // depend on it).
+    if ([(id)host_ respondsToSelector:@selector(refreshImportedGamesAsync)]) {
+      [(id)host_ performSelector:@selector(refreshImportedGamesAsync)];
+    } else {
+      [host_ refreshImportedGames];
+    }
   }
   [self reloadInstalledContent];
 }
@@ -137,7 +145,8 @@
     }
     cell.textLabel.text = @"Add Content";
     cell.textLabel.textColor = self.view.tintColor;
-    cell.detailTextLabel.text = @"Import a title update or DLC package for this game.";
+    cell.detailTextLabel.text = @"Import a title update or DLC package for this game. Large "
+                                @"packages can be linked from a Link Folder instead of copied.";
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.imageView.image = [UIImage systemImageNamed:@"plus.circle.fill"];
     cell.imageView.tintColor = self.view.tintColor;
@@ -246,88 +255,126 @@
   }
 
   NSURL* url = urls[0];
+  // The scope stays open until the background work below has finished.
   BOOL access_granted = [url startAccessingSecurityScopedResource];
-  IOSSelectedContentPackage package_info;
-  NSString* validation_error = nil;
-  if (!xe_read_selected_content_package(std::filesystem::path([url.path UTF8String]), &package_info,
-                                        &validation_error)) {
-    if (access_granted) {
-      [url stopAccessingSecurityScopedResource];
-    }
-    XEPresentOKAlert(self, @"Invalid Package",
-                     validation_error ?: @"Could not read the selected content package.");
-    return;
-  }
+  XeniaIOSFileTransfer* transfer = [[XeniaIOSFileTransfer alloc] init];
+  XeniaIOSTransferProgressAlert* progress_alert = [[XeniaIOSTransferProgressAlert
+      presentFrom:self
+            title:@"Adding Content"
+          message:@"Checking the package..."
+    cancelHandler:^{
+      [transfer cancel];
+    }] retain];
+  const uint32_t title_id = title_id_;
+  id<XeniaGameContentHost> host = host_;
 
-  if (package_info.title_id != title_id_) {
-    if (access_granted) {
-      [url stopAccessingSecurityScopedResource];
-    }
-    XEPresentOKAlert(
-        self, @"Wrong Game",
-        [NSString stringWithFormat:@"This package is for title %08X, but the current game is %08X.",
-                                   package_info.title_id, title_id_]);
-    return;
-  }
-
-  BOOL install_success = NO;
-  NSString* result_title = @"Unsupported Content";
-  NSString* result_message = nil;
-  switch (package_info.content_type) {
-    case xe::XContentType::kInstaller: {
-      NSString* status_message = nil;
-      install_success = host_ && [host_ installTitleUpdateAtPath:url.path
-                                                          status:&status_message
-                                                  notTitleUpdate:nullptr];
-      result_title = install_success ? @"Installed" : @"Install Failed";
-      result_message = install_success ? (status_message ?: @"Title update installed successfully.")
-                                       : (status_message ?: @"Title update installation failed.");
-    } break;
-    case xe::XContentType::kMarketplaceContent: {
-      std::string error_message;
-      BOOL matched_external_location = NO;
-      NSError* external_access_error = nil;
-      std::filesystem::path source_relative_path;
-      XeniaIOSExternalLibraryAccess* external_access = xe::ui::StartIOSExternalLibraryAccessForPath(
-          package_info.path, &matched_external_location, &source_relative_path,
-          &external_access_error);
-      if (matched_external_location && !external_access) {
-        install_success = NO;
-        result_title = @"Link Failed";
-        result_message = external_access_error.localizedDescription
-                             ?: @"XeniOS could not access the linked external folder.";
-      } else if (external_access) {
-        install_success = xe_link_content_package_into_root(
-            package_info, xe_dlc_content_root(title_id_), source_relative_path, &error_message);
-        result_title = install_success ? @"Linked" : @"Link Failed";
-        result_message = install_success ? @"DLC linked from the external folder."
-                                         : ToNSString(error_message.empty() ? "DLC linking failed."
-                                                                            : error_message);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    BOOL install_success = NO;
+    BOOL cancelled = NO;
+    NSString* result_title = @"Unsupported Content";
+    NSString* result_message = nil;
+    @autoreleasepool {
+      IOSSelectedContentPackage package_info;
+      NSString* validation_error = nil;
+      if (!xe_read_selected_content_package(std::filesystem::path([url.path UTF8String]),
+                                            &package_info, &validation_error)) {
+        result_title = @"Invalid Package";
+        result_message = validation_error ?: @"Could not read the selected content package.";
+      } else if (package_info.title_id != title_id) {
+        result_title = @"Wrong Game";
+        result_message = [NSString
+            stringWithFormat:@"This package is for title %08X, but the current game is %08X.",
+                             package_info.title_id, title_id];
       } else {
-        install_success = xe_copy_content_package_into_root(
-            package_info, xe_dlc_content_root(title_id_), &error_message);
-        result_title = install_success ? @"Installed" : @"Install Failed";
-        result_message =
-            install_success
-                ? @"DLC installed successfully."
-                : ToNSString(error_message.empty() ? "DLC installation failed." : error_message);
+        switch (package_info.content_type) {
+          case xe::XContentType::kInstaller: {
+            // The emulator copies and installs the update itself, so there is
+            // no byte progress and nothing to cancel here.
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [progress_alert setCancelAvailable:NO];
+              [progress_alert updateCopiedBytes:0 totalBytes:0];
+            });
+            NSString* status_message = nil;
+            install_success = host && [host installTitleUpdateAtPath:url.path
+                                                              status:&status_message
+                                                      notTitleUpdate:nullptr];
+            result_title = install_success ? @"Installed" : @"Install Failed";
+            result_message = install_success
+                                 ? (status_message ?: @"Title update installed successfully.")
+                                 : (status_message ?: @"Title update installation failed.");
+          } break;
+          case xe::XContentType::kMarketplaceContent: {
+            std::string error_message;
+            BOOL matched_external_location = NO;
+            NSError* external_access_error = nil;
+            std::filesystem::path source_relative_path;
+            XeniaIOSExternalLibraryAccess* external_access =
+                xe::ui::StartIOSExternalLibraryAccessForPath(
+                    package_info.path, &matched_external_location, &source_relative_path,
+                    &external_access_error);
+            if (matched_external_location && !external_access) {
+              result_title = @"Link Failed";
+              result_message = external_access_error.localizedDescription
+                                   ?: @"XeniOS could not access the linked external folder.";
+            } else if (external_access) {
+              install_success = xe_link_content_package_into_root(
+                  package_info, xe_dlc_content_root(title_id), source_relative_path,
+                  &error_message);
+              result_title = install_success ? @"Linked" : @"Link Failed";
+              result_message = install_success
+                                   ? @"DLC linked from the external folder."
+                                   : ToNSString(error_message.empty() ? "DLC linking failed."
+                                                                      : error_message);
+            } else {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [progress_alert updateCopiedBytes:0 totalBytes:1];
+              });
+              install_success = xe_copy_content_package_into_root(
+                  package_info, xe_dlc_content_root(title_id), transfer,
+                  ^(uint64_t copied, uint64_t total) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      [progress_alert updateCopiedBytes:copied totalBytes:total];
+                    });
+                  },
+                  &error_message);
+              cancelled = !install_success && transfer.cancelled;
+              result_title = install_success ? @"Installed" : @"Install Failed";
+              result_message =
+                  install_success
+                      ? @"DLC installed successfully."
+                      : ToNSString(error_message.empty() ? "DLC installation failed."
+                                                         : error_message);
+            }
+          } break;
+          default:
+            result_message =
+                [NSString stringWithFormat:@"Content type 0x%08X is not a title update or DLC.",
+                                           static_cast<uint32_t>(package_info.content_type)];
+            break;
+        }
       }
-    } break;
-    default:
-      result_message =
-          [NSString stringWithFormat:@"Content type 0x%08X is not a title update or DLC.",
-                                     static_cast<uint32_t>(package_info.content_type)];
-      break;
-  }
+      [result_title retain];
+      [result_message retain];
+    }
 
-  if (access_granted) {
-    [url stopAccessingSecurityScopedResource];
-  }
-
-  if (install_success) {
-    [self refreshLauncherContentState];
-  }
-  XEPresentOKAlert(self, result_title, result_message);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (access_granted) {
+        [url stopAccessingSecurityScopedResource];
+      }
+      [progress_alert dismissWithCompletion:^{
+        if (install_success) {
+          [self refreshLauncherContentState];
+        }
+        if (!cancelled) {
+          XEPresentOKAlert(self, result_title, result_message);
+        }
+        [result_title release];
+        [result_message release];
+        [progress_alert release];
+        [transfer release];
+      }];
+    });
+  });
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController* __unused)controller {
