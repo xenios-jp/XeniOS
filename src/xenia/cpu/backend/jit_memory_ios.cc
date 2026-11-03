@@ -33,6 +33,43 @@
 
 namespace xe::cpu::backend {
 
+namespace {
+
+// StikDebug's prepare (3.1.x, iOS 27) drops the high bits of the region's
+// address and prepares the low-memory alias instead, zeroing the heap pages
+// there. Below 8 GB the address survives.
+constexpr uintptr_t kExecuteRegionLimit = uintptr_t(1) << 33;
+// The code region's size on iOS: CodeCacheBase::kGeneratedCodeSize, page
+// rounded.
+constexpr size_t kExecuteRegionReserveSize = size_t(1) << 29;
+
+// Finds room below kExecuteRegionLimit, with hints only so nothing already
+// mapped is replaced.
+uint8_t* MapBelowExecuteRegionLimit(size_t size, int prot) {
+  const size_t step = size_t(1) << 28;
+  for (uintptr_t hint = uintptr_t(1) << 32; hint + size <= kExecuteRegionLimit;
+       hint += step) {
+    void* mapping = mmap(reinterpret_cast<void*>(hint), size, prot,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) {
+      continue;
+    }
+    if (reinterpret_cast<uintptr_t>(mapping) + size <= kExecuteRegionLimit) {
+      return static_cast<uint8_t*>(mapping);
+    }
+    munmap(mapping, size);
+  }
+  return nullptr;
+}
+
+// Below 8 GB only the space under the shared cache is usable, and by the time
+// a game starts UIKit, Metal and the launcher may have left no 512 MB of it in
+// one piece. Take it while the process loads; the code region replaces it.
+uint8_t* execute_region_reservation =
+    MapBelowExecuteRegionLimit(kExecuteRegionReserveSize, PROT_NONE);
+
+}  // namespace
+
 // Device detection and the external JIT preparation protocol originate in
 // XeniOS preview 2f888db75. Keep the platform policy in this translation unit.
 struct IOSJitMemory::Impl {
@@ -66,26 +103,23 @@ struct IOSJitMemory::Impl {
     return state;
   }
 
-  // StikDebug's prepare (3.1.x, iOS 27) drops the high bits of the region's
-  // address and prepares the low-memory alias instead, zeroing the heap pages
-  // there. Below 8 GB the address survives, so look for room there first,
-  // with hints only so nothing already mapped is replaced.
-  static constexpr uintptr_t kExecuteRegionLimit = uintptr_t(1) << 33;
-
   static uint8_t* MapExecuteRegionLow(size_t size) {
-    const size_t step = size_t(1) << 28;
-    for (uintptr_t hint = uintptr_t(1) << 32;
-         hint + size <= kExecuteRegionLimit; hint += step) {
-      void* mapping = mmap(reinterpret_cast<void*>(hint), size,
-                           PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS,
-                           -1, 0);
-      if (mapping == MAP_FAILED) {
-        continue;
+    if (uint8_t* reservation = execute_region_reservation) {
+      execute_region_reservation = nullptr;
+      if (size <= kExecuteRegionReserveSize &&
+          mmap(reservation, size, PROT_READ | PROT_EXEC,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1,
+               0) == reservation) {
+        if (size < kExecuteRegionReserveSize) {
+          munmap(reservation + size, kExecuteRegionReserveSize - size);
+        }
+        return reservation;
       }
-      if (reinterpret_cast<uintptr_t>(mapping) + size <= kExecuteRegionLimit) {
-        return static_cast<uint8_t*>(mapping);
-      }
-      munmap(mapping, size);
+      munmap(reservation, kExecuteRegionReserveSize);
+    }
+    if (uint8_t* mapping =
+            MapBelowExecuteRegionLimit(size, PROT_READ | PROT_EXEC)) {
+      return mapping;
     }
     XELOGW(
         "iOS JIT: no room for the code region below 8 GB, an external "
