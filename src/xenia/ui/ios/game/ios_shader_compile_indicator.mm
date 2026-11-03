@@ -37,12 +37,15 @@ constexpr CFTimeInterval kExpandedSeconds = 6.0;
 constexpr CGFloat kTopMargin = 8.0;
 constexpr CGFloat kSideMargin = 16.0;
 constexpr CGFloat kHorizontalInset = 16.0;
-constexpr CGFloat kVerticalInset = 9.0;
-constexpr CGFloat kBarHeight = 3.0;
+constexpr CGFloat kTopInset = 9.0;
+// One more than the top: the progress line runs along the bottom edge.
+constexpr CGFloat kBottomInset = 10.0;
+constexpr CGFloat kLineHeight = 2.0;
 constexpr CGFloat kIconSpacing = 7.0;
 constexpr CGFloat kRowSpacing = 4.0;
-constexpr CGFloat kBarSpacing = 6.0;
-constexpr CGFloat kExpandedWidth = 320.0;
+// The first-run explanation takes one line when it fits, else balanced lines no
+// wider than this.
+constexpr CGFloat kMaxExpandedContentWidth = 420.0;
 constexpr CGFloat kMaxCornerRadius = 24.0;
 
 enum class Phase { kNone, kLoadingCache, kCompiling };
@@ -53,11 +56,24 @@ UIFont* CappedFont(UIFontTextStyle style, CGFloat size, UIFontWeight weight, CGF
                                                      maximumPointSize:maximum];
 }
 
+constexpr CGFloat kFontSize = 13.0;
+constexpr CGFloat kMaxFontSize = 17.0;
+
+// Always dark, like the system's Game Mode banner, and tinted so the text keeps
+// WCAG AA contrast (4.5:1) even over a white frame.
 UIVisualEffect* BackdropEffect() {
   if (@available(iOS 26.0, *)) {
-    return [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+    UIGlassEffect* glass = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+    glass.tintColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+    return glass;
   }
-  return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+  return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark];
+}
+
+// The explanation and the icon: dimmer than the title, brighter than the system's
+// secondary label so they keep that contrast too.
+UIColor* SecondaryColor() {
+  return [UIColor colorWithWhite:1.0 alpha:0.75];
 }
 
 }  // namespace
@@ -74,35 +90,44 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kShaderCompileStatusKey];
 }
 
-// The thin bar: filled to progress, or with a short segment sweeping it (under Reduce
-// Motion, the whole bar breathing) while the total isn't known.
-@interface XeniaCompileProgressBar : UIView
+// The progress line along the capsule's bottom edge: filled to progress, or with a
+// soft highlight sweeping it while the total isn't known (static under Reduce Motion).
+@interface XeniaCompileProgressLine : UIView
 // < 0: indeterminate.
 @property(nonatomic, assign) CGFloat progress;
 - (void)stopAnimating;
 @end
 
-@implementation XeniaCompileProgressBar {
+@implementation XeniaCompileProgressLine {
   UIView* fill_;
+  CAGradientLayer* sweep_;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
   if (self) {
     _progress = -1.0;
-    self.backgroundColor = [UIColor tertiarySystemFillColor];
-    self.layer.cornerRadius = kBarHeight / 2.0;
-    self.clipsToBounds = YES;
+    self.userInteractionEnabled = NO;
+    self.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
     fill_ = [[UIView alloc] init];
-    fill_.backgroundColor = [UIColor labelColor];
-    fill_.layer.cornerRadius = kBarHeight / 2.0;
+    fill_.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
     [self addSubview:fill_];
+    sweep_ = [[CAGradientLayer alloc] init];
+    sweep_.startPoint = CGPointMake(0.0, 0.5);
+    sweep_.endPoint = CGPointMake(1.0, 0.5);
+    sweep_.colors = @[
+      (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor,
+      (id)[UIColor colorWithWhite:1.0 alpha:0.7].CGColor,
+      (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor,
+    ];
+    [self.layer addSublayer:sweep_];
   }
   return self;
 }
 
 - (void)dealloc {
   [fill_ release];
+  [sweep_ release];
   [super dealloc];
 }
 
@@ -110,48 +135,86 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   if (_progress == progress) {
     return;
   }
+  BOOL mode_changed = (_progress < 0.0) != (progress < 0.0);
   _progress = progress;
+  if (mode_changed) {
+    [self stopAnimating];
+  }
   [self setNeedsLayout];
 }
 
 - (void)stopAnimating {
-  [fill_.layer removeAnimationForKey:kIndeterminateAnimationKey];
+  [sweep_ removeAnimationForKey:kIndeterminateAnimationKey];
 }
 
 - (void)layoutSubviews {
   [super layoutSubviews];
   CGFloat width = CGRectGetWidth(self.bounds);
   CGFloat height = CGRectGetHeight(self.bounds);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
   if (_progress >= 0.0) {
+    fill_.hidden = NO;
+    sweep_.hidden = YES;
     [self stopAnimating];
     fill_.frame = CGRectMake(0.0, 0.0, width * std::min<CGFloat>(_progress, 1.0), height);
+    [CATransaction commit];
     return;
   }
+  fill_.hidden = YES;
   BOOL reduce_motion = UIAccessibilityIsReduceMotionEnabled();
-  CGFloat segment = reduce_motion ? width : std::round(width * 0.3);
-  fill_.frame = CGRectMake(0.0, 0.0, segment, height);
-  // Restart on a size change, so the sweep spans the current width.
-  [self stopAnimating];
-  if (width <= 0.0 || self.hidden) {
+  sweep_.hidden = reduce_motion;
+  CGFloat segment = std::round(width * 0.35);
+  CGRect sweep_bounds = CGRectMake(0.0, 0.0, segment, height);
+  BOOL resized = !CGRectEqualToRect(sweep_.bounds, sweep_bounds);
+  sweep_.bounds = sweep_bounds;
+  sweep_.position = CGPointMake(-segment / 2.0, height / 2.0);
+  [CATransaction commit];
+  if (reduce_motion || width <= 0.0) {
+    [self stopAnimating];
     return;
   }
-  CABasicAnimation* animation;
-  if (reduce_motion) {
-    animation = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    animation.fromValue = @(0.25);
-    animation.toValue = @(0.6);
-    animation.autoreverses = YES;
-    animation.duration = 1.2;
-  } else {
-    animation = [CABasicAnimation animationWithKeyPath:@"position.x"];
-    animation.fromValue = @(-segment / 2.0);
-    animation.toValue = @(width + segment / 2.0);
-    animation.duration = 1.4;
+  // Restart only for a new width, so the sweep spans it; otherwise keep it running.
+  if (!resized && [sweep_ animationForKey:kIndeterminateAnimationKey]) {
+    return;
   }
+  CABasicAnimation* animation = [CABasicAnimation animationWithKeyPath:@"position.x"];
+  animation.fromValue = @(-segment / 2.0);
+  animation.toValue = @(width + segment / 2.0);
+  animation.duration = 1.6;
   animation.repeatCount = HUGE_VALF;
   animation.timingFunction =
       [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-  [fill_.layer addAnimation:animation forKey:kIndeterminateAnimationKey];
+  [sweep_ addAnimation:animation forKey:kIndeterminateAnimationKey];
+}
+
+@end
+
+// Holds the indicator unretained, so the display link (which retains its target)
+// doesn't keep the indicator alive; the indicator invalidates the link when it goes.
+@interface XeniaCompileDisplayLinkTarget : NSObject
+- (instancetype)initWithIndicator:(XeniaShaderCompileIndicator*)indicator;
+- (void)tick:(CADisplayLink*)link;
+@end
+
+@interface XeniaShaderCompileIndicator ()
+- (void)poll:(CADisplayLink*)link;
+@end
+
+@implementation XeniaCompileDisplayLinkTarget {
+  XeniaShaderCompileIndicator* indicator_;  // Not retained.
+}
+
+- (instancetype)initWithIndicator:(XeniaShaderCompileIndicator*)indicator {
+  self = [super init];
+  if (self) {
+    indicator_ = indicator;
+  }
+  return self;
+}
+
+- (void)tick:(CADisplayLink*)link {
+  [indicator_ poll:link];
 }
 
 @end
@@ -160,6 +223,8 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 // outline and a soft shadow that follows it.
 @interface XeniaCompileCapsuleView : UIView
 @property(nonatomic, readonly) UIVisualEffectView* backdrop;
+// Clipped to the capsule's outline, along its bottom edge.
+@property(nonatomic, readonly) XeniaCompileProgressLine* line;
 @end
 
 @implementation XeniaCompileCapsuleView
@@ -177,11 +242,14 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     _backdrop.layer.cornerCurve = kCACornerCurveContinuous;
     _backdrop.clipsToBounds = YES;
     [self addSubview:_backdrop];
+    _line = [[XeniaCompileProgressLine alloc] init];
+    [_backdrop.contentView addSubview:_line];
   }
   return self;
 }
 
 - (void)dealloc {
+  [_line release];
   [_backdrop release];
   [super dealloc];
 }
@@ -190,6 +258,8 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   [super layoutSubviews];
   CGFloat radius = std::min(CGRectGetHeight(self.bounds) / 2.0, kMaxCornerRadius);
   _backdrop.layer.cornerRadius = radius;
+  _line.frame = CGRectMake(0.0, CGRectGetHeight(self.bounds) - kLineHeight,
+                           CGRectGetWidth(self.bounds), kLineHeight);
   self.layer.shadowPath =
       [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:radius].CGPath;
 }
@@ -205,7 +275,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   UIImageView* icon_;
   UILabel* title_label_;
   UILabel* detail_label_;
-  XeniaCompileProgressBar* bar_;
+  XeniaCompileProgressLine* line_;  // Owned by capsule_.
 
   BOOL shown_;
   BOOL expanded_;
@@ -231,6 +301,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   }
   self.userInteractionEnabled = NO;
   self.backgroundColor = [UIColor clearColor];
+  self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   self.hidden = YES;
   progress_ = -1.0;
 
@@ -242,33 +313,31 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   [self addSubview:capsule_];
 
   icon_ = [[UIImageView alloc] init];
-  icon_.tintColor = [UIColor secondaryLabelColor];
+  icon_.tintColor = SecondaryColor();
   icon_.contentMode = UIViewContentModeCenter;
-  icon_.preferredSymbolConfiguration =
-      [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleFootnote
-                                                       scale:UIImageSymbolScaleMedium];
   [capsule_ addSubview:icon_];
 
   title_label_ = [[UILabel alloc] init];
-  title_label_.font = CappedFont(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold, 17.0);
+  title_label_.font =
+      CappedFont(UIFontTextStyleFootnote, kFontSize, UIFontWeightSemibold, kMaxFontSize);
   title_label_.adjustsFontForContentSizeCategory = YES;
   title_label_.textColor = [UIColor labelColor];
   [capsule_ addSubview:title_label_];
 
   detail_label_ = [[UILabel alloc] init];
-  detail_label_.font = CappedFont(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular, 17.0);
+  detail_label_.font =
+      CappedFont(UIFontTextStyleFootnote, kFontSize, UIFontWeightRegular, kMaxFontSize);
   detail_label_.adjustsFontForContentSizeCategory = YES;
-  detail_label_.textColor = [UIColor secondaryLabelColor];
+  detail_label_.textColor = SecondaryColor();
   detail_label_.numberOfLines = 0;
   detail_label_.text = @"Expect stutter and missing effects for a few minutes.";
   detail_label_.alpha = 0.0;
   [capsule_ addSubview:detail_label_];
 
-  bar_ = [[XeniaCompileProgressBar alloc] init];
-  [capsule_ addSubview:bar_];
+  line_ = capsule_.line;
 
   [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
-                     withAction:@selector(setNeedsLayout)];
+                     withAction:@selector(contentSizeCategoryChanged)];
   [self applyContentAnimated:NO];
   return self;
 }
@@ -280,7 +349,6 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   [icon_ release];
   [title_label_ release];
   [detail_label_ release];
-  [bar_ release];
   [super dealloc];
 }
 
@@ -291,39 +359,39 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 - (void)layoutSubviews {
   [super layoutSubviews];
   // Top center inside the safe area: below the status bar and Dynamic Island, clear of
-  // the touch controls. Compact, the capsule hugs its one line; open, it takes a fixed
-  // width and wraps the explanation.
+  // the touch controls. Compact, the capsule hugs its one line; open, it fits the
+  // explanation on one line when it can and otherwise wraps it into balanced lines.
   UIEdgeInsets safe = self.safeAreaInsets;
   CGFloat safe_width = CGRectGetWidth(self.bounds) - safe.left - safe.right;
-  CGFloat max_content = std::max<CGFloat>(
-      0.0, (expanded_ ? std::min(kExpandedWidth, safe_width - 2.0 * kSideMargin)
-                      : safe_width - 2.0 * kSideMargin) -
-               2.0 * kHorizontalInset);
+  CGFloat max_content =
+      std::max<CGFloat>(0.0, safe_width - 2.0 * kSideMargin - 2.0 * kHorizontalInset);
   CGSize icon = icon_.image ? icon_.image.size : CGSizeZero;
   CGFloat title_max = std::max<CGFloat>(0.0, max_content - icon.width - kIconSpacing);
   CGSize title = [title_label_ sizeThatFits:CGSizeMake(title_max, CGFLOAT_MAX)];
   title.width = std::min(std::ceil(title.width), title_max);
   title.height = std::ceil(title.height);
-  CGFloat row_height = std::max(icon.height, title.height);
-  CGFloat content_width =
-      expanded_ ? max_content : std::ceil(icon.width + kIconSpacing + title.width);
-  CGFloat detail_height =
-      expanded_ ? std::ceil([detail_label_ sizeThatFits:CGSizeMake(content_width, CGFLOAT_MAX)]
-                                .height)
-                : 0.0;
-
-  CGFloat y = kVerticalInset;
-  icon_.frame = CGRectMake(kHorizontalInset, y + (row_height - icon.height) / 2.0, icon.width,
-                           icon.height);
-  title_label_.frame = CGRectMake(kHorizontalInset + icon.width + kIconSpacing,
-                                  y + (row_height - title.height) / 2.0, title.width, title.height);
-  y += row_height + kRowSpacing;
-  detail_label_.frame = CGRectMake(kHorizontalInset, y, content_width, detail_height);
+  CGFloat row_width = std::ceil(icon.width + kIconSpacing + title.width);
+  CGFloat content_width = row_width;
+  CGFloat detail_height = 0.0;
   if (expanded_) {
-    y += detail_height + kBarSpacing;
+    content_width = std::max(row_width, [self detailWidthWithin:std::min(
+                                                    max_content, kMaxExpandedContentWidth)]);
+    detail_height = std::ceil(
+        [detail_label_ sizeThatFits:CGSizeMake(content_width, CGFLOAT_MAX)].height);
   }
-  bar_.frame = CGRectMake(kHorizontalInset, y, content_width, kBarHeight);
-  y += kBarHeight + kVerticalInset;
+  CGFloat row_height = std::max(icon.height, title.height);
+  CGFloat row_x = kHorizontalInset;
+
+  CGFloat y = kTopInset;
+  icon_.frame = CGRectMake(row_x, y + (row_height - icon.height) / 2.0, icon.width, icon.height);
+  title_label_.frame = CGRectMake(row_x + icon.width + kIconSpacing,
+                                  y + (row_height - title.height) / 2.0, title.width, title.height);
+  y += row_height;
+  if (expanded_) {
+    y += kRowSpacing;
+  }
+  detail_label_.frame = CGRectMake(kHorizontalInset, y, content_width, detail_height);
+  y += detail_height + kBottomInset;
 
   // bounds and center, not frame: the capsule may carry its show/hide transform.
   CGSize size = CGSizeMake(content_width + 2.0 * kHorizontalInset, y);
@@ -332,13 +400,37 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
       CGPointMake(safe.left + safe_width / 2.0, safe.top + kTopMargin + size.height / 2.0);
 }
 
+// The narrowest width that keeps the explanation on as few lines as |limit| allows,
+// so no line ends up with a word or two on its own.
+- (CGFloat)detailWidthWithin:(CGFloat)limit {
+  CGFloat one_line = std::ceil([detail_label_ sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)]
+                                   .width);
+  if (one_line <= limit) {
+    return one_line;
+  }
+  CGFloat height = [detail_label_ sizeThatFits:CGSizeMake(limit, CGFLOAT_MAX)].height;
+  CGFloat low = 0.0;
+  CGFloat high = limit;
+  while (high - low > 1.0) {
+    CGFloat mid = std::floor((low + high) / 2.0);
+    if ([detail_label_ sizeThatFits:CGSizeMake(mid, CGFLOAT_MAX)].height > height) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  return std::ceil(high);
+}
+
 - (void)setActive:(BOOL)active {
   if (_active == active) {
     return;
   }
   _active = active;
   if (active) {
-    display_link_ = [[CADisplayLink displayLinkWithTarget:self selector:@selector(poll:)] retain];
+    XeniaCompileDisplayLinkTarget* target =
+        [[[XeniaCompileDisplayLinkTarget alloc] initWithIndicator:self] autorelease];
+    display_link_ = [[CADisplayLink displayLinkWithTarget:target selector:@selector(tick:)] retain];
     display_link_.preferredFrameRateRange = CAFrameRateRangeMake(10.0f, 10.0f, 10.0f);
     [display_link_ addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     return;
@@ -355,8 +447,10 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 - (void)poll:(CADisplayLink*)link {
   const xe::gpu::metal::CompileActivity& activity = xe::gpu::metal::compile_activity;
   CFTimeInterval now = link.timestamp;
-  uint64_t queued = activity.queued.load(std::memory_order_relaxed);
+  // finished first: a request finishing between the loads then reads as still
+  // pending for a tick, never the backlog as empty.
   uint64_t finished = activity.finished.load(std::memory_order_relaxed);
+  uint64_t queued = activity.queued.load(std::memory_order_relaxed);
   uint64_t backlog = queued > finished ? queued - finished : 0;
 
   uint32_t generation = activity.storage_generation.load(std::memory_order_relaxed);
@@ -436,7 +530,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     }
     if (progress_ >= 0.0) {
       progress_ = 1.0;
-      bar_.progress = 1.0;
+      line_.progress = 1.0;
     }
     return;
   }
@@ -474,16 +568,35 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   return @"Compiling shaders. Expect stutter and missing effects until they finish.";
 }
 
-- (void)applyContentAnimated:(BOOL)animated {
+- (void)contentSizeCategoryChanged {
+  [self updateIcon];
+  [self setNeedsLayout];
+}
+
+// The symbol is built at the title's capped size, so its image size is what's drawn
+// and it never outgrows the text at large Dynamic Type sizes.
+- (void)updateIcon {
+  CGFloat size = std::min(kMaxFontSize, [[UIFontMetrics metricsForTextStyle:UIFontTextStyleFootnote]
+                                            scaledValueForValue:kFontSize
+                                  compatibleWithTraitCollection:self.traitCollection]);
+  UIImageSymbolConfiguration* config =
+      [UIImageSymbolConfiguration configurationWithPointSize:size
+                                                      weight:UIImageSymbolWeightSemibold
+                                                       scale:UIImageSymbolScaleMedium];
   icon_.image = [UIImage systemImageNamed:phase_ == Phase::kLoadingCache
                                               ? @"square.stack.3d.down.right"
-                                              : @"cube.transparent"];
+                                              : @"cube.transparent"
+                        withConfiguration:config];
+}
+
+- (void)applyContentAnimated:(BOOL)animated {
+  [self updateIcon];
   NSString* title = [self titleText];
   if (![title_label_.text isEqualToString:title]) {
     title_label_.text = title;
   }
   title_label_.numberOfLines = expanded_ ? 0 : 1;
-  bar_.progress = progress_;
+  line_.progress = progress_;
   [self setNeedsLayout];
   capsule_.accessibilityLabel = [self spokenText];
   capsule_.accessibilityValue =
@@ -549,7 +662,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     if (!shown_) {
       self.hidden = YES;
       capsule_.transform = CGAffineTransformIdentity;
-      [bar_ stopAnimating];
+      [line_ stopAnimating];
     }
   };
   if (!animated) {
