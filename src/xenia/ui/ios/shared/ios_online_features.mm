@@ -18,7 +18,7 @@ constexpr BOOL kOnlineFeaturesDefault = YES;
 
 NSString* const kOnlineFeaturesKey = @"XeniaOnlineFeaturesEnabled";
 // The notice revision last answered. 1 covered fetching and reports, 2 added System
-// Link, which shows other players the device's IP address.
+// Link, which shows other players the device's IP address and a profile ID.
 NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeRevision";
 constexpr NSInteger kOnlineFeaturesNoticeRevision = 2;
 NSString* const kShareDiagnosticsKey = @"XeniaShareDiagnosticsEnabled";
