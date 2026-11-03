@@ -1222,7 +1222,9 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock,
       ctx->TranslateVirtualGPR<X_KPCR*>(our_pcr)->prcb_data.current_cpu;
 
   // Lock.
+#if XE_PLATFORM_APPLE
   uint32_t contended_yields = 0;
+#endif  // XE_PLATFORM_APPLE
   while (
       !xe::atomic_cas(0, xe::byte_swap(our_pcr), &lock->prcb_of_owner.value)) {
     // Under the cooperative scheduler the holder may be a fiber queued behind
@@ -1275,13 +1277,16 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock,
         continue;
       }
     }
+#if XE_PLATFORM_APPLE
     // A yield keeps the spinner on a core if nothing else is runnable, so once
     // the holder is clearly not about to release (descheduled mid-hold), sleep
-    // briefly to free the core for it rather than spin hot.
+    // briefly to free the core for it rather than spin hot. Apple only: a
+    // 20 us sleep rounds up to the timer resolution (~1 ms) on Windows.
     if (++contended_yields > 64) {
       xe::threading::NanoSleep(20000);
       continue;
     }
+#endif  // XE_PLATFORM_APPLE
     xe::threading::MaybeYield();
   }
 
