@@ -372,6 +372,11 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
     }
     return false;
   }
+  if (transfer.skippedItemCount > 0 && error_message_out) {
+    // Success with a warning: callers show it when the text is not empty.
+    *error_message_out = "Copied, but " + std::to_string(transfer.skippedItemCount) +
+                         " item(s) (links or special files) were skipped.";
+  }
   return true;
 }
 
@@ -390,6 +395,17 @@ void xe_exclude_installed_content_from_backup() {
         const std::filesystem::path root = it->path() / type_directory;
         if (std::filesystem::is_directory(root, ec)) {
           XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:root.c_str()]);
+          if (std::string(type_directory) == "00000002") {
+            // Partial DLC copies left by a killed app; live ones are registered and skipped.
+            std::error_code package_ec;
+            std::filesystem::directory_iterator package_it(root, package_ec);
+            for (; !package_ec && package_it != end; package_it.increment(package_ec)) {
+              std::error_code dir_ec;
+              if (package_it->is_directory(dir_ec)) {
+                XeniaIOSSweepStalePartFiles(package_it->path());
+              }
+            }
+          }
         }
       }
     }

@@ -263,6 +263,12 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
             &import_error);
         if (!imported_path.empty()) {
           outcome = Outcome::kImported;
+          if (transfer.skippedItemCount > 0) {
+            message = [NSString
+                stringWithFormat:@"%lu item(s) in the folder (links or special files) were not "
+                                 @"copied. The game may be incomplete.",
+                                 static_cast<unsigned long>(transfer.skippedItemCount)];
+          }
         } else if (transfer.cancelled) {
           outcome = Outcome::kCancelled;
         } else {
@@ -270,7 +276,8 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
           message = import_error.localizedDescription ?: @"Failed to import selected game.";
         }
       }
-      if (removeSource) {
+      if (removeSource && (outcome == Outcome::kImported || outcome == Outcome::kUpdateInstalled)) {
+        // Only after success: on a failure or cancel the Inbox copy may be the only one.
         // Gone already if the import was a rename.
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
       }
@@ -298,6 +305,10 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
                                                           message:message];
             break;
           case Outcome::kImported: {
+            if (message) {
+              [_host documentImportCoordinatorPresentAlertWithTitle:@"Imported With Warnings"
+                                                            message:message];
+            }
             NSString* imported_name = ToNSString(imported_path.filename().string());
             const std::filesystem::path launch_path = imported_path;
             [self refreshImportedGamesWithScannedGamesCompletion:^(
@@ -400,9 +411,44 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
                                             }
                                             [url release];
                                           }]];
-  [[_host documentImportCoordinatorPresenter] presentViewController:sheet
-                                                           animated:YES
-                                                         completion:nil];
+  // Dropping the scope and the URL is the same on every path that doesn't reach a handler. The
+  // Inbox copy, if any, is left for the next launch's cleanup.
+  void (^abandon)(void) = [[^{
+    finish();
+    [url release];
+  } copy] autorelease];
+  [self presentOpenSheet:sheet attemptsLeft:20 abandon:abandon];
+}
+
+// A cold start from Files can get here before the main view is on screen, and a stacked alert
+// can be mid-transition. Present only on a presenter that is in a window and idle; otherwise try
+// again shortly, then give up through `abandon` so nothing stays held.
+- (void)presentOpenSheet:(UIAlertController*)sheet
+            attemptsLeft:(int)attempts
+                 abandon:(void (^)(void))abandon {
+  UIViewController* top = [_host documentImportCoordinatorPresenter];
+  while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+    top = top.presentedViewController;
+  }
+  const BOOL ready = top && top.viewIfLoaded.window && !top.isBeingPresented &&
+                     !top.isBeingDismissed && !top.presentedViewController;
+  if (ready) {
+    [top presentViewController:sheet animated:YES completion:nil];
+    return;
+  }
+  if (attempts <= 0) {
+    XELOGW("iOS: Could not present the open-in sheet; dropping it");
+    abandon();
+    return;
+  }
+  [sheet retain];
+  [abandon retain];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [self presentOpenSheet:sheet attemptsLeft:attempts - 1 abandon:abandon];
+                   [sheet release];
+                   [abandon release];
+                 });
 }
 
 - (void)linkExternalLibraryAtURL:(NSURL*)url {

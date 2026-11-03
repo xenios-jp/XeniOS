@@ -339,11 +339,16 @@
                   &error_message);
               cancelled = !install_success && transfer.cancelled;
               result_title = install_success ? @"Installed" : @"Install Failed";
-              result_message =
-                  install_success
-                      ? @"DLC installed successfully."
-                      : ToNSString(error_message.empty() ? "DLC installation failed."
-                                                         : error_message);
+              // On success, error_message carries a warning about skipped folder entries.
+              if (install_success) {
+                result_message =
+                    error_message.empty()
+                        ? @"DLC installed successfully."
+                        : [@"DLC installed. " stringByAppendingString:ToNSString(error_message)];
+              } else {
+                result_message = ToNSString(error_message.empty() ? "DLC installation failed."
+                                                                  : error_message);
+              }
             }
           } break;
           default:

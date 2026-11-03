@@ -73,7 +73,8 @@ bool xe_copy_directory_recursive(const std::filesystem::path& source,
 // open. Copies through ".part" files (see ios_file_transfer.h) so a failed or
 // cancelled copy leaves nothing behind, and keeps the package folder out of
 // iCloud backup. Failure text goes to error_message_out; a cancel is reported
-// as "Cancelled.".
+// as "Cancelled.". On success error_message_out is normally empty;
+// non-empty means a warning (items skipped) to show with the result.
 bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        XeniaIOSFileTransfer* transfer,
