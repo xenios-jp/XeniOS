@@ -2832,7 +2832,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   } else if (running_name.length) {
     message = [NSString
         stringWithFormat:NSLocalizedString(
-                             @"A link wants to launch \"%@\". This will stop \"%@\", and unsaved "
+                             @"A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved "
                              @"progress will be lost.",
                              @"Alert message; %1$@ is the game to launch, %2$@ the running game"),
                          display_name, running_name];

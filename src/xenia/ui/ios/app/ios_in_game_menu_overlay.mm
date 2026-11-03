@@ -65,6 +65,9 @@
   self.backgroundColor = [XeniaTheme overlayLight];
   self.hidden = YES;
   self.userInteractionEnabled = NO;
+  // While shown, VoiceOver stays in the menu instead of reaching the touch
+  // controller behind it. A hidden view is out of the accessibility tree.
+  self.accessibilityViewIsModal = YES;
   _focusedAction = XeniaIOSInGameMenuActionNone;
   _controllerNavigationEnabled = NO;
 
