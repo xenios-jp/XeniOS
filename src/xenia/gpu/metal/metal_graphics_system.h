@@ -25,6 +25,11 @@ class MetalGraphicsSystem : public GraphicsSystem {
 
   static bool IsAvailable();
 
+  // Commits the open command buffer and blocks until every submitted command
+  // buffer has completed. Call only on |command_processor|'s worker thread (from
+  // CallInThread). Used to drain the GPU before the app backgrounds.
+  static void AwaitGpuIdleOnWorkerThread(CommandProcessor* command_processor);
+
   std::string name() const override;
 
   X_STATUS Setup(cpu::Processor* processor, kernel::KernelState* kernel_state,

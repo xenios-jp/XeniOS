@@ -346,6 +346,10 @@ void iOSWindow::SetupDisplayLink() {
   g_display_link_target = [[XeniaDisplayLinkTarget alloc] initWithWindow:this];
   display_link_ = [CADisplayLink displayLinkWithTarget:g_display_link_target
                                               selector:@selector(displayLinkFired:)];
+  // The display link retains its target until it is invalidated, so drop the
+  // creation reference. g_display_link_target stays valid until
+  // TeardownDisplayLink invalidates the link.
+  [g_display_link_target release];
   [g_display_link_target setDisplayLink:display_link_];
   // Keep presenter pacing display-link driven, with the preferred refresh rate
   // following the guest display cap toggle.
@@ -362,6 +366,7 @@ void iOSWindow::TeardownDisplayLink() {
     [g_display_link_target stopObservingLifecycle];
   }
   if (display_link_) {
+    // Releases the target (and deallocates it, as nothing else holds it).
     [display_link_ invalidate];
     display_link_ = nil;
   }

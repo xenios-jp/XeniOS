@@ -3702,6 +3702,40 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
 }
 
+- (void)presentGameLaunchFailureAlertWithMessage:(NSString*)message {
+  UIAlertController* alert =
+      [UIAlertController alertControllerWithTitle:@"Couldn't Start Game"
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            xe_ios_present_log_share(self, nil, NO);
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentGameStopStuckAlert {
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@"Game Isn't Responding"
+                       message:@"The game is taking too long to stop. You can wait a little "
+                               @"longer, or force-quit XeniOS from the app switcher and open it "
+                               @"again."
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(__unused UIAlertAction* action) {
+                                            xe_ios_present_log_share(self, nil, NO);
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Keep Waiting"
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)dealloc {
   [self.jitPollTimer invalidate];
   [self.controllerNavigationCoordinator invalidate];
@@ -3792,7 +3826,11 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     [self.touchControlsOverlay setGameplayOverlayVisible:overlay_visible animated:animated];
   }
   if (self.appContext) {
-    self.appContext->SetGameplayInputBlocked([self shouldBlockGameplayInput] ? true : false);
+    const bool covered = [self shouldBlockGameplayInput] ? true : false;
+    self.appContext->SetGameplayInputBlocked(covered);
+    // The game is hidden or blocked by the menu or a sheet: stop it too.
+    self.appContext->SetEmulationPaused(
+        xe::ui::IOSWindowedAppContext::EmulationPauseReason::kInGameMenu, covered);
   }
   // The screen-wide tap recognizer used to toggle the in-game menu would
   // otherwise fire every time the user presses a touch overlay button (the

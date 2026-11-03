@@ -26,6 +26,14 @@ bool MetalGraphicsSystem::IsAvailable() {
   return xe::ui::metal::MetalProvider::IsMetalAPIAvailable();
 }
 
+void MetalGraphicsSystem::AwaitGpuIdleOnWorkerThread(
+    CommandProcessor* command_processor) {
+  if (command_processor) {
+    static_cast<MetalCommandProcessor*>(command_processor)
+        ->AwaitAllQueueOperationsCompletion();
+  }
+}
+
 std::string MetalGraphicsSystem::name() const { return "Metal"; }
 
 X_STATUS MetalGraphicsSystem::Setup(cpu::Processor* processor,
