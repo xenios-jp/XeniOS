@@ -443,6 +443,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     kInactive = 1u << 1,
     // The scene is in the background.
     kBackground = 1u << 2,
+    // The user chose to wait for a long shader rebuild before playing.
+    kShaderPreparation = 1u << 3,
   };
   using EmulationPauseCallback = std::function<void(EmulationPauseReason, bool)>;
   void set_emulation_pause_callback(EmulationPauseCallback callback) {
