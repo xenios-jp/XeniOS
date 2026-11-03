@@ -55,6 +55,7 @@
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_content_management.h"
+#import "xenia/ui/ios/launcher/ios_dashboard.h"
 #import "xenia/ui/ios/launcher/ios_document_import_coordinator.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_external_url.h"
@@ -605,6 +606,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                            selector:@selector(onExternalLibraryDidChange:)
                                                name:kXeniaIOSExternalLibraryDidChangeNotification
                                              object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(onSystemSoftwareDidChange:)
+                                               name:XeniaIOSSystemSoftwareDidChangeNotification
+                                             object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(onTitleWillStart:)
+                                               name:XeniaIOSTitleWillStartNotification
+                                             object:nil];
   // Show the last scan's result at once (read from disk, no folder walk), then
   // rescan in the background.
   discovered_games_ = xe::ui::LoadCachedIOSGameLibrary();
@@ -635,6 +644,39 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 - (void)onExternalLibraryDidChange:(NSNotification* __unused)note {
   [self refreshImportedGamesAsync];
+}
+
+- (void)onSystemSoftwareDidChange:(NSNotification* __unused)note {
+  [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
+}
+
+- (void)launchDashboard {
+  [self launchGameAtPath:xe::ui::IOSInstalledDashboardPath()
+             displayName:NSLocalizedString(@"Xbox 360 Dashboard",
+                                           @"main view controller: title")];
+}
+
+// A title the emulator starts itself, like a game the dashboard launches, gets
+// what a launch from the library sets up: its touch layout and access to the
+// folder it is in.
+- (void)onTitleWillStart:(NSNotification*)note {
+  NSString* path_ns = note.userInfo[XeniaIOSTitlePathKey];
+  if (![path_ns isKindOfClass:[NSString class]] || !path_ns.length) {
+    return;
+  }
+  const std::filesystem::path path([path_ns fileSystemRepresentation]);
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [NSMutableArray array];
+  BOOL matched_external_location = NO;
+  if (XeniaIOSExternalLibraryAccess* access = xe::ui::StartIOSExternalLibraryAccessForPath(
+          path, &matched_external_location, nil)) {
+    [accesses addObject:access];
+  }
+  active_game_title_id_ = [self titleIDForGamePath:path];
+  [self appendLinkedContentAccessesForTitleID:active_game_title_id_
+                                     accesses:accesses
+                                 errorMessage:nil];
+  [self retainExternalGameAccessesForLaunch:accesses replaceExisting:YES];
+  [self applyTouchLayoutModelForTitleID:active_game_title_id_];
 }
 
 - (void)handleAppDidBecomeActive:(NSNotification* __unused)note {
@@ -1183,6 +1225,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   self.launcherOverlayView.importHandler = ^{
     [unsafe_self presentLibraryAddSheetFromView:unsafe_self.launcherOverlayView];
   };
+  self.launcherOverlayView.dashboardHandler = ^{
+    [unsafe_self launchDashboard];
+  };
+  [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
   self.launcherOverlayView.openStikDebugHandler = ^{
     [unsafe_self requestStikDebugJITHandoffForPendingLaunchPath:nullptr
                                               requirePreference:NO
@@ -2365,6 +2411,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)finishImportedGamesRefresh {
   [self applyCompatDataToDiscoveredGames];
   SortDiscoveredGames(&discovered_games_);
+  // The dashboard lists the library as its games.
+  xe::ui::PublishIOSLibraryToDashboard(discovered_games_);
 
   NSInteger focused_game_index = self.controllerNavigationCoordinator.focusedGameIndex;
   if (discovered_games_.empty()) {

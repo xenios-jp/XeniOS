@@ -15,6 +15,7 @@
 #import "xenia/ui/ios/settings/ios_config_view_controller.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
+#import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -112,6 +113,7 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindCacheCleanup,
   XeniaSettingsHubCategoryKindLibrary,
   XeniaSettingsHubCategoryKindGameContent,
+  XeniaSettingsHubCategoryKindSystemSoftware,
   XeniaSettingsHubCategoryKindAutomation,
   XeniaSettingsHubCategoryKindAbout,
 };
@@ -1314,6 +1316,16 @@ titleForFooterInSection:(NSInteger)section {
                                    @"settings hub view controller: title")
                          symbolName:@"puzzlepiece.extension.fill"
                           tintColor:gray],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindSystemSoftware
+                              title:NSLocalizedString(@"Xbox 360 System Software",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(
+                                        @"Install the system update that has the Xbox 360 "
+                                        @"Dashboard.",
+                                        @"settings hub view controller: title")
+                         symbolName:@"square.stack.3d.up.fill"
+                          tintColor:gray],
                  ]];
 
   XeniaSettingsHubSection* compatibility = [XeniaSettingsHubSection
@@ -1590,6 +1602,15 @@ titleForFooterInSection:(NSInteger)section {
             subtitle:NSLocalizedString(@"Games · Manage title-specific content from a game tile.",
                                        @"settings hub view controller: title")
           symbolName:@"puzzlepiece.extension.fill"
+           tintColor:[XeniaTheme sectionIconGray]],
+    [XeniaSettingsHubItem
+        itemWithKind:XeniaSettingsHubCategoryKindSystemSoftware
+               title:NSLocalizedString(@"Xbox 360 System Software",
+                                       @"settings hub view controller: title")
+            subtitle:NSLocalizedString(
+                         @"Games · Install the system update and the Xbox 360 Dashboard.",
+                         @"settings hub view controller: title")
+          symbolName:@"square.stack.3d.up.fill"
            tintColor:[XeniaTheme sectionIconGray]],
   ];
   for (XeniaSettingsHubItem* item in items) {
@@ -1934,6 +1955,9 @@ titleForFooterInSection:(NSInteger)section {
                   items:items
           actionHandler:action_handler_] autorelease];
     }
+    case XeniaSettingsHubCategoryKindSystemSoftware:
+      return [[[XeniaSystemSoftwareViewController alloc] initWithGameRunning:!no_game_running_]
+          autorelease];
     case XeniaSettingsHubCategoryKindPerformance: {
       XeniaConfigViewController* config = [[[XeniaConfigViewController alloc]
           initWithCatalogKind:IOSConfigCatalogKind::kPerformance

@@ -46,6 +46,9 @@
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^profileHandler)(void);
 @property(nonatomic, copy) void (^importHandler)(void);
+// Backs the Xbox 360 Dashboard button beside Import, which shows while the
+// system software is installed.
+@property(nonatomic, copy) void (^dashboardHandler)(void);
 @property(nonatomic, copy) void (^bulkZarConversionHandler)(void);
 // Backs the "Open StikDebug" button on the JIT card. The button is hidden
 // while this is nil.
@@ -64,6 +67,7 @@
 
 - (void)setGames:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games;
 - (void)setJITAcquired:(BOOL)acquired;
+- (void)setDashboardInstalled:(BOOL)installed;
 - (void)setJITStatusText:(NSString*)text;
 - (void)setMemoryEntitlementEnabled:(BOOL)enabled;
 - (void)setMemoryEntitlementStatusText:(NSString*)text;
