@@ -1,50 +1,100 @@
 <p align="center">
-    <a href="https://github.com/xenia-canary/xenia-canary/tree/canary_experimental/assets/icon">
-        <img height="256px" src="https://raw.githubusercontent.com/xenia-canary/xenia/master/assets/icon/256.png" />
-    </a>
+    <img height="256px" src="assets/apple/xenios-readme-icon.png" alt="XeniOS app icon" />
 </p>
 
-<h1 align="center">Xenia Edge - Xbox 360 Emulator</h1>
+<h1 align="center">XeniOS - Xbox 360 Emulator</h1>
 
-Xenia Edge is yet another experimental fork of the Xenia emulator, originally based on [Xenia Canary](https://github.com/xenia-canary/xenia-canary). Edge builds have evolved far beyond Canary in many areas, starting from the UI and ranging to kernel emulation, networking, graphics backend features, JIT improvements, arm64 and macOS support, and many others. Exact differences are hard to pin down any longer due to how extensive they are and how much has been ported back into Canary over time to various degrees. In general Edge will run more games, and run them better, but this code is under active development and there are always regressions so YMMV. If something isn't working on Edge it's worth testing on Canary.
+XeniOS is an experimental Apple-focused fork of Xenia, currently based on
+[Xenia Edge](https://github.com/has207/xenia-edge). It exists as a fast-moving
+place to develop, test, and ship iOS and macOS work while also carrying
+platform changes that benefit ARM64 Windows, Linux, and Android. Relevant
+improvements are intended to flow back upstream over time.
 
-While there is no official compatibility tracker for Xenia Edge at the moment, all known games at least get to gameplay and should render more or less correctly and run at their target framerates or better. At least on sufficiently decent hardware (generally RTX 2xxx class and above). Some games require game-specific config changes, so make sure to check the [Canary compatibility page](https://github.com/xenia-canary/game-compatibility/issues) if something is wrong, the issue is likely already known and has a documented solution.
+<p align="center">
+  <a href="https://xenios.jp">Website</a> ◦
+  <a href="https://github.com/xenios-jp/XeniOS/releases">Releases</a> ◦
+  <a href="https://xenios.jp/docs">Docs</a> ◦
+  <a href="https://xenios.jp/faq">FAQ</a> ◦
+  <a href="https://xenios.jp/compatibility">Compatibility</a> ◦
+  <a href="https://discord.gg/QwcTtNKTGf">Discord</a> ◦
+  <a href="https://github.com/xenios-jp/XeniOS/issues">Issues</a>
+</p>
 
-## Status
+## Current Focus
 
-Build (Windows / Linux / macOS): [![CI](https://github.com/has207/xenia-edge/actions/workflows/CI.yml/badge.svg?branch=edge)](https://github.com/has207/xenia-edge/actions/workflows/CI.yml) [![Codacy Badge](https://app.codacy.com/project/badge/Grade/cd506034fd8148309a45034925648499)](https://app.codacy.com/gh/has207/xenia-edge/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+- iOS
+- macOS (Apple Silicon)
+- macOS (Intel)
 
-Releases
---------
-[Latest](https://github.com/has207/xenia-edge/releases/latest) ◦ [All](https://github.com/has207/xenia-edge/releases)
+Current published releases focus on iOS and macOS.
+For Windows or Linux builds, use [Xenia Edge](https://github.com/has207/xenia-edge) or [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
 
-FAQ
----
+## Why This Fork Exists
 
-- Q: How to use systemlink?<br>
-  A: Systemlink is enabled by default and will work without further configuration with other Edge instances on the same network. If that's all you care about you can stop reading here. To connect to retail consoles you need an instance of [Xlink Kai](https://www.teamxlink.co.uk/) running somewhere on your network, most likely the same PC you're running Xenia but it's not necessary. On RGH/JTAG consoles you have to disable the Nova plugin in Aurora as that replaces normal systemlink on the console. If you plan to connect to console or users over the internet you will need to set ```systemlink_transport = "kai"``` in the Network settings. For remote connections you will need to add them as a friend in the Kai Engine interface once you started it, and they must do the same, or all of you need to be in the same Kai arena for the game. No other configuration should be needed. It's possible to use Kai locally with multiple Edge instances but it requires setting "Allow remote DDS connections" in the Kai settings and pointing the other Edge instances at your machine using ```systemlink_kai_engine = $IP_OF_PC_RUNNING_KAI```, but again you don't *need* Kai for local Xenia-only connections, those will work without any configuration changes using the default ```systemlink_transport = "tunnel"```.
+Xenia development is relatively thinly staffed right now, and upstream is not
+set up for fast iteration on Apple-specific packaging, documentation, release
+flow, and user experience. XeniOS exists so that work can move faster in a
+repository where the full product experience can be shaped directly, from the
+app itself to releases, docs, compatibility reporting, and the public website
+at [xenios.jp](https://xenios.jp).
 
-- Q: How to run original Xbox games?<br>
-  A: OG Xbox games are supported in the same manner they are on a real console, more precisely an RGH/JTAG console, through ```xefu```. You will want to search for how to run them there, the same information applies here. Start [here](https://consolemods.org/wiki/Xbox_360:Original_Xbox_Games_Compatibility_List). In other words, you'll likely want the "patched" xefu builds that remove restrictions on what games they support. Keep in mind xefu is not a single executable but a "family" where ```xbox.xex``` is the console's dispatcher that selects the appropriately whitelisted ```xefuN.xex```. These have all been community patched to run other games, so you'll want to figure out how it's done on RGH/JTAG setups and mostly follow those instructions. Do not expect compatibility/performance to be quite as good as a real console quite yet, it is still a work in progress, but many games should be playable.
+The goal is not to keep good work siloed here forever. The goal is to iterate
+quickly, build a more polished user-facing experience for Apple platforms, and
+then contribute the useful technical improvements back upstream into the
+broader Xenia community, especially
+[Xenia Canary](https://github.com/xenia-canary/xenia-canary).
 
-- Q: How to run Xbox Live Indie (XBLIG) games?<br>
-  A: XBLIG titles require an XNA runtime and launcher. The launcher is available in the system update you can download from MS when choosing the USB Update option [direct link](https://www.xbox.com/system-update-usb). Unzip and pull out ```Xna_TitleLauncher.xex``` and place it in its own directory (this step is important). Then add it to the library by running it with Edge, it will complain about a missing update but you want to do this so that it's added to the game list. As for the update, you will need to get it the same place you find XBLIG titles themselves, it contains the actual XNA runtime that's needed to launch them. Make sure to install the update file using ```Tools/Install Content...``` and confirm it shows up in the Content section of Xna_TitleLauncher. The titles are not proper game packages like everything else, and instead install as DLC content for the launcher, so they won't show up as individual games in the game list (for now). When you start the launcher any XBLIG titles you have installed will be shown in a prompt for you to select which one to start. They are also listed in the Content tab on the launcher's info pane. This experience will probably improve in the future so no need to tell me how awkward it is. I know.
-  
-- Q: How to tell what options a particular game might need?<br>
-  A: Many games that are not running well by default require one or two simple config changes that make them (near) perfect. To find out, check the Compatibility section in game details pane. If there is an existing compatibility page there will be a link to Master, Canary, or both. Prefer information on the Canary page, you will often find the answer there.
+## Downloads
 
-- Q: Why are translations into language X so bad?<br>
-  A: They're AI-generated, if you speak the language and want to help edit the relevant .po file in the assets directory and submit it. If you don't know how to use git then just open a bug and attach the fixed .po file. Best way to edit those is with a program called Poedit. Or just open a bug and tell me what translation is bad and how to improve it.
+Download XeniOS from
+[GitHub Releases](https://github.com/xenios-jp/XeniOS/releases).
 
-- Q: Should I use the Windows build with wine/proton on Linux?<br>
-  A: The native build for Linux is quite competitive with Windows now and is recommended over wine/proton.
+- [Latest GitHub release](https://github.com/xenios-jp/XeniOS/releases/latest)
+- [All GitHub releases](https://github.com/xenios-jp/XeniOS/releases)
 
-- Q: Why is macOS build not as capable as Windows / Linux?<br>
-  A: macOS is the newest port, with a completely different CPU and GPU backends that have not had nearly the amount of testing of the other platforms. Many games will have issues on macOS that run and render fine on Windows and Linux. This is working as intended for now. No need to tell me about issues you find with the macOS port. I know.
+## Quickstart
 
-- Q: Can you add ARM64 Linux or Windows builds?<br>
-  A: Yes, and I choose not to, there is no need to send me PRs or requests for these builds. They will be made available when I'm ready to support them, in the meantime you can build from source if you really want to run them.
-  
-- Q: Will you accept donations of money or games/hardware for testing?<br>
-  A: No, this project is strictly a hobby and I would like to keep it that way. I pay for all games/hardware I test out of my own pocket and do not want to receive any compensation for my work on Xenia.
+Start with the public docs at [xenios.jp/docs](https://xenios.jp/docs).
 
+## FAQ
+
+See the public FAQ at [xenios.jp/faq](https://xenios.jp/faq).
+
+## Game Compatibility
+
+Browse currently tracked games on
+[xenios.jp/compatibility](https://xenios.jp/compatibility).
+
+To file a compatibility report, use the
+[GitHub compatibility tracker](https://github.com/xenios-jp/game-compatibility/issues/new/choose).
+
+## Building
+
+See [building.md](docs/building.md) for setup and information about the
+`xb` script. When writing code, check the [style guide](docs/style_guide.md)
+and be sure to run clang-format!
+
+## Contributors Wanted!
+
+Have some spare time, know advanced C++, and want to write an emulator?
+Contribute! There's a ton of work that needs to be done, a lot of which
+is wide open greenfield fun.
+
+**For general rules and guidelines please see [CONTRIBUTING.md](.github/CONTRIBUTING.md).**
+
+Fixes and optimizations are always welcome, especially around Apple platform
+performance, UI polish, compatibility coverage, packaging, and tooling.
+
+Start with the
+[XeniOS issue tracker](https://github.com/xenios-jp/XeniOS/issues),
+join the [XeniOS Discord](https://discord.gg/QwcTtNKTGf), check
+[CONTRIBUTING.md](.github/CONTRIBUTING.md), and coordinate before starting
+larger work.
+
+## Disclaimer
+
+The goal of this project is to experiment, research, and educate on the topic
+of emulation of modern devices and operating systems. **It is not for enabling
+illegal activity**. All information is obtained via reverse engineering of
+legally purchased devices and games and information made public on the internet
+(you'd be surprised what's indexed on Google...).
