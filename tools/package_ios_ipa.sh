@@ -6,8 +6,8 @@ usage() {
 Usage: tools/package_ios_ipa.sh [options] APP_BUNDLE REQUESTED_ENTITLEMENTS IPA_OUT [REQUESTED_OUT] [SIGNED_OUT]
 
 Packages an iOS .app bundle as an IPA by copying it into Payload, ad-hoc
-signing the copied app with REQUESTED_ENTITLEMENTS, and emitting entitlement
-helper files:
+signing the copied app with REQUESTED_ENTITLEMENTS (its frameworks and
+extensions without them), and emitting entitlement helper files:
 - REQUESTED_OUT: the entitlements plist the build asks codesign/Xcode to use.
 - SIGNED_OUT: the entitlements extracted from the copied Payload app signature.
 
@@ -106,7 +106,25 @@ if [ -n "$bundle_identifier" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_identifier" \
     "$payload_app/Info.plist"
 fi
-codesign --force --deep --sign - --entitlements "$requested_entitlements" "$payload_app"
+app_identifier="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$payload_app/Info.plist")"
+# Nested code is signed first and apart from the app: --deep would give the
+# app's entitlements to its extensions. An extension takes the app's version and
+# an identifier under the app's (com.xenios.crash-reporter -> <app id>.crash-reporter).
+shopt -s nullglob
+for nested in "$payload_app"/Frameworks/*.dylib "$payload_app"/Frameworks/*.framework; do
+  codesign --force --sign - "$nested"
+done
+for appex in "$payload_app"/Extensions/*.appex "$payload_app"/PlugIns/*.appex; do
+  appex_identifier="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$appex/Info.plist")"
+  /usr/libexec/PlistBuddy \
+    -c "Set :CFBundleIdentifier $app_identifier.${appex_identifier##*.}" \
+    -c "Set :CFBundleShortVersionString $short_version" \
+    -c "Set :CFBundleVersion $build_number" \
+    "$appex/Info.plist"
+  codesign --force --sign - "$appex"
+done
+shopt -u nullglob
+codesign --force --sign - --entitlements "$requested_entitlements" "$payload_app"
 
 if [ -n "$signed_out" ]; then
   signed_dir="$(dirname "$signed_out")"
