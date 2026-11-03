@@ -29,6 +29,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
   XeniaIOSGameActionPatches,
   XeniaIOSGameActionConvertToZar,
   XeniaIOSGameActionCopyLaunchURL,
+  XeniaIOSGameActionSystemLink,
 };
 
 @interface XeniaIOSGameActionsViewController : XESheetTableViewController

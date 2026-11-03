@@ -15,7 +15,10 @@ namespace {
 constexpr BOOL kOnlineFeaturesDefault = YES;
 
 NSString* const kOnlineFeaturesKey = @"XeniaOnlineFeaturesEnabled";
-NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeAnswered";
+// The notice revision last answered. 1 covered fetching and reports, 2 added System
+// Link, which shows other players the device's IP address.
+NSString* const kOnlineFeaturesNoticeKey = @"XeniaOnlineFeaturesNoticeRevision";
+constexpr NSInteger kOnlineFeaturesNoticeRevision = 2;
 
 }  // namespace
 
@@ -42,9 +45,11 @@ NSString* xe_ios_online_features_off_message(void) {
 }
 
 BOOL xe_ios_online_features_notice_pending(void) {
-  return ![[NSUserDefaults standardUserDefaults] boolForKey:kOnlineFeaturesNoticeKey];
+  return [[NSUserDefaults standardUserDefaults] integerForKey:kOnlineFeaturesNoticeKey] <
+         kOnlineFeaturesNoticeRevision;
 }
 
 void xe_ios_set_online_features_notice_answered(void) {
-  [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnlineFeaturesNoticeKey];
+  [[NSUserDefaults standardUserDefaults] setInteger:kOnlineFeaturesNoticeRevision
+                                             forKey:kOnlineFeaturesNoticeKey];
 }
