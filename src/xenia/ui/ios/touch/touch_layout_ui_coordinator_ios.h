@@ -14,6 +14,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import "xenia/ui/ios/shared/ios_status_toast.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -44,7 +46,7 @@ class IOSTouchRuntimeModel;
 - (void)touchLayoutCoordinatorShowLayoutLibraryWithItems:
             (NSArray<XeniaTouchLayoutLibraryItem*>*)items
                                     currentLayoutLocalID:(NSString*)currentLayoutLocalID;
-- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text;
+- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text style:(XeniaIOSStatusToastStyle)style;
 - (void)touchLayoutCoordinatorPresentAlertWithTitle:(NSString*)title message:(NSString*)message;
 - (void)touchLayoutCoordinatorPresentKeyboardPromptWithTitle:(NSString*)title
                                                  description:(NSString*)description

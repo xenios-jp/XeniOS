@@ -330,7 +330,8 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   detail_label_.adjustsFontForContentSizeCategory = YES;
   detail_label_.textColor = SecondaryColor();
   detail_label_.numberOfLines = 0;
-  detail_label_.text = @"Expect stutter and missing effects for a few minutes.";
+  detail_label_.text = NSLocalizedString(@"Expect stutter and missing effects for a few minutes.",
+                                         @"Detail line of the expanded shader compile indicator");
   detail_label_.alpha = 0.0;
   [capsule_ addSubview:detail_label_];
 
@@ -549,23 +550,34 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 
 - (NSString*)titleText {
   if (expanded_) {
-    return @"Building shaders for this game";
+    return NSLocalizedString(@"Building shaders for this game",
+                             @"Shader compile indicator title, expanded");
   }
   if (phase_ == Phase::kLoadingCache) {
-    return @"Loading shader cache";
+    return NSLocalizedString(@"Loading shader cache",
+                             @"Shader compile indicator title while loading the cache");
   }
-  return [NSString stringWithFormat:@"Compiling shaders · %llu", (unsigned long long)backlog_];
+  return
+      [NSString stringWithFormat:
+                    NSLocalizedString(
+                        @"Compiling shaders · %llu",
+                        @"Shader compile indicator title; %llu is the number of shaders waiting"),
+                    (unsigned long long)backlog_];
 }
 
 - (NSString*)spokenText {
   if (expanded_) {
-    return @"Building shaders for this game. Expect stutter and missing effects for a few "
-           @"minutes.";
+    return NSLocalizedString(
+        @"Building shaders for this game. Expect stutter and missing effects for a few minutes.",
+        @"VoiceOver text for the shader compile indicator");
   }
   if (phase_ == Phase::kLoadingCache) {
-    return @"Loading shader cache. Expect stutter until it finishes.";
+    return NSLocalizedString(@"Loading shader cache. Expect stutter until it finishes.",
+                             @"VoiceOver text for the shader compile indicator");
   }
-  return @"Compiling shaders. Expect stutter and missing effects until they finish.";
+  return NSLocalizedString(
+      @"Compiling shaders. Expect stutter and missing effects until they finish.",
+      @"VoiceOver text for the shader compile indicator");
 }
 
 - (void)contentSizeCategoryChanged {

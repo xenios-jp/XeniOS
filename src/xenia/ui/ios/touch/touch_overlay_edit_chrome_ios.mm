@@ -72,7 +72,7 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
 
   title_label_ = [[UILabel alloc] initWithFrame:CGRectZero];
   title_label_.backgroundColor = [UIColor clearColor];
-  title_label_.text = @"Edit";
+  title_label_.text = NSLocalizedString(@"Edit", @"Title of the touch control edit panel");
   xe_apply_label_font(title_label_, UIFontTextStyleBody, 16.0, UIFontWeightSemibold);
   title_label_.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.94];
   title_label_.adjustsFontSizeToFitWidth = YES;
@@ -88,11 +88,16 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
   selection_label_.minimumScaleFactor = 0.75f;
   [self addSubview:selection_label_];
 
-  library_button_ = CreateChromeButton(@"Layouts", self, @selector(layoutLibraryButtonPressed:));
+  library_button_ =
+      CreateChromeButton(NSLocalizedString(@"Layouts", @"Button opening the touch layout library"),
+                         self, @selector(layoutLibraryButtonPressed:));
   [self addSubview:library_button_];
 
-  layout_library_filter_control_ =
-      [[UISegmentedControl alloc] initWithItems:@[ @"Official", @"Saved", @"Favorites" ]];
+  layout_library_filter_control_ = [[UISegmentedControl alloc] initWithItems:@[
+    NSLocalizedString(@"Official", @"Layout library filter: layouts bundled with the app"),
+    NSLocalizedString(@"Saved", @"Layout library filter: layouts the user saved"),
+    NSLocalizedString(@"Favorites", @"Layout library filter: favorite layouts")
+  ]];
   layout_library_filter_control_.selectedSegmentIndex = XeniaTouchLayoutLibraryFilterOfficial;
   layout_library_filter_control_.hidden = YES;
   layout_library_filter_control_.backgroundColor =
@@ -114,16 +119,20 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
                            forControlEvents:UIControlEventValueChanged];
   [self addSubview:layout_library_filter_control_];
 
-  layout_library_save_button_ =
-      CreateChromeButton(@"Save Copy", self, @selector(layoutLibrarySaveButtonPressed:));
+  layout_library_save_button_ = CreateChromeButton(
+      NSLocalizedString(@"Save Copy",
+                        @"Layout library button that saves a copy of the current layout"),
+      self, @selector(layoutLibrarySaveButtonPressed:));
   layout_library_save_button_.hidden = YES;
   [self addSubview:layout_library_save_button_];
-  layout_library_import_button_ =
-      CreateChromeButton(@"Import", self, @selector(layoutLibraryImportButtonPressed:));
+  layout_library_import_button_ = CreateChromeButton(
+      NSLocalizedString(@"Import", @"Layout library button that imports a layout file"), self,
+      @selector(layoutLibraryImportButtonPressed:));
   layout_library_import_button_.hidden = YES;
   [self addSubview:layout_library_import_button_];
-  layout_library_reset_button_ =
-      CreateChromeButton(@"Reset", self, @selector(layoutLibraryResetButtonPressed:));
+  layout_library_reset_button_ = CreateChromeButton(
+      NSLocalizedString(@"Reset", @"Layout library button that resets the layout"), self,
+      @selector(layoutLibraryResetButtonPressed:));
   layout_library_reset_button_.hidden = YES;
   [layout_library_reset_button_ setTitleColor:[[XeniaTheme statusWarning] colorWithAlphaComponent:0.98]
                                      forState:UIControlStateNormal];
@@ -217,11 +226,13 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
 
   if (state_.showing_layout_library) {
     edit_panel_.hidden = YES;
-    title_label_.text = @"Layouts";
+    title_label_.text = NSLocalizedString(@"Layouts", @"Title of the touch layout library");
     title_label_.hidden = !state_.editing_enabled;
-    selection_label_.text = @"Apply a layout or manage saved copies";
+    selection_label_.text = NSLocalizedString(@"Apply a layout or manage saved copies",
+                                              @"Subtitle of the touch layout library");
     selection_label_.hidden = !state_.editing_enabled;
-    [library_button_ setTitle:@"Back" forState:UIControlStateNormal];
+    [library_button_ setTitle:NSLocalizedString(@"Back", @"Button leaving the touch layout library")
+                     forState:UIControlStateNormal];
     library_button_.hidden = !state_.editing_enabled;
     layout_library_filter_control_.hidden = !state_.editing_enabled;
     layout_library_save_button_.hidden = !state_.editing_enabled;

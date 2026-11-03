@@ -47,13 +47,13 @@ NSString* XeniaTouchShortActionName(xe::hid::touch::IOSTouchAction action) {
   using xe::hid::touch::IOSTouchAction;
   switch (action) {
     case IOSTouchAction::kNone:
-      return @"Off";
+      return NSLocalizedString(@"Off", @"Very short badge on a touch control: action is off");
     case IOSTouchAction::kMove:
-      return @"Mv";
+      return NSLocalizedString(@"Mv", @"Very short badge on a touch control: Move");
     case IOSTouchAction::kLook:
-      return @"Lk";
+      return NSLocalizedString(@"Lk", @"Very short badge on a touch control: Look");
     case IOSTouchAction::kPauseMenu:
-      return @"P";
+      return NSLocalizedString(@"P", @"Very short badge on a touch control: Pause");
     case IOSTouchAction::kButtonA:
       return @"A";
     case IOSTouchAction::kButtonB:
@@ -71,9 +71,9 @@ NSString* XeniaTouchShortActionName(xe::hid::touch::IOSTouchAction action) {
     case IOSTouchAction::kRightTrigger:
       return @"RT";
     case IOSTouchAction::kBack:
-      return @"Bk";
+      return NSLocalizedString(@"Bk", @"Very short badge on a touch control: Back button");
     case IOSTouchAction::kStart:
-      return @"St";
+      return NSLocalizedString(@"St", @"Very short badge on a touch control: Start button");
     case IOSTouchAction::kLeftThumb:
       return @"LS";
     case IOSTouchAction::kRightThumb:
@@ -87,7 +87,8 @@ NSString* XeniaTouchShortActionName(xe::hid::touch::IOSTouchAction action) {
     case IOSTouchAction::kDpadRight:
       return @"DR";
   }
-  return @"Ctrl";
+  return NSLocalizedString(@"Ctrl",
+                           @"Very short badge on a touch control: generic controller input");
 }
 
 NSString* XeniaTouchShortAnalogOutputName(
@@ -95,13 +96,14 @@ NSString* XeniaTouchShortAnalogOutputName(
   using xe::hid::touch::IOSTouchAnalogOutput;
   switch (output) {
     case IOSTouchAnalogOutput::kNone:
-      return @"Off";
+      return NSLocalizedString(@"Off",
+                               @"Very short badge on a touch control: analog output is off");
     case IOSTouchAnalogOutput::kLook:
-      return @"Lk";
+      return NSLocalizedString(@"Lk", @"Very short badge on a touch control: Look");
     case IOSTouchAnalogOutput::kMove:
-      return @"Mv";
+      return NSLocalizedString(@"Mv", @"Very short badge on a touch control: Move");
   }
-  return @"Off";
+  return NSLocalizedString(@"Off", @"Very short badge on a touch control: analog output is off");
 }
 
 NSString* XeniaTouchBehaviorBadgeText(
@@ -151,7 +153,8 @@ NSString* XeniaTouchBehaviorBadgeText(
 
   if (control.type == xe::hid::touch::IOSTouchControlType::kMoveStick &&
       control.move_with_dpad_ring) {
-    [chips addObject:@"DPad"];
+    [chips
+        addObject:NSLocalizedString(@"DPad", @"Very short badge on a touch control: D-pad ring")];
   }
 
   if (!chips.count) {

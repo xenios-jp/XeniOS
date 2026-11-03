@@ -288,11 +288,13 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
   if (!presenter) {
     return;
   }
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:title ?: @"Notice"
-                                          message:message ?: @""
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:title
+                                   ?: NSLocalizedString(@"Notice",
+                                                        @"Fallback title of a plain alert")
+                       message:message ?: @""
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
   [presenter presentViewController:alert animated:YES completion:nil];

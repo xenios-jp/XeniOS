@@ -401,7 +401,10 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
       return;
     }
   }
-  [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+  [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                 @"Selected layout is no longer available.",
+                                                 @"Toast: the chosen layout is gone")
+                                       style:XeniaIOSStatusToastStyleInfo];
 }
 
 - (void)applyTouchLayoutInfo:(const IOSTouchLocalLayoutInfo&)info {
@@ -413,7 +416,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   xe::hid::touch::IOSTouchLayoutModel layout;
   NSString* error_message = nil;
   if (![self loadTouchLayoutModelAtPath:info.path model:&layout error:&error_message]) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Layout could not be loaded."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Layout could not be loaded.",
+                                                          @"Toast: a layout failed to load")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
@@ -422,8 +429,13 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   [_host touchLayoutCoordinatorRefreshTouchOverlayLayoutModel];
   [self refreshTouchLayoutLibraryOverlayIfVisible];
   [self saveCurrentLayoutForTitleID:[_host touchLayoutCoordinatorActiveTitleID]];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Applied %@.", ToNSString(info.display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Applied %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               ToNSString(info.display_name)]
+                                    style:XeniaIOSStatusToastStyleSuccess];
 }
 
 - (void)presentRenameSheet {
@@ -433,14 +445,19 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                      [](const IOSTouchLocalLayoutInfo& info) { return info.official; }),
       local_layouts.end());
   if (local_layouts.empty()) {
-    [_host touchLayoutCoordinatorSetStatusText:@"No saved local layouts to rename."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"No saved local layouts to rename.",
+                                                   @"Toast: there is no saved layout to rename")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
 
-  UIAlertController* sheet =
-      [UIAlertController alertControllerWithTitle:@"Rename Saved Layout"
-                                          message:@"Choose a local layout to rename."
-                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  UIAlertController* sheet = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Rename Saved Layout",
+                                                 @"Alert title: choose a layout to rename")
+                       message:NSLocalizedString(@"Choose a local layout to rename.",
+                                                 @"Alert message: choose a layout to rename")
+                preferredStyle:UIAlertControllerStyleActionSheet];
   __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
   for (const IOSTouchLocalLayoutInfo& info : local_layouts) {
     IOSTouchLocalLayoutInfo selected_info = info;
@@ -454,9 +471,10 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                           [unsafe_self renameLayout:selected_info currentName:current_name];
                         }]];
   }
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [sheet
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
 
   [self presentActionSheet:sheet];
 }
@@ -464,11 +482,17 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 - (void)renameLayoutWithLocalID:(NSString*)localID {
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   if (selected_info.official) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Official presets cannot be renamed."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Official presets cannot be renamed.",
+                                                   @"Toast: bundled presets cannot be renamed")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   [self renameLayout:selected_info currentName:ToNSString(selected_info.display_name)];
@@ -477,9 +501,13 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 - (void)renameLayout:(const IOSTouchLocalLayoutInfo&)selected_info
          currentName:(NSString*)current_name {
   __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
-  [_host touchLayoutCoordinatorPresentKeyboardPromptWithTitle:@"Rename Layout"
-                                                  description:@"Enter a new name for the saved "
-                                                              @"local layout."
+  [_host touchLayoutCoordinatorPresentKeyboardPromptWithTitle:NSLocalizedString(
+                                                                  @"Rename Layout",
+                                                                  @"Prompt title: rename a layout")
+                                                  description:NSLocalizedString(
+                                                                  @"Enter a new name for the saved "
+                                                                  @"local layout.",
+                                                                  @"Prompt text: rename a layout")
                                                   defaultText:current_name
                                                    completion:^(BOOL cancelled, NSString* text) {
                                                      [unsafe_self finishRenameLayout:selected_info
@@ -503,7 +531,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   xe::hid::touch::IOSTouchLayoutModel layout;
   NSString* error_message = nil;
   if (![self loadTouchLayoutModelAtPath:selected_info.path model:&layout error:&error_message]) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Layout could not be loaded."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Layout could not be loaded.",
+                                                          @"Toast: a layout failed to load")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
@@ -517,7 +549,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   }
 
   if (![self writeTouchLayoutModel:layout path:next_path error:&error_message]) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Failed to rename saved layout."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Failed to rename saved layout.",
+                                                          @"Toast: renaming a layout failed")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
@@ -525,9 +561,13 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     std::error_code remove_ec;
     std::filesystem::remove(selected_info.path, remove_ec);
     if (remove_ec) {
-      [_host touchLayoutCoordinatorSetStatusText:
-                 [NSString stringWithFormat:@"Renamed %@, but the old file could not be removed.",
-                                            trimmed]];
+      [_host
+          touchLayoutCoordinatorSetStatusText:
+              [NSString stringWithFormat:NSLocalizedString(
+                                             @"Renamed %@, but the old file could not be removed.",
+                                             @"Toast; %@ is the new layout name"),
+                                         trimmed]
+                                        style:XeniaIOSStatusToastStyleError];
       return;
     }
   }
@@ -548,7 +588,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   }
 
   [self refreshTouchLayoutLibraryOverlayIfVisible];
-  [_host touchLayoutCoordinatorSetStatusText:[NSString stringWithFormat:@"Renamed %@.", trimmed]];
+  [_host touchLayoutCoordinatorSetStatusText:
+             [NSString stringWithFormat:NSLocalizedString(@"Renamed %@.",
+                                                          @"Toast; %@ is the new layout name"),
+                                        trimmed]
+                                       style:XeniaIOSStatusToastStyleSuccess];
 }
 
 - (void)presentDeleteSheet {
@@ -558,14 +602,19 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                      [](const IOSTouchLocalLayoutInfo& info) { return info.official; }),
       local_layouts.end());
   if (local_layouts.empty()) {
-    [_host touchLayoutCoordinatorSetStatusText:@"No saved local layouts to delete."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"No saved local layouts to delete.",
+                                                   @"Toast: there is no saved layout to delete")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
 
-  UIAlertController* sheet =
-      [UIAlertController alertControllerWithTitle:@"Delete Saved Layout"
-                                          message:@"Choose a local layout to delete."
-                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  UIAlertController* sheet = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Delete Saved Layout",
+                                                 @"Alert title: choose a layout to delete")
+                       message:NSLocalizedString(@"Choose a local layout to delete.",
+                                                 @"Alert message: choose a layout to delete")
+                preferredStyle:UIAlertControllerStyleActionSheet];
   __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
   for (const IOSTouchLocalLayoutInfo& info : local_layouts) {
     IOSTouchLocalLayoutInfo selected_info = info;
@@ -579,9 +628,10 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                           [unsafe_self confirmDeleteLayout:selected_info currentName:current_name];
                         }]];
   }
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [sheet
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
 
   [self presentActionSheet:sheet];
 }
@@ -589,11 +639,17 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 - (void)deleteLayoutWithLocalID:(NSString*)localID {
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   if (selected_info.official) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Official presets cannot be deleted."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Official presets cannot be deleted.",
+                                                   @"Toast: bundled presets cannot be deleted")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   [self confirmDeleteLayout:selected_info currentName:ToNSString(selected_info.display_name)];
@@ -601,21 +657,25 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 
 - (void)confirmDeleteLayout:(const IOSTouchLocalLayoutInfo&)selected_info
                 currentName:(NSString*)current_name {
-  UIAlertController* confirm =
-      [UIAlertController alertControllerWithTitle:@"Delete Layout?"
-                                          message:@"This removes the saved local layout file."
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-  __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Delete Layout?",
+                                                 @"Alert title: confirm deleting a layout")
+                       message:NSLocalizedString(@"This removes the saved local layout file.",
+                                                 @"Alert message: confirm deleting a layout")
+                preferredStyle:UIAlertControllerStyleAlert];
   [confirm
-      addAction:[UIAlertAction actionWithTitle:@"Delete"
-                                         style:UIAlertActionStyleDestructive
-                                       handler:^(__unused UIAlertAction* delete_action) {
-                                         [unsafe_self deleteLayout:selected_info
-                                                       currentName:current_name];
-                                       }]];
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+  __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Delete", @"Alert button: confirm deleting a layout")
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(__unused UIAlertAction* delete_action) {
+                                   [unsafe_self deleteLayout:selected_info
+                                                 currentName:current_name];
+                                 }]];
   [[_host touchLayoutCoordinatorTopPresenter] presentViewController:confirm
                                                            animated:YES
                                                          completion:nil];
@@ -626,7 +686,9 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   std::error_code remove_ec;
   const bool removed = std::filesystem::remove(selected_info.path, remove_ec);
   if (remove_ec || !removed) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Failed to delete saved layout."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(@"Failed to delete saved layout.",
+                                                                 @"Toast: deleting a layout failed")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
@@ -643,8 +705,13 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   }
 
   [self refreshTouchLayoutLibraryOverlayIfVisible];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Deleted %@.", current_name]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Deleted %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               current_name]
+                                    style:XeniaIOSStatusToastStyleSuccess];
 }
 
 - (void)saveCurrentLayoutCopy {
@@ -653,18 +720,23 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     return;
   }
 
-  NSString* suggested_name = runtime_model->layout().display_name.empty()
-                                 ? @"Custom Layout"
-                                 : ToNSString(runtime_model->layout().display_name);
+  NSString* suggested_name =
+      runtime_model->layout().display_name.empty()
+          ? NSLocalizedString(@"Custom Layout", @"Default name suggested when saving a layout copy")
+          : ToNSString(runtime_model->layout().display_name);
   __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
-  [_host touchLayoutCoordinatorPresentKeyboardPromptWithTitle:@"Save Layout Copy"
-                                                  description:@"Enter a name for the saved local "
-                                                              @"layout."
-                                                  defaultText:suggested_name
-                                                   completion:^(BOOL cancelled, NSString* text) {
-                                                     [unsafe_self finishSaveLayoutCopy:text
-                                                                             cancelled:cancelled];
-                                                   }];
+  [_host
+      touchLayoutCoordinatorPresentKeyboardPromptWithTitle:
+          NSLocalizedString(@"Save Layout Copy", @"Prompt title: save a copy of the layout")
+                                               description:
+                                                   NSLocalizedString(
+                                                       @"Enter a name for the saved local layout.",
+                                                       @"Prompt text: save a copy of the layout")
+                                               defaultText:suggested_name
+                                                completion:^(BOOL cancelled, NSString* text) {
+                                                  [unsafe_self finishSaveLayoutCopy:text
+                                                                          cancelled:cancelled];
+                                                }];
 }
 
 - (void)finishSaveLayoutCopy:(NSString*)text cancelled:(BOOL)cancelled {
@@ -693,13 +765,20 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   if (![self writeTouchLayoutModel:layout
                               path:[self touchLayoutPathForLocalID:local_id]
                              error:&error_message]) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Failed to save layout copy."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Failed to save layout copy.",
+                                                          @"Toast: saving a layout copy failed")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
   [self refreshTouchLayoutLibraryOverlayIfVisible];
   [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Saved copy %@.", trimmed]];
+             [NSString stringWithFormat:NSLocalizedString(@"Saved copy %@.",
+                                                          @"Toast; %@ is the new layout name"),
+                                        trimmed]
+                                       style:XeniaIOSStatusToastStyleSuccess];
 }
 
 - (void)importFromFile {
@@ -721,7 +800,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     [url stopAccessingSecurityScopedResource];
   }
   if (!ok) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Failed to import touch layout."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Failed to import touch layout.",
+                                                          @"Toast: importing a layout failed")
+                                         style:XeniaIOSStatusToastStyleError];
   } else if ([self runtimeModel]) {
     std::string base_name = imported_layout.display_name;
     if (base_name.empty()) {
@@ -746,10 +829,17 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
       [self refreshTouchLayoutLibraryOverlayIfVisible];
       [self saveCurrentLayoutForTitleID:[_host touchLayoutCoordinatorActiveTitleID]];
       [_host touchLayoutCoordinatorSetStatusText:
-                 [NSString stringWithFormat:@"Imported %@.",
-                                            ToNSString(imported_layout.display_name)]];
+                 [NSString stringWithFormat:NSLocalizedString(@"Imported %@.",
+                                                              @"Toast; %@ is the layout name"),
+                                            ToNSString(imported_layout.display_name)]
+                                           style:XeniaIOSStatusToastStyleSuccess];
     } else {
-      [_host touchLayoutCoordinatorSetStatusText:write_error ?: @"Failed to save imported touch layout."];
+      [_host
+          touchLayoutCoordinatorSetStatusText:write_error
+                                                  ?: NSLocalizedString(
+                                                         @"Failed to save imported touch layout.",
+                                                         @"Toast: saving an imported layout failed")
+                                        style:XeniaIOSStatusToastStyleError];
     }
   }
   [_host touchLayoutCoordinatorSetGameplayModalPresentationPending:NO];
@@ -768,7 +858,11 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                                       (base_name + ".touchlayout.toml");
   NSString* error_message = nil;
   if (![self writeTouchLayoutModel:layout path:export_path error:&error_message]) {
-    [_host touchLayoutCoordinatorSetStatusText:error_message ?: @"Failed to export touch layout."];
+    [_host touchLayoutCoordinatorSetStatusText:error_message
+                                                   ?: NSLocalizedString(
+                                                          @"Failed to export touch layout.",
+                                                          @"Toast: exporting a layout failed")
+                                         style:XeniaIOSStatusToastStyleError];
     return;
   }
 
@@ -802,7 +896,10 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 - (void)exportLayoutWithLocalID:(NSString*)localID {
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   [self exportTouchLayoutModel:selected_info.layout
@@ -811,45 +908,71 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
 
 - (void)setLayoutDefaultForCurrentTitleWithLocalID:(NSString*)localID {
   if (![_host touchLayoutCoordinatorActiveTitleID]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"No active game title for this layout default."];
+    [_host touchLayoutCoordinatorSetStatusText:
+               NSLocalizedString(@"No active game title for this layout default.",
+                                 @"Toast: no game is active, so no per-game default can be set")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   [self applyTouchLayoutInfo:selected_info];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Default for this game is %@.",
-                                        ToNSString(selected_info.display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Default for this game is %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               ToNSString(
+                                                                   selected_info.display_name)]
+                                    style:XeniaIOSStatusToastStyleInfo];
 }
 
 - (void)setLayoutDefaultForAllGamesWithLocalID:(NSString*)localID {
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   WriteGlobalTouchLayoutAssignment(selected_info.local_id);
   [self refreshTouchLayoutLibraryOverlayIfVisible];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Default for all games is %@.",
-                                        ToNSString(selected_info.display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Default for all games is %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               ToNSString(
+                                                                   selected_info.display_name)]
+                                    style:XeniaIOSStatusToastStyleInfo];
 }
 
 - (void)setLayoutFavoriteWithLocalID:(NSString*)localID favorite:(BOOL)favorite {
   IOSTouchLocalLayoutInfo selected_info;
   if (![self findTouchLayoutInfoWithLocalID:localID info:&selected_info]) {
-    [_host touchLayoutCoordinatorSetStatusText:@"Selected layout is no longer available."];
+    [_host touchLayoutCoordinatorSetStatusText:NSLocalizedString(
+                                                   @"Selected layout is no longer available.",
+                                                   @"Toast: the chosen layout is gone")
+                                         style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   SetFavoriteTouchLayoutLocalID(selected_info.local_id, favorite);
   [self refreshTouchLayoutLibraryOverlayIfVisible];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"%@ %@.",
-                                        favorite ? @"Favorited" : @"Unfavorited",
-                                        ToNSString(selected_info.display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:
+          [NSString stringWithFormat:favorite ? NSLocalizedString(@"Favorited %@.",
+                                                                  @"Toast; %@ is the layout name")
+                                              : NSLocalizedString(@"Unfavorited %@.",
+                                                                  @"Toast; %@ is the layout name"),
+                                     ToNSString(selected_info.display_name)]
+                                    style:XeniaIOSStatusToastStyleInfo];
 }
 
 - (void)resetToOfficialPreset {
@@ -866,8 +989,14 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   [_host touchLayoutCoordinatorRefreshTouchOverlayLayoutModel];
   [self refreshTouchLayoutLibraryOverlayIfVisible];
   [self saveCurrentLayoutForTitleID:[_host touchLayoutCoordinatorActiveTitleID]];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Restored %@.", ToNSString(preset_layout.display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Restored %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               ToNSString(
+                                                                   preset_layout.display_name)]
+                                    style:XeniaIOSStatusToastStyleSuccess];
 }
 
 - (BOOL)handleExternalFileURL:(NSURL*)url {
@@ -942,20 +1071,31 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   [_pendingInstallSuggestedName release];
   _pendingInstallSuggestedName = nil;
 
-  NSString* display_for_prompt = suggested.length ? suggested : @"this layout";
-  NSString* confirm_message =
-      [NSString stringWithFormat:@"Install \"%@\" into your XeniOS touch layout library?",
-                                 display_for_prompt];
+  NSString* display_for_prompt =
+      suggested.length
+          ? suggested
+          : NSLocalizedString(
+                @"this layout",
+                @"Placeholder for a layout whose name is unknown, used in the install prompt");
+  NSString* confirm_message = [NSString
+      stringWithFormat:NSLocalizedString(@"Install \"%@\" into your XeniOS touch layout library?",
+                                         @"Alert message; %@ is the layout name"),
+                       display_for_prompt];
   XELOGD("iOS: Presenting touch layout install confirm for {}", display_for_prompt.UTF8String);
   NSString* error_message = nil;
-  if (![self installTouchLayoutFromTOMLBytes:bytes
-                               suggestedName:suggested
-                                confirmTitle:@"Install Touch Layout"
-                              confirmMessage:confirm_message
-                                confirmLabel:@"Install"
-                                       error:&error_message]) {
+  if (![self
+          installTouchLayoutFromTOMLBytes:bytes
+                            suggestedName:suggested
+                             confirmTitle:NSLocalizedString(@"Install Touch Layout",
+                                                            @"Alert title: install a touch layout")
+                           confirmMessage:confirm_message
+                             confirmLabel:NSLocalizedString(@"Install", @"Alert button: install")
+                                    error:&error_message]) {
     if (error_message.length) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout" message:error_message];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:error_message];
     }
   }
 }
@@ -971,9 +1111,13 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   }
   NSString* absolute = url.absoluteString ?: @"";
   if (absolute.length > kXeniaIOSTouchLayoutURLMaxLength) {
-    [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                              message:@"This install link is too long to be safe "
-                                                      @"and was rejected."];
+    [_host touchLayoutCoordinatorPresentAlertWithTitle:
+               NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                               message:
+                                                   NSLocalizedString(
+                                                       @"This install link is too long to be safe "
+                                                       @"and was rejected.",
+                                                       @"Alert message: install link is too long")];
     return YES;
   }
 
@@ -993,26 +1137,44 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
         initWithBase64EncodedString:file_param
                             options:NSDataBase64DecodingIgnoreUnknownCharacters] autorelease];
     if (!decoded || decoded.length == 0) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                                message:@"This install link's payload could not be "
-                                                        @"decoded."];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:NSLocalizedString(
+                                                          @"This install link's payload could not "
+                                                          @"be decoded.",
+                                                          @"Alert message: install link payload "
+                                                          @"cannot be decoded")];
       return YES;
     }
     if (decoded.length > kXeniaIOSTouchLayoutMaxBytes) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                                message:@"The embedded layout is larger than 64 KB "
-                                                        @"and was rejected."];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:NSLocalizedString(
+                                                          @"The embedded layout is larger than 64 "
+                                                          @"KB and was rejected.",
+                                                          @"Alert message: embedded layout is too "
+                                                          @"large")];
       return YES;
     }
     NSString* error_message = nil;
-    if (![self installTouchLayoutFromTOMLBytes:decoded
-                                 suggestedName:@"shared_layout"
-                                  confirmTitle:@"Install Touch Layout"
-                                confirmMessage:@"Install the touch layout from this link?"
-                                  confirmLabel:@"Install"
-                                         error:&error_message]) {
+    if (![self
+            installTouchLayoutFromTOMLBytes:decoded
+                              suggestedName:@"shared_layout"
+                               confirmTitle:NSLocalizedString(
+                                                @"Install Touch Layout",
+                                                @"Alert title: install a touch layout")
+                             confirmMessage:NSLocalizedString(
+                                                @"Install the touch layout from this link?",
+                                                @"Alert message: install a layout from a link")
+                               confirmLabel:NSLocalizedString(@"Install", @"Alert button: install")
+                                      error:&error_message]) {
       if (error_message.length) {
-        [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout" message:error_message];
+        [_host
+            touchLayoutCoordinatorPresentAlertWithTitle:
+                NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                                message:error_message];
       }
     }
     return YES;
@@ -1022,50 +1184,76 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     NSURL* source_url = [NSURL URLWithString:source_param];
     if (!source_url || ![source_url.scheme.lowercaseString isEqualToString:@"https"] ||
         source_url.host.length == 0) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                                message:@"Layout downloads must use a valid "
-                                                        @"https:// URL."];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:NSLocalizedString(
+                                                          @"Layout downloads must use a valid "
+                                                          @"https:// URL.",
+                                                          @"Alert message: layout downloads need "
+                                                          @"an https URL")];
       return YES;
     }
     if (source_param.length > kXeniaIOSTouchLayoutURLMaxLength) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                                message:@"The download URL is too long to be safe "
-                                                        @"and was rejected."];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:
+                                                  NSLocalizedString(
+                                                      @"The download URL is too long to be safe "
+                                                      @"and was rejected.",
+                                                      @"Alert message: download URL is too long")];
       return YES;
     }
 
     if (!xe_ios_online_features_enabled()) {
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                                message:xe_ios_online_features_off_message()];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:xe_ios_online_features_off_message()];
       return YES;
     }
 
-    NSString* host_label = source_url.host ?: @"the source";
-    NSString* prompt_message =
-        [NSString stringWithFormat:@"Download a touch layout from %@?", host_label];
-    UIAlertController* confirm =
-        [UIAlertController alertControllerWithTitle:@"Touch Layout"
-                                            message:prompt_message
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                                style:UIAlertActionStyleCancel
-                                              handler:nil]];
+    NSString* host_label =
+        source_url.host
+            ?: NSLocalizedString(@"the source",
+                                 @"Placeholder for the host name of a layout download source");
+    NSString* prompt_message = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"Download a touch layout from %@?",
+                             @"Alert message; %@ is the host name of the download source"),
+                         host_label];
+    UIAlertController* confirm = [UIAlertController
+        alertControllerWithTitle:NSLocalizedString(@"Touch Layout",
+                                                   @"Alert title for touch layout downloads")
+                         message:prompt_message
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction
+                           actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                     style:UIAlertActionStyleCancel
+                                   handler:nil]];
     __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
-    [confirm addAction:[UIAlertAction actionWithTitle:@"Download"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(__unused UIAlertAction* _action) {
-                                                [unsafe_self downloadTouchLayoutFromURL:source_url
-                                                                              hostLabel:host_label];
-                                              }]];
+    [confirm addAction:[UIAlertAction
+                           actionWithTitle:NSLocalizedString(@"Download",
+                                                             @"Alert button: start the download")
+                                     style:UIAlertActionStyleDefault
+                                   handler:^(__unused UIAlertAction* _action) {
+                                     [unsafe_self downloadTouchLayoutFromURL:source_url
+                                                                   hostLabel:host_label];
+                                   }]];
     [[_host touchLayoutCoordinatorTopPresenter] presentViewController:confirm
                                                              animated:YES
                                                            completion:nil];
     return YES;
   }
 
-  [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                            message:@"This link is missing a 'source' URL or "
-                                                    @"'file' payload."];
+  [_host touchLayoutCoordinatorPresentAlertWithTitle:
+             NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                             message:NSLocalizedString(
+                                                         @"This link is missing a 'source' URL or "
+                                                         @"'file' payload.",
+                                                         @"Alert message: install link has no "
+                                                         @"source or file")];
   return YES;
 }
 
@@ -1074,14 +1262,25 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     return;
   }
   if (!xe_ios_online_features_enabled()) {
-    [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout"
-                                              message:xe_ios_online_features_off_message()];
+    [_host touchLayoutCoordinatorPresentAlertWithTitle:
+               NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                               message:xe_ios_online_features_off_message()];
     return;
   }
 
-  NSString* display_host = host_label.length ? host_label : (source_url.host ?: @"the source");
+  NSString* display_host =
+      host_label.length
+          ? host_label
+          : (source_url.host
+                 ?: NSLocalizedString(
+                        @"the source",
+                        @"Placeholder for the host name of a layout download source"));
   [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Downloading touch layout from %@...", display_host]];
+             [NSString stringWithFormat:NSLocalizedString(
+                                            @"Downloading touch layout from %@...",
+                                            @"Toast; %@ is the host name of the download source"),
+                                        display_host]
+                                       style:XeniaIOSStatusToastStyleInfo];
 
   NSMutableURLRequest* request =
       [NSMutableURLRequest requestWithURL:source_url
@@ -1111,14 +1310,17 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   NSData* response_data = nil;
 
   if (download_error || !location) {
-    failure = download_error.localizedDescription ?: @"The touch layout could not be downloaded.";
+    failure = download_error.localizedDescription
+                  ?: NSLocalizedString(@"The touch layout could not be downloaded.",
+                                       @"Error text: download failed");
   }
 
   if (!failure && [response isKindOfClass:[NSHTTPURLResponse class]]) {
     NSHTTPURLResponse* http_response = (NSHTTPURLResponse*)response;
     if (http_response.statusCode < 200 || http_response.statusCode >= 300) {
       failure =
-          [NSString stringWithFormat:@"Download failed with HTTP %ld.",
+          [NSString stringWithFormat:NSLocalizedString(@"Download failed with HTTP %ld.",
+                                                       @"Error text; %ld is the HTTP status code"),
                                      static_cast<long>(http_response.statusCode)];
     }
   }
@@ -1126,7 +1328,8 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   if (!failure && response.expectedContentLength > 0 &&
       static_cast<unsigned long long>(response.expectedContentLength) >
           kXeniaIOSTouchLayoutMaxBytes) {
-    failure = @"The downloaded layout is larger than 64 KB and was rejected.";
+    failure = NSLocalizedString(@"The downloaded layout is larger than 64 KB and was rejected.",
+                                @"Error text: downloaded layout is too large");
   }
 
   if (!failure) {
@@ -1135,11 +1338,15 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
         [[NSFileManager defaultManager] attributesOfItemAtPath:location.path error:&file_error];
     NSNumber* file_size = [attributes objectForKey:NSFileSize];
     if (!file_size) {
-      failure = file_error.localizedDescription ?: @"The downloaded layout could not be inspected.";
+      failure = file_error.localizedDescription
+                    ?: NSLocalizedString(@"The downloaded layout could not be inspected.",
+                                         @"Error text: downloaded layout could not be inspected");
     } else if (file_size.unsignedLongLongValue == 0) {
-      failure = @"The downloaded layout was empty.";
+      failure = NSLocalizedString(@"The downloaded layout was empty.",
+                                  @"Error text: downloaded layout is empty");
     } else if (file_size.unsignedLongLongValue > kXeniaIOSTouchLayoutMaxBytes) {
-      failure = @"The downloaded layout is larger than 64 KB and was rejected.";
+      failure = NSLocalizedString(@"The downloaded layout is larger than 64 KB and was rejected.",
+                                  @"Error text: downloaded layout is too large");
     }
   }
 
@@ -1147,18 +1354,27 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     NSError* read_error = nil;
     response_data = [NSData dataWithContentsOfURL:location options:0 error:&read_error];
     if (!response_data || response_data.length == 0) {
-      failure = read_error.localizedDescription ?: @"The downloaded layout could not be read.";
+      failure = read_error.localizedDescription
+                    ?: NSLocalizedString(@"The downloaded layout could not be read.",
+                                         @"Error text: downloaded layout could not be read");
     } else if (response_data.length > kXeniaIOSTouchLayoutMaxBytes) {
-      failure = @"The downloaded layout is larger than 64 KB and was rejected.";
+      failure = NSLocalizedString(@"The downloaded layout is larger than 64 KB and was rejected.",
+                                  @"Error text: downloaded layout is too large");
       response_data = nil;
     }
   }
 
   dispatch_async(dispatch_get_main_queue(), ^{
     if (failure.length || !response_data) {
-      NSString* message = failure.length ? failure : @"The touch layout could not be downloaded.";
-      [_host touchLayoutCoordinatorSetStatusText:message];
-      [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout" message:message];
+      NSString* message = failure.length
+                              ? failure
+                              : NSLocalizedString(@"The touch layout could not be downloaded.",
+                                                  @"Error text: download failed");
+      [_host touchLayoutCoordinatorSetStatusText:message style:XeniaIOSStatusToastStyleError];
+      [_host
+          touchLayoutCoordinatorPresentAlertWithTitle:
+              NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                              message:message];
       return;
     }
 
@@ -1170,17 +1386,26 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
       suggested = @"downloaded_layout";
     }
 
-    NSString* install_message =
-        [NSString stringWithFormat:@"Install the touch layout from %@?", display_host];
+    NSString* install_message = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"Install the touch layout from %@?",
+                             @"Alert message; %@ is the host name of the download source"),
+                         display_host];
     NSString* error_message = nil;
-    if (![self installTouchLayoutFromTOMLBytes:response_data
-                                 suggestedName:suggested
-                                  confirmTitle:@"Install Touch Layout"
-                                confirmMessage:install_message
-                                  confirmLabel:@"Install"
-                                         error:&error_message]) {
+    if (![self
+            installTouchLayoutFromTOMLBytes:response_data
+                              suggestedName:suggested
+                               confirmTitle:NSLocalizedString(
+                                                @"Install Touch Layout",
+                                                @"Alert title: install a touch layout")
+                             confirmMessage:install_message
+                               confirmLabel:NSLocalizedString(@"Install", @"Alert button: install")
+                                      error:&error_message]) {
       if (error_message.length) {
-        [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout" message:error_message];
+        [_host
+            touchLayoutCoordinatorPresentAlertWithTitle:
+                NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                                message:error_message];
       }
     }
   });
@@ -1194,7 +1419,8 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                                   error:(NSString**)error_out {
   if (!bytes || bytes.length == 0) {
     if (error_out) {
-      *error_out = @"The touch layout payload was empty.";
+      *error_out = NSLocalizedString(@"The touch layout payload was empty.",
+                                     @"Error text: layout payload is empty");
     }
     return NO;
   }
@@ -1206,14 +1432,17 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
     parsed_layout = MakeTouchLayoutSeedModelForTable(table);
     if (!xe::hid::touch::ApplyIOSTouchLayoutModel(table, &parsed_layout)) {
       if (error_out) {
-        *error_out = @"Touch layout file could not be applied.";
+        *error_out = NSLocalizedString(@"Touch layout file could not be applied.",
+                                       @"Error text: layout file could not be applied");
       }
       return NO;
     }
   } catch (const std::exception& parse_error) {
     if (error_out) {
-      *error_out =
-          [NSString stringWithFormat:@"Failed to parse touch layout: %s", parse_error.what()];
+      *error_out = [NSString
+          stringWithFormat:NSLocalizedString(@"Failed to parse touch layout: %s",
+                                             @"Error text; %s is the parser's description"),
+                           parse_error.what()];
     }
     return NO;
   }
@@ -1226,35 +1455,43 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   } else {
     effective_display = @"Imported Layout";
   }
-  NSString* sheet_message = confirmMessage.length
-                                ? confirmMessage
-                                : [NSString stringWithFormat:@"Install \"%@\"?", effective_display];
+  NSString* sheet_message =
+      confirmMessage.length
+          ? confirmMessage
+          : [NSString stringWithFormat:NSLocalizedString(@"Install \"%@\"?",
+                                                         @"Alert message; %@ is the layout name"),
+                                       effective_display];
 
   xe::hid::touch::IOSTouchLayoutModel* layout_copy =
       new xe::hid::touch::IOSTouchLayoutModel(parsed_layout);
   __unsafe_unretained XeniaIOSTouchLayoutUICoordinator* unsafe_self = self;
   NSString* base_name_for_id = effective_display;
 
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:confirmTitle ?: @"Install Touch Layout"
-                                          message:sheet_message
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:confirmTitle
+                                   ?: NSLocalizedString(
+                                          @"Install Touch Layout",
+                                          @"Fallback alert title: install a touch layout")
+                       message:sheet_message
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert addAction:[UIAlertAction
-                       actionWithTitle:@"Cancel"
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
                                  style:UIAlertActionStyleCancel
                                handler:^(__unused UIAlertAction* _action) {
                                  delete layout_copy;
                                  [unsafe_self->_host
                                      touchLayoutCoordinatorEvaluateAutomaticStikDebugJITHandoffIfNeeded];
                                }]];
-  [alert
-      addAction:[UIAlertAction
-                    actionWithTitle:confirmLabel.length ? confirmLabel : @"Install"
-                              style:UIAlertActionStyleDefault
-                            handler:^(__unused UIAlertAction* _action) {
-                              [unsafe_self installParsedLayout:layout_copy
-                                                 baseNameForID:base_name_for_id];
-                            }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:confirmLabel.length
+                                           ? confirmLabel
+                                           : NSLocalizedString(@"Install",
+                                                               @"Fallback alert button: install")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* _action) {
+                                 [unsafe_self installParsedLayout:layout_copy
+                                                    baseNameForID:base_name_for_id];
+                               }]];
 
   UIAlertController* alert_to_present = [alert retain];
   __unsafe_unretained id<XeniaIOSTouchLayoutUICoordinatorHost> host = _host;
@@ -1280,10 +1517,14 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
                                    path:[self touchLayoutPathForLocalID:local_id]
                                   error:&write_error];
   if (!ok) {
-    NSString* message =
-        write_error.length ? write_error : @"The touch layout could not be saved.";
-    [_host touchLayoutCoordinatorSetStatusText:message];
-    [_host touchLayoutCoordinatorPresentAlertWithTitle:@"Touch Layout" message:message];
+    NSString* message = write_error.length
+                            ? write_error
+                            : NSLocalizedString(@"The touch layout could not be saved.",
+                                                @"Error text: layout could not be saved");
+    [_host touchLayoutCoordinatorSetStatusText:message style:XeniaIOSStatusToastStyleError];
+    [_host touchLayoutCoordinatorPresentAlertWithTitle:
+               NSLocalizedString(@"Touch Layout", @"Alert title for touch layout install problems")
+                                               message:message];
     delete layout_copy;
     [_host touchLayoutCoordinatorEvaluateAutomaticStikDebugJITHandoffIfNeeded];
     return;
@@ -1296,8 +1537,14 @@ std::string OfficialResetLayoutIDForRuntimeLayout(
   [_host touchLayoutCoordinatorRefreshTouchOverlayLayoutModel];
   [self refreshTouchLayoutLibraryOverlayIfVisible];
   [self saveCurrentLayoutForTitleID:[_host touchLayoutCoordinatorActiveTitleID]];
-  [_host touchLayoutCoordinatorSetStatusText:
-             [NSString stringWithFormat:@"Imported %@.", ToNSString(layout_copy->display_name)]];
+  [_host
+      touchLayoutCoordinatorSetStatusText:[NSString
+                                              stringWithFormat:NSLocalizedString(
+                                                                   @"Imported %@.",
+                                                                   @"Toast; %@ is the layout name"),
+                                                               ToNSString(
+                                                                   layout_copy->display_name)]
+                                    style:XeniaIOSStatusToastStyleSuccess];
   delete layout_copy;
   [_host touchLayoutCoordinatorEvaluateAutomaticStikDebugJITHandoffIfNeeded];
 }

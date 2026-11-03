@@ -17,14 +17,35 @@ namespace {
 // column is the underlying XeniaIOSWindowScalingMode.
 struct ScreenModeOption {
   XeniaIOSWindowScalingMode mode;
-  __unsafe_unretained NSString* title;
-  __unsafe_unretained NSString* subtitle;
 };
 const ScreenModeOption kScreenModes[] = {
-    {XeniaIOSWindowScalingModeFit, @"Fit", @"Preserve aspect ratio"},
-    {XeniaIOSWindowScalingModeZoom, @"Fill", @"Crop edges to fill the screen"},
-    {XeniaIOSWindowScalingModeStretch, @"Stretch", @"Ignore aspect ratio"},
+    {XeniaIOSWindowScalingModeFit},
+    {XeniaIOSWindowScalingModeZoom},
+    {XeniaIOSWindowScalingModeStretch},
 };
+// Looked up on use so the strings follow the current locale and are never held
+// unretained.
+NSString* ScreenModeTitle(XeniaIOSWindowScalingMode mode) {
+  switch (mode) {
+    case XeniaIOSWindowScalingModeFit:
+      return NSLocalizedString(@"Fit", @"Screen mode option: keep the aspect ratio");
+    case XeniaIOSWindowScalingModeZoom:
+      return NSLocalizedString(@"Fill", @"Screen mode option: crop to fill the screen");
+    default:
+      return NSLocalizedString(@"Stretch", @"Screen mode option: ignore the aspect ratio");
+  }
+}
+NSString* ScreenModeSubtitle(XeniaIOSWindowScalingMode mode) {
+  switch (mode) {
+    case XeniaIOSWindowScalingModeFit:
+      return NSLocalizedString(@"Preserve aspect ratio", @"Subtitle of the Fit screen mode");
+    case XeniaIOSWindowScalingModeZoom:
+      return NSLocalizedString(@"Crop edges to fill the screen",
+                               @"Subtitle of the Fill screen mode");
+    default:
+      return NSLocalizedString(@"Ignore aspect ratio", @"Subtitle of the Stretch screen mode");
+  }
+}
 constexpr NSInteger kSectionScreenMode = 0;
 constexpr NSInteger kSectionOptions = 1;
 }  // namespace
@@ -43,7 +64,7 @@ constexpr NSInteger kSectionOptions = 1;
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = @"Display";
+  self.title = NSLocalizedString(@"Display", @"Title of the display settings screen");
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 56.0;
@@ -61,13 +82,16 @@ constexpr NSInteger kSectionOptions = 1;
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
-  return section == kSectionScreenMode ? @"Screen Mode" : @"Options";
+  return section == kSectionScreenMode
+             ? NSLocalizedString(@"Screen Mode", @"Section header in display settings")
+             : NSLocalizedString(@"Options", @"Section header in display settings");
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
   return section == kSectionOptions
-             ? @"Shader Compile Status shows when the game is building shaders, which causes "
-               @"stutter and missing effects until it finishes."
+             ? NSLocalizedString(@"Shader Compile Status shows when the game is building shaders, "
+                                 @"which causes stutter and missing effects until it finishes.",
+                                 @"Footer under the display options")
              : nil;
 }
 
@@ -89,17 +113,19 @@ constexpr NSInteger kSectionOptions = 1;
                                      reuseIdentifier:kModeCell] autorelease];
     }
     const ScreenModeOption& option = kScreenModes[(size_t)indexPath.row];
-    cell.textLabel.text = option.title;
+    cell.textLabel.text = ScreenModeTitle(option.mode);
     cell.textLabel.textColor = [XeniaTheme textPrimary];
-    cell.detailTextLabel.text = option.subtitle;
+    cell.detailTextLabel.text = ScreenModeSubtitle(option.mode);
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     const BOOL selected = host_ && [host_ currentWindowScalingMode] == option.mode;
     cell.accessoryType =
         selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     cell.tintColor = [XeniaTheme accent];
     cell.isAccessibilityElement = YES;
-    cell.accessibilityLabel = option.title;
-    cell.accessibilityValue = selected ? @"Selected" : nil;
+    cell.accessibilityLabel = ScreenModeTitle(option.mode);
+    cell.accessibilityValue =
+        selected ? NSLocalizedString(@"Selected", @"VoiceOver value for the selected screen mode")
+                 : nil;
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     return cell;
   }
@@ -115,7 +141,7 @@ constexpr NSInteger kSectionOptions = 1;
   if (indexPath.row == 0) {
     const BOOL letterbox_available =
         host_ && [host_ currentWindowScalingMode] != XeniaIOSWindowScalingModeStretch;
-    cell.textLabel.text = @"Letterbox";
+    cell.textLabel.text = NSLocalizedString(@"Letterbox", @"Display settings toggle");
     cell.textLabel.enabled = letterbox_available;
     UISwitch* letterbox_switch =
         [self switchWithOn:(letterbox_available && [host_ isPresentLetterboxEnabled])
@@ -123,12 +149,13 @@ constexpr NSInteger kSectionOptions = 1;
     letterbox_switch.enabled = letterbox_available;
     cell.accessoryView = letterbox_switch;
   } else if (indexPath.row == 1) {
-    cell.textLabel.text = @"Uncapped Emulated Display";
+    cell.textLabel.text =
+        NSLocalizedString(@"Uncapped Emulated Display", @"Display settings toggle");
     cell.textLabel.enabled = YES;
     cell.accessoryView = [self switchWithOn:(host_ && [host_ isGuestDisplayUncapped])
                                      action:@selector(uncappedChanged:)];
   } else {
-    cell.textLabel.text = @"Shader Compile Status";
+    cell.textLabel.text = NSLocalizedString(@"Shader Compile Status", @"Display settings toggle");
     cell.textLabel.enabled = YES;
     cell.accessoryView = [self switchWithOn:xe_ios_shader_compile_status_enabled()
                                      action:@selector(shaderCompileStatusChanged:)];

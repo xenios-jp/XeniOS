@@ -36,7 +36,9 @@ void xe_ios_set_online_features_enabled(BOOL enabled) {
 }
 
 NSString* xe_ios_online_features_off_message(void) {
-  return @"Online features are turned off. Turn them on in Settings > About > Privacy.";
+  return NSLocalizedString(
+      @"Online features are turned off. Turn them on in Settings > About > Privacy.",
+      @"Message shown when a feature needs online features turned on");
 }
 
 BOOL xe_ios_online_features_notice_pending(void) {
