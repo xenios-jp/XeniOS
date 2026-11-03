@@ -371,9 +371,16 @@
     return;
   }
 
-  hero_title_label_.text = game_title_.length > 0 ? game_title_ : @"Unknown Title";
-  hero_tid_label_.text = title_id_ ? [NSString stringWithFormat:@"Title ID: %08X", title_id_]
-                                   : @"No title ID available";
+  hero_title_label_.text =
+      game_title_.length > 0
+          ? game_title_
+          : NSLocalizedString(@"Unknown Title", @"game compatibility hero view: title");
+  hero_tid_label_.text =
+      title_id_
+          ? [NSString stringWithFormat:NSLocalizedString(@"Title ID: %08X",
+                                                         @"game compatibility hero view: title"),
+                                       title_id_]
+          : NSLocalizedString(@"No title ID available", @"game compatibility hero view: title");
 
   NSDictionary* summary_source = [self bestResultSource];
   NSString* status = xe_string_from_object(summary_source[@"status"]);
@@ -406,7 +413,9 @@
                                                                       : nil);
   if (updated_at.length > 0) {
     hero_updated_label_.text =
-        [NSString stringWithFormat:@"Last updated: %@", xe_format_iso_date(updated_at)];
+        [NSString stringWithFormat:NSLocalizedString(@"Last updated: %@",
+                                                     @"game compatibility hero view: label text"),
+                                   xe_format_iso_date(updated_at)];
     hero_updated_label_.hidden = NO;
   } else {
     hero_updated_label_.hidden = YES;
@@ -598,7 +607,8 @@
   [hero_header_card_view_ addSubview:hero_handle_view_];
 
   hero_sheet_title_label_ = [[UILabel alloc] init];
-  hero_sheet_title_label_.text = @"Compatibility";
+  hero_sheet_title_label_.text =
+      NSLocalizedString(@"Compatibility", @"game compatibility hero view: title");
   hero_sheet_title_label_.textColor = [XeniaTheme textPrimary];
   hero_sheet_title_label_.textAlignment = NSTextAlignmentCenter;
   xe_apply_label_font(hero_sheet_title_label_, UIFontTextStyleTitle2, 18.0, UIFontWeightSemibold);

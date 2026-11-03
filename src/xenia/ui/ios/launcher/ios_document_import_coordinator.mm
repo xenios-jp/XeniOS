@@ -111,7 +111,9 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   _mode = IOSDocumentImportMode::kGameImport;
   if ([_host documentImportCoordinatorGameStopInProgress]) {
     XELOGI("iOS library action: game import picker deferred because stop is in progress");
-    [_host documentImportCoordinatorSetStatusText:@"Stopping game... Please wait."];
+    [_host documentImportCoordinatorSetStatusText:NSLocalizedString(
+                                                      @"Stopping game... Please wait.",
+                                                      @"document import coordinator: label text")];
     return;
   }
 
@@ -144,7 +146,9 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   _mode = IOSDocumentImportMode::kExternalLibraryFolder;
   if ([_host documentImportCoordinatorGameStopInProgress]) {
     XELOGI("iOS library action: external folder picker deferred because stop is in progress");
-    [_host documentImportCoordinatorSetStatusText:@"Stopping game... Please wait."];
+    [_host documentImportCoordinatorSetStatusText:NSLocalizedString(
+                                                      @"Stopping game... Please wait.",
+                                                      @"document import coordinator: label text")];
     return;
   }
   XELOGI("iOS library action: presenting external folder picker");
@@ -181,9 +185,14 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
 // a file opened from Files or AirDrop).
 - (void)importGameAtURL:(NSURL*)url removeSourceWhenDone:(BOOL)removeSource {
   if (_importInProgress) {
-    [_host documentImportCoordinatorPresentAlertWithTitle:@"Import In Progress"
-                                                  message:@"Wait for the current import to "
-                                                          @"finish, or cancel it first."];
+    [_host documentImportCoordinatorPresentAlertWithTitle:NSLocalizedString(
+                                                              @"Import In Progress",
+                                                              @"document import coordinator: title")
+                                                  message:
+                                                      NSLocalizedString(
+                                                          @"Wait for the current import to "
+                                                          @"finish, or cancel it first.",
+                                                          @"document import coordinator: message")];
     return;
   }
   _importInProgress = YES;
@@ -194,14 +203,20 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   const BOOL can_install_title_updates = [_host documentImportCoordinatorCanInstallTitleUpdates];
   XeniaIOSFileTransfer* transfer = [[XeniaIOSFileTransfer alloc] init];
   XeniaIOSTransferProgressAlert* progress_alert = [[XeniaIOSTransferProgressAlert
-      presentFrom:[_host documentImportCoordinatorPresenter]
-            title:@"Importing"
-          message:[NSString stringWithFormat:@"%@\nFor very large files, Link Folder plays them "
-                                             @"in place without copying.",
-                                             url.lastPathComponent ?: @"Selected file"]
-    cancelHandler:^{
-      [transfer cancel];
-    }] retain];
+        presentFrom:[_host documentImportCoordinatorPresenter]
+              title:NSLocalizedString(@"Importing", @"document import coordinator: title")
+            message:[NSString
+                        stringWithFormat:
+                            NSLocalizedString(@"%@\nFor very large files, Link Folder plays them "
+                                              @"in place without copying.",
+                                              @"document import coordinator: message"),
+                            url.lastPathComponent
+                                ?: NSLocalizedString(
+                                       @"Selected file",
+                                       @"document import coordinator: user-visible text")]
+      cancelHandler:^{
+        [transfer cancel];
+      }] retain];
 
   enum class Outcome { kImported, kUpdateInstalled, kFailed, kCancelled };
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -242,11 +257,15 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
                                                         notTitleUpdate:&not_title_update];
           if (success) {
             outcome = Outcome::kUpdateInstalled;
-            message = status.empty() ? @"Installed title update." : ToNSString(status);
+            message = status.empty() ? NSLocalizedString(@"Installed title update.",
+                                                         @"document import coordinator: message")
+                                     : ToNSString(status);
             handled = YES;
           } else if (!not_title_update) {
             outcome = Outcome::kFailed;
-            message = status.empty() ? @"Title update installation failed." : ToNSString(status);
+            message = status.empty() ? NSLocalizedString(@"Title update installation failed.",
+                                                         @"document import coordinator: message")
+                                     : ToNSString(status);
             handled = YES;
           }
         }
@@ -265,15 +284,19 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
           outcome = Outcome::kImported;
           if (transfer.skippedItemCount > 0) {
             message = [NSString
-                stringWithFormat:@"%lu item(s) in the folder (links or special files) were not "
-                                 @"copied. The game may be incomplete.",
+                stringWithFormat:NSLocalizedString(
+                                     @"%lu item(s) in the folder (links or special files) were not "
+                                     @"copied. The game may be incomplete.",
+                                     @"document import coordinator: message"),
                                  static_cast<unsigned long>(transfer.skippedItemCount)];
           }
         } else if (transfer.cancelled) {
           outcome = Outcome::kCancelled;
         } else {
           outcome = Outcome::kFailed;
-          message = import_error.localizedDescription ?: @"Failed to import selected game.";
+          message = import_error.localizedDescription
+                        ?: NSLocalizedString(@"Failed to import selected game.",
+                                             @"document import coordinator: message");
         }
       }
       if (removeSource && (outcome == Outcome::kImported || outcome == Outcome::kUpdateInstalled)) {
@@ -292,21 +315,33 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
       [progress_alert dismissWithCompletion:^{
         switch (outcome) {
           case Outcome::kCancelled:
-            [_host documentImportCoordinatorSetStatusText:@"Import cancelled."];
+            [_host documentImportCoordinatorSetStatusText:
+                       NSLocalizedString(@"Import cancelled.",
+                                         @"document import coordinator: label text")];
             break;
           case Outcome::kFailed:
-            [_host documentImportCoordinatorPresentAlertWithTitle:@"Import Failed"
-                                                          message:message ?: @"Import failed."];
+            [_host
+                documentImportCoordinatorPresentAlertWithTitle:
+                    NSLocalizedString(@"Import Failed", @"document import coordinator: title")
+                                                       message:message
+                                                                   ?: NSLocalizedString(
+                                                                          @"Import failed.",
+                                                                          @"document import "
+                                                                          @"coordinator: message")];
             break;
           case Outcome::kUpdateInstalled:
             [_host documentImportCoordinatorSetStatusText:message];
             [_host documentImportCoordinatorRefreshImportedGames];
-            [_host documentImportCoordinatorPresentAlertWithTitle:@"Title Update Installed"
+            [_host documentImportCoordinatorPresentAlertWithTitle:
+                       NSLocalizedString(@"Title Update Installed",
+                                         @"document import coordinator: title")
                                                           message:message];
             break;
           case Outcome::kImported: {
             if (message) {
-              [_host documentImportCoordinatorPresentAlertWithTitle:@"Imported With Warnings"
+              [_host documentImportCoordinatorPresentAlertWithTitle:
+                         NSLocalizedString(@"Imported With Warnings",
+                                           @"document import coordinator: title")
                                                             message:message];
             }
             NSString* imported_name = ToNSString(imported_path.filename().string());
@@ -342,7 +377,10 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
     [_host documentImportCoordinatorLaunchGameAtPath:path displayName:displayName];
   } else {
     [_host documentImportCoordinatorSetStatusText:
-               [NSString stringWithFormat:@"Imported %@. Waiting for JIT.", displayName]];
+               [NSString
+                   stringWithFormat:NSLocalizedString(@"Imported %@. Waiting for JIT.",
+                                                      @"document import coordinator: label text"),
+                                    displayName]];
   }
 }
 
@@ -359,7 +397,9 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
          xe::strip_pii(url.path ? [url.path UTF8String] : ""), openInPlace ? "yes" : "no",
          is_inbox_copy ? "yes" : "no");
   if ([_host documentImportCoordinatorGameStopInProgress]) {
-    [_host documentImportCoordinatorSetStatusText:@"Stopping game... Please wait."];
+    [_host documentImportCoordinatorSetStatusText:NSLocalizedString(
+                                                      @"Stopping game... Please wait.",
+                                                      @"document import coordinator: label text")];
     if (is_inbox_copy) {
       [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     }
@@ -370,12 +410,20 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
   BOOL access_granted = [url startAccessingSecurityScopedResource];
   NSString* name = url.lastPathComponent ?: @"file";
   UIAlertController* sheet = [UIAlertController
-      alertControllerWithTitle:[NSString stringWithFormat:@"Open \"%@\"", name]
+      alertControllerWithTitle:[NSString
+                                   stringWithFormat:NSLocalizedString(
+                                                        @"Open \"%@\"",
+                                                        @"document import coordinator: title"),
+                                                    name]
                        message:openInPlace
-                                   ? @"Import copies it into XeniOS (needs the file's size in "
-                                     @"free storage). Link Folder plays it from its current "
-                                     @"folder without copying."
-                                   : @"Import it into the XeniOS library."
+                                   ? NSLocalizedString(
+                                         @"Import copies it into XeniOS (needs the file's size in "
+                                         @"free storage). Link Folder plays it from its current "
+                                         @"folder without copying.",
+                                         @"document import coordinator: message")
+                                   : NSLocalizedString(
+                                         @"Import it into the XeniOS library.",
+                                         @"document import coordinator: user-visible text")
                 preferredStyle:UIAlertControllerStyleAlert];
   [url retain];
   void (^finish)(void) = ^{
@@ -384,7 +432,8 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
     }
   };
   [sheet addAction:[UIAlertAction
-                       actionWithTitle:@"Import"
+                       actionWithTitle:NSLocalizedString(@"Import",
+                                                         @"document import coordinator: title")
                                  style:UIAlertActionStyleDefault
                                handler:^(__unused UIAlertAction* action) {
                                  // The import takes its own scope; drop ours after.
@@ -393,24 +442,27 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
                                  [url release];
                                }]];
   if (openInPlace && !is_inbox_copy) {
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Link Folder..."
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction* action) {
-                                              finish();
-                                              [url release];
-                                              [self presentExternalLibraryFolderPicker];
-                                            }]];
+    [sheet addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Link Folder...",
+                                                           @"document import coordinator: title")
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction* action) {
+                                   finish();
+                                   [url release];
+                                   [self presentExternalLibraryFolderPicker];
+                                 }]];
   }
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            finish();
-                                            if (is_inbox_copy) {
-                                              [[NSFileManager defaultManager] removeItemAtURL:url
-                                                                                        error:nil];
-                                            }
-                                            [url release];
-                                          }]];
+  [sheet addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel",
+                                                         @"document import coordinator: title")
+                                 style:UIAlertActionStyleCancel
+                               handler:^(__unused UIAlertAction* action) {
+                                 finish();
+                                 if (is_inbox_copy) {
+                                   [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+                                 }
+                                 [url release];
+                               }]];
   // Dropping the scope and the URL is the same on every path that doesn't reach a handler. The
   // Inbox copy, if any, is left for the next launch's cleanup.
   void (^abandon)(void) = [[^{
@@ -460,17 +512,24 @@ void AddFilenameExtensionContentType(NSMutableArray<UTType*>* content_types, NSS
            xe::strip_pii(url.path ? [url.path UTF8String] : ""),
            error.localizedDescription ? xe::strip_pii([error.localizedDescription UTF8String])
                                       : "unknown");
-    NSString* message = error.localizedDescription ?: @"Failed to link selected folder.";
-    [_host documentImportCoordinatorPresentAlertWithTitle:@"Link Failed" message:message];
+    NSString* message = error.localizedDescription
+                            ?: NSLocalizedString(@"Failed to link selected folder.",
+                                                 @"document import coordinator: message");
+    [_host documentImportCoordinatorPresentAlertWithTitle:NSLocalizedString(
+                                                              @"Link Failed",
+                                                              @"document import coordinator: title")
+                                                  message:message];
     return;
   }
   XELOGI("iOS library action: external folder linked path='{}'",
          xe::strip_pii(url.path ? [url.path UTF8String] : ""));
 
   NSString* folder_name = url.lastPathComponent.length > 0 ? url.lastPathComponent : url.path;
-  [_host documentImportCoordinatorSetStatusText:[NSString
-                                                    stringWithFormat:@"Linked external library: %@",
-                                                                     folder_name]];
+  [_host
+      documentImportCoordinatorSetStatusText:
+          [NSString stringWithFormat:NSLocalizedString(@"Linked external library: %@",
+                                                       @"document import coordinator: label text"),
+                                     folder_name]];
   const std::filesystem::path linked_path(url.path ? [url.path UTF8String] : "");
   [self refreshImportedGamesWithScannedGamesCompletion:^(
             const std::vector<xe::ui::IOSDiscoveredGame>& scanned_games) {

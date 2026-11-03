@@ -46,7 +46,7 @@
     discussion_controller_ = [[XeniaGameCompatibilityDiscussionController alloc]
         initWithTitleID:title_id
              compatInfo:compat_data];
-    self.title = @"Compatibility";
+    self.title = NSLocalizedString(@"Compatibility", @"game compatibility view controller: title");
   }
   return self;
 }

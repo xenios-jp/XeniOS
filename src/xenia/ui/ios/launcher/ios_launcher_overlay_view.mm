@@ -122,8 +122,11 @@
   [_settingsButton addTarget:self
                       action:@selector(settingsTapped:)
             forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(_settingsButton, @"Settings", nil, @"Opens XeniOS settings.",
-                       UIAccessibilityTraitButton);
+  XEApplyAccessibility(
+      _settingsButton, NSLocalizedString(@"Settings", @"launcher overlay view: user-visible text"),
+      nil,
+      NSLocalizedString(@"Opens XeniOS settings.", @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
   [self addSubview:_settingsButton];
 
   UIButtonConfiguration* profileCfg = [UIButtonConfiguration plainButtonConfiguration];
@@ -139,8 +142,11 @@
   [_profileButton addTarget:self
                      action:@selector(profileTapped:)
            forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(_profileButton, @"Profile", nil, @"Opens profile management.",
-                       UIAccessibilityTraitButton);
+  XEApplyAccessibility(
+      _profileButton, NSLocalizedString(@"Profile", @"launcher overlay view: user-visible text"),
+      nil,
+      NSLocalizedString(@"Opens profile management.", @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
   [self addSubview:_profileButton];
 
   // JIT ready indicator in nav bar.
@@ -162,7 +168,7 @@
 
   _jitReadyLabel = [[UILabel alloc] init];
   _jitReadyLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _jitReadyLabel.text = @"JIT Enabled";
+  _jitReadyLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
   _jitReadyLabel.textColor = [XeniaTheme textSecondary];
   xe_apply_label_font(_jitReadyLabel, UIFontTextStyleCaption2, 11.0, UIFontWeightSemibold);
   [self addSubview:_jitReadyLabel];
@@ -200,13 +206,16 @@
 
   _jitStatusLabel = [[UILabel alloc] init];
   _jitStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _jitStatusLabel.text = @"Waiting for JIT...";
+  _jitStatusLabel.text =
+      NSLocalizedString(@"Waiting for JIT...", @"launcher overlay view: label text");
   _jitStatusLabel.textColor = [XeniaTheme textPrimary];
   xe_apply_label_font(_jitStatusLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightMedium);
   _jitStatusLabel.numberOfLines = 0;
   [_jitWarningCard addSubview:_jitStatusLabel];
-  XEApplyAccessibility(_jitWarningCard, @"JIT status", _jitStatusLabel.text, nil,
-                       UIAccessibilityTraitStaticText);
+  XEApplyAccessibility(
+      _jitWarningCard,
+      NSLocalizedString(@"JIT status", @"launcher overlay view: user-visible text"),
+      _jitStatusLabel.text, nil, UIAccessibilityTraitStaticText);
 
   // Compact memory-entitlement notice shown when the installed signature lacks
   // com.apple.developer.kernel.increased-memory-limit.
@@ -235,8 +244,10 @@
   xe_apply_label_font(_memoryStatusLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightMedium);
   _memoryStatusLabel.numberOfLines = 0;
   [_memoryWarningCard addSubview:_memoryStatusLabel];
-  XEApplyAccessibility(_memoryWarningCard, @"Memory entitlement status", _memoryStatusLabel.text,
-                       nil, UIAccessibilityTraitStaticText);
+  XEApplyAccessibility(
+      _memoryWarningCard,
+      NSLocalizedString(@"Memory entitlement status", @"launcher overlay view: user-visible text"),
+      _memoryStatusLabel.text, nil, UIAccessibilityTraitStaticText);
 
   // ── Library header: "Library" (left) + convert + "+" (right) ───────────
 
@@ -245,7 +256,7 @@
 
   _libraryLabel = [[UILabel alloc] init];
   _libraryLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _libraryLabel.text = @"Library";
+  _libraryLabel.text = NSLocalizedString(@"Library", @"launcher overlay view: label text");
   _libraryLabel.textColor = [XeniaTheme textPrimary];
   xe_apply_label_font(_libraryLabel, UIFontTextStyleTitle3, 20.0, UIFontWeightSemibold);
   _libraryLabel.accessibilityTraits = UIAccessibilityTraitHeader;
@@ -265,8 +276,13 @@
   [_convertLibraryButton addTarget:self
                             action:@selector(convertLibraryTapped:)
                   forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(_convertLibraryButton, @"Convert library to ZAR", nil,
-                       @"Converts non-ZAR games in the library.", UIAccessibilityTraitButton);
+  XEApplyAccessibility(
+      _convertLibraryButton,
+      NSLocalizedString(@"Convert library to ZAR", @"launcher overlay view: user-visible text"),
+      nil,
+      NSLocalizedString(@"Converts non-ZAR games in the library.",
+                        @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
 
   UIButtonConfiguration* importCfg = [UIButtonConfiguration plainButtonConfiguration];
   importCfg.image =
@@ -281,8 +297,12 @@
   [_openGameButton addTarget:self
                       action:@selector(importTapped:)
             forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(_openGameButton, @"Import game", nil,
-                       @"Opens the document picker to import a game.", UIAccessibilityTraitButton);
+  XEApplyAccessibility(
+      _openGameButton,
+      NSLocalizedString(@"Import game", @"launcher overlay view: user-visible text"), nil,
+      NSLocalizedString(@"Opens the document picker to import a game.",
+                        @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
 
   UIStackView* libraryActionsStack =
       [[UIStackView alloc] initWithArrangedSubviews:@[ _convertLibraryButton, _openGameButton ]];
@@ -327,8 +347,9 @@
   emptyBg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   _emptyLabel = [[UILabel alloc] init];
   _emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _emptyLabel.text =
-      @"No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +.";
+  _emptyLabel.text = NSLocalizedString(
+      @"No games yet.\nTransfer ISO or GOD files to the\nDocuments folder, or tap +.",
+      @"launcher overlay view: label text");
   _emptyLabel.textColor = [XeniaTheme textMuted];
   xe_apply_label_font(_emptyLabel, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
   _emptyLabel.textAlignment = NSTextAlignmentCenter;
@@ -643,10 +664,10 @@
   _jitAcquired = acquired;
   if (acquired) {
     _jitStatusDot.backgroundColor = [XeniaTheme accent];
-    _jitStatusLabel.text = @"JIT Enabled";
+    _jitStatusLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
     _jitReadyDot.hidden = NO;
     _jitReadyLabel.hidden = NO;
-    _jitReadyLabel.text = @"JIT Enabled";
+    _jitReadyLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
     [_jitStatusRing.layer removeAllAnimations];
     _jitStatusRing.alpha = 0;
     xe_add_jit_ring_pulse(_jitReadyRing.layer, @"xenia.jit.ready.pulse", 1.7, 0.5, 2.0);
@@ -664,11 +685,18 @@
   if (previousHidden != _jitWarningCard.hidden) {
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
   }
-  _jitWarningCard.accessibilityValue = acquired ? @"JIT is enabled" : _jitStatusLabel.text;
-  _jitReadyLabel.accessibilityLabel = acquired ? @"JIT is enabled" : @"JIT is not enabled";
+  _jitWarningCard.accessibilityValue =
+      acquired ? NSLocalizedString(@"JIT is enabled", @"launcher overlay view: accessibility value")
+               : _jitStatusLabel.text;
+  _jitReadyLabel.accessibilityLabel =
+      acquired
+          ? NSLocalizedString(@"JIT is enabled", @"launcher overlay view: accessibility label")
+          : NSLocalizedString(@"JIT is not enabled", @"launcher overlay view: accessibility label");
   if (previous_acquired != acquired) {
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                    acquired ? @"JIT is enabled" : _jitStatusLabel.text);
+    UIAccessibilityPostNotification(
+        UIAccessibilityAnnouncementNotification,
+        acquired ? NSLocalizedString(@"JIT is enabled", @"launcher overlay view: user-visible text")
+                 : _jitStatusLabel.text);
   }
   [self applyActionsEnabledState];
 }
@@ -692,11 +720,15 @@
     _memoryStatusLabel.text = xe_memory_entitlement_missing_status_message();
   }
   _memoryWarningCard.accessibilityValue =
-      enabled ? @"Increased memory entitlement is enabled" : _memoryStatusLabel.text;
+      enabled ? NSLocalizedString(@"Increased memory entitlement is enabled",
+                                  @"launcher overlay view: accessibility value")
+              : _memoryStatusLabel.text;
   if (previous_enabled != enabled) {
     UIAccessibilityPostNotification(
         UIAccessibilityAnnouncementNotification,
-        enabled ? @"Increased memory entitlement is enabled" : _memoryStatusLabel.text);
+        enabled ? NSLocalizedString(@"Increased memory entitlement is enabled",
+                                    @"launcher overlay view: user-visible text")
+                : _memoryStatusLabel.text);
   }
 }
 
@@ -912,9 +944,13 @@
   if (game.hasCompatInfo) {
     [accessibility_values addObject:xe_compat_status_label(game.compatStatus)];
   }
-  cell.accessibilityLabel = game.title.length ? game.title : @"Untitled game";
+  cell.accessibilityLabel =
+      game.title.length
+          ? game.title
+          : NSLocalizedString(@"Untitled game", @"launcher overlay view: accessibility label");
   cell.accessibilityValue = [accessibility_values componentsJoinedByString:@", "];
-  cell.accessibilityHint = @"Opens the game. Long press for more actions.";
+  cell.accessibilityHint = NSLocalizedString(@"Opens the game. Long press for more actions.",
+                                             @"launcher overlay view: accessibility hint");
   cell.accessibilityTraits = UIAccessibilityTraitButton;
 
   UIImage* icon = game.supportsRemoteArt ? xe_cached_game_art(game.titleId) : nil;
@@ -1025,62 +1061,68 @@
                      }
                      XeniaIOSLauncherGameSnapshot* game = unsafeSelf->_games[gameIndex];
 
-                     UIAction* playAction =
-                         [UIAction actionWithTitle:@"Play"
-                                             image:[UIImage systemImageNamed:@"play.fill"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_gameLaunchedHandler) {
-                                               unsafeSelf->_gameLaunchedHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* gameSettingsAction =
-                         [UIAction actionWithTitle:@"Game Settings"
-                                             image:[UIImage systemImageNamed:@"slider.horizontal.3"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_gameSettingsHandler) {
-                                               unsafeSelf->_gameSettingsHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* touchLayoutAction =
-                         [UIAction actionWithTitle:@"Touch Layout"
-                                             image:[UIImage systemImageNamed:@"hand.tap"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_touchLayoutHandler) {
-                                               unsafeSelf->_touchLayoutHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* compatAction =
-                         [UIAction actionWithTitle:@"Compatibility"
-                                             image:[UIImage systemImageNamed:@"checkmark.shield"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_compatibilityHandler) {
-                                               unsafeSelf->_compatibilityHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* contentAction =
-                         [UIAction actionWithTitle:@"Manage Content"
-                                             image:[UIImage systemImageNamed:@"square.stack.3d.up"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_manageContentHandler) {
-                                               unsafeSelf->_manageContentHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* discAction =
-                         [UIAction actionWithTitle:@"Launch Disc"
-                                             image:[UIImage systemImageNamed:@"opticaldisc"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_discSelectionHandler) {
-                                               unsafeSelf->_discSelectionHandler(gameIndex);
-                                             }
-                                           }];
+                     UIAction* playAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Play", @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"play.fill"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_gameLaunchedHandler) {
+                                     unsafeSelf->_gameLaunchedHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* gameSettingsAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Game Settings",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"slider.horizontal.3"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_gameSettingsHandler) {
+                                     unsafeSelf->_gameSettingsHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* touchLayoutAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Touch Layout",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"hand.tap"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_touchLayoutHandler) {
+                                     unsafeSelf->_touchLayoutHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* compatAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Compatibility",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"checkmark.shield"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_compatibilityHandler) {
+                                     unsafeSelf->_compatibilityHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* contentAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Manage Content",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"square.stack.3d.up"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_manageContentHandler) {
+                                     unsafeSelf->_manageContentHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* discAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Launch Disc",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"opticaldisc"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_discSelectionHandler) {
+                                     unsafeSelf->_discSelectionHandler(gameIndex);
+                                   }
+                                 }];
                      UIAction* patchesAction = [UIAction
-                         actionWithTitle:@"Patches"
+                         actionWithTitle:NSLocalizedString(@"Patches",
+                                                           @"launcher overlay view: title")
                                    image:[UIImage systemImageNamed:@"puzzlepiece.extension"]
                               identifier:nil
                                  handler:^(__unused UIAction* action) {
@@ -1088,24 +1130,26 @@
                                      unsafeSelf->_patchesHandler(gameIndex);
                                    }
                                  }];
-                     UIAction* zarConversionAction =
-                         [UIAction actionWithTitle:@"Convert to ZAR"
-                                             image:[UIImage systemImageNamed:@"opticaldisc"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_zarConversionHandler) {
-                                               unsafeSelf->_zarConversionHandler(gameIndex);
-                                             }
-                                           }];
-                     UIAction* copyURLAction =
-                         [UIAction actionWithTitle:@"Copy Launch URL"
-                                             image:[UIImage systemImageNamed:@"link"]
-                                        identifier:nil
-                                           handler:^(__unused UIAction* action) {
-                                             if (unsafeSelf->_copyLaunchURLHandler) {
-                                               unsafeSelf->_copyLaunchURLHandler(gameIndex);
-                                             }
-                                           }];
+                     UIAction* zarConversionAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Convert to ZAR",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"opticaldisc"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_zarConversionHandler) {
+                                     unsafeSelf->_zarConversionHandler(gameIndex);
+                                   }
+                                 }];
+                     UIAction* copyURLAction = [UIAction
+                         actionWithTitle:NSLocalizedString(@"Copy Launch URL",
+                                                           @"launcher overlay view: title")
+                                   image:[UIImage systemImageNamed:@"link"]
+                              identifier:nil
+                                 handler:^(__unused UIAction* action) {
+                                   if (unsafeSelf->_copyLaunchURLHandler) {
+                                     unsafeSelf->_copyLaunchURLHandler(gameIndex);
+                                   }
+                                 }];
                      if (!game.supportsCompatibility) {
                        compatAction.attributes = UIMenuElementAttributesDisabled;
                      }

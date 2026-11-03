@@ -339,7 +339,10 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   UILabel* title = [[[UILabel alloc] init] autorelease];
   title.translatesAutoresizingMaskIntoConstraints = NO;
   title.backgroundColor = [UIColor clearColor];
-  title.text = game_title_id_ ? @"Game-Specific Settings" : @"Change Settings Before Launch";
+  title.text =
+      game_title_id_
+          ? NSLocalizedString(@"Game-Specific Settings", @"config view controller: title")
+          : NSLocalizedString(@"Change Settings Before Launch", @"config view controller: title");
   title.textColor = [XeniaTheme textPrimary];
   title.numberOfLines = 0;
   xe_apply_label_font(title, UIFontTextStyleHeadline, 17.0, UIFontWeightSemibold);
@@ -352,15 +355,21 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   body.backgroundColor = [UIColor clearColor];
   if (game_title_id_) {
     NSString* title_id = XEFormatTitleIDHexUpper(game_title_id_);
-    NSString* game_name = game_title_.length ? game_title_ : @"this game";
-    body.text = [NSString stringWithFormat:
-                              @"Overrides here apply only to %@ (%@). They are read when the title "
-                              @"launches, so relaunch the game after saving.",
-                              game_name, title_id];
+    NSString* game_name = game_title_.length
+                              ? game_title_
+                              : NSLocalizedString(@"this game", @"config view controller: title");
+    body.text = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"Overrides here apply only to %@ (%@). They are read when the title "
+                             @"launches, so relaunch the game after saving.",
+                             @"config view controller: label text"),
+                         game_name, title_id];
   } else {
-    body.text = @"To avoid partial updates, change settings before launching a game. If "
-                @"you save changes while a game is already running, fully relaunch "
-                @"XeniOS before testing them.";
+    body.text =
+        NSLocalizedString(@"To avoid partial updates, change settings before launching a game. If "
+                          @"you save changes while a game is already running, fully relaunch "
+                          @"XeniOS before testing them.",
+                          @"config view controller: label text");
   }
   body.textColor = [XeniaTheme textSecondary];
   body.numberOfLines = 0;
@@ -397,8 +406,11 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   UILabel* label = [[[UILabel alloc] init] autorelease];
   label.translatesAutoresizingMaskIntoConstraints = NO;
   label.backgroundColor = [UIColor clearColor];
-  label.text = game_title_id_ ? @"Changes apply immediately and are saved for this game"
-                              : @"Changes apply immediately for this session";
+  label.text = game_title_id_
+                   ? NSLocalizedString(@"Changes apply immediately and are saved for this game",
+                                       @"config view controller: title")
+                   : NSLocalizedString(@"Changes apply immediately for this session",
+                                       @"config view controller: title");
   label.textAlignment = NSTextAlignmentCenter;
   label.textColor = [XeniaTheme textMuted];
   label.numberOfLines = 1;
@@ -516,10 +528,11 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   }
 
   if (!live_override_) {
-    saveButton_ = [[UIBarButtonItem alloc] initWithTitle:@"Save"
-                                                   style:UIBarButtonItemStyleDone
-                                                  target:self
-                                                  action:@selector(saveTapped:)];
+    saveButton_ = [[UIBarButtonItem alloc]
+        initWithTitle:NSLocalizedString(@"Save", @"config view controller: title")
+                style:UIBarButtonItemStyleDone
+               target:self
+               action:@selector(saveTapped:)];
     saveButton_.enabled = NO;
   }
   [self updateNavigationItems];
@@ -547,8 +560,10 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
 - (UIView*)versionFooterView {
   NSString* footer_text = xe_user_facing_build_label(xe_current_compat_report_build_info());
   const BOOL has_footer_text = footer_text.length > 0;
-  NSString* memorial_text = @"XeniOS is one of several apps with dedication keeping the memory of "
-                            @"\"Lily\" alive 11/03/2023";
+  NSString* memorial_text =
+      NSLocalizedString(@"XeniOS is one of several apps with dedication keeping the memory of "
+                        @"\"Lily\" alive 11/03/2023",
+                        @"config view controller: label text");
   UIView* footer =
       [[[UIView alloc]
           initWithFrame:[self initialTableAccessoryFrameWithHeight:(has_footer_text ? 176.0
@@ -559,7 +574,7 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   UILabel* links_label = [[[UILabel alloc] init] autorelease];
   links_label.translatesAutoresizingMaskIntoConstraints = NO;
   links_label.backgroundColor = [UIColor clearColor];
-  links_label.text = @"Links";
+  links_label.text = NSLocalizedString(@"Links", @"config view controller: label text");
   links_label.textAlignment = NSTextAlignmentCenter;
   links_label.textColor = [XeniaTheme textMuted];
   links_label.numberOfLines = 1;
@@ -569,9 +584,9 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   [footer addSubview:links_label];
 
   UIStackView* links_row = [[[UIStackView alloc] initWithArrangedSubviews:@[
-    xe_make_settings_footer_button(@"", @"globe", @"Website",
-                                   kXeniaConfigFooterLinkWebsite, YES, self,
-                                   @selector(footerLinkTapped:)),
+    xe_make_settings_footer_button(
+        @"", @"globe", NSLocalizedString(@"Website", @"config view controller: section footer"),
+        kXeniaConfigFooterLinkWebsite, YES, self, @selector(footerLinkTapped:)),
     xe_make_settings_footer_button(
         @"SettingsLinkGitHub", @"chevron.left.forwardslash.chevron.right", @"GitHub",
         kXeniaConfigFooterLinkGitHub, YES, self, @selector(footerLinkTapped:)),
@@ -808,7 +823,9 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     toggle.on = item->bool_value;
     toggle.enabled = !letterbox_blocked;
     toggle.accessibilityLabel = content.text;
-    toggle.accessibilityValue = toggle.on ? @"On" : @"Off";
+    toggle.accessibilityValue =
+        toggle.on ? NSLocalizedString(@"On", @"config view controller: accessibility value")
+                  : NSLocalizedString(@"Off", @"config view controller: accessibility value");
     toggle.accessibilityHint = content.secondaryText;
     [toggle addTarget:self
                   action:@selector(toggleChanged:)
@@ -843,7 +860,8 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.accessibilityLabel = content.text;
     cell.accessibilityValue = field.text;
     cell.accessibilityHint =
-        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+        [NSLocalizedString(@"Double tap to edit. ", @"config view controller: accessibility hint")
+            stringByAppendingString:content.secondaryText ?: @""];
     cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kDouble) {
@@ -871,7 +889,8 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.accessibilityLabel = content.text;
     cell.accessibilityValue = field.text;
     cell.accessibilityHint =
-        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+        [NSLocalizedString(@"Double tap to edit. ", @"config view controller: accessibility hint")
+            stringByAppendingString:content.secondaryText ?: @""];
     cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kString ||
@@ -901,7 +920,8 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.accessibilityLabel = content.text;
     cell.accessibilityValue = field.text;
     cell.accessibilityHint =
-        [@"Double tap to edit. " stringByAppendingString:content.secondaryText ?: @""];
+        [NSLocalizedString(@"Double tap to edit. ", @"config view controller: accessibility hint")
+            stringByAppendingString:content.secondaryText ?: @""];
     cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kAction) {
@@ -917,10 +937,14 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.isAccessibilityElement = YES;
     cell.accessibilityLabel = content.text;
     cell.accessibilityValue = content.secondaryText;
-    cell.accessibilityHint = item->action == IOSConfigAction::kResetAllSettings
-                                 ? @"Asks before putting every setting back to its default."
-                             : destructive_action ? @"Deletes saved game-specific overrides."
-                                                  : @"Opens another settings page.";
+    cell.accessibilityHint =
+        item->action == IOSConfigAction::kResetAllSettings
+            ? NSLocalizedString(@"Asks before putting every setting back to its default.",
+                                @"config view controller: accessibility hint")
+        : destructive_action ? NSLocalizedString(@"Deletes saved game-specific overrides.",
+                                                 @"config view controller: user-visible text")
+                             : NSLocalizedString(@"Opens another settings page.",
+                                                 @"config view controller: user-visible text");
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   } else {
@@ -938,7 +962,8 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     cell.isAccessibilityElement = YES;
     cell.accessibilityLabel = ToNSString(item->title);
     cell.accessibilityValue = value_title.empty() ? nil : ToNSString(value_title);
-    cell.accessibilityHint = @"Opens choices for this setting.";
+    cell.accessibilityHint = NSLocalizedString(@"Opens choices for this setting.",
+                                               @"config view controller: accessibility hint");
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   }
@@ -959,7 +984,8 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   if (IsLetterboxBlockedByWindowStretch(*item)) {
     item->bool_value = false;
     [sender setOn:NO animated:YES];
-    sender.accessibilityValue = @"Off";
+    sender.accessibilityValue =
+        NSLocalizedString(@"Off", @"config view controller: accessibility value");
     [self markPendingChangesForItem:item];
     if (live_override_) {
       [self applyLiveOverrideForItem:item];
@@ -968,7 +994,9 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     return;
   }
   item->bool_value = sender.isOn;
-  sender.accessibilityValue = sender.isOn ? @"On" : @"Off";
+  sender.accessibilityValue =
+      sender.isOn ? NSLocalizedString(@"On", @"config view controller: accessibility value")
+                  : NSLocalizedString(@"Off", @"config view controller: accessibility value");
   [self markPendingChangesForItem:item];
   if (live_override_) {
     [self applyLiveOverrideForItem:item];
@@ -1051,9 +1079,11 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   }
   sender.text = [NSString stringWithFormat:@"%lld", item->integer_value];
   [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
-  XEPresentOKAlert(self, @"Value Not Accepted",
-                   [NSString stringWithFormat:@"%@ was not changed. %@", ToNSString(item->title),
-                                              ToNSString(problem)]);
+  XEPresentOKAlert(
+      self, NSLocalizedString(@"Value Not Accepted", @"config view controller: user-visible text"),
+      [NSString stringWithFormat:NSLocalizedString(@"%@ was not changed. %@",
+                                                   @"config view controller: user-visible text"),
+                                 ToNSString(item->title), ToNSString(problem)]);
 }
 
 - (void)doubleFieldChanged:(UITextField*)sender {
@@ -1083,9 +1113,11 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   }
   sender.text = [NSString stringWithFormat:@"%.6g", item->double_value];
   [self.tableView cellForRowAtIndexPath:indexPath].accessibilityValue = sender.text;
-  XEPresentOKAlert(self, @"Value Not Accepted",
-                   [NSString stringWithFormat:@"%@ was not changed. %@", ToNSString(item->title),
-                                              ToNSString(problem)]);
+  XEPresentOKAlert(
+      self, NSLocalizedString(@"Value Not Accepted", @"config view controller: user-visible text"),
+      [NSString stringWithFormat:NSLocalizedString(@"%@ was not changed. %@",
+                                                   @"config view controller: user-visible text"),
+                                 ToNSString(item->title), ToNSString(problem)]);
 }
 
 - (void)stringFieldChanged:(UITextField*)sender {
@@ -1248,92 +1280,115 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     return;
   }
 
-  NSString* game_name = game_title_.length ? game_title_ : @"this game";
-  NSString* message = [NSString stringWithFormat:
-                                    @"Delete saved overrides for %@ and discard unsaved changes in "
-                                    @"this sheet?",
-                                    game_name];
-  UIAlertController* confirm =
-      [UIAlertController alertControllerWithTitle:@"Reset Game Settings?"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
+  NSString* game_name = game_title_.length
+                            ? game_title_
+                            : NSLocalizedString(@"this game", @"config view controller: title");
+  NSString* message = [NSString
+      stringWithFormat:NSLocalizedString(
+                           @"Delete saved overrides for %@ and discard unsaved changes in "
+                           @"this sheet?",
+                           @"config view controller: message"),
+                       game_name];
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Reset Game Settings?",
+                                                 @"config view controller: title")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                        @"Cancel", @"config view controller: title")
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Reset"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              const bool deleted =
-                                                  xe::ui::DeleteIOSGameConfig(game_title_id_);
-                                              if (deleted) {
-                                                dirty_keys_.clear();
-                                                hasPendingChanges_ = NO;
-                                                saveButton_.enabled = NO;
-                                                [self replaceSections:[self buildSections]];
-                                              }
+  [confirm
+      addAction:
+          [UIAlertAction
+              actionWithTitle:NSLocalizedString(@"Reset", @"config view controller: title")
+                        style:UIAlertActionStyleDestructive
+                      handler:^(__unused UIAlertAction* action) {
+                        const bool deleted = xe::ui::DeleteIOSGameConfig(game_title_id_);
+                        if (deleted) {
+                          dirty_keys_.clear();
+                          hasPendingChanges_ = NO;
+                          saveButton_.enabled = NO;
+                          [self replaceSections:[self buildSections]];
+                        }
 
-                                              NSString* title =
-                                                  deleted ? @"Game Settings Reset"
-                                                          : @"Game Settings Not Reset";
-                                              NSString* result_message =
-                                                  deleted
-                                                      ? @"Deleted title-specific overrides. "
-                                                        @"Relaunch the game before testing."
-                                                      : @"Failed to delete title-specific "
-                                                        @"overrides. Check xenia.log.";
-                                              UIAlertController* result =
-                                                  [UIAlertController
-                                                      alertControllerWithTitle:title
-                                                                       message:result_message
-                                                                preferredStyle:
-                                                                    UIAlertControllerStyleAlert];
-                                              [result
-                                                  addAction:
-                                                      [UIAlertAction
-                                                          actionWithTitle:@"Done"
-                                                                    style:
-                                                                        UIAlertActionStyleDefault
-                                                                  handler:nil]];
-                                              [self presentViewController:result
-                                                                 animated:YES
-                                                               completion:nil];
-                                            }]];
+                        NSString* title =
+                            deleted
+                                ? NSLocalizedString(@"Game Settings Reset",
+                                                    @"config view controller: title")
+                                : NSLocalizedString(@"Game Settings Not Reset",
+                                                    @"config view controller: user-visible text");
+                        NSString* result_message =
+                            deleted
+                                ? NSLocalizedString(@"Deleted title-specific overrides. "
+                                                    @"Relaunch the game before testing.",
+                                                    @"config view controller: user-visible text")
+                                : NSLocalizedString(@"Failed to delete title-specific "
+                                                    @"overrides. Check xenia.log.",
+                                                    @"config view controller: user-visible text");
+                        UIAlertController* result = [UIAlertController
+                            alertControllerWithTitle:title
+                                             message:result_message
+                                      preferredStyle:UIAlertControllerStyleAlert];
+                        [result addAction:[UIAlertAction
+                                              actionWithTitle:NSLocalizedString(
+                                                                  @"Done",
+                                                                  @"config view controller: title")
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:nil]];
+                        [self presentViewController:result animated:YES completion:nil];
+                      }]];
   [self presentViewController:confirm animated:YES completion:nil];
 }
 
 - (void)confirmResetAllSettings {
   UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:@"Reset All Settings?"
-                       message:@"Every XeniOS setting goes back to its default. Games, saves, "
-                               @"profiles, touch layouts and per-game overrides are kept. "
-                               @"Relaunch XeniOS afterwards."
+      alertControllerWithTitle:NSLocalizedString(@"Reset All Settings?",
+                                                 @"config view controller: title")
+                       message:NSLocalizedString(
+                                   @"Every XeniOS setting goes back to its default. Games, saves, "
+                                   @"profiles, touch layouts and per-game overrides are kept. "
+                                   @"Relaunch XeniOS afterwards.",
+                                   @"config view controller: message")
                 preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
+  [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                        @"Cancel", @"config view controller: title")
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
-  [confirm addAction:[UIAlertAction
-                         actionWithTitle:@"Reset"
-                                   style:UIAlertActionStyleDestructive
-                                 handler:^(__unused UIAlertAction* action) {
-                                   bool ok = false;
-                                   auto reset = [&ok]() { ok = ResetAllIOSConfigToDefaults(); };
-                                   if (app_context_) {
-                                     app_context_->ApplyLiveSettings(reset);
-                                   } else {
-                                     reset();
-                                   }
-                                   dirty_keys_.clear();
-                                   hasPendingChanges_ = NO;
-                                   saveButton_.enabled = NO;
-                                   [self replaceSections:[self buildSections]];
-                                   XEPresentOKAlert(self,
-                                                    ok ? @"Settings Reset" : @"Reset Failed",
-                                                    ok ? @"All settings are back to their "
-                                                         @"defaults. Relaunch XeniOS before "
-                                                         @"testing."
-                                                       : @"Settings could not be reset. Check "
-                                                         @"xenia.log.");
-                                 }]];
+  [confirm
+      addAction:[UIAlertAction
+                    actionWithTitle:NSLocalizedString(@"Reset", @"config view controller: title")
+                              style:UIAlertActionStyleDestructive
+                            handler:^(__unused UIAlertAction* action) {
+                              bool ok = false;
+                              auto reset = [&ok]() { ok = ResetAllIOSConfigToDefaults(); };
+                              if (app_context_) {
+                                app_context_->ApplyLiveSettings(reset);
+                              } else {
+                                reset();
+                              }
+                              dirty_keys_.clear();
+                              hasPendingChanges_ = NO;
+                              saveButton_.enabled = NO;
+                              [self replaceSections:[self buildSections]];
+                              XEPresentOKAlert(
+                                  self,
+                                  ok ? NSLocalizedString(
+                                           @"Settings Reset",
+                                           @"config view controller: user-visible text")
+                                     : NSLocalizedString(
+                                           @"Reset Failed",
+                                           @"config view controller: user-visible text"),
+                                  ok ? NSLocalizedString(
+                                           @"All settings are back to their "
+                                           @"defaults. Relaunch XeniOS before "
+                                           @"testing.",
+                                           @"config view controller: user-visible text")
+                                     : NSLocalizedString(
+                                           @"Settings could not be reset. Check "
+                                           @"xenia.log.",
+                                           @"config view controller: user-visible text"));
+                            }]];
   [self presentViewController:confirm animated:YES completion:nil];
 }
 
@@ -1354,18 +1409,24 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     return;
   }
 
-  UIAlertController* confirm =
-      [UIAlertController alertControllerWithTitle:@"Discard Changes?"
-                                          message:@"You have unsaved setting changes."
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Keep Editing"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Discard"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [self dismissSettingsControllerAnimated:YES];
-                                            }]];
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Discard Changes?",
+                                                 @"config view controller: title")
+                       message:NSLocalizedString(@"You have unsaved setting changes.",
+                                                 @"config view controller: message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Keep Editing",
+                                                                 @"config view controller: title")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+  [confirm
+      addAction:[UIAlertAction
+                    actionWithTitle:NSLocalizedString(@"Discard", @"config view controller: title")
+                              style:UIAlertActionStyleDestructive
+                            handler:^(__unused UIAlertAction* action) {
+                              [self dismissSettingsControllerAnimated:YES];
+                            }]];
   [self presentViewController:confirm animated:YES completion:nil];
 }
 
@@ -1376,19 +1437,24 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
     return;
   }
 
-  UIAlertController* confirm =
-      [UIAlertController alertControllerWithTitle:@"Discard Changes?"
-                                          message:@"You have unsaved setting changes."
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Keep Editing"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Discard"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [self.navigationController
-                                                  popViewControllerAnimated:YES];
-                                            }]];
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Discard Changes?",
+                                                 @"config view controller: title")
+                       message:NSLocalizedString(@"You have unsaved setting changes.",
+                                                 @"config view controller: message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Keep Editing",
+                                                                 @"config view controller: title")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+  [confirm
+      addAction:[UIAlertAction
+                    actionWithTitle:NSLocalizedString(@"Discard", @"config view controller: title")
+                              style:UIAlertActionStyleDestructive
+                            handler:^(__unused UIAlertAction* action) {
+                              [self.navigationController popViewControllerAnimated:YES];
+                            }]];
   [self presentViewController:confirm animated:YES completion:nil];
 }
 
@@ -1412,27 +1478,40 @@ void ApplyLiveOverrideValue(const IOSConfigItem& item) {
   NSString* title = nil;
   NSString* message = nil;
   if (game_title_id_) {
-    title = saved ? @"Game Settings Saved" : @"Save Completed With Warnings";
-    message = saved ? @"Saved title-specific overrides. Relaunch the game before testing them."
-                    : @"Some title-specific overrides could not be saved. Check xenia.log.";
+    title = saved ? NSLocalizedString(@"Game Settings Saved", @"config view controller: title")
+                  : NSLocalizedString(@"Save Completed With Warnings",
+                                      @"config view controller: title");
+    message = saved ? NSLocalizedString(
+                          @"Saved title-specific overrides. Relaunch the game before testing them.",
+                          @"config view controller: message")
+                    : NSLocalizedString(
+                          @"Some title-specific overrides could not be saved. Check xenia.log.",
+                          @"config view controller: message");
   } else {
-    title = saved ? @"Settings Saved" : @"Save Completed With Warnings";
-    message = saved ? @"Saved to XeniOS settings.\n\nFor reliable results, change "
-                      @"settings before launching a game. If you saved while a game was "
-                      @"already running, fully relaunch XeniOS before testing."
-                    : @"Some settings could not be applied. Check xenia.log.\n\nAny "
-                      @"settings that were saved should be tested after a full XeniOS "
-                      @"relaunch, or by changing them before launching a game.";
+    title = saved ? NSLocalizedString(@"Settings Saved", @"config view controller: title")
+                  : NSLocalizedString(@"Save Completed With Warnings",
+                                      @"config view controller: title");
+    message =
+        saved
+            ? NSLocalizedString(@"Saved to XeniOS settings.\n\nFor reliable results, change "
+                                @"settings before launching a game. If you saved while a game was "
+                                @"already running, fully relaunch XeniOS before testing.",
+                                @"config view controller: message")
+            : NSLocalizedString(@"Some settings could not be applied. Check xenia.log.\n\nAny "
+                                @"settings that were saved should be tested after a full XeniOS "
+                                @"relaunch, or by changing them before launching a game.",
+                                @"config view controller: user-visible text");
   }
   UIAlertController* alert =
       [UIAlertController alertControllerWithTitle:title
                                           message:message
                                    preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Done"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [self dismissSettingsControllerAnimated:YES];
-                                          }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Done", @"config view controller: title")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 [self dismissSettingsControllerAnimated:YES];
+                               }]];
   [self presentViewController:alert animated:YES completion:nil];
 }
 
