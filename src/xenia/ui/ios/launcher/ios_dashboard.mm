@@ -356,7 +356,11 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
                                    void (^progress)(int percent),
                                    void (^completion)(SystemFilesResult result)) {
   const std::filesystem::path source_path([source fileSystemRepresentation]);
+  [source retain];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // The picker hands over a copy in tmp, or the original (a folder, say) with
+    // a scope that has to be open to read it. Harmless for a copy.
+    const BOOL access_granted = [source startAccessingSecurityScopedResource];
     int last_percent = 0;
     const auto result = InstallIOSSystemSoftware(
         source_path, [&last_percent, &cancel, progress](size_t done, size_t total) {
@@ -369,6 +373,10 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
           }
           return !cancel->load();
         });
+    if (access_granted) {
+      [source stopAccessingSecurityScopedResource];
+    }
+    [source release];
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(result);
     });

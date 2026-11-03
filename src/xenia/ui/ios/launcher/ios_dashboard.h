@@ -89,7 +89,8 @@ NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result);
 
 // Installs the update from |source| off the main thread. |progress| gets whole
 // percents and |completion| the result, both on the main thread. Setting
-// |cancel| stops the install early.
+// |cancel| stops the install early. Holds |source|'s security scope for the
+// install, so a picked folder that wasn't copied can be read.
 void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
                                    void (^progress)(int percent),
                                    void (^completion)(SystemFilesResult result));
