@@ -470,7 +470,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   // mode (which may extend the metal view past the parent in one dimension
   // to maintain aspect) from leaking outside our view controller's view.
   self.view.clipsToBounds = YES;
-  self.metalView = [[XeniaMetalView alloc] initWithFrame:self.view.bounds];
+  self.metalView = [[[XeniaMetalView alloc] initWithFrame:self.view.bounds] autorelease];
   self.metalView.contentScaleFactor = [UIScreen mainScreen].scale;
   [self.view addSubview:self.metalView];
 
@@ -3892,6 +3892,8 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];
   [pending_url_confirmation_ release];
+  [_metalView release];
+  [_statusLabel release];
   [super dealloc];
 }
 
