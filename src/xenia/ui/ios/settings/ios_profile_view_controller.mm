@@ -12,6 +12,7 @@
 #include <vector>
 
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 @implementation XeniaProfileViewController {
   xe::ui::IOSWindowedAppContext* app_context_;
@@ -141,6 +142,8 @@
     cell.detailTextLabel.text = @"Create a new profile and sign in.";
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    XEApplyAccessibility(cell, cell.textLabel.text, nil, cell.detailTextLabel.text,
+                         UIAccessibilityTraitButton);
     return cell;
   }
 
@@ -148,6 +151,8 @@
     cell.textLabel.text = @"";
     cell.detailTextLabel.text = @"";
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    XEApplyAccessibility(cell, nil, nil, nil, UIAccessibilityTraitNone);
+    cell.isAccessibilityElement = NO;
     return cell;
   }
 
@@ -163,6 +168,9 @@
     cell.detailTextLabel.text = @"Not signed in";
   }
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  XEApplyAccessibility(cell, gamertag, cell.detailTextLabel.text, nil,
+                       profile.signed_in ? (UIAccessibilityTraitButton | UIAccessibilityTraitSelected)
+                                         : UIAccessibilityTraitButton);
   return cell;
 }
 
