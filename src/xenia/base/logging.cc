@@ -164,7 +164,7 @@ static bool IsAppDocumentsEntry(std::string_view name) {
       "games",   "content",       "config",   "system",
       "cache",   "cache_host",    "library",  "patches",
       "Inbox",   "screenshots",   "touch-layouts",
-      "xenia.log", "xenia.previous.log"};
+      "xenia.log", "xenia.previous.log", "xenia-edge.config.toml"};
   for (const std::string_view known : kNames) {
     if (name == known) {
       return true;
