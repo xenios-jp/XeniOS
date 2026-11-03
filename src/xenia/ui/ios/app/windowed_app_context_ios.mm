@@ -23,6 +23,50 @@ IOSWindowedAppContext::IOSWindowedAppContext() = default;
 
 IOSWindowedAppContext::~IOSWindowedAppContext() = default;
 
+namespace {
+
+bool IsCancelTitle(NSString* title) {
+  for (NSString* cancel in @[ @"Cancel", @"No", @"Back" ]) {
+    if ([title caseInsensitiveCompare:cancel] == NSOrderedSame) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A guest's message box. The first Cancel or No button gets the cancel style
+// (UIKit allows one); the guest's default stays the preferred action.
+UIAlertController* GuestMessageBox(NSString* title, NSString* text, NSArray<NSString*>* buttons,
+                                   uint32_t default_button, void (^picked)(uint32_t)) {
+  UIAlertController* alert =
+      [UIAlertController alertControllerWithTitle:title
+                                          message:text
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  bool has_cancel = false;
+  for (NSUInteger i = 0; i < buttons.count; ++i) {
+    UIAlertActionStyle style = UIAlertActionStyleDefault;
+    if (!has_cancel && buttons.count > 1 && IsCancelTitle(buttons[i])) {
+      style = UIAlertActionStyleCancel;
+      has_cancel = true;
+    }
+    UIAlertAction* action =
+        [UIAlertAction actionWithTitle:buttons[i]
+                                 style:style
+                               handler:^(__unused UIAlertAction* picked_action) {
+                                 if (picked) {
+                                   picked(static_cast<uint32_t>(i));
+                                 }
+                               }];
+    [alert addAction:action];
+    if (i == default_button) {
+      alert.preferredAction = action;
+    }
+  }
+  return alert;
+}
+
+}  // namespace
+
 bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const std::string& text,
                                                const std::vector<std::string>& buttons,
                                                uint32_t default_button,
@@ -70,36 +114,9 @@ bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const s
       }
       return false;
     }
-    UIViewController* presenter = base_view_controller;
-    while (presenter.presentedViewController) {
-      presenter = presenter.presentedViewController;
-    }
-    if (!presenter) {
-      if (selected_button_out) {
-        *selected_button_out = selected_button;
-      }
-      return false;
-    }
-
     UIAlertController* alert =
-        [UIAlertController alertControllerWithTitle:title_ns
-                                            message:text_ns
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction* preferred_action = nil;
-    for (NSUInteger i = 0; i < prompt_buttons.count; ++i) {
-      UIAlertAction* action =
-          [UIAlertAction actionWithTitle:prompt_buttons[i]
-                                   style:UIAlertActionStyleDefault
-                                 handler:nil];
-      [alert addAction:action];
-      if (i == selected_button) {
-        preferred_action = action;
-      }
-    }
-    if (preferred_action) {
-      alert.preferredAction = preferred_action;
-    }
-    [presenter presentViewController:alert animated:YES completion:nil];
+        GuestMessageBox(title_ns, text_ns, prompt_buttons, selected_button, nil);
+    XeniaPresentGuestPrompt(base_view_controller, alert, nil);
     if (selected_button_out) {
       *selected_button_out = selected_button;
     }
@@ -107,43 +124,19 @@ bool IOSWindowedAppContext::PromptMessageBoxUI(const std::string& title, const s
   }
 
   dispatch_async(dispatch_get_main_queue(), ^{
-    UIViewController* presenter = base_view_controller;
-    while (presenter.presentedViewController) {
-      presenter = presenter.presentedViewController;
-    }
-    if (!presenter) {
-      dispatch_semaphore_signal(sem);
-      return;
-    }
-
     UIAlertController* alert =
-        [UIAlertController alertControllerWithTitle:title_ns
-                                            message:text_ns
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction* preferred_action = nil;
-    for (NSUInteger i = 0; i < prompt_buttons.count; ++i) {
-      UIAlertAction* action =
-          [UIAlertAction actionWithTitle:prompt_buttons[i]
-                                   style:UIAlertActionStyleDefault
-                                 handler:^(__unused UIAlertAction* picked_action) {
-                                   selected_button = static_cast<uint32_t>(i);
-                                   shown = YES;
-                                   dispatch_semaphore_signal(sem);
-                                 }];
-      [alert addAction:action];
-      if (i == selected_button) {
-        preferred_action = action;
-      }
-    }
-    if (preferred_action) {
-      alert.preferredAction = preferred_action;
-    }
+        GuestMessageBox(title_ns, text_ns, prompt_buttons, selected_button, ^(uint32_t picked) {
+          selected_button = picked;
+          shown = YES;
+          dispatch_semaphore_signal(sem);
+        });
     // B on a controller, or leaving the game, answers it as cancelled.
     XeniaAlertSetCancelHandler(alert, ^{
       dispatch_semaphore_signal(sem);
     });
-    XeniaAlertMarkGuestPrompt(alert);
-    [presenter presentViewController:alert animated:YES completion:nil];
+    XeniaPresentGuestPrompt(base_view_controller, alert, ^{
+      dispatch_semaphore_signal(sem);
+    });
   });
 
   dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
