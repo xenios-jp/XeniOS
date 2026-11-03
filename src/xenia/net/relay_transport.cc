@@ -107,9 +107,12 @@ class RelayTransport final : public PacketTransport {
     CloseLobby();
     client_.Leave(out_);
     Flush();
-    RelayStatus stopped;
-    stopped.state = RelayStatus::State::kStopped;
-    Report(stopped);
+    // Nothing was reported while it was dormant, so there is nothing to end.
+    if (active_) {
+      RelayStatus stopped;
+      stopped.state = RelayStatus::State::kStopped;
+      Report(stopped);
+    }
   }
 
   bool Open(std::string& error) {
@@ -130,8 +133,17 @@ class RelayTransport final : public PacketTransport {
   uint32_t mtu() const override { return kMtu; }
   bool healthy() const override { return healthy_; }
 
+  // Nothing reaches the lobby, STUN or TURN before this. Any frame to send is
+  // System Link play too, so Send() activates as well.
+  void Activate() override {
+    if (!active_.exchange(true)) {
+      socket_.Wake();
+    }
+  }
+
   // A frame that can't go anywhere yet is lost like on a busy LAN.
   int Send(std::span<const uint8_t> frame) override {
+    Activate();
     if (!paused_) {
       client_.Send(frame, Now(), out_);
       Flush();
@@ -198,7 +210,12 @@ class RelayTransport final : public PacketTransport {
         }
       }
     }
-    if (paused_) {
+    // A room the player chose joins at game start. The public lobby waits for
+    // the game to play System Link.
+    if (!active_ && config_.room != relay::PublicLobby(config_.title_id)) {
+      Activate();
+    }
+    if (paused_ || !active_) {
       return;
     }
     if (!gathered_ || now - gathered_ms_ >= kHostCandidatesMs) {
@@ -352,6 +369,9 @@ class RelayTransport final : public PacketTransport {
   }
 
   void ReportChanges() {
+    if (!active_) {
+      return;
+    }
     RelayStatus status;
     if (paused_) {
       status.state = RelayStatus::State::kStopped;
@@ -380,6 +400,8 @@ class RelayTransport final : public PacketTransport {
   bool paused_ = false;
   std::optional<RelayStatus> reported_;
   std::atomic<bool> healthy_{true};
+  // Set by the first System Link activity, from any thread.
+  std::atomic<bool> active_{false};
 };
 
 }  // namespace

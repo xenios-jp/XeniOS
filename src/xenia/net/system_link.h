@@ -183,6 +183,9 @@ class SystemLinkStream {
 // transport. Methods are thread safe. Secure addresses are opaque handles in
 // 0.0.0.0/8 that the guest passes to socket calls in place of a peer's IP.
 // This console's own XNADDR maps to 127.0.0.1.
+// A transport that reaches strangers is activated by the first System Link
+// play: registering a key, broadcasting, QoS lookups and raw frames. Opening
+// ports and sockets alone does not.
 class SystemLink {
  public:
   // Fills in |association|'s identity and credential.
