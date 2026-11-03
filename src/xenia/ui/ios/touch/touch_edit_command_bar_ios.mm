@@ -109,26 +109,32 @@ UIView* MakePill() {
   self.backgroundColor = [UIColor clearColor];
 
   name_button_ = MakeIconButton(kLayoutsSymbol, self, @selector(nameTapped:));
-  name_button_.accessibilityLabel = @"Layout menu";
-  [self setLayoutName:@"Layout"];
+  name_button_.accessibilityLabel = NSLocalizedString(
+      @"Layout menu", @"VoiceOver label of the layout name button in the touch edit bar");
+  [self setLayoutName:NSLocalizedString(@"Layout",
+                                        @"Placeholder layout name until a layout is known")];
 
   history_pill_ = MakePill();
   [self addSubview:history_pill_];
   undo_button_ = MakeIconButton(kUndoSymbol, self, @selector(undoTapped:));
-  undo_button_.accessibilityLabel = @"Undo";
+  undo_button_.accessibilityLabel =
+      NSLocalizedString(@"Undo", @"VoiceOver label of the undo button");
   [history_pill_ addSubview:undo_button_];
   redo_button_ = MakeIconButton(kRedoSymbol, self, @selector(redoTapped:));
-  redo_button_.accessibilityLabel = @"Redo";
+  redo_button_.accessibilityLabel =
+      NSLocalizedString(@"Redo", @"VoiceOver label of the redo button");
   [history_pill_ addSubview:redo_button_];
 
   command_pill_ = MakePill();
   [self addSubview:command_pill_];
   [command_pill_ addSubview:name_button_];
   grid_button_ = MakeIconButton(kGridSymbol, self, @selector(gridTapped:));
-  grid_button_.accessibilityLabel = @"Grid snap";
+  grid_button_.accessibilityLabel =
+      NSLocalizedString(@"Grid snap", @"VoiceOver label of the grid snap button");
   [command_pill_ addSubview:grid_button_];
   add_button_ = MakeIconButton(kAddSymbol, self, @selector(addTapped:));
-  add_button_.accessibilityLabel = @"Add control";
+  add_button_.accessibilityLabel =
+      NSLocalizedString(@"Add control", @"VoiceOver label of the add control button");
   [command_pill_ addSubview:add_button_];
 
   done_button_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
@@ -136,7 +142,8 @@ UIView* MakePill() {
   done_button_.layer.cornerRadius = kPillHeight * 0.5f;
   xe_apply_button_title_font(done_button_, UIFontTextStyleSubheadline, 17.0, UIFontWeightSemibold);
   [done_button_ setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
-  [done_button_ setTitle:@"Done" forState:UIControlStateNormal];
+  [done_button_ setTitle:NSLocalizedString(@"Done", @"Button that leaves touch control editing")
+                forState:UIControlStateNormal];
   done_button_.accessibilityTraits = UIAccessibilityTraitButton;
   [done_button_ addTarget:self
                    action:@selector(doneTapped:)
@@ -225,8 +232,12 @@ UIView* MakePill() {
 #pragma mark - State
 
 - (void)setLayoutName:(NSString*)name {
-  NSString* text = name.length ? name : @"Layout";
-  name_button_.accessibilityLabel = [NSString stringWithFormat:@"Layout: %@", text];
+  NSString* text = name.length ? name : NSLocalizedString(@"Layout", @"Fallback layout name");
+  name_button_.accessibilityLabel = [NSString
+      stringWithFormat:NSLocalizedString(
+                           @"Layout: %@",
+                           @"VoiceOver label of the layout name button; %@ is the layout name"),
+                       text];
 }
 
 - (void)setCanUndo:(BOOL)canUndo canRedo:(BOOL)canRedo {

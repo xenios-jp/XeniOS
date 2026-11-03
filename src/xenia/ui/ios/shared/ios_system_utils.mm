@@ -147,14 +147,16 @@ BOOL xe_ios_requires_debugger_broker(void) {
 }
 
 NSString* xe_jit_waiting_status_message(void) {
-  return @"JIT is not active. Enable it with StikDebug (assign universal.js or "
-         @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker.";
+  return NSLocalizedString(@"JIT is not active. Enable it with StikDebug (assign universal.js or "
+                           @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker.",
+                           @"Guidance when JIT is not active");
 }
 
 NSString* xe_jit_not_detected_guidance_message(void) {
-  return @"JIT is not active. Enable it with StikDebug (assign universal.js or "
-         @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool "
-         @"attached until the game has started.";
+  return NSLocalizedString(@"JIT is not active. Enable it with StikDebug (assign universal.js or "
+                           @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep "
+                           @"the tool attached until the game has started.",
+                           @"Guidance when JIT is not active before launching a game");
 }
 
 void xe_add_jit_ring_pulse(CALayer* layer, NSString* key, CGFloat end_scale, CGFloat peak_opacity,
@@ -207,14 +209,17 @@ BOOL xe_has_increased_memory_limit_entitlement(void) {
 }
 
 NSString* xe_memory_entitlement_missing_status_message(void) {
-  return @"Memory entitlement missing. Games will likely crash. Enable Get More RAM, then refresh "
-         @"XeniOS.";
+  return NSLocalizedString(@"Memory entitlement missing. Games will likely crash. Enable Get More "
+                           @"RAM, then refresh XeniOS.",
+                           @"Short status line when the memory entitlement is missing");
 }
 
 NSString* xe_memory_entitlement_not_detected_guidance_message(void) {
-  return @"The increased-memory entitlement is not enabled in the installed app. Most games will "
-         @"likely crash without it.\n\nEnable Get More RAM for XeniOS, then refresh or reinstall "
-         @"the app so it is signed with increased memory.";
+  return NSLocalizedString(
+      @"The increased-memory entitlement is not enabled in the installed app. Most games will "
+      @"likely crash without it.\n\nEnable Get More RAM for XeniOS, then refresh or reinstall the "
+      @"app so it is signed with increased memory.",
+      @"Alert message when the memory entitlement is missing");
 }
 
 std::filesystem::path xe_get_ios_documents_path(void) {

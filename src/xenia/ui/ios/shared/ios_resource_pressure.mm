@@ -32,7 +32,9 @@ void HandleThermalStateChange() {
   g_thermal_toast_shown = YES;
   XELOGI("iOS: Thermal state {} while a game is running; showing a toast", (int)state);
   if (g_present_toast) {
-    g_present_toast(@"Your device is warm. The game may run slower until it cools down.");
+    g_present_toast(
+        NSLocalizedString(@"Your device is warm. The game may run slower until it cools down.",
+                          @"Toast shown when the device is thermally throttled"));
   }
 }
 

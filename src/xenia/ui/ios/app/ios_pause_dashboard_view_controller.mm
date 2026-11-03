@@ -69,7 +69,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
   NSArray<NSDictionary*>* sections = @[
     @{@"rows" : @[ @(XeniaPauseDashboardRowResume) ]},
     @{
-      @"header" : @"Quick Settings",
+      @"header" : NSLocalizedString(@"Quick Settings", @"Section header in the pause menu"),
       @"rows" : @[
         @(XeniaPauseDashboardRowDisplayMode),
         @(XeniaPauseDashboardRowTouchControls),
@@ -77,11 +77,11 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       ]
     },
     @{
-      @"header" : @"Game",
+      @"header" : NSLocalizedString(@"Game", @"Section header in the pause menu"),
       @"rows" : @[ @(XeniaPauseDashboardRowAchievements), @(XeniaPauseDashboardRowProfile) ]
     },
     @{
-      @"header" : @"More",
+      @"header" : NSLocalizedString(@"More", @"Section header in the pause menu"),
       @"rows" : @[ @(XeniaPauseDashboardRowGraphics), @(XeniaPauseDashboardRowDiagnostics) ]
     },
     @{@"rows" : @[ @(XeniaPauseDashboardRowExit) ]},
@@ -92,7 +92,9 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = game_title_.length ? game_title_ : @"Game Menu";
+  self.title = game_title_.length
+                   ? game_title_
+                   : NSLocalizedString(@"Game Menu", @"Fallback title of the pause menu");
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 52.0;
@@ -102,7 +104,9 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
 }
 
 - (void)reloadDashboard {
-  self.title = game_title_.length ? game_title_ : @"Game Menu";
+  self.title = game_title_.length
+                   ? game_title_
+                   : NSLocalizedString(@"Game Menu", @"Fallback title of the pause menu");
   [self.tableView reloadData];
 }
 
@@ -199,21 +203,21 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
   switch (row) {
     case XeniaPauseDashboardRowResume:
       [self configureActionCell:cell
-                          title:@"Resume Game"
+                          title:NSLocalizedString(@"Resume Game", @"Pause menu row")
                          symbol:@"play.fill"
                      accentFill:YES
                     destructive:NO];
       break;
     case XeniaPauseDashboardRowExit:
       [self configureActionCell:cell
-                          title:@"Exit to Library"
+                          title:NSLocalizedString(@"Exit to Library", @"Pause menu row")
                          symbol:@"rectangle.portrait.and.arrow.right"
                      accentFill:NO
                     destructive:YES];
       break;
     case XeniaPauseDashboardRowDisplayMode:
       [self configureValueCell:cell
-                         title:@"Display Mode"
+                         title:NSLocalizedString(@"Display Mode", @"Pause menu row")
                         symbol:@"rectangle.expand.vertical"
                          value:display_mode_value_
                     disclosure:YES
@@ -221,7 +225,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowTouchControls:
       [self configureValueCell:cell
-                         title:@"Touch Controls"
+                         title:NSLocalizedString(@"Touch Controls", @"Pause menu row")
                         symbol:@"hand.tap"
                          value:touch_controls_value_
                     disclosure:YES
@@ -229,7 +233,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowPerformanceOverlay:
       [self configureValueCell:cell
-                         title:@"Performance Overlay"
+                         title:NSLocalizedString(@"Performance Overlay", @"Pause menu row")
                         symbol:@"speedometer"
                          value:performance_overlay_value_
                     disclosure:YES
@@ -237,7 +241,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowAchievements:
       [self configureValueCell:cell
-                         title:@"Achievements"
+                         title:NSLocalizedString(@"Achievements", @"Pause menu row")
                         symbol:@"trophy"
                          value:achievements_summary_
                     disclosure:YES
@@ -245,7 +249,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowProfile:
       [self configureValueCell:cell
-                         title:@"Profile"
+                         title:NSLocalizedString(@"Profile", @"Pause menu row")
                         symbol:@"person.crop.circle"
                          value:profile_name_
                     disclosure:NO
@@ -253,7 +257,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowGraphics:
       [self configureValueCell:cell
-                         title:@"Graphics"
+                         title:NSLocalizedString(@"Graphics", @"Pause menu row")
                         symbol:@"slider.horizontal.3"
                          value:nil
                     disclosure:YES
@@ -261,7 +265,7 @@ typedef NS_ENUM(NSInteger, XeniaPauseDashboardRowId) {
       break;
     case XeniaPauseDashboardRowDiagnostics:
       [self configureValueCell:cell
-                         title:@"Diagnostics"
+                         title:NSLocalizedString(@"Diagnostics", @"Pause menu row")
                         symbol:@"waveform.path.ecg"
                          value:nil
                     disclosure:YES

@@ -69,10 +69,12 @@ void AppendTouchButtonMaskNames(uint16_t buttons, NSMutableArray<NSString*>* par
     [parts addObject:@"RB"];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_BACK) {
-    [parts addObject:@"Back"];
+    [parts addObject:NSLocalizedString(@"Back",
+                                       @"Name of a controller button in a touch control preview")];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_START) {
-    [parts addObject:@"Start"];
+    [parts addObject:NSLocalizedString(@"Start",
+                                       @"Name of a controller button in a touch control preview")];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_LEFT_THUMB) {
     [parts addObject:@"LS"];
@@ -81,16 +83,20 @@ void AppendTouchButtonMaskNames(uint16_t buttons, NSMutableArray<NSString*>* par
     [parts addObject:@"RS"];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_DPAD_UP) {
-    [parts addObject:@"D-Up"];
+    [parts addObject:NSLocalizedString(@"D-Up",
+                                       @"Name of a controller button in a touch control preview")];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_DPAD_DOWN) {
-    [parts addObject:@"D-Down"];
+    [parts addObject:NSLocalizedString(@"D-Down",
+                                       @"Name of a controller button in a touch control preview")];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_DPAD_LEFT) {
-    [parts addObject:@"D-Left"];
+    [parts addObject:NSLocalizedString(@"D-Left",
+                                       @"Name of a controller button in a touch control preview")];
   }
   if (buttons & xe::hid::X_INPUT_GAMEPAD_DPAD_RIGHT) {
-    [parts addObject:@"D-Right"];
+    [parts addObject:NSLocalizedString(@"D-Right",
+                                       @"Name of a controller button in a touch control preview")];
   }
 }
 
@@ -111,7 +117,9 @@ NSString* TouchInteractionBehaviorOutputText(
                                      xe::hid::touch::IOSTouchAnalogOutputDisplayName(
                                          analog_output)]];
   }
-  return outputs.count ? [outputs componentsJoinedByString:@" + "] : @"Unused";
+  return outputs.count
+             ? [outputs componentsJoinedByString:@" + "]
+             : NSLocalizedString(@"Unused", @"Touch control preview when nothing is mapped");
 }
 
 xe::hid::touch::IOSTouchPoint ToInputPoint(CGPoint point) {
@@ -298,12 +306,18 @@ TouchInteractionBehaviorState ResolveTouchInteractionBehaviorState(
 NSString* TouchInteractionBehaviorSummaryText(
     const xe::hid::touch::IOSTouchInteractionBehavior& behavior) {
   if (behavior.trigger == xe::hid::touch::IOSTouchInteractionTrigger::kNone) {
-    return @"Behavior: Off";
+    return NSLocalizedString(@"Behavior: Off",
+                             @"Touch control edit panel summary of a disabled secondary behavior");
   }
   NSString* trigger = [NSString
       stringWithUTF8String:xe::hid::touch::IOSTouchInteractionTriggerDisplayName(behavior.trigger)];
   NSString* outputs = TouchInteractionBehaviorOutputText(behavior);
-  return [NSString stringWithFormat:@"Behavior: %@ -> %@", trigger, outputs];
+  return
+      [NSString stringWithFormat:
+                    NSLocalizedString(
+                        @"Behavior: %1$@ -> %2$@",
+                        @"Touch control edit panel summary; %1$@ is the trigger, %2$@ the outputs"),
+                    trigger, outputs];
 }
 
 CGPoint MoveStickUnitVectorForCapture(const xe::hid::touch::IOSTouchControlDefinition& control,
@@ -330,11 +344,11 @@ NSString* TouchButtonMaskPreviewText(uint16_t buttons) {
 NSString* TouchControlShapeDisplayText(xe::hid::touch::IOSTouchControlShape shape) {
   switch (shape) {
     case xe::hid::touch::IOSTouchControlShape::kCircle:
-      return @"Circle";
+      return NSLocalizedString(@"Circle", @"Name of a touch control shape");
     case xe::hid::touch::IOSTouchControlShape::kRoundedRect:
-      return @"Rounded Rectangle";
+      return NSLocalizedString(@"Rounded Rectangle", @"Name of a touch control shape");
   }
-  return @"Round";
+  return NSLocalizedString(@"Round", @"Name of a touch control shape");
 }
 
 CGFloat TouchEditPreviewHeightForLabel(UILabel* label, CGFloat width) {

@@ -497,7 +497,8 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   collapse_button_.tintColor = PrimaryText();
   [collapse_button_ setImage:[UIImage systemImageNamed:@"chevron.right"]
                     forState:UIControlStateNormal];
-  collapse_button_.accessibilityLabel = @"Expand";
+  collapse_button_.accessibilityLabel =
+      NSLocalizedString(@"Expand", @"VoiceOver label of the panel's expand/collapse button");
   [collapse_button_ addTarget:self
                        action:@selector(collapseTapped:)
              forControlEvents:UIControlEventTouchUpInside];
@@ -508,35 +509,48 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   size_stepper_.layer.cornerRadius = kQuickButtonHeight * 0.5f;
   size_stepper_.clipsToBounds = YES;
   [header_ addSubview:size_stepper_];
-  smaller_button_ = CreateQuickIconButton(@"minus", @"Decrease size", PrimaryText(), self,
-                                          @selector(smallerTapped:));
+  smaller_button_ = CreateQuickIconButton(
+      @"minus",
+      NSLocalizedString(@"Decrease size", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), self, @selector(smallerTapped:));
   smaller_button_.backgroundColor = [UIColor clearColor];
   [size_stepper_ addSubview:smaller_button_];
-  larger_button_ = CreateQuickIconButton(@"plus", @"Increase size", PrimaryText(), self,
-                                         @selector(largerTapped:));
+  larger_button_ = CreateQuickIconButton(
+      @"plus",
+      NSLocalizedString(@"Increase size", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), self, @selector(largerTapped:));
   larger_button_.backgroundColor = [UIColor clearColor];
   [size_stepper_ addSubview:larger_button_];
   size_separator_ = [[UIView alloc] initWithFrame:CGRectZero];
   size_separator_.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.10f];
   [size_stepper_ addSubview:size_separator_];
 
-  layout_button_ = CreateQuickIconButton(@"arrow.up.left.and.arrow.down.right", @"Match size",
-                                         PrimaryText(), self, @selector(layoutTapped:));
+  layout_button_ = CreateQuickIconButton(
+      @"arrow.up.left.and.arrow.down.right",
+      NSLocalizedString(@"Match size", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), self, @selector(layoutTapped:));
   layout_button_.menu = [self layoutQuickMenu];
   layout_button_.showsMenuAsPrimaryAction = NO;
   [header_ addSubview:layout_button_];
-  behavior_button_ =
-      CreateQuickIconButton(@"ellipsis", @"Extra function", PrimaryText(), nil, nil);
+  behavior_button_ = CreateQuickIconButton(
+      @"ellipsis",
+      NSLocalizedString(@"Extra function", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), nil, nil);
   behavior_button_.showsMenuAsPrimaryAction = YES;
   [header_ addSubview:behavior_button_];
-  tune_button_ = CreateQuickIconButton(@"speedometer", @"Tune response", PrimaryText(),
-                                       self, @selector(tuneTapped:));
+  tune_button_ = CreateQuickIconButton(
+      @"speedometer",
+      NSLocalizedString(@"Tune response", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), self, @selector(tuneTapped:));
   [header_ addSubview:tune_button_];
-  duplicate_button_ = CreateQuickIconButton(@"square.on.square", @"Duplicate", PrimaryText(), self,
-                                            @selector(duplicateTapped:));
+  duplicate_button_ = CreateQuickIconButton(
+      @"square.on.square",
+      NSLocalizedString(@"Duplicate", @"VoiceOver label of a touch control edit button"),
+      PrimaryText(), self, @selector(duplicateTapped:));
   [header_ addSubview:duplicate_button_];
-  delete_button_ =
-      CreateQuickIconButton(@"trash", @"Delete", DestructiveText(), self, @selector(deleteTapped:));
+  delete_button_ = CreateQuickIconButton(
+      @"trash", NSLocalizedString(@"Delete", @"VoiceOver label of a touch control edit button"),
+      DestructiveText(), self, @selector(deleteTapped:));
   [header_ addSubview:delete_button_];
 
   scroll_ = [[XeTEPScrollView alloc] initWithFrame:CGRectZero];
@@ -624,7 +638,10 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   [collapse_button_
       setImage:[UIImage systemImageNamed:(expanded ? @"chevron.down" : @"chevron.right")]
       forState:UIControlStateNormal];
-  collapse_button_.accessibilityLabel = expanded ? @"Collapse" : @"Expand";
+  collapse_button_.accessibilityLabel =
+      expanded
+          ? NSLocalizedString(@"Collapse", @"VoiceOver label of the panel's expand/collapse button")
+          : NSLocalizedString(@"Expand", @"VoiceOver label of the panel's expand/collapse button");
   scroll_.hidden = !expanded;
   [self setNeedsLayout];
 }
@@ -797,18 +814,24 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 
 - (void)updateHeader {
   NSString* name = xe::ui::XeniaTouchConfiguredControlLabelText(control_, YES);
-  header_title_.text = name.length ? name : @"Control";
+  header_title_.text =
+      name.length ? name : NSLocalizedString(@"Control", @"Fallback name of a touch control");
   NSString* primary = [self primaryBindingTitle];
   [primary_binding_button_ setTitle:(primary.length ? primary : name)
                            forState:UIControlStateNormal];
-  primary_binding_button_.accessibilityLabel =
-      [NSString stringWithFormat:@"Primary binding %@", primary.length ? primary : name];
+  primary_binding_button_.accessibilityLabel = [NSString
+      stringWithFormat:NSLocalizedString(@"Primary binding %@",
+                                         @"VoiceOver label; %@ is the button the control presses"),
+                       primary.length ? primary : name];
   primary_binding_button_.menu = [self primaryBindingMenu];
   primary_binding_button_.showsMenuAsPrimaryAction = primary_binding_button_.menu != nil;
   primary_binding_button_.hidden = primary_binding_button_.menu == nil;
   const CGFloat width_units = MAX(1.0f, MIN(99.0f, control_.normalized_frame.width * 100.0f));
-  NSString* base = [NSString stringWithFormat:@"%@, %.0fu, %.0f%%", [self typeName], width_units,
-                                              control_.visual_opacity * 100.0f];
+  NSString* base = [NSString
+      stringWithFormat:NSLocalizedString(@"%1$@, %2$.0fu, %3$.0f%%",
+                                         @"Touch control summary; %1$@ is the control type, %2$.0f "
+                                         @"its width in units, %3$.0f its opacity percentage"),
+                       [self typeName], width_units, control_.visual_opacity * 100.0f];
   NSString* assignment = [self assignmentSummary];
   header_subtitle_.text = base;
   UIMenu* assignment_menu = [self assignmentQuickMenu];
@@ -819,21 +842,27 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   assignment_badge_.hidden = assignment_menu == nil;
   assignment_badge_.menu = assignment_menu;
   assignment_badge_.accessibilityLabel =
-      assignment.length ? [NSString stringWithFormat:@"Assigned %@", assignment] : nil;
+      assignment.length
+          ? [NSString
+                stringWithFormat:NSLocalizedString(
+                                     @"Assigned %@",
+                                     @"VoiceOver label; %@ is the extra assignment of the control"),
+                                 assignment]
+          : nil;
 }
 
 - (NSString*)typeName {
   switch (control_.type) {
     case IOSTouchControlType::kActionButton:
-      return @"Face Button";
+      return NSLocalizedString(@"Face Button", @"Touch control type");
     case IOSTouchControlType::kMoveStick:
-      return @"Analog Stick";
+      return NSLocalizedString(@"Analog Stick", @"Touch control type");
     case IOSTouchControlType::kLookSwipeZone:
-      return @"Look Zone";
+      return NSLocalizedString(@"Look Zone", @"Touch control type");
     case IOSTouchControlType::kPauseButton:
-      return @"Menu Button";
+      return NSLocalizedString(@"Menu Button", @"Touch control type");
   }
-  return @"Control";
+  return NSLocalizedString(@"Control", @"Touch control type");
 }
 
 - (NSString*)displayForAction:(IOSTouchAction)action {
@@ -851,7 +880,7 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 
 - (NSString*)primaryBindingTitle {
   if (control_.type == IOSTouchControlType::kPauseButton) {
-    return @"Pause";
+    return NSLocalizedString(@"Pause", @"Binding name of the pause button");
   }
   return [self displayForAction:control_.action];
 }
@@ -872,7 +901,11 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   if (control_.type == IOSTouchControlType::kActionButton) {
     UIMenu* hold_slide = [self dragOutputMenu];
     if (hold_slide.children.count) {
-      [children addObject:[UIMenu menuWithTitle:@"Held Slide" children:hold_slide.children]];
+      [children
+          addObject:[UIMenu menuWithTitle:NSLocalizedString(
+                                              @"Held Slide",
+                                              @"Submenu title in the touch control edit panel")
+                                 children:hold_slide.children]];
     }
     UIMenu* extra = [self behaviorQuickMenu];
     if (extra.children.count) {
@@ -885,15 +918,20 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
       [children addObjectsFromArray:extra.children];
     }
   }
-  return children.count ? [UIMenu menuWithTitle:@"Assignments" children:children] : nil;
+  return children.count
+             ? [UIMenu
+                   menuWithTitle:NSLocalizedString(@"Assignments",
+                                                   @"Submenu title in the touch control edit panel")
+                        children:children]
+             : nil;
 }
 
 - (NSString*)emptyAssignmentTitle {
   if (control_.type == IOSTouchControlType::kMoveStick) {
-    return @"D-Pad + Extra";
+    return NSLocalizedString(@"D-Pad + Extra", @"Badge text when a stick has no extra assignment");
   }
   if (control_.type == IOSTouchControlType::kActionButton) {
-    return @"Extra";
+    return NSLocalizedString(@"Extra", @"Badge text when a button has no extra assignment");
   }
   return @"";
 }
@@ -919,17 +957,22 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   IOSTouchAnalogOutput primary_drag = [self effectiveDragOutput:control_.drag_output
                                                    relativeLook:control_.enables_relative_look];
   if (primary_drag != IOSTouchAnalogOutput::kNone) {
-    [parts addObject:[NSString
-                         stringWithFormat:@"Held Slide: %@", [self displayForOutput:primary_drag]]];
+    [parts
+        addObject:[NSString
+                      stringWithFormat:
+                          NSLocalizedString(
+                              @"Held Slide: %@",
+                              @"Assignment summary; %@ is an analog output such as Look or Move"),
+                          [self displayForOutput:primary_drag]]];
   }
   if (control_.type == IOSTouchControlType::kMoveStick && control_.move_with_dpad_ring) {
-    [parts addObject:@"D-Pad Ring"];
+    [parts addObject:NSLocalizedString(@"D-Pad Ring", @"Assignment summary chip")];
   }
 
   const auto& secondary = control_.secondary_behavior;
   if (secondary.trigger != IOSTouchInteractionTrigger::kNone) {
     NSString* trigger_name = secondary.trigger == IOSTouchInteractionTrigger::kHoldDrag
-                                 ? @"Extra Hold Drag"
+                                 ? NSLocalizedString(@"Extra Hold Drag", @"Assignment summary chip")
                                  : [self displayForTrigger:secondary.trigger];
     NSMutableString* behavior = [NSMutableString stringWithString:trigger_name];
     if (secondary.action != IOSTouchAction::kNone) {
@@ -982,14 +1025,16 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   __unsafe_unretained XeniaTouchEditPanel* unsafe_self = self;
 
   // APPEARANCE -------------------------------------------------------------
-  [self addSection:@"Appearance"];
+  [self addSection:NSLocalizedString(@"Appearance",
+                                     @"Section header in the touch control edit panel")];
 
   XeTEPSliderRow* opacity = [self addSliderRow];
-  [opacity configureWithTitle:@"Opacity"
-                        value:control_.visual_opacity
-                          min:0.2f
-                          max:1.0f
-                      percent:YES];
+  [opacity
+      configureWithTitle:NSLocalizedString(@"Opacity", @"Row title in the touch control edit panel")
+                   value:control_.visual_opacity
+                     min:0.2f
+                     max:1.0f
+                 percent:YES];
   opacity.onBegin = ^{
     [unsafe_self->delegate_ touchEditPanelDidBeginOpacityChange:unsafe_self];
   };
@@ -1012,7 +1057,9 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     }
     ++tint_index;
   }
-  [tint configureWithTitle:@"Tint" colors:colors selectedIndex:selected];
+  [tint configureWithTitle:NSLocalizedString(@"Tint", @"Row title in the touch control edit panel")
+                    colors:colors
+             selectedIndex:selected];
   tint.onSelect = ^(NSInteger index) {
     NSInteger i = 0;
     for (IOSTouchTintStyle style : xe::hid::touch::kIOSTouchEditableTintStyles) {
@@ -1026,10 +1073,11 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 
   if (control_.type == IOSTouchControlType::kActionButton) {
     XeTEPChipRow* shape = [self addChipRow];
-    [shape configureWithTitle:@"Shape"
-                     subtitle:nil
-                        value:xe::ui::ios::touch_overlay::TouchControlShapeDisplayText(
-                                  control_.shape)];
+    [shape
+        configureWithTitle:NSLocalizedString(@"Shape", @"Row title in the touch control edit panel")
+                  subtitle:nil
+                     value:xe::ui::ios::touch_overlay::TouchControlShapeDisplayText(
+                               control_.shape)];
     shape.chipButton.menu = [self shapeMenu];
     shape.chipButton.showsMenuAsPrimaryAction = YES;
   }
@@ -1037,18 +1085,30 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   XeTEPChipRow* label = [self addChipRow];
   NSString* label_text = xe::ui::XeniaTouchConfiguredControlLabelText(control_, YES);
   NSString* label_value =
-      control_.label_hidden ? @"Hidden" : (label_text.length ? label_text : @"Default");
-  [label configureWithTitle:@"Label" subtitle:nil value:label_value];
+      control_.label_hidden
+          ? NSLocalizedString(@"Hidden",
+                              @"Value shown in the Label row of the touch control edit panel")
+          : (label_text.length
+                 ? label_text
+                 : NSLocalizedString(
+                       @"Default",
+                       @"Value shown in the Label row of the touch control edit panel"));
+  [label
+      configureWithTitle:NSLocalizedString(@"Label", @"Row title in the touch control edit panel")
+                subtitle:nil
+                   value:label_value];
   label.chipButton.menu = [self labelMenu];
   label.chipButton.showsMenuAsPrimaryAction = YES;
 
   // BEHAVIOR ---------------------------------------------------------------
   if (control_.type == IOSTouchControlType::kActionButton) {
-    [self addSection:@"Behavior"];
+    [self addSection:NSLocalizedString(@"Behavior",
+                                       @"Section header in the touch control edit panel")];
 
     XeTEPChipRow* tap = [self addChipRow];
-    [tap configureWithTitle:@"Tap"
-                   subtitle:@"Press & release"
+    [tap configureWithTitle:NSLocalizedString(@"Tap", @"Row title in the touch control edit panel")
+                   subtitle:NSLocalizedString(@"Press & release",
+                                              @"Row subtitle in the touch control edit panel")
                       value:[self displayForAction:control_.action]];
     tap.chipButton.menu = [self tapActionMenu];
     tap.chipButton.showsMenuAsPrimaryAction = YES;
@@ -1056,24 +1116,30 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     XeTEPChipRow* drag = [self addChipRow];
     IOSTouchAnalogOutput drag_output = [self effectiveDragOutput:control_.drag_output
                                                     relativeLook:control_.enables_relative_look];
-    [drag configureWithTitle:@"Held Slide"
-                    subtitle:@"Slide while holding"
+    [drag configureWithTitle:NSLocalizedString(@"Held Slide",
+                                               @"Row title in the touch control edit panel")
+                    subtitle:NSLocalizedString(@"Slide while holding",
+                                               @"Row subtitle in the touch control edit panel")
                        value:[self displayForOutput:drag_output]];
     drag.chipButton.menu = [self dragOutputMenu];
     drag.chipButton.showsMenuAsPrimaryAction = YES;
 
     XeTEPChipRow* gesture = [self addChipRow];
-    [gesture configureWithTitle:@"Extra gesture"
-                       subtitle:@"Flick for a 2nd input"
+    [gesture configureWithTitle:NSLocalizedString(@"Extra gesture",
+                                                  @"Row title in the touch control edit panel")
+                       subtitle:NSLocalizedString(@"Flick for a 2nd input",
+                                                  @"Row subtitle in the touch control edit panel")
                           value:[self displayForTrigger:control_.secondary_behavior.trigger]];
     gesture.chipButton.menu = [self gestureTriggerMenu];
     gesture.chipButton.showsMenuAsPrimaryAction = YES;
 
     if (control_.secondary_behavior.trigger != IOSTouchInteractionTrigger::kNone) {
       XeTEPChipRow* then_button = [self addChipRow];
-      [then_button configureWithTitle:@"Then button"
-                             subtitle:nil
-                                value:[self displayForAction:control_.secondary_behavior.action]];
+      [then_button
+          configureWithTitle:NSLocalizedString(@"Then button",
+                                               @"Row title in the touch control edit panel")
+                    subtitle:nil
+                       value:[self displayForAction:control_.secondary_behavior.action]];
       then_button.chipButton.menu = [self gestureActionMenu];
       then_button.chipButton.showsMenuAsPrimaryAction = YES;
 
@@ -1081,7 +1147,8 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
       IOSTouchAnalogOutput secondary_output =
           [self effectiveDragOutput:control_.secondary_behavior.analog_output
                        relativeLook:control_.secondary_behavior.enables_relative_look];
-      [then_drag configureWithTitle:@"Then drag"
+      [then_drag configureWithTitle:NSLocalizedString(@"Then drag",
+                                                      @"Row title in the touch control edit panel")
                            subtitle:nil
                               value:[self displayForOutput:secondary_output]];
       then_drag.chipButton.menu = [self gestureDragMenu];
@@ -1089,20 +1156,23 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     }
 
     if ([self selectedControlHasTunableAnalogOutput]) {
-      [self addSection:@"Feel"];
+      [self
+          addSection:NSLocalizedString(@"Feel", @"Section header in the touch control edit panel")];
       [self addTuneRow];
     }
   } else if (control_.type == IOSTouchControlType::kMoveStick ||
              control_.type == IOSTouchControlType::kLookSwipeZone) {
-    [self addSection:@"Behavior"];
+    [self addSection:NSLocalizedString(@"Behavior",
+                                       @"Section header in the touch control edit panel")];
     XeTEPChipRow* binding = [self addChipRow];
-    [binding configureWithTitle:@"Binding"
+    [binding configureWithTitle:NSLocalizedString(@"Binding",
+                                                  @"Row title in the touch control edit panel")
                        subtitle:nil
                           value:[self displayForAction:control_.action]];
     binding.chipButton.menu = [self bindingMoveLookMenu];
     binding.chipButton.showsMenuAsPrimaryAction = YES;
 
-    [self addSection:@"Feel"];
+    [self addSection:NSLocalizedString(@"Feel", @"Section header in the touch control edit panel")];
     [self addTuneRow];
   }
 }
@@ -1110,9 +1180,11 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 - (void)addTuneRow {
   __unsafe_unretained XeniaTouchEditPanel* unsafe_self = self;
   XeTEPChipRow* tune = [self addChipRow];
-  [tune configureWithTitle:@"Tune response"
-                  subtitle:@"Deadzone, curve, smoothing"
-                     value:@"Adjust"];
+  [tune configureWithTitle:NSLocalizedString(@"Tune response",
+                                             @"Row title in the touch control edit panel")
+                  subtitle:NSLocalizedString(@"Deadzone, curve, smoothing",
+                                             @"Row subtitle in the touch control edit panel")
+                     value:NSLocalizedString(@"Adjust", @"Value shown in the Tune response row")];
   [tune.chipButton addAction:[UIAction actionWithHandler:^(__unused UIAction* action) {
                      [unsafe_self->delegate_ touchEditPanelDidRequestTune:unsafe_self];
                    }]
@@ -1277,45 +1349,54 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   const bool has_custom_label = xe::hid::touch::IOSTouchControlHasCustomLabel(control_);
   NSMutableArray<UIMenuElement*>* children = [NSMutableArray arrayWithCapacity:3];
 
-  UIAction* rename = [UIAction actionWithTitle:@"Rename..."
-                                         image:[UIImage systemImageNamed:@"text.cursor"]
-                                    identifier:nil
-                                       handler:^(__unused UIAction* action) {
-                                         [unsafe_self->delegate_
-                                             touchEditPanelDidRequestRenameLabel:unsafe_self];
-                                       }];
+  UIAction* rename = [UIAction
+      actionWithTitle:NSLocalizedString(@"Rename...", @"Menu item in the touch control label menu")
+                image:[UIImage systemImageNamed:@"text.cursor"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                [unsafe_self->delegate_ touchEditPanelDidRequestRenameLabel:unsafe_self];
+              }];
   [children addObject:rename];
 
-  UIAction* visibility =
-      [UIAction actionWithTitle:(control_.label_hidden ? @"Show Label" : @"Hide Label")
-                          image:[UIImage systemImageNamed:(control_.label_hidden
-                                                              ? @"text.badge.checkmark"
-                                                              : @"text.badge.xmark")]
-                     identifier:nil
-                        handler:^(__unused UIAction* action) {
-                          [unsafe_self->delegate_ touchEditPanel:unsafe_self
-                                            didSelectLabelHidden:!unsafe_self->control_.label_hidden];
-                        }];
+  UIAction* visibility = [UIAction
+      actionWithTitle:(control_.label_hidden
+                           ? NSLocalizedString(@"Show Label",
+                                               @"Menu item in the touch control label menu")
+                           : NSLocalizedString(@"Hide Label",
+                                               @"Menu item in the touch control label menu"))
+                image:[UIImage systemImageNamed:(control_.label_hidden ? @"text.badge.checkmark"
+                                                                       : @"text.badge.xmark")]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                [unsafe_self->delegate_ touchEditPanel:unsafe_self
+                                  didSelectLabelHidden:!unsafe_self->control_.label_hidden];
+              }];
   [children addObject:visibility];
 
-  UIAction* reset = [UIAction actionWithTitle:@"Use Default Label"
-                                        image:nil
-                                   identifier:nil
-                                      handler:^(__unused UIAction* action) {
-                                        [unsafe_self->delegate_
-                                            touchEditPanelDidRequestResetLabel:unsafe_self];
-                                      }];
+  UIAction* reset =
+      [UIAction actionWithTitle:NSLocalizedString(@"Use Default Label",
+                                                  @"Menu item in the touch control label menu")
+                          image:nil
+                     identifier:nil
+                        handler:^(__unused UIAction* action) {
+                          [unsafe_self->delegate_ touchEditPanelDidRequestResetLabel:unsafe_self];
+                        }];
   if (!has_custom_label) {
     reset.attributes = UIMenuElementAttributesDisabled;
   }
   [children addObject:reset];
 
-  return [UIMenu menuWithTitle:@"Label" children:children];
+  return [UIMenu
+      menuWithTitle:NSLocalizedString(@"Label", @"Submenu title in the touch control edit panel")
+           children:children];
 }
 
 - (UIAction*)dpadRingAction {
   __unsafe_unretained XeniaTouchEditPanel* unsafe_self = self;
-  NSString* title = control_.move_with_dpad_ring ? @"D-Pad Ring On" : @"D-Pad Ring Off";
+  NSString* title =
+      control_.move_with_dpad_ring
+          ? NSLocalizedString(@"D-Pad Ring On", @"Menu item toggling the D-pad ring")
+          : NSLocalizedString(@"D-Pad Ring Off", @"Menu item toggling the D-pad ring");
   UIAction* item = [UIAction
       actionWithTitle:title
                 image:[UIImage systemImageNamed:@"dpad"]
@@ -1330,16 +1411,17 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 - (UIMenu*)layoutQuickMenu {
   __unsafe_unretained XeniaTouchEditPanel* unsafe_self = self;
   NSMutableArray<UIMenuElement*>* children = [NSMutableArray array];
-  UIAction* mirror =
-      [UIAction actionWithTitle:@"Mirror"
-                          image:[UIImage systemImageNamed:@"arrow.left.and.right"]
-                     identifier:nil
-                        handler:^(__unused UIAction* action) {
-                          [unsafe_self->delegate_ touchEditPanelDidRequestMirror:unsafe_self];
-                        }];
+  UIAction* mirror = [UIAction
+      actionWithTitle:NSLocalizedString(@"Mirror", @"Menu item in the touch control layout menu")
+                image:[UIImage systemImageNamed:@"arrow.left.and.right"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                [unsafe_self->delegate_ touchEditPanelDidRequestMirror:unsafe_self];
+              }];
   [children addObject:mirror];
   UIAction* match_size =
-      [UIAction actionWithTitle:@"Match Size..."
+      [UIAction actionWithTitle:NSLocalizedString(@"Match Size...",
+                                                  @"Menu item in the touch control layout menu")
                           image:[UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right"]
                      identifier:nil
                         handler:^(__unused UIAction* action) {
@@ -1349,13 +1431,17 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 
   NSArray<UIMenuElement*>* shape_actions = [self shapeActions];
   if (shape_actions.count) {
-    [children addObject:[UIMenu menuWithTitle:@"Button Shape"
+    [children addObject:[UIMenu menuWithTitle:NSLocalizedString(
+                                                  @"Button Shape",
+                                                  @"Submenu title in the touch control edit panel")
                                         image:[UIImage systemImageNamed:@"capsule"]
                                    identifier:nil
                                       options:UIMenuOptionsDisplayInline
                                      children:shape_actions]];
   }
-  return [UIMenu menuWithTitle:@"Layout" children:children];
+  return [UIMenu
+      menuWithTitle:NSLocalizedString(@"Layout", @"Submenu title in the touch control edit panel")
+           children:children];
 }
 
 - (UIMenu*)behaviorQuickMenu {
@@ -1363,13 +1449,13 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   const auto& current = control_.secondary_behavior;
   IOSTouchAnalogOutput current_output = [self effectiveDragOutput:current.analog_output
                                                      relativeLook:current.enables_relative_look];
-  UIAction* off =
-      [UIAction actionWithTitle:@"Extra Off"
-                          image:[UIImage systemImageNamed:@"xmark.circle"]
-                     identifier:nil
-                        handler:^(__unused UIAction* action) {
-                          [unsafe_self->delegate_ touchEditPanelDidRequestClearExtras:unsafe_self];
-                        }];
+  UIAction* off = [UIAction
+      actionWithTitle:NSLocalizedString(@"Extra Off", @"Menu item that removes an extra function")
+                image:[UIImage systemImageNamed:@"xmark.circle"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                [unsafe_self->delegate_ touchEditPanelDidRequestClearExtras:unsafe_self];
+              }];
   off.state = [self hasAnyExtraAssignment] ? UIMenuElementStateOff : UIMenuElementStateOn;
 
   UIAction* (^buttonPreset)(NSString*, IOSTouchInteractionTrigger, IOSTouchAction) =
@@ -1399,14 +1485,22 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
       }
       NSString* action_name = [self displayForAction:action];
       [double_tap_forward
-          addObject:buttonPreset([NSString stringWithFormat:@"Double Tap Forward %@", action_name],
+          addObject:buttonPreset([NSString stringWithFormat:NSLocalizedString(
+                                                                @"Double Tap Forward %@",
+                                                                @"Menu item; %@ is a button name"),
+                                                            action_name],
                                  IOSTouchInteractionTrigger::kDoubleTapForward, action)];
     }
-    return [UIMenu menuWithTitle:@"Extra Function"
-                        children:@[
-                          off,
-                          [UIMenu menuWithTitle:@"Double Tap Forward" children:double_tap_forward],
-                        ]];
+    return [UIMenu
+        menuWithTitle:NSLocalizedString(@"Extra Function",
+                                        @"Submenu title in the touch control edit panel")
+             children:@[
+               off,
+               [UIMenu
+                   menuWithTitle:NSLocalizedString(@"Double Tap Forward",
+                                                   @"Submenu title in the touch control edit panel")
+                        children:double_tap_forward],
+             ]];
   }
 
   UIAction* (^dragPreset)(NSString*, IOSTouchAnalogOutput) =
@@ -1435,24 +1529,44 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
       continue;
     }
     NSString* action_name = [self displayForAction:action];
-    [hold addObject:buttonPreset([NSString stringWithFormat:@"Hold %@", action_name],
+    [hold addObject:buttonPreset([NSString stringWithFormat:NSLocalizedString(
+                                                                @"Hold %@",
+                                                                @"Menu item; %@ is a button name"),
+                                                            action_name],
                                  IOSTouchInteractionTrigger::kHold, action)];
-    [double_tap addObject:buttonPreset([NSString stringWithFormat:@"Double Tap %@", action_name],
-                                       IOSTouchInteractionTrigger::kDoubleTap, action)];
+    [double_tap
+        addObject:buttonPreset([NSString stringWithFormat:NSLocalizedString(
+                                                              @"Double Tap %@",
+                                                              @"Menu item; %@ is a button name"),
+                                                          action_name],
+                               IOSTouchInteractionTrigger::kDoubleTap, action)];
   }
   NSMutableArray<UIMenuElement*>* children = [NSMutableArray array];
   [children addObject:off];
-  [children addObject:[UIMenu menuWithTitle:@"Hold" children:hold]];
-  [children addObject:[UIMenu menuWithTitle:@"Double Tap" children:double_tap]];
+  [children
+      addObject:[UIMenu menuWithTitle:NSLocalizedString(
+                                          @"Hold", @"Submenu title in the touch control edit panel")
+                             children:hold]];
+  [children addObject:[UIMenu menuWithTitle:NSLocalizedString(
+                                                @"Double Tap",
+                                                @"Submenu title in the touch control edit panel")
+                                   children:double_tap]];
   if (control_.type == IOSTouchControlType::kActionButton) {
     NSArray<UIAction*>* drag = @[
-      dragPreset(@"Look", IOSTouchAnalogOutput::kLook),
-      dragPreset(@"Move", IOSTouchAnalogOutput::kMove),
+      dragPreset(NSLocalizedString(@"Look", @"Menu item that assigns a hold-and-drag output"),
+                 IOSTouchAnalogOutput::kLook),
+      dragPreset(NSLocalizedString(@"Move", @"Menu item that assigns a hold-and-drag output"),
+                 IOSTouchAnalogOutput::kMove),
     ];
-    [children addObject:[UIMenu menuWithTitle:@"Extra Hold Drag" children:drag]];
+    [children addObject:[UIMenu menuWithTitle:NSLocalizedString(
+                                                  @"Extra Hold Drag",
+                                                  @"Submenu title in the touch control edit panel")
+                                     children:drag]];
   }
 
-  return [UIMenu menuWithTitle:@"Extra Function" children:children];
+  return [UIMenu menuWithTitle:NSLocalizedString(@"Extra Function",
+                                                 @"Submenu title in the touch control edit panel")
+                      children:children];
 }
 
 #pragma mark - Actions

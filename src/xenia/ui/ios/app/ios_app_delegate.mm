@@ -27,6 +27,16 @@
 
 DECLARE_path(log_file);
 
+namespace {
+// The launcher clears this status text once profile services are ready, but only if it is still
+// showing, so the clear compares against this one string rather than an English literal.
+NSString* ProfileInitStatusText() {
+  static NSString* text = [NSLocalizedString(@"Initializing profile services...",
+                                             @"Status line while profile services start") copy];
+  return text;
+}
+}  // namespace
+
 @implementation XeniaAppDelegate {
   std::unique_ptr<xe::ui::IOSWindowedAppContext> app_context_;
   std::unique_ptr<xe::ui::WindowedApp> app_;
@@ -208,7 +218,7 @@ DECLARE_path(log_file);
   app_context_->set_profile_services_ready_callback([vc]() {
     dispatch_async(dispatch_get_main_queue(), ^{
       [vc refreshSignedInProfileUI];
-      if ([vc.statusLabel.text isEqualToString:@"Initializing profile services..."]) {
+      if ([vc.statusLabel.text isEqualToString:ProfileInitStatusText()]) {
         vc.statusLabel.text = @"";
       }
     });
@@ -232,14 +242,16 @@ DECLARE_path(log_file);
     // After the scene's window is on screen.
     dispatch_async(dispatch_get_main_queue(), ^{
       xe_ios_present_init_failure_alert(
-          vc, @"The emulator could not be initialized. Sharing the log helps find out why.");
+          vc, NSLocalizedString(
+                  @"The emulator could not be initialized. Sharing the log helps find out why.",
+                  @"Alert message when the emulator fails to initialize"));
     });
     return NO;
   }
 
   [vc refreshSignedInProfileUI];
   if (vc.appContext) {
-    vc.statusLabel.text = @"Initializing profile services...";
+    vc.statusLabel.text = ProfileInitStatusText();
     vc.appContext->LaunchGame(std::string());
   }
 

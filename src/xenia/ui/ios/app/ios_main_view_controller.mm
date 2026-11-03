@@ -682,26 +682,33 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
   online_features_notice_presented_ = YES;
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Online Features"
-                       message:@"XeniOS checks for updates and downloads compatibility information "
-                               @"and cover art. Compatibility reports you submit are public.\n\n"
-                               @"You can change this in Settings > About > Privacy."
+      alertControllerWithTitle:NSLocalizedString(@"Online Features",
+                                                 @"Alert title: first-run online features notice")
+                       message:
+                           NSLocalizedString(
+                               @"XeniOS checks for updates and downloads compatibility information "
+                               @"and cover art. Compatibility reports you submit are "
+                               @"public.\n\nYou can change this in Settings > About > Privacy.",
+                               @"Alert message: first-run online features notice")
                 preferredStyle:UIAlertControllerStyleAlert];
   void (^answer)(BOOL) = ^(BOOL enabled) {
     xe_ios_set_online_features_enabled(enabled);
     xe_ios_set_online_features_notice_answered();
     [self runAppearanceTasks];
   };
-  [alert addAction:[UIAlertAction actionWithTitle:@"Turn Off"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            answer(NO);
-                                          }]];
-  UIAlertAction* keep_on = [UIAlertAction actionWithTitle:@"Continue"
-                                                    style:UIAlertActionStyleDefault
-                                                  handler:^(__unused UIAlertAction* action) {
-                                                    answer(YES);
-                                                  }];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Turn Off",
+                                                         @"Alert button: disables online features")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 answer(NO);
+                               }]];
+  UIAlertAction* keep_on = [UIAlertAction
+      actionWithTitle:NSLocalizedString(@"Continue", @"Alert button: keeps online features on")
+                style:UIAlertActionStyleDefault
+              handler:^(__unused UIAlertAction* action) {
+                answer(YES);
+              }];
   [alert addAction:keep_on];
   alert.preferredAction = keep_on;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
@@ -738,36 +745,57 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)presentUpdateAvailableNotificationForInfo:(XeniaUpdateInfo*)info {
-  NSString* latest = info.latestVersionText.length ? info.latestVersionText : @"a new version";
+  NSString* latest =
+      info.latestVersionText.length
+          ? info.latestVersionText
+          : NSLocalizedString(@"a new version", @"Fallback version text in the update notice");
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   // Avoid stacking on a launch-time alert (JIT/entitlement prompts); fall back
   // to a toast and let Settings › About carry the actionable link.
   if ([presenter isKindOfClass:[UIAlertController class]]) {
-    [self showStatusToastForMessage:[NSString stringWithFormat:@"Update available: %@", latest]];
+    [self
+        showStatusToast:[NSString
+                            stringWithFormat:NSLocalizedString(
+                                                 @"Update available: %@",
+                                                 @"Toast: an update is available; %@ is a version"),
+                                             latest]
+                  style:XeniaIOSStatusToastStyleInfo];
     return;
   }
 
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Update Available"
-                       message:[NSString stringWithFormat:@"XeniOS %@ is available. You're on %@.",
-                                                          latest,
-                                                          info.currentVersionText ?: @"this build"]
+      alertControllerWithTitle:NSLocalizedString(@"Update Available",
+                                                 @"Alert title: update available")
+                       message:[NSString
+                                   stringWithFormat:
+                                       NSLocalizedString(
+                                           @"XeniOS %1$@ is available. You're on %2$@.",
+                                           @"Alert message: update available; %1$@ is the new "
+                                           @"version, %2$@ the current one"),
+                                       latest,
+                                       info.currentVersionText
+                                           ?: NSLocalizedString(@"this build",
+                                                                @"Fallback for the current version "
+                                                                @"text in the update notice")]
                 preferredStyle:UIAlertControllerStyleAlert];
   NSURL* download_target = [NSURL URLWithString:info.downloadURLString ?: @""];
   if (!xe_ios_is_trusted_release_url(download_target)) {
     download_target = [NSURL URLWithString:@"https://xenios.jp/downloads"];
   }
-  [alert addAction:[UIAlertAction actionWithTitle:@"Download"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [[UIApplication sharedApplication]
-                                                          openURL:download_target
-                                                          options:@{}
-                                                completionHandler:nil];
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Later"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Download",
+                                                         @"Alert button: opens the download page")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 [[UIApplication sharedApplication] openURL:download_target
+                                                                    options:@{}
+                                                          completionHandler:nil];
+                               }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(
+                                           @"Later", @"Alert button: dismisses the update notice")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
   [presenter presentViewController:alert animated:YES completion:nil];
 }
 
@@ -993,7 +1021,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (elapsed >= 300.0) {
     self.jitPollTimedOut = YES;
     [self updateJITStatusIndicator];
-    NSString* message = @"JIT is still unavailable. Open StikDebug, then return here to retry.";
+    NSString* message =
+        NSLocalizedString(@"JIT is still unavailable. Open StikDebug, then return here to retry.",
+                          @"Toast: JIT did not become available after waiting");
     [self showStatusToast:message style:XeniaIOSStatusToastStyleWarning];
     return;
   }
@@ -1074,9 +1104,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   presenting_stikdebug_automation_prompt_ = YES;
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Always Auto-Enable JIT?"
-                       message:@"StikDebug enabled JIT successfully. XeniOS can use the same "
-                               @"StikDebug handoff automatically next time JIT is missing."
+      alertControllerWithTitle:
+          NSLocalizedString(@"Always Auto-Enable JIT?",
+                            @"Alert title: offers to enable JIT through StikDebug automatically")
+                       message:NSLocalizedString(
+                                   @"StikDebug enabled JIT successfully. XeniOS can use the same "
+                                   @"StikDebug handoff automatically next time JIT is missing.",
+                                   @"Alert message: offers to enable JIT through StikDebug "
+                                   @"automatically")
                 preferredStyle:UIAlertControllerStyleAlert];
 
   void (^finish)(void) = ^{
@@ -1086,20 +1121,27 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
   };
 
-  [alert addAction:[UIAlertAction actionWithTitle:@"Always Enable"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            SetUserDefaultBool(
-                                                kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, true);
-                                            [self showStatusToast:@"Auto-enable JIT is on."
-                                                            style:XeniaIOSStatusToastStyleSuccess];
-                                            finish();
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Not Now"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            finish();
-                                          }]];
+  [alert addAction:
+             [UIAlertAction
+                 actionWithTitle:NSLocalizedString(@"Always Enable",
+                                                   @"Alert button: turn on automatic StikDebug JIT")
+                           style:UIAlertActionStyleDefault
+                         handler:^(__unused UIAlertAction* action) {
+                           SetUserDefaultBool(kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, true);
+                           [self
+                               showStatusToast:NSLocalizedString(
+                                                   @"Auto-enable JIT is on.",
+                                                   @"Toast: automatic StikDebug JIT was turned on")
+                                         style:XeniaIOSStatusToastStyleSuccess];
+                           finish();
+                         }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Not Now",
+                                                         @"Alert button: dismiss without enabling")
+                                 style:UIAlertActionStyleCancel
+                               handler:^(__unused UIAlertAction* action) {
+                                 finish();
+                               }]];
   [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -1198,11 +1240,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       has_imported_source = true;
     }
     if (has_imported_source && has_external_source) {
-      [detail_parts addObject:@"Imported + External"];
+      [detail_parts
+          addObject:NSLocalizedString(@"Imported + External",
+                                      @"Game source label: file is both imported and external")];
     } else if (has_external_source) {
-      [detail_parts addObject:@"External"];
+      [detail_parts
+          addObject:NSLocalizedString(@"External", @"Game source label: file is external")];
     } else if (has_imported_source) {
-      [detail_parts addObject:@"Imported"];
+      [detail_parts
+          addObject:NSLocalizedString(@"Imported", @"Game source label: file is imported")];
     }
     if (!game.content_type_name.empty() &&
         (game.content_type == xe::XContentType::kArcadeTitle ||
@@ -1211,7 +1257,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [detail_parts addObject:ToNSString(game.content_type_name)];
     }
     if (game.discs.size() > 1) {
-      [detail_parts addObject:[NSString stringWithFormat:@"%zu Discs", game.discs.size()]];
+      [detail_parts
+          addObject:[NSString
+                        stringWithFormat:NSLocalizedString(
+                                             @"%zu Discs",
+                                             @"Game detail label; %zu is the number of discs"),
+                                         game.discs.size()]];
     }
     if (detail_parts.count > 0) {
       snapshot.contentTypeName = [detail_parts componentsJoinedByString:@" · "];
@@ -1403,7 +1454,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self hideInGameMenuOverlay];
   if (self.gameStopInProgress) {
     self.statusLabel.text = @"";
-    [self showStatusToast:@"Stopping game... Please wait." style:XeniaIOSStatusToastStyleInfo];
+    [self showStatusToast:NSLocalizedString(@"Stopping game... Please wait.",
+                                            @"Toast: a stop request is already in progress")
+                    style:XeniaIOSStatusToastStyleInfo];
     return;
   }
   if (!self.appContext) {
@@ -1421,7 +1474,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self updateTouchControlsOverlayVisibilityAnimated:YES];
   xe_request_current_orientation(self);
   self.statusLabel.text = @"";
-  [self showStatusToast:@"Stopping game..." style:XeniaIOSStatusToastStyleInfo];
+  [self showStatusToast:NSLocalizedString(@"Stopping game...", @"Toast: the game is being stopped")
+                  style:XeniaIOSStatusToastStyleInfo];
 
   xe::ui::IOSWindowedAppContext* app_context = self.appContext;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -1439,7 +1493,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!self.appContext) {
     self.launcherOverlayView.actionsEnabled = NO;
     self.launcherOverlayView.alpha = 0.5;
-    self.signedInProfileLabel.text = @"Profile system unavailable";
+    self.signedInProfileLabel.text = NSLocalizedString(
+        @"Profile system unavailable", @"Launcher label: profile services unavailable");
     return;
   }
 
@@ -1456,79 +1511,101 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   if (signed_in_profile) {
-    self.signedInProfileLabel.text =
-        [NSString stringWithFormat:@"Signed in: %@", ToNSString(signed_in_profile->gamertag)];
+    self.signedInProfileLabel.text = [NSString
+        stringWithFormat:NSLocalizedString(@"Signed in: %@",
+                                           @"Launcher label; %@ is the signed-in gamertag"),
+                         ToNSString(signed_in_profile->gamertag)];
   } else if (profiles.empty()) {
-    self.signedInProfileLabel.text = @"No local profile yet";
+    self.signedInProfileLabel.text =
+        NSLocalizedString(@"No local profile yet", @"Launcher label: no profile exists");
   } else {
-    self.signedInProfileLabel.text = @"No profile signed in";
+    self.signedInProfileLabel.text = NSLocalizedString(
+        @"No profile signed in", @"Launcher label: a profile exists but none is signed in");
   }
 }
 
 - (void)presentProfileCreateAlert {
   // Under MRC, `__weak` is unavailable; rely on block strong captures.
   // Use `__block` for the alert to avoid a retain-cycle: alert -> action -> handler -> alert.
-  __block UIAlertController* create_alert =
-      [UIAlertController alertControllerWithTitle:@"Create Profile"
-                                          message:@"Enter a gamertag (1-15 characters)."
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  __block UIAlertController* create_alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Create Profile",
+                                                 @"Alert title: create a profile")
+                       message:NSLocalizedString(@"Enter a gamertag (1-15 characters).",
+                                                 @"Alert message: gamertag rules")
+                preferredStyle:UIAlertControllerStyleAlert];
   [create_alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
-    text_field.placeholder = @"Gamertag";
+    text_field.placeholder =
+        NSLocalizedString(@"Gamertag", @"Placeholder of the gamertag text field");
     text_field.autocapitalizationType = UITextAutocapitalizationTypeWords;
     text_field.autocorrectionType = UITextAutocorrectionTypeNo;
     text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
   }];
-  [create_alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                                   style:UIAlertActionStyleCancel
-                                                 handler:nil]];
   [create_alert
-      addAction:[UIAlertAction
-                    actionWithTitle:@"Create"
-                              style:UIAlertActionStyleDefault
-                            handler:^(__unused UIAlertAction* action) {
-                              if (!self.appContext) {
-                                return;
-                              }
-                              UITextField* text_field = create_alert.textFields.firstObject;
-                              NSString* raw_text = text_field.text ?: @"";
-                              NSString* trimmed =
-                                  [raw_text stringByTrimmingCharactersInSet:
-                                                [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                              if (trimmed.length == 0 || !self.appContext) {
-                                return;
-                              }
-                              auto* app_context = self.appContext;
-                              if (!app_context) {
-                                return;
-                              }
-                              NSString* gamertag = [[trimmed copy] autorelease];
-                              create_alert = nil;
-                              uint64_t xuid =
-                                  app_context->CreateProfile(std::string([gamertag UTF8String]));
-                              if (!xuid) {
-                                UIAlertController* failure = [UIAlertController
-                                    alertControllerWithTitle:@"Profile Not Created"
-                                                     message:@"Profile could not be created. "
-                                                             @"Please try again."
-                                              preferredStyle:UIAlertControllerStyleAlert];
-                                [failure addAction:[UIAlertAction
-                                                       actionWithTitle:@"OK"
-                                                                 style:UIAlertActionStyleCancel
-                                                               handler:nil]];
-                                [self presentViewController:failure animated:YES completion:nil];
-                                return;
-                              }
-                              BOOL signed_in = app_context->SignInProfile(xuid);
-                              if (!signed_in) {
-                                [self showStatusToast:@"Failed to sign in with the new profile."
-                                                style:XeniaIOSStatusToastStyleError];
-                                return;
-                              }
-                              [self refreshSignedInProfileUI];
-                              [self showStatusToast:[NSString stringWithFormat:@"Signed in as %@.",
-                                                                               gamertag]
-                                              style:XeniaIOSStatusToastStyleSuccess];
-                            }]];
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+  [create_alert
+      addAction:
+          [UIAlertAction
+              actionWithTitle:NSLocalizedString(@"Create", @"Alert button: create the profile")
+                        style:UIAlertActionStyleDefault
+                      handler:^(__unused UIAlertAction* action) {
+                        if (!self.appContext) {
+                          return;
+                        }
+                        UITextField* text_field = create_alert.textFields.firstObject;
+                        NSString* raw_text = text_field.text ?: @"";
+                        NSString* trimmed = [raw_text
+                            stringByTrimmingCharactersInSet:[NSCharacterSet
+                                                                whitespaceAndNewlineCharacterSet]];
+                        if (trimmed.length == 0 || !self.appContext) {
+                          return;
+                        }
+                        auto* app_context = self.appContext;
+                        if (!app_context) {
+                          return;
+                        }
+                        NSString* gamertag = [[trimmed copy] autorelease];
+                        create_alert = nil;
+                        uint64_t xuid =
+                            app_context->CreateProfile(std::string([gamertag UTF8String]));
+                        if (!xuid) {
+                          UIAlertController* failure = [UIAlertController
+                              alertControllerWithTitle:NSLocalizedString(
+                                                           @"Profile Not Created",
+                                                           @"Alert title: profile creation failed")
+                                               message:
+                                                   NSLocalizedString(
+                                                       @"Profile could not be created. Please try "
+                                                       @"again.",
+                                                       @"Alert message: profile creation failed")
+                                        preferredStyle:UIAlertControllerStyleAlert];
+                          [failure
+                              addAction:[UIAlertAction
+                                            actionWithTitle:NSLocalizedString(
+                                                                @"OK", @"Alert button: dismiss")
+                                                      style:UIAlertActionStyleCancel
+                                                    handler:nil]];
+                          [self presentViewController:failure animated:YES completion:nil];
+                          return;
+                        }
+                        BOOL signed_in = app_context->SignInProfile(xuid);
+                        if (!signed_in) {
+                          [self showStatusToast:NSLocalizedString(
+                                                    @"Failed to sign in with the new profile.",
+                                                    @"Toast: signing in to the new profile failed")
+                                          style:XeniaIOSStatusToastStyleError];
+                          return;
+                        }
+                        [self refreshSignedInProfileUI];
+                        [self
+                            showStatusToast:[NSString
+                                                stringWithFormat:NSLocalizedString(
+                                                                     @"Signed in as %@.",
+                                                                     @"Toast; %@ is the gamertag"),
+                                                                 gamertag]
+                                      style:XeniaIOSStatusToastStyleSuccess];
+                      }]];
   [self presentViewController:create_alert animated:YES completion:nil];
 }
 
@@ -1669,9 +1746,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     } break;
     case XeniaSettingsHubActionEditTouchControls: {
       if (!self.gameRunning) {
-        XEPresentOKAlert([self topPresentedControllerForModalPresentation] ?: self,
-                         @"Game Required",
-                         @"Launch a game before editing the running touch layout.");
+        XEPresentOKAlert(
+            [self topPresentedControllerForModalPresentation] ?: self,
+            NSLocalizedString(@"Game Required", @"Alert title: no game running"),
+            NSLocalizedString(@"Launch a game before editing the running touch layout.",
+                              @"Alert message: touch layout editing needs a running game"));
         return;
       }
       __block XeniaViewController* unsafe_self = self;
@@ -1708,44 +1787,63 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 - (void)confirmClearCurrentGameShaderCache {
   if (!active_game_title_id_) {
-    XEPresentOKAlert([self topPresentedControllerForModalPresentation] ?: self, @"No Running Game",
-                     @"Launch a game before clearing the current game's shader cache.");
+    XEPresentOKAlert(
+        [self topPresentedControllerForModalPresentation] ?: self,
+        NSLocalizedString(@"No Running Game", @"Alert title: no game running"),
+        NSLocalizedString(@"Launch a game before clearing the current game's shader cache.",
+                          @"Alert message: clearing the shader cache needs a running game"));
     return;
   }
 
-  UIAlertController* confirm =
-      [UIAlertController alertControllerWithTitle:@"Clear Shader Cache?"
-                                          message:@"Delete persistent shaders for the running "
-                                                  @"title. Relaunch the game before testing."
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(
+                                   @"Clear Shader Cache?",
+                                   @"Alert title: confirm clearing the current game's shader cache")
+                       message:
+                           NSLocalizedString(
+                               @"Delete persistent shaders for the running title. Relaunch the "
+                               @"game before testing.",
+                               @"Alert message: confirm clearing the current game's shader cache")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
   __unsafe_unretained XeniaViewController* unsafe_self = self;
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Clear"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [unsafe_self clearCurrentGameShaderCache];
-                                            }]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Clear",
+                                             @"Alert button: confirm clearing the shader cache")
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(__unused UIAlertAction* action) {
+                                   [unsafe_self clearCurrentGameShaderCache];
+                                 }]];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:confirm animated:YES completion:nil];
 }
 
 - (void)confirmClearAllShaderCaches {
   UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:@"Clear All Shader Caches?"
-                       message:@"Delete persistent shader storage for every title. Games, saves, "
-                               @"content, and settings are not removed."
+      alertControllerWithTitle:NSLocalizedString(@"Clear All Shader Caches?",
+                                                 @"Alert title: confirm clearing all shader caches")
+                       message:NSLocalizedString(
+                                   @"Delete persistent shader storage for every title. Games, "
+                                   @"saves, content, and settings are not removed.",
+                                   @"Alert message: confirm clearing all shader caches")
                 preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
   __unsafe_unretained XeniaViewController* unsafe_self = self;
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Clear All"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(__unused UIAlertAction* action) {
-                                              [unsafe_self clearAllShaderCaches];
-                                            }]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Clear All",
+                                             @"Alert button: confirm clearing all shader caches")
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(__unused UIAlertAction* action) {
+                                   [unsafe_self clearAllShaderCaches];
+                                 }]];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:confirm animated:YES completion:nil];
 }
@@ -1758,15 +1856,22 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (success) {
     message =
         removed == 0
-            ? @"No matching shader cache files were found."
-            : [NSString stringWithFormat:@"Removed %llu cached item(s). Relaunch before testing.",
-                                         static_cast<unsigned long long>(removed)];
+            ? NSLocalizedString(@"No matching shader cache files were found.",
+                                @"Result message: no shader cache files found")
+            : [NSString
+                  stringWithFormat:NSLocalizedString(
+                                       @"Removed %llu cached item(s). Relaunch before testing.",
+                                       @"Result message; %llu is the number of items removed"),
+                                   static_cast<unsigned long long>(removed)];
   } else {
     message =
-        [NSString stringWithFormat:@"Failed to clear shader cache: %s", error.message().c_str()];
+        [NSString stringWithFormat:NSLocalizedString(@"Failed to clear shader cache: %s",
+                                                     @"Result message; %s is an error description"),
+                                   error.message().c_str()];
   }
   XEPresentOKAlert([self topPresentedControllerForModalPresentation] ?: self, title, message);
-  [self showStatusToastForMessage:message];
+  [self showStatusToast:message
+                  style:(success ? XeniaIOSStatusToastStyleInfo : XeniaIOSStatusToastStyleError)];
 }
 
 - (void)clearCurrentGameShaderCache {
@@ -1774,8 +1879,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   std::error_code error;
   BOOL success =
       xe_clear_shader_cache_for_title(active_game_title_id_, &removed, &error) ? YES : NO;
-  [self presentShaderCacheResultWithTitle:(success ? @"Shader Cache Cleared"
-                                                   : @"Shader Cache Not Cleared")
+  [self presentShaderCacheResultWithTitle:(success ? NSLocalizedString(
+                                                         @"Shader Cache Cleared",
+                                                         @"Alert title: shader cache clear result")
+                                                   : NSLocalizedString(
+                                                         @"Shader Cache Not Cleared",
+                                                         @"Alert title: shader cache clear result"))
                                   success:success
                                   removed:removed
                                     error:error];
@@ -1785,11 +1894,17 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   uintmax_t removed = 0;
   std::error_code error;
   BOOL success = xe_clear_all_shader_caches(&removed, &error) ? YES : NO;
-  [self presentShaderCacheResultWithTitle:(success ? @"Shader Caches Cleared"
-                                                   : @"Shader Caches Not Cleared")
-                                  success:success
-                                  removed:removed
-                                    error:error];
+  [self
+      presentShaderCacheResultWithTitle:(success
+                                             ? NSLocalizedString(
+                                                   @"Shader Caches Cleared",
+                                                   @"Alert title: all shader caches clear result")
+                                             : NSLocalizedString(
+                                                   @"Shader Caches Not Cleared",
+                                                   @"Alert title: all shader caches clear result"))
+                                success:success
+                                removed:removed
+                                  error:error];
 }
 
 - (void)presentSystemSigninPromptForUserIndex:(uint32_t)user_index
@@ -1822,17 +1937,21 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
 
     // Under MRC, use `__block` to avoid a retain-cycle: alert -> action -> handler -> alert.
-    __block UIAlertController* create_alert =
-        [UIAlertController alertControllerWithTitle:@"Create Profile"
-                                            message:@"Enter a gamertag (1-15 characters)."
-                                     preferredStyle:UIAlertControllerStyleAlert];
+    __block UIAlertController* create_alert = [UIAlertController
+        alertControllerWithTitle:NSLocalizedString(@"Create Profile",
+                                                   @"Alert title: create a profile")
+                         message:NSLocalizedString(@"Enter a gamertag (1-15 characters).",
+                                                   @"Alert message: gamertag rules")
+                  preferredStyle:UIAlertControllerStyleAlert];
     [create_alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
-      text_field.placeholder = @"Gamertag";
+      text_field.placeholder =
+          NSLocalizedString(@"Gamertag", @"Placeholder of the gamertag text field");
       text_field.autocapitalizationType = UITextAutocapitalizationTypeWords;
       text_field.autocorrectionType = UITextAutocorrectionTypeNo;
       text_field.clearButtonMode = UITextFieldViewModeWhileEditing;
     }];
-    [create_alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+    [create_alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                               @"Cancel", @"Alert button: cancel")
                                                      style:UIAlertActionStyleCancel
                                                    handler:^(__unused UIAlertAction* action) {
                                                      finish(NO);
@@ -1840,7 +1959,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [create_alert
         addAction:
             [UIAlertAction
-                actionWithTitle:@"Create"
+                actionWithTitle:NSLocalizedString(@"Create", @"Alert button: create the profile")
                           style:UIAlertActionStyleDefault
                         handler:^(__unused UIAlertAction* action) {
                           UITextField* text_field = create_alert.textFields.firstObject;
@@ -1862,19 +1981,28 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                           uint64_t xuid =
                               app_context->CreateProfile(std::string([gamertag UTF8String]));
                           if (!xuid) {
-                            [self showStatusToast:@"Profile could not be created. Please try again."
+                            [self showStatusToast:
+                                      NSLocalizedString(
+                                          @"Profile could not be created. Please try again.",
+                                          @"Toast: profile creation failed")
                                             style:XeniaIOSStatusToastStyleError];
                             finish(NO);
                             return;
                           }
                           BOOL signed_in = app_context->SignInProfile(xuid);
                           if (signed_in) {
-                            [self showStatusToast:[NSString stringWithFormat:@"Signed in as %@.",
-                                                                             gamertag]
+                            [self showStatusToast:
+                                      [NSString stringWithFormat:NSLocalizedString(
+                                                                     @"Signed in as %@.",
+                                                                     @"Toast; %@ is the gamertag"),
+                                                                 gamertag]
                                             style:XeniaIOSStatusToastStyleSuccess];
                           } else {
-                            [self showStatusToast:@"Failed to sign in with the new profile."
-                                            style:XeniaIOSStatusToastStyleError];
+                            [self
+                                showStatusToast:NSLocalizedString(
+                                                    @"Failed to sign in with the new profile.",
+                                                    @"Toast: signing in to the new profile failed")
+                                          style:XeniaIOSStatusToastStyleError];
                           }
                           finish(signed_in);
                         }]];
@@ -1889,24 +2017,36 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return;
   }
 
-  NSString* message = [NSString stringWithFormat:@"Select profile (needs %u user%@).", users_needed,
-                                                 users_needed == 1 ? @"" : @"s"];
-  UIAlertController* sheet =
-      [UIAlertController alertControllerWithTitle:@"Select Profile"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  NSString* message =
+      users_needed == 1
+          ? NSLocalizedString(@"Select profile (needs 1 user).",
+                              @"Profile picker message when exactly one user is needed")
+          : [NSString stringWithFormat:NSLocalizedString(@"Select profile (needs %u users).",
+                                                         @"Profile picker message; %u is the "
+                                                         @"number of users needed (2 or more)"),
+                                       users_needed];
+  UIAlertController* sheet = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Select Profile",
+                                                 @"Action sheet title: choose a profile")
+                       message:message
+                preferredStyle:UIAlertControllerStyleActionSheet];
 
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Create Profile"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            present_create_alert();
-                                          }]];
+  [sheet addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Create Profile",
+                                                         @"Action sheet button: create a profile")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 present_create_alert();
+                               }]];
 
   for (const auto& profile : profiles) {
     NSString* gamertag = ToNSString(profile.gamertag);
     NSString* title = gamertag;
     if (profile.signed_in) {
-      title = [title stringByAppendingString:@" (Signed In)"];
+      title =
+          [NSString stringWithFormat:NSLocalizedString(@"%@ (Signed In)",
+                                                       @"Profile picker row; %@ is the gamertag"),
+                                     title];
     }
     uint64_t xuid = profile.xuid;
     [sheet addAction:[UIAlertAction actionWithTitle:title
@@ -1921,11 +2061,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                             }]];
   }
 
-  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            finish(NO);
-                                          }]];
+  [sheet addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"Action sheet button: cancel")
+                                 style:UIAlertActionStyleCancel
+                               handler:^(__unused UIAlertAction* action) {
+                                 finish(NO);
+                               }]];
 
   UIPopoverPresentationController* popover = sheet.popoverPresentationController;
   if (popover) {
@@ -2005,10 +2146,13 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                  defaultText:(NSString*)default_text
                                    maxLength:(NSUInteger)max_length
                                   completion:(void (^)(BOOL cancelled, NSString* text))completion {
-  __block UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:title.length ? title : @"Input Required"
-                                          message:description
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  __block UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:title.length ? title
+                                            : NSLocalizedString(
+                                                  @"Input Required",
+                                                  @"Fallback alert title for a guest text prompt")
+                       message:description
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
     text_field.text = default_text ?: @"";
     text_field.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -2019,15 +2163,16 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
   }];
 
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            if (completion) {
-                                              completion(YES, @"");
-                                            }
-                                          }]];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(__unused UIAlertAction* action) {
+                                         if (completion) {
+                                           completion(YES, @"");
+                                         }
+                                       }]];
   UIAlertAction* ok_action =
-      [UIAlertAction actionWithTitle:@"OK"
+      [UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: confirm")
                                style:UIAlertActionStyleDefault
                              handler:^(__unused UIAlertAction* action) {
                                UITextField* text_field = alert.textFields.firstObject;
@@ -2050,10 +2195,13 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)updateJITStatusIndicator {
   [self.launcherOverlayView setJITAcquired:self.jitAcquired];
   if (self.jitAcquired) {
-    [self.launcherOverlayView setJITStatusText:@"JIT Enabled"];
+    [self.launcherOverlayView
+        setJITStatusText:NSLocalizedString(@"JIT Enabled", @"Launcher status: JIT is enabled")];
   } else if (self.jitPollTimedOut) {
     [self.launcherOverlayView
-        setJITStatusText:@"JIT unavailable. Open StikDebug, then restart polling."];
+        setJITStatusText:NSLocalizedString(
+                             @"JIT unavailable. Open StikDebug, then restart polling.",
+                             @"Launcher status: JIT is unavailable")];
   } else {
     [self.launcherOverlayView setJITStatusText:xe_jit_waiting_status_message()];
   }
@@ -2171,18 +2319,23 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* launch_path_string = gamePath.empty() ? nil : ToNSString(gamePath.string());
   NSString* message = xe_jit_not_detected_guidance_message();
   if (displayName.length > 0) {
-    message = [NSString
-        stringWithFormat:@"%@\n\nStikDebug can enable JIT and return to XeniOS to launch %@.",
-                         message, displayName];
+    message =
+        [NSString stringWithFormat:
+                      NSLocalizedString(
+                          @"%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@.",
+                          @"Alert message; %1$@ is the guidance text, %2$@ the game title"),
+                      message, displayName];
   }
 
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"JIT Not Detected"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"JIT Not Detected",
+                                                 @"Alert title: JIT was not detected")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
   [alert
       addAction:[UIAlertAction
-                    actionWithTitle:@"Enable via StikDebug"
+                    actionWithTitle:NSLocalizedString(@"Enable via StikDebug",
+                                                      @"Alert button: enable JIT through StikDebug")
                               style:UIAlertActionStyleDefault
                             handler:^(__unused UIAlertAction* action) {
                               std::filesystem::path launch_path;
@@ -2198,12 +2351,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                 self->pending_external_launch_path_ = launch_path;
                               }
                             }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Open Settings"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [self openSettingsTapped:nil];
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Open Settings",
+                                                         @"Alert button: opens the Settings app")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 [self openSettingsTapped:nil];
+                               }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
   [self presentViewController:alert animated:YES completion:nil];
@@ -2214,15 +2369,22 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* launch_path_string = gamePath.empty() ? nil : ToNSString(gamePath.string());
   NSString* message = xe_memory_entitlement_not_detected_guidance_message();
   if (displayName.length > 0) {
-    message = [NSString stringWithFormat:@"%@\n\nYou can still try launching %@, but it may crash.",
-                                         message, displayName];
+    message = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"%1$@\n\nYou can still try launching %2$@, but it may crash.",
+                             @"Alert message; %1$@ is the guidance text, %2$@ the game title"),
+                         message, displayName];
   }
 
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"Memory Entitlement Missing"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Launch Anyway"
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(
+                                   @"Memory Entitlement Missing",
+                                   @"Alert title: the increased memory entitlement is missing")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                      @"Launch Anyway",
+                                                      @"Alert button: launch despite the warning")
                                             style:UIAlertActionStyleDefault
                                           handler:^(__unused UIAlertAction* action) {
                                             std::filesystem::path launch_path;
@@ -2234,7 +2396,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                                  displayName:displayName
                                                 skipMemoryEntitlementWarning:YES];
                                           }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
   [self presentViewController:alert animated:YES completion:nil];
@@ -2330,7 +2492,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   UIApplication* application = [UIApplication sharedApplication];
   if (![application canOpenURL:stikdebug_url]) {
     XELOGW("iOS: StikDebug URL scheme unavailable");
-    [self showStatusToast:@"StikDebug is not installed or unavailable."
+    [self showStatusToast:NSLocalizedString(@"StikDebug is not installed or unavailable.",
+                                            @"Toast: StikDebug is unavailable")
                     style:XeniaIOSStatusToastStyleError];
     if (launch_path && !launch_path->empty()) {
       ClearPendingExternalLaunchPathPreference();
@@ -2347,8 +2510,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const BOOL has_pending_launch = launch_path && !launch_path->empty();
   SetUserDefaultDouble(kXeniaLastAutoStikDebugAttemptTimestampPreferenceKey, now);
-  [self showStatusToast:has_pending_launch ? @"Opening StikDebug to enable JIT..."
-                                           : @"Opening StikDebug for JIT..."
+  [self showStatusToast:has_pending_launch
+                            ? NSLocalizedString(@"Opening StikDebug to enable JIT...",
+                                                @"Toast: opening StikDebug before a launch")
+                            : NSLocalizedString(@"Opening StikDebug for JIT...",
+                                                @"Toast: opening StikDebug")
                   style:XeniaIOSStatusToastStyleInfo];
   XELOGI("iOS: Opening StikDebug handoff URL {}", stikdebug_url.absoluteString.UTF8String);
 
@@ -2359,8 +2525,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                        completionHandler:^(BOOL success) {
                          if (!success) {
                            XELOGW("iOS: Failed to open StikDebug handoff URL");
-                           [self showStatusToast:@"Failed to open StikDebug."
-                                           style:XeniaIOSStatusToastStyleError];
+                           [self
+                               showStatusToast:NSLocalizedString(@"Failed to open StikDebug.",
+                                                                 @"Toast: could not open StikDebug")
+                                         style:XeniaIOSStatusToastStyleError];
                            if (has_pending_launch) {
                              ClearPendingExternalLaunchPathPreference();
                            }
@@ -2391,22 +2559,28 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    [self showStatusToast:@"Launch URL unavailable for this game."
+    [self showStatusToast:NSLocalizedString(@"Launch URL unavailable for this game.",
+                                            @"Toast: no launch URL exists for the game")
                     style:XeniaIOSStatusToastStyleError];
     return;
   }
 
   NSString* launch_url = xe_launch_url_for_title_id(game.title_id, game.system);
   if (!launch_url || launch_url.length == 0) {
-    [self showStatusToast:@"Failed to build launch URL." style:XeniaIOSStatusToastStyleError];
+    [self showStatusToast:NSLocalizedString(@"Failed to build launch URL.",
+                                            @"Toast: building the launch URL failed")
+                    style:XeniaIOSStatusToastStyleError];
     return;
   }
 
   [UIPasteboard generalPasteboard].string = launch_url;
   NSString* game_title = ToNSString(game.title);
-  NSString* message = game_title.length > 0
-                          ? [NSString stringWithFormat:@"Copied launch URL for %@.", game_title]
-                          : @"Copied launch URL.";
+  NSString* message =
+      game_title.length > 0
+          ? [NSString stringWithFormat:NSLocalizedString(@"Copied launch URL for %@.",
+                                                         @"Toast; %@ is the game title"),
+                                       game_title]
+          : NSLocalizedString(@"Copied launch URL.", @"Toast: launch URL copied");
   [self showStatusToast:message style:XeniaIOSStatusToastStyleSuccess];
   XELOGI("iOS: Copied title-ID launch URL {}", [launch_url UTF8String]);
 }
@@ -2419,8 +2593,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (!callback_scheme || callback_scheme.length == 0) {
     XELOGW("iOS: gameInfo request is missing callback scheme");
-    [self showStatusToast:@"gameInfo request is missing a callback scheme."
-                    style:XeniaIOSStatusToastStyleError];
+    [self
+        showStatusToast:NSLocalizedString(@"gameInfo request is missing a callback scheme.",
+                                          @"Toast: developer-facing error about a library request")
+                  style:XeniaIOSStatusToastStyleError];
     return YES;
   }
 
@@ -2428,31 +2604,41 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (request_scheme && [callback_scheme caseInsensitiveCompare:request_scheme] == NSOrderedSame) {
     XELOGW("iOS: gameInfo callback scheme {} would loop back into XeniOS",
            [callback_scheme UTF8String]);
-    [self showStatusToast:@"gameInfo callback scheme cannot point back to XeniOS."
-                    style:XeniaIOSStatusToastStyleError];
+    [self
+        showStatusToast:NSLocalizedString(@"gameInfo callback scheme cannot point back to XeniOS.",
+                                          @"Toast: developer-facing error about a library request")
+                  style:XeniaIOSStatusToastStyleError];
     return YES;
   }
 
   // Any app can send this URL: the library's titles and icons leave only after the
   // user agrees.
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Share Game Library?"
-                       message:[NSString stringWithFormat:@"The app \"%@\" is asking for the "
-                                                          @"titles and icons of your game library.",
-                                                          callback_scheme]
+      alertControllerWithTitle:NSLocalizedString(
+                                   @"Share Game Library?",
+                                   @"Alert title: another app asks for the game library")
+                       message:[NSString
+                                   stringWithFormat:
+                                       NSLocalizedString(
+                                           @"The app \"%@\" is asking for the titles and icons of "
+                                           @"your game library.",
+                                           @"Alert message; %@ is the name of the requesting app"),
+                                       callback_scheme]
                 preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [self clearURLConfirmation];
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Share"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [self clearURLConfirmation];
-                                            [self sendGameInfoToCallbackScheme:callback_scheme
-                                                                    requestURL:url];
-                                          }]];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(__unused UIAlertAction* action) {
+                                         [self clearURLConfirmation];
+                                       }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Share",
+                                                         @"Alert button: share the game library")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 [self clearURLConfirmation];
+                                 [self sendGameInfoToCallbackScheme:callback_scheme requestURL:url];
+                               }]];
   [self presentURLConfirmation:alert];
   return YES;
 }
@@ -2497,14 +2683,19 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!json_data || json_error) {
     XELOGE("iOS: Failed serializing gameInfo payload: {}",
            json_error.localizedDescription.UTF8String);
-    [self showStatusToast:@"Failed to build gameInfo payload." style:XeniaIOSStatusToastStyleError];
+    [self showStatusToast:NSLocalizedString(
+                              @"Failed to build gameInfo payload.",
+                              @"Toast: developer-facing error about the library payload")
+                    style:XeniaIOSStatusToastStyleError];
     return;
   }
 
   NSString* games_payload = [json_data base64EncodedStringWithOptions:0];
   if (!games_payload || games_payload.length == 0) {
     XELOGW("iOS: gameInfo payload encoding produced empty data");
-    [self showStatusToast:@"Failed to encode gameInfo payload."
+    [self showStatusToast:NSLocalizedString(
+                              @"Failed to encode gameInfo payload.",
+                              @"Toast: developer-facing error about the library payload")
                     style:XeniaIOSStatusToastStyleError];
     return;
   }
@@ -2518,7 +2709,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!callback_url) {
     XELOGE("iOS: Failed building gameInfo callback URL for scheme {}",
            [callback_scheme UTF8String]);
-    [self showStatusToast:@"Failed to build gameInfo callback URL."
+    [self showStatusToast:NSLocalizedString(
+                              @"Failed to build gameInfo callback URL.",
+                              @"Toast: developer-facing error about the library callback")
                     style:XeniaIOSStatusToastStyleError];
     return;
   }
@@ -2537,15 +2730,20 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                 options:@{}
       completionHandler:^(BOOL success) {
         if (success) {
-          [self showStatusToast:[NSString stringWithFormat:@"Sent %lu games to %@.",
+          [self showStatusToast:[NSString stringWithFormat:NSLocalizedString(
+                                                               @"Sent %1$lu games to %2$@.",
+                                                               @"Toast; %1$lu is the number of "
+                                                               @"games, %2$@ the receiving app"),
                                                            (unsigned long)exported_count,
                                                            callback_app]
                           style:XeniaIOSStatusToastStyleSuccess];
           return;
         }
         XELOGW("iOS: Failed opening gameInfo callback URL {}://", [callback_app UTF8String]);
-        [self showStatusToast:[NSString
-                                  stringWithFormat:@"Failed to return library to %@.", callback_app]
+        [self showStatusToast:[NSString stringWithFormat:NSLocalizedString(
+                                                             @"Failed to return library to %@.",
+                                                             @"Toast; %@ is the name of the app"),
+                                                         callback_app]
                         style:XeniaIOSStatusToastStyleError];
       }];
 }
@@ -2592,8 +2790,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
         return YES;
       }
       XELOGW("iOS: External launch title ID {:08X} was not found in Library", title_id);
-      [self showStatusToast:[NSString stringWithFormat:@"Title ID %08X was not found in Library.",
-                                                       title_id]
+      [self showStatusToast:[NSString
+                                stringWithFormat:NSLocalizedString(
+                                                     @"Title ID %08X was not found in Library.",
+                                                     @"Toast; %08X is the title ID in hexadecimal"),
+                                                 title_id]
                       style:XeniaIOSStatusToastStyleError];
       return NO;
     }
@@ -2602,7 +2803,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (launch_path.empty()) {
     XELOGW("iOS: External launch URL missing valid game target (scheme={} host={})",
            url.scheme ? [url.scheme UTF8String] : "", url.host ? [url.host UTF8String] : "");
-    [self showStatusToast:@"Launch URL missing a valid game target."
+    [self showStatusToast:NSLocalizedString(@"Launch URL missing a valid game target.",
+                                            @"Toast: a launch link names no usable game")
                     style:XeniaIOSStatusToastStyleError];
     return NO;
   }
@@ -2624,36 +2826,54 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* running_name = replaces_game ? [self runningGameDisplayName] : nil;
   NSString* message = nil;
   if (!replaces_game) {
-    message = [NSString stringWithFormat:@"A link wants to launch \"%@\".", display_name];
-  } else if (running_name.length) {
-    message = [NSString stringWithFormat:@"A link wants to launch \"%@\". This will stop \"%@\", "
-                                         @"and unsaved progress will be lost.",
-                                         display_name, running_name];
-  } else {
-    message = [NSString stringWithFormat:@"A link wants to launch \"%@\". This will stop the "
-                                         @"running game, and unsaved progress will be lost.",
+    message = [NSString stringWithFormat:NSLocalizedString(@"A link wants to launch \"%@\".",
+                                                           @"Alert message; %@ is the game title"),
                                          display_name];
+  } else if (running_name.length) {
+    message = [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"A link wants to launch \"%@\". This will stop \"%@\", and unsaved "
+                             @"progress will be lost.",
+                             @"Alert message; %1$@ is the game to launch, %2$@ the running game"),
+                         display_name, running_name];
+  } else {
+    message = [NSString
+        stringWithFormat:NSLocalizedString(@"A link wants to launch \"%@\". This will stop the "
+                                           @"running game, and unsaved progress will be lost.",
+                                           @"Alert message; %@ is the game to launch"),
+                         display_name];
   }
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:replaces_game ? @"Replace Running Game?"
-                                                                : @"Launch Game?"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(__unused UIAlertAction* action) {
-                                            [self clearURLConfirmation];
-                                          }]];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:replaces_game
+                                   ? NSLocalizedString(
+                                         @"Replace Running Game?",
+                                         @"Alert title: a link wants to replace the running game")
+                                   : NSLocalizedString(
+                                         @"Launch Game?",
+                                         @"Alert title: a link wants to launch a game")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(__unused UIAlertAction* action) {
+                                         [self clearURLConfirmation];
+                                       }]];
   const std::filesystem::path confirmed_path = launch_path;
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:replaces_game ? @"Replace" : @"Launch"
-                                 style:replaces_game ? UIAlertActionStyleDestructive
-                                                     : UIAlertActionStyleDefault
-                               handler:^(__unused UIAlertAction* action) {
-                                 [self clearURLConfirmation];
-                                 [self proceedWithExternalLaunchPath:confirmed_path
-                                                         displayName:display_name];
-                               }]];
+  [alert
+      addAction:[UIAlertAction
+                    actionWithTitle:replaces_game
+                                        ? NSLocalizedString(
+                                              @"Replace", @"Alert button: replace the running game")
+                                        : NSLocalizedString(
+                                              @"Launch", @"Alert button: replace the running game")
+                              style:replaces_game ? UIAlertActionStyleDestructive
+                                                  : UIAlertActionStyleDefault
+                            handler:^(__unused UIAlertAction* action) {
+                              [self clearURLConfirmation];
+                              [self proceedWithExternalLaunchPath:confirmed_path
+                                                      displayName:display_name];
+                            }]];
   [self presentURLConfirmation:alert];
   return YES;
 }
@@ -2663,9 +2883,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (!self.jitAcquired) {
     pending_external_launch_path_ = launch_path;
     if (![self requestAutomaticStikDebugJITHandoffForPendingLaunchPath:&launch_path]) {
-      [self
-          showStatusToast:[NSString stringWithFormat:@"Waiting for JIT to launch: %@", display_name]
-                    style:XeniaIOSStatusToastStyleInfo];
+      [self showStatusToast:[NSString
+                                stringWithFormat:NSLocalizedString(@"Waiting for JIT to launch: %@",
+                                                                   @"Toast; %@ is the game title"),
+                                                 display_name]
+                      style:XeniaIOSStatusToastStyleInfo];
     }
     return;
   }
@@ -2737,7 +2959,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       launch_path, &matched_external_location, &external_access_error);
   if (matched_external_location && !external_access) {
     NSString* message =
-        external_access_error.localizedDescription ?: @"External library folder is unavailable.";
+        external_access_error.localizedDescription
+            ?: NSLocalizedString(@"External library folder is unavailable.",
+                                 @"Error text: the external library folder cannot be reached");
     [self showStatusToast:message style:XeniaIOSStatusToastStyleError];
     [self refreshImportedGamesAsync];
     return;
@@ -2752,7 +2976,9 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   NSString* path_ns = ToNSString(launch_path.string());
   std::error_code path_exists_ec;
   if (!std::filesystem::exists(launch_path, path_exists_ec)) {
-    [self showStatusToast:@"Game file is no longer available." style:XeniaIOSStatusToastStyleError];
+    [self showStatusToast:NSLocalizedString(@"Game file is no longer available.",
+                                            @"Toast: the game file is gone")
+                    style:XeniaIOSStatusToastStyleError];
     [self refreshImportedGamesAsync];
     return;
   }
@@ -2761,11 +2987,17 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     auto metadata = xe::vfs::ExtractStfsMetadata(launch_path);
     if (metadata.has_value() && xe::ui::IOSContentDataFileCount(launch_path) > 0 &&
         !HasContentSidecarDataDirectory(launch_path)) {
-      [self showStatusToast:@"Selected game is missing its .data folder."
+      [self showStatusToast:NSLocalizedString(@"Selected game is missing its .data folder.",
+                                              @"Toast: GOD package lacks its .data folder")
                       style:XeniaIOSStatusToastStyleError];
-      XEPresentOKAlert(self, @"Missing Game Data",
-                       @"This GOD package needs its matching .data folder in the same directory. "
-                       @"Transfer both the GOD file and its .data folder, then try again.");
+      XEPresentOKAlert(
+          self,
+          NSLocalizedString(@"Missing Game Data",
+                            @"Alert title: GOD package lacks its .data folder"),
+          NSLocalizedString(
+              @"This GOD package needs its matching .data folder in the same directory. Transfer "
+              @"both the GOD file and its .data folder, then try again.",
+              @"Alert message: GOD package lacks its .data folder"));
       return;
     }
   }
@@ -2792,8 +3024,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   if (![self appendLinkedContentAccessesForTitleID:launch_title_id
                                           accesses:launch_external_accesses
                                       errorMessage:&linked_content_access_error]) {
-    [self showStatusToast:(linked_content_access_error ?: @"Linked content is unavailable.")
-                    style:XeniaIOSStatusToastStyleError];
+    [self
+        showStatusToast:(linked_content_access_error
+                             ?: NSLocalizedString(@"Linked content is unavailable.",
+                                                  @"Error text: linked content cannot be reached"))
+                  style:XeniaIOSStatusToastStyleError];
     [self refreshImportedGamesAsync];
     return;
   }
@@ -2816,7 +3051,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:NO];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
-      [self showStatusToast:@"Unable to queue launch (app context unavailable)."
+      [self showStatusToast:NSLocalizedString(@"Unable to queue launch (app context unavailable).",
+                                              @"Toast: launch could not be queued")
                       style:XeniaIOSStatusToastStyleError];
     }
     return;
@@ -2840,7 +3076,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:YES];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
-    [self showStatusToast:@"Unable to launch game (app context unavailable)."
+    [self showStatusToast:NSLocalizedString(@"Unable to launch game (app context unavailable).",
+                                            @"Toast: launch failed")
                     style:XeniaIOSStatusToastStyleError];
     self.launcherOverlayView.hidden = NO;
     self.launcherOverlayView.alpha = 1.0;
@@ -2859,7 +3096,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
   if (!self.appContext) {
     if (status_out) {
-      *status_out = @"App context unavailable.";
+      *status_out =
+          NSLocalizedString(@"App context unavailable.", @"Error text: app context is unavailable");
     }
     return NO;
   }
@@ -2965,12 +3203,20 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     NSString* title =
         game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
     NSMutableArray<NSString*>* details = [NSMutableArray array];
-    [details addObject:[NSString stringWithFormat:@"Title ID %@",
-                                                  ToNSString(FormatTitleID(game.title_id))]];
+    [details
+        addObject:[NSString
+                      stringWithFormat:NSLocalizedString(
+                                           @"Title ID %@",
+                                           @"Picker row detail; %@ is a title ID in hexadecimal"),
+                                       ToNSString(FormatTitleID(game.title_id))]];
     if (!game.content_type_name.empty()) {
       [details addObject:ToNSString(game.content_type_name)];
     } else if (game.discs.size() > 1) {
-      [details addObject:[NSString stringWithFormat:@"%zu discs", game.discs.size()]];
+      [details addObject:[NSString
+                             stringWithFormat:NSLocalizedString(
+                                                  @"%zu discs",
+                                                  @"Picker row detail; %zu is the number of discs"),
+                                              game.discs.size()]];
     }
 
     [items addObject:[XeniaIOSGamePickerItem itemWithTitle:title
@@ -2980,14 +3226,20 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   if (items.count == 0) {
-    XEPresentOKAlert(self, @"No Games Available",
-                     @"Import a game with a title ID before editing a per-game touch layout.");
+    XEPresentOKAlert(
+        self,
+        NSLocalizedString(@"No Games Available",
+                          @"Alert title: no games for the touch layout picker"),
+        NSLocalizedString(@"Import a game with a title ID before editing a per-game touch layout.",
+                          @"Alert message: no games for the touch layout picker"));
     return;
   }
 
   XeniaIOSGamePickerViewController* picker = [[XeniaIOSGamePickerViewController alloc]
-      initWithTitle:@"Game Touch Layout"
-             prompt:@"Choose a title to edit before launch."
+      initWithTitle:NSLocalizedString(@"Game Touch Layout",
+                                      @"Title of the per-game touch layout picker")
+             prompt:NSLocalizedString(@"Choose a title to edit before launch.",
+                                      @"Prompt of the per-game touch layout picker")
               items:items];
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   picker.selectionHandler = ^(NSUInteger gameIndex) {
@@ -3014,8 +3266,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    XEPresentOKAlert(self, @"Unavailable",
-                     @"This item does not expose a title ID, so game settings cannot be saved.");
+    XEPresentOKAlert(self,
+                     NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+                     NSLocalizedString(
+                         @"This item does not expose a title ID, so game settings cannot be saved.",
+                         @"Alert message: game settings need a title ID"));
     return;
   }
 
@@ -3043,43 +3298,64 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    XEPresentOKAlert(self, @"Unavailable",
-                     @"This item does not expose a title ID, so game settings cannot be reset.");
+    XEPresentOKAlert(self,
+                     NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+                     NSLocalizedString(
+                         @"This item does not expose a title ID, so game settings cannot be reset.",
+                         @"Alert message: game settings need a title ID"));
     return;
   }
 
   NSString* game_title =
       game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
   UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:@"Reset Game Settings?"
-                       message:[NSString stringWithFormat:@"Delete saved overrides for %@ and "
-                                                          @"return this title to defaults.",
-                                                          game_title]
+      alertControllerWithTitle:NSLocalizedString(@"Reset Game Settings?",
+                                                 @"Alert title: confirm resetting game settings")
+                       message:[NSString
+                                   stringWithFormat:NSLocalizedString(
+                                                        @"Delete saved overrides for %@ and return "
+                                                        @"this title to defaults.",
+                                                        @"Alert message; %@ is the game title"),
+                                                    game_title]
                 preferredStyle:UIAlertControllerStyleAlert];
-  [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
 
   const uint32_t title_id = game.title_id;
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   [confirm
       addAction:
           [UIAlertAction
-              actionWithTitle:@"Reset"
+              actionWithTitle:NSLocalizedString(@"Reset",
+                                                @"Alert button: confirm resetting game settings")
                         style:UIAlertActionStyleDestructive
                       handler:^(__unused UIAlertAction* action) {
                         const bool deleted = xe::ui::DeleteIOSGameConfig(title_id);
                         NSString* title =
-                            deleted ? @"Game Settings Reset" : @"Game Settings Not Reset";
+                            deleted ? NSLocalizedString(
+                                          @"Game Settings Reset",
+                                          @"Alert title: result of resetting game settings")
+                                    : NSLocalizedString(
+                                          @"Game Settings Not Reset",
+                                          @"Alert title: result of resetting game settings");
                         NSString* message =
                             deleted
-                                ? @"Deleted title-specific overrides. Relaunch before testing."
-                                : @"Failed to delete title-specific overrides. Check xenia.log.";
+                                ? NSLocalizedString(
+                                      @"Deleted title-specific overrides. Relaunch before testing.",
+                                      @"Alert message: game settings were reset")
+                                : NSLocalizedString(
+                                      @"Failed to delete title-specific overrides. Check "
+                                      @"xenia.log.",
+                                      @"Alert message: game settings could not be reset");
                         UIViewController* top_presenter =
                             [unsafe_self topPresentedControllerForModalPresentation];
                         UIViewController* presenter = top_presenter ?: unsafe_self;
                         XEPresentOKAlert(presenter, title, message);
-                        [unsafe_self showStatusToastForMessage:message];
+                        [unsafe_self showStatusToast:message
+                                               style:(deleted ? XeniaIOSStatusToastStyleSuccess
+                                                              : XeniaIOSStatusToastStyleError)];
                       }]];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:confirm animated:YES completion:nil];
@@ -3092,9 +3368,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    XEPresentOKAlert(self, @"Unavailable",
-                     @"This item does not expose a title ID, so a title-specific touch layout "
-                     @"cannot be saved.");
+    XEPresentOKAlert(self,
+                     NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+                     NSLocalizedString(@"This item does not expose a title ID, so a title-specific "
+                                       @"touch layout cannot be saved.",
+                                       @"Alert message: touch layout needs a title ID"));
     return;
   }
 
@@ -3120,9 +3398,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    XEPresentOKAlert(self, @"Unavailable",
-                     @"This item does not expose a title ID, so compatibility details "
-                     @"cannot be loaded.");
+    XEPresentOKAlert(
+        self, NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+        NSLocalizedString(
+            @"This item does not expose a title ID, so compatibility details cannot be loaded.",
+            @"Alert message: compatibility details need a title ID"));
     return;
   }
 
@@ -3168,8 +3448,10 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
     XEPresentOKAlert(
-        self, @"Unavailable",
-        @"This item does not expose a title ID, so installed content cannot be managed.");
+        self, NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+        NSLocalizedString(
+            @"This item does not expose a title ID, so installed content cannot be managed.",
+            @"Alert message: installed content needs a title ID"));
     return;
   }
 
@@ -3214,7 +3496,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
           return;
         }
         NSString* display_name =
-            label.length ? [NSString stringWithFormat:@"%@ (%@)", game_title, label] : game_title;
+            label.length
+                ? [NSString
+                      stringWithFormat:
+                          NSLocalizedString(
+                              @"%1$@ (%2$@)",
+                              @"Disc picker title; %1$@ is the game title, %2$@ the disc label"),
+                          game_title, label]
+                : game_title;
         [unsafe_self launchGameAtPath:std::filesystem::path([path UTF8String])
                           displayName:display_name];
       }];
@@ -3234,12 +3523,17 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   const IOSDiscoveredGame& game = discovered_games_[game_index];
   if (!game.title_id) {
-    XEPresentOKAlert(self, @"Unavailable",
-                     @"This item does not expose a title ID, so patches cannot be loaded.");
+    XEPresentOKAlert(
+        self, NSLocalizedString(@"Unavailable", @"Alert title: item cannot be configured"),
+        NSLocalizedString(@"This item does not expose a title ID, so patches cannot be loaded.",
+                          @"Alert message: patches need a title ID"));
     return;
   }
   if (!self.appContext) {
-    XEPresentOKAlert(self, @"Unavailable", @"Patch management is unavailable.");
+    XEPresentOKAlert(
+        self, NSLocalizedString(@"Unavailable", @"Alert title and message: patches unavailable"),
+        NSLocalizedString(@"Patch management is unavailable.",
+                          @"Alert title and message: patches unavailable"));
     return;
   }
 
@@ -3393,21 +3687,24 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 - (UIMenu*)buildInGameDisplayMenu {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   const XeniaIOSWindowScalingMode current_mode = [self currentWindowScalingMode];
-  NSString* scaling_title = @"Scaling";
+  NSString* scaling_title = NSLocalizedString(@"Scaling", @"Title of the Scaling submenu");
   switch (current_mode) {
     case XeniaIOSWindowScalingModeFit:
-      scaling_title = @"Scaling: Fit";
+      scaling_title =
+          NSLocalizedString(@"Scaling: Fit", @"Title of the Scaling submenu with Fit active");
       break;
     case XeniaIOSWindowScalingModeStretch:
-      scaling_title = @"Scaling: Stretch";
+      scaling_title = NSLocalizedString(@"Scaling: Stretch",
+                                        @"Title of the Scaling submenu with Stretch active");
       break;
     case XeniaIOSWindowScalingModeZoom:
-      scaling_title = @"Scaling: Fill";
+      scaling_title =
+          NSLocalizedString(@"Scaling: Fill", @"Title of the Scaling submenu with Fill active");
       break;
   }
 
   UIAction* fit_action =
-      [UIAction actionWithTitle:@"Fit (Preserve Aspect)"
+      [UIAction actionWithTitle:NSLocalizedString(@"Fit (Preserve Aspect)", @"Display menu item")
                           image:[UIImage systemImageNamed:@"rectangle.center.inset.filled"]
                      identifier:nil
                         handler:^(__unused UIAction* action) {
@@ -3418,7 +3715,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
       current_mode == XeniaIOSWindowScalingModeFit ? UIMenuElementStateOn : UIMenuElementStateOff;
 
   UIAction* stretch_action = [UIAction
-      actionWithTitle:@"Stretch (Fill, Ignore Aspect)"
+      actionWithTitle:NSLocalizedString(@"Stretch (Fill, Ignore Aspect)", @"Display menu item")
                 image:[UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right"]
            identifier:nil
               handler:^(__unused UIAction* action) {
@@ -3429,7 +3726,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                                                                           : UIMenuElementStateOff;
 
   UIAction* zoom_action =
-      [UIAction actionWithTitle:@"Zoom (Fill, Crop)"
+      [UIAction actionWithTitle:NSLocalizedString(@"Zoom (Fill, Crop)", @"Display menu item")
                           image:[UIImage systemImageNamed:@"rectangle.fill"]
                      identifier:nil
                         handler:^(__unused UIAction* action) {
@@ -3448,9 +3745,12 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 
   const BOOL letterbox_available = current_mode != XeniaIOSWindowScalingModeStretch;
   const BOOL letterbox_enabled = letterbox_available && [self isPresentLetterboxEnabled];
-  NSString* presentation_title = letterbox_enabled ? @"Presentation: Letterbox" : @"Presentation";
+  NSString* presentation_title =
+      letterbox_enabled
+          ? NSLocalizedString(@"Presentation: Letterbox", @"Title of the Presentation submenu")
+          : NSLocalizedString(@"Presentation", @"Title of the Presentation submenu");
   UIAction* letterbox_action =
-      [UIAction actionWithTitle:@"Letterbox"
+      [UIAction actionWithTitle:NSLocalizedString(@"Letterbox", @"Display menu item")
                           image:[UIImage systemImageNamed:@"rectangle.center.inset.filled"]
                      identifier:nil
                         handler:^(__unused UIAction* action) {
@@ -3471,16 +3771,18 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                    children:@[ letterbox_action ]];
 
   const BOOL display_uncapped = [self isGuestDisplayUncapped];
-  NSString* refresh_title = display_uncapped ? @"Refresh: Uncapped" : @"Refresh";
-  UIAction* uncapped_action =
-      [UIAction actionWithTitle:@"Emulated Display Uncapped"
-                          image:[UIImage systemImageNamed:@"speedometer"]
-                     identifier:nil
-                        handler:^(__unused UIAction* action) {
-                          const BOOL next_uncapped = ![unsafe_self isGuestDisplayUncapped];
-                          [unsafe_self setGuestDisplayUncapped:next_uncapped];
-                          [unsafe_self refreshInGameDisplayMenu];
-                        }];
+  NSString* refresh_title =
+      display_uncapped ? NSLocalizedString(@"Refresh: Uncapped", @"Title of the Refresh submenu")
+                       : NSLocalizedString(@"Refresh", @"Title of the Refresh submenu");
+  UIAction* uncapped_action = [UIAction
+      actionWithTitle:NSLocalizedString(@"Emulated Display Uncapped", @"Display menu item")
+                image:[UIImage systemImageNamed:@"speedometer"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                const BOOL next_uncapped = ![unsafe_self isGuestDisplayUncapped];
+                [unsafe_self setGuestDisplayUncapped:next_uncapped];
+                [unsafe_self refreshInGameDisplayMenu];
+              }];
   uncapped_action.state = display_uncapped ? UIMenuElementStateOn : UIMenuElementStateOff;
 
   UIMenu* refresh_submenu = [UIMenu menuWithTitle:refresh_title
@@ -3493,32 +3795,34 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   // there's actual slack to drag the surface within.
   const BOOL is_portrait = self.view.bounds.size.height >= self.view.bounds.size.width;
   const BOOL position_available = is_portrait && current_mode == XeniaIOSWindowScalingModeFit;
-  UIAction* position_action = [UIAction actionWithTitle:@"Position in Portrait..."
-                                                  image:[UIImage systemImageNamed:@"hand.draw"]
-                                             identifier:nil
-                                                handler:^(__unused UIAction* action) {
-                                                  [unsafe_self enterWindowPositionMode];
-                                                }];
+  UIAction* position_action =
+      [UIAction actionWithTitle:NSLocalizedString(@"Position in Portrait...", @"Display menu item")
+                          image:[UIImage systemImageNamed:@"hand.draw"]
+                     identifier:nil
+                        handler:^(__unused UIAction* action) {
+                          [unsafe_self enterWindowPositionMode];
+                        }];
   if (!position_available) {
     position_action.attributes = UIMenuElementAttributesDisabled;
   }
 
   UIAction* reset_action =
-      [UIAction actionWithTitle:@"Reset Position"
+      [UIAction actionWithTitle:NSLocalizedString(@"Reset Position", @"Display menu item")
                           image:[UIImage systemImageNamed:@"arrow.counterclockwise"]
                      identifier:nil
                         handler:^(__unused UIAction* action) {
                           [unsafe_self resetWindowPosition];
                         }];
 
-  UIMenu* position_submenu = [UIMenu menuWithTitle:@"Position"
-                                             image:[UIImage systemImageNamed:@"hand.draw"]
-                                        identifier:nil
-                                           options:0
-                                          children:@[ position_action, reset_action ]];
+  UIMenu* position_submenu =
+      [UIMenu menuWithTitle:NSLocalizedString(@"Position", @"Title of the Position submenu")
+                      image:[UIImage systemImageNamed:@"hand.draw"]
+                 identifier:nil
+                    options:0
+                   children:@[ position_action, reset_action ]];
 
   return [UIMenu
-      menuWithTitle:@"Display"
+      menuWithTitle:NSLocalizedString(@"Display", @"Title of the Display menu")
            children:@[ scaling_submenu, presentation_submenu, refresh_submenu, position_submenu ]];
 }
 
@@ -3573,40 +3877,51 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 - (void)presentLibraryAddSheetFromView:(UIView*)sourceView {
   XELOGI("iOS library action: presenting Add to Library sheet games={}", discovered_games_.size());
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"Add to Library"
-                                          message:@"Import Copy duplicates the game into "
-                                                  @"XeniOS storage and needs that much free "
-                                                  @"space. For very large images, Link External "
-                                                  @"Folder plays them in place without copying."
-                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Add to Library",
+                                                 @"Action sheet title: add games to the library")
+                       message:NSLocalizedString(
+                                   @"Import Copy duplicates the game into XeniOS storage and needs "
+                                   @"that much free space. For very large images, Link External "
+                                   @"Folder plays them in place without copying.",
+                                   @"Action sheet message: explains the two import options")
+                preferredStyle:UIAlertControllerStyleActionSheet];
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   [alert addAction:[UIAlertAction
-                       actionWithTitle:@"Import Copy"
+                       actionWithTitle:NSLocalizedString(
+                                           @"Import Copy",
+                                           @"Action sheet button: copies a game into the app")
                                  style:UIAlertActionStyleDefault
                                handler:^(__unused UIAlertAction* action) {
                                  XELOGI("iOS library action: Import Copy selected");
                                  [unsafe_self.documentImportCoordinator presentGameImportPicker];
                                }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Link External Folder"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            XELOGI("iOS library action: Link External Folder "
-                                                   "selected");
-                                            [unsafe_self.documentImportCoordinator
-                                                    presentExternalLibraryFolderPicker];
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Manage External Folders…"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            XELOGI("iOS library action: Manage External Folders "
-                                                   "selected");
-                                            [unsafe_self presentExternalFoldersSheet];
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                   @"Link External Folder",
+                                                   @"Action sheet button: links a folder in place")
+                                         style:UIAlertActionStyleDefault
+                                       handler:^(__unused UIAlertAction* action) {
+                                         XELOGI("iOS library action: Link External Folder "
+                                                "selected");
+                                         [unsafe_self.documentImportCoordinator
+                                                 presentExternalLibraryFolderPicker];
+                                       }]];
+  [alert
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
+                                                   @"Manage External Folders…",
+                                                   @"Action sheet button: manages linked folders")
+                                         style:UIAlertActionStyleDefault
+                                       handler:^(__unused UIAlertAction* action) {
+                                         XELOGI("iOS library action: Manage External Folders "
+                                                "selected");
+                                         [unsafe_self presentExternalFoldersSheet];
+                                       }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"Action sheet button: cancel")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
 
   UIPopoverPresentationController* popover = alert.popoverPresentationController;
   if (popover) {
@@ -3652,7 +3967,8 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     if (!matched_external_location || !access) {
       if (errorMessage) {
         *errorMessage = external_access_error.localizedDescription
-                            ?: @"Linked content external folder is unavailable.";
+                            ?: NSLocalizedString(@"Linked content external folder is unavailable.",
+                                                 @"Error text: linked content cannot be reached");
       }
       return NO;
     }
@@ -3662,7 +3978,8 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     NSString* access_root_path = access.url.path;
     if (!relative_path.empty() && access_root_path.length == 0) {
       if (errorMessage) {
-        *errorMessage = @"Linked content external folder path is unavailable.";
+        *errorMessage = NSLocalizedString(@"Linked content external folder path is unavailable.",
+                                          @"Error text: linked content cannot be reached");
       }
       return NO;
     }
@@ -3674,7 +3991,8 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(current_source_path, ec) || ec) {
       if (errorMessage) {
-        *errorMessage = @"Linked content source file is no longer available.";
+        *errorMessage = NSLocalizedString(@"Linked content source file is no longer available.",
+                                          @"Error text: linked content source is gone");
       }
       return NO;
     }
@@ -3946,35 +4264,47 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 }
 
 - (void)presentGameLaunchFailureAlertWithMessage:(NSString*)message {
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:@"Couldn't Start Game"
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            xe_ios_present_log_share(self, nil, NO);
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Couldn't Start Game",
+                                                 @"Alert title: the game failed to start")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Share Log",
+                                                         @"Alert button: shares the log file")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 xe_ios_present_log_share(self, nil, NO);
+                               }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)presentGameStopStuckAlert {
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:@"Game Isn't Responding"
-                       message:@"The game is taking too long to stop. You can wait a little "
-                               @"longer, or force-quit XeniOS from the app switcher and open it "
-                               @"again."
+      alertControllerWithTitle:NSLocalizedString(@"Game Isn't Responding",
+                                                 @"Alert title: the game is not stopping")
+                       message:NSLocalizedString(@"The game is taking too long to stop. You can "
+                                                 @"wait a little longer, or force-quit XeniOS from "
+                                                 @"the app switcher and open it again.",
+                                                 @"Alert message: the game is not stopping")
                 preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Share Log"
-                                            style:UIAlertActionStyleDefault
-                                          handler:^(__unused UIAlertAction* action) {
-                                            xe_ios_present_log_share(self, nil, NO);
-                                          }]];
-  [alert addAction:[UIAlertAction actionWithTitle:@"Keep Waiting"
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Share Log",
+                                                         @"Alert button: shares the log file")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 xe_ios_present_log_share(self, nil, NO);
+                               }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(
+                                           @"Keep Waiting",
+                                           @"Alert button: keep waiting for the game to stop")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:alert animated:YES completion:nil];
 }
@@ -4205,8 +4535,10 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                                    currentLayoutLocalID:currentLayoutLocalID];
 }
 
-- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text {
-  [self showStatusToastForMessage:text];
+- (void)touchLayoutCoordinatorSetStatusText:(NSString*)text style:(XeniaIOSStatusToastStyle)style {
+  if (text.length > 0) {
+    [self showStatusToast:text style:style];
+  }
 }
 
 - (void)touchLayoutCoordinatorPresentAlertWithTitle:(NSString*)title message:(NSString*)message {

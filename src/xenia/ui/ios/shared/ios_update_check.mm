@@ -123,13 +123,22 @@ NSInteger CompareVersionStrings(NSString* lhs, NSString* rhs) {
 
 NSString* VersionText(NSString* version, long long build) {
   if (version.length && build > 0) {
-    return [NSString stringWithFormat:@"%@ (%lld)", version, build];
+    return [NSString
+        stringWithFormat:NSLocalizedString(
+                             @"%1$@ (%2$lld)",
+                             @"Version text; %1$@ is the version, %2$lld the build number"),
+                         version, build];
   }
   if (version.length) {
     return version;
   }
   if (build > 0) {
-    return [NSString stringWithFormat:@"build %lld", build];
+    return [NSString
+        stringWithFormat:
+            NSLocalizedString(
+                @"build %lld",
+                @"Version text when only a build number is known; %lld is the build number"),
+            build];
   }
   return nil;
 }
@@ -212,7 +221,9 @@ long long xe_current_app_build_number(void) {
 
 NSString* xe_current_app_version_text(void) {
   NSString* text = VersionText(xe_current_app_version_string(), xe_current_app_build_number());
-  return text.length ? text : @"Development Build";
+  return text.length
+             ? text
+             : NSLocalizedString(@"Development Build", @"Version text of a development build");
 }
 
 BOOL xe_is_development_build(void) {
