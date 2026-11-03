@@ -331,6 +331,10 @@ GetKnownEnumOptions() {
         {"gpu", {"metal", "vulkan", "null"}},
         {"apu", {"nop", "sdl"}},
         {"hid", {"sdl", "nop"}},
+#elif XE_PLATFORM_IOS
+        {"gpu", {"metal"}},
+        {"apu", {"phase", "sdl", "nop"}},
+        {"hid", {"sdl", "nop"}},
 #else
         {"gpu", {"vulkan", "null"}},
         {"apu", {"nop", "sdl"}},

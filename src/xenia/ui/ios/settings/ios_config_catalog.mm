@@ -356,9 +356,8 @@ static std::vector<IOSConfigSection> BuildGraphicsSections() {
   backend.title = "Graphics Backend";
   AddStringChoiceSetting(backend.items, "gpu", "Graphics Backend",
                          "Select the renderer used after the next full relaunch. Metal is the "
-                         "primary iOS backend; Vulkan uses the bundled MoltenVK path when "
-                         "that backend is compiled into the app.",
-                         "metal", {{"Metal", "metal"}, {"Vulkan (MoltenVK)", "vulkan"}});
+                         "only iOS backend.",
+                         "metal", {{"Metal", "metal"}});
   AddIntegerSetting(backend.items, "anisotropic_override", "Anisotropic Override",
                     "Override anisotropic filtering level (-1 = auto, 0 = off, 1-5).");
   PushIfNotEmpty(sections, std::move(backend));
