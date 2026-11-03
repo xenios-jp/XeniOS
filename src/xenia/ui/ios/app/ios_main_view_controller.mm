@@ -839,14 +839,14 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                               @"and cover art, and sends anonymous crash reports and performance "
                               @"statistics to help fix problems. It also links System Link games "
                               @"with other players over the internet, who can see your IP "
-                              @"address. Compatibility reports you submit are public.\n\nYou "
-                              @"can change this in Settings > About > Privacy.",
+                              @"address and a profile ID. Compatibility reports you submit are "
+                              @"public.\n\nYou can change this in Settings > About > Privacy.",
                               @"Alert message: first-run online features notice")
           : NSLocalizedString(@"XeniOS checks for updates, downloads compatibility information "
                               @"and cover art, and links System Link games with other players "
-                              @"over the internet, who can see your IP address. Compatibility "
-                              @"reports you submit are public.\n\nYou can change this in "
-                              @"Settings > About > Privacy.",
+                              @"over the internet, who can see your IP address and a profile "
+                              @"ID. Compatibility reports you submit are public.\n\nYou can "
+                              @"change this in Settings > About > Privacy.",
                               @"Alert message: first-run online features notice");
   UIAlertController* alert =
       first_launch
