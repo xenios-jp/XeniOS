@@ -85,11 +85,11 @@
 /* Gamerscore of one achievement; %u is the score */
 "%u G" = "%u G";
 
-/* Game detail label; %zu is the number of discs */
-"%zu Discs" = "%zu Discs";
-
 /* Picker row detail; %zu is the number of discs */
 "%zu discs" = "%zu discs";
+
+/* Game detail label; %zu is the number of discs */
+"%zu Discs" = "%zu Discs";
 
 /* zar conversion coordinator: user-visible text */
 "%zu items" = "%zu items";
@@ -434,6 +434,9 @@
 
 /* system software view controller: status */
 "Checking…" = "Checking…";
+
+/* dashboard setup: button, picks the update in Files */
+"Choose a Downloaded Update" = "Choose a Downloaded Update";
 
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
@@ -974,8 +977,11 @@
 /* Error text; %ld is the HTTP status code */
 "Download failed with HTTP %ld." = "Download failed with HTTP %ld.";
 
-/* system software view controller: footer */
-"Download the USB system update from Microsoft's page to Files, then install it here. You can pick the zip or the folder Files expands it to." = "Download the USB system update from Microsoft's page to Files, then install it here. You can pick the zip or the folder Files expands it to.";
+/* system update page: status */
+"Downloaded." = "Downloaded.";
+
+/* system update page: download progress */
+"Downloading the system update: %d%%" = "Downloading the system update: %d%%";
 
 /* Toast; %@ is the host name of the download source */
 "Downloading touch layout from %@..." = "Downloading touch layout from %@...";
@@ -1105,11 +1111,11 @@
 /* Badge text when a button has no extra assignment */
 "Extra" = "Extra";
 
-/* Submenu title in the touch control edit panel */
-"Extra Function" = "Extra Function";
-
 /* VoiceOver label of a touch control edit button */
 "Extra function" = "Extra function";
+
+/* Submenu title in the touch control edit panel */
+"Extra Function" = "Extra Function";
 
 /* Row title in the touch control edit panel */
 "Extra gesture" = "Extra gesture";
@@ -1327,8 +1333,12 @@
 /* settings hub view controller: title */
 "Games · Rescan XeniOS storage and update the launcher grid." = "Games · Rescan XeniOS storage and update the launcher grid.";
 
-/* system software view controller: action */
+/* dashboard setup: button
+   system software view controller: action */
 "Get the Update from Microsoft" = "Get the Update from Microsoft";
+
+/* system software view controller: footer */
+"Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to." = "Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to.";
 
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
@@ -1430,11 +1440,11 @@
 /* document import coordinator: message */
 "Import failed." = "Import failed.";
 
-/* settings hub view controller: title */
-"Import Game" = "Import Game";
-
 /* launcher overlay view: user-visible text */
 "Import game" = "Import game";
+
+/* settings hub view controller: title */
+"Import Game" = "Import Game";
 
 /* launcher overlay view: button title */
 "Import Games" = "Import Games";
@@ -1548,6 +1558,9 @@
 /* system software view controller: title */
 "Installing System Software" = "Installing System Software";
 
+/* dashboard setup: title */
+"Installing the System Software" = "Installing the System Software";
+
 /* game content view controller: title */
 "Invalid Package" = "Invalid Package";
 
@@ -1606,6 +1619,9 @@
 
 /* zar conversion coordinator: label text */
 "Keep XeniOS open until conversion finishes. Cancel removes partial output." = "Keep XeniOS open until conversion finishes. Cancel removes partial output.";
+
+/* dashboard setup: message */
+"Keep XeniOS open until it finishes." = "Keep XeniOS open until it finishes.";
 
 /* Placeholder of the control label text field
    Row title in the touch control edit panel
@@ -1842,6 +1858,9 @@
 /* Touch control type */
 "Menu Button" = "Menu Button";
 
+/* system update page: error */
+"Microsoft's page couldn't be loaded. Check the connection, then reload." = "Microsoft's page couldn't be loaded. Check the connection, then reload.";
+
 /* Menu item in the touch control layout menu */
 "Mirror" = "Mirror";
 
@@ -1975,6 +1994,9 @@
 /* choice list view controller: accessibility value */
 "Not selected" = "Not selected";
 
+/* launcher overlay view: accessibility value */
+"Not set up" = "Not set up";
+
 /* profile view controller: detail text */
 "Not signed in" = "Not signed in";
 
@@ -2085,7 +2107,7 @@
 "Opens in Safari." = "Opens in Safari.";
 
 /* system software view controller: accessibility hint */
-"Opens Microsoft's system update page in Safari." = "Opens Microsoft's system update page in Safari.";
+"Opens Microsoft's system update page." = "Opens Microsoft's system update page.";
 
 /* launcher overlay view: user-visible text */
 "Opens profile management." = "Opens profile management.";
@@ -2350,6 +2372,9 @@
 /* game compatibility cells: label text */
 "RELEASE SUMMARY" = "RELEASE SUMMARY";
 
+/* system update page: button, reloads Microsoft's page */
+"Reload" = "Reload";
+
 /* system software view controller: action */
 "Remove" = "Remove";
 
@@ -2584,6 +2609,19 @@
 /* Toast; %1$lu is the number of games, %2$@ the receiving app */
 "Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
 
+/* launcher overlay view: Dashboard tile label, before the system software is installed */
+"Set Up" = "Set Up";
+
+/* launcher overlay view: menu action */
+"Set Up Dashboard" = "Set Up Dashboard";
+
+/* dashboard setup: title
+   launcher overlay view: button title */
+"Set Up the Xbox 360 Dashboard" = "Set Up the Xbox 360 Dashboard";
+
+/* launcher overlay view: accessibility hint */
+"Sets up the Xbox 360 Dashboard." = "Sets up the Xbox 360 Dashboard.";
+
 /* Launch screen status: the emulator is being set up */
 "Setting up…" = "Setting up…";
 
@@ -2718,6 +2756,16 @@
 /* Name of a controller button in a touch control preview */
 "Start" = "Start";
 
+/* dashboard setup: button
+   launcher overlay view: menu action */
+"Start Dashboard" = "Start Dashboard";
+
+/* dashboard setup: message */
+"Start it now, or later from its tile in the library." = "Start it now, or later from its tile in the library.";
+
+/* launcher overlay view: button title */
+"Start the Xbox 360 Dashboard" = "Start the Xbox 360 Dashboard";
+
 /* system software view controller: message */
 "Start the Xbox 360 Dashboard from the Library." = "Start the Xbox 360 Dashboard from the Library.";
 
@@ -2735,6 +2783,9 @@
 
 /* Alert message: StikDebug is unavailable */
 "StikDebug is not installed or unavailable." = "StikDebug is not installed or unavailable.";
+
+/* system update page: button, cancels the download */
+"Stop Download" = "Stop Download";
 
 /* Status while the game is being stopped */
 "Stopping game..." = "Stopping game...";
@@ -2780,8 +2831,14 @@
 /* launcher overlay view: accessibility hint */
 "Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
 
+/* launcher overlay view: menu action */
+"System Software" = "System Software";
+
 /* system software view controller: title */
 "System Software Installed" = "System Software Installed";
+
+/* system update page: title */
+"System Update" = "System Update";
 
 /* Row title in the touch control edit panel */
 "Tap" = "Tap";
@@ -2804,6 +2861,9 @@
 /* game compatibility cells: label text */
 "Tested this game?" = "Tested this game?";
 
+/* system update page: error */
+"That isn't the system update. Tap the download link under “Copy to a USB flash drive”." = "That isn't the system update. Tap the download link under “Copy to a USB flash drive”.";
+
 /* Alert message: an incoming link was not usable */
 "That link could not be opened." = "That link could not be opened.";
 
@@ -2812,6 +2872,15 @@
 
 /* choice list view controller: footer for a value that is not in the list */
 "The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it." = "The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it.";
+
+/* dashboard setup: message */
+"The dashboard comes with Microsoft's free Xbox 360 system update. Download it from Microsoft's support page, and XeniOS installs it." = "The dashboard comes with Microsoft's free Xbox 360 system update. Download it from Microsoft's support page, and XeniOS installs it.";
+
+/* dashboard setup: title */
+"The Dashboard Is Ready" = "The Dashboard Is Ready";
+
+/* system update page: error; %@ is the reason */
+"The download stopped: %@ Tap the link to try again." = "The download stopped: %@ Tap the link to try again.";
 
 /* Alert message: download URL is too long */
 "The download URL is too long to be safe and was rejected." = "The download URL is too long to be safe and was rejected.";
@@ -2878,6 +2947,9 @@
 
 /* Error text: layout payload is empty */
 "The touch layout payload was empty." = "The touch layout payload was empty.";
+
+/* dashboard setup: footnote */
+"The update is about 116 MB." = "The update is about 116 MB.";
 
 /* system software view controller: footer */
 "The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system folder in Files." = "The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system folder in Files.";
@@ -3067,6 +3139,9 @@
 /* Display settings toggle */
 "Uncapped Emulated Display" = "Uncapped Emulated Display";
 
+/* system update page: instructions */
+"Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update once it has downloaded." = "Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update once it has downloaded.";
+
 /* VoiceOver label of the undo button */
 "Undo" = "Undo";
 
@@ -3237,7 +3312,8 @@
 /* game content view controller: title */
 "Wrong Game" = "Wrong Game";
 
-/* launcher overlay view: user-visible text
+/* dashboard setup: title
+   launcher overlay view: user-visible text
    main view controller: title */
 "Xbox 360 Dashboard" = "Xbox 360 Dashboard";
 

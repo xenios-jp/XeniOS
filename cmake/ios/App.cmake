@@ -77,6 +77,7 @@ target_link_libraries(xenia-app PRIVATE
   "-framework Security"
   "-framework UIKit"
   "-framework UniformTypeIdentifiers"
+  "-framework WebKit"
 )
 target_link_options(xenia-app PRIVATE
   "-Wl,-u,___clear_cache"
