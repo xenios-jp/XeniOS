@@ -475,8 +475,12 @@ constexpr std::chrono::milliseconds kSchedulerPauseTimeout{1500};
 // A live settings change keeps the game paused this long after the last change, so a slider
 // drag pauses once instead of once per tick.
 constexpr int64_t kLiveSettingsHoldNs = 250 * 1000 * 1000;
-// How long the emulator thread waits for a resume before tearing down.
-constexpr std::chrono::milliseconds kResumeForTeardownTimeout{8000};
+// How long the emulator thread waits for the pause queue to drain before tearing down. It has to
+// outlast the slowest pause still in flight (the GPU wait, the audio and XMA pauses of about 2 s
+// each, the scheduler wait), or teardown frees the audio system and the scheduler under it.
+constexpr std::chrono::milliseconds kResumeForTeardownTimeout =
+    kGpuPauseTimeout + std::chrono::milliseconds{4000} + kSchedulerPauseTimeout +
+    std::chrono::milliseconds{3000};
 // How long the main thread waits for a pause before applying live settings.
 constexpr std::chrono::milliseconds kLiveSettingsPauseTimeout{3000};
 // How long stopping a game may take before the user is told it is stuck. A normal
@@ -1500,6 +1504,15 @@ void EmulatorAppIOS::PauseEmulationNow() {
   if (!emulator || !emulator->kernel_state()) {
     return;
   }
+  // Teardown ends the session and waits for this to return, so each stage first checks that the
+  // title is still live. The resume that follows an abandoned pause undoes the stages done.
+  auto session_live = [this]() {
+    std::lock_guard<std::mutex> lock(pause_state_mutex_);
+    return pause_game_running_;
+  };
+  if (!session_live()) {
+    return;
+  }
   XELOGI("iOS: pausing emulation");
 
   // GPU first, then audio, then guest threads, like Emulator::Pause. The GPU
@@ -1536,8 +1549,14 @@ void EmulatorAppIOS::PauseEmulationNow() {
     }
   }
 
+  if (!session_live()) {
+    return;
+  }
   if (auto* audio = emulator->audio_system()) {
     audio->Pause();
+  }
+  if (!session_live()) {
+    return;
   }
 
   // Guest threads run as fibers on six dispatch threads. Stop the dispatch
