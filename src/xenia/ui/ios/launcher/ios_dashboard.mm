@@ -19,6 +19,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/kernel/title_id_utils.h"
+#include "xenia/ui/ios/launcher/ios_game_library_store.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/vfs/xex_metadata.h"
 
@@ -26,8 +27,7 @@ DECLARE_path(storage_root);
 
 NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification =
     @"XeniaIOSSystemSoftwareDidChangeNotification";
-NSNotificationName const XeniaIOSTitleWillStartNotification =
-    @"XeniaIOSTitleWillStartNotification";
+NSNotificationName const XeniaIOSTitleWillStartNotification = @"XeniaIOSTitleWillStartNotification";
 NSString* const XeniaIOSTitlePathKey = @"path";
 NSString* const XeniaIOSSystemUpdateSupportURL =
     @"https://support.xbox.com/en-US/help/xbox-360/console/system-updates-info";
@@ -177,6 +177,20 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
 std::vector<Emulator::LibraryTitle> IOSDashboardLibraryTitles() {
   std::lock_guard<std::mutex> lock(library_titles_mutex);
   return library_titles;
+}
+
+NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess() {
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [NSMutableArray array];
+  for (const auto& location : ListIOSExternalLibraryLocations()) {
+    if (!location.available) {
+      continue;
+    }
+    if (XeniaIOSExternalLibraryAccess* access =
+            StartIOSExternalLibraryAccessForPath(location.path, nullptr, nil)) {
+      [accesses addObject:access];
+    }
+  }
+  return accesses;
 }
 
 }  // namespace ui
