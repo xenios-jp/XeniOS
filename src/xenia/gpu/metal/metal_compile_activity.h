@@ -39,6 +39,13 @@ struct CompileActivity {
   // The title had no stored pipelines: everything it draws compiles for the first
   // time.
   std::atomic<bool> storage_empty{false};
+  // The number of stored pipeline descriptions, published before they are queued
+  // (which can take a while), so a forecast can start early. 0 until known.
+  std::atomic<uint64_t> storage_total{0};
+  // How long the title's last complete rebuild took per stored description, in
+  // microseconds, from a sidecar next to the stored pipelines. 0: no usable
+  // record (first run, or the pipeline version changed).
+  std::atomic<uint64_t> storage_seed_us_per_stored{0};
 };
 
 inline CompileActivity compile_activity;
