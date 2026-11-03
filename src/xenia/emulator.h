@@ -514,8 +514,8 @@ class Emulator {
   void ChangeDisc();
   // Takes whatever disc is in the drive out of it.
   void EjectDisc();
-  // Asked on the UI thread for the disc to put in the drive. An empty path
-  // leaves it empty.
+  // Asked on the UI thread (on iOS, on a thread of its own) for the disc to put
+  // in the drive. An empty path leaves it empty.
   using DiscPicker = std::function<std::filesystem::path()>;
   void set_disc_picker(DiscPicker picker) { disc_picker_ = std::move(picker); }
 

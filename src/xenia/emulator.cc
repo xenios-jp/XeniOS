@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <thread>
 #include <utility>
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
@@ -916,12 +917,21 @@ void Emulator::ChangeDisc() {
   // CPU keep running.
   std::filesystem::path path;
   xe::threading::Fence fence;
+#if XE_PLATFORM_IOS
+  // iOS can't wait for a sheet on the UI thread. Its picker presents one there
+  // and waits on a thread of its own, as IOSFilePicker does.
+  std::thread([this, &path, &fence]() {
+    path = disc_picker_();
+    fence.Signal();
+  }).detach();
+#else
   if (!display_window_->app_context().CallInUIThread([this, &path, &fence]() {
         path = disc_picker_();
         fence.Signal();
       })) {
     return;
   }
+#endif  // XE_PLATFORM_IOS
   kernel::GuestScheduler::WaitOnFence(fence);
   if (!path.empty()) {
     InsertDisc(path);
