@@ -10,6 +10,7 @@
 #include "xenia/ui/ios/launcher/zar_converter.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -44,6 +45,23 @@ struct ZarOutputContext {
   std::ofstream stream;
   bool has_error = false;
   std::string error_message;
+  ZarConversionResult* result = nullptr;
+
+  // Records a failed write. `err` is errno captured right after the failure.
+  void Fail(std::string message, int err) {
+    has_error = true;
+    if (err == ENOSPC || err == EDQUOT) {
+      message = "Storage is full. Free up space on this device and try again.";
+      if (result) {
+        result->storage_full = true;
+      }
+    }
+    error_message = message;
+    if (result) {
+      result->output_failed = true;
+      result->error_message = message;
+    }
+  }
 };
 
 void SetError(ZarConversionResult* result, std::string message) {
@@ -70,6 +88,11 @@ void ReportProgress(const ZarConversionProgressCallback& progress_callback,
 
 bool CheckCancellation(const ZarConversionCancelCallback& cancel_callback,
                        ZarConversionResult* result) {
+  // A failed output write stops the conversion like a cancel does, without
+  // marking it cancelled.
+  if (result && result->output_failed) {
+    return true;
+  }
   if (!cancel_callback || !cancel_callback()) {
     return false;
   }
@@ -82,6 +105,10 @@ bool CheckCancellation(const ZarConversionCancelCallback& cancel_callback,
 
 std::string PathForMessage(const std::filesystem::path& path) {
   return path.string();
+}
+
+std::string PathForLog(const std::filesystem::path& path) {
+  return xe::strip_pii(path.string());
 }
 
 const char* BoolForLog(bool value) { return value ? "true" : "false"; }
@@ -135,9 +162,8 @@ void ZarOpenOutputFile(const int32_t part_index, void* context) {
   output_context->stream = std::ofstream(output_context->output_path,
                                          std::ios::binary | std::ios::trunc);
   if (!output_context->stream.is_open()) {
-    output_context->has_error = true;
-    output_context->error_message = "Failed to create output file: " +
-                                    PathForMessage(output_context->output_path);
+    const int err = errno;
+    output_context->Fail("Failed to create the output file.", err);
   }
 }
 
@@ -148,15 +174,18 @@ void ZarWriteOutputData(const void* data, size_t length, void* context) {
   }
   output_context->stream.write(reinterpret_cast<const char*>(data), length);
   if (!output_context->stream.good()) {
-    output_context->has_error = true;
-    output_context->error_message = "Failed writing output file: " +
-                                    PathForMessage(output_context->output_path);
+    const int err = errno;
+    output_context->Fail("Failed writing the output file.", err);
   }
 }
 
 bool ShouldSkipHostPath(const std::filesystem::path& path,
                         const std::filesystem::path& output_path) {
-  return PathsReferToSameFile(path, output_path);
+  // The output may be a final name or its in-progress ".part" sibling.
+  std::filesystem::path part_path = output_path;
+  part_path += ".part";
+  return PathsReferToSameFile(path, output_path) ||
+         PathsReferToSameFile(path, part_path);
 }
 
 uint64_t SaturatingAdd(uint64_t lhs, uint64_t rhs) {
@@ -695,14 +724,14 @@ ZarConversionEstimate EstimatePathToZar(
   XELOGI(
       "ZAR estimate: starting source='{}' output='{}' kind={} "
       "max_sample_bytes={}",
-      PathForMessage(source_path), PathForMessage(output_path),
+      PathForLog(source_path), PathForLog(output_path),
       SourceKindForLog(source_path), max_sample_bytes);
   ZarConversionEstimate estimate;
   std::error_code ec;
   if (!std::filesystem::exists(source_path, ec)) {
     estimate.error_message = "Source path does not exist.";
     XELOGI("ZAR estimate: failed source='{}' error='{}'",
-           PathForMessage(source_path), estimate.error_message);
+           PathForLog(source_path), estimate.error_message);
     return estimate;
   }
 
@@ -717,15 +746,15 @@ ZarConversionEstimate EstimatePathToZar(
       XELOGI(
           "ZAR estimate: failed creating source device source='{}' "
           "kind={} error='{}'",
-          PathForMessage(source_path), SourceKindForLog(source_path),
+          PathForLog(source_path), SourceKindForLog(source_path),
           estimate.error_message);
       return estimate;
     }
   }
 
   XELOGI("ZAR estimate: prepared source='{}' kind={} host_directory='{}'",
-         PathForMessage(source_path), SourceKindForLog(source_path),
-         PathForMessage(host_directory));
+         PathForLog(source_path), SourceKindForLog(source_path),
+         PathForLog(host_directory));
 
   estimate.input_bytes =
       host_directory.empty()
@@ -755,7 +784,7 @@ ZarConversionEstimate EstimatePathToZar(
       "ZAR estimate: finished source='{}' success={} input_bytes={} "
       "estimated_output_bytes={} sampled_input_bytes={} "
       "sampled_output_bytes={} files_seen={} error='{}'",
-      PathForMessage(source_path), BoolForLog(estimate.success),
+      PathForLog(source_path), BoolForLog(estimate.success),
       estimate.input_bytes, estimate.estimated_output_bytes,
       estimate.sampled_input_bytes, estimate.sampled_output_bytes,
       estimate.files_seen, estimate.error_message);
@@ -764,36 +793,74 @@ ZarConversionEstimate EstimatePathToZar(
 
 ZarConversionResult ConvertPathToZar(
     const std::filesystem::path& source_path,
-    const std::filesystem::path& output_path,
-    ZarConversionProgressCallback progress_callback,
+    const std::filesystem::path& final_output_path,
+    ZarConversionProgressCallback raw_progress_callback,
     ZarConversionCancelCallback cancel_callback) {
+  // Everything is written to "<name>.part" and renamed once complete.
+  std::filesystem::path output_path = final_output_path;
+  if (!output_path.empty()) {
+    output_path += ".part";
+  }
+  // The callback usually hops to the main queue, so don't call it per MiB.
+  ZarConversionProgressCallback progress_callback;
+  if (raw_progress_callback) {
+    struct ThrottleState {
+      bool has_reported = false;
+      std::chrono::steady_clock::time_point last_time;
+      uint64_t last_bytes = 0;
+      uint32_t last_files = 0;
+    };
+    auto state = std::make_shared<ThrottleState>();
+    progress_callback = [raw_progress_callback,
+                         state](const ZarConversionProgress& progress) {
+      const auto now = std::chrono::steady_clock::now();
+      bool report = !state->has_reported || progress.finalizing ||
+                    progress.cancelled ||
+                    (progress.total_bytes &&
+                     progress.bytes_written >= progress.total_bytes);
+      if (!report && now - state->last_time >= std::chrono::milliseconds(100)) {
+        const uint64_t one_percent = progress.total_bytes / 100;
+        report = progress.bytes_written - state->last_bytes >=
+                     std::max<uint64_t>(one_percent, 1) ||
+                 progress.files_written != state->last_files;
+      }
+      if (!report) {
+        return;
+      }
+      state->has_reported = true;
+      state->last_time = now;
+      state->last_bytes = progress.bytes_written;
+      state->last_files = progress.files_written;
+      raw_progress_callback(progress);
+    };
+  }
   XELOGI("ZAR convert: starting source='{}' output='{}' kind={}",
-         PathForMessage(source_path), PathForMessage(output_path),
+         PathForLog(source_path), PathForLog(output_path),
          SourceKindForLog(source_path));
   ZarConversionResult result;
   std::error_code ec;
   if (CheckCancellation(cancel_callback, &result)) {
     XELOGI("ZAR convert: cancelled before start source='{}'",
-           PathForMessage(source_path));
+           PathForLog(source_path));
     return result;
   }
   if (!std::filesystem::exists(source_path, ec)) {
     result.error_message = "Source path does not exist.";
     XELOGI("ZAR convert: failed source='{}' error='{}'",
-           PathForMessage(source_path), result.error_message);
+           PathForLog(source_path), result.error_message);
     return result;
   }
   if (output_path.empty()) {
     result.error_message = "Output path is empty.";
     XELOGI("ZAR convert: failed source='{}' error='{}'",
-           PathForMessage(source_path), result.error_message);
+           PathForLog(source_path), result.error_message);
     return result;
   }
-  if (PathsReferToSameFile(source_path, output_path)) {
+  if (PathsReferToSameFile(source_path, final_output_path)) {
     result.error_message =
         "Output path must be different from the source path.";
     XELOGI("ZAR convert: failed source='{}' output='{}' error='{}'",
-           PathForMessage(source_path), PathForMessage(output_path),
+           PathForLog(source_path), PathForLog(output_path),
            result.error_message);
     return result;
   }
@@ -811,7 +878,7 @@ ZarConversionResult ConvertPathToZar(
       XELOGI(
           "ZAR convert: failed creating source device source='{}' "
           "kind={} error='{}'",
-          PathForMessage(source_path), SourceKindForLog(source_path),
+          PathForLog(source_path), SourceKindForLog(source_path),
           result.error_message);
       return result;
     }
@@ -819,12 +886,12 @@ ZarConversionResult ConvertPathToZar(
   result.total_bytes =
       host_directory.empty()
           ? EstimateVfsDeviceBytes(device.get())
-          : EstimateHostDirectoryBytes(host_directory, output_path);
+          : EstimateHostDirectoryBytes(host_directory, final_output_path);
   XELOGI(
       "ZAR convert: prepared source='{}' kind={} host_directory='{}' "
       "total_bytes={}",
-      PathForMessage(source_path), SourceKindForLog(source_path),
-      PathForMessage(host_directory), result.total_bytes);
+      PathForLog(source_path), SourceKindForLog(source_path),
+      PathForLog(host_directory), result.total_bytes);
   ReportProgress(progress_callback, result, std::string());
 
   if (!output_path.parent_path().empty()) {
@@ -834,18 +901,19 @@ ZarConversionResult ConvertPathToZar(
       XELOGI(
           "ZAR convert: failed creating output folder output='{}' "
           "error='{}'",
-          PathForMessage(output_path), result.error_message);
+          PathForLog(output_path), result.error_message);
       return result;
     }
   }
 
   ZarOutputContext output_context;
   output_context.output_path = output_path;
+  output_context.result = &result;
   ZArchiveWriter writer(ZarOpenOutputFile, ZarWriteOutputData, &output_context);
   if (output_context.has_error) {
     result.error_message = output_context.error_message;
     XELOGI("ZAR convert: failed opening output='{}' error='{}'",
-           PathForMessage(output_path), result.error_message);
+           PathForLog(output_path), result.error_message);
     return result;
   }
 
@@ -854,13 +922,13 @@ ZarConversionResult ConvertPathToZar(
   bool packed = false;
   if (!host_directory.empty()) {
     XELOGI("ZAR convert: packing host directory='{}' output='{}'",
-           PathForMessage(host_directory), PathForMessage(output_path));
+           PathForLog(host_directory), PathForLog(output_path));
     packed =
-        PackHostDirectoryToZar(&writer, host_directory, output_path, &result,
+        PackHostDirectoryToZar(&writer, host_directory, final_output_path, &result,
                                progress_callback, cancel_callback);
   } else {
     XELOGI("ZAR convert: packing virtual device source='{}' output='{}'",
-           PathForMessage(source_path), PathForMessage(output_path));
+           PathForLog(source_path), PathForLog(output_path));
     packed = PackVfsDeviceToZar(device.get(), &writer, &result,
                                 progress_callback, cancel_callback);
   }
@@ -869,19 +937,20 @@ ZarConversionResult ConvertPathToZar(
     XELOGI(
         "ZAR convert: finalizing output='{}' files={} bytes={} "
         "total_bytes={}",
-        PathForMessage(output_path), result.files_written, result.bytes_written,
+        PathForLog(output_path), result.files_written, result.bytes_written,
         result.total_bytes);
     ReportProgress(progress_callback, result, std::string(), true);
     writer.Finalize();
     output_context.stream.flush();
-    if (!output_context.stream.good()) {
-      output_context.has_error = true;
-      output_context.error_message =
-          "Failed finalizing output file: " + PathForMessage(output_path);
+    if (!output_context.stream.good() || output_context.has_error) {
+      if (!output_context.has_error) {
+        const int err = errno;
+        output_context.Fail("Failed finalizing the output file.", err);
+      }
       XELOGI(
           "ZAR convert: output stream finalization failed output='{}' "
           "error='{}'",
-          PathForMessage(output_path), output_context.error_message);
+          PathForLog(output_path), output_context.error_message);
     }
     CheckCancellation(cancel_callback, &result);
   }
@@ -899,7 +968,7 @@ ZarConversionResult ConvertPathToZar(
         "ZAR convert: failed source='{}' output='{}' packed={} "
         "cancelled={} output_error={} files={} bytes={} total_bytes={} "
         "remove_error='{}' error='{}'",
-        PathForMessage(source_path), PathForMessage(output_path),
+        PathForLog(source_path), PathForLog(output_path),
         BoolForLog(packed), BoolForLog(result.cancelled),
         BoolForLog(output_context.has_error), result.files_written,
         result.bytes_written, result.total_bytes, ec ? ec.message() : "none",
@@ -907,6 +976,17 @@ ZarConversionResult ConvertPathToZar(
     return result;
   }
 
+  // Publish the finished archive under its real name.
+  std::filesystem::rename(output_path, final_output_path, ec);
+  if (ec) {
+    result.error_message =
+        "Could not finish the ZAR archive: " + ec.message();
+    std::error_code remove_ec;
+    std::filesystem::remove(output_path, remove_ec);
+    XELOGI("ZAR convert: rename failed error='{}'", ec.message());
+    return result;
+  }
+  output_path = final_output_path;
   result.success = true;
   const double elapsed_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -927,7 +1007,7 @@ ZarConversionResult ConvertPathToZar(
       "ZAR convert: success source='{}' output='{}' files={} bytes={} "
       "total_bytes={} output_bytes={} workers={} elapsed={:.2f}s "
       "throughput={:.1f} MiB/s ratio={:.3f}",
-      PathForMessage(source_path), PathForMessage(output_path),
+      PathForLog(source_path), PathForLog(output_path),
       result.files_written, result.bytes_written, result.total_bytes,
       output_size_ec ? 0ull : output_bytes, 1u,
       elapsed_seconds, throughput_mib_s, ratio);
@@ -936,14 +1016,14 @@ ZarConversionResult ConvertPathToZar(
 
 bool ValidateZarArchive(const std::filesystem::path& path,
                         std::string* error_message_out) {
-  XELOGI("ZAR validate: starting path='{}'", PathForMessage(path));
+  XELOGI("ZAR validate: starting path='{}'", PathForLog(path));
   std::error_code ec;
   if (!std::filesystem::is_regular_file(path, ec)) {
     if (error_message_out) {
       *error_message_out = "ZAR output file is missing.";
     }
     XELOGI(
-        "ZAR validate: failed path='{}' error='{}'", PathForMessage(path),
+        "ZAR validate: failed path='{}' error='{}'", PathForLog(path),
         error_message_out ? *error_message_out : "ZAR output file is missing.");
     return false;
   }
@@ -956,7 +1036,7 @@ bool ValidateZarArchive(const std::filesystem::path& path,
              : "ZAR output file is empty.";
     }
     XELOGI("ZAR validate: failed path='{}' file_size={} error='{}'",
-           PathForMessage(path), ec ? 0 : static_cast<uint64_t>(file_size),
+           PathForLog(path), ec ? 0 : static_cast<uint64_t>(file_size),
            error_message_out ? *error_message_out
                              : (ec ? "Failed reading ZAR output size."
                                    : "ZAR output file is empty."));
@@ -968,10 +1048,10 @@ bool ValidateZarArchive(const std::filesystem::path& path,
       *error_message_out = "ZAR output is incomplete or not a valid archive.";
     }
     XELOGI("ZAR validate: failed opening archive path='{}' file_size={}",
-           PathForMessage(path), static_cast<uint64_t>(file_size));
+           PathForLog(path), static_cast<uint64_t>(file_size));
     return false;
   }
-  XELOGI("ZAR validate: success path='{}' file_size={}", PathForMessage(path),
+  XELOGI("ZAR validate: success path='{}' file_size={}", PathForLog(path),
          static_cast<uint64_t>(file_size));
   return true;
 }

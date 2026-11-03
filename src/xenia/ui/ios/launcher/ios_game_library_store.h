@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <vector>
 
+#include "xenia/ui/ios/launcher/ios_file_transfer.h"
 #include "xenia/ui/ios/launcher/ios_game_library.h"
 
 #ifdef __OBJC__
@@ -31,9 +32,27 @@ namespace xe {
 namespace ui {
 
 std::filesystem::path IOSImportedGamesDirectory();
+// Symlink-resolved absolute form of a path that may not exist yet; for
+// comparing paths.
+std::filesystem::path NormalizedIOSLibraryPath(const std::filesystem::path& path);
 
+// Synchronous convenience form. Don't call it on the main thread for real
+// files: use the transfer form from a background queue.
 std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, NSError** error);
+// Blocking; call from a background queue with the source's security scope
+// open for the whole call. Copies through "<name>.part" with progress and
+// cancel (see ios_file_transfer.h); a source already inside Documents is
+// renamed. Returns an empty path with `error` set on failure or cancel.
+std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, XeniaIOSFileTransfer* transfer,
+                                               XeniaIOSFileTransferProgress progress,
+                                               NSError** error);
 bool IsPathInIOSImportedGamesDirectory(const std::filesystem::path& path);
+// Documents/Inbox is where iOS puts copies of files opened from other apps.
+bool IsPathInIOSDocumentsInbox(const std::filesystem::path& path);
+// Deletes everything in Documents/Inbox except `keep_path` (empty for none).
+// Call at launch, passing the file of a launch-time open-in if there is one.
+// Safe from any thread.
+void CleanupIOSDocumentsInbox(const std::filesystem::path& keep_path);
 
 // One linked external library folder, for the management UI.
 struct IOSExternalLibraryLocation {
@@ -62,7 +81,18 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
 
 #endif  // __OBJC__
 
+// Walks Documents and every linked folder, blocking until done, so keep it off
+// the main thread. Safe to call from any background queue (several at once are
+// fine): it touches no UIKit, starts and stops its security scopes on the
+// calling thread, and shares only NSUserDefaults. Also writes the cache below,
+// sweeps stale ".part" files from the games folder and keeps the games and
+// installed-content folders excluded from iCloud backup.
 std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache);
+
+// The result of the last completed scan, read from disk (cheap, no folder
+// walk). For showing the library at once while the real scan runs; entries
+// are display-only until the scan replaces them. Empty on first launch.
+std::vector<IOSDiscoveredGame> LoadCachedIOSGameLibrary();
 
 void ApplyIOSCompatibilityDataToDiscoveredGames(NSDictionary* compat_data,
                                                 std::vector<IOSDiscoveredGame>* games);

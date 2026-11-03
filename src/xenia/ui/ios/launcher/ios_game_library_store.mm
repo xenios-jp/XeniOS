@@ -10,6 +10,7 @@
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -19,6 +20,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/ui/ios/launcher/ios_compat_data.h"
 #include "xenia/ui/ios/launcher/ios_content_management.h"
+#include "xenia/ui/ios/launcher/ios_file_transfer.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -36,8 +38,8 @@
   }
   _url = [url retain];
   _accessGranted = [_url startAccessingSecurityScopedResource];
-  XELOGI("iOS: External library scope started for {} (security-scoped: {})",
-         _url.path ? [_url.path UTF8String] : "", _accessGranted ? "yes" : "no");
+  XELOGD("iOS: External library scope started for {} (security-scoped: {})",
+         _url.path ? xe::strip_pii([_url.path UTF8String]) : "", _accessGranted ? "yes" : "no");
   return self;
 }
 
@@ -266,6 +268,51 @@ NSDictionary* HiddenExternalGameRecordForPath(const std::filesystem::path& path,
   return record;
 }
 
+// A bookmark that resolves but reports stale (the folder moved or the volume
+// was re-mounted) is still good once re-created from the resolved URL. The
+// saved list is only ever edited on the main thread, so the replacement is
+// hopped there; the new bookmark is made now, inside the security scope.
+void RefreshStaleExternalLibraryBookmark(NSDictionary* record, NSURL* url) {
+  BOOL access_granted = [url startAccessingSecurityScopedResource];
+  NSData* fresh_bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+                         includingResourceValuesForKeys:nil
+                                          relativeToURL:nil
+                                                  error:nil];
+  if (access_granted) {
+    [url stopAccessingSecurityScopedResource];
+  }
+  if (!fresh_bookmark) {
+    return;
+  }
+  NSData* old_bookmark = [[[record objectForKey:kExternalLibraryBookmarkKey] copy] autorelease];
+  NSString* new_path = [[url.path copy] autorelease];
+  NSString* name = [[[record objectForKey:kExternalLibraryNameKey] copy] autorelease];
+  NSData* new_bookmark = [[fresh_bookmark copy] autorelease];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSMutableArray<NSDictionary*>* records =
+        [[ExternalLibraryLocationRecords() mutableCopy] autorelease];
+    for (NSUInteger i = 0; i < records.count; ++i) {
+      NSDictionary* existing = records[i];
+      if (![[existing objectForKey:kExternalLibraryBookmarkKey] isEqual:old_bookmark]) {
+        continue;
+      }
+      NSMutableDictionary* updated = [[existing mutableCopy] autorelease];
+      [updated setObject:new_bookmark forKey:kExternalLibraryBookmarkKey];
+      if (new_path.length > 0) {
+        [updated setObject:new_path forKey:kExternalLibraryPathKey];
+      }
+      if (name.length > 0) {
+        [updated setObject:name forKey:kExternalLibraryNameKey];
+      }
+      records[i] = updated;
+      [[NSUserDefaults standardUserDefaults] setObject:records
+                                                forKey:kExternalLibraryLocationsDefaultsKey];
+      XELOGI("iOS: Refreshed stale external library bookmark");
+      break;
+    }
+  });
+}
+
 NSURL* ResolveExternalLibraryRecord(NSDictionary* record, BOOL* stale, NSError** error) {
   if (stale) {
     *stale = NO;
@@ -285,6 +332,11 @@ NSURL* ResolveExternalLibraryRecord(NSDictionary* record, BOOL* stale, NSError**
                                    relativeToURL:nil
                              bookmarkDataIsStale:&bookmark_stale
                                            error:error];
+  if (url && bookmark_stale) {
+    // Usable: renew the saved bookmark and report the folder as available.
+    RefreshStaleExternalLibraryBookmark(record, url);
+    bookmark_stale = NO;
+  }
   if (stale) {
     *stale = bookmark_stale;
   }
@@ -394,12 +446,58 @@ std::filesystem::path IOSImportedGamesDirectory() {
   return xe_get_ios_documents_path() / "games";
 }
 
+std::filesystem::path NormalizedIOSLibraryPath(const std::filesystem::path& path) {
+  return WeaklyCanonicalOrAbsolute(path);
+}
+
 bool IsPathInIOSImportedGamesDirectory(const std::filesystem::path& path) {
   return PathIsInDirectory(WeaklyCanonicalOrAbsolute(path),
                            WeaklyCanonicalOrAbsolute(IOSImportedGamesDirectory()));
 }
 
+bool IsPathInIOSDocumentsInbox(const std::filesystem::path& path) {
+  return PathIsInDirectory(WeaklyCanonicalOrAbsolute(path),
+                           WeaklyCanonicalOrAbsolute(xe_get_ios_documents_path() / "Inbox"));
+}
+
+void CleanupIOSDocumentsInbox(const std::filesystem::path& keep_path) {
+  const std::filesystem::path inbox = xe_get_ios_documents_path() / "Inbox";
+  std::error_code ec;
+  if (!std::filesystem::is_directory(inbox, ec)) {
+    return;
+  }
+  const std::filesystem::path keep =
+      keep_path.empty() ? std::filesystem::path() : WeaklyCanonicalOrAbsolute(keep_path);
+  size_t removed = 0;
+  std::filesystem::directory_iterator it(inbox, ec);
+  std::filesystem::directory_iterator end;
+  std::vector<std::filesystem::path> entries;
+  for (; !ec && it != end; it.increment(ec)) {
+    entries.push_back(it->path());
+  }
+  for (const std::filesystem::path& entry : entries) {
+    if (!keep.empty() && PathIsInDirectory(keep, WeaklyCanonicalOrAbsolute(entry))) {
+      continue;
+    }
+    std::error_code remove_ec;
+    std::filesystem::remove_all(entry, remove_ec);
+    if (!remove_ec) {
+      ++removed;
+    }
+  }
+  if (removed) {
+    XELOGI("iOS: Cleared {} leftover item(s) from Documents/Inbox", removed);
+  }
+}
+
 std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, NSError** error) {
+  XeniaIOSFileTransfer* transfer = [[[XeniaIOSFileTransfer alloc] init] autorelease];
+  return ImportGameIntoIOSLibrary(source_url, transfer, nil, error);
+}
+
+std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, XeniaIOSFileTransfer* transfer,
+                                               XeniaIOSFileTransferProgress progress,
+                                               NSError** error) {
   std::filesystem::path source_path([source_url.path UTF8String]);
   std::filesystem::path documents_path = xe_get_ios_documents_path();
   std::filesystem::path library_path = IOSImportedGamesDirectory();
@@ -423,6 +521,7 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, NSError** erro
     }
     return {};
   }
+  XeniaIOSExcludeFromBackup(ToNSString(library_path.string()));
 
   auto weak_library = std::filesystem::weakly_canonical(library_path, ec);
   if (ec) {
@@ -471,16 +570,21 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, NSError** erro
       }
       NSString* container_ns = ToNSString(container.string());
       NSString* destination_dir_ns = ToNSString(destination_dir.string());
-      NSFileManager* file_manager = [NSFileManager defaultManager];
+      // Inside Documents this is a same-volume rename; elsewhere it is a copy
+      // through ".part" with progress and cancel.
       const BOOL relocated =
           source_inside_documents
-              ? [file_manager moveItemAtPath:container_ns toPath:destination_dir_ns error:error]
-              : [file_manager copyItemAtPath:container_ns toPath:destination_dir_ns error:error];
+              ? [[NSFileManager defaultManager] moveItemAtPath:container_ns
+                                                        toPath:destination_dir_ns
+                                                         error:error]
+              : [transfer copyPairs:@[ @[ container_ns, destination_dir_ns ] ]
+                           progress:progress
+                              error:error];
       if (!relocated) {
         return {};
       }
-      XELOGI("iOS: Relocated folder game container {} -> {}", container.string(),
-             destination_dir.string());
+      XELOGD("iOS: Relocated folder game container {} -> {}", xe::strip_pii(container.string()),
+             xe::strip_pii(destination_dir.string()));
       return destination_dir / source_path.filename();
     }
   }
@@ -496,40 +600,33 @@ std::filesystem::path ImportGameIntoIOSLibrary(NSURL* source_url, NSError** erro
 
   NSString* source_ns = source_url.path;
   NSString* destination_ns = ToNSString(destination.string());
-  NSFileManager* file_manager = [NSFileManager defaultManager];
-  BOOL transferred = should_move_source
-                         ? [file_manager moveItemAtPath:source_ns toPath:destination_ns error:error]
-                         : [file_manager copyItemAtPath:source_ns
+  if (should_move_source) {
+    // Same-volume rename (Inbox, or anywhere else inside Documents).
+    if (![[NSFileManager defaultManager] moveItemAtPath:source_ns
                                                  toPath:destination_ns
-                                                  error:error];
-  if (!transferred) {
-    return {};
+                                                  error:error]) {
+      return {};
+    }
+    return destination;
   }
 
+  // The main file goes first in the list so it is renamed into place last,
+  // after its ".data" sidecar folder.
+  NSMutableArray<NSArray<NSString*>*>* pairs =
+      [NSMutableArray arrayWithObject:@[ source_ns, destination_ns ]];
   if (source_has_sidecar) {
     std::filesystem::path source_sidecar = source_path;
     source_sidecar += ".data";
     std::filesystem::path destination_sidecar = destination;
     destination_sidecar += ".data";
-
-    std::string error_message;
-    if (!xe_copy_directory_recursive(source_sidecar, destination_sidecar, &error_message)) {
-      std::error_code cleanup_error;
-      std::filesystem::remove(destination, cleanup_error);
-      std::filesystem::remove_all(destination_sidecar, cleanup_error);
-      if (error) {
-        *error = [NSError
-            errorWithDomain:@"XeniaIOSImport"
-                       code:1002
-                   userInfo:@{
-                     NSLocalizedDescriptionKey : ToNSString(
-                         error_message.empty() ? "Failed copying package sidecar." : error_message)
-                   }];
-      }
-      return {};
-    }
+    std::error_code remove_ec;
+    std::filesystem::remove_all(destination_sidecar, remove_ec);
+    [pairs addObject:@[ ToNSString(source_sidecar.string()),
+    ToNSString(destination_sidecar.string()) ]];
   }
-
+  if (![transfer copyPairs:pairs progress:progress error:error]) {
+    return {};
+  }
   return destination;
 }
 
@@ -589,7 +686,7 @@ BOOL SaveIOSExternalLibraryLocation(NSURL* folder_url, NSError** error) {
   }];
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
-  XELOGI("iOS: Linked external library location: {}", [path UTF8String]);
+  XELOGI("iOS: Linked external library location: {}", xe::strip_pii([path UTF8String]));
   return YES;
 }
 
@@ -661,7 +758,7 @@ BOOL HideIOSExternalLibraryGameAtPath(const std::filesystem::path& path, NSStrin
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryHiddenGamesDefaultsKey];
   [[NSUserDefaults standardUserDefaults] synchronize];
-  XELOGI("iOS: Hid external library game {}", normalized_game_path.string());
+  XELOGI("iOS: Hid external library game {}", xe::strip_pii(normalized_game_path.string()));
   return YES;
 }
 
@@ -704,7 +801,7 @@ BOOL RemoveIOSExternalLibraryLocationForPath(const std::filesystem::path& path,
 
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
-  XELOGI("iOS: Removed external library location for {}", path.string());
+  XELOGI("iOS: Removed external library location for {}", xe::strip_pii(path.string()));
   return YES;
 }
 
@@ -762,7 +859,7 @@ BOOL RemoveIOSExternalLibraryLocationAtRoot(const std::filesystem::path& path,
 
   [[NSUserDefaults standardUserDefaults] setObject:records
                                             forKey:kExternalLibraryLocationsDefaultsKey];
-  XELOGI("iOS: Removed external library location rooted at {}", path.string());
+  XELOGI("iOS: Removed external library location rooted at {}", xe::strip_pii(path.string()));
   return YES;
 }
 
@@ -832,7 +929,153 @@ XeniaIOSExternalLibraryAccess* StartIOSExternalLibraryAccessForPath(
   return nil;
 }
 
-std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache) {
+namespace {
+
+NSString* const kScanCacheVersionKey = @"version";
+NSString* const kScanCacheGamesKey = @"games";
+constexpr int kScanCacheVersion = 1;
+
+NSString* ScanCachePath() {
+  NSString* caches =
+      NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+  return [caches stringByAppendingPathComponent:@"library-scan-cache.plist"];
+}
+
+NSString* StringOrEmpty(const std::string& value) { return ToNSString(value); }
+
+NSDictionary* CacheDictionaryForDisc(const IOSDiscoveredGame::Disc& disc) {
+  return @{
+    @"path" : StringOrEmpty(disc.path.string()),
+    @"label" : StringOrEmpty(disc.label),
+    @"ext" : @(disc.is_external),
+    @"imp" : @(disc.has_imported_source),
+    @"exs" : @(disc.has_external_source),
+    @"src" : StringOrEmpty(disc.source_label),
+    @"mid" : @(disc.media_id),
+    @"dn" : @(disc.disc_number),
+    @"dc" : @(disc.disc_count),
+  };
+}
+
+NSDictionary* CacheDictionaryForGame(const IOSDiscoveredGame& game) {
+  NSMutableArray* discs = [NSMutableArray array];
+  for (const IOSDiscoveredGame::Disc& disc : game.discs) {
+    [discs addObject:CacheDictionaryForDisc(disc)];
+  }
+  NSMutableDictionary* dictionary = [NSMutableDictionary dictionaryWithDictionary:@{
+    @"path" : StringOrEmpty(game.path.string()),
+    @"title" : StringOrEmpty(game.title),
+    @"system" : @(static_cast<uint8_t>(game.system)),
+    @"ct" : @(static_cast<uint32_t>(game.content_type)),
+    @"ctn" : StringOrEmpty(game.content_type_name),
+    @"tid" : @(game.title_id),
+    @"mid" : @(game.media_id),
+    @"dn" : @(game.disc_number),
+    @"dc" : @(game.disc_count),
+    @"inst" : @(game.has_installed_content),
+    @"ext" : @(game.is_external),
+    @"extname" : StringOrEmpty(game.external_location_name),
+    @"discs" : discs,
+  }];
+  if (!game.icon_data.empty()) {
+    dictionary[@"icon"] = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
+  }
+  return dictionary;
+}
+
+std::string StdString(id value) {
+  return [value isKindOfClass:[NSString class]] ? std::string([(NSString*)value UTF8String])
+                                                : std::string();
+}
+
+bool GameFromCacheDictionary(NSDictionary* dictionary, IOSDiscoveredGame* game) {
+  if (![dictionary isKindOfClass:[NSDictionary class]]) {
+    return false;
+  }
+  game->path = std::filesystem::path(StdString(dictionary[@"path"]));
+  if (game->path.empty()) {
+    return false;
+  }
+  game->title = StdString(dictionary[@"title"]);
+  game->system = static_cast<IOSGameSystem>(UInt8FromObject(dictionary[@"system"]));
+  game->content_type = static_cast<XContentType>(UInt32FromObject(dictionary[@"ct"]));
+  game->content_type_name = StdString(dictionary[@"ctn"]);
+  game->title_id = UInt32FromObject(dictionary[@"tid"]);
+  game->media_id = UInt32FromObject(dictionary[@"mid"]);
+  game->disc_number = UInt8FromObject(dictionary[@"dn"]);
+  game->disc_count = UInt8FromObject(dictionary[@"dc"]);
+  game->has_installed_content = [dictionary[@"inst"] boolValue];
+  game->is_external = [dictionary[@"ext"] boolValue];
+  game->external_location_name = StdString(dictionary[@"extname"]);
+  NSData* icon = dictionary[@"icon"];
+  if ([icon isKindOfClass:[NSData class]] && icon.length > 0) {
+    const uint8_t* bytes = static_cast<const uint8_t*>(icon.bytes);
+    game->icon_data.assign(bytes, bytes + icon.length);
+  }
+  NSArray* discs = dictionary[@"discs"];
+  if ([discs isKindOfClass:[NSArray class]]) {
+    for (NSDictionary* disc_dictionary in discs) {
+      if (![disc_dictionary isKindOfClass:[NSDictionary class]]) {
+        continue;
+      }
+      IOSDiscoveredGame::Disc disc;
+      disc.path = std::filesystem::path(StdString(disc_dictionary[@"path"]));
+      disc.label = StdString(disc_dictionary[@"label"]);
+      disc.is_external = [disc_dictionary[@"ext"] boolValue];
+      disc.has_imported_source = [disc_dictionary[@"imp"] boolValue];
+      disc.has_external_source = [disc_dictionary[@"exs"] boolValue];
+      disc.source_label = StdString(disc_dictionary[@"src"]);
+      disc.media_id = UInt32FromObject(disc_dictionary[@"mid"]);
+      disc.disc_number = UInt8FromObject(disc_dictionary[@"dn"]);
+      disc.disc_count = UInt8FromObject(disc_dictionary[@"dc"]);
+      game->discs.push_back(std::move(disc));
+    }
+  }
+  return true;
+}
+
+void SaveCachedIOSGameLibrary(const std::vector<IOSDiscoveredGame>& games) {
+  @autoreleasepool {
+    NSMutableArray* entries = [NSMutableArray arrayWithCapacity:games.size()];
+    for (const IOSDiscoveredGame& game : games) {
+      [entries addObject:CacheDictionaryForGame(game)];
+    }
+    NSDictionary* root = @{
+      kScanCacheVersionKey : @(kScanCacheVersion),
+      kScanCacheGamesKey : entries,
+    };
+    [root writeToFile:ScanCachePath() atomically:YES];
+  }
+}
+
+}  // namespace
+
+std::vector<IOSDiscoveredGame> LoadCachedIOSGameLibrary() {
+  std::vector<IOSDiscoveredGame> games;
+  @autoreleasepool {
+    NSDictionary* root = [NSDictionary dictionaryWithContentsOfFile:ScanCachePath()];
+    if (![root isKindOfClass:[NSDictionary class]] ||
+        [root[kScanCacheVersionKey] intValue] != kScanCacheVersion) {
+      return games;
+    }
+    for (NSDictionary* dictionary in root[kScanCacheGamesKey]) {
+      IOSDiscoveredGame game;
+      if (!GameFromCacheDictionary(dictionary, &game)) {
+        continue;
+      }
+      // Linked folders may be offline; only the app's own storage is cheap and
+      // safe to check here. The real scan corrects the rest.
+      std::error_code ec;
+      if (!game.is_external && !std::filesystem::exists(game.path, ec)) {
+        continue;
+      }
+      games.push_back(std::move(game));
+    }
+  }
+  return games;
+}
+
+static std::vector<IOSDiscoveredGame> ScanIOSGameLibraryImpl(NSDictionary* title_name_cache) {
   std::vector<IOSDiscoveredGame> games;
 
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* external_accesses = [NSMutableArray array];
@@ -845,12 +1088,18 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
   const std::filesystem::path normalized_documents_root = WeaklyCanonicalOrAbsolute(documents_root);
   const std::filesystem::path normalized_library_root = WeaklyCanonicalOrAbsolute(library_root);
   NSArray<NSDictionary*>* external_records = ExternalLibraryLocationRecords();
-  XELOGI("iOS library scan: starting documents='{}' imported='{}' "
+  XELOGD("iOS library scan: starting documents='{}' imported='{}' "
          "external_records={} hidden_paths={} hidden_identities={}",
-         documents_root.string(), library_root.string(),
+         xe::strip_pii(documents_root.string()), xe::strip_pii(library_root.string()),
          static_cast<unsigned long>(external_records.count),
          static_cast<unsigned long>(hidden_external_game_paths.count),
          hidden_external_games.size());
+  // Housekeeping for the app's own storage, safe from any thread: drop partial
+  // imports/conversions that no live transfer owns (never inside linked
+  // folders), and keep the games folder out of iCloud backup.
+  XeniaIOSSweepStalePartFiles(library_root);
+  XeniaIOSExcludeFromBackup(ToNSString(library_root.string()));
+  xe_exclude_installed_content_from_backup();
   scan_roots.push_back({library_root});
   if (documents_root != library_root) {
     scan_roots.push_back({documents_root});
@@ -862,17 +1111,19 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
     NSURL* url = ResolveExternalLibraryRecord(record, &stale, &resolve_error);
     if (!url || stale || url.path.length == 0) {
       XELOGW("iOS: Skipping unavailable external library bookmark: {}",
-             resolve_error.localizedDescription ? [resolve_error.localizedDescription UTF8String]
-                                                : "stale or invalid bookmark");
+             resolve_error.localizedDescription
+                 ? xe::strip_pii([resolve_error.localizedDescription UTF8String])
+                 : "invalid bookmark");
       continue;
     }
     XeniaIOSExternalLibraryAccess* access =
         [[[XeniaIOSExternalLibraryAccess alloc] initWithURL:url] autorelease];
     [external_accesses addObject:access];
     NSString* name = ExternalLibraryRecordName(record, url);
-    XELOGI("iOS library scan: linked external root name='{}' path='{}' "
+    XELOGD("iOS library scan: linked external root name='{}' path='{}' "
            "stale={}",
-           name ? [name UTF8String] : "", url.path ? [url.path UTF8String] : "", BoolForLog(stale));
+           name ? xe::strip_pii([name UTF8String]) : "",
+           url.path ? xe::strip_pii([url.path UTF8String]) : "", BoolForLog(stale));
     scan_roots.push_back({std::filesystem::path(std::string([url.path UTF8String])), true,
                           name ? std::string([name UTF8String]) : std::string()});
   }
@@ -882,9 +1133,10 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
   for (const auto& root : scan_roots) {
     std::error_code ec;
     if (!std::filesystem::exists(root.path, ec)) {
-      XELOGI("iOS library scan: skipping missing root path='{}' external={} "
+      XELOGD("iOS library scan: skipping missing root path='{}' external={} "
              "error='{}'",
-             root.path.string(), BoolForLog(root.is_external), ec ? ec.message() : "none");
+             xe::strip_pii(root.path.string()), BoolForLog(root.is_external),
+             ec ? ec.message() : "none");
       continue;
     }
 
@@ -899,14 +1151,16 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
     const bool is_documents_fallback_root =
         !root.is_external && WeaklyCanonicalOrAbsolute(root.path) == normalized_documents_root &&
         normalized_documents_root != normalized_library_root;
-    XELOGI("iOS library scan: scanning root path='{}' external={} "
+    XELOGD("iOS library scan: scanning root path='{}' external={} "
            "documents_fallback={} name='{}'",
-           root.path.string(), BoolForLog(root.is_external), BoolForLog(is_documents_fallback_root),
-           root.external_location_name);
+           xe::strip_pii(root.path.string()), BoolForLog(root.is_external),
+           BoolForLog(is_documents_fallback_root),
+           xe::strip_pii(root.external_location_name));
     std::filesystem::recursive_directory_iterator it(
         root.path, std::filesystem::directory_options::skip_permission_denied, ec);
     if (ec) {
-      XELOGI("iOS library scan: failed opening root path='{}' error='{}'", root.path.string(),
+      XELOGD("iOS library scan: failed opening root path='{}' error='{}'",
+             xe::strip_pii(root.path.string()),
              ec.message());
       continue;
     }
@@ -916,25 +1170,33 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
       const auto filename = entry.path().filename().string();
       const auto filename_lower = ToLowerAsciiCopy(filename);
       if (entry.is_directory(ec)) {
+        if (entry.path().extension() == ".part") {
+          // An import or conversion in flight (or a stale one the sweep above
+          // missed): never list anything inside it.
+          ++pruned_directories;
+          it.disable_recursion_pending();
+        }
         if (ToLowerAsciiCopy(entry.path().extension().string()) == ".data") {
           ++pruned_directories;
-          XELOGI("iOS library scan: pruning .data directory path='{}'", entry.path().string());
+          XELOGD("iOS library scan: pruning .data directory path='{}'",
+                 xe::strip_pii(entry.path().string()));
           it.disable_recursion_pending();
         }
         if (is_documents_fallback_root &&
             PathIsInDirectory(WeaklyCanonicalOrAbsolute(entry.path()), normalized_library_root)) {
           ++pruned_directories;
-          XELOGI("iOS library scan: pruning imported games mirror from "
+          XELOGD("iOS library scan: pruning imported games mirror from "
                  "Documents fallback path='{}'",
-                 entry.path().string());
+                 xe::strip_pii(entry.path().string()));
           it.disable_recursion_pending();
         }
         if (filename_lower == "cache" || filename_lower == "cache_host") {
           ++pruned_directories;
-          XELOGI("iOS library scan: pruning cache directory path='{}'", entry.path().string());
+          XELOGD("iOS library scan: pruning cache directory path='{}'",
+                 xe::strip_pii(entry.path().string()));
           it.disable_recursion_pending();
         }
-      } else if (entry.is_regular_file(ec) &&
+      } else if (entry.is_regular_file(ec) && entry.path().extension() != ".part" &&
                  (IsISOPath(entry.path()) || IsZarPath(entry.path()) ||
                   IsDefaultXexPath(entry.path()) || IsLikelyGodContainerFile(entry.path()))) {
         ++candidate_files;
@@ -943,13 +1205,14 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
         const std::filesystem::path unique_path =
             ec ? std::filesystem::absolute(entry.path(), ec) : canonical_path;
         ec.clear();
-        XELOGI("iOS library scan: candidate kind={} external={} path='{}'",
+        XELOGD("iOS library scan: candidate kind={} external={} path='{}'",
                LibraryCandidateKindForLog(unique_path), BoolForLog(root.is_external),
-               unique_path.string());
+               xe::strip_pii(unique_path.string()));
 
         if (root.is_external && IsHiddenExternalGamePath(unique_path, hidden_external_game_paths)) {
           ++hidden_paths;
-          XELOGI("iOS library scan: skipping hidden external path='{}'", unique_path.string());
+          XELOGD("iOS library scan: skipping hidden external path='{}'",
+                 xe::strip_pii(unique_path.string()));
           ++it;
           continue;
         }
@@ -958,18 +1221,18 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
           IOSDiscoveredGame game;
           if (!BuildDiscoveredGameFromPath(unique_path, &game)) {
             ++build_failures;
-            XELOGI("iOS library scan: failed building game metadata kind={} "
+            XELOGD("iOS library scan: failed building game metadata kind={} "
                    "path='{}'",
-                   LibraryCandidateKindForLog(unique_path), unique_path.string());
+                   LibraryCandidateKindForLog(unique_path), xe::strip_pii(unique_path.string()));
             ++it;
             continue;
           }
           if (root.is_external && IsHiddenExternalGameIdentity(game, hidden_external_games)) {
             ++hidden_identities;
-            XELOGI("iOS library scan: skipping hidden external identity "
+            XELOGD("iOS library scan: skipping hidden external identity "
                    "title_id={:08X} media_id={:08X} disc={}/{} path='{}'",
                    game.title_id, game.media_id, game.disc_number, game.disc_count,
-                   unique_path.string());
+                   xe::strip_pii(unique_path.string()));
             ++it;
             continue;
           }
@@ -981,12 +1244,12 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
               game.title = NormalizeGameTitleForUI(std::string([cached UTF8String]));
             }
           }
-          XELOGI("iOS library scan: discovered title='{}' title_id={:08X} "
+          XELOGD("iOS library scan: discovered title='{}' title_id={:08X} "
                  "media_id={:08X} disc={}/{} content_type='{}' kind={} "
                  "external={} path='{}'",
                  game.title, game.title_id, game.media_id, game.disc_number, game.disc_count,
                  game.content_type_name, LibraryCandidateKindForLog(unique_path),
-                 BoolForLog(game.is_external), unique_path.string());
+                 BoolForLog(game.is_external), xe::strip_pii(unique_path.string()));
           if (game.title_id) {
             auto existing = title_id_to_index.find(game.title_id);
             if (existing != title_id_to_index.end()) {
@@ -994,11 +1257,12 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
               int old_priority = IOSDiscFormatPriority(existing_game.path);
               int new_priority = IOSDiscFormatPriority(unique_path);
               ++merged_games;
-              XELOGI("iOS library scan: merging duplicate title_id={:08X} "
+              XELOGD("iOS library scan: merging duplicate title_id={:08X} "
                      "old_priority={} new_priority={} old_path='{}' "
                      "new_path='{}'",
-                     game.title_id, old_priority, new_priority, existing_game.path.string(),
-                     unique_path.string());
+                     game.title_id, old_priority, new_priority,
+                     xe::strip_pii(existing_game.path.string()),
+                     xe::strip_pii(unique_path.string()));
               if (new_priority < old_priority) {
                 IOSDiscoveredGame previous_game = std::move(existing_game);
                 existing_game = std::move(game);
@@ -1015,17 +1279,19 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
           games.push_back(std::move(game));
         } else {
           ++duplicate_paths;
-          XELOGI("iOS library scan: skipping duplicate path='{}'", unique_path.string());
+          XELOGD("iOS library scan: skipping duplicate path='{}'",
+                 xe::strip_pii(unique_path.string()));
         }
       }
 
       ++it;
     }
-    XELOGI("iOS library scan: finished root path='{}' external={} "
+    XELOGD("iOS library scan: finished root path='{}' external={} "
            "candidates={} added={} merged={} duplicate_paths={} "
            "hidden_paths={} hidden_identities={} build_failures={} "
            "pruned_directories={} scan_error='{}'",
-           root.path.string(), BoolForLog(root.is_external), candidate_files, added_games,
+           xe::strip_pii(root.path.string()), BoolForLog(root.is_external), candidate_files,
+           added_games,
            merged_games, duplicate_paths, hidden_paths, hidden_identities, build_failures,
            pruned_directories, ec ? ec.message() : "none");
   }
@@ -1042,6 +1308,17 @@ std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache
 
   SortDiscoveredGames(&games);
   XELOGI("iOS library scan: complete games={}", games.size());
+  return games;
+}
+
+std::vector<IOSDiscoveredGame> ScanIOSGameLibrary(NSDictionary* title_name_cache) {
+  std::vector<IOSDiscoveredGame> games;
+  // The pool drains the security-scope holders created by the scan, so every
+  // scope starts and stops on the thread that ran it.
+  @autoreleasepool {
+    games = ScanIOSGameLibraryImpl(title_name_cache);
+  }
+  SaveCachedIOSGameLibrary(games);
   return games;
 }
 
