@@ -41,6 +41,7 @@ DEFINE_bool(apply_title_update, true, "Apply title updates.", "Kernel");
 DEFINE_bool(allow_incompatible_title_update, false,
             "Allow title updates with mismatched signatures to be applied.",
             "Kernel");
+UPDATE_from_bool(allow_incompatible_title_update, 2026, 11, 3, 14, true);
 
 DEFINE_uint32(kernel_build_version, 17559, "Define current kernel version",
               "Kernel");
