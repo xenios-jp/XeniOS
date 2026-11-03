@@ -847,10 +847,12 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     // Where this thread's run of pixels is. The dispatch covers one tile
     // rectangle of one render target's ownership, so the tile it starts at
     // comes in rather than being divided back out of a linear index.
-    uint32_t msaa_x_log2 =
-        uint32_t(key.msaa_samples >= xenos::MsaaSamples::k4X);
-    uint32_t msaa_y_log2 =
-        uint32_t(key.msaa_samples >= xenos::MsaaSamples::k2X);
+    // With direct_resolve_samples_as_pixels, the tile is the resolve's 1x one.
+    bool samples_as_pixels = key.direct_resolve_samples_as_pixels;
+    uint32_t msaa_x_log2 = uint32_t(
+        !samples_as_pixels && key.msaa_samples >= xenos::MsaaSamples::k4X);
+    uint32_t msaa_y_log2 = uint32_t(
+        !samples_as_pixels && key.msaa_samples >= xenos::MsaaSamples::k2X);
     uint32_t tile_pixels_x = tile_width >> msaa_x_log2;
     uint32_t tile_pixels_y = tile_height >> msaa_y_log2;
     spv::Id dispatch_tile =
@@ -1014,7 +1016,22 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       source_pixel_y = divide_down(source_pixel_y, options.resolution_scale_y);
     }
     spv::Id source_sample_id = spv::NoResult;
-    if (source_is_multisampled) {
+    // With samples_as_pixels, source_pixel_x/y so far are canonical 4x sample
+    // coordinates, as in a dump: the guest pixel per axis is
+    // ((c >> 2) << 1) | (c & 1), and bit 1 of each is a bit of the sample. The
+    // vertical one is the same for the whole run, the horizontal one is taken
+    // per pixel below.
+    auto sample_to_pixel = [&](spv::Id canonical) {
+      return builder.createQuadOp(
+          spv::OpBitFieldInsert, type_uint, canonical,
+          shift_right(canonical, 2), builder.makeUintConstant(1),
+          builder.makeUintConstant(31));
+    };
+    spv::Id sample_bit_y = spv::NoResult;
+    if (samples_as_pixels) {
+      sample_bit_y = bitwise_and(source_pixel_y, 2);
+      source_pixel_y = sample_to_pixel(source_pixel_y);
+    } else if (source_is_multisampled) {
       if (key.msaa_samples >= xenos::MsaaSamples::k4X) {
         // The guest 4x sample numbering matches the host one, bit 0 horizontal
         // and bit 1 vertical, so the selected sample passes through.
@@ -1138,10 +1155,16 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       if (source_native_in_scaled_dest) {
         pixel_x = divide_down(pixel_x, options.resolution_scale_x);
       }
+      spv::Id pixel_sample_id = source_sample_id;
+      if (samples_as_pixels) {
+        pixel_sample_id = bitwise_or(
+            sample_bit_y, bitwise_and(shift_right(pixel_x, 1), 1));
+        pixel_x = sample_to_pixel(pixel_x);
+      }
       if (key.direct_resolve_average) {
         load_average_rgba8(pixel_x, source_pixel_y, pixel_packed[0]);
       } else {
-        load_and_pack(pixel_x, source_pixel_y, source_sample_id, pixel_packed);
+        load_and_pack(pixel_x, source_pixel_y, pixel_sample_id, pixel_packed);
       }
       for (uint32_t j = 0; j < dwords_per_pixel; ++j) {
         run_packed[i * dwords_per_pixel + j] = pixel_packed[j];

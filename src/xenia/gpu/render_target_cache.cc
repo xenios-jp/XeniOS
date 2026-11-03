@@ -1578,7 +1578,8 @@ RenderTargetCache::GetDirectResolveEligibility(
     const draw_util::ResolveInfo& resolve_info,
     draw_util::ResolveCopyShaderIndex copy_shader, bool allow_full32_4x_average,
     bool allow_cross_depth_color, bool allow_full32_rgb10f_1x,
-    bool allow_full64_rgba16_1x, bool allow_full64_rgb10f_rgba16_1x) const {
+    bool allow_full64_rgba16_1x, bool allow_full64_rgb10f_rgba16_1x,
+    bool allow_samples_as_pixels) const {
   if (GetPath() != Path::kHostRenderTargets) {
     return DirectResolveEligibility::kNotHostRenderTargets;
   }
@@ -1685,7 +1686,17 @@ RenderTargetCache::GetDirectResolveEligibility(
     // reads them back in the resolve's, so only matching layouts can drop the
     // buffer in between. Formats within a layout may still differ - the fast
     // copy is bitwise and only picks a red/blue swap from the format.
-    if (rt_key.msaa_samples != edram_info.msaa_samples ||
+    // A tile holds 80x16 samples at any sample count, so a bitwise 1x copy
+    // can also read a 4x render target, one sample per resolve pixel.
+    bool samples_as_pixels =
+        allow_samples_as_pixels &&
+        (copy_shader == draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA ||
+         copy_shader ==
+             draw_util::ResolveCopyShaderIndex::kFast64bpp1x2xMSAA) &&
+        edram_info.msaa_samples == xenos::MsaaSamples::k1X &&
+        rt_key.msaa_samples == xenos::MsaaSamples::k4X;
+    if ((rt_key.msaa_samples != edram_info.msaa_samples &&
+         !samples_as_pixels) ||
         uint32_t(rt_key.Is64bpp()) != edram_info.format_is_64bpp) {
       return DirectResolveEligibility::kSourceLayoutMismatch;
     }
