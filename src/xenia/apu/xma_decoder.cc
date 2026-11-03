@@ -203,6 +203,7 @@ X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
 }
 
 void XmaDecoder::WorkerThreadMain() {
+  worker_loop_running_ = true;
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
@@ -221,6 +222,7 @@ void XmaDecoder::WorkerThreadMain() {
     }
     xe::threading::Wait(work_event_.get(), false);
   }
+  worker_loop_running_ = false;
 }
 
 void XmaDecoder::Shutdown() {
@@ -405,6 +407,11 @@ void XmaDecoder::Pause() {
   }
   pause_fence_.TryWait();
   paused_ = true;
+  // Without the dedicated thread there is no worker to park: decoding runs on
+  // the guest thread that kicks a context, and the guest is held separately.
+  if (!worker_loop_running_) {
+    return;
+  }
   // An idle worker waits for work and would never reach its pause point.
   if (work_event_) {
     work_event_->Set();
