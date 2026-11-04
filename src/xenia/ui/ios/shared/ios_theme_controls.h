@@ -17,6 +17,9 @@
 @property(nonatomic) UIEdgeInsets padding;
 @end
 
+// A round avatar with a gamertag's initials: accent when signed in, gray otherwise.
+UIImage* xe_profile_avatar_image(NSString* gamertag, BOOL signed_in, CGFloat diameter);
+
 // Dynamic-type aware font helpers.
 UIFont* xe_scaled_system_font(UIFontTextStyle text_style, CGFloat point_size, UIFontWeight weight);
 UIFont* xe_scaled_monospaced_font(UIFontTextStyle text_style, CGFloat point_size,

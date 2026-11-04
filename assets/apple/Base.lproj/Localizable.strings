@@ -38,9 +38,6 @@
 "%1$@\n%2$@ of %3$@\n" = "%1$@\n%2$@ of %3$@\n";
 
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
-"%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@." = "%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@.";
-
-/* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
 /* online view controller: summary row detail, after \"3 Players Online\"; %1$ld players, %2$ld games */
@@ -67,14 +64,14 @@
 /* zar conversion coordinator: detail text */
 "%@ - estimated savings unavailable" = "%@ - estimated savings unavailable";
 
-/* game content view controller: detail text */
-"%@ - Linked" = "%@ - Linked";
-
 /* zar conversion coordinator: user-visible text */
 "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed." = "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed.";
 
 /* acknowledgements view controller: accessibility label */
 "%@ license" = "%@ license";
+
+/* game content view controller: detail text */
+"%@ · Linked" = "%@ · Linked";
 
 /* document import coordinator: message */
 "%@\nFor very large files, Link Folder plays them in place without copying." = "%@\nFor very large files, Link Folder plays them in place without copying.";
@@ -108,6 +105,9 @@
 
 /* Game library, VoiceOver: players in the game's public System Link lobby */
 "%ld players online" = "%ld players online";
+
+/* online view controller: players in a game's lobby; %ld is how many */
+"%ld playing" = "%ld playing";
 
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
@@ -163,6 +163,9 @@
 /* Game library, VoiceOver: one player in the game's public System Link lobby */
 "1 player online" = "1 player online";
 
+/* online view controller: players in a game's lobby */
+"1 playing" = "1 playing";
+
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
 
@@ -186,6 +189,9 @@
 
 /* game library store: user-visible text */
 "A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder." = "A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder.";
+
+/* config view controller: label text */
+"A game is running. Changes take effect after you relaunch XeniOS." = "A game is running. Changes take effect after you relaunch XeniOS.";
 
 /* Alert message; %1$@ is the game to launch, %2$@ the running game */
 "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost." = "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost.";
@@ -233,23 +239,26 @@
 /* Control tooltip line; %s is the action name */
 "Action: %s" = "Action: %s";
 
-/* game content view controller: user-visible text */
-"Actions" = "Actions";
-
 /* Layout library row detail: the layout in use */
 "Active" = "Active";
+
+/* game patches view controller: empty detail; %@ is the folder */
+"Add .patch.toml files for this game to %@." = "Add .patch.toml files for this game to %@.";
 
 /* settings hub view controller: title */
 "Add a layout from Files." = "Add a layout from Files.";
 
-/* game content view controller: detail text */
-"Add a title update or DLC package from Files." = "Add a title update or DLC package from Files.";
-
-/* game content view controller: label text */
-"Add Content" = "Add Content";
+/* settings hub view controller: account card */
+"Add a Profile" = "Add a Profile";
 
 /* VoiceOver label of the add control button */
 "Add control" = "Add control";
+
+/* game content view controller: add button */
+"Add from Files" = "Add from Files";
+
+/* launcher overlay view: user-visible text */
+"Add Games" = "Add Games";
 
 /* dashboard disc tray: empty library text */
 "Add games to the library to put them in the drive." = "Add games to the library to put them in the drive.";
@@ -257,7 +266,7 @@
 /* launcher overlay view: empty library message */
 "Add games with Files or Finder." = "Add games with Files or Finder.";
 
-/* profile view controller: title */
+/* profile view controller: empty state button */
 "Add Profile" = "Add Profile";
 
 /* profile view controller: button */
@@ -266,11 +275,14 @@
 /* compat report cells: label text */
 "Add Screenshot" = "Add Screenshot";
 
+/* game content view controller: empty detail */
+"Add title updates and DLC for %@ from Files." = "Add title updates and DLC for %@ from Files.";
+
+/* game content view controller: empty detail */
+"Add title updates and DLC for this game from Files." = "Add title updates and DLC for this game from Files.";
+
 /* Action sheet title: add games to the library */
 "Add to Library" = "Add to Library";
-
-/* settings hub view controller: title */
-"Add-ons, updates and patches." = "Add-ons, updates and patches.";
 
 /* game content view controller: title */
 "Adding Content" = "Adding Content";
@@ -352,9 +364,6 @@
 
 /* Subtitle of the touch layout library */
 "Apply a layout or manage saved copies" = "Apply a layout or manage saved copies";
-
-/* compat report cells: label text */
-"Architecture" = "Architecture";
 
 /* zar conversion coordinator: user-visible text */
 "Archive is %1$@ larger (%2$@ -> %3$@)." = "Archive is %1$@ larger (%2$@ -> %3$@).";
@@ -486,7 +495,6 @@
    file transfer: title
    game content view controller: title
    Launch screen button: stop a slow launch
-   profile view controller: title
    system link view controller: button
    zar conversion coordinator: title */
 "Cancel" = "Cancel";
@@ -521,6 +529,9 @@
 /* settings hub view controller: detail text */
 "Check Now" = "Check Now";
 
+/* config view controller: message */
+"Check xenia.log for details." = "Check xenia.log for details.";
+
 /* settings hub view controller: label text */
 "Checking for Updates…" = "Checking for Updates…";
 
@@ -539,12 +550,6 @@
 /* online game picker: title */
 "Choose a Game" = "Choose a Game";
 
-/* online view controller: footer */
-"Choose a game to play it in its public lobby or a private room." = "Choose a game to play it in its public lobby or a private room.";
-
-/* profile view controller: message */
-"Choose a gamertag of up to 15 characters." = "Choose a gamertag of up to 15 characters.";
-
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -553,6 +558,9 @@
 
 /* Prompt of the per-game touch layout picker */
 "Choose a title to edit before launch." = "Choose a title to edit before launch.";
+
+/* JIT sheet: step 2 */
+"Choose XeniOS and tap Enable JIT." = "Choose XeniOS and tap Enable JIT.";
 
 /* Name of a touch control shape */
 "Circle" = "Circle";
@@ -584,18 +592,8 @@
 /* settings hub view controller: title */
 "Clear This Game's Shaders" = "Clear This Game's Shaders";
 
-/* achievements view controller: button
-   external folders view controller: button
-   game content view controller: title
-   game disc view controller: button
-   game patches view controller: title
-   log view controller: button
-   Message box button
-   Navigation bar button that closes the touch layout editor
-   profile view controller: button
-   settings hub view controller: title
-   system link view controller: button
-   system software view controller: button */
+/* Message box button
+   sheet close button */
 "Close" = "Close";
 
 /* VoiceOver hint for the disc tray's Leave Empty button */
@@ -604,9 +602,9 @@
 /* VoiceOver label of the panel's expand/collapse button */
 "Collapse" = "Collapse";
 
-/* game actions view controller: user-visible text
-   game compatibility hero view: title
+/* game compatibility hero view: title
    game compatibility view controller: title
+   game page: row
    launcher overlay view: title */
 "Compatibility" = "Compatibility";
 
@@ -636,6 +634,9 @@
 
 /* Alert button: keeps online features or diagnostics on */
 "Continue" = "Continue";
+
+/* launcher overlay view: label above the last game */
+"Continue Playing" = "Continue Playing";
 
 /* Fallback name of a touch control
    Touch control type */
@@ -718,16 +719,14 @@
 /* zar conversion coordinator: title */
 "Convert In Place and Delete Original" = "Convert In Place and Delete Original";
 
-/* zar conversion coordinator: title */
+/* Add menu: converts disc images to ZAR
+   zar conversion coordinator: title */
 "Convert Library to ZAR" = "Convert Library to ZAR";
-
-/* launcher overlay view: user-visible text */
-"Convert library to ZAR" = "Convert library to ZAR";
 
 /* zar conversion coordinator: user-visible text */
 "Convert Options" = "Convert Options";
 
-/* game actions view controller: user-visible text
+/* game page: row
    launcher overlay view: title
    zar conversion coordinator: title */
 "Convert to ZAR" = "Convert to ZAR";
@@ -741,9 +740,6 @@
 /* zar conversion coordinator: item status */
 "Converting..." = "Converting...";
 
-/* launcher overlay view: user-visible text */
-"Converts non-ZAR games in the library." = "Converts non-ZAR games in the library.";
-
 /* Shader compile indicator title while the device is too hot to keep building at full speed */
 "Cooling down" = "Cooling down";
 
@@ -753,18 +749,18 @@
 /* Toast: launch URL copied */
 "Copied launch URL." = "Copied launch URL.";
 
+/* Add menu: subtitle of Import Copy */
+"Copies the game into XeniOS." = "Copies the game into XeniOS.";
+
 /* log view controller: title */
 "Copy" = "Copy";
 
 /* settings hub view controller: title */
 "Copy a game or add-on from Files." = "Copy a game or add-on from Files.";
 
-/* game actions view controller: user-visible text
+/* game page: more menu
    launcher overlay view: title */
 "Copy Launch URL" = "Copy Launch URL";
-
-/* game actions view controller: user-visible text */
-"Copy the xenia:// URL for this title." = "Copy the xenia:// URL for this title.";
 
 /* Error shown when saving a touch layout; %s is the system error */
 "Could not close layout file: %s" = "Could not close layout file: %s";
@@ -817,28 +813,21 @@
 /* Alert title: one-time notice that diagnostics are now sent, for installs that saw the older notice */
 "Crash Reports and Performance" = "Crash Reports and Performance";
 
-/* Alert button: create the profile
-   profile view controller: title */
+/* Alert button: create the profile */
 "Create" = "Create";
 
 /* zar conversion coordinator: title */
 "Create .zar archives in XeniOS, then decide how to handle the originals." = "Create .zar archives in XeniOS, then decide how to handle the originals.";
 
-/* game actions view controller: user-visible text */
-"Create a compressed .zar copy in the XeniOS library." = "Create a compressed .zar copy in the XeniOS library.";
-
-/* game patches view controller: detail text */
-"Create a patches folder here:\n%@" = "Create a patches folder here:\n%@";
-
 /* system link view controller: button row */
 "Create Private Room" = "Create Private Room";
-
-/* online view controller: button row */
-"Create Private Room…" = "Create Private Room…";
 
 /* Action sheet button: create a profile
    Alert title: create a profile */
 "Create Profile" = "Create Profile";
+
+/* online view controller: button */
+"Create Room" = "Create Room";
 
 /* zar conversion coordinator: title */
 "Create the archive and clean up the old library entry after a successful conversion." = "Create the archive and clean up the old library entry after a successful conversion.";
@@ -890,6 +879,9 @@
 
 /* settings hub view controller: user-visible text */
 "Dark" = "Dark";
+
+/* launcher overlay view: the Xbox 360 Dashboard tile */
+"Dashboard" = "Dashboard";
 
 /* Slider label in the touch analog tuning screen */
 "Deadzone" = "Deadzone";
@@ -968,9 +960,6 @@
 /* Alert message; %@ is the game title */
 "Delete saved overrides for %@ and return this title to defaults." = "Delete saved overrides for %@ and return this title to defaults.";
 
-/* game actions view controller: user-visible text */
-"Delete saved overrides for this title and return to defaults." = "Delete saved overrides for this title and return to defaults.";
-
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Delete selected control" = "Delete selected control";
 
@@ -1035,12 +1024,6 @@
 
 /* dashboard disc tray: which disc of a game */
 "Disc %u of %u" = "Disc %u of %u";
-
-/* config view controller: title */
-"Discard" = "Discard";
-
-/* config view controller: title */
-"Discard Changes?" = "Discard Changes?";
 
 /* settings hub view controller: title */
 "Discord" = "Discord";
@@ -1138,9 +1121,6 @@
 /* settings hub view controller: title */
 "Edit Game Touch Layout" = "Edit Game Touch Layout";
 
-/* game actions view controller: user-visible text */
-"Edit or assign the touch controls used by this title." = "Edit or assign the touch controls used by this title.";
-
 /* settings hub view controller: title */
 "Edit Running Touch Layout" = "Edit Running Touch Layout";
 
@@ -1152,9 +1132,6 @@
 
 /* settings hub view controller: title */
 "Emulator Options" = "Emulator Options";
-
-/* Alert button: enable JIT through StikDebug */
-"Enable via StikDebug" = "Enable via StikDebug";
 
 /* game patches view controller: accessibility value */
 "Enabled" = "Enabled";
@@ -1202,17 +1179,8 @@
 /* system link view controller: room row detail */
 "Everyone playing this game." = "Everyone playing this game.";
 
-/* online view controller: footer */
-"Everyone with XeniOS open and Online on. To join a private room, ask for its code." = "Everyone with XeniOS open and Online on. To join a private room, ask for its code.";
-
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
-
-/* In-game menu button, leaves a game the Xbox 360 Dashboard started for the dashboard */
-"Exit To Dashboard" = "Exit To Dashboard";
-
-/* In-game menu button, leaves the game */
-"Exit To Library" = "Exit To Library";
 
 /* Pause menu row */
 "Exit to Library" = "Exit to Library";
@@ -1403,22 +1371,12 @@
 
 /* compat report view controller: user-visible text
    game disc view controller: title
-   game patches view controller: title
    Section header in the pause menu
    zar conversion coordinator: user-visible text */
 "Game" = "Game";
 
 /* system link view controller: a game with no name; %@ is its title ID */
 "Game %@" = "Game %@";
-
-/* game actions view controller: title */
-"Game Actions" = "Game Actions";
-
-/* settings hub view controller: title */
-"Game Content & Patches" = "Game Content & Patches";
-
-/* settings hub view controller: title */
-"Game Content and Patches" = "Game Content and Patches";
 
 /* Alert message: the game file is gone */
 "Game file is no longer available." = "Game file is no longer available.";
@@ -1435,7 +1393,7 @@
 /* Alert title: no game running */
 "Game Required" = "Game Required";
 
-/* game actions view controller: user-visible text
+/* game page: button
    launcher overlay view: title */
 "Game Settings" = "Game Settings";
 
@@ -1446,9 +1404,6 @@
 /* Alert title: result of resetting game settings
    config view controller: title */
 "Game Settings Reset" = "Game Settings Reset";
-
-/* config view controller: title */
-"Game Settings Saved" = "Game Settings Saved";
 
 /* Title of the per-game touch layout picker */
 "Game Touch Layout" = "Game Touch Layout";
@@ -1472,11 +1427,18 @@
 /* Detail line of the expanded shader compile indicator */
 "Games may stutter until this finishes." = "Games may stutter until this finishes.";
 
+/* Guidance when JIT is not active
+   launcher overlay view: JIT card detail */
+"Games need it to start." = "Games need it to start.";
+
+/* Guidance when JIT is not active before launching a game */
+"Games need JIT to run. Open StikDebug to turn it on, then start the game." = "Games need JIT to run. Open StikDebug to turn it on, then start the game.";
+
+/* settings hub view controller: account card */
+"Games save progress and achievements to it." = "Games save progress and achievements to it.";
+
 /* profile view controller: footer */
 "Games save progress and achievements to the signed-in profile." = "Games save progress and achievements to the signed-in profile.";
-
-/* settings hub view controller: title */
-"Games · Add-ons, updates and patches." = "Games · Add-ons, updates and patches.";
 
 /* settings hub view controller: title */
 "Games · Copy a game or add-on from Files." = "Games · Copy a game or add-on from Files.";
@@ -1503,10 +1465,8 @@
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
 
-/* compat report cells: label text */
-"GPU Backend" = "GPU Backend";
-
-/* In-game menu button
+/* compat report cells: label text
+   In-game menu button
    Pause menu row
    settings hub view controller: title */
 "Graphics" = "Graphics";
@@ -1564,14 +1524,8 @@
    Layout library button that imports a layout file */
 "Import" = "Import";
 
-/* online view controller: footer */
-"Import a game to play in a private room." = "Import a game to play in a private room.";
-
 /* Alert message: no games for the touch layout picker */
 "Import a game with a title ID before editing a per-game touch layout." = "Import a game with a title ID before editing a per-game touch layout.";
-
-/* game content view controller: detail text */
-"Import a title update or DLC package for this game. Large packages can be linked from a Link Folder instead of copied." = "Import a title update or DLC package for this game. Large packages can be linked from a Link Folder instead of copied.";
 
 /* document import coordinator: label text */
 "Import cancelled." = "Import cancelled.";
@@ -1579,20 +1533,15 @@
 /* document import coordinator: message */
 "Import copies it into XeniOS (needs the file's size in free storage). Link Folder plays it from its current folder without copying." = "Import copies it into XeniOS (needs the file's size in free storage). Link Folder plays it from its current folder without copying.";
 
-/* Action sheet button: copies a game into the app */
+/* Action sheet button: copies a game into the app
+   Add menu: copies a game into the app */
 "Import Copy" = "Import Copy";
-
-/* Action sheet message: explains the two import options */
-"Import Copy duplicates the game into XeniOS storage and needs that much free space. For very large images, Link External Folder plays them in place without copying." = "Import Copy duplicates the game into XeniOS storage and needs that much free space. For very large images, Link External Folder plays them in place without copying.";
 
 /* document import coordinator: title */
 "Import Failed" = "Import Failed";
 
 /* document import coordinator: message */
 "Import failed." = "Import failed.";
-
-/* launcher overlay view: user-visible text */
-"Import game" = "Import game";
 
 /* settings hub view controller: title */
 "Import Game" = "Import Game";
@@ -1602,6 +1551,9 @@
 
 /* settings hub view controller: title */
 "Import games and free up space." = "Import games and free up space.";
+
+/* launcher overlay view: user-visible text */
+"Import games, link a folder, or convert the library." = "Import games, link a folder, or convert the library.";
 
 /* document import coordinator: title */
 "Import In Progress" = "Import In Progress";
@@ -1634,8 +1586,8 @@
 /* online view controller: summary row detail, after \"3 Players Online\" */
 "In 1 game." = "In 1 game.";
 
-/* Title of the in-game pause menu */
-"In-Game Menu" = "In-Game Menu";
+/* JIT sheet: other ways to enable JIT */
+"In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts." = "In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts.";
 
 /* zar conversion coordinator: user-visible text */
 "Incomplete ZAR Conversion Removed" = "Incomplete ZAR Conversion Removed";
@@ -1682,12 +1634,6 @@
 /* Alert message: install a layout from a link */
 "Install the touch layout from this link?" = "Install the touch layout from this link?";
 
-/* game content view controller: user-visible text */
-"Install title updates or DLC packages for %@." = "Install title updates or DLC packages for %@.";
-
-/* game content view controller: user-visible text */
-"Install title updates or DLC packages for this game." = "Install title updates or DLC packages for this game.";
-
 /* Alert title: install a touch layout
    Fallback alert title: install a touch layout */
 "Install Touch Layout" = "Install Touch Layout";
@@ -1695,9 +1641,6 @@
 /* game content view controller: title
    system software view controller: status */
 "Installed" = "Installed";
-
-/* game content view controller: user-visible text */
-"Installed Content" = "Installed Content";
 
 /* document import coordinator: message */
 "Installed title update." = "Installed title update.";
@@ -1717,6 +1660,12 @@
 /* Switch label in the touch analog tuning screen */
 "Invert Vertical" = "Invert Vertical";
 
+/* JIT sheet: one-line explanation */
+"iOS only lets XeniOS run games fast when another app switches JIT on for it." = "iOS only lets XeniOS run games fast when another app switches JIT on for it.";
+
+/* compat report cells: label text */
+"iOS Version" = "iOS Version";
+
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
 
@@ -1726,28 +1675,14 @@
 /* zar conversion coordinator: user-visible text */
 "Items" = "Items";
 
-/* launcher overlay view: label text
-   Launcher status: JIT is enabled */
+/* Launcher status: JIT is enabled */
 "JIT Enabled" = "JIT Enabled";
 
-/* launcher overlay view: accessibility label
-   launcher overlay view: user-visible text */
+/* launcher overlay view: user-visible text */
 "JIT is enabled" = "JIT is enabled";
-
-/* Guidance when JIT is not active before launching a game */
-"JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool attached until the game has started." = "JIT is not active. Enable it with StikDebug (assign universal.js or Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep the tool attached until the game has started.";
-
-/* launcher overlay view: accessibility label */
-"JIT is not enabled" = "JIT is not enabled";
 
 /* launcher overlay view: JIT card title */
 "JIT Is Off" = "JIT Is Off";
-
-/* Alert title: JIT was not detected */
-"JIT Not Detected" = "JIT Not Detected";
-
-/* Launcher status: JIT is unavailable */
-"JIT unavailable. Open StikDebug, then restart polling." = "JIT unavailable. Open StikDebug, then restart polling.";
 
 /* system link view controller: button */
 "Join" = "Join";
@@ -1758,11 +1693,11 @@
 /* system link status view controller: button row */
 "Join Another Room…" = "Join Another Room…";
 
+/* online view controller: button */
+"Join with Code" = "Join with Code";
+
 /* system link view controller: button row */
 "Join with Code…" = "Join with Code…";
-
-/* config view controller: title */
-"Keep Editing" = "Keep Editing";
 
 /* zar conversion coordinator: title */
 "Keep Original" = "Keep Original";
@@ -1784,9 +1719,6 @@
    Submenu title in the touch control edit panel */
 "Label" = "Label";
 
-/* game compatibility hero view: label text */
-"Last updated: %@" = "Last updated: %@";
-
 /* Alert button: dismisses the update notice */
 "Later" = "Later";
 
@@ -1805,16 +1737,13 @@
 /* Alert button: launch despite the warning */
 "Launch Anyway" = "Launch Anyway";
 
-/* game actions view controller: user-visible text
-   game disc view controller: title
+/* game disc view controller: title
+   game page: row
    launcher overlay view: title */
 "Launch Disc" = "Launch Disc";
 
 /* Alert title: a link wants to launch a game */
 "Launch Game?" = "Launch Game?";
-
-/* game actions view controller: user-visible text */
-"Launch the selected title." = "Launch the selected title.";
 
 /* Alert message: no launch URL exists for the game */
 "Launch URL unavailable for this game." = "Launch URL unavailable for this game.";
@@ -1878,13 +1807,14 @@
 /* compat report view controller: title */
 "Limit Reached" = "Limit Reached";
 
-/* Action sheet button: links a folder in place */
-"Link External Folder" = "Link External Folder";
-
 /* document import coordinator: title
    external folders view controller: user-visible text
    game content view controller: title */
 "Link Failed" = "Link Failed";
+
+/* Action sheet button: links a folder in place
+   Add menu: links a folder in place */
+"Link Folder" = "Link Folder";
 
 /* document import coordinator: title */
 "Link Folder..." = "Link Folder...";
@@ -1907,9 +1837,6 @@
 /* Error text: linked content source is gone */
 "Linked content source file is no longer available." = "Linked content source file is no longer available.";
 
-/* game content view controller: user-visible text */
-"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it." = "Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.";
-
 /* game library store: user-visible text */
 "Linked external folder was not found." = "Linked external folder was not found.";
 
@@ -1919,8 +1846,7 @@
 /* document import coordinator: label text */
 "Linked external library: %@" = "Linked external library: %@";
 
-/* config view controller: label text
-   settings hub view controller: user-visible text */
+/* settings hub view controller: user-visible text */
 "Links" = "Links";
 
 /* In-game menu button
@@ -1973,19 +1899,15 @@
 /* system link view controller: button row */
 "Make a Private Room" = "Make a Private Room";
 
-/* game actions view controller: user-visible text
-   game content view controller: title
-   launcher overlay view: title */
+/* Add menu: subtitle of Convert Library */
+"Makes disc images smaller." = "Makes disc images smaller.";
+
+/* launcher overlay view: title */
 "Manage Content" = "Manage Content";
 
-/* Action sheet button: manages linked folders */
-"Manage External Folders…" = "Manage External Folders…";
-
-/* game actions view controller: user-visible text */
-"Manage installed title updates and related content." = "Manage installed title updates and related content.";
-
-/* settings hub view controller: title */
-"Manage title-specific installed content, discs, and patches from a game tile's context menu." = "Manage title-specific installed content, discs, and patches from a game tile's context menu.";
+/* Action sheet button: manages linked folders
+   Add menu: manages linked folders */
+"Manage Folders" = "Manage Folders";
 
 /* VoiceOver label of a touch control edit button */
 "Match size" = "Match size";
@@ -2029,7 +1951,9 @@
 /* compat report view controller: title */
 "Missing Status" = "Missing Status";
 
-/* Section header in the pause menu */
+/* game page: more button
+   launcher overlay view: Continue Playing actions button
+   Section header in the pause menu */
 "More" = "More";
 
 /* Short status line when the memory entitlement is missing */
@@ -2044,11 +1968,15 @@
 /* Very short badge on a touch control: Move */
 "Mv" = "Mv";
 
-/* settings hub view controller: title */
+/* launcher overlay view: sort by name
+   settings hub view controller: title */
 "Name" = "Name";
 
 /* settings hub view controller: title */
 "Needed for the Xbox 360 Dashboard." = "Needed for the Xbox 360 Dashboard.";
+
+/* new profile sheet: title */
+"New Profile" = "New Profile";
 
 /* Alert message; %s is the log file name */
 "No %s file exists yet." = "No %s file exists yet.";
@@ -2061,9 +1989,6 @@
 
 /* game disc view controller: user-visible text */
 "No alternate discs were found for this title." = "No alternate discs were found for this title.";
-
-/* game content view controller: label text */
-"No content installed" = "No content installed";
 
 /* Achievement row when there is no description */
 "No description available." = "No description available.";
@@ -2105,11 +2030,14 @@
 /* game patches view controller: label text */
 "No patch entries" = "No patch entries";
 
-/* game patches view controller: label text */
-"No patches available" = "No patches available";
+/* game patches view controller: empty title */
+"No Patches" = "No Patches";
 
 /* Launcher label: a profile exists but none is signed in */
 "No profile signed in" = "No profile signed in";
+
+/* profile view controller: empty state title */
+"No Profiles" = "No Profiles";
 
 /* log view controller: label text */
 "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically." = "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically.";
@@ -2132,8 +2060,8 @@
 /* game compatibility hero view: title */
 "No title ID available" = "No title ID available";
 
-/* game content view controller: user-visible text */
-"No title updates or DLC are installed for this title." = "No title updates or DLC are installed for this title.";
+/* game content view controller: empty title */
+"No Updates or Add-ons" = "No Updates or Add-ons";
 
 /* online view controller: summary row detail, after \"3 Players Online\" */
 "Nobody is in a game yet." = "Nobody is in a game yet.";
@@ -2155,6 +2083,9 @@
 
 /* settings hub view controller: no pending reports */
 "None" = "None";
+
+/* game patches view controller: empty detail */
+"None of the patch files is for title ID %08X." = "None of the patch files is for title ID %08X.";
 
 /* system link view controller: alert title */
 "Not a Room Code" = "Not a Room Code";
@@ -2252,6 +2183,9 @@
 /* settings hub view controller: detail text */
 "Online features off" = "Online features off";
 
+/* online view controller: summary title */
+"Online Is Off" = "Online Is Off";
+
 /* system link view controller: room row detail */
 "Only players with the code." = "Only players with the code.";
 
@@ -2267,17 +2201,14 @@
 /* game compatibility cells: title */
 "Open comment" = "Open comment";
 
-/* game actions view controller: user-visible text */
-"Open compatibility status, reports, and notes." = "Open compatibility status, reports, and notes.";
-
-/* Alert button: opens the Settings app */
-"Open Settings" = "Open Settings";
-
-/* launcher overlay view: accessibility label */
+/* JIT sheet: primary button */
 "Open StikDebug" = "Open StikDebug";
 
 /* settings hub view controller: title */
 "Open StikDebug on launch." = "Open StikDebug on launch.";
+
+/* JIT sheet: step 1 */
+"Open StikDebug." = "Open StikDebug.";
 
 /* Toast: opening StikDebug */
 "Opening StikDebug for JIT..." = "Opening StikDebug for JIT...";
@@ -2303,17 +2234,11 @@
 /* VoiceOver hint for the Graphics button */
 "Opens graphics compatibility settings." = "Opens graphics compatibility settings.";
 
-/* VoiceOver hint of a link button */
-"Opens in Safari." = "Opens in Safari.";
-
 /* system software view controller: accessibility hint */
 "Opens Microsoft's system update page." = "Opens Microsoft's system update page.";
 
 /* launcher overlay view: user-visible text */
 "Opens profile management." = "Opens profile management.";
-
-/* launcher overlay view: user-visible text */
-"Opens the document picker to import a game." = "Opens the document picker to import a game.";
 
 /* launcher overlay view: accessibility hint */
 "Opens the game. Long press for more actions." = "Opens the game. Long press for more actions.";
@@ -2337,6 +2262,9 @@
    VoiceOver hint for the Settings button */
 "Opens XeniOS settings." = "Opens XeniOS settings.";
 
+/* settings hub view controller: account card hint */
+"Opens your profiles." = "Opens your profiles.";
+
 /* Section header in display settings */
 "Options" = "Options";
 
@@ -2346,11 +2274,11 @@
 /* zar conversion coordinator: user-visible text */
 "Original Files" = "Original Files";
 
-/* compat report cells: label text */
-"OS Version" = "OS Version";
-
 /* online view controller: section header */
 "Other Games" = "Other Games";
+
+/* JIT sheet: tertiary button */
+"Other Ways to Enable JIT" = "Other Ways to Enable JIT";
 
 /* online view controller: summary row detail */
 "Others show up here when they open XeniOS with Online features on." = "Others show up here when they open XeniOS with Online features on.";
@@ -2370,9 +2298,6 @@
 /* Slider label in the touch analog tuning screen */
 "Overall Sensitivity" = "Overall Sensitivity";
 
-/* config view controller: label text */
-"Overrides here apply only to %1$@ (%2$@). They are read when the title launches, so relaunch the game after saving." = "Overrides here apply only to %1$@ (%2$@). They are read when the title launches, so relaunch the game after saving.";
-
 /* Very short badge on a touch control: Pause */
 "P" = "P";
 
@@ -2385,16 +2310,13 @@
 /* game patches view controller: user-visible text */
 "Patch changes are saved immediately and take effect the next time the game launches." = "Patch changes are saved immediately and take effect the next time the game launches.";
 
-/* game patches view controller: user-visible text */
-"Patch files were found, but none matched this title ID." = "Patch files were found, but none matched this title ID.";
-
 /* Alert title and message: patches unavailable */
 "Patch management is unavailable." = "Patch management is unavailable.";
 
 /* game patches view controller: user-visible text */
 "Patch Not Saved" = "Patch Not Saved";
 
-/* game actions view controller: user-visible text
+/* game page: row
    game patches view controller: title
    launcher overlay view: title */
 "Patches" = "Patches";
@@ -2410,6 +2332,10 @@
 
 /* log view controller: accessibility label */
 "Pause live log" = "Pause live log";
+
+/* In-game menu: the game is paused
+   Title of the in-game menu without a game name */
+"Paused" = "Paused";
 
 /* log view controller: section footer */
 "Paused. Resume to continue the live tail." = "Paused. Resume to continue the live tail.";
@@ -2429,6 +2355,9 @@
 /* Pause menu row */
 "Performance Overlay" = "Performance Overlay";
 
+/* game compatibility hero: performance pill */
+"Performance: %@" = "Performance: %@";
+
 /* settings hub view controller: title */
 "Performs this settings action." = "Performs this settings action.";
 
@@ -2438,20 +2367,23 @@
 /* settings hub view controller: title */
 "Pick a game and arrange its touch controls." = "Pick a game and arrange its touch controls.";
 
-/* game actions view controller: user-visible text */
-"Pick which disc to start for multi-disc games." = "Pick which disc to start for multi-disc games.";
-
 /* game compatibility cells: detail text */
 "PLATFORM" = "PLATFORM";
 
-/* game actions view controller: user-visible text
+/* game page: play button
+   launcher overlay view: Continue Playing button
    launcher overlay view: title
+   online view controller: button on a game row
    settings hub view controller: title
    system link view controller: button */
 "Play" = "Play";
 
 /* System Link invite text; %1$@ is the game, %2$@ the room code */
 "Play %1$@ with me over System Link in XeniOS. Room code: %2$@" = "Play %1$@ with me over System Link in XeniOS. Room code: %2$@";
+
+/* launcher overlay view: accessibility label; %@ is the game
+   online view controller: VoiceOver label of a game row's Play button */
+"Play %@" = "Play %@";
 
 /* settings hub view controller: title */
 "Play games from Files, USB drives or network shares without copying them." = "Play games from Files, USB drives or network shares without copying them.";
@@ -2462,11 +2394,11 @@
 /* Button that starts the game while shaders keep building */
 "Play now" = "Play now";
 
-/* game actions view controller: user-visible text */
-"Play with others over the internet, in the public lobby or a private room." = "Play with others over the internet, in the public lobby or a private room.";
-
 /* system link view controller: footer */
 "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
+
+/* launcher overlay view: Continue Playing; %@ is like \"2 hours ago\" */
+"Played %@" = "Played %@";
 
 /* system link view controller: footer */
 "Players in each game's public lobby, updated every minute. Private rooms aren't counted." = "Players in each game's public lobby, updated every minute. Private rooms aren't counted.";
@@ -2483,8 +2415,14 @@
 /* online view controller: summary row detail */
 "Players show up here while they're in a game's public lobby." = "Players show up here while they're in a game's public lobby.";
 
+/* In-game menu: the game is running */
+"Playing" = "Playing";
+
 /* system link view controller: section header */
 "Playing Online Now" = "Playing Online Now";
+
+/* Add menu: subtitle of Link Folder */
+"Plays large games in place, without copying." = "Plays large games in place, without copying.";
 
 /* compat report view controller: message */
 "Please add a short note about your experience." = "Please add a short note about your experience.";
@@ -2535,9 +2473,6 @@
 /* Row subtitle in the touch control edit panel */
 "Press & release" = "Press & release";
 
-/* Subtitle of the in-game menu when a controller is connected */
-"Press B or tap anywhere to close" = "Press B or tap anywhere to close";
-
 /* compat formatting: user-visible text */
 "Preview %@" = "Preview %@";
 
@@ -2571,6 +2506,9 @@
 /* profile view controller: title */
 "Profiles" = "Profiles";
 
+/* settings hub view controller: account card */
+"Profiles and sign-in" = "Profiles and sign-in";
+
 /* system link view controller: room row */
 "Public Lobby" = "Public Lobby";
 
@@ -2580,11 +2518,17 @@
 /* Section header in the pause menu */
 "Quick Settings" = "Quick Settings";
 
+/* In-game menu button, leaves the game */
+"Quit Game" = "Quit Game";
+
 /* system software view controller: footer */
 "Quit the game to install the system software." = "Quit the game to install the system software.";
 
 /* system software view controller: footer */
 "Quit the game to remove the system software." = "Quit the game to remove the system software.";
+
+/* In-game menu button, leaves a game the Xbox 360 Dashboard started for the dashboard */
+"Quit to Dashboard" = "Quit to Dashboard";
 
 /* Slider label in the touch analog tuning screen */
 "Radius" = "Radius";
@@ -2603,6 +2547,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "Ready to convert" = "Ready to convert";
+
+/* launcher overlay view: sort by last played */
+"Recently Played" = "Recently Played";
 
 /* system link status view controller: state */
 "Reconnecting…" = "Reconnecting…";
@@ -2703,7 +2650,7 @@
 /* config view controller: user-visible text */
 "Reset Failed" = "Reset Failed";
 
-/* game actions view controller: user-visible text */
+/* game page: more menu */
 "Reset Game Settings" = "Reset Game Settings";
 
 /* Alert title: confirm resetting game settings
@@ -2767,21 +2714,14 @@
 /* Feedback while dragging; %@ is the name of the other control */
 "Same Y as %@" = "Same Y as %@";
 
-/* Alert button: save the label
-   config view controller: title */
+/* Alert button: save the label */
 "Save" = "Save";
 
 /* zar conversion coordinator: user-visible text */
 "Save about %@" = "Save about %@";
 
-/* config view controller: title */
-"Save Completed With Warnings" = "Save Completed With Warnings";
-
 /* Layout library button that saves a copy of the current layout */
 "Save Copy" = "Save Copy";
-
-/* game actions view controller: user-visible text */
-"Save display, compatibility, and cvar overrides for this title." = "Save display, compatibility, and cvar overrides for this title.";
 
 /* Prompt title: save a copy of the layout */
 "Save Layout Copy" = "Save Layout Copy";
@@ -2797,12 +2737,6 @@
 
 /* Layout library row detail: layout the user saved */
 "Saved local copy" = "Saved local copy";
-
-/* config view controller: message */
-"Saved title-specific overrides. Relaunch the game before testing them." = "Saved title-specific overrides. Relaunch the game before testing them.";
-
-/* config view controller: message */
-"Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing." = "Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing.";
 
 /* game disc view controller: user-visible text */
 "Saves, updates and add-ons are shared by every disc." = "Saves, updates and add-ons are shared by every disc.";
@@ -2822,9 +2756,6 @@
 /* zar conversion coordinator: detail text */
 "Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)" = "Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)";
 
-/* game patches view controller: detail text */
-"Scanned %1$zu files in:\n%2$@\n\nAdd xenia-canary .patch.toml files for this title." = "Scanned %1$zu files in:\n%2$@\n\nAdd xenia-canary .patch.toml files for this title.";
-
 /* zar conversion coordinator: detail text */
 "Scanning %1$lu item%2$@..." = "Scanning %1$lu item%2$@...";
 
@@ -2836,6 +2767,12 @@
 
 /* compat report view controller: user-visible text */
 "Screenshots" = "Screenshots";
+
+/* launcher overlay view: search placeholder; %lu is the game count */
+"Search %lu Games" = "Search %lu Games";
+
+/* launcher overlay view: search placeholder */
+"Search 1 Game" = "Search 1 Game";
 
 /* dashboard disc tray: search field placeholder */
 "Search Games" = "Search Games";
@@ -2902,17 +2839,11 @@
    settings hub view controller: title */
 "Settings" = "Settings";
 
-/* config view controller: label text */
-"Settings apply when a game starts. If a game is running, relaunch XeniOS after saving." = "Settings apply when a game starts. If a game is running, relaunch XeniOS after saving.";
-
 /* config view controller: user-visible text */
 "Settings could not be reset. Check xenia.log." = "Settings could not be reset. Check xenia.log.";
 
 /* config view controller: user-visible text */
 "Settings Reset" = "Settings Reset";
-
-/* config view controller: title */
-"Settings Saved" = "Settings Saved";
 
 /* Alert title: shader cache clear result */
 "Shader Cache Cleared" = "Shader Cache Cleared";
@@ -2960,8 +2891,8 @@
 /* system link view controller: footer */
 "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you." = "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you.";
 
-/* online view controller: footer */
-"Share the room code with your friends. Everyone needs the game." = "Share the room code with your friends. Everyone needs the game.";
+/* Alert message after a crash outside a game */
+"Share the log to help fix it." = "Share the log to help fix it.";
 
 /* settings hub view controller: title */
 "Share the running game's layout." = "Share the running game's layout.";
@@ -3009,6 +2940,9 @@
 /* In-game menu, VoiceOver: System Link card hint */
 "Shows the System Link room, its players and who's online." = "Shows the System Link room, its players and who's online.";
 
+/* settings hub view controller: account card */
+"Sign In" = "Sign In";
+
 /* profile view controller: detail text */
 "Signed In" = "Signed In";
 
@@ -3031,17 +2965,20 @@
 /* Launch screen note: a game is slow to show its first frame */
 "Some games take a while to show their first screen." = "Some games take a while to show their first screen.";
 
-/* config view controller: user-visible text */
-"Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game." = "Some settings could not be applied. Check xenia.log.\n\nAny settings that were saved should be tested after a full XeniOS relaunch, or by changing them before launching a game.";
-
-/* config view controller: message */
-"Some title-specific overrides could not be saved. Check xenia.log." = "Some title-specific overrides could not be saved. Check xenia.log.";
+/* config view controller: title */
+"Some Settings Weren't Saved" = "Some Settings Weren't Saved";
 
 /* System Link toast: another player has the same console identity */
 "Someone in this System Link room uses the same profile. Switch profiles to join." = "Someone in this System Link room uses the same profile. Switch profiles to join.";
 
 /* Alert title: a game or link failed */
 "Something Went Wrong" = "Something Went Wrong";
+
+/* launcher overlay view: sort menu button */
+"Sort" = "Sort";
+
+/* launcher overlay view: sort menu */
+"Sort By" = "Sort By";
 
 /* zar conversion coordinator: user-visible text */
 "Source" = "Source";
@@ -3053,7 +2990,7 @@
 "Space saved could not be estimated." = "Space saved could not be estimated.";
 
 /* settings hub view controller: title */
-"Spatial audio and mute." = "Spatial audio and mute.";
+"Spatial sound and head tracking." = "Spatial sound and head tracking.";
 
 /* Very short badge on a touch control: Start button */
 "St" = "St";
@@ -3082,9 +3019,6 @@
 
 /* game compatibility cells: detail text */
 "STATUS" = "STATUS";
-
-/* launcher overlay view: button that opens StikDebug */
-"StikDebug" = "StikDebug";
 
 /* Alert message: offers to enable JIT through StikDebug automatically */
 "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing." = "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing.";
@@ -3142,10 +3076,16 @@
 /* Slider label in the touch analog tuning screen */
 "Swipe Acceleration" = "Swipe Acceleration";
 
+/* game content view controller: user-visible text */
+"Swipe left on an item to delete it. Linked DLC stays in its folder." = "Swipe left on an item to delete it. Linked DLC stays in its folder.";
+
+/* Touch editor: the screen-wide look area */
+"Swipe to Look" = "Swipe to Look";
+
 /* launcher overlay view: accessibility hint */
 "Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
 
-/* game actions view controller: user-visible text
+/* game page: row
    In-game menu: System Link card
    system link view controller: title */
 "System Link" = "System Link";
@@ -3213,9 +3153,6 @@
 /* Feedback while picking a control to copy the size from */
 "Tap another button" = "Tap another button";
 
-/* Subtitle of the in-game menu */
-"Tap anywhere to close" = "Tap anywhere to close";
-
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
 
@@ -3279,12 +3216,6 @@
 /* acknowledgements: fallback text shown when the license file is missing */
 "The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS" = "The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS";
 
-/* game patches view controller: user-visible text */
-"The patches folder did not contain any .patch.toml files." = "The patches folder did not contain any .patch.toml files.";
-
-/* game patches view controller: user-visible text */
-"The patches folder was not found." = "The patches folder was not found.";
-
 /* system software view controller: install error */
 "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again." = "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again.";
 
@@ -3344,6 +3275,9 @@
 
 /* Row title in the touch control edit panel */
 "Then drag" = "Then drag";
+
+/* config view controller: label text */
+"These apply only to %1$@ (%2$@) and take effect the next time it starts." = "These apply only to %1$@ (%2$@) and take effect the next time it starts.";
 
 /* system link status view controller: row detail */
 "They show up here when they start this game in the same room." = "They show up here when they start this game in the same room.";
@@ -3447,17 +3381,14 @@
 /* compat report cells: label text */
 "Title ID" = "Title ID";
 
+/* game compatibility hero view: title */
+"Title ID %08X" = "Title ID %08X";
+
 /* Alert message; %08X is the title ID in hexadecimal */
 "Title ID %08X was not found in Library." = "Title ID %08X was not found in Library.";
 
-/* game patches view controller: detail text */
-"Title ID %1$08X did not match any discovered patch file.\n\nFolder: %2$@\nPatch-looking files: %3$zu\nParse failures: %4$zu\nOther title IDs: %5$zu" = "Title ID %1$08X did not match any discovered patch file.\n\nFolder: %2$@\nPatch-looking files: %3$zu\nParse failures: %4$zu\nOther title IDs: %5$zu";
-
 /* Picker row detail; %@ is a title ID in hexadecimal */
 "Title ID %@" = "Title ID %@";
-
-/* game compatibility hero view: title */
-"Title ID: %08X" = "Title ID: %08X";
 
 /* content management: title */
 "Title Update" = "Title Update";
@@ -3478,9 +3409,6 @@
 /* compat report submission: message */
 "Too many reports were sent recently. Please try again later." = "Too many reports were sent recently. Please try again later.";
 
-/* settings hub view controller: title */
-"Touch Behavior" = "Touch Behavior";
-
 /* VoiceOver label of the on-screen controller area */
 "Touch controller" = "Touch controller";
 
@@ -3490,7 +3418,7 @@
 
 /* Alert title for touch layout downloads
    Alert title for touch layout install problems
-   game actions view controller: user-visible text
+   game page: button
    launcher overlay view: title
    Title of the touch layout editor */
 "Touch Layout" = "Touch Layout";
@@ -3503,11 +3431,15 @@
 "Touch layout import cancelled." = "Touch layout import cancelled.";
 
 /* settings hub view controller: title
-   settings hub view controller: user-visible text */
+   settings hub view controller: user-visible text
+   Touch layout editor prompt when no game is chosen */
 "Touch Layouts" = "Touch Layouts";
 
 /* VoiceOver hint of the on-screen controller area */
 "Touch the screen to use the on-screen controls." = "Touch the screen to use the on-screen controls.";
+
+/* Launcher status: JIT is unavailable */
+"Try again in StikDebug." = "Try again in StikDebug.";
 
 /* Title of the touch analog tuning screen */
 "Tune" = "Tune";
@@ -3516,16 +3448,18 @@
    VoiceOver label of a touch control edit button */
 "Tune response" = "Tune response";
 
-/* Guidance when JIT is not active */
-"Turn it on in StikDebug to play games." = "Turn it on in StikDebug to play games.";
-
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
 
-/* system link view controller: button */
+/* launcher overlay view: button that turns on JIT
+   system link view controller: button */
 "Turn On" = "Turn On";
 
-/* online view controller: button row
+/* JIT sheet: title
+   launcher overlay view: accessibility label */
+"Turn On JIT" = "Turn On JIT";
+
+/* online view controller: button
    system link view controller: button row */
 "Turn On Online Features" = "Turn On Online Features";
 
@@ -3615,6 +3549,9 @@
 /* Touch control preview when nothing is mapped */
 "Unused" = "Unused";
 
+/* new profile sheet: footer */
+"Up to 15 characters. Games show it to other players." = "Up to 15 characters. Games show it to other players.";
+
 /* settings hub view controller: label text */
 "Up to Date" = "Up to Date";
 
@@ -3631,8 +3568,15 @@
 /* settings hub view controller: footer of the Online Features switch */
 "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics." = "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics.";
 
+/* game compatibility hero view: label text */
+"Updated %@" = "Updated %@";
+
 /* settings hub view controller: label text */
 "Updates" = "Updates";
+
+/* game content view controller: title
+   game page: row */
+"Updates & Add-ons" = "Updates & Add-ons";
 
 /* Menu item in the touch control label menu */
 "Use Default Label" = "Use Default Label";
@@ -3671,9 +3615,6 @@
 /* Slider label in the touch analog tuning screen */
 "Vertical Sensitivity" = "Vertical Sensitivity";
 
-/* game actions view controller: user-visible text */
-"View and manage title patches." = "View and manage title patches.";
-
 /* game compatibility cells: title */
 "View Issue #%ld" = "View Issue #%ld";
 
@@ -3698,9 +3639,6 @@
 /* Toast; %@ is the game title */
 "Waiting for JIT to launch: %@" = "Waiting for JIT to launch: %@";
 
-/* launcher overlay view: label text */
-"Waiting for JIT..." = "Waiting for JIT...";
-
 /* system link status view controller: row */
 "Waiting for Players" = "Waiting for Players";
 
@@ -3713,8 +3651,7 @@
 /* Wait button once the user chose to wait */
 "Waiting…" = "Waiting…";
 
-/* config view controller: section footer
-   settings hub view controller: title */
+/* settings hub view controller: title */
 "Website" = "Website";
 
 /* online game picker: header */
@@ -3784,7 +3721,7 @@
 /* acknowledgements view controller: label text */
 "XeniOS is based on Xenia and uses the open-source software listed above." = "XeniOS is based on Xenia and uses the open-source software listed above.";
 
-/* config view controller: label text */
+/* settings hub view controller: footer under the links */
 "XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023" = "XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive 11/03/2023";
 
 /* Alert message: launch could not be queued
@@ -3796,9 +3733,6 @@
 
 /* Alert title: shown after the app crashed in the previous session */
 "XeniOS Quit Unexpectedly" = "XeniOS Quit Unexpectedly";
-
-/* Alert message after a crash outside a game */
-"XeniOS quit unexpectedly. Share the log to help fix it." = "XeniOS quit unexpectedly. Share the log to help fix it.";
 
 /* zar conversion coordinator: user-visible text */
 "XeniOS removed the partial .zar output from the interrupted conversion." = "XeniOS removed the partial .zar output from the interrupted conversion.";
@@ -3815,8 +3749,11 @@
 /* system link view controller: alert message */
 "You can change this in Settings > About > Privacy." = "You can change this in Settings > About > Privacy.";
 
-/* config view controller: message */
-"You have unsaved setting changes." = "You have unsaved setting changes.";
+/* JIT sheet: step 3; %@ is the game */
+"You come back here and %@ starts." = "You come back here and %@ starts.";
+
+/* JIT sheet: step 3 without a game */
+"You come back here and pick a game." = "You come back here and pick a game.";
 
 /* compat report view controller: message */
 "Your compatibility report has been submitted." = "Your compatibility report has been submitted.";
