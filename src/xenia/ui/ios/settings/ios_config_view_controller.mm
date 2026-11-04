@@ -1161,6 +1161,26 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   return field;
 }
 
+// Number pads have no return key, so they get a Done bar to close them.
+- (UIToolbar*)numberPadAccessoryToolbar {
+  UIToolbar* toolbar = [[[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)] autorelease];
+  UIBarButtonItem* flexible = [[[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+                           target:nil
+                           action:nil] autorelease];
+  UIBarButtonItem* done = [[[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                           target:self
+                           action:@selector(numberPadDoneTapped:)] autorelease];
+  toolbar.items = @[ flexible, done ];
+  [toolbar sizeToFit];
+  return toolbar;
+}
+
+- (void)numberPadDoneTapped:(id)sender {
+  [self.view endEditing:YES];
+}
+
 - (void)configureField:(UITextField*)field
                   text:(NSString*)text
                   font:(UIFont*)font
@@ -1240,6 +1260,9 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                                         tag:kXeniaConfigIntegerFieldTag
                                   endAction:@selector(integerFieldChanged:)];
     field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+    if (!field.inputAccessoryView) {
+      field.inputAccessoryView = [self numberPadAccessoryToolbar];
+    }
     [self configureField:field
                     text:[NSString stringWithFormat:@"%lld", item->integer_value]
                     font:field_font
@@ -1264,6 +1287,9 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                                         tag:kXeniaConfigDoubleFieldTag
                                   endAction:@selector(doubleFieldChanged:)];
     field.keyboardType = UIKeyboardTypeDecimalPad;
+    if (!field.inputAccessoryView) {
+      field.inputAccessoryView = [self numberPadAccessoryToolbar];
+    }
     [self configureField:field
                     text:[NSString stringWithFormat:@"%.6g", item->double_value]
                     font:field_font
