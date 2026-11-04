@@ -611,7 +611,7 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   [super viewDidLoad];
   self.title = ToNSString(IOSConfigCatalogTitle(catalog_kind_));
   if (game_title_id_ && game_title_.length) {
-    self.navigationItem.prompt = game_title_;
+    self.navigationItem.subtitle = game_title_;
   }
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
