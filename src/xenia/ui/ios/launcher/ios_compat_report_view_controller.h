@@ -18,8 +18,8 @@
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
 // "Submit a Report" sheet. Lets the user pick a status, perf rating, optional
-// notes and an optional screenshot, signs the payload with the build's
-// attestation if one is present and uploads it via the compat-submission API
+// notes and an optional screenshot, and uploads it with the build's version
+// and number via the compat-submission API
 // (falling back to GitHub discussion creation when the worker is offline).
 @interface XeniaCompatReportViewController
     : XESheetTableViewController <PHPickerViewControllerDelegate, UITextViewDelegate>

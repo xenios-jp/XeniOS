@@ -21,17 +21,6 @@ static BOOL xe_compat_entry_has_summary_fields(NSDictionary* entry) {
          xe_string_from_object(entry[@"notes"]).length > 0;
 }
 
-static NSDictionary* xe_compat_summary_named(NSDictionary* compat_info, NSString* key) {
-  NSDictionary* summaries = xe_dictionary_from_object(compat_info[@"summaries"]);
-  NSDictionary* summary = summaries ? xe_dictionary_from_object(summaries[key]) : nil;
-  return xe_compat_entry_has_summary_fields(summary) ? summary : nil;
-}
-
-NSDictionary* xe_release_summary_from_compat_info(NSDictionary* compat_info) {
-  return xe_compat_summary_named(compat_info, @"release");
-}
-
-
 static BOOL xe_compat_date_is_newer(NSString* candidate, NSString* baseline) {
   if (candidate.length == 0) {
     return NO;
@@ -94,52 +83,16 @@ static NSDictionary* xe_compat_best_report(NSArray<NSDictionary*>* reports) {
   return best;
 }
 
-// Mirrors the compat worker's reportMatchesSummaryChannel for "release":
-// strict buildId match against the currently-published release build, with a
-// legacy fallback that accepts reports missing build metadata or carrying
-// channel="release". See worker/src/index.ts (xenios-jp/xenios.jp).
-static BOOL xe_compat_release_filter_matches(NSDictionary* report,
-                                             NSDictionary* current_release_build) {
-  NSDictionary* build = xe_dictionary_from_object(report[@"build"]);
-  NSString* current_build_id = xe_string_from_object(current_release_build[@"buildId"]);
-  if (current_build_id.length > 0) {
-    NSString* report_channel = xe_string_from_object(build[@"channel"]);
-    NSString* report_build_id = xe_string_from_object(build[@"buildId"]);
-    return [report_channel isEqualToString:@"release"] &&
-           [report_build_id isEqualToString:current_build_id];
-  }
-  if (!build) {
-    return YES;
-  }
-  NSString* channel = xe_string_from_object(build[@"channel"]);
-  if (channel.length == 0) {
-    return YES;
-  }
-  return [channel isEqualToString:@"release"];
-}
-
-// Mirrors the compat worker's buildSummaryForChannel — produces summaries in
-// the exact shape that data/compatibility.json's summaries.* fields use
-// (channel, status, perf, notes, updatedAt, reportCount, latestReport,
-// bestReport). Pass `current_release_build` from the release-builds manifest
-// when summarising the release channel; pass nil for "all".
-static NSDictionary* xe_compat_summarize_reports_for_channel(NSArray<NSDictionary*>* reports,
-                                                             NSDictionary* current_release_build,
-                                                             NSString* channel) {
+// Mirrors the compat worker's summary of a game's reports, in the shape of
+// data/compatibility.json's summaries.all (status, perf, notes, updatedAt,
+// reportCount, latestReport, bestReport). Every report counts, whatever build
+// it came from.
+static NSDictionary* xe_compat_summarize_reports(NSArray<NSDictionary*>* reports) {
   NSMutableArray<NSDictionary*>* matching = [NSMutableArray arrayWithCapacity:reports.count];
-  if ([channel isEqualToString:@"all"]) {
-    for (id raw in reports) {
-      NSDictionary* report = xe_dictionary_from_object(raw);
-      if (report) {
-        [matching addObject:report];
-      }
-    }
-  } else {
-    for (id raw in reports) {
-      NSDictionary* report = xe_dictionary_from_object(raw);
-      if (report && xe_compat_release_filter_matches(report, current_release_build)) {
-        [matching addObject:report];
-      }
+  for (id raw in reports) {
+    NSDictionary* report = xe_dictionary_from_object(raw);
+    if (report) {
+      [matching addObject:report];
     }
   }
 
@@ -147,7 +100,6 @@ static NSDictionary* xe_compat_summarize_reports_for_channel(NSArray<NSDictionar
   NSDictionary* latest_report = xe_compat_latest_report(matching);
 
   NSMutableDictionary* summary = [NSMutableDictionary dictionary];
-  summary[@"channel"] = channel ?: @"all";
   summary[@"status"] =
       best_report ? (xe_string_from_object(best_report[@"status"]) ?: @"untested") : @"untested";
   NSString* best_perf = xe_string_from_object(best_report[@"perf"]);
@@ -212,18 +164,14 @@ static NSDictionary* xe_compat_flatten_summary_detail_fields(NSDictionary* summa
 
 // Status presence check: "untested" passes xe_compat_entry_has_summary_fields
 // (it's a non-empty string), but it carries no useful information. The
-// preferred-summary picker uses this to skip past untested release summaries
-// when a populated all-channel summary is available.
+// preferred-summary picker uses this to skip past an untested summary when
+// the iOS reports themselves say more.
 static BOOL xe_compat_summary_has_status_data(NSDictionary* summary) {
   if (!summary) {
     return NO;
   }
   NSString* status = xe_string_from_object(summary[@"status"]);
   return status.length > 0 && ![status isEqualToString:@"untested"];
-}
-
-static BOOL xe_compat_summary_is_untested(NSDictionary* summary) {
-  return [xe_string_from_object(summary[@"status"]) isEqualToString:@"untested"];
 }
 
 static BOOL xe_compat_platform_is_ios(NSString* platform) {
@@ -277,20 +225,18 @@ static NSArray<NSDictionary*>* xe_compat_ios_reports_from_compat_info(NSDictiona
   return ios_reports;
 }
 
-static NSDictionary* xe_compat_summary_from_ios_reports_for_channel(NSDictionary* compat_info,
-                                                                    NSString* channel) {
+static NSDictionary* xe_compat_summary_from_ios_reports(NSDictionary* compat_info) {
   NSArray<NSDictionary*>* ios_reports = xe_compat_ios_reports_from_compat_info(compat_info);
   if (ios_reports.count == 0) {
     return nil;
   }
 
-  NSDictionary* derived = xe_compat_summarize_reports_for_channel(ios_reports, nil, channel);
+  NSDictionary* derived = xe_compat_summarize_reports(ios_reports);
   return xe_compat_entry_has_summary_fields(derived) ? derived : nil;
 }
 
-static NSDictionary* xe_compat_untested_summary(NSString* channel) {
+static NSDictionary* xe_compat_untested_summary() {
   NSMutableDictionary* summary = [NSMutableDictionary dictionary];
-  summary[@"channel"] = channel ?: @"release";
   summary[@"status"] = @"untested";
   summary[@"perf"] = (id)[NSNull null];
   summary[@"notes"] = @"";
@@ -300,91 +246,22 @@ static NSDictionary* xe_compat_untested_summary(NSString* channel) {
   return summary;
 }
 
-NSDictionary* xe_ios_public_release_summary_from_compat_info(NSDictionary* compat_info) {
-  // Keep iOS launcher compatibility scoped to iOS reports. The website feed's
-  // prebuilt summaries may be global across Apple platforms, so only trust
-  // them here when the report payload is iOS-backed or explicitly untested.
-  // Otherwise derive the release summary from raw iOS reports using the same
-  // worker algorithm.
-  NSDictionary* summaries = xe_dictionary_from_object(compat_info[@"summaries"]);
-  NSDictionary* prebuilt_release = xe_dictionary_from_object(summaries[@"release"]);
-  if (xe_compat_entry_has_summary_fields(prebuilt_release) &&
-      (xe_compat_summary_is_untested(prebuilt_release) ||
-       xe_compat_summary_is_ios_report_backed(prebuilt_release))) {
-    return xe_compat_flatten_summary_detail_fields(prebuilt_release);
-  }
-
-  NSDictionary* derived = xe_compat_summary_from_ios_reports_for_channel(compat_info, @"release");
-  if (derived) {
-    return derived;
-  }
-
-  return xe_compat_entry_has_summary_fields(prebuilt_release)
-             ? xe_compat_untested_summary(@"release")
-             : nil;
-}
-
 NSDictionary* xe_preferred_summary_from_compat_info(NSDictionary* compat_info) {
-  // Match the release verdict when it has actual iOS data, but fall back to
-  // iOS all-channel reports when release is untested. Never use populated
-  // macOS/global summaries for iOS badges or details.
+  // One verdict from every iOS report. The website feed's prebuilt summary
+  // may be global across Apple platforms, so it's used only when it's backed
+  // by an iOS report; otherwise the summary comes from the raw iOS reports.
+  // Never use a populated macOS/global summary for iOS badges or details.
   NSDictionary* summaries = xe_dictionary_from_object(compat_info[@"summaries"]);
-  NSDictionary* release_summary = xe_dictionary_from_object(summaries[@"release"]);
   NSDictionary* all_summary = xe_dictionary_from_object(summaries[@"all"]);
-  BOOL has_prebuilt_summaries = summaries.count > 0;
-  if (xe_compat_summary_has_status_data(release_summary) &&
-      xe_compat_summary_is_ios_report_backed(release_summary)) {
-    return xe_compat_flatten_summary_detail_fields(release_summary);
-  }
-
-  NSDictionary* ios_release_summary =
-      xe_compat_summary_from_ios_reports_for_channel(compat_info, @"release");
-  if (xe_compat_summary_has_status_data(ios_release_summary)) {
-    return ios_release_summary;
-  }
-
-  NSDictionary* ios_all_summary =
-      xe_compat_summary_from_ios_reports_for_channel(compat_info, @"all");
-  if (xe_compat_summary_has_status_data(ios_all_summary)) {
-    return ios_all_summary;
-  }
-
   if (xe_compat_summary_has_status_data(all_summary) &&
       xe_compat_summary_is_ios_report_backed(all_summary)) {
     return xe_compat_flatten_summary_detail_fields(all_summary);
   }
 
-  // No populated iOS summary anywhere. Surface an untested release summary
-  // rather than leaking a populated macOS/global verdict into the iOS UI.
-  if (xe_compat_entry_has_summary_fields(release_summary) &&
-      (xe_compat_summary_is_untested(release_summary) ||
-       xe_compat_summary_is_ios_report_backed(release_summary))) {
-    return xe_compat_flatten_summary_detail_fields(release_summary);
-  }
-  if (ios_release_summary) {
-    return ios_release_summary;
-  }
-  if (xe_compat_entry_has_summary_fields(all_summary) &&
-      (xe_compat_summary_is_untested(all_summary) ||
-       xe_compat_summary_is_ios_report_backed(all_summary))) {
-    return xe_compat_flatten_summary_detail_fields(all_summary);
+  NSDictionary* ios_summary = xe_compat_summary_from_ios_reports(compat_info);
+  if (ios_summary) {
+    return ios_summary;
   }
 
-  if (has_prebuilt_summaries) {
-    return xe_compat_untested_summary(@"release");
-  }
-
-  // Older feeds carry a top-level status/perf/notes block with no nested
-  // summaries dictionary; treat the entry itself as the summary in that case.
-  NSString* legacy_platform = xe_string_from_object(compat_info[@"platform"]);
-  if (xe_compat_entry_has_summary_fields(compat_info) &&
-      (legacy_platform.length == 0 || xe_compat_platform_is_ios(legacy_platform))) {
-    return compat_info;
-  }
-
-  NSDictionary* derived = xe_ios_public_release_summary_from_compat_info(compat_info);
-  if (derived) {
-    return derived;
-  }
-  return xe_compat_summary_named(compat_info, @"preview");
+  return summaries ? xe_compat_untested_summary() : nil;
 }
