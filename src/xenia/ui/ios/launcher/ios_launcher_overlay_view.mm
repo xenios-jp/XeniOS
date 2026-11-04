@@ -571,6 +571,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // into instead of ending at an edge.
   UIImageView* _ambientArt;
   UIView* _ambientDim;
+  // The old game's art and text fading out over the new one; see -crossfadeHeroToGame:.
+  UIView* _heroFadeSnapshot;
   // The game page in place of the grid (side layout): the game it is for, its rows, ✕ and ⋯ in
   // the header, and touch layout and settings beside Play.
   XeniaIOSLauncherGameSnapshot* _detailGame;
@@ -1216,7 +1218,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)layoutHeroCover {
   BOOL show = _heroArtIsCover && _sideLayout && !_heroView.hidden;
   if (show) {
-    [_heroText layoutIfNeeded];
+    // The text's own frame, after a longer title wraps, not the one from the last pass.
+    [_heroView layoutIfNeeded];
     const CGFloat top = CGRectGetMaxY(_headerView.frame) + 16.0;
     const CGFloat bottom = CGRectGetMinY(_heroText.frame) - 18.0;
     const CGFloat max_width = CGRectGetWidth(_heroView.bounds) - 2.0 * _heroTextLeading.constant;
@@ -1386,18 +1389,32 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _ambientArt.frame = bounds;
   _ambientDim.frame = _ambientArt.bounds;
   _ambientArt.alpha = ambient ? 1.0 : 0.0;
-  if (ambient) {
+  // The dissolve masks the art and its scrims, not the hero, so the title and buttons stay whole.
+  // Each mask is in its own layer's space: solid to 55% of the hero's width, clear at its edge.
+  CAGradientLayer* (^dissolve_for)(CALayer*) = ^CAGradientLayer*(CALayer* layer) {
+    const CGRect frame = [_heroView.layer convertRect:layer.bounds fromLayer:layer];
+    const CGFloat width = MAX(frame.size.width, 1.0);
     CAGradientLayer* dissolve = [CAGradientLayer layer];
-    dissolve.frame = hero_bounds;
+    dissolve.frame = layer.bounds;
     dissolve.colors = @[ (id)UIColor.blackColor.CGColor, (id)UIColor.blackColor.CGColor,
-                         (id)UIColor.clearColor.CGColor ];
-    dissolve.locations = @[ @0.0, @0.55, @1.0 ];
+                         (id)UIColor.clearColor.CGColor, (id)UIColor.clearColor.CGColor ];
+    const CGFloat solid_to = (hero_bounds.size.width * 0.55 - frame.origin.x) / width;
+    const CGFloat clear_at = (hero_bounds.size.width - frame.origin.x) / width;
+    dissolve.locations = @[ @0.0, @(MAX(solid_to, 0.0)), @(MAX(clear_at, 0.0)), @1.0 ];
     dissolve.startPoint = CGPointMake(0.0, 0.5);
     dissolve.endPoint = CGPointMake(1.0, 0.5);
-    _heroView.layer.mask = dissolve;
+    return dissolve;
+  };
+  _heroView.layer.mask = nil;
+  if (ambient) {
+    _heroArt.layer.mask = dissolve_for(_heroArt.layer);
+    _heroScrim.mask = dissolve_for(_heroScrim);
+    _heroTopScrim.mask = dissolve_for(_heroTopScrim);
     _heroView.backgroundColor = UIColor.clearColor;
   } else {
-    _heroView.layer.mask = nil;
+    _heroArt.layer.mask = nil;
+    _heroScrim.mask = nil;
+    _heroTopScrim.mask = nil;
     _heroView.backgroundColor = [XeniaTheme bgPrimary];
   }
   if (side && ambient) {
@@ -1695,14 +1712,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }];
   if (other_game && had_hero) {
     // The art and title turn to this game in place.
-    [UIView transitionWithView:_heroView
-                      duration:0.3
-                       options:UIViewAnimationOptionTransitionCrossDissolve |
-                               UIViewAnimationOptionAllowUserInteraction
-                    animations:^{
-                      [self applyHeroGame:game];
-                    }
-                    completion:nil];
+    [self crossfadeHeroToGame:game];
   }
   // The grid leaves first, so the rows never come in over it.
   [UIView animateWithDuration:0.16
@@ -1784,14 +1794,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     return;
   }
   if (_heroGame && _heroGame != shown) {
-    [UIView transitionWithView:_heroView
-                      duration:0.3
-                       options:UIViewAnimationOptionTransitionCrossDissolve |
-                               UIViewAnimationOptionAllowUserInteraction
-                    animations:^{
-                      [self applyHeroGame:_heroGame];
-                    }
-                    completion:nil];
+    [self crossfadeHeroToGame:_heroGame];
   }
   // The rows leave first, so they never sit over the grid coming back.
   [UIView animateWithDuration:0.16
@@ -1815,6 +1818,51 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _libraryLabel);
   }];
   [animator startAnimationAfterDelay:0.08];
+}
+
+// The art and text turn to another game in place. A snapshot of the old ones fades out over the
+// new: a cross-dissolve transition on the hero itself froze half-way when layout swapped the
+// hero's mask and scrim during it, leaving both games' text on screen. The snapshot is removed
+// when the fade ends, by the next fade, or after a deadline, whichever comes first.
+- (void)crossfadeHeroToGame:(XeniaIOSLauncherGameSnapshot*)game {
+  [self removeHeroFadeSnapshot];
+  UIView* snapshot = _heroView.window ? [_heroView snapshotViewAfterScreenUpdates:NO] : nil;
+  if (snapshot) {
+    snapshot.frame = _heroView.frame;
+    snapshot.userInteractionEnabled = NO;
+    [_heroView.superview insertSubview:snapshot aboveSubview:_heroView];
+    _heroFadeSnapshot = [snapshot retain];
+  }
+  [self applyHeroGame:game];
+  if (!snapshot) {
+    return;
+  }
+  [UIView animateWithDuration:0.3
+      delay:0.0
+      options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionCurveEaseInOut
+      animations:^{
+        snapshot.alpha = 0.0;
+      }
+      completion:^(BOOL __unused finished) {
+        if (_heroFadeSnapshot == snapshot) {
+          [self removeHeroFadeSnapshot];
+        }
+      }];
+  [snapshot retain];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_heroFadeSnapshot == snapshot) {
+                     [self removeHeroFadeSnapshot];
+                   }
+                   [snapshot release];
+                 });
+}
+
+- (void)removeHeroFadeSnapshot {
+  [_heroFadeSnapshot.layer removeAllAnimations];
+  [_heroFadeSnapshot removeFromSuperview];
+  [_heroFadeSnapshot release];
+  _heroFadeSnapshot = nil;
 }
 
 - (void)heroPlayTapped:(UIButton*)__unused sender {
@@ -2013,6 +2061,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_searchWidth release];
   [_heroView release];
   [_heroArt release];
+  [self removeHeroFadeSnapshot];
   [_heroScrim release];
   [_heroCover release];
   [_ambientArt release];
@@ -2762,7 +2811,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
           : @"";
   cell.discBadge.hidden = game.discCount <= 1;
   cell.contentTypePill.text = game.contentTypeName ?: @"";
-  cell.contentTypePill.hidden = game.contentTypeName.length == 0;
+  // One line under the title: the status when there is one, otherwise the tag. A reused cell
+  // doesn't always lay out again, so this is decided here rather than left to -layoutSubviews.
+  cell.contentTypePill.hidden = game.contentTypeName.length == 0 || game.hasCompatInfo;
   cell.contentTypePill.textColor = [XeniaTheme textMuted];
   cell.contentTypePill.backgroundColor = [UIColor clearColor];
   cell.contentTypePill.layer.borderColor = [UIColor clearColor].CGColor;
