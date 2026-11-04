@@ -851,6 +851,49 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       std::span<MTL::Texture* const> refresh_textures = {},
       uint32_t refresh_offset_y = 0, bool refresh_depth_float = false);
 
+  // What DirectResolveRenderTargets' dump shader does for
+  // a bit copy of one 1x color render target, as a tile dispatch in the
+  // guest's open render pass, which has that render target attached - reading
+  // the pixels from the tiles instead of ending the pass to read them back.
+  // With refresh_textures, also writes the texture-cache refresh texels as
+  // the dump shader does. Returns null if it encoded the dispatch, or why not,
+  // having encoded nothing.
+  const char* TileResolveInOpenPass(
+      const draw_util::ResolveInfo& resolve_info,
+      draw_util::ResolveCopyShaderIndex copy_shader,
+      const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+      uint32_t dump_pitch, std::span<MTL::Texture* const> refresh_textures,
+      uint32_t refresh_offset_y);
+  enum class TileResolveKernel : uint32_t {
+    k8888,
+    k16_16Float,
+    k32Float,
+    k16_16_16_16Float,
+    k32_32Float,
+    // IsFull64RGBA16OneSample's conversion, not a bit copy.
+    k16_16_16_16,
+    kCount,
+  };
+  // For the pass's color formats at every index and its sample count, reading
+  // color attachment color_index.
+  MTL::RenderPipelineState* GetOrCreateTileResolvePipeline(
+      MTL::RenderPassDescriptor* pass_descriptor, uint32_t color_index,
+      TileResolveKernel kernel, uint32_t sample_count,
+      uint32_t refresh_count);
+  MTL::Library* tile_resolve_library_ = nullptr;
+  // The last Resolve left the guest's pass open after a tile resolve.
+  bool last_resolve_kept_pass_ = false;
+
+ public:
+  bool last_resolve_kept_pass() const { return last_resolve_kept_pass_; }
+
+ private:
+  bool tile_resolve_library_failed_ = false;
+  // Null for a pipeline that failed, so it is not retried.
+  std::unordered_map<uint64_t, MTL::RenderPipelineState*>
+      tile_resolve_pipelines_;
+
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
                          uint32_t dump_rows, uint32_t dump_pitch,
