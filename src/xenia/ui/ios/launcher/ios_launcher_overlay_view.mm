@@ -106,8 +106,125 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
   return cached;
 }
 
+// A cover-sized placeholder for a game without cover art: the surface
+// colours in a soft gradient, with the game's own icon (or a controller
+// symbol) at a modest size in the middle, never stretched to fill the tile.
+UIImage* xe_placeholder_cover_art(UIImage* icon, UITraitCollection* traits) {
+  const CGSize size = CGSizeMake(219.0, 300.0);
+  UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
+  format.scale = 2.0;
+  format.opaque = YES;
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
+  UIColor* top = [[XeniaTheme bgSurface2] resolvedColorWithTraitCollection:traits];
+  UIColor* bottom = [[XeniaTheme bgSurface] resolvedColorWithTraitCollection:traits];
+  UIImage* symbol = nil;
+  if (!icon) {
+    symbol = [[UIImage systemImageNamed:@"gamecontroller.fill"
+                      withConfiguration:[UIImageSymbolConfiguration
+                                            configurationWithPointSize:44.0
+                                                                weight:UIImageSymbolWeightMedium]]
+        imageWithTintColor:[[XeniaTheme textMuted] resolvedColorWithTraitCollection:traits]
+             renderingMode:UIImageRenderingModeAlwaysOriginal];
+  }
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient = CGGradientCreateWithColors(
+        space, (CFArrayRef) @[ (id)top.CGColor, (id)bottom.CGColor ], nullptr);
+    CGContextDrawLinearGradient(context.CGContext, gradient, CGPointZero,
+                                CGPointMake(0.0, size.height), 0);
+    CGGradientRelease(gradient);
+    CGColorSpaceRelease(space);
+    if (icon) {
+      const CGFloat side = 88.0;
+      const CGRect rect = CGRectMake((size.width - side) * 0.5, (size.height - side) * 0.45, side,
+                                     side);
+      [[UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:side * 0.22] addClip];
+      [icon drawInRect:rect];
+    } else {
+      const CGSize symbol_size = symbol.size;
+      [symbol drawInRect:CGRectMake((size.width - symbol_size.width) * 0.5,
+                                    (size.height - symbol_size.height) * 0.45, symbol_size.width,
+                                    symbol_size.height)];
+    }
+  }];
+}
+
 bool xe_uses_accessibility_text(UITraitCollection* traits) {
   return UIContentSizeCategoryIsAccessibilityCategory(traits.preferredContentSizeCategory);
+}
+
+// A notice above the library: a status symbol, a short title with one line of
+// detail under it, and an optional action on the trailing edge. Every notice
+// uses this, so they line up and read the same.
+UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, UIButton* action) {
+  UIView* card = [[UIView alloc] init];
+  card.translatesAutoresizingMaskIntoConstraints = NO;
+  card.backgroundColor = [XeniaTheme bgSurface];
+  card.layer.cornerRadius = XeniaRadiusLg;
+  card.layer.cornerCurve = kCACornerCurveContinuous;
+
+  icon.translatesAutoresizingMaskIntoConstraints = NO;
+  icon.contentMode = UIViewContentModeScaleAspectFit;
+  icon.isAccessibilityElement = NO;
+  [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+  [icon setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                        forAxis:UILayoutConstraintAxisHorizontal];
+
+  title.textColor = [XeniaTheme textPrimary];
+  xe_apply_label_font(title, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+  title.numberOfLines = 0;
+  title.accessibilityTraits = UIAccessibilityTraitHeader;
+  detail.textColor = [XeniaTheme textSecondary];
+  xe_apply_label_font(detail, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
+  detail.numberOfLines = 0;
+
+  UIStackView* text = [[[UIStackView alloc] initWithArrangedSubviews:@[ title, detail ]] autorelease];
+  text.axis = UILayoutConstraintAxisVertical;
+  text.spacing = 1.0;
+
+  NSMutableArray* items = [NSMutableArray arrayWithObjects:icon, text, nil];
+  if (action) {
+    [action setContentHuggingPriority:UILayoutPriorityRequired
+                              forAxis:UILayoutConstraintAxisHorizontal];
+    [action setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                            forAxis:UILayoutConstraintAxisHorizontal];
+    [items addObject:action];
+  }
+  UIStackView* row = [[[UIStackView alloc] initWithArrangedSubviews:items] autorelease];
+  row.translatesAutoresizingMaskIntoConstraints = NO;
+  row.axis = UILayoutConstraintAxisHorizontal;
+  row.alignment = UIStackViewAlignmentCenter;
+  row.spacing = 12.0;
+  [card addSubview:row];
+  [NSLayoutConstraint activateConstraints:@[
+    [icon.widthAnchor constraintEqualToConstant:24.0],
+    [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+    [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12.0],
+    [row.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
+    [row.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
+  ]];
+  return card;
+}
+
+// The small capsule action a notice card carries.
+UIButton* xe_new_notice_action(NSString* title) {
+  UIButtonConfiguration* config = [UIButtonConfiguration tintedButtonConfiguration];
+  config.title = title;
+  config.baseForegroundColor = [XeniaTheme accent];
+  config.baseBackgroundColor = [XeniaTheme accent];
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.contentInsets = NSDirectionalEdgeInsetsMake(7.0, 14.0, 7.0, 14.0);
+  config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+    return updated;
+  };
+  UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  return button;
 }
 
 // Two snapshots show the same game with the same content when every field the
@@ -286,120 +403,52 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // ── JIT card shown only when JIT is not enabled: symbol, status and the
   // way to fix it (open StikDebug) ───────────────────────────────────────
 
-  _jitWarningCard = [[UIView alloc] init];
-  _jitWarningCard.translatesAutoresizingMaskIntoConstraints = NO;
-  _jitWarningCard.backgroundColor = [XeniaTheme bgSurface];
-  _jitWarningCard.layer.cornerRadius = XeniaRadiusLg;
-  _jitWarningCard.layer.borderWidth = 0.5;
-  _jitWarningCard.layer.borderColor = [XeniaTheme border].CGColor;
-
   _jitStatusIcon = [[UIImageView alloc]
       initWithImage:[UIImage systemImageNamed:@"bolt.slash.fill"
                             withConfiguration:[UIImageSymbolConfiguration
                                                   configurationWithTextStyle:UIFontTextStyleTitle3
                                                                        scale:
                                                                            UIImageSymbolScaleMedium]]];
-  _jitStatusIcon.translatesAutoresizingMaskIntoConstraints = NO;
   _jitStatusIcon.tintColor = [XeniaTheme statusError];
-  _jitStatusIcon.contentMode = UIViewContentModeScaleAspectFit;
-  _jitStatusIcon.isAccessibilityElement = NO;
-  [_jitStatusIcon setContentHuggingPriority:UILayoutPriorityRequired
-                                    forAxis:UILayoutConstraintAxisHorizontal];
-  [_jitWarningCard addSubview:_jitStatusIcon];
-
   _jitTitleLabel = [[UILabel alloc] init];
-  _jitTitleLabel.text = NSLocalizedString(@"JIT Required", @"launcher overlay view: JIT card title");
-  _jitTitleLabel.textColor = [XeniaTheme textPrimary];
-  xe_apply_label_font(_jitTitleLabel, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-  _jitTitleLabel.numberOfLines = 0;
-  _jitTitleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
-
+  _jitTitleLabel.text = NSLocalizedString(@"JIT Is Off", @"launcher overlay view: JIT card title");
   _jitStatusLabel = [[UILabel alloc] init];
   _jitStatusLabel.text =
       NSLocalizedString(@"Waiting for JIT...", @"launcher overlay view: label text");
-  _jitStatusLabel.textColor = [XeniaTheme textSecondary];
-  xe_apply_label_font(_jitStatusLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightMedium);
-  _jitStatusLabel.numberOfLines = 0;
-
-  UIButtonConfiguration* stikDebugCfg = [UIButtonConfiguration tintedButtonConfiguration];
-  stikDebugCfg.title = NSLocalizedString(@"Open StikDebug", @"launcher overlay view: button title");
-  stikDebugCfg.image = [UIImage systemImageNamed:@"arrow.up.forward.app"];
-  stikDebugCfg.imagePadding = 6.0;
-  stikDebugCfg.baseForegroundColor = [XeniaTheme accent];
-  stikDebugCfg.baseBackgroundColor = [XeniaTheme accent];
-  stikDebugCfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
-  stikDebugCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
-      NSDictionary<NSAttributedStringKey, id>* attributes) {
-    NSMutableDictionary* updated = [attributes mutableCopy];
-    updated[NSFontAttributeName] =
-        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-    return [updated autorelease];
-  };
-  _jitOpenButton = [[UIButton buttonWithConfiguration:stikDebugCfg primaryAction:nil] retain];
-  _jitOpenButton.translatesAutoresizingMaskIntoConstraints = NO;
+  _jitOpenButton = [xe_new_notice_action(NSLocalizedString(
+      @"StikDebug", @"launcher overlay view: button that opens StikDebug")) retain];
   _jitOpenButton.hidden = YES;  // Until `openStikDebugHandler` is set.
   [_jitOpenButton addTarget:self
                      action:@selector(openStikDebugTapped:)
            forControlEvents:UIControlEventTouchUpInside];
   XEApplyAccessibility(
-      _jitOpenButton, nil, nil,
+      _jitOpenButton,
+      NSLocalizedString(@"Open StikDebug", @"launcher overlay view: accessibility label"), nil,
       NSLocalizedString(@"Switches to StikDebug to enable JIT.",
                         @"launcher overlay view: accessibility hint"),
       UIAccessibilityTraitButton);
+  _jitWarningCard = xe_new_notice_card(_jitStatusIcon, _jitTitleLabel, _jitStatusLabel,
+                                       _jitOpenButton);
 
-  UIStackView* jitTextStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ _jitTitleLabel, _jitStatusLabel, _jitOpenButton ]];
-  jitTextStack.axis = UILayoutConstraintAxisVertical;
-  jitTextStack.alignment = UIStackViewAlignmentLeading;
-  jitTextStack.spacing = 2.0;
-  [jitTextStack setCustomSpacing:10.0 afterView:_jitStatusLabel];
-  jitTextStack.translatesAutoresizingMaskIntoConstraints = NO;
-  [_jitWarningCard addSubview:jitTextStack];
-  [NSLayoutConstraint activateConstraints:@[
-    [_jitOpenButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_jitStatusIcon.leadingAnchor constraintEqualToAnchor:_jitWarningCard.leadingAnchor
-                                                 constant:14],
-    [_jitStatusIcon.topAnchor constraintEqualToAnchor:_jitWarningCard.topAnchor constant:12],
-    [_jitStatusIcon.widthAnchor constraintEqualToConstant:26],
-    [jitTextStack.leadingAnchor constraintEqualToAnchor:_jitStatusIcon.trailingAnchor constant:10],
-    [jitTextStack.trailingAnchor constraintEqualToAnchor:_jitWarningCard.trailingAnchor
-                                                constant:-14],
-    [jitTextStack.topAnchor constraintEqualToAnchor:_jitWarningCard.topAnchor constant:10],
-    [jitTextStack.bottomAnchor constraintEqualToAnchor:_jitWarningCard.bottomAnchor constant:-10],
-  ]];
-  [jitTextStack release];
-
-  // Compact memory-entitlement notice shown when the installed signature lacks
+  // Shown when the installed signature lacks
   // com.apple.developer.kernel.increased-memory-limit.
-  _memoryWarningCard = [[UIView alloc] init];
-  _memoryWarningCard.translatesAutoresizingMaskIntoConstraints = NO;
-  _memoryWarningCard.backgroundColor = [XeniaTheme bgSurface];
-  _memoryWarningCard.layer.cornerRadius = XeniaRadiusLg;
-  _memoryWarningCard.layer.borderWidth = 0.5;
-  _memoryWarningCard.layer.borderColor = [XeniaTheme border].CGColor;
-  _memoryWarningCard.hidden = YES;
-
-  UIImageSymbolConfiguration* memoryIconConfig =
-      [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
-  UIImage* memoryIconImage = [UIImage systemImageNamed:@"exclamationmark.triangle.fill"
-                                     withConfiguration:memoryIconConfig];
-  _memoryStatusIcon = [[UIImageView alloc] initWithImage:memoryIconImage];
-  _memoryStatusIcon.translatesAutoresizingMaskIntoConstraints = NO;
+  _memoryStatusIcon = [[UIImageView alloc]
+      initWithImage:[UIImage systemImageNamed:@"memorychip"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleTitle3
+                                                                       scale:
+                                                                           UIImageSymbolScaleMedium]]];
   _memoryStatusIcon.tintColor = [XeniaTheme statusWarning];
-  _memoryStatusIcon.contentMode = UIViewContentModeScaleAspectFit;
-  [_memoryWarningCard addSubview:_memoryStatusIcon];
-
+  UILabel* memoryTitleLabel = [[[UILabel alloc] init] autorelease];
+  memoryTitleLabel.text =
+      NSLocalizedString(@"Memory Limit Is Low", @"launcher overlay view: memory card title");
   _memoryStatusLabel = [[UILabel alloc] init];
-  _memoryStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
   _memoryStatusLabel.text = xe_memory_entitlement_missing_status_message();
-  _memoryStatusLabel.textColor = [XeniaTheme textPrimary];
-  xe_apply_label_font(_memoryStatusLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightMedium);
-  _memoryStatusLabel.numberOfLines = 0;
-  [_memoryWarningCard addSubview:_memoryStatusLabel];
-  XEApplyAccessibility(
-      _memoryWarningCard,
-      NSLocalizedString(@"Memory entitlement status", @"launcher overlay view: user-visible text"),
-      _memoryStatusLabel.text, nil, UIAccessibilityTraitStaticText);
+  _memoryWarningCard =
+      xe_new_notice_card(_memoryStatusIcon, memoryTitleLabel, _memoryStatusLabel, nil);
+  _memoryWarningCard.hidden = YES;
+  XEApplyAccessibility(_memoryWarningCard, memoryTitleLabel.text, _memoryStatusLabel.text, nil,
+                       UIAccessibilityTraitStaticText);
 
   // ── Library header: "Library" (left) + convert + "+" (right) ───────────
 
@@ -548,20 +597,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [_topInfoStack.topAnchor constraintEqualToAnchor:_navSep.bottomAnchor constant:12],
     [_topInfoStack.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:hPad],
     [_topInfoStack.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-hPad],
-
-    // Memory entitlement banner internals.
-    [_memoryStatusIcon.leadingAnchor constraintEqualToAnchor:_memoryWarningCard.leadingAnchor
-                                                    constant:14],
-    [_memoryStatusIcon.centerYAnchor constraintEqualToAnchor:_memoryWarningCard.centerYAnchor],
-    [_memoryStatusIcon.widthAnchor constraintEqualToConstant:18],
-    [_memoryStatusIcon.heightAnchor constraintEqualToConstant:18],
-    [_memoryStatusLabel.leadingAnchor constraintEqualToAnchor:_memoryStatusIcon.trailingAnchor
-                                                     constant:10],
-    [_memoryStatusLabel.trailingAnchor constraintEqualToAnchor:_memoryWarningCard.trailingAnchor
-                                                      constant:-14],
-    [_memoryStatusLabel.topAnchor constraintEqualToAnchor:_memoryWarningCard.topAnchor constant:10],
-    [_memoryStatusLabel.bottomAnchor constraintEqualToAnchor:_memoryWarningCard.bottomAnchor
-                                                    constant:-10],
 
     // Library row internals.
     [_libraryLabel.leadingAnchor constraintEqualToAnchor:libraryRow.leadingAnchor],
@@ -1369,11 +1404,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (game.iconData.length) {
     [self decodeIconForGame:game];
   }
-  UIImage* fallback = [UIImage imageNamed:@"128"];
-  if (!fallback) {
-    fallback = [UIImage systemImageNamed:@"gamecontroller.fill"];
+  // One shared fallback per appearance.
+  static UIImage* fallback[2] = {nil, nil};
+  UIImage*& cached =
+      fallback[self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0];
+  if (!cached) {
+    cached = [xe_placeholder_cover_art(nil, self.traitCollection) retain];
   }
-  return fallback;
+  return cached;
 }
 
 - (void)decodeIconForGame:(XeniaIOSLauncherGameSnapshot*)game {
@@ -1390,10 +1428,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     dispatch_async(dispatch_get_main_queue(), ^{
       [_pendingIconDecodes removeObject:key];
       if (decoded) {
+        UIImage* placeholder = xe_placeholder_cover_art(decoded, self.traitCollection);
         for (XeniaIOSLauncherGameSnapshot* candidate in _games) {
           if (candidate.titleId == titleId && candidate.iconData.length &&
               !candidate.decodedIcon) {
-            candidate.decodedIcon = decoded;
+            candidate.decodedIcon = placeholder;
           }
         }
         [self reconfigureVisibleGamesWithTitleId:titleId];
