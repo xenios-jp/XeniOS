@@ -1609,10 +1609,6 @@ void GuestScheduler::RunLoop(int cpu_index) {
   // Darwin names only the calling thread, so the name EnsureStarted set from
   // its own thread never reaches profilers there.
   xe::threading::set_name("Guest CPU " + std::to_string(cpu_index));
-  // Titles run their main thread on CPU 0, which a frame waits on.
-  if (cpu_index == 0 && xe::threading::PreferPerformanceCores()) {
-    XELOGI("GuestScheduler: CPU 0 prefers the performance cores");
-  }
   Profiler::ThreadEnter(
       ("GuestScheduler CPU " + std::to_string(cpu_index)).c_str());
   Cpu& cpu = cpus_[cpu_index];
