@@ -587,6 +587,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIStackView* _heroButtons;  // not retained; _heroText holds it
   // Art on the left and the grid on the right, for windows wider than tall.
   BOOL _sideLayout;
+  UIButton* _onlineButton;
   // How far the keyboard covers the bottom of the library.
   CGFloat _keyboardOverlap;
   // The games the grid shows, in order: all of them, sorted, or the search's matches.
@@ -947,6 +948,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
   // Online, the capsule's height and only as wide as its text.
   UIButton* online = xe_ios_new_system_link_online_button();
+  _onlineButton = [online retain];
   [online setContentHuggingPriority:UILayoutPriorityRequired
                             forAxis:UILayoutConstraintAxisHorizontal];
   [online.heightAnchor constraintEqualToConstant:44.0].active = YES;
@@ -1349,9 +1351,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     grid_frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left - safe.right,
                             bounds.size.height);
     // The game's rows start at the top, level with ✕; the header has nothing else on that side.
+    // Their list insets its first row past the fade at its top edge.
     XEPlaceSlidingView(_detailRows,
-                       CGRectMake(grid_left, header_top, bounds.size.width - grid_left,
-                                  bounds.size.height - header_top));
+                       CGRectMake(grid_left, header_top - 8.0, bounds.size.width - grid_left,
+                                  bounds.size.height - header_top + 8.0));
     top_inset = header_bottom + 6.0 + stack_block;
     _headerBackdrop.frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left,
                                        header_bottom + 6.0);
@@ -2102,6 +2105,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_heroGame release];
   [_detailGame release];
   [_detailRows release];
+  [_onlineButton release];
   [_detailCloseButton release];
   [_detailMoreButton release];
   [_heroTouchButton release];
@@ -2337,8 +2341,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (!button) {
     return;
   }
-  button.layer.cornerRadius = XeniaRadiusMd;
-  button.layer.borderWidth = focused ? 1.5 : 0.0;
+  // Every focusable control is a capsule or a circle.
+  button.layer.cornerRadius = CGRectGetHeight(button.bounds) / 2.0;
+  button.layer.borderWidth = focused ? 2.0 : 0.0;
   button.layer.borderColor = focused ? [XeniaTheme accent].CGColor : [UIColor clearColor].CGColor;
   button.layer.shadowColor = [XeniaTheme accent].CGColor;
   button.layer.shadowOpacity = focused ? 0.35f : 0.0f;
@@ -2350,7 +2355,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (!button) {
     return;
   }
-  button.layer.cornerRadius = XeniaRadiusMd;
+  if (CGRectGetHeight(button.bounds) > 0.0) {
+    button.layer.cornerRadius = CGRectGetHeight(button.bounds) / 2.0;
+  }
   button.layer.borderWidth = 0.0f;
   button.layer.borderColor = [UIColor clearColor].CGColor;
   button.layer.shadowOpacity = 0.0f;
@@ -2358,30 +2365,64 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   button.layer.shadowOffset = CGSizeZero;
 }
 
+// The views a controller can focus besides the games, with the ring drawn round each one's shape.
+- (NSArray<UIView*>*)controllerFocusViews {
+  NSMutableArray<UIView*>* views = [NSMutableArray array];
+  for (UIView* view in @[ _searchField, _sortButton, _onlineButton, _openGameButton,
+                          _settingsButton, _profileButton, _heroPlayButton, _heroMoreButton ]) {
+    if (view) {
+      [views addObject:view];
+    }
+  }
+  return views;
+}
+
+- (UIView*)viewForControllerFocusTarget:(XeniaIOSLauncherFocusTarget)target {
+  switch (target) {
+    case XeniaIOSLauncherFocusTargetSearch:
+      return _searchField;
+    case XeniaIOSLauncherFocusTargetSort:
+      return _sortButton;
+    case XeniaIOSLauncherFocusTargetOnline:
+      return _onlineButton;
+    case XeniaIOSLauncherFocusTargetImport:
+      return _openGameButton;
+    case XeniaIOSLauncherFocusTargetSettings:
+      return _settingsButton;
+    case XeniaIOSLauncherFocusTargetProfile:
+      return _profileButton;
+    case XeniaIOSLauncherFocusTargetHeroPlay:
+      return _heroPlayButton;
+    case XeniaIOSLauncherFocusTargetHeroMore:
+      return _heroMoreButton;
+    default:
+      return nil;
+  }
+}
+
 - (void)setControllerNavigationEnabled:(BOOL)enabled
-                       settingsFocused:(BOOL)settingsFocused
-                        profileFocused:(BOOL)profileFocused
-                         importFocused:(BOOL)importFocused
-                    libraryFocusActive:(BOOL)libraryFocusActive {
+                           focusTarget:(XeniaIOSLauncherFocusTarget)target {
   BOOL previousLibraryFocusActive = _libraryFocusActive;
   _controllerNavigationEnabled = enabled;
-  _libraryFocusActive = enabled && libraryFocusActive;
+  _libraryFocusActive = enabled && target == XeniaIOSLauncherFocusTargetLibrary;
 
-  if (!_controllerNavigationEnabled) {
-    _libraryFocusActive = NO;
-    [self clearButtonFocusChrome:_settingsButton];
-    [self clearButtonFocusChrome:_profileButton];
-    [self clearButtonFocusChrome:_openGameButton];
-    if (_focusedGameIndex >= 0 && _focusedGameIndex < [self libraryItemCount]) {
-      NSIndexPath* focusedPath = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
-      [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ focusedPath ]];
+  UIView* focused = enabled ? [self viewForControllerFocusTarget:target] : nil;
+  for (UIView* view in [self controllerFocusViews]) {
+    if (view == focused) {
+      [self setButton:(UIButton*)view controllerFocused:YES];
+    } else {
+      [self clearButtonFocusChrome:(UIButton*)view];
     }
-    return;
   }
-
-  [self setButton:_settingsButton controllerFocused:settingsFocused];
-  [self setButton:_profileButton controllerFocused:profileFocused];
-  [self setButton:_openGameButton controllerFocused:importFocused];
+  // Upright, Continue Playing and Search scroll with the games: bring them back to be seen.
+  if (focused && !_sideLayout &&
+      (target == XeniaIOSLauncherFocusTargetHeroPlay ||
+       target == XeniaIOSLauncherFocusTargetHeroMore ||
+       target == XeniaIOSLauncherFocusTargetSearch || target == XeniaIOSLauncherFocusTargetSort)) {
+    [_gamesCollectionView
+        setContentOffset:CGPointMake(0.0, -_gamesCollectionView.adjustedContentInset.top)
+                animated:YES];
+  }
 
   if (_libraryFocusActive && _focusedGameIndex < 0 && _games.count > 0) {
     [self setFocusedGameIndex:0 scroll:NO];
@@ -2392,6 +2433,90 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     NSIndexPath* focusedPath = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
     [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ focusedPath ]];
   }
+}
+
+- (BOOL)controllerShowsHero {
+  return _heroGame != nil && _detailGame == nil && !_heroView.hidden;
+}
+
+- (BOOL)controllerShowsSearch {
+  return !_searchRow.hidden && _searchRow.superview != nil;
+}
+
+- (BOOL)controllerSideLayout {
+  return _sideLayout;
+}
+
+- (BOOL)controllerSearchEditing {
+  return _searchField.isFirstResponder;
+}
+
+- (void)endControllerSearch {
+  [_searchField resignFirstResponder];
+}
+
+- (UIAlertController*)activateControllerFocusTarget:(XeniaIOSLauncherFocusTarget)target {
+  switch (target) {
+    case XeniaIOSLauncherFocusTargetSearch:
+      [_searchField becomeFirstResponder];
+      return nil;
+    case XeniaIOSLauncherFocusTargetOnline:
+      [_onlineButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+      return nil;
+    case XeniaIOSLauncherFocusTargetHeroPlay:
+      [self heroPlayTapped:_heroPlayButton];
+      return nil;
+    case XeniaIOSLauncherFocusTargetHeroMore:
+      [self heroMoreTapped:_heroMoreButton];
+      return nil;
+    case XeniaIOSLauncherFocusTargetSort:
+      return [self controllerSortSheet];
+    default:
+      return nil;
+  }
+}
+
+// Sort's menu as an action sheet, its current choice in bold.
+- (UIAlertController*)controllerSortSheet {
+  UIAlertController* sheet =
+      [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Sort", @"launcher overlay "
+                                                                             @"view: sort sheet "
+                                                                             @"title")
+                                          message:nil
+                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  NSMutableArray<UIMenuElement*>* pending =
+      [NSMutableArray arrayWithArray:_sortButton.menu.children ?: @[]];
+  while (pending.count) {
+    UIMenuElement* element = [[pending.firstObject retain] autorelease];
+    [pending removeObjectAtIndex:0];
+    if ([element isKindOfClass:[UIMenu class]]) {
+      [pending insertObjects:((UIMenu*)element).children
+                   atIndexes:[NSIndexSet
+                                 indexSetWithIndexesInRange:NSMakeRange(
+                                                                0, ((UIMenu*)element)
+                                                                       .children.count)]];
+      continue;
+    }
+    if (![element isKindOfClass:[UIAction class]]) {
+      continue;
+    }
+    UIAction* action = (UIAction*)element;
+    UIAlertAction* choice = [UIAlertAction actionWithTitle:action.title
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(UIAlertAction* __unused alert) {
+                                                     [action performWithSender:nil target:nil];
+                                                   }];
+    [sheet addAction:choice];
+    if (action.state == UIMenuElementStateOn) {
+      sheet.preferredAction = choice;
+    }
+  }
+  [sheet addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  sheet.popoverPresentationController.sourceView = _sortButton;
+  sheet.popoverPresentationController.sourceRect = _sortButton.bounds;
+  return sheet;
 }
 
 #pragma mark - Data ingestion
