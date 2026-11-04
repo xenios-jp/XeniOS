@@ -22,6 +22,9 @@
 // against the session's cool start). Sampled every 5 s and checkpointed 10 s
 // in, then every minute, so a session cut short by a crash or a kill is still
 // reported, at the next launch. Only started while diagnostics can be sent.
+// Its "day" is the UTC day it was played (the day it ended; for one cut short,
+// the day it started), so the Worker counts it on that day though the outbox
+// holds sessions until the day is over.
 
 // A game starts. Ignored if a session is already running.
 void xe_ios_session_stats_begin(void);
