@@ -310,64 +310,62 @@ void DismissLikeSwipe(UIViewController* presented) {
   resume.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                               XeniaIOSInGameMenuActionResume];
 
-  // Row 1 left: Edit Controls
+  // Row 1: Edit Controls, Settings, Quit
   xe::ui::apple::FocusNode edit_controls;
   edit_controls.id = kInGameFocusEdit;
   edit_controls.up = kInGameFocusResume;
-  edit_controls.down = kInGameFocusDisplay;
-  edit_controls.right = kInGameFocusGraphics;
+  edit_controls.down = kInGameFocusGraphics;
+  edit_controls.right = kInGameFocusSettings;
   edit_controls.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                      XeniaIOSInGameMenuActionEditControls];
 
-  // Row 1 right: Graphics
-  xe::ui::apple::FocusNode graphics;
-  graphics.id = kInGameFocusGraphics;
-  graphics.up = kInGameFocusResume;
-  graphics.down = kInGameFocusSettings;
-  graphics.left = kInGameFocusEdit;
-  graphics.enabled = [_host controllerNavigationInGameMenuActionEnabled:
-                                XeniaIOSInGameMenuActionGraphics];
-
-  // Row 2 left: Display
-  xe::ui::apple::FocusNode display_node;
-  display_node.id = kInGameFocusDisplay;
-  display_node.up = kInGameFocusEdit;
-  display_node.down = kInGameFocusAchievements;
-  display_node.right = kInGameFocusSettings;
-  display_node.enabled = [_host controllerNavigationInGameMenuActionEnabled:
-                                    XeniaIOSInGameMenuActionDisplay];
-
-  // Row 2 right: Settings
   xe::ui::apple::FocusNode settings;
   settings.id = kInGameFocusSettings;
-  settings.up = kInGameFocusGraphics;
-  settings.down = kInGameFocusExit;
-  settings.left = kInGameFocusDisplay;
+  settings.up = kInGameFocusResume;
+  settings.down = kInGameFocusDisplay;
+  settings.left = kInGameFocusEdit;
+  settings.right = kInGameFocusExit;
   settings.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                 XeniaIOSInGameMenuActionSettings];
 
-  // Row 3 left: Achievements
-  xe::ui::apple::FocusNode achievements;
-  achievements.id = kInGameFocusAchievements;
-  achievements.up = kInGameFocusDisplay;
-  achievements.down = kInGameFocusLog;
-  achievements.right = kInGameFocusExit;
-  achievements.enabled = [_host controllerNavigationInGameMenuActionEnabled:
-                                     XeniaIOSInGameMenuActionAchievements];
-
-  // Row 3 right: Exit
   xe::ui::apple::FocusNode exit_node;
   exit_node.id = kInGameFocusExit;
-  exit_node.up = kInGameFocusSettings;
-  exit_node.down = kInGameFocusLog;
-  exit_node.left = kInGameFocusAchievements;
+  exit_node.up = kInGameFocusResume;
+  exit_node.down = kInGameFocusAchievements;
+  exit_node.left = kInGameFocusSettings;
   exit_node.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                  XeniaIOSInGameMenuActionExit];
+
+  // Row 2: Graphics, Display, Achievements
+  xe::ui::apple::FocusNode graphics;
+  graphics.id = kInGameFocusGraphics;
+  graphics.up = kInGameFocusEdit;
+  graphics.down = kInGameFocusLog;
+  graphics.right = kInGameFocusDisplay;
+  graphics.enabled = [_host controllerNavigationInGameMenuActionEnabled:
+                                XeniaIOSInGameMenuActionGraphics];
+
+  xe::ui::apple::FocusNode display_node;
+  display_node.id = kInGameFocusDisplay;
+  display_node.up = kInGameFocusSettings;
+  display_node.down = kInGameFocusLog;
+  display_node.left = kInGameFocusGraphics;
+  display_node.right = kInGameFocusAchievements;
+  display_node.enabled = [_host controllerNavigationInGameMenuActionEnabled:
+                                    XeniaIOSInGameMenuActionDisplay];
+
+  xe::ui::apple::FocusNode achievements;
+  achievements.id = kInGameFocusAchievements;
+  achievements.up = kInGameFocusExit;
+  achievements.down = kInGameFocusLog;
+  achievements.left = kInGameFocusDisplay;
+  achievements.enabled = [_host controllerNavigationInGameMenuActionEnabled:
+                                     XeniaIOSInGameMenuActionAchievements];
 
   // Footer: Live Log
   xe::ui::apple::FocusNode log;
   log.id = kInGameFocusLog;
-  log.up = kInGameFocusAchievements;
+  log.up = kInGameFocusDisplay;
   log.down = kInGameFocusResume;
   log.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                            XeniaIOSInGameMenuActionLiveLog];

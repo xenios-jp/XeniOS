@@ -272,7 +272,9 @@
 
   // Close: leading, vertically centred with the title, as on every other sheet.
   CGFloat title_center_y = CGRectGetMidY(hero_sheet_title_label_.frame);
-  hero_close_button_.frame = CGRectMake(16.0, floor(title_center_y - close_size.height / 2.0),
+  // Clear of the sensor housing in landscape.
+  const CGFloat leading = MAX(16.0, hero_header_card_view_.safeAreaInsets.left + 4.0);
+  hero_close_button_.frame = CGRectMake(leading, floor(title_center_y - close_size.height / 2.0),
                                         ceil(close_size.width), ceil(close_size.height));
 }
 
@@ -379,7 +381,7 @@
           : NSLocalizedString(@"Unknown Title", @"game compatibility hero view: title");
   hero_tid_label_.text =
       title_id_
-          ? [NSString stringWithFormat:NSLocalizedString(@"Title ID: %08X",
+          ? [NSString stringWithFormat:NSLocalizedString(@"Title ID %08X",
                                                          @"game compatibility hero view: title"),
                                        title_id_]
           : NSLocalizedString(@"No title ID available", @"game compatibility hero view: title");
@@ -390,7 +392,7 @@
     UIColor* status_color = xe_compat_status_color(status);
     hero_status_pill_.text = xe_compat_status_label(status);
     hero_status_pill_.textColor = status_color;
-    hero_status_pill_.backgroundColor = [status_color colorWithAlphaComponent:0.1];
+    hero_status_pill_.backgroundColor = [status_color colorWithAlphaComponent:0.16];
     hero_status_pill_.hidden = NO;
   } else {
     hero_status_pill_.hidden = YES;
@@ -405,7 +407,7 @@
                                            @"game compatibility hero: performance pill"),
                          xe_compat_perf_label(perf)];
     hero_perf_pill_.textColor = perf_color;
-    hero_perf_pill_.backgroundColor = [perf_color colorWithAlphaComponent:0.1];
+    hero_perf_pill_.backgroundColor = [perf_color colorWithAlphaComponent:0.16];
     hero_perf_pill_.hidden = NO;
   } else {
     hero_perf_pill_.hidden = YES;
@@ -419,7 +421,7 @@
                                                                       : nil);
   if (updated_at.length > 0) {
     hero_updated_label_.text =
-        [NSString stringWithFormat:NSLocalizedString(@"Last updated: %@",
+        [NSString stringWithFormat:NSLocalizedString(@"Updated %@",
                                                      @"game compatibility hero view: label text"),
                                    xe_format_iso_date(updated_at)];
     hero_updated_label_.hidden = NO;
@@ -485,6 +487,7 @@
   [hero_header_view_ setNeedsLayout];
   [hero_header_view_ layoutIfNeeded];
   hero_header_scrim_layer_.frame = hero_header_card_view_.bounds;
+  [self layoutOverlayFrames];
   [self updateHeroHeaderArtwork];
 }
 
@@ -529,6 +532,8 @@
   hero_header_card_view_.layer.borderWidth = 0.5;
   hero_header_card_view_.layer.borderColor = [XeniaTheme border].CGColor;
   hero_header_card_view_.clipsToBounds = YES;
+  hero_header_card_view_.insetsLayoutMarginsFromSafeArea = YES;
+  hero_header_card_view_.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(0, 24, 0, 24);
   [hero_header_view_ addSubview:hero_header_card_view_];
 
   hero_header_backdrop_view_ = [[UIImageView alloc] init];
@@ -630,19 +635,19 @@
   hero_title_label_.textColor = [XeniaTheme textPrimary];
   hero_title_label_.numberOfLines = 2;
   hero_title_label_.lineBreakMode = NSLineBreakByTruncatingTail;
-  xe_apply_label_font(hero_title_label_, UIFontTextStyleLargeTitle, 26.0, UIFontWeightBold);
+  xe_apply_label_font(hero_title_label_, UIFontTextStyleLargeTitle, 30.0, UIFontWeightHeavy);
   [hero_content_stack_ addArrangedSubview:hero_title_label_];
 
   hero_tid_label_ = [[UILabel alloc] init];
   hero_tid_label_.translatesAutoresizingMaskIntoConstraints = NO;
   hero_tid_label_.textColor = [XeniaTheme textSecondary];
-  xe_apply_monospaced_label_font(hero_tid_label_, UIFontTextStyleBody, 13.0, UIFontWeightRegular);
+  xe_apply_label_font(hero_tid_label_, UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
   [hero_content_stack_ addArrangedSubview:hero_tid_label_];
 
   hero_pills_stack_ = [[UIStackView alloc] init];
   hero_pills_stack_.translatesAutoresizingMaskIntoConstraints = NO;
   hero_pills_stack_.axis = UILayoutConstraintAxisHorizontal;
-  hero_pills_stack_.spacing = 10.0;
+  hero_pills_stack_.spacing = 8.0;
   hero_pills_stack_.alignment = UIStackViewAlignmentCenter;
   [hero_pills_stack_ setContentHuggingPriority:UILayoutPriorityRequired
                                        forAxis:UILayoutConstraintAxisHorizontal];
@@ -651,11 +656,12 @@
 
   hero_status_pill_ = [[XeniaPaddedLabel alloc] init];
   hero_status_pill_.translatesAutoresizingMaskIntoConstraints = NO;
-  hero_status_pill_.padding = UIEdgeInsetsMake(2, 7, 2, 7);
+  hero_status_pill_.padding = UIEdgeInsetsMake(5, 11, 5, 11);
   hero_status_pill_.textAlignment = NSTextAlignmentCenter;
-  hero_status_pill_.layer.cornerRadius = XeniaRadiusMd;
+  hero_status_pill_.layer.cornerRadius = 13.0;
+  hero_status_pill_.layer.cornerCurve = kCACornerCurveContinuous;
   hero_status_pill_.clipsToBounds = YES;
-  xe_apply_label_font(hero_status_pill_, UIFontTextStyleCaption1, 11.0, UIFontWeightMedium);
+  xe_apply_label_font(hero_status_pill_, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   [hero_status_pill_ setContentHuggingPriority:UILayoutPriorityRequired
                                        forAxis:UILayoutConstraintAxisHorizontal];
   [hero_status_pill_ setContentCompressionResistancePriority:UILayoutPriorityRequired
@@ -664,11 +670,12 @@
 
   hero_perf_pill_ = [[XeniaPaddedLabel alloc] init];
   hero_perf_pill_.translatesAutoresizingMaskIntoConstraints = NO;
-  hero_perf_pill_.padding = UIEdgeInsetsMake(2, 7, 2, 7);
+  hero_perf_pill_.padding = UIEdgeInsetsMake(5, 11, 5, 11);
   hero_perf_pill_.textAlignment = NSTextAlignmentCenter;
-  hero_perf_pill_.layer.cornerRadius = XeniaRadiusMd;
+  hero_perf_pill_.layer.cornerRadius = 13.0;
+  hero_perf_pill_.layer.cornerCurve = kCACornerCurveContinuous;
   hero_perf_pill_.clipsToBounds = YES;
-  xe_apply_label_font(hero_perf_pill_, UIFontTextStyleCaption1, 11.0, UIFontWeightMedium);
+  xe_apply_label_font(hero_perf_pill_, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   [hero_perf_pill_ setContentHuggingPriority:UILayoutPriorityRequired
                                      forAxis:UILayoutConstraintAxisHorizontal];
   [hero_perf_pill_ setContentCompressionResistancePriority:UILayoutPriorityRequired
@@ -719,11 +726,12 @@
     // content_stack uses auto layout only for leading/trailing/bottom.
     // No top constraint — its top position is determined by its content height
     // and the bottom anchor, avoiding any conflict with the manual-frame views above.
-    [hero_content_stack_.leadingAnchor constraintEqualToAnchor:hero_header_card_view_.leadingAnchor
-                                                      constant:28.0],
+    // The margins grow with the safe area, so a phone in landscape keeps the title clear of
+    // the sensor housing.
+    [hero_content_stack_.leadingAnchor
+        constraintEqualToAnchor:hero_header_card_view_.layoutMarginsGuide.leadingAnchor],
     [hero_content_stack_.trailingAnchor
-        constraintEqualToAnchor:hero_header_card_view_.trailingAnchor
-                       constant:-28.0],
+        constraintEqualToAnchor:hero_header_card_view_.layoutMarginsGuide.trailingAnchor],
     [hero_content_stack_.bottomAnchor constraintEqualToAnchor:hero_header_card_view_.bottomAnchor
                                                      constant:-26.0],
   ]];
