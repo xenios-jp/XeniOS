@@ -83,6 +83,17 @@ NSString* XeniaTouchNSStringFromStdString(const std::string& value) {
   return value.empty() ? @"" : [NSString stringWithUTF8String:value.c_str()];
 }
 
+// The built-in look area was labelled "Look Background", which reads like a setting. Layouts saved
+// with that label show plain words instead; a label the player typed is left alone.
+static NSString* XeniaTouchDisplayLabel(const xe::hid::touch::IOSTouchControlDefinition& control,
+                                 const std::string& label) {
+  if (control.type == xe::hid::touch::IOSTouchControlType::kLookSwipeZone &&
+      (label == "Look Background" || label == control.identifier)) {
+    return NSLocalizedString(@"Swipe to Look", @"Touch editor: the screen-wide look area");
+  }
+  return XeniaTouchNSStringFromStdString(label);
+}
+
 NSString* XeniaTouchConfiguredControlLabelText(
     const xe::hid::touch::IOSTouchControlDefinition& control,
     BOOL fallback_to_identifier) {
@@ -90,7 +101,7 @@ NSString* XeniaTouchConfiguredControlLabelText(
   if (label.empty() && fallback_to_identifier) {
     label = control.identifier;
   }
-  return XeniaTouchNSStringFromStdString(label);
+  return XeniaTouchDisplayLabel(control, label);
 }
 
 NSString* XeniaTouchVisibleControlLabelText(
@@ -100,7 +111,7 @@ NSString* XeniaTouchVisibleControlLabelText(
   if (label.empty() && fallback_to_identifier) {
     label = control.identifier;
   }
-  return XeniaTouchNSStringFromStdString(label);
+  return XeniaTouchDisplayLabel(control, label);
 }
 
 }  // namespace ui

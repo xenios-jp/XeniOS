@@ -15,37 +15,6 @@
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
-namespace {
-
-// A round avatar with the gamertag's initials, as in the Online mockup.
-UIImage* ProfileAvatar(NSString* gamertag, BOOL signed_in) {
-  NSMutableString* initials = [NSMutableString string];
-  for (NSString* word in [gamertag componentsSeparatedByCharactersInSet:
-                                       [NSCharacterSet whitespaceCharacterSet]]) {
-    if (word.length && initials.length < 2) {
-      [initials appendString:[[word substringToIndex:1] uppercaseString]];
-    }
-  }
-  const CGSize size = CGSizeMake(40.0, 40.0);
-  UIGraphicsImageRenderer* renderer =
-      [[[UIGraphicsImageRenderer alloc] initWithSize:size] autorelease];
-  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
-    UIColor* fill = signed_in ? [XeniaTheme accent] : [UIColor colorWithWhite:0.25 alpha:1.0];
-    [fill setFill];
-    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, size.width, size.height)] fill];
-    NSDictionary* attributes = @{
-      NSFontAttributeName : [UIFont systemFontOfSize:15.0 weight:UIFontWeightBold],
-      NSForegroundColorAttributeName : signed_in ? [XeniaTheme accentFg] : [UIColor whiteColor],
-    };
-    const CGSize text = [initials sizeWithAttributes:attributes];
-    [initials drawAtPoint:CGPointMake((size.width - text.width) / 2.0,
-                                      (size.height - text.height) / 2.0)
-           withAttributes:attributes];
-  }];
-}
-
-}  // namespace
-
 // New Profile, as drawn: ✕ dismisses, ✓ creates. One field for the gamertag.
 @interface XeniaNewProfileViewController : XESheetTableViewController <UITextFieldDelegate>
 - (instancetype)initWithCreate:(void (^)(NSString* gamertag))create;
@@ -356,7 +325,7 @@ UIImage* ProfileAvatar(NSString* gamertag, BOOL signed_in) {
     cell.detailTextLabel.text =
         NSLocalizedString(@"Tap to sign in", @"profile view controller: detail text");
   }
-  cell.imageView.image = ProfileAvatar(gamertag, profile.signed_in);
+  cell.imageView.image = xe_profile_avatar_image(gamertag, profile.signed_in, 40.0);
   cell.textLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
   cell.detailTextLabel.font =
       xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
