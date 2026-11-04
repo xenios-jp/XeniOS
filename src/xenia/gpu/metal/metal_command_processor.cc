@@ -4489,12 +4489,24 @@ void MetalCommandProcessor::UpdateGuestConstantCaches(
             uint64_t bits = map.float_bitmap[i];
             uint32_t constant_index;
             while (out != end && xe::bit_scan_forward(bits, &constant_index)) {
-              bits &= ~(uint64_t(1) << constant_index);
+              // A run of used constants is contiguous in the registers and in
+              // the packed buffer alike, so it is copied at once.
+              uint32_t run_length;
+              if (!xe::bit_scan_forward(~(bits >> constant_index),
+                                        &run_length)) {
+                run_length = 64;
+              }
+              run_length = std::min(
+                  run_length, uint32_t(size_t(end - out) /
+                                       (4 * sizeof(uint32_t))));
+              bits = constant_index + run_length < 64
+                         ? bits & (~uint64_t(0) << (constant_index + run_length))
+                         : 0;
               std::memcpy(
                   out,
                   &regs.values[regs_base + (i << 8) + (constant_index << 2)],
-                  4 * sizeof(uint32_t));
-              out += 4 * sizeof(uint32_t);
+                  run_length * 4 * sizeof(uint32_t));
+              out += run_length * 4 * sizeof(uint32_t);
             }
           }
         }
