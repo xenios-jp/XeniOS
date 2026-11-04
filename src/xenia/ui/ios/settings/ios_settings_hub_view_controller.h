@@ -30,6 +30,7 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubAction) {
   XeniaSettingsHubActionResetTouchLayout,
   XeniaSettingsHubActionImportGame,
   XeniaSettingsHubActionRefreshLibrary,
+  XeniaSettingsHubActionManageExternalFolders,  // Handled by the Library & Storage page.
   XeniaSettingsHubActionClearCurrentGameShaderCache,
   XeniaSettingsHubActionClearAllShaderCaches,
 };

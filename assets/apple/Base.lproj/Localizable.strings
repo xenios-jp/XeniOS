@@ -242,6 +242,9 @@
 /* Layout library row detail: the layout in use */
 "Active" = "Active";
 
+/* settings hub view controller: title */
+"Add a layout from Files." = "Add a layout from Files.";
+
 /* game content view controller: detail text */
 "Add a title update or DLC package from Files." = "Add a title update or DLC package from Files.";
 
@@ -301,6 +304,9 @@
 /* config view controller: user-visible text */
 "All settings are back to their defaults. Relaunch XeniOS before testing." = "All settings are back to their defaults. Relaunch XeniOS before testing.";
 
+/* settings hub view controller: title */
+"All your touch layouts." = "All your touch layouts.";
+
 /* zar conversion coordinator: user-visible text */
 "Already ZAR" = "Already ZAR";
 
@@ -355,6 +361,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "Archive is %1$@ larger (%2$@ -> %3$@)." = "Archive is %1$@ larger (%2$@ -> %3$@).";
+
+/* settings hub view controller: title */
+"Arrange the touch controls in the running game." = "Arrange the touch controls in the running game.";
 
 /* config view controller: accessibility hint */
 "Asks before putting every setting back to its default." = "Asks before putting every setting back to its default.";
@@ -424,9 +433,6 @@
 /* Menu item in the Add Control menu */
 "Blank Button" = "Blank Button";
 
-/* settings hub view controller: title */
-"Browse, rename, duplicate, import, export, and reset touch layouts." = "Browse, rename, duplicate, import, export, and reset touch layouts.";
-
 /* compat report cells: label text */
 "Build" = "Build";
 
@@ -453,6 +459,12 @@
 
 /* settings hub view controller: title */
 "Cache Cleanup" = "Cache Cleanup";
+
+/* settings hub view controller: title */
+"Cache Cleanup · Removes saved shaders for every game." = "Cache Cleanup · Removes saved shaders for every game.";
+
+/* settings hub view controller: title */
+"Cache Cleanup · Removes the running game's saved shaders." = "Cache Cleanup · Removes the running game's saved shaders.";
 
 /* settings hub view controller: search result note */
 "Can be overridden per game" = "Can be overridden per game";
@@ -545,9 +557,6 @@
 /* Prompt of the per-game touch layout picker */
 "Choose a title to edit before launch." = "Choose a title to edit before launch.";
 
-/* settings hub view controller: title */
-"Choose an installed title and edit its touch controls before launch." = "Choose an installed title and edit its touch controls before launch.";
-
 /* game disc view controller: user-visible text */
 "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID." = "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID.";
 
@@ -566,20 +575,20 @@
 /* Alert button: confirm clearing all shader caches */
 "Clear All" = "Clear All";
 
-/* settings hub view controller: title */
-"Clear All Shader Caches" = "Clear All Shader Caches";
-
 /* Alert title: confirm clearing all shader caches */
 "Clear All Shader Caches?" = "Clear All Shader Caches?";
 
 /* settings hub view controller: title */
-"Clear Current Game Shader Cache" = "Clear Current Game Shader Cache";
+"Clear All Shaders" = "Clear All Shaders";
 
 /* settings hub view controller: title */
 "Clear saved shaders." = "Clear saved shaders.";
 
 /* Alert title: confirm clearing the current game's shader cache */
 "Clear Shader Cache?" = "Clear Shader Cache?";
+
+/* settings hub view controller: title */
+"Clear This Game's Shaders" = "Clear This Game's Shaders";
 
 /* achievements view controller: button
    external folders view controller: button
@@ -613,9 +622,6 @@
 /* settings hub view controller: title */
 "Compatibility Workarounds" = "Compatibility Workarounds";
 
-/* settings hub view controller: title */
-"Connect a controller before or during gameplay; XeniOS binds it automatically." = "Connect a controller before or during gameplay; XeniOS binds it automatically.";
-
 /* system link status view controller: row */
 "Connected Directly" = "Connected Directly";
 
@@ -644,6 +650,9 @@
 /* Alert title: edit a control's label */
 "Control Label" = "Control Label";
 
+/* settings hub view controller: footer */
+"Controllers work as soon as they connect. The touch controls show when none is connected." = "Controllers work as soon as they connect. The touch controls show when none is connected.";
+
 /* settings hub view controller: title */
 "Controllers, touch and haptics." = "Controllers, touch and haptics.";
 
@@ -652,28 +661,28 @@
 "Controls" = "Controls";
 
 /* settings hub view controller: title */
-"Controls · Auto-bind controllers connected before or during gameplay." = "Controls · Auto-bind controllers connected before or during gameplay.";
+"Controls · Add a layout from Files." = "Controls · Add a layout from Files.";
 
 /* settings hub view controller: title */
-"Controls · Browse, rename, duplicate, import, export, and reset touch layouts." = "Controls · Browse, rename, duplicate, import, export, and reset touch layouts.";
+"Controls · All your touch layouts." = "Controls · All your touch layouts.";
+
+/* settings hub view controller: title */
+"Controls · Arrange the touch controls in the running game." = "Controls · Arrange the touch controls in the running game.";
 
 /* settings hub view controller: title */
 "Controls · Choose a layout before launch or adjust it while a game is running." = "Controls · Choose a layout before launch or adjust it while a game is running.";
 
 /* settings hub view controller: title */
-"Controls · Choose an installed title and edit its touch controls before launch." = "Controls · Choose an installed title and edit its touch controls before launch.";
+"Controls · Go back to the standard layout." = "Controls · Go back to the standard layout.";
 
 /* settings hub view controller: title */
-"Controls · Install a .toml layout from Files." = "Controls · Install a .toml layout from Files.";
+"Controls · Pick a game and arrange its touch controls." = "Controls · Pick a game and arrange its touch controls.";
 
 /* settings hub view controller: title */
-"Controls · Open the in-game touch editor for the currently running title." = "Controls · Open the in-game touch editor for the currently running title.";
+"Controls · Share the running game's layout." = "Controls · Share the running game's layout.";
 
 /* settings hub view controller: title */
-"Controls · Restore the running game's layout to the built-in XeniOS preset." = "Controls · Restore the running game's layout to the built-in XeniOS preset.";
-
-/* settings hub view controller: title */
-"Controls · Share the layout currently loaded in the running game." = "Controls · Share the layout currently loaded in the running game.";
+"Controls · Use controllers as soon as they connect." = "Controls · Use controllers as soon as they connect.";
 
 /* zar conversion coordinator: detail text */
 "Conversion complete." = "Conversion complete.";
@@ -752,6 +761,9 @@
 
 /* log view controller: title */
 "Copy" = "Copy";
+
+/* settings hub view controller: title */
+"Copy a game or add-on from Files." = "Copy a game or add-on from Files.";
 
 /* game actions view controller: user-visible text
    launcher overlay view: title */
@@ -950,11 +962,7 @@
 /* Alert message: confirm clearing all shader caches */
 "Delete persistent shader storage for every title. Games, saves, content, and settings are not removed." = "Delete persistent shader storage for every title. Games, saves, content, and settings are not removed.";
 
-/* settings hub view controller: title */
-"Delete persistent shader storage for every title. This does not remove games or saves." = "Delete persistent shader storage for every title. This does not remove games or saves.";
-
-/* Alert message: confirm clearing the current game's shader cache
-   settings hub view controller: title */
+/* Alert message: confirm clearing the current game's shader cache */
 "Delete persistent shaders for the running title. Relaunch the game before testing." = "Delete persistent shaders for the running title. Relaunch the game before testing.";
 
 /* Alert title: choose a layout to delete */
@@ -1232,7 +1240,8 @@
 /* zar conversion coordinator: user-visible text */
 "External Folder Unavailable" = "External Folder Unavailable";
 
-/* external folders view controller: title */
+/* external folders view controller: title
+   settings hub view controller: title */
 "External Folders" = "External Folders";
 
 /* external folders view controller: label text
@@ -1462,7 +1471,7 @@
 "Games" = "Games";
 
 /* external folders view controller: user-visible text */
-"Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected." = "Games in linked folders appear in your library without being copied. Unlinking a folder only removes it from XeniOS; the files are not deleted. A folder shows as Unavailable when its drive or network share is disconnected.";
+"Games in these folders show in your library without being copied. Swipe a folder to unlink it; its files stay where they are." = "Games in these folders show in your library without being copied. Swipe a folder to unlink it; its files stay where they are.";
 
 /* Detail line of the expanded shader compile indicator */
 "Games may stutter until this finishes." = "Games may stutter until this finishes.";
@@ -1471,16 +1480,19 @@
 "Games save progress and achievements to the signed-in profile." = "Games save progress and achievements to the signed-in profile.";
 
 /* settings hub view controller: title */
-"Games · Install the system update and the Xbox 360 Dashboard." = "Games · Install the system update and the Xbox 360 Dashboard.";
+"Games · Add-ons, updates and patches." = "Games · Add-ons, updates and patches.";
 
 /* settings hub view controller: title */
-"Games · Manage title-specific content from a game tile." = "Games · Manage title-specific content from a game tile.";
+"Games · Copy a game or add-on from Files." = "Games · Copy a game or add-on from Files.";
 
 /* settings hub view controller: title */
-"Games · Open Files and copy a game or content package into XeniOS storage." = "Games · Open Files and copy a game or content package into XeniOS storage.";
+"Games · Look again for added or removed games." = "Games · Look again for added or removed games.";
 
 /* settings hub view controller: title */
-"Games · Rescan XeniOS storage and update the launcher grid." = "Games · Rescan XeniOS storage and update the launcher grid.";
+"Games · Needed for the Xbox 360 Dashboard." = "Games · Needed for the Xbox 360 Dashboard.";
+
+/* settings hub view controller: title */
+"Games · Play games from Files, USB drives or network shares without copying them." = "Games · Play games from Files, USB drives or network shares without copying them.";
 
 /* dashboard setup: button
    system software view controller: action */
@@ -1488,6 +1500,9 @@
 
 /* system software view controller: footer */
 "Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to." = "Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to.";
+
+/* settings hub view controller: title */
+"Go back to the standard layout." = "Go back to the standard layout.";
 
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
@@ -1500,12 +1515,6 @@
    settings hub view controller: title */
 "Graphics" = "Graphics";
 
-/* settings hub view controller: title */
-"Graphics & Performance · Delete persistent shader storage for every title." = "Graphics & Performance · Delete persistent shader storage for every title.";
-
-/* settings hub view controller: title */
-"Graphics & Performance · Delete persistent shaders for the running title." = "Graphics & Performance · Delete persistent shaders for the running title.";
-
 /* compat formatting: user-visible text */
 "Great" = "Great";
 
@@ -1513,7 +1522,7 @@
 "Grid snap" = "Grid snap";
 
 /* settings hub view controller: title */
-"Haptics, overlay visibility, and touch-look tuning." = "Haptics, overlay visibility, and touch-look tuning.";
+"Haptics and how the controls look." = "Haptics and how the controls look.";
 
 /* settings hub view controller: title */
 "Hardware Controllers" = "Hardware Controllers";
@@ -1668,9 +1677,6 @@
 
 /* Alert message; %@ is the layout name */
 "Install \"%@\"?" = "Install \"%@\"?";
-
-/* settings hub view controller: title */
-"Install a .toml layout from Files." = "Install a .toml layout from Files.";
 
 /* game content view controller: title */
 "Install Failed" = "Install Failed";
@@ -1891,6 +1897,9 @@
 /* document import coordinator: title */
 "Link Folder..." = "Link Folder...";
 
+/* external folders view controller: button */
+"Link Folder…" = "Link Folder…";
+
 /* game content view controller: title */
 "Linked" = "Linked";
 
@@ -1917,9 +1926,6 @@
 
 /* document import coordinator: label text */
 "Linked external library: %@" = "Linked external library: %@";
-
-/* external folders view controller: user-visible text */
-"Linked Folders" = "Linked Folders";
 
 /* config view controller: label text
    settings hub view controller: user-visible text */
@@ -1958,6 +1964,9 @@
 
 /* Menu item that assigns a hold-and-drag output */
 "Look" = "Look";
+
+/* settings hub view controller: title */
+"Look again for added or removed games." = "Look again for added or removed games.";
 
 /* Menu item in the Add Control menu */
 "Look Stick" = "Look Stick";
@@ -2072,9 +2081,6 @@
 
 /* game disc view controller: label text */
 "No discs available" = "No discs available";
-
-/* external folders view controller: label text */
-"No external folders linked" = "No external folders linked";
 
 /* dashboard disc tray: empty library title
    launcher overlay view: empty library title */
@@ -2272,9 +2278,6 @@
 /* game actions view controller: user-visible text */
 "Open compatibility status, reports, and notes." = "Open compatibility status, reports, and notes.";
 
-/* settings hub view controller: title */
-"Open Files and copy a game or content package into XeniOS storage." = "Open Files and copy a game or content package into XeniOS storage.";
-
 /* Alert button: opens the Settings app */
 "Open Settings" = "Open Settings";
 
@@ -2283,9 +2286,6 @@
 
 /* settings hub view controller: title */
 "Open StikDebug on launch." = "Open StikDebug on launch.";
-
-/* settings hub view controller: title */
-"Open the in-game touch editor for the currently running title." = "Open the in-game touch editor for the currently running title.";
 
 /* Toast: opening StikDebug */
 "Opening StikDebug for JIT..." = "Opening StikDebug for JIT...";
@@ -2444,7 +2444,7 @@
 "Permanently delete the original files from the external drive." = "Permanently delete the original files from the external drive.";
 
 /* settings hub view controller: title */
-"Pick a game layout before launch, then use Edit Running Touch Layout for final placement." = "Pick a game layout before launch, then use Edit Running Touch Layout for final placement.";
+"Pick a game and arrange its touch controls." = "Pick a game and arrange its touch controls.";
 
 /* game actions view controller: user-visible text */
 "Pick which disc to start for multi-disc games." = "Pick which disc to start for multi-disc games.";
@@ -2460,6 +2460,9 @@
 
 /* System Link invite text; %1$@ is the game, %2$@ the room code */
 "Play %1$@ with me over System Link in XeniOS. Room code: %2$@" = "Play %1$@ with me over System Link in XeniOS. Room code: %2$@";
+
+/* settings hub view controller: title */
+"Play games from Files, USB drives or network shares without copying them." = "Play games from Files, USB drives or network shares without copying them.";
 
 /* system link status view controller: button row */
 "Play in the Public Lobby" = "Play in the Public Lobby";
@@ -2652,6 +2655,12 @@
 /* Result message; %llu is the number of items removed */
 "Removed %llu cached item(s). Relaunch before testing." = "Removed %llu cached item(s). Relaunch before testing.";
 
+/* settings hub view controller: title */
+"Removes saved shaders for every game. Games and saves stay." = "Removes saved shaders for every game. Games and saves stay.";
+
+/* settings hub view controller: title */
+"Removes the running game's saved shaders. They rebuild as you play." = "Removes the running game's saved shaders. They rebuild as you play.";
+
 /* system software view controller: accessibility hint */
 "Removes the system software and the unrestored copy a failed install left. Asks first." = "Removes the system software and the unrestored copy a failed install left. Asks first.";
 
@@ -2689,9 +2698,6 @@
 /* compat report view controller: user-visible text */
 "Reports are tagged as %@." = "Reports are tagged as %@.";
 
-/* settings hub view controller: title */
-"Rescan XeniOS storage and update the launcher grid." = "Rescan XeniOS storage and update the launcher grid.";
-
 /* Alert button: confirm resetting game settings
    Button resetting the touch analog tuning values
    config view controller: swipe action title
@@ -2720,9 +2726,6 @@
 
 /* Slider label in the touch analog tuning screen */
 "Response" = "Response";
-
-/* settings hub view controller: title */
-"Restore the running game's layout to the built-in XeniOS preset." = "Restore the running game's layout to the built-in XeniOS preset.";
 
 /* Toast; %@ is the layout name */
 "Restored %@." = "Restored %@.";
@@ -2962,11 +2965,11 @@
 /* system link view controller: footer */
 "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you." = "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you.";
 
-/* settings hub view controller: title */
-"Share the layout currently loaded in the running game." = "Share the layout currently loaded in the running game.";
-
 /* online view controller: footer */
 "Share the room code with your friends. Everyone needs the game." = "Share the room code with your friends. Everyone needs the game.";
+
+/* settings hub view controller: title */
+"Share the running game's layout." = "Share the running game's layout.";
 
 /* Submenu title in the Add Control menu */
 "Shoulders / Triggers" = "Shoulders / Triggers";
@@ -3211,9 +3214,6 @@
 
 /* Row title in the touch control edit panel */
 "Tap" = "Tap";
-
-/* external folders view controller: detail text */
-"Tap + to link a folder from Files, a USB drive, or a network share." = "Tap + to link a folder from Files, a USB drive, or a network share.";
 
 /* Feedback while picking a control to copy the size from */
 "Tap another button" = "Tap another button";
@@ -3483,8 +3483,7 @@
 /* compat report submission: message */
 "Too many reports were sent recently. Please try again later." = "Too many reports were sent recently. Please try again later.";
 
-/* settings hub view controller: title
-   settings hub view controller: user-visible text */
+/* settings hub view controller: title */
 "Touch Behavior" = "Touch Behavior";
 
 /* VoiceOver label of the on-screen controller area */
@@ -3549,7 +3548,7 @@
 "Unavailable" = "Unavailable";
 
 /* external folders view controller: detail text */
-"Unavailable - tap to re-link\n%@" = "Unavailable - tap to re-link\n%@";
+"Unavailable · Tap to Re-link" = "Unavailable · Tap to Re-link";
 
 /* Display settings toggle */
 "Uncapped Emulated Display" = "Uncapped Emulated Display";

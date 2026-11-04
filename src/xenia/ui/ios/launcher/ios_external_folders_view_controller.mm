@@ -20,6 +20,7 @@
 
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
     @"XeniaIOSExternalLibraryDidChangeNotification";
@@ -197,7 +198,11 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (folders_.empty() || indexPath.row >= static_cast<NSInteger>(folders_.size())) {
+  if ([self isAddRow:indexPath]) {
+    [self addFolderTapped:nil];
+    return;
+  }
+  if (indexPath.row >= static_cast<NSInteger>(folders_.size())) {
     return;
   }
   const xe::ui::IOSExternalLibraryLocation folder = folders_[static_cast<size_t>(indexPath.row)];
@@ -243,99 +248,79 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   return 1;
 }
 
+// The linked folders, then a last row that links another.
 - (NSInteger)tableView:(__unused UITableView*)tableView
     numberOfRowsInSection:(__unused NSInteger)section {
-  return folders_.empty() ? 1 : static_cast<NSInteger>(folders_.size());
+  return static_cast<NSInteger>(folders_.size()) + 1;
 }
 
-- (NSString*)tableView:(__unused UITableView*)tableView
-    titleForHeaderInSection:(__unused NSInteger)section {
-  return NSLocalizedString(@"Linked Folders",
-                           @"external folders view controller: user-visible text");
+- (BOOL)isAddRow:(NSIndexPath*)indexPath {
+  return indexPath.row == static_cast<NSInteger>(folders_.size());
 }
 
 - (NSString*)tableView:(__unused UITableView*)tableView
     titleForFooterInSection:(__unused NSInteger)section {
   return NSLocalizedString(
-      @"Games in linked folders appear in your library without being copied. Unlinking a "
-      @"folder only removes it from XeniOS; the files are not deleted. A folder shows as "
-      @"Unavailable when its drive or network share is disconnected.",
+      @"Games in these folders show in your library without being copied. Swipe a folder to "
+      @"unlink it; its files stay where they are.",
       @"external folders view controller: user-visible text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (folders_.empty()) {
-    static NSString* const kEmptyCellId = @"XeniaIOSExternalFoldersEmptyCell";
-    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kEmptyCellId];
-    if (!cell) {
-      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                     reuseIdentifier:kEmptyCellId] autorelease];
-      cell.selectionStyle = UITableViewCellSelectionStyleNone;
-      cell.textLabel.numberOfLines = 0;
-      cell.detailTextLabel.numberOfLines = 0;
-    }
-    cell.textLabel.text = NSLocalizedString(@"No external folders linked",
-                                            @"external folders view controller: label text");
-    cell.textLabel.textColor = [XeniaTheme textPrimary];
-    cell.detailTextLabel.text =
-        NSLocalizedString(@"Tap + to link a folder from Files, a USB drive, or a network share.",
-                          @"external folders view controller: detail text");
-    cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-    cell.imageView.image = nil;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    return cell;
-  }
-
   static NSString* const kFolderCellId = @"XeniaIOSExternalFoldersFolderCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kFolderCellId];
   if (!cell) {
     cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                    reuseIdentifier:kFolderCellId] autorelease];
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.textLabel.numberOfLines = 0;
-    cell.detailTextLabel.numberOfLines = 0;
+    cell.detailTextLabel.numberOfLines = 1;
+    cell.detailTextLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
   }
+  cell.accessoryType = UITableViewCellAccessoryNone;
+
+  if ([self isAddRow:indexPath]) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Link Folder…", @"external folders view controller: button");
+    cell.textLabel.textColor = [XeniaTheme accent];
+    cell.detailTextLabel.text = nil;
+    cell.imageView.image = XESettingsBadgeImage(@"plus", [XeniaTheme accent]);
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
+    return cell;
+  }
+
   const xe::ui::IOSExternalLibraryLocation& folder = folders_[static_cast<size_t>(indexPath.row)];
   cell.textLabel.text =
       folder.name.empty()
           ? NSLocalizedString(@"External Library", @"external folders view controller: label text")
           : ToNSString(folder.name);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
-
-  NSString* path_text = ToNSString(folder.path.string());
   cell.detailTextLabel.text =
       folder.available
-          ? path_text
-          : [NSString stringWithFormat:NSLocalizedString(
-                                           @"Unavailable - tap to re-link\n%@",
-                                           @"external folders view controller: detail text"),
-                                       path_text];
-  cell.selectionStyle =
-      folder.available ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
+          ? ToNSString(folder.path.string())
+          : NSLocalizedString(@"Unavailable · Tap to Re-link",
+                              @"external folders view controller: detail text");
   cell.detailTextLabel.textColor =
       folder.available ? [XeniaTheme textSecondary] : [XeniaTheme statusWarning];
-
-  UIImageSymbolConfiguration* config =
-      [UIImageSymbolConfiguration configurationWithPointSize:22.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  UIImage* symbol =
-      [UIImage systemImageNamed:(folder.available ? @"externaldrive.fill"
-                                                  : @"externaldrive.badge.exclamationmark")
-              withConfiguration:config];
-  cell.imageView.image = [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  cell.imageView.tintColor = folder.available ? [XeniaTheme accent] : [XeniaTheme statusWarning];
-  cell.accessoryType = UITableViewCellAccessoryNone;
+  cell.imageView.image =
+      folder.available ? XESettingsBadgeImage(@"folder.fill", [XeniaTheme sectionIconBlue])
+                       : XESettingsBadgeImage(@"exclamationmark.triangle.fill",
+                                              [XeniaTheme statusWarning]);
+  cell.selectionStyle =
+      folder.available ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
+  cell.accessibilityTraits =
+      folder.available ? UIAccessibilityTraitStaticText : UIAccessibilityTraitButton;
   return cell;
 }
 
 - (BOOL)tableView:(__unused UITableView*)tableView canEditRowAtIndexPath:(NSIndexPath*)indexPath {
-  return !folders_.empty() && indexPath.row < static_cast<NSInteger>(folders_.size());
+  return indexPath.row < static_cast<NSInteger>(folders_.size());
 }
 
 - (UISwipeActionsConfiguration*)tableView:(__unused UITableView*)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (folders_.empty() || indexPath.row >= static_cast<NSInteger>(folders_.size())) {
+  if (indexPath.row >= static_cast<NSInteger>(folders_.size())) {
     return nil;
   }
   // Capture the folder path now, not the index path: a reload between opening the

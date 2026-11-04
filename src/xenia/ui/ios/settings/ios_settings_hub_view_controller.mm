@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 
+#import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_catalog.h"
 #import "xenia/ui/ios/settings/ios_config_storage.h"
@@ -610,6 +611,12 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   XeniaSettingsActionListItem* item = [items_ objectAtIndex:indexPath.row];
+  if (item.selectable && item.action == XeniaSettingsHubActionManageExternalFolders) {
+    XeniaIOSExternalFoldersViewController* folders =
+        [[[XeniaIOSExternalFoldersViewController alloc] init] autorelease];
+    [self.navigationController pushViewController:folders animated:YES];
+    return;
+  }
   if (!item.selectable || !action_handler_) {
     return;
   }
@@ -628,8 +635,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                                 title:NSLocalizedString(@"Edit Game Touch Layout",
                                                         @"settings hub view controller: title")
                              subtitle:NSLocalizedString(
-                                          @"Choose an installed title and edit its touch "
-                                          @"controls before launch.",
+                                          @"Pick a game and arrange its touch controls.",
                                           @"settings hub view controller: title")
                            symbolName:@"gamecontroller.fill"
                             tintColor:blue]];
@@ -638,8 +644,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                                 title:NSLocalizedString(@"Layout Library",
                                                         @"settings hub view controller: title")
                              subtitle:NSLocalizedString(
-                                          @"Browse, rename, duplicate, import, export, and reset "
-                                          @"touch layouts.",
+                                          @"All your touch layouts.",
                                           @"settings hub view controller: title")
                            symbolName:@"rectangle.grid.2x2.fill"
                             tintColor:blue]];
@@ -649,8 +654,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                                   title:NSLocalizedString(@"Edit Running Touch Layout",
                                                           @"settings hub view controller: title")
                                subtitle:NSLocalizedString(
-                                            @"Open the in-game touch editor for the currently "
-                                            @"running title.",
+                                            @"Arrange the touch controls in the running game.",
                                             @"settings hub view controller: title")
                              symbolName:@"hand.draw.fill"
                               tintColor:blue]];
@@ -659,7 +663,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                        itemWithAction:XeniaSettingsHubActionImportTouchLayout
                                 title:NSLocalizedString(@"Import Layout",
                                                         @"settings hub view controller: title")
-                             subtitle:NSLocalizedString(@"Install a .toml layout from Files.",
+                             subtitle:NSLocalizedString(@"Add a layout from Files.",
                                                         @"settings hub view controller: title")
                            symbolName:@"square.and.arrow.down.fill"
                             tintColor:blue]];
@@ -669,8 +673,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                                   title:NSLocalizedString(@"Export Running Layout",
                                                           @"settings hub view controller: title")
                                subtitle:NSLocalizedString(
-                                            @"Share the layout currently loaded in the running "
-                                            @"game.",
+                                            @"Share the running game's layout.",
                                             @"settings hub view controller: title")
                              symbolName:@"square.and.arrow.up.fill"
                               tintColor:blue]];
@@ -679,8 +682,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
                                   title:NSLocalizedString(@"Reset Running Layout",
                                                           @"settings hub view controller: title")
                                subtitle:NSLocalizedString(
-                                            @"Restore the running game's layout to the built-in "
-                                            @"XeniOS preset.",
+                                            @"Go back to the standard layout.",
                                             @"settings hub view controller: title")
                              symbolName:@"arrow.counterclockwise"
                               tintColor:[XeniaTheme sectionIconOrange]]];
@@ -733,26 +735,20 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
 
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForHeaderInSection:(NSInteger)section {
+  // The second section is one row named like it, so it needs no header.
   return section == 0 ? NSLocalizedString(@"Touch Layouts",
                                           @"settings hub view controller: user-visible text")
-                      : NSLocalizedString(@"Touch Behavior",
-                                          @"settings hub view controller: user-visible text");
+                      : nil;
 }
 
-// The setup advice is a footer under the layouts it refers to, not two rows that do nothing.
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForFooterInSection:(NSInteger)section {
   if (section != 0) {
     return nil;
   }
-  return [NSString
-      stringWithFormat:@"%@ %@",
-                       NSLocalizedString(@"Connect a controller before or during gameplay; "
-                                         @"XeniOS binds it automatically.",
-                                         @"settings hub view controller: title"),
-                       NSLocalizedString(@"Pick a game layout before launch, then use Edit "
-                                         @"Running Touch Layout for final placement.",
-                                         @"settings hub view controller: title")];
+  return NSLocalizedString(@"Controllers work as soon as they connect. The touch controls show "
+                           @"when none is connected.",
+                           @"settings hub view controller: footer");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -779,7 +775,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
     tint_color = item.tintColor;
   } else {
     title = NSLocalizedString(@"Touch Behavior", @"settings hub view controller: title");
-    subtitle = NSLocalizedString(@"Haptics, overlay visibility, and touch-look tuning.",
+    subtitle = NSLocalizedString(@"Haptics and how the controls look.",
                                  @"settings hub view controller: title");
     symbol_name = @"hand.tap.fill";
     tint_color = [XeniaTheme sectionIconBlue];
@@ -1596,8 +1592,7 @@ titleForFooterInSection:(NSInteger)section {
         itemWithKind:XeniaSettingsHubCategoryKindControls
                title:NSLocalizedString(@"Hardware Controllers",
                                        @"settings hub view controller: title")
-            subtitle:NSLocalizedString(
-                         @"Controls · Auto-bind controllers connected before or during gameplay.",
+            subtitle:NSLocalizedString(@"Controls · Use controllers as soon as they connect.",
                          @"settings hub view controller: title")
           symbolName:@"gamecontroller.fill"
            tintColor:blue],
@@ -1613,16 +1608,14 @@ titleForFooterInSection:(NSInteger)section {
         itemWithKind:XeniaSettingsHubCategoryKindTouchLayouts
                title:NSLocalizedString(@"Edit Game Touch Layout",
                                        @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Controls · Choose an installed title and edit its touch "
-                                       @"controls before launch.",
+            subtitle:NSLocalizedString(@"Controls · Pick a game and arrange its touch controls.",
                                        @"settings hub view controller: title")
           symbolName:@"gamecontroller.fill"
            tintColor:blue],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindTouchLayouts
                title:NSLocalizedString(@"Layout Library", @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Controls · Browse, rename, duplicate, import, export, and "
-                                       @"reset touch layouts.",
+            subtitle:NSLocalizedString(@"Controls · All your touch layouts.",
                                        @"settings hub view controller: title")
           symbolName:@"rectangle.grid.2x2.fill"
            tintColor:blue],
@@ -1631,15 +1624,14 @@ titleForFooterInSection:(NSInteger)section {
                title:NSLocalizedString(@"Edit Running Touch Layout",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(
-                    @"Controls · Open the in-game touch editor for the currently running title.",
+                NSLocalizedString(@"Controls · Arrange the touch controls in the running game.",
                     @"settings hub view controller: title")
           symbolName:@"hand.draw.fill"
            tintColor:blue],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindTouchLayouts
                title:NSLocalizedString(@"Import Layout", @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Controls · Install a .toml layout from Files.",
+            subtitle:NSLocalizedString(@"Controls · Add a layout from Files.",
                                        @"settings hub view controller: title")
           symbolName:@"square.and.arrow.down.fill"
            tintColor:blue],
@@ -1647,8 +1639,7 @@ titleForFooterInSection:(NSInteger)section {
         itemWithKind:XeniaSettingsHubCategoryKindTouchLayouts
                title:NSLocalizedString(@"Export Running Layout",
                                        @"settings hub view controller: title")
-            subtitle:NSLocalizedString(
-                         @"Controls · Share the layout currently loaded in the running game.",
+            subtitle:NSLocalizedString(@"Controls · Share the running game's layout.",
                          @"settings hub view controller: title")
           symbolName:@"square.and.arrow.up.fill"
            tintColor:blue],
@@ -1657,8 +1648,7 @@ titleForFooterInSection:(NSInteger)section {
                title:NSLocalizedString(@"Reset Running Layout",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(
-                    @"Controls · Restore the running game's layout to the built-in XeniOS preset.",
+                NSLocalizedString(@"Controls · Go back to the standard layout.",
                     @"settings hub view controller: title")
           symbolName:@"arrow.counterclockwise"
            tintColor:[XeniaTheme sectionIconOrange]],
@@ -1689,35 +1679,41 @@ titleForFooterInSection:(NSInteger)section {
                title:NSLocalizedString(@"Import Game", @"settings hub view controller: title")
             subtitle:
                 NSLocalizedString(
-                    @"Games · Open Files and copy a game or content package into XeniOS storage.",
+                    @"Games · Copy a game or add-on from Files.",
                     @"settings hub view controller: title")
-          symbolName:@"plus.app.fill"
+          symbolName:@"plus"
            tintColor:[XeniaTheme accent]],
+    [XeniaSettingsHubItem
+        itemWithKind:XeniaSettingsHubCategoryKindLibrary
+               title:NSLocalizedString(@"External Folders", @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Games · Play games from Files, USB drives or network "
+                                       @"shares without copying them.",
+                                       @"settings hub view controller: title")
+          symbolName:@"folder.fill"
+           tintColor:[XeniaTheme sectionIconBlue]],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Refresh Library", @"settings hub view controller: title")
             subtitle:NSLocalizedString(
-                         @"Games · Rescan XeniOS storage and update the launcher grid.",
+                         @"Games · Look again for added or removed games.",
                          @"settings hub view controller: title")
           symbolName:@"arrow.clockwise"
            tintColor:[XeniaTheme sectionIconGray]],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
-               title:NSLocalizedString(@"Clear Current Game Shader Cache",
+               title:NSLocalizedString(@"Clear This Game's Shaders",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(
-                    @"Graphics & Performance · Delete persistent shaders for the running title.",
+                NSLocalizedString(@"Cache Cleanup · Removes the running game's saved shaders.",
                     @"settings hub view controller: title")
           symbolName:@"trash"
            tintColor:[XeniaTheme sectionIconOrange]],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
-               title:NSLocalizedString(@"Clear All Shader Caches",
+               title:NSLocalizedString(@"Clear All Shaders",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(
-                    @"Graphics & Performance · Delete persistent shader storage for every title.",
+                NSLocalizedString(@"Cache Cleanup · Removes saved shaders for every game.",
                     @"settings hub view controller: title")
           symbolName:@"trash.fill"
            tintColor:[XeniaTheme sectionIconRed]],
@@ -1725,7 +1721,7 @@ titleForFooterInSection:(NSInteger)section {
         itemWithKind:XeniaSettingsHubCategoryKindGameContent
                title:NSLocalizedString(@"Game Content and Patches",
                                        @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Games · Manage title-specific content from a game tile.",
+            subtitle:NSLocalizedString(@"Games · Add-ons, updates and patches.",
                                        @"settings hub view controller: title")
           symbolName:@"puzzlepiece.extension.fill"
            tintColor:[XeniaTheme sectionIconGray]],
@@ -1733,8 +1729,7 @@ titleForFooterInSection:(NSInteger)section {
         itemWithKind:XeniaSettingsHubCategoryKindSystemSoftware
                title:NSLocalizedString(@"Xbox 360 System Software",
                                        @"settings hub view controller: title")
-            subtitle:NSLocalizedString(
-                         @"Games · Install the system update and the Xbox 360 Dashboard.",
+            subtitle:NSLocalizedString(@"Games · Needed for the Xbox 360 Dashboard.",
                          @"settings hub view controller: title")
           symbolName:@"square.stack.3d.up.fill"
            tintColor:[XeniaTheme sectionIconGray]],
@@ -2015,17 +2010,24 @@ titleForFooterInSection:(NSInteger)section {
         [XeniaSettingsActionListItem
             itemWithAction:XeniaSettingsHubActionImportGame
                      title:NSLocalizedString(@"Import Game", @"settings hub view controller: title")
-                  subtitle:
-                      NSLocalizedString(
-                          @"Open Files and copy a game or content package into XeniOS storage.",
-                          @"settings hub view controller: title")
-                symbolName:@"plus.app.fill"
+                  subtitle:NSLocalizedString(@"Copy a game or add-on from Files.",
+                                             @"settings hub view controller: title")
+                symbolName:@"plus"
                  tintColor:[XeniaTheme accent]],
+        [XeniaSettingsActionListItem
+            itemWithAction:XeniaSettingsHubActionManageExternalFolders
+                     title:NSLocalizedString(@"External Folders",
+                                             @"settings hub view controller: title")
+                  subtitle:NSLocalizedString(@"Play games from Files, USB drives or network "
+                                             @"shares without copying them.",
+                                             @"settings hub view controller: title")
+                symbolName:@"folder.fill"
+                 tintColor:[XeniaTheme sectionIconBlue]],
         [XeniaSettingsActionListItem
             itemWithAction:XeniaSettingsHubActionRefreshLibrary
                      title:NSLocalizedString(@"Refresh Library",
                                              @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Rescan XeniOS storage and update the launcher grid.",
+                  subtitle:NSLocalizedString(@"Look again for added or removed games.",
                                              @"settings hub view controller: title")
                 symbolName:@"arrow.clockwise"
                  tintColor:gray],
@@ -2040,19 +2042,19 @@ titleForFooterInSection:(NSInteger)section {
       NSArray* items = @[
         [XeniaSettingsActionListItem
             itemWithAction:XeniaSettingsHubActionClearCurrentGameShaderCache
-                     title:NSLocalizedString(@"Clear Current Game Shader Cache",
+                     title:NSLocalizedString(@"Clear This Game's Shaders",
                                              @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Delete persistent shaders for the running title. "
-                                             @"Relaunch the game before testing.",
+                  subtitle:NSLocalizedString(@"Removes the running game's saved shaders. They "
+                                             @"rebuild as you play.",
                                              @"settings hub view controller: title")
                 symbolName:@"trash"
                  tintColor:[XeniaTheme sectionIconOrange]],
         [XeniaSettingsActionListItem
             itemWithAction:XeniaSettingsHubActionClearAllShaderCaches
-                     title:NSLocalizedString(@"Clear All Shader Caches",
+                     title:NSLocalizedString(@"Clear All Shaders",
                                              @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Delete persistent shader storage for every title. "
-                                             @"This does not remove games or saves.",
+                  subtitle:NSLocalizedString(@"Removes saved shaders for every game. Games and "
+                                             @"saves stay.",
                                              @"settings hub view controller: title")
                 symbolName:@"trash.fill"
                  tintColor:[XeniaTheme sectionIconRed]],

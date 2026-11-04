@@ -452,29 +452,26 @@ static std::vector<IOSConfigSection> BuildControlsSections() {
   std::vector<IOSConfigSection> sections;
   IOSConfigSection touch;
   touch.title = "Touch Behavior";
-  touch.footer = "Lower look points increase camera sensitivity.";
-  AddBoolSetting(touch.items, "ios_touch_haptics", "Touch Haptics",
-                 "Play haptic feedback on touch button presses, control selection, and "
-                 "snap engagement.",
+  AddBoolSetting(touch.items, "ios_touch_haptics", "Haptics",
+                 "Vibrate when you press a touch button.",
                  true);
-  AddBoolSetting(touch.items, "ios_touch_overlay", "Show Touch Overlay",
-                 "Show on-screen touch controls during gameplay when no hardware "
-                 "controller is connected.",
+  AddBoolSetting(touch.items, "ios_touch_overlay", "Touch Controls",
+                 "Show on-screen controls when no controller is connected.",
                  true);
   AddDoubleSetting(touch.items, "ios_touch_look_points_per_full_scale",
-                   "Look Points Per Full Scale",
-                   "Swipe distance needed to drive the touch look zone to full stick output.");
-  AddDoubleSetting(touch.items, "ios_touch_look_vertical_scale", "Look Vertical Scale",
-                   "Extra multiplier for vertical swipe-look motion.");
+                   "Look Swipe Distance",
+                   "How far to swipe to turn at full speed. Lower turns faster.");
+  AddDoubleSetting(touch.items, "ios_touch_look_vertical_scale", "Vertical Look Speed",
+                   "Speed of looking up and down, relative to left and right.");
   PushIfNotEmpty(sections, std::move(touch));
 
   IOSConfigSection low_fps;
-  low_fps.title = "Low-FPS Games";
-  low_fps.footer = "Hold timings help low-FPS games observe short touch input pulses.";
-  AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold Seconds",
-                   "How long touch look motion persists for low-FPS polling.");
-  AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Button Tap Hold Seconds",
-                   "How long tap-style touch buttons stay active for low-FPS polling.");
+  low_fps.title = "Slow Games";
+  low_fps.footer = "Helps games running at a low frame rate notice quick swipes and taps.";
+  AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold Time",
+                   "Seconds a swipe keeps turning the camera.");
+  AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Tap Hold Time",
+                   "Seconds a tap keeps a button pressed.");
   PushIfNotEmpty(sections, std::move(low_fps));
   return sections;
 }
@@ -592,15 +589,6 @@ static std::vector<IOSConfigSection> BuildSystemSections() {
       false);
   PushIfNotEmpty(sections, std::move(automation));
 
-  IOSConfigSection library;
-  library.title = "Library";
-  library.footer =
-      "Link folders from Files, USB drives, or network shares to play games without copying "
-      "them into XeniOS.";
-  AddActionSetting(library.items, IOSConfigAction::kManageExternalFolders,
-                   "Manage External Folders",
-                   "Folders XeniOS looks in for games.");
-  PushIfNotEmpty(sections, std::move(library));
 
   return sections;
 }
