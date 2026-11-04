@@ -831,8 +831,10 @@ MTL::CommandBuffer* MetalTextureCache::EnsureUploadCommandBufferBatch() {
   if (!cmd) {
     return nullptr;
   }
-  cmd->setLabel(
-      NS::String::string("XeniaTextureUploadBatch", NS::UTF8StringEncoding));
+  if (command_processor_->debug_labels()) {
+    cmd->setLabel(
+        NS::String::string("XeniaTextureUploadBatch", NS::UTF8StringEncoding));
+  }
   upload_batch_command_buffer_ = cmd;
   upload_batch_command_buffer_has_work_ = false;
   return cmd;

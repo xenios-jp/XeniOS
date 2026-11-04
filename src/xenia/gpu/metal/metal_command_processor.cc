@@ -2322,6 +2322,16 @@ bool MetalCommandProcessor::SetupContext() {
     return false;
   }
 
+  MTL::CaptureManager* capture_manager =
+      MTL::CaptureManager::sharedCaptureManager();
+  debug_labels_ =
+      (capture_manager &&
+       (capture_manager->supportsDestination(
+            MTL::CaptureDestinationDeveloperTools) ||
+        capture_manager->supportsDestination(
+            MTL::CaptureDestinationGPUTraceDocument))) ||
+      std::getenv("MTL_DEBUG_LAYER");
+
   wait_shared_event_ = device_->newSharedEvent();
   if (wait_shared_event_) {
     wait_shared_event_->setLabel(
@@ -6845,8 +6855,10 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
     return nullptr;
   }
   current_command_buffer_->retain();
-  current_command_buffer_->setLabel(
-      NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
+  if (debug_labels_) {
+    current_command_buffer_->setLabel(
+        NS::String::string("XeniaCommandBuffer", NS::UTF8StringEncoding));
+  }
   command_buffer_render_passes_ = 0;
 
   if (!UseDxilPath() && !EnsureSpirvUniformBuffer()) {
@@ -7342,8 +7354,10 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       render_target_cache_->ConsumeRenderPassDescriptorClears(pass_descriptor);
     }
     ++render_passes_total_;
-    current_render_encoder_->setLabel(
-        NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
+    if (debug_labels_) {
+      current_render_encoder_->setLabel(
+          NS::String::string("XeniaRenderEncoder", NS::UTF8StringEncoding));
+    }
     render_encoder_has_zpd_visibility_ =
         IsQueryPoolReady() && (pass_descriptor->visibilityResultBuffer() ==
                                zpd_visibility_pool_->visibility_buffer());
