@@ -98,6 +98,10 @@ class MetalCommandProcessor : public CommandProcessor {
   bool HasActiveRenderEncoder() const {
     return current_render_encoder_ != nullptr;
   }
+  // Whether to label per-frame command buffers and encoders. Only GPU captures
+  // and the validation layer show them, and each costs a string and a driver
+  // call.
+  bool debug_labels() const { return debug_labels_; }
   // Ends the encoders the command processor keeps open on the command buffer if
   // it's the current one, so the caller can encode its own work after them.
   void EndEncodersForCommandBuffer(MTL::CommandBuffer* command_buffer) {
@@ -712,6 +716,7 @@ class MetalCommandProcessor : public CommandProcessor {
   // Whether the descriptor the current encoder was created from carried the
   // visibility result buffer, so a ZPD segment may be opened on it.
   bool render_encoder_has_zpd_visibility_ = false;
+  bool debug_labels_ = false;
 
   // Tracks resources marked via useResource for the current render encoder
   // to avoid redundant driver calls across draws within the same encoder.
