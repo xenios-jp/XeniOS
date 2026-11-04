@@ -544,9 +544,6 @@
 /* game disc view controller: user-visible text */
 "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID." = "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID.";
 
-/* online view controller: footer */
-"Choose the game, then share the code with the players you want. Everyone needs the game." = "Choose the game, then share the code with the players you want. Everyone needs the game.";
-
 /* Name of a touch control shape */
 "Circle" = "Circle";
 
@@ -581,7 +578,8 @@
    game patches view controller: title
    Message box button
    Navigation bar button that closes the touch layout editor
-   settings hub view controller: title */
+   settings hub view controller: title
+   system link view controller: button */
 "Close" = "Close";
 
 /* VoiceOver hint for the disc tray's Leave Empty button */
@@ -1199,7 +1197,7 @@
 "Everyone playing this game." = "Everyone playing this game.";
 
 /* online view controller: footer */
-"Everyone with XeniOS open and Online features on, in the library or in a game. Games list their public lobbies; private rooms are only counted. To join one, ask for its code." = "Everyone with XeniOS open and Online features on, in the library or in a game. Games list their public lobbies; private rooms are only counted. To join one, ask for its code.";
+"Everyone with XeniOS open and Online on. To join a private room, ask for its code." = "Everyone with XeniOS open and Online on. To join a private room, ask for its code.";
 
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
@@ -2968,6 +2966,9 @@
 
 /* settings hub view controller: title */
 "Share the layout currently loaded in the running game." = "Share the layout currently loaded in the running game.";
+
+/* online view controller: footer */
+"Share the room code with your friends. Everyone needs the game." = "Share the room code with your friends. Everyone needs the game.";
 
 /* Submenu title in the Add Control menu */
 "Shoulders / Triggers" = "Shoulders / Triggers";
