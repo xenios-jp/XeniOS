@@ -11,33 +11,45 @@
 
 #import <GameController/GameController.h>
 
+#import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 @interface XeniaIOSInGameMenuOverlay ()
-- (UIStackView*)newMenuRowWithButtons:(NSArray<UIButton*>*)buttons;
-- (void)updateButton:(UIButton*)button
-               title:(NSString*)title
-             compact:(BOOL)compact
-              resume:(BOOL)resume;
+- (UIStackView*)newRowWithButtons:(NSArray<UIButton*>*)buttons;
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact;
+- (void)updateHeader;
 - (NSString*)pauseEmulatorTitle;
 - (NSString*)pauseEmulatorHint;
 - (NSString*)exitTitle;
 - (NSString*)exitAccessibilityHint;
 @end
 
+namespace {
+
+constexpr CGFloat kResumeHeight = 52.0;
+constexpr CGFloat kResumeHeightCompact = 44.0;
+constexpr CGFloat kTileHeight = 70.0;
+constexpr CGFloat kTileHeightCompact = 54.0;
+constexpr CGFloat kTileRadius = 20.0;
+constexpr CGFloat kPanelRadius = 34.0;
+
+}  // namespace
+
 @implementation XeniaIOSInGameMenuOverlay {
   UIView* _panel;
+  UIVisualEffectView* _panelBackdrop;
+  UIImageView* _coverView;
   UILabel* _titleLabel;
   UILabel* _subtitleLabel;
   UILabel* _thermalLabel;
   UIView* _systemLinkLabel;
   UIStackView* _contentStack;
+  UIStackView* _headerStack;
   UIStackView* _rowOneStack;
   UIStackView* _rowTwoStack;
-  UIStackView* _rowThreeStack;
   UIStackView* _footerStack;
   UIButton* _resumeButton;
   UIButton* _editControlsButton;
@@ -50,20 +62,21 @@
   UIButton* _exitButton;
   UIMenu* _displayMenu;
   NSLayoutConstraint* _panelWidthConstraint;
+  NSLayoutConstraint* _coverWidthConstraint;
+  NSLayoutConstraint* _resumeHeightConstraint;
+  NSLayoutConstraint* _rowOneHeightConstraint;
+  NSLayoutConstraint* _rowTwoHeightConstraint;
+  NSArray<NSLayoutConstraint*>* _paddingConstraints;
   // Tracks the last applied compact-landscape mode so layoutSubviews doesn't
   // reassign button configurations (which invalidates intrinsic sizes and
   // re-dirties layout, looping at display refresh rate) on every pass.
   BOOL _hasAppliedMenuLayout;
   BOOL _appliedCompactLandscape;
-  NSLayoutConstraint* _resumeHeightConstraint;
-  NSLayoutConstraint* _rowOneHeightConstraint;
-  NSLayoutConstraint* _rowTwoHeightConstraint;
-  NSLayoutConstraint* _rowThreeHeightConstraint;
-  NSLayoutConstraint* _liveLogHeightConstraint;
   BOOL _controllerNavigationEnabled;
   XeniaIOSInGameMenuAction _focusedAction;
   void (^_graphicsHandler)(void);
   BOOL _emulatorPaused;
+  uint32_t _coverTitleID;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -72,7 +85,9 @@
   }
 
   self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-  self.backgroundColor = [XeniaTheme overlayLight];
+  self.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.3];
+  // The menu sits over the game, so it keeps the dark look in light mode too.
+  self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   self.hidden = YES;
   self.userInteractionEnabled = NO;
   // While shown, VoiceOver stays in the menu instead of reaching the touch
@@ -81,28 +96,51 @@
   _focusedAction = XeniaIOSInGameMenuActionNone;
   _controllerNavigationEnabled = NO;
 
+  // One glass panel; the game shows through it.
   _panel = [[UIView alloc] init];
   _panel.translatesAutoresizingMaskIntoConstraints = NO;
   xe_apply_floating_window_chrome(_panel);
+  _panel.layer.cornerRadius = kPanelRadius;
+  _panel.layer.cornerCurve = kCACornerCurveContinuous;
+  for (UIView* view in _panel.subviews) {
+    if ([view isKindOfClass:[UIVisualEffectView class]]) {
+      _panelBackdrop = (UIVisualEffectView*)view;
+      view.layer.cornerRadius = kPanelRadius;
+      view.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+  }
   [self addSubview:_panel];
+
+  // Header: the cover, the game and how long it has run.
+  _coverView = [[UIImageView alloc] init];
+  _coverView.translatesAutoresizingMaskIntoConstraints = NO;
+  _coverView.contentMode = UIViewContentModeScaleAspectFill;
+  _coverView.clipsToBounds = YES;
+  _coverView.layer.cornerRadius = 8.0;
+  _coverView.layer.cornerCurve = kCACornerCurveContinuous;
+  _coverView.hidden = YES;
 
   _titleLabel = [[UILabel alloc] init];
   _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _titleLabel.text = NSLocalizedString(@"In-Game Menu", @"Title of the in-game pause menu");
+  _titleLabel.text = NSLocalizedString(@"Paused", @"Title of the in-game menu without a game name");
   _titleLabel.textColor = [XeniaTheme textPrimary];
-  xe_apply_label_font(_titleLabel, UIFontTextStyleTitle2, 22.0,
-                      UIFontWeightSemibold);
-  _titleLabel.textAlignment = NSTextAlignmentCenter;
+  _titleLabel.numberOfLines = 2;
   _titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
 
   _subtitleLabel = [[UILabel alloc] init];
   _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _subtitleLabel.text =
-      NSLocalizedString(@"Tap anywhere to close", @"Subtitle of the in-game menu");
-  _subtitleLabel.textColor = [XeniaTheme textMuted];
-  xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline, 15.0,
-                      UIFontWeightRegular);
-  _subtitleLabel.textAlignment = NSTextAlignmentCenter;
+  _subtitleLabel.textColor = [XeniaTheme textSecondary];
+  _subtitleLabel.numberOfLines = 1;
+  xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline, 13.0, UIFontWeightRegular);
+
+  UIStackView* header_text =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ _titleLabel, _subtitleLabel ]] autorelease];
+  header_text.axis = UILayoutConstraintAxisVertical;
+  header_text.spacing = 2.0;
+  _headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[ _coverView, header_text ]];
+  _headerStack.axis = UILayoutConstraintAxisHorizontal;
+  _headerStack.alignment = UIStackViewAlignmentCenter;
+  _headerStack.spacing = 14.0;
 
   // Shown while the device is Serious or hotter, so the warm state outlives the one-time toast.
   _thermalLabel = [[UILabel alloc] init];
@@ -111,7 +149,6 @@
                                          @"In-game menu notice while thermally limited");
   _thermalLabel.textColor = [XeniaTheme statusWarning];
   _thermalLabel.numberOfLines = 0;
-  _thermalLabel.textAlignment = NSTextAlignmentCenter;
   xe_apply_label_font(_thermalLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   _thermalLabel.hidden = YES;
   _systemLinkLabel = xe_ios_new_system_link_status_view();
@@ -121,115 +158,68 @@
                                              object:nil];
 
   _resumeButton = [self newButtonWithTitle:NSLocalizedString(@"Resume", @"In-game menu button")
-                                 imageName:nil
-                           backgroundColor:[XeniaTheme textPrimary]
-                           foregroundColor:[XeniaTheme bgPrimary]
+                                 imageName:@"play.fill"
                                 menuAction:XeniaIOSInGameMenuActionResume
                                     action:@selector(resumePressed:)];
-
   _editControlsButton =
       [self newButtonWithTitle:NSLocalizedString(@"Edit Controls", @"In-game menu button")
-                     imageName:@"hand.tap"
-               backgroundColor:[XeniaTheme bgSurface2]
-               foregroundColor:[XeniaTheme textPrimary]
+                     imageName:@"hand.raised"
                     menuAction:XeniaIOSInGameMenuActionEditControls
                         action:@selector(editControlsPressed:)];
-
-  _achievementsButton =
-      [self newButtonWithTitle:NSLocalizedString(@"Achievements", @"In-game menu button")
-                     imageName:@"trophy"
-               backgroundColor:[XeniaTheme bgSurface2]
-               foregroundColor:[XeniaTheme textPrimary]
-                    menuAction:XeniaIOSInGameMenuActionAchievements
-                        action:@selector(achievementsPressed:)];
-
+  _settingsButton = [self newButtonWithTitle:NSLocalizedString(@"Settings", @"In-game menu button")
+                                   imageName:@"slider.horizontal.3"
+                                  menuAction:XeniaIOSInGameMenuActionSettings
+                                      action:@selector(settingsPressed:)];
+  _exitButton = [self newButtonWithTitle:[self exitTitle]
+                               imageName:@"power"
+                              menuAction:XeniaIOSInGameMenuActionExit
+                                  action:@selector(exitPressed:)];
+  _graphicsButton = [self newButtonWithTitle:NSLocalizedString(@"Graphics", @"In-game menu button")
+                                   imageName:@"cpu"
+                                  menuAction:XeniaIOSInGameMenuActionGraphics
+                                      action:@selector(graphicsPressed:)];
   _displayButton = [self newButtonWithTitle:NSLocalizedString(@"Display", @"In-game menu button")
-                                  imageName:@"rectangle.expand.vertical"
-                            backgroundColor:[XeniaTheme bgSurface2]
-                            foregroundColor:[XeniaTheme textPrimary]
+                                  imageName:@"aspectratio"
                                  menuAction:XeniaIOSInGameMenuActionDisplay
                                      action:nil];
   _displayButton.showsMenuAsPrimaryAction = YES;
-
-  _settingsButton = [self newButtonWithTitle:NSLocalizedString(@"Settings", @"In-game menu button")
-                                   imageName:@"slider.horizontal.3"
-                             backgroundColor:[XeniaTheme bgSurface2]
-                             foregroundColor:[XeniaTheme textPrimary]
-                                  menuAction:XeniaIOSInGameMenuActionSettings
-                                      action:@selector(settingsPressed:)];
-
-  _graphicsButton = [self newButtonWithTitle:NSLocalizedString(@"Graphics", @"In-game menu button")
-                                   imageName:@"gearshape.2.fill"
-                             backgroundColor:[XeniaTheme bgSurface2]
-                             foregroundColor:[XeniaTheme textPrimary]
-                                  menuAction:XeniaIOSInGameMenuActionGraphics
-                                      action:@selector(graphicsPressed:)];
-
-  _liveLogButton = [self newButtonWithTitle:NSLocalizedString(@"Live Log", @"In-game menu button")
-                                  imageName:@"doc.text"
-                            backgroundColor:[XeniaTheme bgSurface2]
-                            foregroundColor:[XeniaTheme textPrimary]
-                                 menuAction:XeniaIOSInGameMenuActionLiveLog
-                                     action:@selector(liveLogPressed:)];
-
+  _achievementsButton =
+      [self newButtonWithTitle:NSLocalizedString(@"Achievements", @"In-game menu button")
+                     imageName:@"trophy"
+                    menuAction:XeniaIOSInGameMenuActionAchievements
+                        action:@selector(achievementsPressed:)];
   // The menu leaves the game running, so a System Link game keeps going for the other
   // players. This pauses it until the user resumes it or closes the menu.
   _pauseEmulatorButton = [self newButtonWithTitle:[self pauseEmulatorTitle]
                                         imageName:@"pause.fill"
-                                  backgroundColor:[XeniaTheme bgSurface2]
-                                  foregroundColor:[XeniaTheme textPrimary]
                                        menuAction:XeniaIOSInGameMenuActionPauseEmulator
                                            action:@selector(pauseEmulatorPressed:)];
+  _liveLogButton = [self newButtonWithTitle:NSLocalizedString(@"Live Log", @"In-game menu button")
+                                  imageName:@"doc.text"
+                                 menuAction:XeniaIOSInGameMenuActionLiveLog
+                                     action:@selector(liveLogPressed:)];
 
-  _exitButton = [self newButtonWithTitle:[self exitTitle]
-                               imageName:@"rectangle.portrait.and.arrow.right"
-                         backgroundColor:[[XeniaTheme statusError] colorWithAlphaComponent:0.25]
-                         foregroundColor:[XeniaTheme textPrimary]
-                              menuAction:XeniaIOSInGameMenuActionExit
-                                  action:@selector(exitPressed:)];
-
-  _rowOneStack = [self newMenuRowWithButtons:@[
-    _editControlsButton,
-    _graphicsButton,
-  ]];
-  _rowTwoStack = [self newMenuRowWithButtons:@[
-    _displayButton,
-    _settingsButton,
-  ]];
-  _rowThreeStack = [self newMenuRowWithButtons:@[
-    _achievementsButton,
-    _exitButton,
-  ]];
-  _footerStack = [self newMenuRowWithButtons:@[
-    _pauseEmulatorButton,
-    _liveLogButton,
-  ]];
+  _rowOneStack = [self newRowWithButtons:@[ _editControlsButton, _settingsButton, _exitButton ]];
+  _rowTwoStack =
+      [self newRowWithButtons:@[ _graphicsButton, _displayButton, _achievementsButton ]];
+  _footerStack = [self newRowWithButtons:@[ _pauseEmulatorButton, _liveLogButton ]];
 
   _contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[
-    _titleLabel,
-    _subtitleLabel,
+    _headerStack,
     _thermalLabel,
     _systemLinkLabel,
     _resumeButton,
     _rowOneStack,
     _rowTwoStack,
-    _rowThreeStack,
     _footerStack,
   ]];
   _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
   _contentStack.axis = UILayoutConstraintAxisVertical;
   _contentStack.alignment = UIStackViewAlignmentFill;
-  _contentStack.distribution = UIStackViewDistributionFill;
   _contentStack.spacing = 10.0;
-  // The glass buttons share one container so neighbouring buttons blend like the system's.
-  UIVisualEffectView* glass_container = [[UIVisualEffectView alloc] initWithEffect:nil];
-  glass_container.translatesAutoresizingMaskIntoConstraints = NO;
-  UIGlassContainerEffect* container_effect = [[[UIGlassContainerEffect alloc] init] autorelease];
-  container_effect.spacing = 10.0;
-  glass_container.effect = container_effect;
-  [glass_container.contentView addSubview:_contentStack];
-  [_panel addSubview:glass_container];
-  [glass_container autorelease];
+  [_contentStack setCustomSpacing:18.0 afterView:_headerStack];
+  [_contentStack setCustomSpacing:4.0 afterView:_rowTwoStack];
+  [_panel addSubview:_contentStack];
 
   [NSLayoutConstraint activateConstraints:@[
     [_panel.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
@@ -244,47 +234,42 @@
                                                   constant:-8],
   ]];
 
-  _panelWidthConstraint =
-      [[_panel.widthAnchor constraintEqualToConstant:420] retain];
+  _panelWidthConstraint = [[_panel.widthAnchor constraintEqualToConstant:420] retain];
   _panelWidthConstraint.priority = UILayoutPriorityDefaultHigh;
+  _coverWidthConstraint = [[_coverView.widthAnchor constraintEqualToConstant:44.0] retain];
   _resumeHeightConstraint =
-      [[_resumeButton.heightAnchor constraintGreaterThanOrEqualToConstant:52] retain];
+      [[_resumeButton.heightAnchor constraintEqualToConstant:kResumeHeight] retain];
   _rowOneHeightConstraint =
-      [[_rowOneStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
+      [[_rowOneStack.heightAnchor constraintGreaterThanOrEqualToConstant:kTileHeight] retain];
   _rowTwoHeightConstraint =
-      [[_rowTwoStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
-  _rowThreeHeightConstraint =
-      [[_rowThreeStack.heightAnchor constraintGreaterThanOrEqualToConstant:50] retain];
-  _liveLogHeightConstraint =
-      [[_liveLogButton.heightAnchor constraintGreaterThanOrEqualToConstant:46] retain];
+      [[_rowTwoStack.heightAnchor constraintGreaterThanOrEqualToConstant:kTileHeight] retain];
   _resumeHeightConstraint.priority = UILayoutPriorityDefaultHigh;
   _rowOneHeightConstraint.priority = UILayoutPriorityDefaultHigh;
   _rowTwoHeightConstraint.priority = UILayoutPriorityDefaultHigh;
-  _rowThreeHeightConstraint.priority = UILayoutPriorityDefaultHigh;
-  _liveLogHeightConstraint.priority = UILayoutPriorityDefaultHigh;
+  _paddingConstraints = [@[
+    [_contentStack.topAnchor constraintEqualToAnchor:_panel.topAnchor constant:22],
+    [_contentStack.leadingAnchor constraintEqualToAnchor:_panel.leadingAnchor constant:22],
+    [_panel.trailingAnchor constraintEqualToAnchor:_contentStack.trailingAnchor constant:22],
+    [_panel.bottomAnchor constraintEqualToAnchor:_contentStack.bottomAnchor constant:14],
+  ] retain];
+  [NSLayoutConstraint activateConstraints:_paddingConstraints];
   [NSLayoutConstraint activateConstraints:@[
     _panelWidthConstraint,
+    _coverWidthConstraint,
+    [_coverView.heightAnchor constraintEqualToAnchor:_coverView.widthAnchor
+                                          multiplier:300.0 / 219.0],
     _resumeHeightConstraint,
     _rowOneHeightConstraint,
     _rowTwoHeightConstraint,
-    _rowThreeHeightConstraint,
-    _liveLogHeightConstraint,
-
-    [glass_container.topAnchor constraintEqualToAnchor:_panel.topAnchor constant:14],
-    [glass_container.leadingAnchor constraintEqualToAnchor:_panel.leadingAnchor constant:14],
-    [glass_container.trailingAnchor constraintEqualToAnchor:_panel.trailingAnchor constant:-14],
-    [glass_container.bottomAnchor constraintEqualToAnchor:_panel.bottomAnchor constant:-14],
-    [_contentStack.topAnchor constraintEqualToAnchor:glass_container.contentView.topAnchor],
-    [_contentStack.leadingAnchor constraintEqualToAnchor:glass_container.contentView.leadingAnchor],
-    [_contentStack.trailingAnchor
-        constraintEqualToAnchor:glass_container.contentView.trailingAnchor],
-    [_contentStack.bottomAnchor constraintEqualToAnchor:glass_container.contentView.bottomAnchor],
   ]];
+  [self updateHeader];
   return self;
 }
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_gameTitle release];
+  [_sessionStartDate release];
   [_thermalLabel release];
   [_systemLinkLabel release];
   [_resumeHandler release];
@@ -297,16 +282,17 @@
   [_pauseEmulatorHandler release];
   [_displayMenu release];
   [_panelWidthConstraint release];
+  [_coverWidthConstraint release];
   [_resumeHeightConstraint release];
   [_rowOneHeightConstraint release];
   [_rowTwoHeightConstraint release];
-  [_rowThreeHeightConstraint release];
-  [_liveLogHeightConstraint release];
+  [_paddingConstraints release];
   [_contentStack release];
+  [_headerStack release];
   [_rowOneStack release];
   [_rowTwoStack release];
-  [_rowThreeStack release];
   [_footerStack release];
+  [_coverView release];
   [_titleLabel release];
   [_subtitleLabel release];
   [_panel release];
@@ -322,36 +308,55 @@
   [super dealloc];
 }
 
+// Resume is the one white button; the six actions are tiles, an icon over a short name; Pause
+// Emulator and Live Log are quiet text buttons at the foot.
 - (UIButton*)newButtonWithTitle:(NSString*)title
                       imageName:(NSString*)imageName
-                backgroundColor:(UIColor*)backgroundColor
-                foregroundColor:(UIColor*)foregroundColor
                      menuAction:(XeniaIOSInGameMenuAction)menuAction
                          action:(SEL)action {
   const BOOL resume = menuAction == XeniaIOSInGameMenuActionResume;
-  // Resume is the one prominent glass button; the rest are plain glass. Only Resume and Exit
-  // carry a tint (white, as the one primary button, and error); the others keep the neutral glass.
-  UIButtonConfiguration* config = resume ? [UIButtonConfiguration prominentGlassButtonConfiguration]
-                                         : [UIButtonConfiguration glassButtonConfiguration];
+  const BOOL footer = menuAction == XeniaIOSInGameMenuActionPauseEmulator ||
+                      menuAction == XeniaIOSInGameMenuActionLiveLog;
+  const BOOL exit = menuAction == XeniaIOSInGameMenuActionExit;
+  UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
-  if (imageName.length) {
-    config.image = [UIImage systemImageNamed:imageName];
-    config.imagePadding = 6;
+  config.image = [UIImage systemImageNamed:imageName];
+  config.titleLineBreakMode = NSLineBreakByTruncatingTail;
+  UIColor* tile_fill = [UIColor colorWithWhite:1.0 alpha:0.1];
+  if (resume) {
+    config.baseForegroundColor = [UIColor blackColor];
+    config.background.backgroundColor = [UIColor whiteColor];
+    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    config.imagePadding = 8.0;
+    config.preferredSymbolConfigurationForImage =
+        [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleSubheadline];
+  } else if (footer) {
+    config.baseForegroundColor = [XeniaTheme textSecondary];
+    config.imagePadding = 6.0;
+    config.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
+    config.preferredSymbolConfigurationForImage =
+        [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleFootnote];
+  } else {
+    config.baseForegroundColor = exit ? [XeniaTheme statusError] : [XeniaTheme textPrimary];
+    config.background.backgroundColor = tile_fill;
+    config.background.cornerRadius = kTileRadius;
+    config.cornerStyle = UIButtonConfigurationCornerStyleFixed;
+    config.imagePlacement = NSDirectionalRectEdgeTop;
+    config.imagePadding = 5.0;
+    config.contentInsets = NSDirectionalEdgeInsetsMake(8, 6, 8, 6);
+    config.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration
+        configurationWithFont:[UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium]];
   }
-  config.baseForegroundColor = foregroundColor;
-  if (resume || menuAction == XeniaIOSInGameMenuActionExit) {
-    config.baseBackgroundColor = backgroundColor;
-  }
-  config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-  config.contentInsets = resume ? NSDirectionalEdgeInsetsMake(12, 18, 12, 18)
-                                : NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
   UIButton* button = [[UIButton buttonWithConfiguration:config primaryAction:nil] retain];
   button.translatesAutoresizingMaskIntoConstraints = NO;
-  xe_apply_button_title_font(button, UIFontTextStyleBody, 16.0, UIFontWeightSemibold);
-  // Long labels and large Dynamic Type wrap onto a second line instead of shrinking or clipping.
-  button.titleLabel.numberOfLines = 0;
-  button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
-  button.titleLabel.textAlignment = NSTextAlignmentCenter;
+  if (resume) {
+    xe_apply_button_title_font(button, UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
+  } else {
+    xe_apply_button_title_font(button, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  }
+  // The controller focus ring follows the button's shape.
+  button.layer.cornerRadius = resume ? kResumeHeight / 2.0 : (footer ? 12.0 : kTileRadius);
+  button.layer.cornerCurve = kCACornerCurveContinuous;
   button.accessibilityLabel = title;
   button.tag = menuAction;
   switch (menuAction) {
@@ -399,7 +404,7 @@
   return button;
 }
 
-- (UIStackView*)newMenuRowWithButtons:(NSArray<UIButton*>*)buttons {
+- (UIStackView*)newRowWithButtons:(NSArray<UIButton*>*)buttons {
   UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:buttons];
   row.translatesAutoresizingMaskIntoConstraints = NO;
   row.axis = UILayoutConstraintAxisHorizontal;
@@ -409,83 +414,98 @@
   return row;
 }
 
-- (void)updateButton:(UIButton*)button
-               title:(NSString*)title
-             compact:(BOOL)compact
-              resume:(BOOL)resume {
-  UIButtonConfiguration* config = button.configuration;
-  config.title = title;
-  config.imagePadding = compact ? 4.0 : 6.0;
-  if (resume) {
-    config.contentInsets =
-        compact ? NSDirectionalEdgeInsetsMake(8, 14, 8, 14)
-                : NSDirectionalEdgeInsetsMake(12, 18, 12, 18);
-  } else {
-    config.contentInsets =
-        compact ? NSDirectionalEdgeInsetsMake(7, 10, 7, 10)
-                : NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
-  }
-  button.configuration = config;
-
-  xe_apply_button_title_font(button,
-                             compact ? UIFontTextStyleSubheadline
-                                     : UIFontTextStyleBody,
-                             compact ? (resume ? 16.0 : 14.0) : 16.0,
-                             UIFontWeightSemibold);
-  // Long labels and large Dynamic Type wrap onto a second line instead of shrinking or clipping.
-  button.titleLabel.numberOfLines = 0;
-  button.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
-  button.titleLabel.textAlignment = NSTextAlignmentCenter;
-}
-
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact {
-  _subtitleLabel.hidden = compact;
-  _contentStack.spacing = compact ? 6.0 : 10.0;
+  // A phone in landscape is short: smaller tiles and padding keep the panel on screen.
+  const CGFloat padding = compact ? 16.0 : 22.0;
+  _paddingConstraints[0].constant = padding;
+  _paddingConstraints[1].constant = padding;
+  _paddingConstraints[2].constant = padding;
+  _paddingConstraints[3].constant = compact ? 8.0 : 14.0;
+  _contentStack.spacing = compact ? 8.0 : 10.0;
+  [_contentStack setCustomSpacing:compact ? 12.0 : 18.0 afterView:_headerStack];
   _rowOneStack.spacing = compact ? 8.0 : 10.0;
   _rowTwoStack.spacing = compact ? 8.0 : 10.0;
-  _rowThreeStack.spacing = compact ? 8.0 : 10.0;
-  _footerStack.spacing = compact ? 8.0 : 10.0;
-  _resumeHeightConstraint.constant = compact ? 42.0 : 52.0;
-  _rowOneHeightConstraint.constant = compact ? 42.0 : 50.0;
-  _rowTwoHeightConstraint.constant = compact ? 42.0 : 50.0;
-  _rowThreeHeightConstraint.constant = compact ? 42.0 : 50.0;
-  _liveLogHeightConstraint.constant = compact ? 40.0 : 46.0;
+  _coverWidthConstraint.constant = compact ? 34.0 : 44.0;
+  _resumeHeightConstraint.constant = compact ? kResumeHeightCompact : kResumeHeight;
+  _resumeButton.layer.cornerRadius = _resumeHeightConstraint.constant / 2.0;
+  _rowOneHeightConstraint.constant = compact ? kTileHeightCompact : kTileHeight;
+  _rowTwoHeightConstraint.constant = compact ? kTileHeightCompact : kTileHeight;
+  xe_apply_label_font(_titleLabel, UIFontTextStyleTitle3, compact ? 17.0 : 20.0,
+                      UIFontWeightBold);
+  for (UIButton* tile in @[
+         _editControlsButton, _settingsButton, _exitButton, _graphicsButton, _displayButton,
+         _achievementsButton
+       ]) {
+    UIButtonConfiguration* config = tile.configuration;
+    config.imagePadding = compact ? 3.0 : 5.0;
+    config.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration
+        configurationWithFont:[UIFont systemFontOfSize:compact ? 17.0 : 20.0
+                                                weight:UIFontWeightMedium]];
+    tile.configuration = config;
+  }
+}
 
-  xe_apply_label_font(_titleLabel,
-                      compact ? UIFontTextStyleHeadline : UIFontTextStyleTitle2,
-                      compact ? 18.0 : 22.0, UIFontWeightSemibold);
-  xe_apply_label_font(_subtitleLabel, UIFontTextStyleSubheadline,
-                      compact ? 13.0 : 15.0, UIFontWeightRegular);
+// The game's name and cover, and "Playing · 1h 12m" (or Paused) under it.
+- (void)updateHeader {
+  _titleLabel.text = _gameTitle.length
+                         ? _gameTitle
+                         : NSLocalizedString(@"Paused",
+                                             @"Title of the in-game menu without a game name");
+  NSString* state = _emulatorPaused
+                        ? NSLocalizedString(@"Paused", @"In-game menu: the game is paused")
+                        : NSLocalizedString(@"Playing", @"In-game menu: the game is running");
+  NSString* elapsed = nil;
+  const NSTimeInterval seconds =
+      _sessionStartDate ? -[_sessionStartDate timeIntervalSinceNow] : 0.0;
+  if (seconds >= 60.0) {
+    NSDateComponentsFormatter* formatter = [[[NSDateComponentsFormatter alloc] init] autorelease];
+    formatter.unitsStyle = NSDateComponentsFormatterUnitsStyleAbbreviated;
+    formatter.allowedUnits = seconds >= 3600.0 ? (NSCalendarUnitHour | NSCalendarUnitMinute)
+                                               : NSCalendarUnitMinute;
+    elapsed = [formatter stringFromTimeInterval:seconds];
+  }
+  _subtitleLabel.text = elapsed ? [NSString stringWithFormat:@"%@ · %@", state, elapsed] : state;
 
-  [self updateButton:_resumeButton
-               title:NSLocalizedString(@"Resume", @"In-game menu button")
-             compact:compact
-              resume:YES];
-  NSString* edit_controls_title = NSLocalizedString(@"Edit Controls", @"In-game menu button");
-  [self updateButton:_editControlsButton title:edit_controls_title compact:compact resume:NO];
-  [self updateButton:_graphicsButton
-               title:NSLocalizedString(@"Graphics", @"In-game menu button")
-             compact:compact
-              resume:NO];
-  [self updateButton:_displayButton
-               title:NSLocalizedString(@"Display", @"In-game menu button")
-             compact:compact
-              resume:NO];
-  [self updateButton:_settingsButton
-               title:NSLocalizedString(@"Settings", @"In-game menu button")
-             compact:compact
-              resume:NO];
-  [self updateButton:_achievementsButton
-               title:NSLocalizedString(@"Achievements", @"In-game menu button")
-             compact:compact
-              resume:NO];
-  [self updateButton:_exitButton title:[self exitTitle] compact:compact resume:NO];
-  NSString* live_log_title = NSLocalizedString(@"Live Log", @"In-game menu button");
-  [self updateButton:_liveLogButton title:live_log_title compact:compact resume:NO];
-  [self updateButton:_pauseEmulatorButton
-               title:[self pauseEmulatorTitle]
-             compact:compact
-              resume:NO];
+  if (_coverTitleID != _titleID) {
+    _coverTitleID = _titleID;
+    UIImage* cover = _titleID ? xe_cached_game_art(_titleID) : nil;
+    _coverView.image = cover;
+    _coverView.hidden = cover == nil;
+    if (!cover && _titleID) {
+      const uint32_t title_id = _titleID;
+      UIImageView* cover_view = [_coverView retain];
+      xe_fetch_game_art(title_id, ^(UIImage* image) {
+        if (image && self->_coverTitleID == title_id) {
+          cover_view.image = image;
+          cover_view.hidden = NO;
+        }
+        [cover_view release];
+      });
+    }
+  }
+}
+
+- (void)setGameTitle:(NSString*)gameTitle {
+  if (_gameTitle == gameTitle) {
+    return;
+  }
+  [_gameTitle release];
+  _gameTitle = [gameTitle copy];
+  [self updateHeader];
+}
+
+- (void)setTitleID:(uint32_t)titleID {
+  _titleID = titleID;
+  [self updateHeader];
+}
+
+- (void)setSessionStartDate:(NSDate*)sessionStartDate {
+  if (_sessionStartDate == sessionStartDate) {
+    return;
+  }
+  [_sessionStartDate release];
+  _sessionStartDate = [sessionStartDate retain];
+  [self updateHeader];
 }
 
 - (NSString*)pauseEmulatorTitle {
@@ -515,11 +535,9 @@
   _emulatorPaused = emulatorPaused;
   UIButtonConfiguration* config = _pauseEmulatorButton.configuration;
   config.image = [UIImage systemImageNamed:emulatorPaused ? @"play.fill" : @"pause.fill"];
+  config.title = [self pauseEmulatorTitle];
   _pauseEmulatorButton.configuration = config;
-  [self updateButton:_pauseEmulatorButton
-               title:[self pauseEmulatorTitle]
-             compact:_appliedCompactLandscape
-              resume:NO];
+  [self updateHeader];
   _pauseEmulatorButton.accessibilityLabel = [self pauseEmulatorTitle];
   _pauseEmulatorButton.accessibilityHint = [self pauseEmulatorHint];
 }
@@ -598,8 +616,7 @@
   if (!button) {
     return;
   }
-  button.layer.cornerRadius = XeniaRadiusMd;
-  button.layer.borderWidth = focused ? 1.5 : 0.0;
+  button.layer.borderWidth = focused ? 2.5 : 0.0;
   button.layer.borderColor = focused ? [XeniaTheme accent].CGColor : [UIColor clearColor].CGColor;
   button.layer.shadowColor = [XeniaTheme accent].CGColor;
   button.layer.shadowOpacity = focused ? 0.35f : 0.0f;
@@ -646,18 +663,8 @@
                completion:(void (^)(BOOL finished))completion {
   self.userInteractionEnabled = visible;
   if (visible) {
-    BOOL has_controller = NO;
-    for (GCController* controller in GCController.controllers) {
-      has_controller = has_controller || controller.extendedGamepad != nil;
-    }
-    _subtitleLabel.text =
-        has_controller
-            ? NSLocalizedString(@"Press B or tap anywhere to close",
-                                @"Subtitle of the in-game menu when a controller is connected")
-            : NSLocalizedString(@"Tap anywhere to close", @"Subtitle of the in-game menu");
-  }
-  if (visible) {
     [self updateThermalNotice];
+    [self updateHeader];
   }
   if (visible == !self.hidden) {
     if (completion) {
@@ -726,14 +733,9 @@
                       self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact);
   const BOOL regularWidth =
       self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
-  if (compactLandscape) {
-    _panelWidthConstraint.constant = MIN(560.0, MAX(320.0, safeFrame.size.width - 24.0));
-  } else if (regularWidth) {
-    // iPad and wide windows: a readable width that follows the window, not a phone-width stack.
-    _panelWidthConstraint.constant = MIN(560.0, MAX(320.0, safeFrame.size.width - 24.0));
-  } else {
-    _panelWidthConstraint.constant = isLandscape ? 540.0 : 420.0;
-  }
+  // Three tiles to a row read best a little wider than a phone is in portrait.
+  _panelWidthConstraint.constant =
+      MIN(regularWidth ? 480.0 : 440.0, MAX(300.0, safeFrame.size.width - 24.0));
   if (!_hasAppliedMenuLayout || _appliedCompactLandscape != compactLandscape) {
     _hasAppliedMenuLayout = YES;
     _appliedCompactLandscape = compactLandscape;
@@ -785,10 +787,10 @@
 
 - (NSString*)exitTitle {
   return _exitsToDashboard
-             ? NSLocalizedString(@"Exit To Dashboard",
+             ? NSLocalizedString(@"Quit to Dashboard",
                                  @"In-game menu button, leaves a game the Xbox 360 Dashboard "
                                  @"started for the dashboard")
-             : NSLocalizedString(@"Exit To Library", @"In-game menu button, leaves the game");
+             : NSLocalizedString(@"Quit Game", @"In-game menu button, leaves the game");
 }
 
 - (NSString*)exitAccessibilityHint {
