@@ -4297,6 +4297,22 @@ void MetalCommandProcessor::ComputeDrawViewportInfo(
   }
 }
 
+uint32_t MetalCommandProcessor::GetDrawScissorBottom() const {
+  if (!register_file_) {
+    return 0;
+  }
+  const RegisterFile& regs = *register_file_;
+  if (!draw_util::IsRasterizationPotentiallyDone(
+          regs, draw_util::IsPrimitivePolygonal(regs))) {
+    return 0;
+  }
+  draw_util::Scissor scissor;
+  draw_util::GetScissor(regs, scissor);
+  uint32_t draw_resolution_scale_y =
+      texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1;
+  return (scissor.offset[1] + scissor.extent[1]) * draw_resolution_scale_y;
+}
+
 void MetalCommandProcessor::ApplyViewportAndScissor(
     const RegisterFile& regs, const draw_util::ViewportInfo& viewport_info) {
   SCOPE_profile_cpu_f("gpu");
@@ -6848,6 +6864,13 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     EndRenderEncoder();
   }
 
+  // A draw reaching below the open pass's render area needs a pass covering
+  // it.
+  if (current_render_encoder_ && render_encoder_area_restricted_ &&
+      GetDrawScissorBottom() > render_encoder_height_) {
+    EndRenderEncoder();
+  }
+
   // Obtain the render pass descriptor. Prefer the one provided by
   // MetalRenderTargetCache (host render-target path), falling back to the
   // legacy descriptor if needed.
@@ -6943,6 +6966,10 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   }
 
   if (!current_render_encoder_) {
+    if (render_target_cache_) {
+      render_target_cache_->SetRenderPassArea(pass_descriptor,
+                                              GetDrawScissorBottom());
+    }
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
     render_encoder_shared_memory_hazards_.Abandon();
@@ -6985,6 +7012,8 @@ void MetalCommandProcessor::BeginCommandBuffer() {
                       render_target_height_, rt_width, rt_height);
     render_encoder_width_ = rt_width;
     render_encoder_height_ = rt_height;
+    render_encoder_area_restricted_ =
+        pass_descriptor->renderTargetHeight() != 0;
     MTL::Viewport viewport = {
         0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
         0.0, 1.0};

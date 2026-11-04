@@ -204,6 +204,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // encoder already recording holds the attachments in tile memory instead.
   MTL::RenderPassDescriptor* GetRenderPassDescriptor(
       uint32_t expected_sample_count, bool render_encoder_pending);
+  // Sets the render area of the draw pass about to be created from the
+  // descriptor: the rows its render targets hold EDRAM data in, and at least
+  // min_height (the first draw's scissor), in pixels at the draw resolution
+  // scale. Render targets are as tall as the EDRAM, and a tile-based GPU loads,
+  // clears and stores every tile of the render area. Leaves the whole
+  // attachment when a target holds nothing, the area would be all of it, or
+  // the descriptor isn't the cache's draw pass descriptor.
+  void SetRenderPassArea(MTL::RenderPassDescriptor* pass_descriptor,
+                         uint32_t min_height) const;
   // Whether an existing encoder's descriptor still binds the textures needed
   // by the current guest render-target configuration.
   bool IsRenderPassDescriptorCompatible(
@@ -334,6 +343,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       xenos::DepthRenderTargetFormat format) const override;
 
  private:
+  // Sets the render area of a pass on the render targets with the keys, as
+  // SetRenderPassArea does for the draw pass.
+  void RestrictRenderArea(MTL::RenderPassDescriptor* pass_descriptor,
+                          const RenderTargetKey* keys, uint32_t key_count,
+                          uint32_t min_height) const;
   void RecordRenderTargetViewCreated();
 
   MTL::Library* GetOrCreateEdramLoadLibrary(bool msaa);

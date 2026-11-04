@@ -770,6 +770,10 @@ class RenderTargetCache {
   bool IsRenderTargetDataOnlyInRectangle(
       RenderTargetKey key, bool is_64bpp,
       const Transfer::Rectangle& rectangle) const;
+  // The rows from the top of the render target with the key that hold every
+  // EDRAM range it holds in any of the ownership roles (in its pixels, at 1x
+  // resolution scale), 0 if it holds none.
+  uint32_t GetRenderTargetOwnedHeight(RenderTargetKey key) const;
 
   // Sets up the needed render targets and transfers to perform a clear in a
   // resolve operation via a host render target clear. resolve_info is expected

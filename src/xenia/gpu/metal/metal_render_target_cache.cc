@@ -3161,6 +3161,70 @@ void MetalRenderTargetCache::ConsumeRenderPassDescriptorClears(
   }
 }
 
+void MetalRenderTargetCache::SetRenderPassArea(
+    MTL::RenderPassDescriptor* pass_descriptor, uint32_t min_height) const {
+  if (!pass_descriptor) {
+    return;
+  }
+  if (pass_descriptor != cached_render_pass_descriptor_) {
+    pass_descriptor->setRenderTargetWidth(0);
+    pass_descriptor->setRenderTargetHeight(0);
+    return;
+  }
+  RenderTargetKey keys[1 + xenos::kMaxColorRenderTargets];
+  uint32_t key_count = 0;
+  if (current_depth_target_ && current_depth_target_->texture()) {
+    keys[key_count++] = current_depth_target_->key();
+  }
+  for (const MetalRenderTarget* color_target : current_color_targets_) {
+    if (color_target && color_target->texture()) {
+      keys[key_count++] = color_target->key();
+    }
+  }
+  RestrictRenderArea(pass_descriptor, keys, key_count, min_height);
+}
+
+void MetalRenderTargetCache::RestrictRenderArea(
+    MTL::RenderPassDescriptor* pass_descriptor, const RenderTargetKey* keys,
+    uint32_t key_count, uint32_t min_height) const {
+  pass_descriptor->setRenderTargetWidth(0);
+  pass_descriptor->setRenderTargetHeight(0);
+  if (!key_count) {
+    return;
+  }
+  // The render area can't exceed any attachment, a dummy color one too.
+  uint32_t width = UINT32_MAX;
+  uint32_t full_height = UINT32_MAX;
+  auto constrain = [&](MTL::RenderPassAttachmentDescriptor* attachment) {
+    if (MTL::Texture* texture = attachment->texture()) {
+      width = std::min(width, uint32_t(texture->width()));
+      full_height = std::min(full_height, uint32_t(texture->height()));
+    }
+  };
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    constrain(pass_descriptor->colorAttachments()->object(i));
+  }
+  constrain(pass_descriptor->depthAttachment());
+  constrain(pass_descriptor->stencilAttachment());
+  if (width == UINT32_MAX) {
+    return;
+  }
+  const uint32_t scale_y = std::max<uint32_t>(1u, draw_resolution_scale_y());
+  uint32_t height = min_height;
+  for (uint32_t i = 0; i < key_count; ++i) {
+    uint32_t owned_height = GetRenderTargetOwnedHeight(keys[i]);
+    if (!owned_height) {
+      return;
+    }
+    height = std::max(height, owned_height * scale_y);
+  }
+  if (height >= full_height) {
+    return;
+  }
+  pass_descriptor->setRenderTargetWidth(width);
+  pass_descriptor->setRenderTargetHeight(height);
+}
+
 bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
     MTL::RenderPassDescriptor* pass_descriptor,
     uint32_t expected_sample_count) const {
@@ -5327,6 +5391,10 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   sa->setLoadAction(load);
   sa->setStoreAction(MTL::StoreActionStore);
   sa->setClearStencil(stencil_value);
+  const RenderTargetKey paired_keys[] = {depth_key, color_key};
+  RestrictRenderArea(rp, paired_keys, 2,
+                     (rectangle.y_pixels + rectangle.height_pixels) *
+                         draw_resolution_scale_y());
 
   auto* encoder = cmd->renderCommandEncoder(rp);
   if (!encoder) {
@@ -5414,6 +5482,7 @@ void MetalRenderTargetCache::PerformDeferredClears(MTL::CommandBuffer* cmd) {
       ca->setStoreAction(MTL::StoreActionStore);
       ca->setClearColor(rt->clear_color());
     }
+    RestrictRenderArea(rp, &key, 1, 0);
     auto* encoder = cmd->renderCommandEncoder(rp);
     if (!encoder) {
       XELOGE(
@@ -6223,12 +6292,19 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     }
 
     MTL::RenderCommandEncoder* transfer_encoder = nullptr;
+    // The rows the transfer encoder's render area covers, 0 for all of the
+    // destination.
+    uint32_t transfer_encoder_area_height = 0;
     auto ensure_transfer_encoder = [&]() -> MTL::RenderCommandEncoder* {
       if (transfer_encoder) {
         return transfer_encoder;
       }
       if (use_active_render_encoder) {
         transfer_encoder = active_render_encoder;
+        if (active_render_pass_descriptor) {
+          transfer_encoder_area_height =
+              uint32_t(active_render_pass_descriptor->renderTargetHeight());
+        }
         // Whatever the guest left on the encoder must not cull, wireframe or
         // depth-bias the full-viewport transfer draws.
         transfer_encoder->setCullMode(MTL::CullModeNone);
@@ -6267,6 +6343,15 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           ca->setClearColor(resolve_clear_color);
         }
       }
+      // The transfers and the clear are inside what the destination owns.
+      RestrictRenderArea(
+          rp, &dest_key, 1,
+          resolve_clear_needed
+              ? (resolve_clear_rectangle->y_pixels +
+                 resolve_clear_rectangle->height_pixels) *
+                    draw_resolution_scale_y()
+              : 0);
+      transfer_encoder_area_height = uint32_t(rp->renderTargetHeight());
       transfer_encoder = cmd->renderCommandEncoder(rp);
       return transfer_encoder;
     };
@@ -6745,7 +6830,11 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           scissor.x = 0;
           scissor.y = 0;
           scissor.width = dest_width;
-          scissor.height = dest_height;
+          // The scissor can't leave the render area.
+          scissor.height =
+              transfer_encoder_area_height
+                  ? std::min(dest_height, transfer_encoder_area_height)
+                  : dest_height;
           bind_transfer_scissor(scissor);
         };
 
