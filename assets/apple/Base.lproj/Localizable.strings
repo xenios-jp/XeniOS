@@ -2447,7 +2447,7 @@
 "Play now" = "Play now";
 
 /* system link view controller: footer */
-"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
+"Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
 
 /* launcher overlay view: Continue Playing; %@ is like \"2 hours ago\" */
 "Played %@" = "Played %@";

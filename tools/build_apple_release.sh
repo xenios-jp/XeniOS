@@ -55,7 +55,8 @@ Notes:
   -G "Ninja Multi-Config" -DCMAKE_SYSTEM_NAME=iOS ...); this script builds
   its xenia-app target. The same goes for the macOS tree (cmake -S . -B DIR
   -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64).
-- The Mac app ships as XeniOS.app (com.xenios), as 2.0.1 did, ad-hoc signed.
+- The Mac app ships as XeniOS.app (com.xenios), ad-hoc signed. The CMake build
+  keeps its Xenia-edge name; the package is renamed.
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
 - If no matching tag is available, the marketing version falls back to 2.2.
 - Public release stage defaults to stable.
@@ -531,8 +532,9 @@ bundle_executable_path() {
   printf '%s/%s' "$app_bundle/Contents/MacOS" "$executable_name"
 }
 
-# Copies the CMake-built Mac app out of the build tree under the name and
-# identifier 2.0.1 shipped with, so the release replaces it in /Applications.
+# Copies the CMake-built Mac app (Xenia-edge.app) out of the build tree as
+# XeniOS.app with identifier com.xenios, the Mac naming XeniOS adopted after
+# 2.0.1 (which shipped Xenia-edge.app, com.xenia.edge).
 stage_macos_app() {
   local built_app="$1"
   local staging_dir="$2"
@@ -545,6 +547,12 @@ stage_macos_app() {
   plist_set_string "$plist" "CFBundleName" "XeniOS"
   plist_set_string "$plist" "CFBundleDisplayName" "XeniOS"
   plist_set_string "$plist" "CFBundleIdentifier" "com.xenios"
+  local executable_name
+  executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+  if [ "$executable_name" != "XeniOS" ]; then
+    mv "$staged_app/Contents/MacOS/$executable_name" "$staged_app/Contents/MacOS/XeniOS"
+    plist_set_string "$plist" "CFBundleExecutable" "XeniOS"
+  fi
   printf '%s' "$staged_app"
 }
 

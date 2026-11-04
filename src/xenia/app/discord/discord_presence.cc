@@ -10,6 +10,7 @@
 #include "discord_presence.h"
 #include <ctime>
 #include "third_party/discord-rpc/include/discord_rpc.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 
 // TODO: This library has been deprecated in favor of Discord's GameSDK.
@@ -47,7 +48,11 @@ void DiscordPresence::PlayingTitle(const std::string_view game_title) {
   // discordPresence.smallImageKey = "app";
   // discordPresence.largeImageKey = "state_ingame";
   discordPresence.largeImageKey = "app";
+#if XE_PLATFORM_MAC
+  discordPresence.largeImageText = "XeniOS";
+#else
   discordPresence.largeImageText = "Xenia Edge - Experimental Testing branch";
+#endif
   discordPresence.startTimestamp = time(0);
   discordPresence.instance = 1;
   Discord_UpdatePresence(&discordPresence);
