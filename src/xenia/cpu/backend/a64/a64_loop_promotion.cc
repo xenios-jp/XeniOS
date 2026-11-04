@@ -326,6 +326,49 @@ void ColorSlotInBlock(const Block* block, const PromotedSlot& slot,
   }
 }
 
+// Defers a slot whose last store, in the tail, takes a value colored into
+// another slot's register that nothing writes again before the tail's end.
+bool DeferSlot(const Instr* last_store, const std::vector<PromotedSlot>& slots,
+               PromotedSlot* slot) {
+  const Value* value = last_store->src2.value;
+  if (value->IsConstant()) {
+    return false;
+  }
+  const PromotedSlot* holder = nullptr;
+  for (const PromotedSlot& other : slots) {
+    // The register is unused by the allocator in the loop, so only values
+    // colored into it have its index.
+    if (&other != slot && !other.deferred && other.type == slot->type &&
+        other.reg_index == value->reg.index) {
+      holder = &other;
+    }
+  }
+  if (!holder) {
+    return false;
+  }
+  for (const Instr* i = last_store->block->instr_head; i != last_store;
+       i = i->next) {
+    if (i->BranchLabel()) {
+      return false;
+    }
+  }
+  const bool vec = holder->type == VEC128_TYPE;
+  for (const Instr* i = last_store->next; i; i = i->next) {
+    if (i->dest && i->dest->reg.index == holder->reg_index &&
+        (i->dest->type == VEC128_TYPE) == vec) {
+      return false;
+    }
+    if (IsSlotStore(i, holder->offset) &&
+        (i->src2.value->IsConstant() ||
+         i->src2.value->reg.index != holder->reg_index)) {
+      return false;
+    }
+  }
+  slot->reg_index = holder->reg_index;
+  slot->deferred = true;
+  return true;
+}
+
 void PlanLoop(const std::vector<Block*>& blocks, size_t head, size_t tail,
               const std::vector<std::vector<std::pair<size_t, bool>>>& preds,
               LoopPromotionPlan* plan) {
@@ -490,10 +533,50 @@ void PlanLoop(const std::vector<Block*>& blocks, size_t head, size_t tail,
     return;
   }
 
+  // Slots that may be deferred are colored last, so a value they take from
+  // another slot is in that slot's register.
+  std::vector<bool> may_defer(loop.slots.size());
+  bool tail_only_back_edge = loop.exit_label_ids.empty() &&
+                             BlockFallsThrough(blocks[tail]);
+  for (const auto& [src, is_fallthrough] : preds[head]) {
+    if (src >= head && src != tail) {
+      tail_only_back_edge = false;
+    }
+  }
+  for (size_t s = 0; s < loop.slots.size(); ++s) {
+    const SlotInfo& info = slots.at(loop.slots[s].offset);
+    may_defer[s] = tail_only_back_edge &&
+                   std::all_of(info.accesses.begin(), info.accesses.end(),
+                               [&](const Access& access) {
+                                 return access.store &&
+                                        access.instr->block == blocks[tail];
+                               });
+  }
   std::unordered_set<const Value*> colored;
+  for (bool deferrable : {false, true}) {
+    for (size_t s = 0; s < loop.slots.size(); ++s) {
+      PromotedSlot& slot = loop.slots[s];
+      if (may_defer[s] != deferrable ||
+          (deferrable &&
+           DeferSlot(slots.at(slot.offset).accesses.back().instr, loop.slots,
+                     &slot))) {
+        continue;
+      }
+      for (size_t b = head; b <= tail; ++b) {
+        ColorSlotInBlock(blocks[b], slot, &colored, plan);
+      }
+    }
+  }
   for (const PromotedSlot& slot : loop.slots) {
-    for (size_t b = head; b <= tail; ++b) {
-      ColorSlotInBlock(blocks[b], slot, &colored, plan);
+    if (slot.deferred) {
+      const Instr* first_real = blocks[head]->instr_head;
+      while (first_real && first_real->IsFake()) {
+        first_real = first_real->next;
+      }
+      if (first_real && first_real->GetOpcodeNum() == OPCODE_CHECK_PREEMPT) {
+        loop.entry_skips = first_real;
+      }
+      break;
     }
   }
   plan->loops.push_back(std::move(loop));
