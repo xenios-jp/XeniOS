@@ -276,9 +276,6 @@
 "Advanced" = "Advanced";
 
 /* settings hub view controller: title */
-"Advanced (cvars)" = "Advanced (cvars)";
-
-/* settings hub view controller: title */
 "Advanced Debug" = "Advanced Debug";
 
 /* zar conversion coordinator: message */
@@ -1148,6 +1145,9 @@
 
 /* Display menu item */
 "Emulated Display Uncapped" = "Emulated Display Uncapped";
+
+/* settings hub view controller: title */
+"Emulator Options" = "Emulator Options";
 
 /* Alert button: enable JIT through StikDebug */
 "Enable via StikDebug" = "Enable via StikDebug";

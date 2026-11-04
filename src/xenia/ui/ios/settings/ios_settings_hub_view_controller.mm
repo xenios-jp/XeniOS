@@ -213,14 +213,24 @@ static BOOL XeniaSettingsHubItemMatches(XeniaSettingsHubItem* item,
          XeniaSettingsStringMatches(section_title, query);
 }
 
+// Every word of the query somewhere in the setting's text, underscores read as spaces, so
+// "protect zero" finds protect_zero and "metal shader" finds a Metal shader setting.
 static BOOL XeniaSettingsSearchEntryMatches(const IOSConfigSearchEntry& entry,
                                             NSString* query) {
-  auto matches = [query](const std::string& text) {
-    return !text.empty() && XeniaSettingsStringMatches(ToNSString(text), query);
-  };
-  return matches(entry.title) || matches(entry.subtitle) || matches(entry.key) ||
-         matches(entry.section) || matches(entry.page) ||
-         (entry.value_searchable && matches(entry.value_text));
+  std::string text = entry.title + "\n" + entry.subtitle + "\n" + entry.key + "\n" +
+                     entry.section + "\n" + entry.page;
+  if (entry.value_searchable) {
+    text += "\n" + entry.value_text;
+  }
+  NSString* haystack = [ToNSString(text) stringByReplacingOccurrencesOfString:@"_"
+                                                                   withString:@" "];
+  NSCharacterSet* separators = [NSCharacterSet characterSetWithCharactersInString:@" _\t"];
+  for (NSString* word in [query componentsSeparatedByCharactersInSet:separators]) {
+    if (word.length && !XeniaSettingsStringMatches(haystack, word)) {
+      return NO;
+    }
+  }
+  return YES;
 }
 
 static XeniaSettingsHubCategoryKind XeniaSettingsKindForCatalog(
@@ -398,14 +408,9 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
   cell.selectionStyle =
       supported ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
 
-  UIImageSymbolConfiguration* icon_config =
-      [UIImageSymbolConfiguration configurationWithPointSize:20.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  UIImage* image = [UIImage systemImageNamed:XeniaAppIconSymbolForRow(row)
-                           withConfiguration:icon_config];
-  cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  cell.imageView.tintColor =
-      row == 2 ? [XeniaTheme sectionIconIndigo] : [XeniaTheme sectionIconOrange];
+  cell.imageView.image = XESettingsBadgeImage(
+      XeniaAppIconSymbolForRow(row),
+      row == 2 ? [XeniaTheme sectionIconIndigo] : [XeniaTheme sectionIconOrange]);
   XEApplyAccessibility(cell, cell.textLabel.text, cell.detailTextLabel.text,
                        supported ? NSLocalizedString(@"Selects this app icon.",
                                                      @"settings hub view controller: detail text")
@@ -592,13 +597,7 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
                                         : UITableViewCellSelectionStyleNone;
   cell.accessoryType = item.selectable ? UITableViewCellAccessoryDisclosureIndicator
                                        : UITableViewCellAccessoryNone;
-  UIImageSymbolConfiguration* icon_config =
-      [UIImageSymbolConfiguration configurationWithPointSize:20.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  UIImage* image = [UIImage systemImageNamed:item.symbolName
-                           withConfiguration:icon_config];
-  cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  cell.imageView.tintColor = item.tintColor;
+  cell.imageView.image = XESettingsBadgeImage(item.symbolName, item.tintColor);
   XEApplyAccessibility(
       cell, item.title, item.subtitle,
       item.selectable ? NSLocalizedString(@"Performs this settings action.",
@@ -795,13 +794,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
   xe_apply_label_font(cell.detailTextLabel, UIFontTextStyleSubheadline, 15.0,
                       UIFontWeightRegular);
 
-  UIImageSymbolConfiguration* icon_config =
-      [UIImageSymbolConfiguration configurationWithPointSize:20.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  UIImage* image = [UIImage systemImageNamed:symbol_name
-                           withConfiguration:icon_config];
-  cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  cell.imageView.tintColor = tint_color;
+  cell.imageView.image = XESettingsBadgeImage(symbol_name, tint_color);
   XEApplyAccessibility(cell, title, subtitle,
                        NSLocalizedString(@"Opens this controls option.",
                                          @"settings hub view controller: title"),
@@ -1287,7 +1280,8 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"All Settings",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Every setting in one list. Search by name or value.",
+                                        @"Every setting, emulator options included. Search by "
+                                        @"name, key or value.",
                                         @"settings hub view controller: title")
                          symbolName:@"list.bullet"
                           tintColor:mint],
@@ -1472,14 +1466,6 @@ titleForFooterInSection:(NSInteger)section {
                                         @"Curated F8-style debug and compatibility overrides.",
                                         @"settings hub view controller: title")
                          symbolName:@"slider.horizontal.3"
-                          tintColor:purple],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindAllCvars
-                              title:NSLocalizedString(@"All Config",
-                                                      @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Search and edit every registered cvar.",
-                                                      @"settings hub view controller: title")
-                         symbolName:@"tablecells"
                           tintColor:purple],
                  ]];
 
@@ -1759,7 +1745,7 @@ titleForFooterInSection:(NSInteger)section {
   if (advanced_results.count) {
     [filtered_sections
         addObject:[XeniaSettingsHubSection
-                      sectionWithTitle:NSLocalizedString(@"Advanced (cvars)",
+                      sectionWithTitle:NSLocalizedString(@"Emulator Options",
                                                          @"settings hub view controller: title")
                                  items:advanced_results]];
   }
@@ -1831,12 +1817,8 @@ titleForFooterInSection:(NSInteger)section {
   content.secondaryTextProperties.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0,
                                                                UIFontWeightRegular);
   content.prefersSideBySideTextAndSecondaryText = NO;
-  UIImageSymbolConfiguration* image_config =
-      [UIImageSymbolConfiguration configurationWithPointSize:20.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  content.image = [[UIImage systemImageNamed:item.symbolName withConfiguration:image_config]
-      imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-  content.imageProperties.tintColor = item.tintColor;
+  content.image = XESettingsBadgeImage(item.symbolName, item.tintColor);
+  content.imageProperties.cornerRadius = 7.0;
   cell.contentConfiguration = content;
 
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
