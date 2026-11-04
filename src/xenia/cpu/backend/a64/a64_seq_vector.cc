@@ -2021,27 +2021,27 @@ static void EmitPartialVectorStore(A64Emitter& e,
   e.b(done);
 
   e.L(from8);
-  e.sub(e.w6, count, 8);
+  e.sub(e.w17, count, 8);
   e.ldr(e.x3, ptr(src));
   e.str(e.x3, ptr(dst));
-  e.ldr(e.x3, ptr(src, e.x6));
-  e.str(e.x3, ptr(dst, e.x6));
+  e.ldr(e.x3, ptr(src, e.x17));
+  e.str(e.x3, ptr(dst, e.x17));
   e.b(done);
 
   e.L(from4);
-  e.sub(e.w6, count, 4);
+  e.sub(e.w17, count, 4);
   e.ldr(e.w3, ptr(src));
   e.str(e.w3, ptr(dst));
-  e.ldr(e.w3, ptr(src, e.x6));
-  e.str(e.w3, ptr(dst, e.x6));
+  e.ldr(e.w3, ptr(src, e.x17));
+  e.str(e.w3, ptr(dst, e.x17));
   e.b(done);
 
   e.L(from2);
-  e.sub(e.w6, count, 2);
+  e.sub(e.w17, count, 2);
   e.ldrh(e.w3, ptr(src));
   e.strh(e.w3, ptr(dst));
-  e.ldrh(e.w3, ptr(src, e.x6));
-  e.strh(e.w3, ptr(dst, e.x6));
+  e.ldrh(e.w3, ptr(src, e.x17));
+  e.strh(e.w3, ptr(dst, e.x17));
   e.b(done);
 
   e.L(from1);

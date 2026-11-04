@@ -83,6 +83,10 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Scratch: x0-x18 (caller-saved), v0-v3
   // Available GPRs for register allocator: x22-x28
   static constexpr int GPR_COUNT = 7;
+  // Loop promotion may also keep slots in x4-x6 and x12-x13, caller-saved
+  // registers that no sequence of an opcode a promoted loop can hold uses. A
+  // call on such a loop's rare paths stores and reloads them (CallNativeSafe).
+  static constexpr int PROMOTION_GPR_COUNT = GPR_COUNT + 5;
   // Available VEC regs: v4-v15, v16-v31
   static constexpr int VEC_COUNT = 28;
   static constexpr size_t kStashOffset = 32;
@@ -94,10 +98,10 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
                          const char* set_name);
 
   static void SetupReg(const hir::Value* v, Xbyak_aarch64::WReg& r) {
-    r = Xbyak_aarch64::WReg(MapReg(v, gpr_reg_map_, GPR_COUNT, "gpr"));
+    r = Xbyak_aarch64::WReg(MapReg(v, gpr_reg_map_, PROMOTION_GPR_COUNT, "gpr"));
   }
   static void SetupReg(const hir::Value* v, Xbyak_aarch64::XReg& r) {
-    r = Xbyak_aarch64::XReg(MapReg(v, gpr_reg_map_, GPR_COUNT, "gpr"));
+    r = Xbyak_aarch64::XReg(MapReg(v, gpr_reg_map_, PROMOTION_GPR_COUNT, "gpr"));
   }
   static void SetupReg(const hir::Value* v, Xbyak_aarch64::SReg& r) {
     r = Xbyak_aarch64::SReg(MapReg(v, vec_reg_map_, VEC_COUNT, "vec"));
@@ -435,6 +439,9 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // A promoted loop's guest registers, into their host registers and back.
   void EmitPromotedLoads(const PromotedLoop& loop);
   void EmitPromotedStores(const PromotedLoop& loop);
+  // Stores the slots kept outside the callee-saved registers to their homes,
+  // or loads them back.
+  void MoveCallerSavedSlots(const PromotedLoop& loop, bool store);
 
   // Get or create a pool slot for a v128 constant with no immediate form.
   Xbyak_aarch64::Label& GetV128ConstLabel(const vec128_t& value);
@@ -492,7 +499,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
            static_cast<int>(e) == Xbyak_aarch64::ERR_LABEL_IS_TOO_FAR;
   }
 
-  static const uint32_t gpr_reg_map_[GPR_COUNT];
+  static const uint32_t gpr_reg_map_[PROMOTION_GPR_COUNT];
   static const uint32_t vec_reg_map_[VEC_COUNT];
 
   std::vector<TailEmitter> tail_code_;

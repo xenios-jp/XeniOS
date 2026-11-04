@@ -61,10 +61,11 @@ static uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
 static constexpr size_t kMaxCodeSize = 1_MiB;
 
 // Register maps:
-// GPR allocatable registers: x22, x23, x24, x25, x26, x27, x28
+// GPR allocatable registers: x22, x23, x24, x25, x26, x27, x28, then the ones
+// only loop promotion uses
 // (x19=backend context, x20=context, x21=membase are reserved)
-const uint32_t A64Emitter::gpr_reg_map_[GPR_COUNT] = {
-    22, 23, 24, 25, 26, 27, 28,
+const uint32_t A64Emitter::gpr_reg_map_[PROMOTION_GPR_COUNT] = {
+    22, 23, 24, 25, 26, 27, 28, 4, 5, 6, 12, 13,
 };
 
 // VEC allocatable registers: v4-v15, v16-v31
@@ -1308,8 +1309,38 @@ void A64Emitter::CallNativeSafe(void* fn) {
   mov(x0, reinterpret_cast<uint64_t>(fn));
   ldr(x9,
       BackendCtxPtr(offsetof(A64BackendContext, guest_to_host_thunk_address)));
+  // An MMIO access in a promoted loop calls out on its rare path, and the
+  // callee may clobber the slots outside the callee-saved registers. It reads
+  // no guest register, so their homes in the context can hold them meanwhile.
+  const PromotedLoop* loop = emitting_tail_ ? nullptr : active_loop_;
+  if (loop) {
+    MoveCallerSavedSlots(*loop, true);
+  }
   blr(x9);
+  if (loop) {
+    MoveCallerSavedSlots(*loop, false);
+  }
   MergeFpcrModeAfterConditional(entry_mode);
+}
+
+void A64Emitter::MoveCallerSavedSlots(const PromotedLoop& loop, bool store) {
+  for (const PromotedSlot& slot : loop.slots) {
+    if (slot.type == hir::VEC128_TYPE || slot.reg_index < GPR_COUNT) {
+      continue;
+    }
+    const uint32_t reg = gpr_reg_map_[slot.reg_index];
+    if (slot.type == hir::INT8_TYPE) {
+      if (store) {
+        strb(WReg(reg), ptr(x20, slot.offset));
+      } else {
+        ldrb(WReg(reg), ptr(x20, slot.offset));
+      }
+    } else if (store) {
+      str(XReg(reg), ptr(x20, slot.offset));
+    } else {
+      ldr(XReg(reg), ptr(x20, slot.offset));
+    }
+  }
 }
 
 void A64Emitter::SetReturnAddress(uint64_t value) {
