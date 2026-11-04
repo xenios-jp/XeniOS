@@ -28,6 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 UIImage* _Nullable xe_cached_game_art(uint32_t title_id);
 UIImage* _Nullable xe_cached_game_background_art(uint32_t title_id);
+// Whether the background art is on disk, without reading it.
+BOOL xe_has_cached_game_background_art(uint32_t title_id);
 
 // In-memory cache of pre-decoded, downsampled covers keyed by title id.
 // `xe_cached_game_art_thumbnail` is a memory-only lookup and is safe on the

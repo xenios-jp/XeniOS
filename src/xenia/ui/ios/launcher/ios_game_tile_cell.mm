@@ -70,8 +70,7 @@ constexpr CGFloat kCoverRadius = 8.0;
   self.contentTypePill.hidden = YES;
   [self.contentTypePill setContentHuggingPriority:UILayoutPriorityRequired
                                           forAxis:UILayoutConstraintAxisHorizontal];
-  // The tag ("External", "2 Discs") gives way to the status; -layoutSubviews drops it when
-  // both don't fit.
+  // The tag ("External") shows only on a tile with no status; -layoutSubviews hides it otherwise.
   self.contentTypePill.lineBreakMode = NSLineBreakByTruncatingTail;
   [self.contentTypePill setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                                         forAxis:UILayoutConstraintAxisHorizontal];
@@ -81,7 +80,8 @@ constexpr CGFloat kCoverRadius = 8.0;
   xe_apply_label_font(self.titleLabel, UIFontTextStyleFootnote, 13.5, UIFontWeightSemibold);
   self.titleLabel.textColor = [XeniaTheme textPrimary];
   self.titleLabel.textAlignment = NSTextAlignmentLeft;
-  self.titleLabel.numberOfLines = 1;
+  // Two lines, as on Apple TV, so "Call of Duty: Black Ops" reads whole.
+  self.titleLabel.numberOfLines = 2;
   self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
   self.titleLabel.allowsDefaultTighteningForTruncation = YES;
   [self.titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
@@ -110,6 +110,17 @@ constexpr CGFloat kCoverRadius = 8.0;
                                                           forAxis:UILayoutConstraintAxisHorizontal];
   [self.contentView addSubview:self.metadataStackView];
 
+  self.discBadge = [[XeniaPaddedLabel alloc] init];
+  self.discBadge.translatesAutoresizingMaskIntoConstraints = NO;
+  self.discBadge.padding = UIEdgeInsetsMake(2.0, 7.0, 2.0, 7.0);
+  xe_apply_label_font(self.discBadge, UIFontTextStyleCaption2, 11.0, UIFontWeightSemibold);
+  self.discBadge.textColor = UIColor.whiteColor;
+  self.discBadge.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
+  self.discBadge.layer.cornerCurve = kCACornerCurveContinuous;
+  self.discBadge.layer.masksToBounds = YES;
+  self.discBadge.hidden = YES;
+  [self.cardView addSubview:self.discBadge];
+
   [self updateConfigurationUsingState:self.configurationState];
 
   [NSLayoutConstraint activateConstraints:@[
@@ -134,6 +145,9 @@ constexpr CGFloat kCoverRadius = 8.0;
     [self.metadataStackView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
     [self.metadataStackView.trailingAnchor
         constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor],
+    [self.discBadge.topAnchor constraintEqualToAnchor:self.cardView.topAnchor constant:6.0],
+    [self.discBadge.trailingAnchor constraintEqualToAnchor:self.cardView.trailingAnchor
+                                                  constant:-6.0],
   ]];
   return self;
 }
@@ -150,6 +164,8 @@ constexpr CGFloat kCoverRadius = 8.0;
   self.compatPill.hidden = YES;
   self.compatPill.backgroundColor = [UIColor clearColor];
   self.compatPill.layer.borderColor = [UIColor clearColor].CGColor;
+  self.discBadge.text = @"";
+  self.discBadge.hidden = YES;
   self.transform = CGAffineTransformIdentity;
   self.contentView.transform = CGAffineTransformIdentity;
   self.accessibilityLabel = nil;
@@ -164,22 +180,12 @@ constexpr CGFloat kCoverRadius = 8.0;
 
 - (void)layoutSubviews {
   [super layoutSubviews];
-  // Status first: with a status beside it, the tag shows only if both fit whole, so a tile never
-  // reads "● In-…  2 Discs". Without a status the tag truncates on its own.
-  if (!self.contentTypePill.text.length) {
-    return;
-  }
-  BOOL show_tag = YES;
-  if (!self.compatPill.hidden &&
-      self.metadataStackView.axis == UILayoutConstraintAxisHorizontal) {
-    const CGFloat needed = self.compatPill.intrinsicContentSize.width +
-                           self.metadataStackView.spacing +
-                           self.contentTypePill.intrinsicContentSize.width;
-    show_tag = needed <= CGRectGetWidth(self.metadataStackView.bounds) + 0.5;
-  }
+  // One line under the title: the status when there is one, otherwise the tag.
+  const BOOL show_tag = self.contentTypePill.text.length && self.compatPill.hidden;
   if (self.contentTypePill.hidden == show_tag) {
     self.contentTypePill.hidden = !show_tag;
   }
+  self.discBadge.layer.cornerRadius = CGRectGetHeight(self.discBadge.bounds) / 2.0;
 }
 
 - (void)setControllerFocused:(BOOL)controllerFocused {
@@ -201,10 +207,10 @@ constexpr CGFloat kCoverRadius = 8.0;
     return [color resolvedColorWithTraitCollection:traits].CGColor;
   };
 
-  // Larger text: allow a two-line title and stack the metadata pills.
+  // Accessibility text sizes: a three-line title and stacked metadata.
   BOOL accessibilityText =
       UIContentSizeCategoryIsAccessibilityCategory(traits.preferredContentSizeCategory);
-  self.titleLabel.numberOfLines = accessibilityText ? 2 : 1;
+  self.titleLabel.numberOfLines = accessibilityText ? 3 : 2;
   self.metadataStackView.axis =
       accessibilityText ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
   self.metadataStackView.alignment =

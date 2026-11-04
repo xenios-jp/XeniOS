@@ -26,6 +26,8 @@
 @property(nonatomic, strong) UILabel* titleLabel;
 @property(nonatomic, strong) XeniaPaddedLabel* contentTypePill;
 @property(nonatomic, strong) XeniaPaddedLabel* compatPill;
+// "2 Discs" in the cover's top corner; hidden for single-disc games.
+@property(nonatomic, strong) XeniaPaddedLabel* discBadge;
 @property(nonatomic, assign) BOOL controllerFocused;
 // Title id of the game the cell currently shows (0 when none). Lets async
 // artwork loads check that the cell has not been reused.
