@@ -19,6 +19,9 @@
 
 // Lets users choose a specific launch path for multi-disc titles while the
 // launcher still presents the game as one library entry.
+// Where a disc is, under its label: its file name, and its folder when it is outside XeniOS.
+NSString* XeniaGameDiscDetail(const xe::ui::IOSDiscoveredGame::Disc& disc);
+
 @interface XeniaGameDiscViewController : XESheetTableViewController
 - (instancetype)initWithTitle:(NSString*)title
                         discs:(const std::vector<xe::ui::IOSDiscoveredGame::Disc>&)discs

@@ -45,7 +45,9 @@ NSString* PlayersText(NSInteger players) {
 
 // Online Features is one switch for everything XeniOS sends, so turning it on from here asks
 // first and says what else it starts.
-void ConfirmTurnOnOnlineFeatures(UIViewController* presenter, void (^turn_on)(void)) {
+}  // namespace
+
+void xe_ios_confirm_turn_on_online_features(UIViewController* presenter, void (^turn_on)(void)) {
   NSString* message =
       NSLocalizedString(@"This turns on all Online Features, not only System Link: update checks, "
                         @"compatibility data, cover art, compatibility discussions and reports, "
@@ -84,6 +86,8 @@ void ConfirmTurnOnOnlineFeatures(UIViewController* presenter, void (^turn_on)(vo
                                }]];
   [presenter presentViewController:alert animated:YES completion:nil];
 }
+
+namespace {
 
 // Game names by title ID in hex, from the compatibility data.
 NSDictionary<NSString*, NSString*>* LoadGameNames() {
@@ -193,26 +197,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
 
 // How many players are in this game's public lobby, or nil while that isn't known.
 - (NSString*)lobbyPlayersText {
-  if (!xe_ios_system_link_online_titles()) {
-    return nil;
-  }
-  const NSInteger players = xe_ios_system_link_online_players(title_id_);
-  if (players == 0) {
-    return NSLocalizedString(@"Nobody is there now.",
-                             @"system link view controller: room row detail, after "
-                             @"\"Everyone playing this game.\"");
-  }
-  if (players == 1) {
-    return NSLocalizedString(@"One player is there now.",
-                             @"system link view controller: room row detail, after "
-                             @"\"Everyone playing this game.\"");
-  }
-  return [NSString
-      localizedStringWithFormat:NSLocalizedString(@"%ld players are there now.",
-                                                  @"system link view controller: room row "
-                                                  @"detail, after \"Everyone playing this "
-                                                  @"game.\"; %ld is how many"),
-                                long(players)];
+  return xe_ios_system_link_lobby_players_text(title_id_);
 }
 
 - (void)reloadRows {
@@ -402,7 +387,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   switch ([self rowAtIndexPath:indexPath]) {
     case Row::kTurnOnOnline:
-      ConfirmTurnOnOnlineFeatures(self, ^{
+      xe_ios_confirm_turn_on_online_features(self, ^{
         xe_ios_set_online_features_enabled(YES);
         [self reloadRows];
       });
@@ -431,6 +416,44 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
 }
 
 - (void)presentJoinAlert {
+  xe_ios_present_system_link_join_alert(self, title_id_, ^{
+    [self reloadRows];
+  });
+}
+
+- (void)shareInviteFromView:(UIView*)source {
+  xe_ios_share_system_link_invite(self, title_id_, game_title_, source);
+}
+
+@end
+
+// How many players are in this game's public lobby, or nil while that isn't known.
+NSString* xe_ios_system_link_lobby_players_text(uint32_t title_id) {
+  if (!xe_ios_system_link_online_titles()) {
+    return nil;
+  }
+  const NSInteger players = xe_ios_system_link_online_players(title_id);
+  if (players == 0) {
+    return NSLocalizedString(@"Nobody is there now.",
+                             @"system link view controller: room row detail, after "
+                             @"\"Everyone playing this game.\"");
+  }
+  if (players == 1) {
+    return NSLocalizedString(@"One player is there now.",
+                             @"system link view controller: room row detail, after "
+                             @"\"Everyone playing this game.\"");
+  }
+  return [NSString
+      localizedStringWithFormat:NSLocalizedString(@"%ld players are there now.",
+                                                  @"system link view controller: room row "
+                                                  @"detail, after \"Everyone playing this "
+                                                  @"game.\"; %ld is how many"),
+                                long(players)];
+}
+
+void xe_ios_present_system_link_join_alert(UIViewController* presenter, uint32_t title_id,
+                                           void (^joined)(void)) {
+  void (^joined_copy)(void) = [[joined copy] autorelease];
   __block UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:NSLocalizedString(@"Join a Private Room",
                                                  @"system link view controller: alert title")
@@ -457,23 +480,26 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
                     xe_ios_normalize_system_link_room_code(alert.textFields.firstObject.text);
                 if (!code) {
                   XEPresentOKAlert(
-                      self,
+                      presenter,
                       NSLocalizedString(@"Not a Room Code",
                                         @"system link view controller: alert title"),
                       NSLocalizedString(@"Room codes have 6 letters and digits.",
                                         @"system link view controller: alert message"));
                   return;
                 }
-                xe_ios_set_system_link_room(title_id_, code);
-                [self reloadRows];
+                xe_ios_set_system_link_room(title_id, code);
+                if (joined_copy) {
+                  joined_copy();
+                }
               }];
   [alert addAction:join];
   alert.preferredAction = join;
-  [self presentViewController:alert animated:YES completion:nil];
+  [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)shareInviteFromView:(UIView*)source {
-  NSString* code = xe_ios_system_link_room(title_id_);
+void xe_ios_share_system_link_invite(UIViewController* presenter, uint32_t title_id,
+                                     NSString* game_title, UIView* source) {
+  NSString* code = xe_ios_system_link_room(title_id);
   if (!code) {
     return;
   }
@@ -482,16 +508,14 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
                                          @"code: %2$@",
                                          @"System Link invite text; %1$@ is the game, %2$@ the "
                                          @"room code"),
-                       game_title_.length ? game_title_ : @"", code];
+                       game_title.length ? game_title : @"", code];
   UIActivityViewController* share = [[[UIActivityViewController alloc]
-      initWithActivityItems:@[ text, xe_ios_system_link_invite_url(title_id_, code) ]
+      initWithActivityItems:@[ text, xe_ios_system_link_invite_url(title_id, code) ]
       applicationActivities:nil] autorelease];
-  share.popoverPresentationController.sourceView = source ?: self.view;
-  share.popoverPresentationController.sourceRect = (source ?: self.view).bounds;
-  [self presentViewController:share animated:YES completion:nil];
+  share.popoverPresentationController.sourceView = source ?: presenter.view;
+  share.popoverPresentationController.sourceRect = (source ?: presenter.view).bounds;
+  [presenter presentViewController:share animated:YES completion:nil];
 }
-
-@end
 
 void xe_ios_present_system_link_sheet(UIViewController* presenter, NSString* game_title,
                                       uint32_t title_id, void (^play)(void)) {
@@ -824,7 +848,7 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
 }
 
 - (void)turnOnTapped:(id)__unused sender {
-  ConfirmTurnOnOnlineFeatures(self, ^{
+  xe_ios_confirm_turn_on_online_features(self, ^{
     xe_ios_set_online_features_enabled(YES);
     [self reloadRows];
     xe_ios_system_link_refresh_online();

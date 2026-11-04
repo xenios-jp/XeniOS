@@ -903,6 +903,22 @@ NSArray<NSDictionary<NSString*, NSString*>*>* XEZarPreflightRowsForRequests(
                       handler:(void (^)(void))handler;
 @end
 
+@implementation XeniaIOSZarConversionChoice
+
+@synthesize title = title_;
+@synthesize detail = detail_;
+@synthesize destructive = destructive_;
+@synthesize handler = handler_;
+
+- (void)dealloc {
+  [title_ release];
+  [detail_ release];
+  [handler_ release];
+  [super dealloc];
+}
+
+@end
+
 @implementation XeniaIOSZarConversionPreflightAction
 
 @synthesize title = title_;
@@ -2687,6 +2703,78 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
                                          total:requests_holder->size()
                                        actions:preflight_actions];
       [completion_copy release];
+    });
+  });
+}
+
+- (void)loadConversionChoicesForGames:(const std::vector<IOSDiscoveredGame>&)games
+                                index:(size_t)gameIndex
+                               update:(void (^)(NSString* summary, BOOL estimating,
+                                                NSArray<XeniaIOSZarConversionChoice*>* choices))
+                                          update {
+  if (gameIndex >= games.size() || !update) {
+    return;
+  }
+  discovered_games_ = games;
+  const IOSDiscoveredGame game = games[gameIndex];
+  std::vector<XeniaIOSZarConversionRequest> requests = XEZarSingleConversionRequest(game);
+  if (requests.empty()) {
+    update(nil, NO, @[]);
+    return;
+  }
+  auto requests_holder =
+      std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
+  NSMutableArray<XeniaIOSZarConversionChoice*>* choices = [NSMutableArray array];
+  for (XeniaIOSZarConversionPreflightAction* action in
+       [self singleZarPreflightActionsForGame:game
+                               requestsHolder:requests_holder
+                           completionOnChoice:nil]) {
+    XeniaIOSZarConversionChoice* choice = [[[XeniaIOSZarConversionChoice alloc] init] autorelease];
+    choice.title = action.title;
+    choice.detail = action.detail;
+    choice.destructive = ![action.style isEqualToString:kXEZarSummaryRowStyleSuccess];
+    choice.handler = action.handler;
+    [choices addObject:choice];
+  }
+  NSArray<XeniaIOSZarConversionChoice*>* choices_copy = [[choices copy] autorelease];
+  void (^update_copy)(NSString*, BOOL, NSArray<XeniaIOSZarConversionChoice*>*) =
+      [[update copy] autorelease];
+  // "18.2 GB now. About 11.4 GB as a ZAR archive."
+  auto summary = [](const std::vector<XeniaIOSZarConversionRequest>& requests, bool estimating) {
+    uint64_t source_bytes = 0;
+    uint64_t zar_bytes = 0;
+    for (const XeniaIOSZarConversionRequest& request : requests) {
+      source_bytes += request.source_bytes;
+      zar_bytes += request.estimate_available ? request.estimated_zar_bytes : 0;
+    }
+    NSString* now = [NSByteCountFormatter stringFromByteCount:int64_t(source_bytes)
+                                                   countStyle:NSByteCountFormatterCountStyleFile];
+    if (estimating || !zar_bytes) {
+      return [NSString stringWithFormat:NSLocalizedString(
+                                            @"%@ now. Estimating its size as a ZAR archive…",
+                                            @"game page: Convert to ZAR; %@ is the game's size"),
+                                        now];
+    }
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"%1$@ now. About %2$@ as a ZAR archive.",
+                                           @"game page: Convert to ZAR; %1$@ is the game's "
+                                           @"size, %2$@ the archive's"),
+                         now,
+                         [NSByteCountFormatter stringFromByteCount:int64_t(zar_bytes)
+                                                        countStyle:
+                                                            NSByteCountFormatterCountStyleFile]];
+  };
+  update_copy(summary(*requests_holder, true), YES, choices_copy);
+  // The handlers read the requests, so the estimate works on a copy and is handed back here.
+  auto estimated =
+      std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(*requests_holder);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    for (XeniaIOSZarConversionRequest& request : *estimated) {
+      XEZarRefreshConversionRequestEstimate(&request);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      *requests_holder = *estimated;
+      update_copy(summary(*requests_holder, false), NO, choices_copy);
     });
   });
 }

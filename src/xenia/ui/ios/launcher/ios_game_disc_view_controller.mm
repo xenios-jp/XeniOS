@@ -12,9 +12,7 @@
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
-namespace {
-
-NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
+NSString* XeniaGameDiscDetail(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   NSString* filename = ToNSString(disc.path.filename().string());
   // Only a disc outside XeniOS's storage says where it is; the file name tells discs apart.
   if (!disc.source_label.empty()) {
@@ -28,8 +26,6 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   }
   return filename;
 }
-
-}  // namespace
 
 @implementation XeniaGameDiscViewController {
   NSString* title_;
@@ -124,7 +120,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   const auto& disc = discs_[static_cast<size_t>(indexPath.row)];
   cell.textLabel.text = ToNSString(disc.label);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
-  cell.detailTextLabel.text = DetailForDisc(disc);
+  cell.detailTextLabel.text = XeniaGameDiscDetail(disc);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.imageView.image = XESettingsBadgeImage(@"opticaldisc", [XeniaTheme accent]);
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;

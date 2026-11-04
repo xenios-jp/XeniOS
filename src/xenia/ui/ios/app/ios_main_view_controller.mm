@@ -3528,10 +3528,35 @@ struct LaunchPreparation {
     actions_controller.statusColor = xe_compat_status_color(status);
   }
   actions_controller.appContext = self.appContext;
+  actions_controller.contentHost = self;
+  if (game.discs.size() > 1) {
+    NSMutableArray<NSString*>* labels = [NSMutableArray array];
+    NSMutableArray<NSString*>* details = [NSMutableArray array];
+    for (const auto& disc : game.discs) {
+      [labels addObject:ToNSString(disc.label)];
+      [details addObject:XeniaGameDiscDetail(disc) ?: @""];
+    }
+    actions_controller.discLabels = labels;
+    actions_controller.discDetails = details;
+  }
+  if (game.has_compat_info) {
+    if (!game.compat_perf.empty()) {
+      actions_controller.compatibilityPerformance = [NSString
+          stringWithFormat:NSLocalizedString(@"Performance: %@",
+                                             @"game page: under Compatibility; %@ is how well "
+                                             @"it runs, such as Okay"),
+                           xe_compat_perf_label(ToNSString(game.compat_perf))];
+    }
+    if (!game.compat_notes.empty()) {
+      actions_controller.compatibilityNotes = ToNSString(game.compat_notes);
+    }
+  }
 
-  // A phone on its side: the Library turns into the game's page where it stands.
+  // A phone: the Library turns into the game's page where it stands.
   XeniaIOSLauncherOverlayView* library = self.launcherOverlayView;
-  if (!self.presentedViewController && library.canShowGameDetailInPlace) {
+  const BOOL in_place = !self.presentedViewController && library.canShowGameDetailInPlace;
+  [self wireLeavingRowsOf:actions_controller forIndex:game_index inPlace:in_place];
+  if (in_place) {
     [self showGameActionsInPlace:actions_controller forIndex:game_index];
     [actions_controller release];
     return;
@@ -3558,6 +3583,81 @@ struct LaunchPreparation {
   [self presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [actions_controller release];
+}
+
+// Rows on the game page that leave it: a disc to play, a way to convert. In place the page goes
+// once the game is starting; as a sheet it goes first.
+- (void)wireLeavingRowsOf:(XeniaIOSGameActionsViewController*)actions_controller
+                 forIndex:(size_t)game_index
+                  inPlace:(BOOL)in_place {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  void (^leave)(void (^)(void)) = ^(void (^then)(void)) {
+    if (in_place) {
+      then();
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [unsafe_self.launcherOverlayView hideGameDetailAnimated:NO];
+      });
+    } else {
+      [unsafe_self dismissViewControllerAnimated:YES completion:then];
+    }
+  };
+  void (^leave_copy)(void (^)(void)) = [[leave copy] autorelease];
+  actions_controller.discHandler = ^(NSUInteger disc_index) {
+    leave_copy(^{
+      [unsafe_self launchDisc:disc_index ofGameIndex:game_index];
+    });
+  };
+  if (game_index < discovered_games_.size() &&
+      xe_game_supports_zar_conversion(discovered_games_[game_index])) {
+    actions_controller.conversionChoicesLoader =
+        ^(void (^update)(NSString*, BOOL, NSArray<XeniaIOSZarConversionChoice*>*)) {
+          void (^update_copy)(NSString*, BOOL, NSArray<XeniaIOSZarConversionChoice*>*) =
+              [[update copy] autorelease];
+          [unsafe_self.zarConversionCoordinator
+              loadConversionChoicesForGames:unsafe_self->discovered_games_
+                                      index:game_index
+                                     update:^(NSString* summary, BOOL estimating,
+                                              NSArray<XeniaIOSZarConversionChoice*>* choices) {
+                                       // Choosing one leaves the page for the conversion's sheet.
+                                       NSMutableArray<XeniaIOSZarConversionChoice*>* leaving =
+                                           [NSMutableArray array];
+                                       for (XeniaIOSZarConversionChoice* choice in choices) {
+                                         XeniaIOSZarConversionChoice* copy =
+                                             [[[XeniaIOSZarConversionChoice alloc] init]
+                                                 autorelease];
+                                         copy.title = choice.title;
+                                         copy.detail = choice.detail;
+                                         copy.destructive = choice.destructive;
+                                         void (^start)(void) = choice.handler;
+                                         copy.handler = ^{
+                                           leave_copy(start);
+                                         };
+                                         [leaving addObject:copy];
+                                       }
+                                       update_copy(summary, estimating, leaving);
+                                     }];
+        };
+  }
+}
+
+- (void)launchDisc:(NSUInteger)disc_index ofGameIndex:(size_t)game_index {
+  if (game_index >= discovered_games_.size() ||
+      disc_index >= discovered_games_[game_index].discs.size()) {
+    return;
+  }
+  const IOSDiscoveredGame& game = discovered_games_[game_index];
+  const auto& disc = game.discs[disc_index];
+  NSString* game_title =
+      game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
+  NSString* label = ToNSString(disc.label);
+  NSString* display_name =
+      label.length
+          ? [NSString stringWithFormat:NSLocalizedString(@"%1$@ (%2$@)",
+                                                         @"Disc picker title; %1$@ is the game "
+                                                         @"title, %2$@ the disc label"),
+                                       game_title, label]
+          : game_title;
+  [self launchGameAtPath:disc.path displayName:display_name];
 }
 
 - (void)showGameActionsInPlace:(XeniaIOSGameActionsViewController*)actions_controller

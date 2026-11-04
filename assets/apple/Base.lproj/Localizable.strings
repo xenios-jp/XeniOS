@@ -10,6 +10,9 @@
 /* zar conversion coordinator: user-visible text */
 "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone." = "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone.";
 
+/* game page: Convert to ZAR; %1$@ is the game's size, %2$@ the archive's */
+"%1$@ now. About %2$@ as a ZAR archive." = "%1$@ now. About %2$@ as a ZAR archive.";
+
 /* zar conversion coordinator: label text */
 "%1$@ of %2$@" = "%1$@ of %2$@";
 
@@ -67,7 +70,11 @@
 /* acknowledgements view controller: accessibility label */
 "%@ license" = "%@ license";
 
-/* game content view controller: detail text */
+/* game page: Convert to ZAR; %@ is the game's size */
+"%@ now. Estimating its size as a ZAR archive…" = "%@ now. Estimating its size as a ZAR archive…";
+
+/* game content view controller: detail text
+   game page: an add-on linked from a folder; %@ is its kind */
 "%@ · Linked" = "%@ · Linked";
 
 /* document import coordinator: message */
@@ -108,6 +115,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
+
+/* game page: Launch Disc row */
+"%lu Discs" = "%lu Discs";
 
 /* document import coordinator: message */
 "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete." = "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete.";
@@ -257,6 +267,9 @@
 /* game content view controller: add button */
 "Add from Files" = "Add from Files";
 
+/* game page: under Updates & Add-ons */
+"Add from Files…" = "Add from Files…";
+
 /* launcher overlay view: user-visible text */
 "Add Games" = "Add Games";
 
@@ -265,6 +278,9 @@
 
 /* launcher overlay view: empty library message */
 "Add games with Files or Finder." = "Add games with Files or Finder.";
+
+/* game page: under Patches */
+"Add its .patch.toml files to the patches folder in Files." = "Add its .patch.toml files to the patches folder in Files.";
 
 /* profile view controller: empty state button */
 "Add Profile" = "Add Profile";
@@ -596,7 +612,7 @@
 /* VoiceOver label of the panel's expand/collapse button */
 "Collapse" = "Collapse";
 
-/* game page: Patches row state */
+/* game page: row state */
 "Collapsed" = "Collapsed";
 
 /* game compatibility hero view: title
@@ -816,7 +832,8 @@
 /* zar conversion coordinator: title */
 "Create .zar archives in XeniOS, then decide how to handle the originals." = "Create .zar archives in XeniOS, then decide how to handle the originals.";
 
-/* system link view controller: button row */
+/* game page: under System Link
+   system link view controller: button row */
 "Create Private Room" = "Create Private Room";
 
 /* Action sheet button: create a profile
@@ -913,6 +930,7 @@
 /* Alert button: confirm deleting a layout
    Context menu item in the layout library
    game content view controller: title
+   game page: swipe action
    Swipe action in the layout library
    VoiceOver label of a touch control edit button
    zar conversion coordinator: title */
@@ -1155,6 +1173,9 @@
 /* zar conversion coordinator: user-visible text */
 "Estimated savings: %1$@ (%2$@ -> %3$@)." = "Estimated savings: %1$@ (%2$@ -> %3$@).";
 
+/* game page: Convert to ZAR */
+"Estimating its size…" = "Estimating its size…";
+
 /* zar conversion coordinator: user-visible text */
 "Estimating savings..." = "Estimating savings...";
 
@@ -1170,7 +1191,8 @@
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
 
-/* system link view controller: room row detail */
+/* game page: under System Link
+   system link view controller: room row detail */
 "Everyone playing this game." = "Everyone playing this game.";
 
 /* Keyboard shortcut name shown in the shortcut overlay */
@@ -1182,7 +1204,7 @@
 /* VoiceOver label of the panel's expand/collapse button */
 "Expand" = "Expand";
 
-/* game page: Patches row state */
+/* game page: row state */
 "Expanded" = "Expanded";
 
 /* Context menu item in the layout library
@@ -1696,7 +1718,8 @@
 /* online view controller: button */
 "Join with Code" = "Join with Code";
 
-/* system link view controller: button row */
+/* game page: under System Link
+   system link view controller: button row */
 "Join with Code…" = "Join with Code…";
 
 /* zar conversion coordinator: title */
@@ -2030,6 +2053,9 @@
 /* game patches view controller: empty title */
 "No Patches" = "No Patches";
 
+/* game page: under Patches */
+"No patches for this game." = "No patches for this game.";
+
 /* Launcher label: a profile exists but none is signed in */
 "No profile signed in" = "No profile signed in";
 
@@ -2078,7 +2104,8 @@
 /* system link view controller: room row detail, after \"Everyone playing this game.\" */
 "Nobody is there now." = "Nobody is there now.";
 
-/* settings hub view controller: no pending reports */
+/* game page: Updates & Add-ons row; nothing added
+   settings hub view controller: no pending reports */
 "None" = "None";
 
 /* game patches view controller: empty detail */
@@ -2120,6 +2147,9 @@
 /* zar conversion coordinator: user-visible text */
 "Not started: %lu." = "Not started: %lu.";
 
+/* game page: under Compatibility */
+"Not tested yet." = "Not tested yet.";
+
 /* compat report view controller: user-visible text */
 "Notes" = "Notes";
 
@@ -2129,6 +2159,7 @@
 /* config catalog: toggle value
    config view controller: accessibility value
    game page: Patches row; no patch is on
+   game page: System Link row; Online Features are off
    Very short badge on a touch control: action is off
    Very short badge on a touch control: analog output is off */
 "Off" = "Off";
@@ -2184,7 +2215,8 @@
 /* online view controller: summary title */
 "Online Is Off" = "Online Is Off";
 
-/* system link view controller: room row detail */
+/* game page: under System Link
+   system link view controller: room row detail */
 "Only players with the code." = "Only players with the code.";
 
 /* online view controller: summary row */
@@ -2353,7 +2385,8 @@
 /* Pause menu row */
 "Performance Overlay" = "Performance Overlay";
 
-/* game compatibility hero: performance pill */
+/* game compatibility hero: performance pill
+   game page: under Compatibility; %@ is how well it runs, such as Okay */
 "Performance: %@" = "Performance: %@";
 
 /* settings hub view controller: title */
@@ -2480,7 +2513,8 @@
 /* system link view controller: section header */
 "Private Room" = "Private Room";
 
-/* system link view controller: room row; %@ is the room code */
+/* game page: under System Link; %@ is the room code
+   system link view controller: room row; %@ is the room code */
 "Private Room %@" = "Private Room %@";
 
 /* launcher overlay view: user-visible text
@@ -2504,7 +2538,9 @@
 /* settings hub view controller: account card */
 "Profiles and sign-in" = "Profiles and sign-in";
 
-/* system link view controller: room row */
+/* game page: System Link row
+   game page: under System Link
+   system link view controller: room row */
 "Public Lobby" = "Public Lobby";
 
 /* VoiceOver hint for a disc in the disc tray */
@@ -2626,6 +2662,9 @@
 /* compat report view controller: title */
 "Report Submitted" = "Report Submitted";
 
+/* game page: under Compatibility */
+"Reports & Discussion" = "Reports & Discussion";
+
 /* compat report view controller: user-visible text */
 "Reports are tagged as %@." = "Reports are tagged as %@.";
 
@@ -2678,6 +2717,9 @@
 
 /* system link view controller: section header */
 "Room" = "Room";
+
+/* game page: System Link row; %@ is the private room's code */
+"Room %@" = "Room %@";
 
 /* System Link: names a private room; %@ is its code */
 "room %@" = "room %@";
@@ -2874,7 +2916,8 @@
 /* Alert title: another app asks for the game library */
 "Share Game Library?" = "Share Game Library?";
 
-/* system link view controller: button row */
+/* game page: under System Link
+   system link view controller: button row */
 "Share Invite…" = "Share Invite…";
 
 /* Alert button: shares the log file */
@@ -3108,6 +3151,9 @@
 
 /* system link view controller: footer */
 "System Link plays over the internet, so it needs Online features." = "System Link plays over the internet, so it needs Online features.";
+
+/* game page: under System Link */
+"System Link plays over the internet." = "System Link plays over the internet.";
 
 /* system link status view controller: state detail */
 "System Link starts when the game looks for other players." = "System Link starts when the game looks for other players.";
@@ -3398,6 +3444,9 @@
 /* game content view controller: message */
 "Title update installed successfully." = "Title update installed successfully.";
 
+/* game page: under Updates & Add-ons */
+"Title updates and DLC for this game." = "Title updates and DLC for this game.";
+
 /* game patches view controller: accessibility hint */
 "Toggles this patch for the next launch." = "Toggles this patch for the next launch.";
 
@@ -3454,7 +3503,8 @@
    launcher overlay view: accessibility label */
 "Turn On JIT" = "Turn On JIT";
 
-/* online view controller: button
+/* game page: under System Link
+   online view controller: button
    system link view controller: button row */
 "Turn On Online Features" = "Turn On Online Features";
 
@@ -3508,7 +3558,8 @@
 "Unknown Title" = "Unknown Title";
 
 /* external folders view controller: title
-   game content view controller: title */
+   game content view controller: title
+   game page: swipe action */
 "Unlink" = "Unlink";
 
 /* game content view controller: message */
