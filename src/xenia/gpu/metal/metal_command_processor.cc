@@ -2139,6 +2139,36 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
   copy_resolve_writes_pending_ = true;
 }
 
+bool MetalCommandProcessor::CanKeepRenderPassAfterTileResolve() const {
+  // Past this many guest indices in one pass, the tiler's parameter buffer may
+  // overflow and split the pass into partial renders anyway (assumed from the
+  // measured knee of 1-1.5 M small triangles).
+  constexpr uint64_t kTileResolvePassIndexBudget = 1000000;
+  return current_render_encoder_ &&
+         render_encoder_index_count_ <= kTileResolvePassIndexBudget;
+}
+
+void MetalCommandProcessor::NoteTileResolveWrite(uint32_t start,
+                                                 uint32_t length) {
+  if (!length) {
+    return;
+  }
+  AddPendingWrite(render_encoder_tile_resolve_ranges_,
+                  draw_util::MemExportRange(start >> 2, (start & 3) + length));
+}
+
+bool MetalCommandProcessor::TileResolveWritesOverlap(uint32_t start,
+                                                     uint32_t length) const {
+  for (const auto& written : render_encoder_tile_resolve_ranges_) {
+    uint64_t written_base = uint64_t(written.base_address_dwords) << 2;
+    if (uint64_t(start) < written_base + written.size_bytes &&
+        written_base < uint64_t(start) + length) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool MetalCommandProcessor::DrawOverlapsPendingWrites(
     const std::vector<draw_util::MemExportRange>& pending_writes,
     const Shader& vertex_shader, const Shader* pixel_shader,
@@ -4020,6 +4050,15 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                     memexport_ordering_ranges_, vertex_indices);
     }
   }
+  // Tile resolves earlier in the pass may not have run in every tile yet.
+  if (current_render_encoder_ &&
+      !render_encoder_tile_resolve_ranges_.empty() &&
+      DrawOverlapsPendingWrites(render_encoder_tile_resolve_ranges_,
+                                *vertex_shader, pixel_shader, index_buffer_info,
+                                vertex_indices)) {
+    EndRenderEncoder();
+  }
+  render_encoder_index_count_ += index_count;
   // Fences written while the pass is open are only stored when it ends.
   if (current_render_encoder_ && !pending_shader_done_fence_ranges_.empty() &&
       DrawOverlapsPendingWrites(pending_shader_done_fence_ranges_,
@@ -6390,13 +6429,17 @@ bool MetalCommandProcessor::IssueCopy() {
   SCOPE_profile_cpu_f("gpu");
   // Finish any in-flight rendering so render target contents are visible to
   // resolve logic. The render target cache ends the pass itself, once it
-  // knows which of its attachments the resolve reads and clears.
+  // knows which of its attachments the resolve reads and clears, unless it
+  // reads them from the open pass with a tile dispatch.
   if (!render_target_cache_) {
     EndRenderEncoder();
+  } else if (!current_render_encoder_) {
+    XELOGI("tresolve: fallback no_pass");
   }
   MTL::CommandBuffer* copy_command_buffer = EnsureCommandBuffer();
   if (!copy_command_buffer) {
     XELOGE("MetalCommandProcessor::IssueCopy: failed to get command buffer");
+    EndRenderEncoder();
     return false;
   }
 
@@ -6408,8 +6451,14 @@ bool MetalCommandProcessor::IssueCopy() {
   uint32_t written_address = 0;
   uint32_t written_length = 0;
 
-  if (!render_target_cache_->Resolve(*memory_, written_address, written_length,
-                                     copy_command_buffer)) {
+  bool resolved = render_target_cache_->Resolve(
+      *memory_, written_address, written_length, copy_command_buffer);
+  // The pass ends at the resolve, unless a tile resolve kept it open,
+  // recording what it wrote.
+  if (!render_target_cache_->last_resolve_kept_pass()) {
+    EndRenderEncoder();
+  }
+  if (!resolved) {
     XELOGE("MetalCommandProcessor::IssueCopy - Resolve failed");
     return false;
   }
@@ -6837,6 +6886,9 @@ void MetalCommandProcessor::ResetMslCrossEncoderReuseCaches() {
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
   render_encoder_memexport_ranges_.clear();
+  render_encoder_tile_resolve_ranges_.clear();
+  render_encoder_index_count_ = 0;
+  render_encoder_tile_member_class_ = 0;
   render_encoder_memexport_draws_are_pure_ = true;
   if (!current_render_encoder_) {
     if (current_render_pass_descriptor_) {
@@ -6875,6 +6927,35 @@ void MetalCommandProcessor::EndRenderEncoder() {
 
 void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {
   render_encoder_resource_usage_.clear();
+  render_encoder_textures_.clear();
+}
+
+void MetalCommandProcessor::UseRenderEncoderResource(MTL::Texture* texture,
+                                                     MTL::ResourceUsage usage) {
+  if (current_render_encoder_ && texture &&
+      !render_encoder_resource_usage_.Contains(texture)) {
+    render_encoder_textures_.push_back(texture);
+  }
+  UseRenderEncoderResource(static_cast<MTL::Resource*>(texture), usage);
+}
+
+bool MetalCommandProcessor::RenderEncoderUsesAnyTexture(
+    std::span<MTL::Texture* const> textures) const {
+  auto root_texture = [](MTL::Texture* texture) {
+    while (MTL::Texture* parent = texture->parentTexture()) {
+      texture = parent;
+    }
+    return texture;
+  };
+  for (MTL::Texture* used : render_encoder_textures_) {
+    MTL::Texture* used_root = root_texture(used);
+    for (MTL::Texture* texture : textures) {
+      if (texture && root_texture(texture) == used_root) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,

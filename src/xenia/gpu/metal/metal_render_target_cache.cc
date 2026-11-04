@@ -927,6 +927,17 @@ void MetalRenderTargetCache::Shutdown(bool from_destructor) {
     transfer_library_->release();
     transfer_library_ = nullptr;
   }
+  for (auto& it : tile_resolve_pipelines_) {
+    if (it.second) {
+      it.second->release();
+    }
+  }
+  tile_resolve_pipelines_.clear();
+  if (tile_resolve_library_) {
+    tile_resolve_library_->release();
+    tile_resolve_library_ = nullptr;
+  }
+  tile_resolve_library_failed_ = false;
   if (edram_load_library_) {
     edram_load_library_->release();
     edram_load_library_ = nullptr;
@@ -4122,6 +4133,747 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   return true;
 }
 
+namespace {
+
+// Laid out as XeTileResolveConstants in kTileResolveLibrarySource.
+struct TileResolveConstants {
+  // The render target pixel of resolve pixel (0, 0).
+  uint32_t origin[2];
+  // The resolve rectangle, in pixels.
+  uint32_t size[2];
+  // Where the rectangle starts in the destination, in pixels.
+  uint32_t dest_offset[2];
+  uint32_t dest_pitch_macro_tiles;
+  uint32_t dest_slice_pitch_macro_tiles;
+  uint32_t dest_base;
+  uint32_t dest_array;
+  uint32_t dest_slice;
+  // 0 for none, 1 for XeResolveSwapRedBlue_8_8_8_8, 2 for
+  // XeResolveSwapRedBlue_2_10_10_10, 3 for XeResolveSwap4PixelsRedBlue64bpp.
+  uint32_t swap;
+  // XeEndianSwap32, of each dword at 64bpp.
+  uint32_t swap_bytes_in_16;
+  uint32_t swap_halves_in_32;
+  // XeEndianSwap64's dword exchange for 8in64, before the 32-bit swaps.
+  uint32_t exchange_dwords;
+  // 2 for 32bpp, 3 for 64bpp.
+  uint32_t bytes_per_block_log2;
+  // The refreshed texture-cache textures' size, and the row of resolve row 0.
+  uint32_t refresh_size[2];
+  uint32_t refresh_offset_y;
+  // The 16_16_16_16 conversion: the destination's number format, and the
+  // exponent bias factor's float bits, as XeResolveGetInfo decodes them.
+  uint32_t num_format;
+  uint32_t exp_bias_factor_bits;
+  uint32_t padding;
+};
+static_assert(sizeof(TileResolveConstants) == 88);
+
+// The dump shader's direct resolve per pixel (edram_dump_shader.cc), reading
+// the render target from the pass's tiles: the render target's bits packed as
+// the dump packs them, the red/blue swap of the resolve's format, the endian
+// swap, and the store at XeResolveDestPixelAddress. One thread per pixel, one
+// threadgroup per tile.
+const char kTileResolveLibrarySource[] = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct XeTileResolveConstants {
+  uint2 origin;
+  uint2 size;
+  uint2 dest_offset;
+  uint dest_pitch_macro_tiles;
+  uint dest_slice_pitch_macro_tiles;
+  uint dest_base;
+  uint dest_array;
+  uint dest_slice;
+  uint swap;
+  uint swap_bytes_in_16;
+  uint swap_halves_in_32;
+  uint exchange_dwords;
+  uint bytes_per_block_log2;
+  uint2 refresh_size;
+  uint refresh_offset_y;
+  uint num_format;
+  uint exp_bias_factor_bits;
+  uint padding;
+};
+
+// XenosTextureTiledAddressCombine.
+static uint XeTileResolveCombine(uint outer_inner_bytes, uint bank, uint pipe,
+                                 uint y_lsb) {
+  return (y_lsb << 4) | (pipe << 6) | (bank << 11) |
+         (outer_inner_bytes & 0xFu) | (((outer_inner_bytes >> 4) & 0x1u) << 5) |
+         (((outer_inner_bytes >> 5) & 0x7u) << 8) |
+         (outer_inner_bytes >> 8 << 12);
+}
+
+// XenosTextureTiledAddress2D / 3D.
+static uint XeTileResolveTiledAddress(uint2 p,
+                                      constant XeTileResolveConstants& c) {
+  if (c.dest_array != 0u) {
+    uint outer = ((((c.dest_slice >> 2) * c.dest_slice_pitch_macro_tiles +
+                    (p.y >> 4)) * c.dest_pitch_macro_tiles) + (p.x >> 5)) << 7;
+    uint inner = ((c.dest_slice & 0x3u) << 5) | (((p.y >> 1) & 0x3u) << 3) |
+                 (p.x & 0x7u);
+    uint bank = ((p.y >> 3) ^ (c.dest_slice >> 2)) & 0x1u;
+    return XeTileResolveCombine((outer | inner) << c.bytes_per_block_log2,
+                                bank,
+                                ((p.x >> 3) & 0x3u) ^ (bank << 1), p.y & 1u);
+  }
+  uint outer = ((p.y >> 5) * c.dest_pitch_macro_tiles + (p.x >> 5)) << 6;
+  uint inner = (((p.y >> 1) & 0x7u) << 3) | (p.x & 0x7u);
+  return XeTileResolveCombine((outer | inner) << c.bytes_per_block_log2,
+                              (p.y >> 4) & 0x1u,
+                              ((p.x >> 3) & 0x3u) ^ (((p.y >> 3) & 0x1u) << 1),
+                              p.y & 1u);
+}
+
+// XeResolveSwapRedBlue_8_8_8_8 / XeResolveSwapRedBlue_2_10_10_10, keyed on the
+// resolve's format as in the dump shader.
+static uint XeTileResolveSwapRedBlue(constant XeTileResolveConstants& c,
+                                     uint value) {
+  if (c.swap == 1u) {
+    value = (value & ~0xFF00FFu) | ((value & 0xFFu) << 16) |
+            ((value >> 16) & 0xFFu);
+  } else if (c.swap == 2u) {
+    value = (value & ~0x3FF003FFu) | ((value & 0x3FFu) << 20) |
+            ((value >> 20) & 0x3FFu);
+  }
+  return value;
+}
+// XeResolveSwap4PixelsRedBlue64bpp - the low halves of the two dwords.
+static uint2 XeTileResolveSwapRedBlue(constant XeTileResolveConstants& c,
+                                      uint2 value) {
+  if (c.swap == 3u) {
+    value = uint2((value.x & ~0xFFFFu) | (value.y & 0xFFFFu),
+                  (value.y & ~0xFFFFu) | (value.x & 0xFFFFu));
+  }
+  return value;
+}
+
+// The texture-cache refresh texel: the swapped bits, not yet
+// endian-transformed, as the ordinary loader would copy them from the
+// resolved memory.
+static uint4 XeTileResolveRefreshTexel(uint value) {
+  return uint4(value, 0u, 0u, 0u);
+}
+static uint4 XeTileResolveRefreshTexel(uint2 value) {
+  return uint4(value, 0u, 0u);
+}
+
+// XeEndianSwap32, and the store at XeResolveDestPixelAddress.
+static void XeTileResolveStore(constant XeTileResolveConstants& c,
+                               device uint* dest, uint2 p, uint value) {
+  if (c.swap_bytes_in_16 != 0u) {
+    value = ((value & 0x00FF00FFu) << 8) | ((value & 0xFF00FF00u) >> 8);
+  }
+  if (c.swap_halves_in_32 != 0u) {
+    value = (value << 16) | (value >> 16);
+  }
+  dest[(c.dest_base + XeTileResolveTiledAddress(p + c.dest_offset, c)) >> 2] =
+      value;
+}
+// XeEndianSwap64 - the dword exchange for 8in64, then XeEndianSwap32 on each
+// dword - and the store of both.
+static void XeTileResolveStore(constant XeTileResolveConstants& c,
+                               device uint* dest, uint2 p, uint2 value) {
+  if (c.exchange_dwords != 0u) {
+    value = value.yx;
+  }
+  if (c.swap_bytes_in_16 != 0u) {
+    value = ((value & 0x00FF00FFu) << 8) | ((value & 0xFF00FF00u) >> 8);
+  }
+  if (c.swap_halves_in_32 != 0u) {
+    value = (value << 16) | (value >> 16);
+  }
+  uint index =
+      (c.dest_base + XeTileResolveTiledAddress(p + c.dest_offset, c)) >> 2;
+  dest[index] = value.x;
+  dest[index + 1] = value.y;
+}
+
+// As the dump shader packs a k_8_8_8_8 render target: each component
+// converted with OpConvertFToU(c * 255 + 0.5).
+static uint XeTileResolvePack_8888(float4 color,
+                                    constant XeTileResolveConstants& c) {
+  uint4 bytes = uint4(color * 255.0f + 0.5f);
+  return bytes.x | (bytes.y << 8) | (bytes.z << 16) | (bytes.w << 24);
+}
+// The ownership transfer view's bits. Every tile dispatch of a pass has to
+// declare the same imageblock member type, so the attachments are read as
+// half4 (16-bit float, exact, denormals included) or float4 (the rest; a 32-bit
+// float is exact either way).
+static uint XeTileResolvePack_16_16Float(half4 color,
+                                    constant XeTileResolveConstants& c) {
+  return as_type<uint>(color.xy);
+}
+static uint XeTileResolvePack_32Float(float4 color,
+                                    constant XeTileResolveConstants& c) {
+  return as_type<uint>(color.x);
+}
+// The RGBA16Uint ownership transfer view's components, two to a dword, red
+// and blue in the low halves.
+static uint2 XeTileResolvePack_16_16_16_16Float(half4 color,
+                                     constant XeTileResolveConstants& c) {
+  return as_type<uint2>(color);
+}
+// The RG32Uint ownership transfer view's.
+static uint2 XeTileResolvePack_32_32Float(float4 color,
+                                     constant XeTileResolveConstants& c) {
+  return as_type<uint2>(color.xy);
+}
+
+// XePackFixed for 16 bits.
+static uint XeTileResolvePackFixed16(float value, uint num_format) {
+  uint unsigned_max = (1u << 16u) - 1u;
+  uint packed = 0u;
+  if (num_format == 1u) {
+    // Signed fraction uses the positive endpoint, then keeps the destination
+    // bit width.
+    float positive_max = float((1u << (16u - 1u)) - 1u);
+    packed = uint(int(min(max(value, -1.0f), 1.0f) * positive_max +
+                      (value >= 0.0f ? 0.5f : -0.5f)));
+  } else if (num_format == 2u) {
+    packed = uint(min(max(value, 0.0f), float(unsigned_max)) + 0.5f);
+  } else if (num_format == 3u) {
+    int signed_min = -int(1u << (16u - 1u));
+    int signed_max = int((1u << (16u - 1u)) - 1u);
+    packed = uint(int(min(max(value, float(signed_min)), float(signed_max)) +
+                      (value >= 0.0f ? 0.5f : -0.5f)));
+  } else {
+    // Unsigned fraction, float-on-fixed, or anything unexpected: keep the
+    // usual unsigned-fraction pack.
+    packed = uint(saturate(value) * float(unsigned_max) + 0.5f);
+  }
+  return packed & unsigned_max;
+}
+// resolve_full_64bpp_rgba16_1x_direct's conversion of one pixel of a
+// 16_16_16_16 render target (RGBA16Snorm, read as float, whose stored bits are
+// rint(v * 32767)): XeUnpackR16G16B16A16Edram, the exponent bias and
+// XePackR16G16B16A16. The red/blue swap comes after, on the packed halves,
+// which is the same as swapping the floats before packing.
+static uint2 XeTileResolvePack_16_16_16_16(float4 color,
+                                           constant XeTileResolveConstants& c) {
+  float4 pixel = float4(int4(rint(color * 32767.0f))) * (1.0f / 1024.0f);
+  pixel *= as_type<float>(c.exp_bias_factor_bits);
+  uint4 n = uint4(XeTileResolvePackFixed16(pixel.x, c.num_format),
+                  XeTileResolvePackFixed16(pixel.y, c.num_format),
+                  XeTileResolvePackFixed16(pixel.z, c.num_format),
+                  XeTileResolvePackFixed16(pixel.w, c.num_format));
+  return n.xz | (n.yw << 16u);
+}
+
+// How many texture-cache textures the resolve refreshes, 0 to 4: the first
+// and its aliases, R32Uint (32bpp) or RG32Uint (64bpp) 2D array views.
+constant uint xe_tile_resolve_refresh_count [[function_constant(0)]];
+constant bool xe_tile_resolve_refresh_0 = xe_tile_resolve_refresh_count > 0u;
+constant bool xe_tile_resolve_refresh_1 = xe_tile_resolve_refresh_count > 1u;
+constant bool xe_tile_resolve_refresh_2 = xe_tile_resolve_refresh_count > 2u;
+constant bool xe_tile_resolve_refresh_3 = xe_tile_resolve_refresh_count > 3u;
+
+#define XE_TILE_RESOLVE(kernel_name, member_type, index)                      \
+  struct XeTileResolvePixel_##kernel_name##_##index {                         \
+    member_type color [[color(index)]];                                       \
+  };                                                                          \
+  kernel void xe_tile_resolve_##kernel_name##_##index(                        \
+      imageblock<XeTileResolvePixel_##kernel_name##_##index,                  \
+                 imageblock_layout_implicit> pixels,                          \
+      constant XeTileResolveConstants& constants [[buffer(0)]],               \
+      device uint* dest [[buffer(1)]],                                        \
+      texture2d_array<uint, access::write> refresh_0                          \
+      [[texture(0), function_constant(xe_tile_resolve_refresh_0)]],           \
+      texture2d_array<uint, access::write> refresh_1                          \
+      [[texture(1), function_constant(xe_tile_resolve_refresh_1)]],           \
+      texture2d_array<uint, access::write> refresh_2                          \
+      [[texture(2), function_constant(xe_tile_resolve_refresh_2)]],           \
+      texture2d_array<uint, access::write> refresh_3                          \
+      [[texture(3), function_constant(xe_tile_resolve_refresh_3)]],           \
+      ushort2 pixel_in_tile [[thread_position_in_threadgroup]],               \
+      uint2 pixel [[thread_position_in_grid]]) {                              \
+    uint2 p = pixel - constants.origin;                                       \
+    if (p.x >= constants.size.x || p.y >= constants.size.y) {                 \
+      return;                                                                 \
+    }                                                                         \
+    auto value = XeTileResolveSwapRedBlue(                                    \
+        constants,                                                            \
+        XeTileResolvePack_##kernel_name(pixels.read(pixel_in_tile).color,     \
+                                        constants));                          \
+    if (xe_tile_resolve_refresh_0) {                                          \
+      uint2 texel = uint2(p.x, p.y + constants.refresh_offset_y);             \
+      if (texel.x < constants.refresh_size.x &&                               \
+          texel.y < constants.refresh_size.y) {                               \
+        uint4 refresh = XeTileResolveRefreshTexel(value);                     \
+        refresh_0.write(refresh, texel, 0);                                   \
+        if (xe_tile_resolve_refresh_1) {                                      \
+          refresh_1.write(refresh, texel, 0);                                 \
+        }                                                                     \
+        if (xe_tile_resolve_refresh_2) {                                      \
+          refresh_2.write(refresh, texel, 0);                                 \
+        }                                                                     \
+        if (xe_tile_resolve_refresh_3) {                                      \
+          refresh_3.write(refresh, texel, 0);                                 \
+        }                                                                     \
+      }                                                                       \
+    }                                                                         \
+    XeTileResolveStore(constants, dest, p, value);                            \
+  }
+#define XE_TILE_RESOLVE_ALL_INDICES(kernel_name, member_type)                 \
+  XE_TILE_RESOLVE(kernel_name, member_type, 0)                                \
+  XE_TILE_RESOLVE(kernel_name, member_type, 1)                                \
+  XE_TILE_RESOLVE(kernel_name, member_type, 2)                                \
+  XE_TILE_RESOLVE(kernel_name, member_type, 3)
+XE_TILE_RESOLVE_ALL_INDICES(8888, float4)
+XE_TILE_RESOLVE_ALL_INDICES(16_16Float, half4)
+XE_TILE_RESOLVE_ALL_INDICES(32Float, float4)
+XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16Float, half4)
+XE_TILE_RESOLVE_ALL_INDICES(32_32Float, float4)
+XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16, float4)
+)METAL";
+
+const char* const kTileResolveKernelNames[] = {
+    "8888",       "16_16Float",  "32Float", "16_16_16_16Float",
+    "32_32Float", "16_16_16_16"};
+
+// The largest tile area Metal allows at each sample count (Metal feature set
+// tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
+uint32_t GetMaxTileArea(uint32_t sample_count) {
+  switch (sample_count) {
+    case 1:
+    case 2:
+      return 32 * 32;
+    case 4:
+      return 32 * 16;
+    case 8:
+      return 16 * 16;
+    default:
+      return 0;
+  }
+}
+
+}  // namespace
+
+MTL::RenderPipelineState*
+MetalRenderTargetCache::GetOrCreateTileResolvePipeline(
+    MTL::RenderPassDescriptor* pass_descriptor, uint32_t color_index,
+    TileResolveKernel kernel, uint32_t sample_count, uint32_t refresh_count) {
+  // The pass's color formats, 10 bits each, then the color index (2 bits),
+  // the kernel (4 bits), the samples (4 bits) and the refresh count.
+  uint64_t key = 0;
+  MTL::PixelFormat formats[xenos::kMaxColorRenderTargets];
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    MTL::Texture* texture =
+        pass_descriptor->colorAttachments()->object(i)->texture();
+    formats[i] = texture ? texture->pixelFormat() : MTL::PixelFormatInvalid;
+    if (uint32_t(formats[i]) >= 1024) {
+      return nullptr;
+    }
+    key |= uint64_t(formats[i]) << (10 * i);
+  }
+  key |= uint64_t(color_index) << 40 | uint64_t(kernel) << 42 |
+         uint64_t(sample_count) << 46 | uint64_t(refresh_count) << 50;
+  auto it = tile_resolve_pipelines_.find(key);
+  if (it != tile_resolve_pipelines_.end()) {
+    return it->second;
+  }
+
+  if (!tile_resolve_library_ && !tile_resolve_library_failed_) {
+    NS::Error* error = nullptr;
+    tile_resolve_library_ = device_->newLibrary(
+        NS::String::string(kTileResolveLibrarySource, NS::UTF8StringEncoding),
+        nullptr, &error);
+    if (!tile_resolve_library_) {
+      tile_resolve_library_failed_ = true;
+      XELOGE("tresolve: failed to compile the tile resolve library: {}",
+             error && error->localizedDescription()
+                 ? error->localizedDescription()->utf8String()
+                 : "unknown error");
+    }
+  }
+  MTL::RenderPipelineState* pipeline = nullptr;
+  if (tile_resolve_library_) {
+    std::string function_name =
+        std::string("xe_tile_resolve_") +
+        kTileResolveKernelNames[uint32_t(kernel)] + "_" +
+        std::to_string(color_index);
+    MTL::FunctionConstantValues* constant_values =
+        MTL::FunctionConstantValues::alloc()->init();
+    constant_values->setConstantValue(&refresh_count, MTL::DataTypeUInt,
+                                      NS::UInteger(0));
+    NS::Error* function_error = nullptr;
+    MTL::Function* function = tile_resolve_library_->newFunction(
+        NS::String::string(function_name.c_str(), NS::UTF8StringEncoding),
+        constant_values, &function_error);
+    constant_values->release();
+    if (!function) {
+      XELOGE("tresolve: failed to specialize {}: {}", function_name,
+             function_error && function_error->localizedDescription()
+                 ? function_error->localizedDescription()->utf8String()
+                 : "unknown error");
+    }
+    MTL::TileRenderPipelineDescriptor* descriptor =
+        MTL::TileRenderPipelineDescriptor::alloc()->init();
+    if (function && descriptor) {
+      descriptor->setTileFunction(function);
+      descriptor->setRasterSampleCount(sample_count);
+      descriptor->setThreadgroupSizeMatchesTileSize(true);
+      for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+        descriptor->colorAttachments()->object(i)->setPixelFormat(formats[i]);
+      }
+      NS::Error* error = nullptr;
+      pipeline = device_->newRenderPipelineState(
+          descriptor, MTL::PipelineOptionNone, nullptr, &error);
+      if (!pipeline) {
+        XELOGE("tresolve: failed to create {}: {}", function_name,
+               error && error->localizedDescription()
+                   ? error->localizedDescription()->utf8String()
+                   : "unknown error");
+      }
+    }
+    if (descriptor) {
+      descriptor->release();
+    }
+    if (function) {
+      function->release();
+    }
+  }
+  tile_resolve_pipelines_.emplace(key, pipeline);
+  return pipeline;
+}
+
+const char* MetalRenderTargetCache::TileResolveInOpenPass(
+    const draw_util::ResolveInfo& resolve_info,
+    draw_util::ResolveCopyShaderIndex copy_shader,
+    const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
+    uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+    uint32_t dump_pitch, std::span<MTL::Texture* const> refresh_textures,
+    uint32_t refresh_offset_y) {
+  if (!device_->supportsFamily(MTL::GPUFamilyApple4)) {
+    return "family";
+  }
+  if (resolve_info.IsCopyingDepth()) {
+    return "depth";
+  }
+  // Only set under resolution scaling, which takes the EDRAM path, but the
+  // tile kernels don't fill.
+  if (copy_shader_constants.dest_relative.edram_info.fill_half_pixel_offset) {
+    return "half_pixel_fill";
+  }
+  // The dump shader's bit copies, and the 16_16_16_16 conversion, have tile
+  // variants.
+  const bool rgba16_1x =
+      IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
+  switch (copy_shader) {
+    case draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA:
+    case draw_util::ResolveCopyShaderIndex::kFast32bpp4xMSAA:
+    case draw_util::ResolveCopyShaderIndex::kFast64bpp1x2xMSAA:
+    case draw_util::ResolveCopyShaderIndex::kFast64bpp4xMSAA:
+      break;
+    default:
+      if (!rgba16_1x) {
+        return "kernel";
+      }
+      break;
+  }
+
+  // One render target owning every tile of the resolve.
+  std::vector<ResolveCopyDumpRectangle> rectangles;
+  GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
+                                 dump_pitch, rectangles);
+  if (rectangles.size() != 1 || !rectangles[0].render_target) {
+    return "rectangles";
+  }
+  const ResolveCopyDumpRectangle& rectangle = rectangles[0];
+  if (rectangle.row_first || rectangle.rows != dump_rows ||
+      rectangle.row_first_start ||
+      rectangle.row_last_end != dump_row_length_used) {
+    return "partial_owner";
+  }
+  auto* rt = static_cast<MetalRenderTarget*>(rectangle.render_target);
+  const RenderTargetKey rt_key = rt->key();
+  if (rt_key.is_depth) {
+    return "depth";
+  }
+  if (rt_key.msaa_samples != xenos::MsaaSamples::k1X) {
+    return "msaa";
+  }
+  TileResolveKernel kernel;
+  MTL::PixelFormat source_format;
+  switch (rt_key.GetColorFormat()) {
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+      kernel = TileResolveKernel::k8888;
+      source_format = MTL::PixelFormatRGBA8Unorm;
+      break;
+    case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+      kernel = TileResolveKernel::k16_16Float;
+      source_format = MTL::PixelFormatRG16Float;
+      break;
+    case xenos::ColorRenderTargetFormat::k_32_FLOAT:
+      kernel = TileResolveKernel::k32Float;
+      source_format = MTL::PixelFormatR32Float;
+      break;
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+      kernel = TileResolveKernel::k16_16_16_16Float;
+      source_format = MTL::PixelFormatRGBA16Float;
+      break;
+    case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
+      kernel = TileResolveKernel::k32_32Float;
+      source_format = MTL::PixelFormatRG32Float;
+      break;
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+      // Only the conversion: the bit copy of the raw bits isn't ported.
+      if (!rgba16_1x) {
+        return "format";
+      }
+      kernel = TileResolveKernel::k16_16_16_16;
+      source_format = MTL::PixelFormatRGBA16Snorm;
+      break;
+    default:
+      return "format";
+  }
+  if (rgba16_1x && kernel != TileResolveKernel::k16_16_16_16) {
+    return "kernel";
+  }
+  const bool is_64bpp = rt_key.Is64bpp();
+  MTL::Texture* source = rt->texture();
+  if (!source || source->pixelFormat() != source_format ||
+      source->sampleCount() != 1) {
+    return "host_format";
+  }
+
+  // Resolve pixel p is render target pixel p + origin while the resolve's
+  // rows are the render target's rows, as in DirectResolveRenderTargets'
+  // rgb10 copies - which with one owner covering the whole span is also where
+  // the dump shader reads it.
+  const draw_util::ResolveEdramInfo& edram_info =
+      copy_shader_constants.dest_relative.edram_info;
+  const draw_util::ResolveCoordinateInfo& coordinate_info =
+      copy_shader_constants.dest_relative.coordinate_info;
+  if (!edram_info.pitch_tiles || dump_pitch != edram_info.pitch_tiles ||
+      rt_key.GetPitchTiles() != edram_info.pitch_tiles ||
+      edram_info.base_tiles < rt_key.base_tiles) {
+    return "layout";
+  }
+  if (xenos::IsColorRenderTargetFormat64bpp(
+          xenos::ColorRenderTargetFormat(edram_info.format)) != is_64bpp) {
+    return "format";
+  }
+  const uint32_t base_delta = edram_info.base_tiles - rt_key.base_tiles;
+  // 64bpp tiles are half as wide in pixels.
+  const uint32_t edram_tile_width =
+      xenos::kEdramTileWidthSamples >> uint32_t(is_64bpp);
+  TileResolveConstants constants = {};
+  constants.origin[0] = base_delta % edram_info.pitch_tiles * edram_tile_width +
+                        coordinate_info.edram_offset_x_div_8 * 8;
+  constants.origin[1] =
+      base_delta / edram_info.pitch_tiles * xenos::kEdramTileHeightSamples +
+      coordinate_info.edram_offset_y_div_8 * 8;
+  constants.size[0] = coordinate_info.width_div_8 * 8;
+  constants.size[1] = resolve_info.height_div_8 * 8;
+  if (constants.origin[0] + constants.size[0] >
+          edram_info.pitch_tiles * edram_tile_width ||
+      constants.origin[0] + constants.size[0] > source->width() ||
+      constants.origin[1] + constants.size[1] > source->height()) {
+    return "layout";
+  }
+  const reg::RB_COPY_DEST_INFO dest_info =
+      copy_shader_constants.dest_relative.dest_info;
+  const draw_util::ResolveCopyDestCoordinateInfo& dest_coordinate_info =
+      copy_shader_constants.dest_relative.dest_coordinate_info;
+  constants.dest_offset[0] = dest_coordinate_info.offset_x_div_8 * 8;
+  constants.dest_offset[1] = dest_coordinate_info.offset_y_div_8 * 8;
+  constants.dest_pitch_macro_tiles = dest_coordinate_info.pitch_aligned_div_32;
+  constants.dest_slice_pitch_macro_tiles =
+      dest_coordinate_info.height_aligned_div_32 << 1;
+  constants.dest_base = copy_shader_constants.dest_base;
+  constants.dest_array = dest_info.copy_dest_array;
+  constants.dest_slice = dest_info.copy_dest_slice;
+  if (dest_info.copy_dest_swap) {
+    switch (xenos::ColorRenderTargetFormat(edram_info.format)) {
+      case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+      case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+        constants.swap = 1;
+        break;
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+      case xenos::ColorRenderTargetFormat::
+          k_2_10_10_10_FLOAT_AS_16_16_16_16:
+        constants.swap = 2;
+        break;
+      case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+      case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+        constants.swap = 3;
+        break;
+      default:
+        break;
+    }
+  }
+  xenos::Endian128 endian = dest_info.copy_dest_endian;
+  // XeEndianSwap64 exchanges the dwords for 8in64, then swaps as 8in32.
+  if (is_64bpp && endian == xenos::Endian128::k8in64) {
+    constants.exchange_dwords = 1;
+    endian = xenos::Endian128::k8in32;
+  }
+  constants.bytes_per_block_log2 = 2 + uint32_t(is_64bpp);
+  // XeResolveGetInfo's dest_num_format and dest_exp_bias_factor.
+  constants.num_format = (dest_info.value >> 13) & 0x7;
+  constants.exp_bias_factor_bits =
+      uint32_t((int32_t(dest_info.value << 10) >> 26 << 23) + 0x3F800000);
+  if (kernel == TileResolveKernel::k16_16_16_16) {
+    // An RGBA16Snorm tile no draw of the pass touched may hold 0x8000, which
+    // today's compute reads raw (-32768) and the tile read sees as -1.0, like
+    // 0x8001 (-32767). Both convert to the same output except for these.
+    const int32_t exp_bias = int32_t(dest_info.value << 10) >> 26;
+    if ((constants.num_format == 1 && (exp_bias == -6 || exp_bias == -5)) ||
+        (constants.num_format == 3 && (exp_bias == -6 || exp_bias == 10))) {
+      return "rgba16_bias";
+    }
+  }
+  constants.swap_bytes_in_16 = endian == xenos::Endian128::k8in16 ||
+                               endian == xenos::Endian128::k8in32;
+  constants.swap_halves_in_32 = endian == xenos::Endian128::k8in32 ||
+                                endian == xenos::Endian128::k16in32;
+  // The dump shader stores whole 16-byte blocks from this base.
+  if (constants.dest_base & 0xF) {
+    return "dest_align";
+  }
+
+  // The render target has to be an attachment of the open pass, and the
+  // resolve inside the area its tiles cover.
+  MTL::RenderPassDescriptor* pass_descriptor = nullptr;
+  uint32_t pass_width = 0, pass_height = 0;
+  MetalBufferHazards::Encoder* hazards = nullptr;
+  MTL::RenderCommandEncoder* encoder = command_processor_.GetOpenRenderPass(
+      pass_descriptor, pass_width, pass_height, hazards);
+  if (!encoder) {
+    return "no_pass";
+  }
+  uint32_t color_index = UINT32_MAX;
+  for (uint32_t i = 0; i < 8; ++i) {
+    MTL::RenderPassColorAttachmentDescriptor* attachment =
+        pass_descriptor->colorAttachments()->object(i);
+    if (attachment->texture() && i >= xenos::kMaxColorRenderTargets) {
+      return "attachments";
+    }
+    if (attachment->texture() == source && !attachment->level() &&
+        !attachment->slice() && !attachment->depthPlane()) {
+      color_index = i;
+    }
+  }
+  if (color_index == UINT32_MAX) {
+    return "not_attached";
+  }
+  if (constants.origin[0] + constants.size[0] > pass_width ||
+      constants.origin[1] + constants.size[1] > pass_height) {
+    return "render_area";
+  }
+  // Every tile dispatch of a pass declares the same imageblock member type:
+  // half4 for the 16-bit float formats, float4 for the rest.
+  const uint32_t member_class =
+      1 + uint32_t(kernel == TileResolveKernel::k16_16Float ||
+                   kernel == TileResolveKernel::k16_16_16_16Float);
+  const uint32_t pass_member_class =
+      command_processor_.GetRenderEncoderTileMemberClass();
+  if (pass_member_class && pass_member_class != member_class) {
+    return "member_class";
+  }
+
+  // The tile size is the pass's own, checked against the limits rather than
+  // assumed.
+  const uint32_t sample_count = 1;
+  const uint32_t tile_width = uint32_t(encoder->tileWidth());
+  const uint32_t tile_height = uint32_t(encoder->tileHeight());
+  if (!tile_width || !tile_height ||
+      tile_width * tile_height > GetMaxTileArea(sample_count)) {
+    return "tile_size";
+  }
+  // The refresh views are R32Uint at 32bpp and RG32Uint at 64bpp, all of the
+  // shape of the first.
+  const uint32_t refresh_count = uint32_t(refresh_textures.size());
+  if (refresh_count) {
+    if (refresh_count > 4) {
+      return "refresh_count";
+    }
+    const MTL::PixelFormat refresh_format =
+        is_64bpp ? MTL::PixelFormatRG32Uint : MTL::PixelFormatR32Uint;
+    for (MTL::Texture* refresh_texture : refresh_textures) {
+      if (!refresh_texture ||
+          refresh_texture->textureType() != MTL::TextureType2DArray ||
+          refresh_texture->pixelFormat() != refresh_format) {
+        return "refresh_format";
+      }
+    }
+    // An earlier draw of this pass may sample them in a tile the dispatch
+    // reaches first.
+    if (command_processor_.RenderEncoderUsesAnyTexture(refresh_textures)) {
+      return "refresh_sampled";
+    }
+    constants.refresh_size[0] = uint32_t(refresh_textures[0]->width());
+    constants.refresh_size[1] = uint32_t(refresh_textures[0]->height());
+    constants.refresh_offset_y = refresh_offset_y;
+  }
+  MTL::RenderPipelineState* pipeline = GetOrCreateTileResolvePipeline(
+      pass_descriptor, color_index, kernel, sample_count, refresh_count);
+  if (!pipeline) {
+    return "pipeline";
+  }
+  if (tile_width * tile_height > pipeline->maxTotalThreadsPerThreadgroup()) {
+    return "threads";
+  }
+  const NS::UInteger imageblock_bytes =
+      std::max<NS::UInteger>(
+          pipeline->imageblockSampleLength() * tile_width * tile_height,
+          pipeline->imageblockMemoryLength(
+              MTL::Size::Make(tile_width, tile_height, 1))) *
+      sample_count;
+  if (imageblock_bytes > device_->maxThreadgroupMemoryLength()) {
+    return "imageblock";
+  }
+
+  auto* shared = command_processor_.shared_memory();
+  MTL::Buffer* dest_buffer = shared ? shared->GetBuffer() : nullptr;
+  if (!dest_buffer) {
+    return "shared_memory";
+  }
+  // Earlier commands of this pass that touched the destination may run after
+  // the dispatch in other tiles.
+  if ((hazards && hazards->HasAccess(resolve_info.copy_dest_extent_start,
+                                     resolve_info.copy_dest_extent_length)) ||
+      command_processor_.TileResolveWritesOverlap(
+          resolve_info.copy_dest_extent_start,
+          resolve_info.copy_dest_extent_length)) {
+    return "dest_in_pass";
+  }
+  // The GPU is about to overwrite this range, so any CPU-side data has to be
+  // uploaded first. Without zero-copy that is a blit, which ends the pass.
+  if (!shared->RequestRange(resolve_info.copy_dest_extent_start,
+                            resolve_info.copy_dest_extent_length)) {
+    return "request_range";
+  }
+  if (!command_processor_.HasActiveRenderEncoder()) {
+    return "upload_ended_pass";
+  }
+
+  encoder->setRenderPipelineState(pipeline);
+  command_processor_.InvalidateRenderEncoderPipeline();
+  encoder->setTileBytes(&constants, sizeof(constants), 0);
+  encoder->setTileBuffer(dest_buffer, 0, 1);
+  for (uint32_t i = 0; i < refresh_count; ++i) {
+    encoder->setTileTexture(refresh_textures[i], i);
+    command_processor_.UseRenderEncoderResource(refresh_textures[i],
+                                                MTL::ResourceUsageWrite);
+  }
+  if (hazards) {
+    hazards->Access(resolve_info.copy_dest_extent_start,
+                    resolve_info.copy_dest_extent_length, true);
+  }
+  encoder->dispatchThreadsPerTile(
+      MTL::Size::Make(tile_width, tile_height, 1));
+  command_processor_.SetRenderEncoderTileMemberClass(member_class);
+  return nullptr;
+}
+
 void MetalRenderTargetCache::DumpAllRenderTargetsToEdram() {
   DumpRenderTargets(0, xenos::kEdramTileCount, 1, xenos::kEdramTileCount);
 }
@@ -4747,33 +5499,66 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                 draw_resolution_scale_x(),
                                 draw_resolution_scale_y(), fixed_rg16_trunc,
                                 fixed_rgba16_trunc, resolve_info);
-  // The guest's pass before the resolve is still open. With what the resolve
-  // will read and clear known, it can drop stores nothing will read.
-  if (resolve_info_valid) {
-    PlanResolveStoreActions(resolve_info);
+  // IssueCopy leaves the guest's pass before the resolve open, so the resolve
+  // can read its attachments with a tile dispatch. Every other path ends it
+  // first. With what the resolve will read and clear known, the end can drop
+  // stores nothing will read.
+  bool tile_pass_open = command_processor_.HasActiveRenderEncoder();
+  bool transfers_flushed = false;
+  last_resolve_kept_pass_ = false;
+  auto end_pass = [&]() {
+    if (resolve_info_valid) {
+      PlanResolveStoreActions(resolve_info);
+    }
+    command_processor_.EndRenderEncoder();
+    // With no pass open, the plan applies to none.
+    dead_store_render_targets_.clear();
+    if (transfers_flushed) {
+      PerformDeferredClears(command_buffer);
+    }
+  };
+  // The argument says why, for a debugger.
+  auto end_tile_pass = [&](const char*) {
+    if (!tile_pass_open) {
+      return;
+    }
+    tile_pass_open = false;
+    end_pass();
+  };
+  if (!tile_pass_open) {
+    end_pass();
   }
-  command_processor_.EndRenderEncoder();
-  // With no pass open, the plan applies to none.
-  dead_store_render_targets_.clear();
   if (!trace_writer_) {
     XELOGE("MetalRenderTargetCache::Resolve: trace_writer_ is null");
+    end_tile_pass("error");
     return false;
   }
   if (!resolve_info_valid) {
     XELOGE("MetalRenderTargetCache::Resolve: GetResolveInfo failed");
+    end_tile_pass("error");
     return false;
   }
 
   // Resolving reads the render targets, so anything still queued for a draw
   // pass has to have been applied to them first.
+  if (HasPendingDrawPassTransfers()) {
+    end_tile_pass("pending_transfers");
+  }
   if (!FlushPendingDrawPassTransfers()) {
+    end_tile_pass("error");
     return false;
   }
-  // So do the clears deferred to the passes that would bind them.
-  PerformDeferredClears(command_buffer);
+  transfers_flushed = true;
+  // So do the clears deferred to the passes that would bind them. An open
+  // pass has done those of its own attachments as its clear load actions, and
+  // the tile dispatch reads only those.
+  if (!tile_pass_open) {
+    PerformDeferredClears(command_buffer);
+  }
 
   // Nothing to do.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
+    end_tile_pass("empty");
     return true;
   }
 
@@ -4815,6 +5600,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   if (!resolve_info.copy_dest_extent_length) {
     // A malformed or entirely clipped copy destination drops only the copy.
     // The guest's post-resolve EDRAM clear is independent and must still run.
+    end_tile_pass("no_copy");
     return perform_resolve_clear();
   }
 
@@ -4888,16 +5674,54 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     for (uint32_t i = 0; i < refresh_target.count; ++i) {
       refresh_views[i] = refresh_target.destinations[i].write_texture.get();
     }
-    resolved_directly = DirectResolveRenderTargets(
-        resolve_info, copy_shader, copy_constants, dump_base,
-        dump_row_length_used, dump_rows, dump_pitch, group_count_x,
-        group_count_y, command_buffer,
-        {refresh_views.data(), refresh_target.count},
-        refresh_target.destinations[0].offset_y,
-        refresh_target.transform ==
-            MetalTextureCache::ResolveTextureRefreshTarget::Transform::
-                kDepthFloat24);
+    if (tile_pass_open) {
+      const char* tile_fallback =
+          refresh_target.transform !=
+                  MetalTextureCache::ResolveTextureRefreshTarget::Transform::
+                      kNone
+              ? "refresh_depth"
+              : TileResolveInOpenPass(
+                    resolve_info, copy_shader, copy_constants, dump_base,
+                    dump_row_length_used, dump_rows, dump_pitch,
+                    {refresh_views.data(), refresh_target.count},
+                    refresh_target.destinations[0].offset_y);
+      if (tile_fallback) {
+        end_tile_pass(tile_fallback);
+      } else {
+        tile_pass_open = false;
+        // Later draws of the pass would sample refreshed textures without a
+        // pass end between, and a resolve clear ends the pass for a clear
+        // load action of its own.
+        const bool clears =
+            resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
+        if (!refresh_target && !clears &&
+            command_processor_.CanKeepRenderPassAfterTileResolve()) {
+          command_processor_.NoteTileResolveWrite(
+              resolve_info.copy_dest_extent_start,
+              resolve_info.copy_dest_extent_length);
+          last_resolve_kept_pass_ = true;
+        } else {
+          XELOGI("tresolve: end {}", refresh_target ? "refresh"
+                                     : clears       ? "clear"
+                                                    : "budget");
+          end_pass();
+        }
+        resolved_directly = true;
+      }
+    }
+    if (!resolved_directly) {
+      resolved_directly = DirectResolveRenderTargets(
+          resolve_info, copy_shader, copy_constants, dump_base,
+          dump_row_length_used, dump_rows, dump_pitch, group_count_x,
+          group_count_y, command_buffer,
+          {refresh_views.data(), refresh_target.count},
+          refresh_target.destinations[0].offset_y,
+          refresh_target.transform ==
+              MetalTextureCache::ResolveTextureRefreshTarget::Transform::
+                  kDepthFloat24);
+    }
   }
+  end_tile_pass(draw_resolution_scaled ? "scaled" : "not_direct");
 
   if (!resolved_directly) {
     DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch,
