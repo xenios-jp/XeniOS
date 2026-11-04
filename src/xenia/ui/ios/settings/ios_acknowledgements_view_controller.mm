@@ -54,18 +54,49 @@ NSString* AcknowledgementsFallbackText() {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-  NSMutableString* text = [NSMutableString string];
-  NSString* note = entry_[@"note"];
-  if ([note isKindOfClass:[NSString class]] && note.length) {
-    [text appendFormat:@"%@\n\n", note];
-  }
+  // The full name heads the text, where it can wrap; a large title would cut "FFmpeg
+  // (libavcodec, libavformat, libavutil)" short.
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  self.navigationItem.title = @"";
+  NSMutableAttributedString* text = [[[NSMutableAttributedString alloc] init] autorelease];
+  UIFont* body_font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  NSDictionary* body = @{
+    NSFontAttributeName : body_font,
+    NSForegroundColorAttributeName : [XeniaTheme textPrimary],
+  };
+  NSDictionary* secondary = @{
+    NSFontAttributeName : body_font,
+    NSForegroundColorAttributeName : [XeniaTheme textSecondary],
+  };
+  UIFontDescriptor* heading_descriptor =
+      [[UIFontDescriptor preferredFontDescriptorWithTextStyle:UIFontTextStyleLargeTitle]
+          fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold];
+  NSMutableParagraphStyle* heading_style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+  heading_style.paragraphSpacing = 12.0;
+  [text appendAttributedString:[[[NSAttributedString alloc]
+                                   initWithString:[self.title stringByAppendingString:@"\n"]
+                                       attributes:@{
+                                         NSFontAttributeName :
+                                             [UIFont fontWithDescriptor:heading_descriptor size:0],
+                                         NSForegroundColorAttributeName : [XeniaTheme textPrimary],
+                                         NSParagraphStyleAttributeName : heading_style,
+                                       }] autorelease]];
   NSString* url = entry_[@"url"];
   if ([url isKindOfClass:[NSString class]] && url.length) {
-    [text appendFormat:@"%@\n\n", url];
+    [text appendAttributedString:[[[NSAttributedString alloc]
+                                     initWithString:[url stringByAppendingString:@"\n\n"]
+                                         attributes:body] autorelease]];
+  }
+  NSString* note = entry_[@"note"];
+  if ([note isKindOfClass:[NSString class]] && note.length) {
+    [text appendAttributedString:[[[NSAttributedString alloc]
+                                     initWithString:[note stringByAppendingString:@"\n\n"]
+                                         attributes:secondary] autorelease]];
   }
   NSString* license = entry_[@"text"];
   if ([license isKindOfClass:[NSString class]]) {
-    [text appendString:license];
+    [text appendAttributedString:[[[NSAttributedString alloc] initWithString:license
+                                                                  attributes:body] autorelease]];
   }
 
   UITextView* text_view = [[[UITextView alloc] init] autorelease];
@@ -73,12 +104,11 @@ NSString* AcknowledgementsFallbackText() {
   text_view.editable = NO;
   text_view.alwaysBounceVertical = YES;
   text_view.backgroundColor = [UIColor clearColor];
-  text_view.textColor = [XeniaTheme textPrimary];
-  text_view.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
   text_view.adjustsFontForContentSizeCategory = YES;
-  text_view.textContainerInset = UIEdgeInsetsMake(16.0, 12.0, 24.0, 12.0);
+  text_view.textContainerInset = UIEdgeInsetsMake(8.0, 16.0, 24.0, 16.0);
+  text_view.textContainer.lineFragmentPadding = 0.0;
   text_view.dataDetectorTypes = UIDataDetectorTypeLink;
-  text_view.text = text;
+  text_view.attributedText = text;
   text_view.accessibilityLabel = [NSString
       stringWithFormat:NSLocalizedString(@"%@ license",
                                          @"acknowledgements view controller: accessibility label"),
