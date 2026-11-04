@@ -17,8 +17,10 @@
 #import <PHASE/PHASE.h>
 #import <simd/simd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -45,14 +47,33 @@ namespace {
 // 256 samples at 48 kHz (FL, FR, FC, LFE, BL, BR). The PHASE ambient mixer
 // renders each channel from its speaker direction and ignores LFE.
 constexpr uint32_t kChannelSamples = AudioDriver::kChannelSamplesDefault;  // 256
-// Pool is sized at/above the audio system's max queued frames so the guest
-// (throttled by the pre-filled semaphore) never starves the free list.
-constexpr size_t kBufferPoolSize = 64;
+// Pool is sized at/above the audio system's max queued frames plus the
+// permitless buffers below, so the guest (throttled by the pre-filled
+// semaphore) never starves the free list.
+constexpr size_t kBufferPoolSize = 96;
+constexpr int kMaxPermitlessBuffers = 32;
 // Bounded wait so Shutdown never blocks forever on a wedged render thread.
 constexpr int kShutdownDrainPollMs = 2;
 constexpr int kShutdownDrainMaxPolls = 250;  // ~0.5s
 // Heartbeat cadence for the steady-state stats log (~5s at 48kHz/256).
 constexpr uint64_t kHeartbeatFrames = 1000;
+
+// PHASE reports a buffer rendered only after the output I/O cycle that played
+// it, so the buffers of the cycle in progress still hold the audio worker's
+// permits. With iOS's 20 ms cycle that is 4 or 5 of the worker's 8, and on its
+// 5.33 ms deadlines it then finds none free and skips the frame: 2 to 5% of
+// the audio went missing as gaps between buffers, heard as crackle. As many
+// buffers as one cycle can touch give their permit back when scheduled.
+int OutputCycleBuffers(double sample_rate, uint32_t channel_samples) {
+#if TARGET_OS_IOS
+  const double cycle_frames = [AVAudioSession sharedInstance].IOBufferDuration * sample_rate;
+#else
+  const double cycle_frames = 512.0;
+#endif
+  // A cycle can straddle one buffer more than it covers.
+  const int buffers = static_cast<int>(std::ceil(cycle_frames / channel_samples)) + 1;
+  return std::clamp(buffers, 1, kMaxPermitlessBuffers);
+}
 
 // Posted by the app (xenia_main_ios) once the audio session is active again
 // after an interruption, a media services reset or a return from the
@@ -70,6 +91,10 @@ struct PHASEAudioDriverShared {
   std::mutex mutex;
   std::vector<AVAudioPCMBuffer*> free_pool;
   std::atomic<int> outstanding{0};
+  // Scheduled buffers that gave their permit back early, and how many may
+  // (OutputCycleBuffers). Under |mutex|.
+  int permitless = 0;
+  int permitless_max = 0;
   xe::threading::Semaphore* semaphore = nullptr;
   // Bumped (under |mutex|) when buffers scheduled on a stopped graph are given
   // up on, so their completion blocks, if they ever run, only recycle the
@@ -83,6 +108,10 @@ struct PHASEAudioDriverShared {
   std::atomic<uint64_t> frames_submitted{0};
   std::atomic<uint64_t> frames_completed{0};
   std::atomic<uint64_t> underruns{0};
+  // Frames scheduled when PHASE had nothing left to play: a gap before each.
+  // A lower bound, as a cycle that runs short with buffers still queued is
+  // not seen.
+  std::atomic<uint64_t> stream_dry{0};
   std::atomic<uint64_t> dropped_inactive{0};
   std::atomic<bool> logged_first_submit{false};
   std::atomic<bool> logged_first_complete{false};
@@ -170,6 +199,13 @@ bool PHASEAudioDriver::Impl::BuildGraph() {
     }
     XELOGI("PHASEAudioDriver: stream format ch={}, rate={}, interleaved=no",
            static_cast<uint32_t>(d->format.channelCount), d->format.sampleRate);
+    const int permitless_max = OutputCycleBuffers(d->frequency, d->channel_samples);
+    {
+      std::lock_guard<std::mutex> lock(d->shared->mutex);
+      d->shared->permitless_max = permitless_max;
+    }
+    XELOGI("PHASEAudioDriver: {} buffers per output cycle schedule without a permit",
+           permitless_max);
 
     // Identity orientation: speakers in their canonical directions.
     simd_quatf identity = simd_quaternion(0.0f, 0.0f, 0.0f, 1.0f);
@@ -299,12 +335,15 @@ void PHASEAudioDriver::Impl::Restart() {
     // them so the audio worker's permits aren't lost, and replace them in the
     // pool.
     int leaked = 0;
+    int permits = 0;
     {
       std::lock_guard<std::mutex> lock(shared->mutex);
       ++shared->epoch;
       leaked = shared->outstanding.exchange(0, std::memory_order_acq_rel);
+      permits = leaked - shared->permitless;
+      shared->permitless = 0;
     }
-    for (int i = 0; i < leaked; ++i) {
+    for (int i = 0; i < permits; ++i) {
       ReleaseSemaphore();
     }
 
@@ -412,9 +451,9 @@ void PHASEAudioDriver::Shutdown() {
     Impl* d = impl_.get();
     auto s = d->shared;
     XELOGI("PHASEAudioDriver::Shutdown begin (submitted={}, completed={}, "
-           "underruns={}, dropped_inactive={}, outstanding={})",
+           "underruns={}, stream_dry={}, dropped_inactive={}, outstanding={})",
            s->frames_submitted.load(), s->frames_completed.load(),
-           s->underruns.load(), s->dropped_inactive.load(),
+           s->underruns.load(), s->stream_dry.load(), s->dropped_inactive.load(),
            s->outstanding.load());
 
     d->shutting_down.store(true, std::memory_order_release);
@@ -444,13 +483,22 @@ void PHASEAudioDriver::Shutdown() {
       std::this_thread::sleep_for(
           std::chrono::milliseconds(kShutdownDrainPollMs));
     }
-    int leaked = s->outstanding.exchange(0, std::memory_order_acq_rel);
+    int leaked = 0;
+    int permits = 0;
+    {
+      std::lock_guard<std::mutex> lock(s->mutex);
+      // A buffer that completes after this only returns to the pool.
+      ++s->epoch;
+      leaked = s->outstanding.exchange(0, std::memory_order_acq_rel);
+      permits = leaked - s->permitless;
+      s->permitless = 0;
+    }
     if (leaked > 0) {
       XELOGW("PHASEAudioDriver: {} buffer(s) never completed; flushing permits "
              "after {}ms wait",
              leaked, polls * kShutdownDrainPollMs);
     }
-    for (int i = 0; i < leaked; ++i) {
+    for (int i = 0; i < permits; ++i) {
       d->ReleaseSemaphore();
     }
 
@@ -518,22 +566,33 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
   }
 
   uint64_t submitted = s.frames_submitted.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (submitted > 1 && s.outstanding.load(std::memory_order_relaxed) == 0) {
+    s.stream_dry.fetch_add(1, std::memory_order_relaxed);
+  }
   if (!s.logged_first_submit.exchange(true, std::memory_order_relaxed)) {
     XELOGI("PHASEAudioDriver: first frame submitted to PHASE (vol={})", vol);
   }
   if ((submitted % kHeartbeatFrames) == 0) {
     XELOGI("PHASEAudioDriver: heartbeat submitted={}, completed={}, "
-           "underruns={}, pool_free={}, outstanding={}",
-           submitted, s.frames_completed.load(), s.underruns.load(), pool_free,
-           s.outstanding.load());
+           "underruns={}, stream_dry={}, pool_free={}, outstanding={}",
+           submitted, s.frames_completed.load(), s.underruns.load(),
+           s.stream_dry.load(), pool_free, s.outstanding.load());
   }
 
   s.outstanding.fetch_add(1, std::memory_order_relaxed);
   std::shared_ptr<PHASEAudioDriverShared> shared = d->shared;
   uint64_t epoch;
+  bool holds_permit = true;
   {
     std::lock_guard<std::mutex> lock(shared->mutex);
     epoch = shared->epoch;
+    if (shared->permitless < shared->permitless_max) {
+      ++shared->permitless;
+      holds_permit = false;
+      if (shared->semaphore) {
+        shared->semaphore->Release(1, nullptr);
+      }
+    }
   }
   [d->stream_node
         scheduleBuffer:buf
@@ -551,16 +610,19 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                    return;
                  }
                  shared->free_pool.push_back(buf);
+                 // Under the lock, so Restart and Shutdown count permits from a settled state.
+                 shared->outstanding.fetch_sub(1, std::memory_order_relaxed);
+                 if (!holds_permit) {
+                   --shared->permitless;
+                 } else if (shared->semaphore) {
+                   shared->semaphore->Release(1, nullptr);
+                 }
                  shared->last_completion_ns.store(
                      std::chrono::duration_cast<std::chrono::nanoseconds>(
                          std::chrono::steady_clock::now().time_since_epoch())
                          .count(),
                      std::memory_order_release);
-                 if (shared->semaphore) {
-                   shared->semaphore->Release(1, nullptr);
-                 }
                }
-               shared->outstanding.fetch_sub(1, std::memory_order_relaxed);
                shared->frames_completed.fetch_add(1, std::memory_order_relaxed);
                if (!shared->logged_first_complete.exchange(
                        true, std::memory_order_relaxed)) {
