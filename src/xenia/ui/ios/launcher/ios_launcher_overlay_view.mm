@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/launcher/ios_launcher_overlay_view.h"
 
+#import <CoreImage/CoreImage.h>
+
 #include <cmath>
 
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
@@ -18,6 +20,54 @@
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
+
+// Fetches the wide background art of |title_ids| one at a time, so a game's page has it the first
+// time it opens. Each title is asked for once per run; titles the art repository has no image for
+// are remembered by the art cache and not asked for again for a while.
+static void XEPrefetchBackgroundArt(NSArray<NSNumber*>* title_ids, NSUInteger index) {
+  static NSMutableSet<NSNumber*>* requested = [[NSMutableSet alloc] init];
+  while (index < title_ids.count &&
+         ([requested containsObject:title_ids[index]] ||
+          xe_has_cached_game_background_art(title_ids[index].unsignedIntValue))) {
+    ++index;
+  }
+  if (index >= title_ids.count) {
+    return;
+  }
+  NSNumber* title_id = title_ids[index];
+  [requested addObject:title_id];
+  xe_fetch_game_background_art(title_id.unsignedIntValue, ^(UIImage* __unused image) {
+    XEPrefetchBackgroundArt(title_ids, index + 1);
+  });
+}
+
+// A small, heavily blurred copy of |image| for backdrops: art that isn't sharp enough to be shown
+// large reads as colour and light instead of as blurry pixels.
+static UIImage* XEBlurredBackdropImage(UIImage* image) {
+  if (!image.CGImage) {
+    return nil;
+  }
+  static CIContext* context = [[CIContext contextWithOptions:nil] retain];
+  CIImage* input = [CIImage imageWithCGImage:image.CGImage];
+  const CGFloat longest = MAX(input.extent.size.width, input.extent.size.height);
+  if (longest <= 0.0) {
+    return nil;
+  }
+  const CGFloat scale = MIN(1.0, 160.0 / longest);
+  const CGRect extent =
+      CGRectMake(0.0, 0.0, floor(input.extent.size.width * scale),
+                 floor(input.extent.size.height * scale));
+  CIImage* small = [input imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
+  CIImage* blurred = [[small imageByClampingToExtent]
+      imageByApplyingGaussianBlurWithSigma:MAX(6.0, extent.size.width / 14.0)];
+  CGImageRef rendered = [context createCGImage:blurred fromRect:extent];
+  if (!rendered) {
+    return nil;
+  }
+  UIImage* result = [UIImage imageWithCGImage:rendered];
+  CGImageRelease(rendered);
+  return result;
+}
 
 @implementation XeniaIOSLauncherGameSnapshot
 
@@ -513,6 +563,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSLayoutConstraint* _heroTextBottom;
   XeniaIOSLauncherGameSnapshot* _heroGame;
   uint32_t _heroArtTitleId;
+  // Only the box art: the art behind is a blur of it, and the cover itself sits on top as a card
+  // at its own size (beside the art), rather than stretched across the page.
+  BOOL _heroArtIsCover;
+  UIImageView* _heroCover;
+  // The game page beside the art: a dimmed blur of the art behind the rows, which the art fades
+  // into instead of ending at an edge.
+  UIImageView* _ambientArt;
+  UIView* _ambientDim;
   // The game page in place of the grid (side layout): the game it is for, its rows, ✕ and ⋯ in
   // the header, and touch layout and settings beside Play.
   XeniaIOSLauncherGameSnapshot* _detailGame;
@@ -627,6 +685,26 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_heroView.layer addSublayer:_heroTopScrim];
   _heroScrim = [[CAGradientLayer layer] retain];
   [_heroView.layer addSublayer:_heroScrim];
+  _heroCover = [[UIImageView alloc] init];
+  _heroCover.contentMode = UIViewContentModeScaleAspectFill;
+  _heroCover.clipsToBounds = YES;
+  _heroCover.layer.cornerRadius = 10.0;
+  _heroCover.layer.cornerCurve = kCACornerCurveContinuous;
+  _heroCover.layer.borderWidth = 0.5;
+  _heroCover.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+  _heroCover.isAccessibilityElement = NO;
+  _heroCover.hidden = YES;
+  [_heroView addSubview:_heroCover];
+
+  _ambientArt = [[UIImageView alloc] init];
+  _ambientArt.contentMode = UIViewContentModeScaleAspectFill;
+  _ambientArt.clipsToBounds = YES;
+  _ambientArt.isAccessibilityElement = NO;
+  _ambientArt.alpha = 0.0;
+  _ambientDim = [[UIView alloc] init];
+  _ambientDim.backgroundColor = [[XeniaTheme bgPrimary] colorWithAlphaComponent:0.55];
+  [_ambientArt addSubview:_ambientDim];
+  [self insertSubview:_ambientArt atIndex:0];
 
   _heroCaption = [[UILabel alloc] init];
   _heroCaption.text =
@@ -1133,6 +1211,29 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [CATransaction commit];
 }
 
+// Box art as a card at the top of the art column, above the title, when there is room for it.
+// Upright, the blur alone carries the colour and the title stands on it.
+- (void)layoutHeroCover {
+  BOOL show = _heroArtIsCover && _sideLayout && !_heroView.hidden;
+  if (show) {
+    [_heroText layoutIfNeeded];
+    const CGFloat top = CGRectGetMaxY(_headerView.frame) + 16.0;
+    const CGFloat bottom = CGRectGetMinY(_heroText.frame) - 18.0;
+    const CGFloat max_width = CGRectGetWidth(_heroView.bounds) - 2.0 * _heroTextLeading.constant;
+    CGFloat height = MIN(bottom - top, 260.0);
+    CGFloat width = floor(height * 219.0 / 300.0);
+    if (width > max_width) {
+      width = max_width;
+      height = floor(width * 300.0 / 219.0);
+    }
+    show = height >= 96.0;
+    if (show) {
+      _heroCover.frame = CGRectMake(_heroTextLeading.constant, top, width, height);
+    }
+  }
+  _heroCover.hidden = !show;
+}
+
 // Whether Play, the round buttons and the capsule fit across the page in one row.
 - (BOOL)heroButtonRowFits {
   if (_heroCompatButton.hidden) {
@@ -1280,7 +1381,35 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroTopScrim.frame = CGRectMake(0.0, 0.0, hero_bounds.size.width, 150.0);
   _heroScrim.frame = hero_bounds;
   UIColor* page = [[XeniaTheme bgPrimary] resolvedColorWithTraitCollection:self.traitCollection];
-  if (side) {
+  // Beside the game's page the art dissolves into a dimmed blur of itself behind the rows.
+  const BOOL ambient = side && hero && (_detailGame != nil) && _ambientArt.image != nil;
+  _ambientArt.frame = bounds;
+  _ambientDim.frame = _ambientArt.bounds;
+  _ambientArt.alpha = ambient ? 1.0 : 0.0;
+  if (ambient) {
+    CAGradientLayer* dissolve = [CAGradientLayer layer];
+    dissolve.frame = hero_bounds;
+    dissolve.colors = @[ (id)UIColor.blackColor.CGColor, (id)UIColor.blackColor.CGColor,
+                         (id)UIColor.clearColor.CGColor ];
+    dissolve.locations = @[ @0.0, @0.55, @1.0 ];
+    dissolve.startPoint = CGPointMake(0.0, 0.5);
+    dissolve.endPoint = CGPointMake(1.0, 0.5);
+    _heroView.layer.mask = dissolve;
+    _heroView.backgroundColor = UIColor.clearColor;
+  } else {
+    _heroView.layer.mask = nil;
+    _heroView.backgroundColor = [XeniaTheme bgPrimary];
+  }
+  if (side && ambient) {
+    // Darkens toward the text at the bottom only; the right edge is the mask's.
+    _heroScrim.colors = @[
+      (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
+      (id)[page colorWithAlphaComponent:0.5].CGColor
+    ];
+    _heroScrim.locations = @[ @0.0, @0.45, @1.0 ];
+    _heroScrim.startPoint = CGPointMake(0.5, 0.0);
+    _heroScrim.endPoint = CGPointMake(0.5, 1.0);
+  } else if (side) {
     // Fades into the page on the right, where the grid starts.
     _heroScrim.colors = @[
       (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
@@ -1300,6 +1429,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     _heroScrim.endPoint = CGPointMake(0.5, 1.0);
   }
   [CATransaction commit];
+  [self layoutHeroCover];
 
   const CGFloat bottom = MAX(side ? 0.0 : safe.bottom, _keyboardOverlap) + 16.0;
   UIEdgeInsets insets = _gamesCollectionView.contentInset;
@@ -1369,12 +1499,23 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [self applyHeroGame:latest];
 }
 
+// The hero's art: wide background art fills it; box art (|is_cover|) is shown as a card over a
+// blur of itself, since it is too small to fill the page sharply.
+- (void)setHeroImage:(UIImage*)image isCover:(BOOL)is_cover {
+  _heroArtIsCover = image && is_cover;
+  UIImage* blurred = XEBlurredBackdropImage(image);
+  _heroArt.image = _heroArtIsCover ? blurred : image;
+  _heroCover.image = _heroArtIsCover ? image : nil;
+  _ambientArt.image = blurred;
+  [self layoutHeroArt];
+  [self setNeedsLayout];
+}
+
 // The hero's title, line under it and art, for the last game played or the open page's game.
 - (void)applyHeroGame:(XeniaIOSLauncherGameSnapshot*)latest {
   if (!latest) {
     _heroArtTitleId = 0;
-    _heroArt.image = nil;
-    [self setNeedsLayout];
+    [self setHeroImage:nil isCover:NO];
     return;
   }
   _heroTitle.text = latest.title;
@@ -1401,19 +1542,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (_heroArtTitleId != latest.titleId) {
     _heroArtTitleId = latest.titleId;
     // The wide background art, else the cover, else the game's own art.
-    _heroArt.image = xe_cached_game_background_art(latest.titleId)
-                         ?: (xe_cached_game_art(latest.titleId) ?: latest.decodedIcon);
-    if (latest.supportsRemoteArt && !xe_cached_game_background_art(latest.titleId)) {
+    UIImage* background = xe_cached_game_background_art(latest.titleId);
+    [self setHeroImage:background ?: (xe_cached_game_art(latest.titleId) ?: latest.decodedIcon)
+               isCover:background == nil];
+    if (latest.supportsRemoteArt && !background) {
       const uint32_t title_id = latest.titleId;
       xe_fetch_game_background_art(title_id, ^(UIImage* image) {
         if (image && self->_heroArtTitleId == title_id) {
-          self->_heroArt.image = image;
-          [self layoutHeroArt];
+          [self setHeroImage:image isCover:NO];
         } else if (!image && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
           xe_fetch_game_art(title_id, ^(UIImage* cover) {
             if (cover && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
-              self->_heroArt.image = cover;
-              [self layoutHeroArt];
+              [self setHeroImage:cover isCover:YES];
             }
           });
         }
@@ -1874,6 +2014,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_heroView release];
   [_heroArt release];
   [_heroScrim release];
+  [_heroCover release];
+  [_ambientArt release];
+  [_ambientDim release];
   [_heroTopScrim release];
   [_heroText release];
   [_heroCaption release];
@@ -2237,6 +2380,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [self updateSearchPlaceholder];
   _searchRow.hidden = _games.count == 0;
   [self updateHero];
+  NSMutableArray<NSNumber*>* art_titles = [NSMutableArray array];
+  for (XeniaIOSLauncherGameSnapshot* game in _games) {
+    if (game.supportsRemoteArt && game.titleId) {
+      [art_titles addObject:@(game.titleId)];
+    }
+  }
+  XEPrefetchBackgroundArt(art_titles, 0);
 
   // Pair the games that are in both lists (identity: title id and title) so
   // that only inserted, removed and changed tiles are touched.
@@ -2550,10 +2700,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       xe_scaled_system_font(UIFontTextStyleFootnote, 13.5, UIFontWeightSemibold).lineHeight;
   CGFloat metaLine =
       xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightRegular).lineHeight;
-  CGFloat lines = accessibilitySize ? 2.0 : 1.0;
-  // 7 above the title + title + 1 gap + status (+ 4 between stacked items).
-  return 7.0 + ceil(titleLine * lines) + 1.0 + ceil(metaLine * lines) +
-         (accessibilitySize ? 4.0 : 0.0);
+  // Room for the longest title (two lines, three at accessibility sizes) so every tile in a row
+  // has the same height; the status follows the title.
+  const CGFloat title_lines = accessibilitySize ? 3.0 : 2.0;
+  // 7 above the title + title + 1 gap + status.
+  return 7.0 + ceil(titleLine * title_lines) + 1.0 + ceil(metaLine);
 }
 
 - (CGFloat)tileWidthForCollectionView:(UICollectionView*)collectionView
@@ -2602,6 +2753,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 
   cell.titleLabel.text = game.title;
+  cell.discBadge.text =
+      game.discCount > 1
+          ? [NSString stringWithFormat:NSLocalizedString(@"%lu Discs",
+                                                         @"launcher overlay view: badge on a "
+                                                         @"game's cover; %lu is the disc count"),
+                                       (unsigned long)game.discCount]
+          : @"";
+  cell.discBadge.hidden = game.discCount <= 1;
   cell.contentTypePill.text = game.contentTypeName ?: @"";
   cell.contentTypePill.hidden = game.contentTypeName.length == 0;
   cell.contentTypePill.textColor = [XeniaTheme textMuted];
@@ -2624,6 +2783,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSMutableArray<NSString*>* accessibility_values = [NSMutableArray array];
   if (game.contentTypeName.length) {
     [accessibility_values addObject:game.contentTypeName];
+  }
+  if (cell.discBadge.text.length) {
+    [accessibility_values addObject:cell.discBadge.text];
   }
   if (game.hasCompatInfo) {
     [accessibility_values addObject:xe_compat_status_label(game.compatStatus)];

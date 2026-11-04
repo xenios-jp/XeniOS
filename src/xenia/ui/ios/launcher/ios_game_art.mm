@@ -298,6 +298,11 @@ UIImage* xe_cached_game_background_art(uint32_t title_id) {
   return [UIImage imageWithContentsOfFile:xe_art_path(xe_game_background_cache_dir(), title_id)];
 }
 
+BOOL xe_has_cached_game_background_art(uint32_t title_id) {
+  return title_id && [[NSFileManager defaultManager]
+                         fileExistsAtPath:xe_art_path(xe_game_background_cache_dir(), title_id)];
+}
+
 UIImage* xe_cached_game_art_thumbnail(uint32_t title_id) {
   if (!title_id) {
     return nil;

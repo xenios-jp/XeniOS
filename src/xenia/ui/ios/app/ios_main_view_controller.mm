@@ -1542,14 +1542,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
          game.content_type == xe::XContentType::kCommunityGame)) {
       [detail_parts addObject:ToNSString(game.content_type_name)];
     }
-    if (game.discs.size() > 1) {
-      [detail_parts
-          addObject:[NSString
-                        stringWithFormat:NSLocalizedString(
-                                             @"%zu Discs",
-                                             @"Game detail label; %zu is the number of discs"),
-                                         game.discs.size()]];
-    }
+    // The disc count is a badge on the cover (discCount), not part of this line.
     if (detail_parts.count > 0) {
       snapshot.contentTypeName = [detail_parts componentsJoinedByString:@" · "];
     }
