@@ -114,6 +114,10 @@ void xe_apply_shadow_token(UIView* view, XeniaShadowElevation elevation);
 @property(nonatomic, copy) void (^onTraitChange)(UITraitCollection* previousTraits);
 @end
 
+// A Settings-style row icon: |symbol| in white on a 29 pt rounded square of |color|.
+// Autoreleased, cached per symbol and colour.
+UIImage* XESettingsBadgeImage(NSString* symbol, UIColor* color);
+
 // Presents a one-button "OK" alert. No-ops when `presenter` is nil.
 void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* message);
 

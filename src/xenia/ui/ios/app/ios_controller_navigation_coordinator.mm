@@ -294,6 +294,9 @@ void DismissLikeSwipe(UIViewController* presented) {
 
   if (previous_focus != xe::ui::apple::kInvalidFocusNodeId) {
     _launcherFocusGraph.SetCurrent(previous_focus);
+  } else if (library.enabled) {
+    // A controller starts on the games, not the Settings button.
+    _launcherFocusGraph.SetCurrent(kLauncherFocusLibrary);
   }
 }
 

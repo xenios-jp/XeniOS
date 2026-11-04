@@ -306,3 +306,37 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
 }
 
 @end
+
+UIImage* XESettingsBadgeImage(NSString* symbol, UIColor* color) {
+  static NSCache<NSString*, UIImage*>* cache = [[NSCache alloc] init];
+  CGFloat r = 0, g = 0, b = 0, a = 0;
+  [color getRed:&r green:&g blue:&b alpha:&a];
+  NSString* key = [NSString stringWithFormat:@"%@|%.3f|%.3f|%.3f", symbol, r, g, b];
+  if (UIImage* cached = [cache objectForKey:key]) {
+    return cached;
+  }
+  const CGFloat side = 29.0;
+  UIImage* glyph = [[UIImage systemImageNamed:symbol
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithPointSize:15.0
+                                                                      weight:UIImageSymbolWeightSemibold]]
+      imageWithTintColor:[UIColor whiteColor]
+           renderingMode:UIImageRenderingModeAlwaysOriginal];
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)] autorelease];
+  UIImage* image = [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
+    [color setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:7.0] fill];
+    if (glyph) {
+      // Fit wide symbols inside the square.
+      CGSize size = glyph.size;
+      const CGFloat scale = MIN(1.0, 19.0 / MAX(size.width, size.height));
+      size = CGSizeMake(size.width * scale, size.height * scale);
+      [glyph drawInRect:CGRectMake((side - size.width) * 0.5, (side - size.height) * 0.5,
+                                   size.width, size.height)];
+    }
+  }];
+  image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+  [cache setObject:image forKey:key];
+  return image;
+}

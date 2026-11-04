@@ -1472,10 +1472,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     } else if (has_external_source) {
       [detail_parts
           addObject:NSLocalizedString(@"External", @"Game source label: file is external")];
-    } else if (has_imported_source) {
-      [detail_parts
-          addObject:NSLocalizedString(@"Imported", @"Game source label: file is imported")];
     }
+    // Imported is how most games get here, so the tile only says where a game is otherwise.
     if (!game.content_type_name.empty() &&
         (game.content_type == xe::XContentType::kArcadeTitle ||
          game.content_type == xe::XContentType::kGameDemo ||
@@ -4486,7 +4484,12 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 #pragma mark - Status bar / home indicator
 
 - (BOOL)prefersStatusBarHidden {
-  return YES;
+  // The library shows the time and battery like any app; a game gets the whole screen.
+  return self.gameRunning;
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle {
+  return UIStatusBarStyleLightContent;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
@@ -4530,6 +4533,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   [self setNeedsUpdateOfHomeIndicatorAutoHidden];
   [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+  [self setNeedsStatusBarAppearanceUpdate];
 }
 
 #pragma mark - Public API
