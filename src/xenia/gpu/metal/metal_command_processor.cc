@@ -3599,7 +3599,11 @@ MTL::CommandBuffer* MetalCommandProcessor::CreateAccountedCommandBuffer(
     // Blocks once the queue's in-flight command buffers are all outstanding,
     // so this reads as GPU backpressure rather than allocation cost.
     SCOPE_profile_cpu_i("gpu", "MetalCommandProcessor::QueueCommandBuffer");
+    uint64_t wait_start = xe::Clock::QueryHostTickCount();
     command_buffer = command_queue_->commandBuffer();
+    gpu_timing.wait_ticks.fetch_add(
+        xe::Clock::QueryHostTickCount() - wait_start,
+        std::memory_order_relaxed);
   }
   if (command_buffer) {
     ++command_buffer_kind_counts_[size_t(kind)];
@@ -3630,10 +3634,27 @@ void MetalCommandProcessor::AddGpuTimeHandler(
     if (status != MTL::CommandBufferStatusCompleted) {
       LogCommandBufferFailure(completed, status);
     }
-    double gpu_seconds = completed->GPUEndTime() - completed->GPUStartTime();
-    if (gpu_seconds > 0.0) {
-      completed_gpu_time_ns_.fetch_add(uint64_t(gpu_seconds * 1e9),
+    double gpu_start = completed->GPUStartTime();
+    double gpu_end = completed->GPUEndTime();
+    if (gpu_end > gpu_start) {
+      completed_gpu_time_ns_.fetch_add(uint64_t((gpu_end - gpu_start) * 1e9),
                                        std::memory_order_relaxed);
+      // Union: only the part past the latest end already counted. Exact when
+      // command buffers complete in the order they started; one that finishes
+      // inside a still-running earlier one loses the earlier one's head.
+      uint64_t start_ns = uint64_t(gpu_start * 1e9);
+      uint64_t end_ns = uint64_t(gpu_end * 1e9);
+      uint64_t counted_end_ns =
+          gpu_timing.busy_end_ns.load(std::memory_order_relaxed);
+      while (end_ns > counted_end_ns &&
+             !gpu_timing.busy_end_ns.compare_exchange_weak(
+                 counted_end_ns, end_ns, std::memory_order_relaxed)) {
+      }
+      if (end_ns > counted_end_ns) {
+        gpu_timing.busy_ns.fetch_add(
+            end_ns - std::max(start_ns, counted_end_ns),
+            std::memory_order_relaxed);
+      }
     }
     gpu_time_command_buffers_.fetch_add(1, std::memory_order_relaxed);
     pending_completion_handlers_.fetch_sub(1, std::memory_order_release);
@@ -3673,11 +3694,20 @@ void MetalCommandProcessor::LogCommandBufferFailure(
 }
 
 void MetalCommandProcessor::AwaitSubmissionCompletion(uint64_t submission) {
-  std::unique_lock<std::mutex> lock(completion_mutex_);
-  completion_cond_.wait(lock, [this, submission]() {
-    return completed_command_buffers_.load(std::memory_order_acquire) >=
-           submission;
-  });
+  if (completed_command_buffers_.load(std::memory_order_acquire) >=
+      submission) {
+    return;
+  }
+  uint64_t wait_start = xe::Clock::QueryHostTickCount();
+  {
+    std::unique_lock<std::mutex> lock(completion_mutex_);
+    completion_cond_.wait(lock, [this, submission]() {
+      return completed_command_buffers_.load(std::memory_order_acquire) >=
+             submission;
+    });
+  }
+  gpu_timing.wait_ticks.fetch_add(xe::Clock::QueryHostTickCount() - wait_start,
+                                  std::memory_order_relaxed);
 }
 
 void MetalCommandProcessor::AwaitAllQueueOperationsCompletion() {
@@ -6683,7 +6713,11 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   // Note: commandBuffer() returns an autoreleased object, we must retain it.
   {
     SCOPE_profile_cpu_i("gpu", "MetalCommandProcessor::QueueCommandBuffer");
+    uint64_t wait_start = xe::Clock::QueryHostTickCount();
     current_command_buffer_ = command_queue_->commandBuffer();
+    gpu_timing.wait_ticks.fetch_add(
+        xe::Clock::QueryHostTickCount() - wait_start,
+        std::memory_order_relaxed);
   }
   if (!current_command_buffer_) {
     XELOGE("EnsureCommandBuffer: failed to create command buffer");

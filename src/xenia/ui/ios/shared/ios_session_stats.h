@@ -16,10 +16,12 @@
 
 // Statistics for one game session, sent as a "session" diagnostics record:
 // time to the first frame, guest frame pacing, long frames during shader
-// compiles, the shader cache, GPU errors, thermal state and memory. Sampled
-// every 5 s and checkpointed 10 s in, then every minute, so a session cut short
-// by a crash or a kill is still reported, at the next launch. Only started
-// while diagnostics can be sent.
+// compiles, the shader cache, GPU errors, thermal state, memory, and 5 s
+// windows of play counted by whether they missed the game's target and what
+// they waited on (the GPU, the CPU, both in turn, shader compiles; GPU time
+// against the session's cool start). Sampled every 5 s and checkpointed 10 s
+// in, then every minute, so a session cut short by a crash or a kill is still
+// reported, at the next launch. Only started while diagnostics can be sent.
 
 // A game starts. Ignored if a session is already running.
 void xe_ios_session_stats_begin(void);
