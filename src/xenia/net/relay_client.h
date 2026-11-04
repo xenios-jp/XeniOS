@@ -36,6 +36,10 @@ struct RelayConfig {
   bool direct_paths = true;
   // Probes loopback and link-local candidates too, for tests on one machine.
   bool probe_local_candidates = false;
+  // The app's ID for counting open apps (16 hex digits, as in
+  // GET /v1/online?here=), sent with the join so the room counts the app while
+  // it plays. Empty sends none.
+  std::string app_id;
   // Asked about once a second when set. False leaves the room, and the
   // transport sends nothing until it's true again.
   std::function<bool()> allowed;
@@ -72,6 +76,9 @@ struct RelayStatus {
   // The round trip to the slowest player reached directly, in ms, rounded to
   // 5 ms above 10 so it doesn't change with every probe. 0 until measured.
   uint32_t ping_ms = 0;
+  // The room counts this app as open (see RelayConfig::app_id), so it needn't
+  // check in with the lobby while it's in the room.
+  bool app_counted = false;
   bool operator==(const RelayStatus&) const = default;
 };
 
@@ -249,6 +256,8 @@ class RelayClient {
   std::optional<uint64_t> net_;
   uint64_t next_lobby_ping_ms_ = 0;
   bool joined_ = false;
+  // The welcome said the room counts the app.
+  bool app_counted_ = false;
   bool rejected_ = false;
   bool left_ = false;
   Reject reject_ = Reject::kFull;
