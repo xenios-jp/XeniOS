@@ -1074,7 +1074,8 @@ static std::vector<IOSConfigSection> BuildCuratedPageSections(IOSConfigCatalogKi
   }
 }
 
-// Every curated page in one list. A setting that appears on two pages is kept once, on the first.
+// Every curated page in one list, then everything else. A setting that appears on two pages is
+// kept once, on the first.
 // Section titles carry their page ("Graphics · Graphics Backend").
 static std::vector<IOSConfigSection> BuildAllSettingsSections() {
   std::vector<IOSConfigSection> result;
@@ -1093,10 +1094,36 @@ static std::vector<IOSConfigSection> BuildAllSettingsSections() {
         continue;
       }
       section.items = std::move(kept);
-      section.title = page + " \xC2\xB7 " + section.title;
+      // "Graphics · Backend", or just "Display" where the section has the page's name.
+      if (section.title.empty() || section.title == page) {
+        section.title = page;
+      } else {
+        section.title = page + " \xC2\xB7 " + section.title;
+      }
       result.push_back(std::move(section));
     }
   }
+  // Then the advanced page, and every other registered setting by its category, so the list
+  // and its search hold everything the emulator reads from its config.
+  auto add_rest = [&](std::vector<IOSConfigSection> sections, const std::string& prefix) {
+    for (IOSConfigSection& section : sections) {
+      std::vector<IOSConfigItem> kept;
+      for (IOSConfigItem& item : section.items) {
+        if (!item.key.empty() && !seen_keys.insert(item.key).second) {
+          continue;
+        }
+        kept.push_back(std::move(item));
+      }
+      if (kept.empty()) {
+        continue;
+      }
+      section.items = std::move(kept);
+      section.title = prefix + section.title;
+      result.push_back(std::move(section));
+    }
+  };
+  add_rest(BuildDebugSettingsSections(), "Advanced \xC2\xB7 ");
+  add_rest(BuildAllCvarSections(), "Emulator \xC2\xB7 ");
   for (IOSConfigSection& section : BuildResetSections()) {
     result.push_back(std::move(section));
   }
@@ -1407,16 +1434,18 @@ std::vector<IOSConfigSearchEntry> BuildIOSConfigSearchIndex() {
           IOSConfigCatalogTitle(IOSConfigCatalogKind::kAllSettings), section.title, false);
     }
   }
+  // The rest open in All Settings, which lists every setting.
+  const std::string all_settings = IOSConfigCatalogTitle(IOSConfigCatalogKind::kAllSettings);
   for (const IOSConfigSection& section : BuildDebugSettingsSections()) {
     for (const IOSConfigItem& item : section.items) {
-      add(item, IOSConfigCatalogKind::kDebugSettings,
-          IOSConfigCatalogTitle(IOSConfigCatalogKind::kDebugSettings), section.title, true);
+      add(item, IOSConfigCatalogKind::kAllSettings, all_settings, "Advanced \xC2\xB7 " + section.title,
+          true);
     }
   }
   for (const IOSConfigSection& section : BuildAllCvarSections()) {
     for (const IOSConfigItem& item : section.items) {
-      add(item, IOSConfigCatalogKind::kAllCvars,
-          IOSConfigCatalogTitle(IOSConfigCatalogKind::kAllCvars), section.title, true);
+      add(item, IOSConfigCatalogKind::kAllSettings, all_settings, "Emulator \xC2\xB7 " + section.title,
+          true);
     }
   }
   return index;

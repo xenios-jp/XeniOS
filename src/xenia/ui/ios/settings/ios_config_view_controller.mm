@@ -983,24 +983,36 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     return;
   }
 
-  // Matches the key, title, description and the current value ("Metal" finds the backend), and
-  // keeps each result under its section.
-  auto matches = [query](const std::string& text) {
-    if (text.empty()) {
-      return false;
+  // Matches every word of the query in the key, title, description, section and the current
+  // value ("Metal" finds the backend), underscores read as spaces, and keeps each result under
+  // its section.
+  NSArray<NSString*>* words = [query
+      componentsSeparatedByCharactersInSet:[NSCharacterSet
+                                               characterSetWithCharactersInString:@" _\t"]];
+  auto matches = [words](const std::string& text) {
+    NSString* haystack = [ToNSString(text) stringByReplacingOccurrencesOfString:@"_"
+                                                                     withString:@" "];
+    for (NSString* word in words) {
+      if (word.length &&
+          [haystack rangeOfString:word
+                          options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch]
+                  .location == NSNotFound) {
+        return false;
+      }
     }
-    return [ToNSString(text) rangeOfString:query
-                                   options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch]
-               .location != NSNotFound;
+    return true;
   };
   std::vector<IOSConfigSection> results;
   for (const IOSConfigSection& section : full_sections_) {
     IOSConfigSection filtered;
     filtered.title = section.title;
     for (const IOSConfigItem& item : section.items) {
-      if (matches(item.key) || matches(item.title) || matches(item.subtitle) ||
-          (item.control_type != IOSConfigControlType::kToggle &&
-           matches(IOSConfigItemValueText(item)))) {
+      std::string text =
+          item.key + "\n" + item.title + "\n" + item.subtitle + "\n" + section.title;
+      if (item.control_type != IOSConfigControlType::kToggle) {
+        text += "\n" + IOSConfigItemValueText(item);
+      }
+      if (matches(text)) {
         filtered.items.push_back(item);
       }
     }
@@ -1167,12 +1179,16 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   content.text = ToNSString(item->title);
   content.textProperties.color = [XeniaTheme textPrimary];
   content.textProperties.numberOfLines = 0;
-  content.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+  content.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  // Descriptions in the small secondary style, as in Settings, and kept to three lines in the
+  // long All Settings list.
   content.secondaryTextProperties.color = [XeniaTheme textSecondary];
-  content.secondaryTextProperties.numberOfLines = 0;
-  content.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  content.secondaryTextProperties.numberOfLines =
+      catalog_kind_ == IOSConfigCatalogKind::kAllSettings ? 3 : 0;
+  content.secondaryTextProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+  content.textToSecondaryTextVerticalPadding = 3.0;
   content.prefersSideBySideTextAndSecondaryText = NO;
-  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(12.0, 0.0, 12.0, 0.0);
+  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(11.0, 0.0, 11.0, 0.0);
 
   UIFont* field_font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
       scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:16.0 weight:UIFontWeightRegular]];
