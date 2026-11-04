@@ -1163,7 +1163,32 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 }
 
 - (UIViewController*)controllerNavigationPresentedController {
-  return self.presentedViewController;
+  // The top of the stack: an alert or sheet over a sheet takes the controller, not the one under
+  // it. One on its way out is skipped.
+  UIViewController* top = nil;
+  for (UIViewController* presented = self.presentedViewController; presented;
+       presented = presented.presentedViewController) {
+    if (presented.isBeingDismissed) {
+      break;
+    }
+    top = presented;
+  }
+  return top;
+}
+
+- (UIViewController*)controllerNavigationGameDetailController {
+  return self.launcherOverlayView.showsGameDetail ? in_place_actions_controller_ : nil;
+}
+
+- (void)controllerNavigationCloseGameDetail {
+  [self.launcherOverlayView hideGameDetailAnimated:YES];
+}
+
+- (void)controllerNavigationPlayGameDetail {
+  XeniaIOSGameActionsViewController* page = in_place_actions_controller_;
+  if (page.actionHandler) {
+    page.actionHandler(XeniaIOSGameActionPlay);
+  }
 }
 
 - (BOOL)controllerNavigationHasConnectedController {
