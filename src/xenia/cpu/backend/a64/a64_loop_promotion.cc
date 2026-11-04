@@ -354,7 +354,7 @@ void PlanLoop(const std::vector<Block*>& blocks, size_t head, size_t tail,
   }
 
   std::map<uint32_t, SlotInfo> slots;
-  bool used_gpr[A64Emitter::GPR_COUNT] = {};
+  bool used_gpr[A64Emitter::PROMOTION_GPR_COUNT] = {};
   bool used_vec[A64Emitter::VEC_COUNT] = {};
   PromotedLoop loop;
   loop.head = blocks[head];
@@ -474,7 +474,8 @@ void PlanLoop(const std::vector<Block*>& blocks, size_t head, size_t tail,
   for (const auto& [offset, info] : ranked) {
     const bool gpr = info->type != VEC128_TYPE;
     bool* used = gpr ? used_gpr : used_vec;
-    const int count = gpr ? A64Emitter::GPR_COUNT : A64Emitter::VEC_COUNT;
+    const int count =
+        gpr ? A64Emitter::PROMOTION_GPR_COUNT : A64Emitter::VEC_COUNT;
     int reg = 0;
     while (reg < count && used[reg]) {
       ++reg;
