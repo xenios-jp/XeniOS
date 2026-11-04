@@ -91,9 +91,10 @@ int InstrEmit_branch(PPCHIRBuilder& f, const char* src, uint64_t cia,
       if (cond && !expect_true) {
         cond = f.IsFalse(cond);
       }
-      if (!function) {
-        // No loaded module owns the target. Resolve it at the call site like
-        // a computed branch instead of handing the backend a null symbol.
+      if (!function || !function->is_guest()) {
+        // No loaded module owns guest code at the target. Resolve it at the
+        // call site like a computed branch, as a direct call reaches only
+        // guest code.
         XELOGE("Unresolved direct call target {:08X} from {:08X}", nia_value,
                static_cast<uint32_t>(cia));
         Value* target = f.LoadConstantUint64(nia_value);
