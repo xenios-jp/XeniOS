@@ -147,8 +147,7 @@ BOOL xe_ios_requires_debugger_broker(void) {
 }
 
 NSString* xe_jit_waiting_status_message(void) {
-  return NSLocalizedString(@"JIT is not active. Enable it with StikDebug (assign universal.js or "
-                           @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker.",
+  return NSLocalizedString(@"Turn it on in StikDebug to play games.",
                            @"Guidance when JIT is not active");
 }
 
@@ -179,8 +178,7 @@ BOOL xe_has_increased_memory_limit_entitlement(void) {
 }
 
 NSString* xe_memory_entitlement_missing_status_message(void) {
-  return NSLocalizedString(@"Memory entitlement missing. Games will likely crash. Enable Get More "
-                           @"RAM, then refresh XeniOS.",
+  return NSLocalizedString(@"Most games will crash. Turn on Get More RAM, then refresh XeniOS.",
                            @"Short status line when the memory entitlement is missing");
 }
 
