@@ -980,6 +980,8 @@ void xe_ios_system_link_show_online_label(UIView* row, uint32_t title_id) {
   label.attributedText = text;
 }
 
+BOOL xe_ios_system_link_online_connected(void) { return g_online != nil; }
+
 NSInteger xe_ios_system_link_online_total(void) {
   NSInteger total = 0;
   for (NSNumber* title_id in g_online) {
@@ -1031,8 +1033,20 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
   // Players, not apps: an open app with nobody in a lobby or room isn't someone to play with.
   const NSInteger total = xe_ios_system_link_online_total() +
                           std::max<NSInteger>(0, xe_ios_system_link_online_private());
+  // A status dot, green while the lobby answers, so the library says whether the app is online.
+  const BOOL connected = xe_ios_system_link_online_connected();
+  UIColor* status = connected ? [XeniaTheme accent] : [XeniaTheme textMuted];
+  configuration.image = [[UIImage
+       systemImageNamed:@"circle.fill"
+      withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:8.0
+                                                                        weight:UIImageSymbolWeightBold]]
+      imageWithTintColor:status
+           renderingMode:UIImageRenderingModeAlwaysOriginal];
+  configuration.baseForegroundColor = connected ? [XeniaTheme textPrimary] : [XeniaTheme textMuted];
   configuration.title =
-      total > 0
+      !connected ? NSLocalizedString(@"Offline", @"Game library: Online button while the app "
+                                                 @"can't reach the System Link lobby")
+      : total > 0
           ? [NSString localizedStringWithFormat:NSLocalizedString(
                                                     @"%ld Online",
                                                     @"Game library: Online button, with how many "
@@ -1055,17 +1069,12 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 @end
 
 UIButton* xe_ios_new_system_link_online_button(void) {
-  UIButtonConfiguration* configuration = [UIButtonConfiguration tintedButtonConfiguration];
+  UIButtonConfiguration* configuration = [UIButtonConfiguration grayButtonConfiguration];
   configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  configuration.baseForegroundColor = [XeniaTheme accent];
-  configuration.baseBackgroundColor = [XeniaTheme accent];
+  configuration.baseBackgroundColor = [XeniaTheme bgSurface2];
   UIFont* font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-  configuration.image = [UIImage
-       systemImageNamed:@"person.2.fill"
-      withConfiguration:[UIImageSymbolConfiguration configurationWithFont:font
-                                                                    scale:UIImageSymbolScaleSmall]];
-  configuration.imagePadding = 6.0;
-  configuration.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 12.0, 6.0, 12.0);
+  configuration.imagePadding = 7.0;
+  configuration.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 11.0, 6.0, 13.0);
   configuration.titleTextAttributesTransformer =
       ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
     NSMutableDictionary<NSAttributedStringKey, id>* out = [[in mutableCopy] autorelease];

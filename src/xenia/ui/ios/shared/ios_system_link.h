@@ -99,6 +99,8 @@ extern NSString* const XeniaIOSSystemLinkOnlineDidChangeNotification;
 // Shows "3 online" at the end of a game tile's footer row (a UIStackView) while players are in
 // its public lobby, and hides it otherwise. Call each time the tile shows a game, 0 for none.
 void xe_ios_system_link_show_online_label(UIView* row, uint32_t title_id);
+// Whether the lobby answered lately, so the counts are known.
+BOOL xe_ios_system_link_online_connected(void);
 // All the players in public lobbies, 0 while the counts aren't known.
 NSInteger xe_ios_system_link_online_total(void);
 // The library's Online button, "Online" with how many players are online, which
