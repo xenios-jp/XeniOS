@@ -398,7 +398,11 @@
   NSString* perf = xe_string_from_object(summary_source[@"perf"]);
   if (perf.length > 0) {
     UIColor* perf_color = xe_compat_perf_color(perf);
-    hero_perf_pill_.text = xe_compat_perf_label(perf);
+    // Beside the status pill a bare "Okay" reads as a verdict on the game; name what it rates.
+    hero_perf_pill_.text = [NSString
+        stringWithFormat:NSLocalizedString(@"Performance: %@",
+                                           @"game compatibility hero: performance pill"),
+                         xe_compat_perf_label(perf)];
     hero_perf_pill_.textColor = perf_color;
     hero_perf_pill_.backgroundColor = [perf_color colorWithAlphaComponent:0.1];
     hero_perf_pill_.hidden = NO;
