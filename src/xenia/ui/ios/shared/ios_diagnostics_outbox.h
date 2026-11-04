@@ -63,7 +63,7 @@ void xe_ios_diagnostics_upload_pending(void);
 void xe_ios_diagnostics_clear_outbox(void);
 
 // The batches that would be sent now, as pretty-printed JSON, in sending order
-// (Settings > About > Privacy > Pending Reports).
+// (Settings > Privacy > Pending Reports).
 NSArray<NSString*>* xe_ios_diagnostics_pending_reports(void);
 // The number of queued records.
 NSUInteger xe_ios_diagnostics_pending_count(void);

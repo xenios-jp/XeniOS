@@ -49,8 +49,8 @@ enum InstallRow : NSInteger {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
     game_running_ = game_running;
-    self.title = NSLocalizedString(@"Xbox 360 System Software",
-                                   @"system software view controller: title");
+    // Short enough for a large title; the Settings row says what it is for.
+    self.title = NSLocalizedString(@"System Software", @"system software view controller: title");
   }
   return self;
 }

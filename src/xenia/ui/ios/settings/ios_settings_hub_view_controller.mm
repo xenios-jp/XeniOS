@@ -120,7 +120,9 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindLibrary,
   XeniaSettingsHubCategoryKindSystemSoftware,
   XeniaSettingsHubCategoryKindAutomation,
+  XeniaSettingsHubCategoryKindPrivacy,
   XeniaSettingsHubCategoryKindAbout,
+  XeniaSettingsHubCategoryKindLink,  // Opens `url` outside the app.
 };
 
 @interface XeniaSettingsHubItem : NSObject
@@ -136,6 +138,10 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
 @property(nonatomic, copy) NSString* hintText;
 // A Controls action that does nothing unless a game is running.
 @property(nonatomic, assign) BOOL needsRunningGame;
+// Words search also finds the row by, for what is on its page ("Online Features" for Privacy).
+@property(nonatomic, copy) NSString* keywords;
+// A link row's address.
+@property(nonatomic, copy) NSString* url;
 + (instancetype)itemWithKind:(XeniaSettingsHubCategoryKind)kind
                        title:(NSString*)title
                     subtitle:(NSString*)subtitle
@@ -167,6 +173,8 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   [_valueText release];
   [_focusKey release];
   [_hintText release];
+  [_keywords release];
+  [_url release];
   [super dealloc];
 }
 
@@ -213,6 +221,7 @@ static BOOL XeniaSettingsHubItemMatches(XeniaSettingsHubItem* item,
                                         NSString* query) {
   return XeniaSettingsStringMatches(item.title, query) ||
          XeniaSettingsStringMatches(item.subtitle, query) ||
+         XeniaSettingsStringMatches(item.keywords, query) ||
          XeniaSettingsStringMatches(section_title, query);
 }
 
@@ -879,21 +888,196 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
 @interface XeniaSettingsAboutViewController : XESheetTableViewController
 @end
 
+@interface XeniaSettingsPrivacyViewController : XESheetTableViewController
+@end
+
 namespace {
 
 typedef NS_ENUM(NSInteger, XeniaAboutSection) {
   XeniaAboutSectionBuild = 0,
   XeniaAboutSectionUpdates,
-  XeniaAboutSectionPrivacy,
-  XeniaAboutSectionDiagnostics,  // Under Privacy, with its own footer; empty without an endpoint.
-  XeniaAboutSectionLinks,
+  XeniaAboutSectionLinks,  // Acknowledgements; the project's links are on the hub.
   XeniaAboutSectionCount,
 };
 
-constexpr NSInteger kAboutAcknowledgementsRow = 4;  // After the four links.
-constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
+typedef NS_ENUM(NSInteger, XeniaPrivacySection) {
+  XeniaPrivacySectionOnline = 0,
+  XeniaPrivacySectionDiagnostics,  // With its own footer; empty without an endpoint.
+  XeniaPrivacySectionCount,
+};
+
+constexpr NSInteger kPrivacyPendingReportsRow = 1;  // After Share Diagnostics.
 
 }  // namespace
+
+// Online Features and diagnostics: what the app sends, apart from the version and links in About.
+@implementation XeniaSettingsPrivacyViewController
+
+- (instancetype)init {
+  self = [super initWithStyle:UITableViewStyleInsetGrouped];
+  if (self) {
+    self.title = NSLocalizedString(@"Privacy", @"settings hub view controller: title");
+  }
+  return self;
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.view.backgroundColor = [UIColor systemBackgroundColor];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  // Back from Pending Reports, or Online Features turned on elsewhere.
+  [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return XeniaPrivacySectionCount;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView
+ numberOfRowsInSection:(NSInteger)section {
+  if (section == XeniaPrivacySectionDiagnostics) {
+    return xe_ios_diagnostics_available() ? 2 : 0;
+  }
+  return 1;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView
+titleForFooterInSection:(NSInteger)section {
+  if (section == XeniaPrivacySectionOnline) {
+    if (!xe_ios_diagnostics_available()) {
+      return NSLocalizedString(
+          @"Update checks, cover art, compatibility data, discussions and reports, and System "
+          @"Link over the internet. Games still run with this off.",
+          @"settings hub view controller: user-visible text");
+    }
+    return NSLocalizedString(
+        @"Update checks, cover art, compatibility data, discussions and reports, System Link "
+        @"over the internet, and diagnostics. Games still run with this off. To stop only "
+        @"diagnostics, turn off Share Diagnostics.",
+        @"settings hub view controller: footer of the Online Features switch");
+  }
+  if (section == XeniaPrivacySectionDiagnostics) {
+    if (!xe_ios_diagnostics_available()) {
+      return nil;
+    }
+    return NSLocalizedString(
+        @"Sends crash reports and performance statistics: device model, iOS version, XeniOS "
+        @"version, the game's title ID, frame rate, load time, shader compiles, GPU errors, "
+        @"temperature, memory use and display settings. Never your files, file names, Apple "
+        @"Account or location. Logs are only sent when you share them yourself.",
+        @"settings hub view controller: footer of the Share Diagnostics switch");
+  }
+  return nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  static NSString* const kCellIdentifier = @"XeniaSettingsPrivacyCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                   reuseIdentifier:kCellIdentifier] autorelease];
+  }
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  cell.accessoryType = UITableViewCellAccessoryNone;
+  cell.accessoryView = nil;
+  cell.textLabel.textColor = [XeniaTheme textPrimary];
+  cell.textLabel.numberOfLines = 0;
+  cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  [self configurePrivacyCell:cell indexPath:indexPath];
+  if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
+    // The switch carries the label and value; the cell stays a container.
+    cell.isAccessibilityElement = NO;
+    cell.textLabel.isAccessibilityElement = NO;
+    cell.detailTextLabel.isAccessibilityElement = NO;
+    return cell;
+  }
+  XEApplyAccessibility(cell, cell.textLabel.text, cell.detailTextLabel.text, nil,
+                       UIAccessibilityTraitButton);
+  cell.isAccessibilityElement = YES;
+  return cell;
+}
+
+- (void)configurePrivacyCell:(UITableViewCell*)cell indexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section == XeniaPrivacySectionDiagnostics &&
+      indexPath.row == kPrivacyPendingReportsRow) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Pending Reports", @"settings hub view controller: label text");
+    const NSUInteger pending = xe_ios_diagnostics_pending_count();
+    cell.detailTextLabel.text =
+        pending ? [NSString localizedStringWithFormat:@"%lu", (unsigned long)pending]
+                : NSLocalizedString(@"None", @"settings hub view controller: no pending reports");
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    return;
+  }
+
+  if (indexPath.section == XeniaPrivacySectionDiagnostics) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Share Diagnostics", @"settings hub view controller: label text");
+    cell.detailTextLabel.text = @"";
+    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    // Online Features off sends nothing, diagnostics included.
+    toggle.on = xe_ios_online_features_enabled() && xe_ios_share_diagnostics_enabled();
+    toggle.enabled = xe_ios_online_features_enabled();
+    toggle.accessibilityLabel = cell.textLabel.text;
+    [toggle addTarget:self
+                  action:@selector(shareDiagnosticsSwitchChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
+    return;
+  }
+
+  if (indexPath.section == XeniaPrivacySectionOnline) {
+    cell.textLabel.text =
+        NSLocalizedString(@"Online Features", @"settings hub view controller: label text");
+    cell.detailTextLabel.text = @"";
+    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    toggle.on = xe_ios_online_features_enabled();
+    toggle.accessibilityLabel = cell.textLabel.text;
+    [toggle addTarget:self
+                  action:@selector(onlineFeaturesSwitchChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
+  }
+}
+
+- (void)onlineFeaturesSwitchChanged:(UISwitch*)sender {
+  xe_ios_set_online_features_enabled(sender.isOn);
+  if (sender.isOn && xe_ios_diagnostics_available()) {
+    // Share Diagnostics and its footer are right below: no separate notice later. A
+    // build without an endpoint shows neither, so a later one still asks.
+    xe_ios_set_diagnostics_notice_answered();
+  }
+  xe_ios_diagnostics_settings_changed();
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:XeniaPrivacySectionDiagnostics]
+                withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)shareDiagnosticsSwitchChanged:(UISwitch*)sender {
+  xe_ios_set_share_diagnostics_enabled(sender.isOn);
+  // Off deletes what is queued; the Pending Reports count follows.
+  xe_ios_diagnostics_settings_changed();
+  [self.tableView
+      reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:kPrivacyPendingReportsRow
+                                                   inSection:XeniaPrivacySectionDiagnostics] ]
+            withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section == XeniaPrivacySectionDiagnostics &&
+      indexPath.row == kPrivacyPendingReportsRow) {
+    [self.navigationController
+        pushViewController:xe_ios_diagnostics_make_pending_reports_controller()
+                  animated:YES];
+  }
+}
+
+@end
 
 @implementation XeniaSettingsAboutViewController {
   XeniaUpdateInfo* update_info_;
@@ -1028,57 +1212,18 @@ constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
   switch (section) {
     case XeniaAboutSectionBuild:
       return 0;  // The header shows the name and version.
-    case XeniaAboutSectionUpdates:
-    case XeniaAboutSectionPrivacy:
-      return 1;
-    case XeniaAboutSectionDiagnostics:
-      return xe_ios_diagnostics_available() ? 2 : 0;
     default:
-      return 5;  // Four links and Acknowledgements.
+      return 1;  // The update status, or Acknowledgements.
   }
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
 titleForHeaderInSection:(NSInteger)section {
-  switch (section) {
-    case XeniaAboutSectionBuild:
-    case XeniaAboutSectionUpdates:
-      return nil;
-    case XeniaAboutSectionPrivacy:
-      return NSLocalizedString(@"Privacy", @"settings hub view controller: user-visible text");
-    case XeniaAboutSectionDiagnostics:
-      return nil;
-    default:
-      return NSLocalizedString(@"Links", @"settings hub view controller: user-visible text");
-  }
+  return nil;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
 titleForFooterInSection:(NSInteger)section {
-  if (section == XeniaAboutSectionPrivacy) {
-    if (!xe_ios_diagnostics_available()) {
-      return NSLocalizedString(
-          @"Update checks, cover art, compatibility data, discussions and reports, and System "
-          @"Link over the internet. Games still run with this off.",
-          @"settings hub view controller: user-visible text");
-    }
-    return NSLocalizedString(
-        @"Update checks, cover art, compatibility data, discussions and reports, System Link "
-        @"over the internet, and diagnostics. Games still run with this off. To stop only "
-        @"diagnostics, turn off Share Diagnostics.",
-        @"settings hub view controller: footer of the Online Features switch");
-  }
-  if (section == XeniaAboutSectionDiagnostics) {
-    if (!xe_ios_diagnostics_available()) {
-      return nil;
-    }
-    return NSLocalizedString(
-        @"Sends crash reports and performance statistics: device model, iOS version, XeniOS "
-        @"version, the game's title ID, frame rate, load time, shader compiles, GPU errors, "
-        @"temperature, memory use and display settings. Never your files, file names, Apple "
-        @"Account or location. Logs are only sent when you share them yourself.",
-        @"settings hub view controller: footer of the Share Diagnostics switch");
-  }
   if (section == XeniaAboutSectionLinks) {
     NSString* memorial = NSLocalizedString(
         @"XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive "
@@ -1149,49 +1294,6 @@ titleForFooterInSection:(NSInteger)section {
     return cell;
   }
 
-  if (indexPath.section == XeniaAboutSectionDiagnostics &&
-      indexPath.row == kAboutPendingReportsRow) {
-    cell.textLabel.text =
-        NSLocalizedString(@"Pending Reports", @"settings hub view controller: label text");
-    const NSUInteger pending = xe_ios_diagnostics_pending_count();
-    cell.detailTextLabel.text =
-        pending ? [NSString localizedStringWithFormat:@"%lu", (unsigned long)pending]
-                : NSLocalizedString(@"None", @"settings hub view controller: no pending reports");
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    return cell;
-  }
-
-  if (indexPath.section == XeniaAboutSectionDiagnostics) {
-    cell.textLabel.text =
-        NSLocalizedString(@"Share Diagnostics", @"settings hub view controller: label text");
-    cell.detailTextLabel.text = @"";
-    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
-    // Online Features off sends nothing, diagnostics included.
-    toggle.on = xe_ios_online_features_enabled() && xe_ios_share_diagnostics_enabled();
-    toggle.enabled = xe_ios_online_features_enabled();
-    toggle.accessibilityLabel = cell.textLabel.text;
-    [toggle addTarget:self
-                  action:@selector(shareDiagnosticsSwitchChanged:)
-        forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = toggle;
-    return cell;
-  }
-
-  if (indexPath.section == XeniaAboutSectionPrivacy) {
-    cell.textLabel.text =
-        NSLocalizedString(@"Online Features", @"settings hub view controller: label text");
-    cell.detailTextLabel.text = @"";
-    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
-    toggle.on = xe_ios_online_features_enabled();
-    toggle.accessibilityLabel = cell.textLabel.text;
-    [toggle addTarget:self
-                  action:@selector(onlineFeaturesSwitchChanged:)
-        forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = toggle;
-    return cell;
-  }
-
   if (indexPath.section == XeniaAboutSectionUpdates) {
     if (!xe_ios_online_features_enabled() && !update_checking_) {
       cell.textLabel.text =
@@ -1243,49 +1345,13 @@ titleForFooterInSection:(NSInteger)section {
     return cell;
   }
 
-  NSArray* titles = @[
-    NSLocalizedString(@"Website", @"settings hub view controller: title"), @"GitHub",
-    NSLocalizedString(@"Discord", @"settings hub view controller: title"),
-    NSLocalizedString(@"Support", @"settings hub view controller: title"),
-    NSLocalizedString(@"Acknowledgements", @"settings hub view controller: title")
-  ];
-  NSArray* symbols = @[
-    @"globe", @"chevron.left.forwardslash.chevron.right", @"bubble.left.and.bubble.right.fill",
-    @"heart.fill", @"doc.text.fill"
-  ];
-  cell.textLabel.text = [titles objectAtIndex:indexPath.row];
+  cell.textLabel.text =
+      NSLocalizedString(@"Acknowledgements", @"settings hub view controller: title");
   cell.detailTextLabel.text = @"";
-  cell.imageView.image =
-      XESettingsBadgeImage([symbols objectAtIndex:indexPath.row], [UIColor systemGrayColor]);
+  cell.imageView.image = XESettingsBadgeImage(@"doc.text.fill", [UIColor systemGrayColor]);
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   return cell;
-}
-
-- (void)onlineFeaturesSwitchChanged:(UISwitch*)sender {
-  xe_ios_set_online_features_enabled(sender.isOn);
-  if (sender.isOn && xe_ios_diagnostics_available()) {
-    // Share Diagnostics and its footer are right below: no separate notice later. A
-    // build without an endpoint shows neither, so a later one still asks.
-    xe_ios_set_diagnostics_notice_answered();
-  }
-  xe_ios_diagnostics_settings_changed();
-  NSMutableIndexSet* sections = [NSMutableIndexSet indexSetWithIndex:XeniaAboutSectionUpdates];
-  [sections addIndex:XeniaAboutSectionDiagnostics];
-  [self.tableView reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
-  if (sender.isOn) {
-    [self refreshUpdateStatusForced:NO];
-  }
-}
-
-- (void)shareDiagnosticsSwitchChanged:(UISwitch*)sender {
-  xe_ios_set_share_diagnostics_enabled(sender.isOn);
-  // Off deletes what is queued; the Pending Reports count follows.
-  xe_ios_diagnostics_settings_changed();
-  [self.tableView
-      reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:kAboutPendingReportsRow
-                                                   inSection:XeniaAboutSectionDiagnostics] ]
-            withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
@@ -1316,30 +1382,13 @@ titleForFooterInSection:(NSInteger)section {
     }
     return;
   }
-  if (indexPath.section == XeniaAboutSectionDiagnostics &&
-      indexPath.row == kAboutPendingReportsRow) {
-    [self.navigationController
-        pushViewController:xe_ios_diagnostics_make_pending_reports_controller()
-                  animated:YES];
-    return;
-  }
   if (indexPath.section != XeniaAboutSectionLinks) {
     return;
   }
-  if (indexPath.row == kAboutAcknowledgementsRow) {
-    XeniaAcknowledgementsViewController* acknowledgements =
-        [[XeniaAcknowledgementsViewController alloc] init];
-    [self.navigationController pushViewController:acknowledgements animated:YES];
-    [acknowledgements release];
-    return;
-  }
-  NSArray* urls = @[
-    @"https://xenios.jp",
-    @"https://github.com/xenios-jp/XeniOS",
-    @"https://discord.gg/QwcTtNKTGf",
-    @"https://ko-fi.com/xenios",
-  ];
-  XeniaOpenSettingsURL([urls objectAtIndex:indexPath.row]);
+  XeniaAcknowledgementsViewController* acknowledgements =
+      [[XeniaAcknowledgementsViewController alloc] init];
+  [self.navigationController pushViewController:acknowledgements animated:YES];
+  [acknowledgements release];
 }
 
 @end
@@ -1403,6 +1452,22 @@ titleForFooterInSection:(NSInteger)section {
   [search_controller_ release];
   [dismissal_handler_ release];
   [super dealloc];
+}
+
+- (XeniaSettingsHubItem*)linkItemWithTitle:(NSString*)title
+                                   subtitle:(NSString*)subtitle
+                                   keywords:(NSString*)keywords
+                                 symbolName:(NSString*)symbol_name
+                                  tintColor:(UIColor*)tint_color
+                                        url:(NSString*)url {
+  XeniaSettingsHubItem* item = [XeniaSettingsHubItem itemWithKind:XeniaSettingsHubCategoryKindLink
+                                                            title:title
+                                                         subtitle:subtitle
+                                                       symbolName:symbol_name
+                                                        tintColor:tint_color];
+  item.keywords = keywords;
+  item.url = url;
+  return item;
 }
 
 - (NSArray*)buildSections {
@@ -1485,6 +1550,17 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:mint],
                  ]];
 
+  XeniaSettingsHubItem* privacy = [XeniaSettingsHubItem
+      itemWithKind:XeniaSettingsHubCategoryKindPrivacy
+             title:NSLocalizedString(@"Privacy", @"settings hub view controller: title")
+          subtitle:NSLocalizedString(@"Online features and diagnostics.",
+                                     @"settings hub view controller: title")
+        symbolName:@"hand.raised.fill"
+         tintColor:blue];
+  privacy.keywords = NSLocalizedString(
+      @"Online Features, Share Diagnostics, Pending Reports, Crash Reports, Internet",
+      @"settings hub view controller: search words for the Privacy page");
+
   XeniaSettingsHubSection* app = [XeniaSettingsHubSection
       sectionWithTitle:NSLocalizedString(@"App", @"settings hub view controller: title")
                  items:@[
@@ -1505,14 +1581,63 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                          symbolName:@"waveform.path.ecg"
                           tintColor:orange],
+                   privacy,
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAbout
                               title:NSLocalizedString(@"About",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Version, updates and privacy.",
+                           subtitle:NSLocalizedString(@"Version, updates and licenses.",
                                                       @"settings hub view controller: title")
                          symbolName:@"info.circle.fill"
                           tintColor:gray],
+                 ]];
+
+  // The project's own places, on the hub itself rather than inside About, so they are easy to find.
+  XeniaSettingsHubSection* community = [XeniaSettingsHubSection
+      sectionWithTitle:NSLocalizedString(@"Community", @"settings hub view controller: title")
+                 items:@[
+                   [self linkItemWithTitle:NSLocalizedString(
+                                               @"Support XeniOS",
+                                               @"settings hub view controller: link to Ko-fi")
+                                  subtitle:NSLocalizedString(
+                                               @"Ko-fi", @"settings hub view controller: title")
+                                  keywords:NSLocalizedString(
+                                               @"Ko-fi, Kofi, Donate, Tip",
+                                               @"settings hub view controller: search words for "
+                                               @"the Support link")
+                                symbolName:@"heart.fill"
+                                 tintColor:[UIColor systemPinkColor]
+                                       url:@"https://ko-fi.com/xenios"],
+                   [self linkItemWithTitle:NSLocalizedString(@"Discord",
+                                                             @"settings hub view controller: title")
+                                  subtitle:NSLocalizedString(
+                                               @"Help and news.",
+                                               @"settings hub view controller: title")
+                                  keywords:NSLocalizedString(
+                                               @"Chat, Server, Help",
+                                               @"settings hub view controller: search words for "
+                                               @"the Discord link")
+                                symbolName:@"bubble.left.and.bubble.right.fill"
+                                 tintColor:indigo
+                                       url:@"https://discord.gg/QwcTtNKTGf"],
+                   [self linkItemWithTitle:@"GitHub"
+                                  subtitle:NSLocalizedString(
+                                               @"Source code and issues.",
+                                               @"settings hub view controller: title")
+                                  keywords:NSLocalizedString(
+                                               @"Source, Code, Bug, Issue",
+                                               @"settings hub view controller: search words for "
+                                               @"the GitHub link")
+                                symbolName:@"chevron.left.forwardslash.chevron.right"
+                                 tintColor:[UIColor colorWithWhite:0.2 alpha:1.0]
+                                       url:@"https://github.com/xenios-jp/XeniOS"],
+                   [self linkItemWithTitle:NSLocalizedString(@"Website",
+                                                             @"settings hub view controller: title")
+                                  subtitle:@"xenios.jp"
+                                  keywords:nil
+                                symbolName:@"globe"
+                                 tintColor:blue
+                                       url:@"https://xenios.jp"],
                  ]];
 
   XeniaSettingsHubSection* advanced = [XeniaSettingsHubSection
@@ -1575,7 +1700,7 @@ titleForFooterInSection:(NSInteger)section {
                           tintColor:gray],
                  ]];
 
-  return @[ account, gameplay, games, app, advanced ];
+  return @[ account, gameplay, games, app, community, advanced ];
 }
 
 - (void)viewDidLoad {
@@ -2106,7 +2231,16 @@ titleForFooterInSection:(NSInteger)section {
   content.textProperties.numberOfLines = 0;
   content.textProperties.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
                                                       UIFontWeightRegular);
-  content.secondaryText = search_result ? item.subtitle : nil;
+  // At the larger text sizes a value on the trailing edge leaves the title a word or two per
+  // line; it goes under the path instead.
+  const BOOL value_below =
+      search_result && item.valueText.length &&
+      UIContentSizeCategoryCompareToCategory(tableView.traitCollection.preferredContentSizeCategory,
+                                             UIContentSizeCategoryExtraLarge) != NSOrderedAscending;
+  content.secondaryText =
+      !search_result ? nil
+      : value_below  ? [NSString stringWithFormat:@"%@\n%@", item.subtitle ?: @"", item.valueText]
+                     : item.subtitle;
   content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
       search_result ? 10.0 : 11.5, 16.0, search_result ? 10.0 : 11.5, 16.0);
   content.secondaryTextProperties.color = [XeniaTheme textSecondary];
@@ -2122,7 +2256,7 @@ titleForFooterInSection:(NSInteger)section {
   cell.contentConfiguration = content;
 
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-  if (item.valueText.length) {
+  if (item.valueText.length && !value_below) {
     // The current value, on the trailing edge like in Settings.
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.accessoryView = XeniaConfigMakeValueAccessoryView(
@@ -2132,15 +2266,31 @@ titleForFooterInSection:(NSInteger)section {
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   }
   [self applySidebarStyleToCell:cell hasValue:item.valueText.length > 0];
+  const BOOL link = item.kind == XeniaSettingsHubCategoryKindLink;
+  if (link) {
+    // Leaves the app, so an arrow out rather than a chevron in.
+    UIImageView* arrow = [[[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:@"arrow.up.right"
+                              withConfiguration:[UIImageSymbolConfiguration
+                                                    configurationWithTextStyle:
+                                                        UIFontTextStyleFootnote
+                                                                         scale:UIImageSymbolScaleMedium]]]
+        autorelease];
+    arrow.tintColor = [UIColor tertiaryLabelColor];
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = arrow;
+  }
 
   // A result reads as: setting, current value, and where it opens.
   const BOOL is_result = item.focusKey.length > 0;
   NSString* value = is_result ? item.valueText : (item.subtitle.length ? item.subtitle : nil);
-  NSString* hint = item.hintText.length
-                       ? item.hintText
-                       : NSLocalizedString(@"Opens this settings section.",
-                                           @"settings hub view controller: title");
-  XEApplyAccessibility(cell, item.title, value, hint, UIAccessibilityTraitButton);
+  NSString* hint = item.hintText.length ? item.hintText
+                 : link ? NSLocalizedString(@"Opens in your browser.",
+                                            @"settings hub view controller: hint of a link row")
+                        : NSLocalizedString(@"Opens this settings section.",
+                                            @"settings hub view controller: title");
+  XEApplyAccessibility(cell, item.title, value, hint,
+                       link ? UIAccessibilityTraitLink : UIAccessibilityTraitButton);
   return cell;
 }
 
@@ -2150,6 +2300,14 @@ titleForFooterInSection:(NSInteger)section {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
   }
   XeniaSettingsHubItem* item = [self itemAtIndexPath:indexPath];
+  if (item.kind == XeniaSettingsHubCategoryKindLink) {
+    // Opens outside the app; the sidebar keeps the page it was showing.
+    XeniaOpenSettingsURL(item.url);
+    if (sidebar) {
+      [self updateSidebarSelection];
+    }
+    return;
+  }
   UIViewController* detail = [self makeDetailControllerForItem:item];
   if (!detail) {
     [self updateSidebarSelection];
@@ -2158,17 +2316,32 @@ titleForFooterInSection:(NSInteger)section {
   if (sidebar) {
     sidebar_kind_ = item.kind;
   }
+  void (^show)(void) = ^{
+    if ([self.selectionDelegate respondsToSelector:
+            @selector(settingsHubViewController:didSelectController:)]) {
+      [self.selectionDelegate settingsHubViewController:self didSelectController:detail];
+      [self updateSidebarSelection];
+      return;
+    }
+    [self.navigationController pushViewController:detail animated:YES];
+  };
   if (search_controller_.active) {
+    // A page shown while the search is still closing is dropped; show it once it has closed.
     search_controller_.active = NO;
-  }
-
-  if ([self.selectionDelegate respondsToSelector:
-          @selector(settingsHubViewController:didSelectController:)]) {
-    [self.selectionDelegate settingsHubViewController:self didSelectController:detail];
-    [self updateSidebarSelection];
+    id<UIViewControllerTransitionCoordinator> coordinator =
+        search_controller_.transitionCoordinator;
+    if (coordinator) {
+      [coordinator animateAlongsideTransition:nil
+                                   completion:^(id<UIViewControllerTransitionCoordinatorContext>
+                                                    __unused context) {
+                                     show();
+                                   }];
+    } else {
+      dispatch_async(dispatch_get_main_queue(), show);
+    }
     return;
   }
-  [self.navigationController pushViewController:detail animated:YES];
+  show();
 }
 
 - (UIViewController*)makeInitialDetailController {
@@ -2373,6 +2546,8 @@ titleForFooterInSection:(NSInteger)section {
       config.showsRootDismissButton = NO;
       return config;
     }
+    case XeniaSettingsHubCategoryKindPrivacy:
+      return [[[XeniaSettingsPrivacyViewController alloc] init] autorelease];
     case XeniaSettingsHubCategoryKindAbout:
       return [[[XeniaSettingsAboutViewController alloc] init] autorelease];
     case XeniaSettingsHubCategoryKindAllCvars: {
