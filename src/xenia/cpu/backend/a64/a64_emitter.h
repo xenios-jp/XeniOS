@@ -336,7 +336,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     auto it = loop_plan_.accesses.find(instr);
     return it != loop_plan_.accesses.end() &&
            instr->GetOpcodeNum() == hir::OPCODE_STORE_CONTEXT &&
-           it->second->type != hir::VEC128_TYPE &&
+           it->second->type != hir::VEC128_TYPE && !it->second->deferred &&
            reg.set == instr->src2.value->reg.set &&
            it->second->reg_index == reg.index;
   }
@@ -503,6 +503,8 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // emitted.
   LoopPromotionPlan loop_plan_;
   const PromotedLoop* active_loop_ = nullptr;
+  // Where the active loop's entry lands, past the head's preempt check.
+  Xbyak_aarch64::Label* loop_entry_ = nullptr;
   // The register moves a promoted slot's load or store becomes; false for any
   // other instruction.
   bool EmitPromotedAccess(const hir::Instr* instr);
