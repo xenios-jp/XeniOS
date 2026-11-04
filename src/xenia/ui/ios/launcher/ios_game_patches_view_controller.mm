@@ -66,9 +66,8 @@ NSString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 76.0;
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close", @"game patches view controller: title")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
   [self reloadPatches];
 }

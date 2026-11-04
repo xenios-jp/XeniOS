@@ -55,9 +55,8 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   // existing stack (from Settings) the back button already handles dismissal.
   if (self.navigationController.viewControllers.firstObject == self) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Close", @"external folders view controller: button")
-                style:UIBarButtonItemStylePlain
-               target:self
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                action:@selector(doneTapped:)] autorelease];
   }
 

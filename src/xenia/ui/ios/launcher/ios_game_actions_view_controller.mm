@@ -141,9 +141,8 @@ struct XeniaIOSGameActionRow {
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   rows_ = [[self buildRows] retain];
   self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Close", @"game actions view controller: button")
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
+      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                                        action:@selector(cancelTapped:)] autorelease];
 }
 
