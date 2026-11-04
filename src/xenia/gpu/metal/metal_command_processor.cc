@@ -7003,6 +7003,18 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     ff_blend_factor_valid_ = false;
     current_render_pass_descriptor_ = pass_descriptor;
     current_render_pass_descriptor_->retain();
+    {
+      RenderPassPipelineFormats& formats =
+          current_render_pass_pipeline_formats_;
+      std::fill(std::begin(formats.color), std::end(formats.color),
+                MTL::PixelFormatInvalid);
+      formats.depth = MTL::PixelFormatInvalid;
+      formats.stencil = MTL::PixelFormatInvalid;
+      formats.sample_count = 1;
+      PopulatePipelineFormatsFromRenderPassDescriptor(
+          pass_descriptor, formats.color, 4, &formats.depth, &formats.stencil,
+          &formats.sample_count);
+    }
 
     // Start the encoder off covering the whole active render pass rather than
     // a hard-coded 1280x720. Every draw applies the guest's own viewport and
@@ -8080,14 +8092,29 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     const RegisterFile& regs, const Shader::Translation* vertex_translation,
     const Shader::Translation* pixel_translation,
     PipelineCompileRequest& request) {
-  // Determine attachment formats from render target cache.
+  // Match the active render pass attachments exactly to avoid
+  // setRenderPipelineState validation failures when the pass descriptor differs
+  // from the cache snapshot (for instance, after attachment reconfiguration).
+  // Without a pass, determine attachment formats from render target cache.
   uint32_t sample_count = 1;
   MTL::PixelFormat color_formats[4] = {
       MTL::PixelFormatInvalid, MTL::PixelFormatInvalid, MTL::PixelFormatInvalid,
       MTL::PixelFormatInvalid};
   MTL::PixelFormat depth_format = MTL::PixelFormatInvalid;
   MTL::PixelFormat stencil_format = MTL::PixelFormatInvalid;
-  if (render_target_cache_) {
+  if (current_render_pass_descriptor_) {
+    const RenderPassPipelineFormats& formats =
+        current_render_pass_pipeline_formats_;
+    std::copy(std::begin(formats.color), std::end(formats.color),
+              color_formats);
+    depth_format = formats.depth;
+    stencil_format = formats.stencil;
+    sample_count = formats.sample_count;
+  } else if (!render_target_cache_) {
+    PopulatePipelineFormatsFromRenderPassDescriptor(
+        render_pass_descriptor_, color_formats, 4, &depth_format,
+        &stencil_format, &sample_count);
+  } else {
     for (uint32_t i = 0; i < 4; ++i) {
       if (MTL::Texture* rt = render_target_cache_->GetColorTargetForDraw(i)) {
         color_formats[i] = rt->pixelFormat();
@@ -8125,25 +8152,6 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
             sample_count, static_cast<uint32_t>(depth_tex->sampleCount()));
       }
     }
-  }
-
-  // Match the active render pass attachments exactly to avoid
-  // setRenderPipelineState validation failures when the pass descriptor differs
-  // from the cache snapshot (for instance, after attachment reconfiguration).
-  MTL::RenderPassDescriptor* pass_descriptor = current_render_pass_descriptor_;
-  if (!pass_descriptor && !render_target_cache_) {
-    pass_descriptor = render_pass_descriptor_;
-  }
-  if (pass_descriptor) {
-    sample_count = 1;
-    for (uint32_t i = 0; i < 4; ++i) {
-      color_formats[i] = MTL::PixelFormatInvalid;
-    }
-    depth_format = MTL::PixelFormatInvalid;
-    stencil_format = MTL::PixelFormatInvalid;
-    PopulatePipelineFormatsFromRenderPassDescriptor(
-        pass_descriptor, color_formats, 4, &depth_format, &stencil_format,
-        &sample_count);
   }
   bool pixel_shader_writes_depth =
       pixel_translation && pixel_translation->shader().writes_depth();
