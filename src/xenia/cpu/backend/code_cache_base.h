@@ -597,6 +597,14 @@ class CodeCacheBase : public CodeCache {
     }
   }
 
+  // A copy of the placed code, in address order: each entry's first is the
+  // start offset from execute_base_address() in the high 32 bits and the end
+  // offset in the low 32, its second the function, or null for host code.
+  std::vector<std::pair<uint64_t, GuestFunction*>> CopyCodeMap() {
+    auto global_lock = global_critical_region_.Acquire();
+    return generated_code_map_;
+  }
+
   GuestFunction* LookupFunction(uint64_t host_pc) override {
     if (generated_code_map_.empty()) {
       return nullptr;
