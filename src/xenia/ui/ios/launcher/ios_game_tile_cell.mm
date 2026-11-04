@@ -128,7 +128,7 @@
     [self.iconView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor],
     [self.iconView.trailingAnchor constraintEqualToAnchor:self.cardView.trailingAnchor],
     [self.iconView.heightAnchor constraintEqualToAnchor:self.iconView.widthAnchor
-                                             multiplier:300.0 * 0.87 / 219.0],
+                                             multiplier:300.0 / 219.0],
     [self.footerView.topAnchor constraintEqualToAnchor:self.iconView.bottomAnchor],
     [self.footerView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor],
     [self.footerView.trailingAnchor constraintEqualToAnchor:self.cardView.trailingAnchor],
