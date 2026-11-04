@@ -235,6 +235,26 @@ static const NSInteger kXeniaConfigIntegerFieldTag = 9101;
 static const NSInteger kXeniaConfigDoubleFieldTag = 9102;
 static const NSInteger kXeniaConfigStringFieldTag = 9103;
 static const NSInteger kXeniaConfigStepperLabelTag = 9104;
+static const NSInteger kXeniaConfigSliderTitleTag = 9105;
+static const NSInteger kXeniaConfigSliderValueTag = 9106;
+static const NSInteger kXeniaConfigSliderTag = 9107;
+static const NSInteger kXeniaConfigSliderMinLabelTag = 9108;
+static const NSInteger kXeniaConfigSliderMaxLabelTag = 9109;
+
+// A stepped value on its grid. Dividing by the step's inverse (10 for 0.1) gives the nearest
+// double, so 1.2 saves as 1.2, not 1.2000000000000002, and repeated steps don't drift.
+static double SnapToStep(double value, double step) {
+  if (step < 1.0) {
+    const double per_unit = std::round(1.0 / step);
+    return std::round(value * per_unit) / per_unit;
+  }
+  return std::round(value / step) * step;
+}
+
+static bool IsSliderItem(const IOSConfigItem* item) {
+  return item && item->control_type == IOSConfigControlType::kDouble && item->step > 0.0 &&
+         !item->min_label.empty() && !item->max_label.empty();
+}
 
 @interface XeniaConfigViewController () <UISearchResultsUpdating>
 - (void)confirmResetGameSettings;
@@ -895,9 +915,8 @@ static const NSInteger kXeniaConfigStepperLabelTag = 9104;
   if ([self isRootSettingsController]) {
     if (shows_root_dismiss_button_) {
       self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-          initWithTitle:NSLocalizedString(@"Close", @"config view controller: button")
-                  style:UIBarButtonItemStylePlain
-                 target:self
+          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                  action:@selector(closeTapped:)] autorelease];
     } else {
       self.navigationItem.leftBarButtonItem = nil;
@@ -951,7 +970,8 @@ static const NSInteger kXeniaConfigStepperLabelTag = 9104;
 
 // Description plus, for a setting that was changed, its default on a second line.
 - (NSString*)secondaryTextForItem:(const IOSConfigItem&)item {
-  NSString* base = ToNSString(item.subtitle);
+  // nil, not "", for a row with no description, so it keeps a one-line height.
+  NSString* base = item.subtitle.empty() ? nil : ToNSString(item.subtitle);
   if (game_title_id_ || item.control_type == IOSConfigControlType::kAction ||
       IsLetterboxBlockedByWindowStretch(item) || IOSConfigItemIsDefault(item)) {
     return base;
@@ -1043,6 +1063,9 @@ static const NSInteger kXeniaConfigStepperLabelTag = 9104;
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (IsSliderItem([self itemAtIndexPath:indexPath])) {
+    return [self sliderCellForItem:*[self itemAtIndexPath:indexPath] tableView:tableView];
+  }
   static NSString* const kCellIdentifier = @"XeniaConfigCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
@@ -1381,6 +1404,141 @@ static const NSInteger kXeniaConfigStepperLabelTag = 9104;
                                  ToNSString(item->title), ToNSString(problem)]);
 }
 
+// A range: the title with its value and unit on one line, and under it a slider between two
+// words ("Slower", "Faster"), as in the Ranges component of the style spec.
+- (UITableViewCell*)sliderCellForItem:(const IOSConfigItem&)item
+                            tableView:(UITableView*)tableView {
+  static NSString* const kSliderCellIdentifier = @"XeniaConfigSliderCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kSliderCellIdentifier];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                   reuseIdentifier:kSliderCellIdentifier] autorelease];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+    UILabel* title = [[[UILabel alloc] init] autorelease];
+    title.tag = kXeniaConfigSliderTitleTag;
+    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    title.adjustsFontForContentSizeCategory = YES;
+    title.textColor = [XeniaTheme textPrimary];
+    title.numberOfLines = 0;
+    UILabel* value = [[[UILabel alloc] init] autorelease];
+    value.tag = kXeniaConfigSliderValueTag;
+    value.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:17.0
+                                                           weight:UIFontWeightRegular]];
+    value.adjustsFontForContentSizeCategory = YES;
+    value.textColor = [XeniaTheme textSecondary];
+    [value setContentHuggingPriority:UILayoutPriorityRequired
+                             forAxis:UILayoutConstraintAxisHorizontal];
+    [value setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                           forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView* top = [[[UIStackView alloc] initWithArrangedSubviews:@[ title, value ]]
+        autorelease];
+    top.axis = UILayoutConstraintAxisHorizontal;
+    top.alignment = UIStackViewAlignmentFirstBaseline;
+    top.spacing = 8.0;
+
+    UILabel* min_label = [[[UILabel alloc] init] autorelease];
+    UILabel* max_label = [[[UILabel alloc] init] autorelease];
+    min_label.tag = kXeniaConfigSliderMinLabelTag;
+    max_label.tag = kXeniaConfigSliderMaxLabelTag;
+    for (UILabel* label in @[ min_label, max_label ]) {
+      label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+      label.adjustsFontForContentSizeCategory = YES;
+      label.textColor = [XeniaTheme textMuted];
+      label.isAccessibilityElement = NO;
+      [label setContentHuggingPriority:UILayoutPriorityRequired
+                               forAxis:UILayoutConstraintAxisHorizontal];
+      [label setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                             forAxis:UILayoutConstraintAxisHorizontal];
+    }
+    UISlider* slider = [[[UISlider alloc] init] autorelease];
+    slider.tag = kXeniaConfigSliderTag;
+    slider.minimumTrackTintColor = [XeniaTheme accent];
+    [slider addTarget:self
+                  action:@selector(sliderChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    [slider addTarget:self
+                  action:@selector(sliderFinished:)
+        forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside |
+                         UIControlEventTouchCancel];
+    UIStackView* bottom = [[[UIStackView alloc]
+        initWithArrangedSubviews:@[ min_label, slider, max_label ]] autorelease];
+    bottom.axis = UILayoutConstraintAxisHorizontal;
+    bottom.alignment = UIStackViewAlignmentCenter;
+    bottom.spacing = 12.0;
+
+    UIStackView* stack = [[[UIStackView alloc] initWithArrangedSubviews:@[ top, bottom ]]
+        autorelease];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 8.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:stack];
+    UILayoutGuide* margins = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+      [stack.topAnchor constraintEqualToAnchor:margins.topAnchor constant:4.0],
+      [stack.bottomAnchor constraintEqualToAnchor:margins.bottomAnchor constant:-4.0],
+      [stack.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+      [stack.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
+    ]];
+  }
+
+  NSString* value_text = ToNSString(IOSConfigItemValueText(item));
+  UILabel* title = (UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderTitleTag];
+  UILabel* value = (UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderValueTag];
+  UISlider* slider = (UISlider*)[cell.contentView viewWithTag:kXeniaConfigSliderTag];
+  title.text = ToNSString(item.title);
+  title.isAccessibilityElement = NO;
+  value.text = value_text;
+  value.isAccessibilityElement = NO;
+  ((UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderMinLabelTag]).text =
+      ToNSString(item.min_label);
+  ((UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderMaxLabelTag]).text =
+      ToNSString(item.max_label);
+  // A hand-edited value outside the range stays reachable.
+  slider.minimumValue = static_cast<float>(MIN(item.min_value, item.double_value));
+  slider.maximumValue = static_cast<float>(MAX(item.max_value, item.double_value));
+  slider.value = static_cast<float>(item.double_value);
+  // The slider is the one VoiceOver element: "Vertical Speed, 1.2×, adjustable".
+  slider.accessibilityLabel = ToNSString(item.title);
+  slider.accessibilityValue = value_text;
+  return cell;
+}
+
+- (void)sliderChanged:(UISlider*)sender {
+  CGPoint point = [sender convertPoint:CGPointZero toView:self.tableView];
+  NSIndexPath* indexPath = [self.tableView indexPathForRowAtPoint:point];
+  if (!indexPath) return;
+  IOSConfigItem* item = [self itemAtIndexPath:indexPath];
+  if (!IsSliderItem(item)) return;
+
+  const double snapped = SnapToStep(sender.value, item->step);
+  if (snapped == item->double_value) {
+    return;
+  }
+  item->double_value = snapped;
+  NSString* text = ToNSString(IOSConfigItemValueText(*item));
+  sender.accessibilityValue = text;
+  UITableViewCell* cell = [self.tableView cellForRowAtIndexPath:indexPath];
+  ((UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderValueTag]).text = text;
+
+  [self markPendingChangesForItem:item];
+  if (live_override_) {
+    [self applyLiveOverrideForItem:item];
+  }
+  [self configItemDidChange:item];
+}
+
+// The thumb settles on the step the value snapped to.
+- (void)sliderFinished:(UISlider*)sender {
+  CGPoint point = [sender convertPoint:CGPointZero toView:self.tableView];
+  NSIndexPath* indexPath = [self.tableView indexPathForRowAtPoint:point];
+  IOSConfigItem* item = indexPath ? [self itemAtIndexPath:indexPath] : nullptr;
+  if (IsSliderItem(item)) {
+    [sender setValue:static_cast<float>(item->double_value) animated:YES];
+  }
+}
+
 // A stepped decimal setting: its value with its unit ("0.10 s"), then a stepper.
 - (UIView*)stepperAccessoryForItem:(const IOSConfigItem&)item {
   UILabel* label = [[[UILabel alloc] init] autorelease];
@@ -1422,14 +1580,7 @@ static const NSInteger kXeniaConfigStepperLabelTag = 9104;
   IOSConfigItem* item = [self itemAtIndexPath:indexPath];
   if (!item || item->control_type != IOSConfigControlType::kDouble || item->step <= 0.0) return;
 
-  // Land on the step grid so repeated taps don't collect rounding error. Dividing by the step's
-  // inverse (10 for 0.1) gives the nearest double, so 1.2 saves as 1.2, not 1.2000000000000002.
-  if (item->step < 1.0) {
-    const double per_unit = std::round(1.0 / item->step);
-    item->double_value = std::round(sender.value * per_unit) / per_unit;
-  } else {
-    item->double_value = std::round(sender.value / item->step) * item->step;
-  }
+  item->double_value = SnapToStep(sender.value, item->step);
   NSString* text = ToNSString(IOSConfigItemValueText(*item));
   sender.accessibilityValue = text;
   UIView* stack = sender.superview;

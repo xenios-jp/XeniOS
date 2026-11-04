@@ -156,9 +156,8 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
   }
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close", @"system link view controller: button")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
   if (play_handler_) {
     self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
@@ -652,9 +651,8 @@ constexpr CGFloat kOnlineIconSize = 36.0;
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close", @"system link view controller: button")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onlineChanged:)
@@ -1184,9 +1182,8 @@ constexpr size_t kMaxStatusOtherGames = 10;
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close", @"system link view controller: button")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
   for (NSString* name in @[
          XeniaIOSSystemLinkStatusDidChangeNotification,

@@ -103,19 +103,22 @@ XeniaPaddedLabel* xe_make_tag_pill(NSString* text, UIColor* text_color) {
 // The same glass "Close" capsule the navigation bars show on every other sheet, for sheets
 // that draw their own header.
 UIButton* xe_make_ios_sheet_close_button(id target, SEL action) {
+  // The round glass ✕ iOS 26 sheets use (UIBarButtonSystemItemClose), for views outside a
+  // navigation bar.
   UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
-  config.title = NSLocalizedString(@"Close", @"sheet close button");
+  config.image = [UIImage systemImageNamed:@"xmark"
+                         withConfiguration:[UIImageSymbolConfiguration
+                                               configurationWithTextStyle:UIFontTextStyleBody
+                                                                    scale:UIImageSymbolScaleMedium]];
   config.baseForegroundColor = [XeniaTheme textPrimary];
   config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(11.0, 16.0, 11.0, 16.0);
-  config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
-      NSDictionary<NSAttributedStringKey, id>* attributes) {
-    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
-    updated[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    return updated;
-  };
   UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
   button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.accessibilityLabel = NSLocalizedString(@"Close", @"sheet close button");
+  [NSLayoutConstraint activateConstraints:@[
+    [button.widthAnchor constraintEqualToConstant:44.0],
+    [button.heightAnchor constraintEqualToConstant:44.0],
+  ]];
   [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
   return button;
 }
