@@ -1871,7 +1871,8 @@ bool A64Backend::DumpCodeMap(const std::filesystem::path& path) {
   std::filesystem::rename(temp_path, path, error);
   ok = ok && !error;
   // The code itself, at its offset from the start of the cache, for
-  // disassembling hot spots. Only the mapped ranges are read: the gaps between
+  // disassembling hot spots. Only the mapped ranges are read, through the
+  // write view (the execute view is not readable on iOS); the gaps between
   // them may not be mapped at all, and are left as holes in the file.
   if (!code_map.empty()) {
     std::filesystem::path code_path = path;
@@ -1881,8 +1882,8 @@ bool A64Backend::DumpCodeMap(const std::filesystem::path& path) {
         const uint32_t start = uint32_t(range >> 32);
         const uint32_t size = uint32_t(range) - start;
         ok = std::fseek(code_file, long(start), SEEK_SET) == 0 &&
-             std::fwrite(reinterpret_cast<const void*>(base + start), 1, size,
-                         code_file) == size &&
+             std::fwrite(code_cache_->readable_base_address() + start, 1,
+                         size, code_file) == size &&
              ok;
       }
       ok = std::fclose(code_file) == 0 && ok;
