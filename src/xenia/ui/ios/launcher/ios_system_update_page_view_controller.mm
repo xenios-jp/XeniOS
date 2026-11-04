@@ -36,7 +36,8 @@ BOOL IsMicrosoftDownload(NSURL* url) {
 
 }  // namespace
 
-@interface XeniaSystemUpdatePageViewController () <WKNavigationDelegate,
+@interface XeniaSystemUpdatePageViewController () <UIGestureRecognizerDelegate,
+                                                   WKNavigationDelegate,
                                                    WKUIDelegate,
                                                    WKDownloadDelegate>
 @end
@@ -50,6 +51,9 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   WKDownload* download_;
   NSURL* download_file_;
   NSTimer* progress_timer_;
+  NSUInteger find_generation_;  // Drops finds a newer load or tap has replaced.
+  UIView* guide_ring_;           // Rings what Find in Page found, above the page.
+  UILabel* guide_label_;
 }
 
 - (instancetype)initWithDownloadHandler:(void (^)(NSURL* file))handler {
@@ -74,6 +78,8 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   [web_view_ release];
   [banner_label_ release];
   [banner_icon_ release];
+  [guide_ring_ release];
+  [guide_label_ release];
   [progress_view_ release];
   [download_ release];
   [download_file_ release];
@@ -124,7 +130,39 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   web_view_.navigationDelegate = self;
   web_view_.UIDelegate = self;
   web_view_.backgroundColor = [XeniaTheme bgPrimary];
+  web_view_.findInteractionEnabled = YES;
   [self.view addSubview:web_view_];
+
+  // A tap that opens a section of the page moves the highlight on to what it revealed.
+  UITapGestureRecognizer* tap =
+      [[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(pageTapped:)]
+          autorelease];
+  tap.cancelsTouchesInView = NO;
+  tap.delegate = self;
+  [web_view_ addGestureRecognizer:tap];
+
+  // Drawn by XeniOS in the web view's scroll view, over the page and scrolling with it.
+  guide_ring_ = [[UIView alloc] init];
+  guide_ring_.userInteractionEnabled = NO;
+  guide_ring_.hidden = YES;
+  guide_ring_.layer.borderColor = [XeniaTheme accent].CGColor;
+  guide_ring_.layer.borderWidth = 3.0;
+  guide_ring_.layer.cornerRadius = 10.0;
+  guide_ring_.backgroundColor = [[XeniaTheme accent] colorWithAlphaComponent:0.08];
+  [web_view_.scrollView addSubview:guide_ring_];
+  guide_label_ = [[UILabel alloc] init];
+  guide_label_.userInteractionEnabled = NO;
+  guide_label_.hidden = YES;
+  guide_label_.text = NSLocalizedString(@"Tap here", @"system update page: label beside the "
+                                                     @"part of Microsoft's page to tap next");
+  guide_label_.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+  guide_label_.font = [UIFont systemFontOfSize:guide_label_.font.pointSize weight:UIFontWeightSemibold];
+  guide_label_.textColor = UIColor.whiteColor;
+  guide_label_.textAlignment = NSTextAlignmentCenter;
+  guide_label_.backgroundColor = [XeniaTheme accent];
+  guide_label_.layer.cornerRadius = 10.0;
+  guide_label_.layer.masksToBounds = YES;
+  [web_view_.scrollView addSubview:guide_label_];
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
   [NSLayoutConstraint activateConstraints:@[
@@ -166,10 +204,12 @@ BOOL IsMicrosoftDownload(NSURL* url) {
 }
 
 - (void)showInstructions {
+  // Microsoft's page is shown as Microsoft serves it; these two steps say where its link is.
   [self setBannerText:NSLocalizedString(
-                          @"Under How to update, open “Copy to a USB flash drive” and "
-                          @"tap its download link. XeniOS installs the update once it has "
-                          @"downloaded.",
+                          @"1. Open the highlighted “How to update”, then “Copy to a USB flash "
+                          @"drive”.\n"
+                          @"2. Tap the highlighted “XBOX 360 system update file”.\n"
+                          @"XeniOS installs the update when the download finishes.",
                           @"system update page: instructions")
                symbol:@"arrow.down.circle"
                 color:[XeniaTheme accent]];
@@ -207,7 +247,156 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   [self showInstructions];
 }
 
+#pragma mark - Find in page
+
+// WebKit's own Find in Page, as in Safari's Find bar: it reads Microsoft's page as shown and
+// selects what it finds, without running anything in the page or changing it. The download link
+// is shown once its section is open, so until the user opens it the section is what's found.
+- (void)findDownloadLinkAfter:(NSTimeInterval)delay attempts:(NSUInteger)attempts {
+  const NSUInteger generation = ++find_generation_;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [self findDownloadLinkGeneration:generation attempts:attempts];
+                 });
+}
+
+- (void)findDownloadLinkGeneration:(NSUInteger)generation attempts:(NSUInteger)attempts {
+  if (generation != find_generation_ || download_ || !web_view_.window) {
+    return;
+  }
+  // Innermost first: the link, the section that holds it, then the heading that holds that.
+  [self findFirstOf:@[ @"XBOX 360 system update file", @"system update file", @"Copy to a USB flash drive",
+                       @"How to update" ]
+         generation:generation
+           attempts:attempts];
+}
+
+- (void)findFirstOf:(NSArray<NSString*>*)texts
+         generation:(NSUInteger)generation
+           attempts:(NSUInteger)attempts {
+  if (!texts.count) {
+    // The page draws itself after it has loaded, so look again for a while.
+    if (attempts > 1) {
+      [self findDownloadLinkAfter:1.0 attempts:attempts - 1];
+    }
+    return;
+  }
+  WKFindConfiguration* configuration = [[[WKFindConfiguration alloc] init] autorelease];
+  [web_view_ findString:texts.firstObject
+      withConfiguration:configuration
+      completionHandler:^(WKFindResult* found) {
+        if (generation != find_generation_) {
+          return;
+        }
+        if (found.matchFound) {
+          [self showGuideGeneration:generation];
+          return;
+        }
+        [self findFirstOf:[texts subarrayWithRange:NSMakeRange(1, texts.count - 1)]
+               generation:generation
+                 attempts:attempts];
+      }];
+}
+
+// Where Find in Page's selection is, in page coordinates. It runs in WebKit's client world, which
+// the page's own scripts can't see, and only reads.
+- (void)showGuideGeneration:(NSUInteger)generation {
+  [web_view_ callAsyncJavaScript:
+                 @"const s = getSelection();"
+                 @"if (!s || !s.rangeCount) return null;"
+                 @"const r = s.getRangeAt(0).getBoundingClientRect();"
+                 @"if (!r.width || !r.height) return null;"
+                 @"return [r.left + scrollX, r.top + scrollY, r.width, r.height];"
+                       arguments:nil
+                         inFrame:nil
+                  inContentWorld:WKContentWorld.defaultClientWorld
+               completionHandler:^(id result, NSError* __unused error) {
+                 if (generation != find_generation_ || download_) {
+                   return;
+                 }
+                 NSArray* box = [result isKindOfClass:[NSArray class]] ? result : nil;
+                 if (box.count != 4) {
+                   [self hideGuide];
+                   return;
+                 }
+                 const CGFloat zoom = web_view_.scrollView.zoomScale;
+                 const CGRect found = CGRectMake([box[0] doubleValue] * zoom, [box[1] doubleValue] * zoom,
+                                                 [box[2] doubleValue] * zoom, [box[3] doubleValue] * zoom);
+                 [self placeGuideAround:found];
+               }];
+}
+
+- (void)placeGuideAround:(CGRect)found {
+  guide_ring_.frame = CGRectInset(found, -10.0, -8.0);
+  const CGSize text = [guide_label_ sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)];
+  const CGSize pill = CGSizeMake(ceil(text.width) + 20.0, ceil(text.height) + 6.0);
+  guide_label_.layer.cornerRadius = pill.height / 2.0;
+  CGFloat y = CGRectGetMinY(guide_ring_.frame) - pill.height - 6.0;
+  if (y < web_view_.scrollView.contentOffset.y) {
+    y = CGRectGetMaxY(guide_ring_.frame) + 6.0;
+  }
+  guide_label_.frame = CGRectMake(CGRectGetMinX(guide_ring_.frame), y, pill.width, pill.height);
+  [web_view_.scrollView scrollRectToVisible:CGRectInset(CGRectUnion(guide_ring_.frame,
+                                                                    guide_label_.frame),
+                                                        0.0, -160.0)
+                                   animated:YES];
+  const BOOL was_hidden = guide_ring_.hidden;
+  guide_ring_.hidden = NO;
+  guide_label_.hidden = NO;
+  [web_view_.scrollView bringSubviewToFront:guide_ring_];
+  [web_view_.scrollView bringSubviewToFront:guide_label_];
+  if (was_hidden) {
+    guide_ring_.alpha = 0.0;
+    guide_label_.alpha = 0.0;
+    [UIView animateWithDuration:0.25
+                     animations:^{
+                       guide_ring_.alpha = 1.0;
+                       guide_label_.alpha = 1.0;
+                     }];
+  }
+  // A gentle pulse, unless the user has asked for less motion.
+  [guide_ring_.layer removeAnimationForKey:@"pulse"];
+  if (!UIAccessibilityIsReduceMotionEnabled()) {
+    CABasicAnimation* pulse = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+    pulse.fromValue = @1.0;
+    pulse.toValue = @1.04;
+    pulse.duration = 0.8;
+    pulse.autoreverses = YES;
+    pulse.repeatCount = HUGE_VALF;
+    pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [guide_ring_.layer addAnimation:pulse forKey:@"pulse"];
+  }
+}
+
+- (void)hideGuide {
+  [guide_ring_.layer removeAnimationForKey:@"pulse"];
+  guide_ring_.hidden = YES;
+  guide_label_.hidden = YES;
+}
+
+- (void)pageTapped:(UITapGestureRecognizer*)__unused tap {
+  [self hideGuide];
+  [self findDownloadLinkAfter:0.8 attempts:3];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)__unused gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer*)__unused other {
+  return YES;
+}
+
 #pragma mark - Navigation
+
+- (void)webView:(WKWebView* __unused)webView
+    didStartProvisionalNavigation:(WKNavigation* __unused)navigation {
+  ++find_generation_;
+  [self hideGuide];
+}
+
+- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)__unused navigation {
+  if (IsMicrosoftHost(webView.URL.host)) {
+    [self findDownloadLinkAfter:0.5 attempts:10];
+  }
+}
 
 - (void)webView:(WKWebView* __unused)webView
     decidePolicyForNavigationAction:(WKNavigationAction*)action
@@ -302,6 +491,7 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   }
   download_ = [download retain];
   download_.delegate = self;
+  [self hideGuide];
   [self updateBarButtons];
 }
 
