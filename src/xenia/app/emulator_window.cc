@@ -493,6 +493,17 @@ wxString SlotDeviceNames(
   return names;
 }
 
+// The Mac app ships as XeniOS, from the xenios-jp/XeniOS repository.
+#if XE_PLATFORM_MAC
+#define XE_APP_NAME "XeniOS"
+#define XE_APP_REPO_URL "https://github.com/xenios-jp/XeniOS"
+#define XE_APP_LICENSE_URL XE_APP_REPO_URL "/blob/xenios/LICENSE"
+#else
+#define XE_APP_NAME "Xenia-edge"
+#define XE_APP_REPO_URL "https://github.com/has207/xenia-edge"
+#define XE_APP_LICENSE_URL XE_APP_REPO_URL "/blob/edge/LICENSE"
+#endif
+
 // About dialog with clickable links, which the stock wxAboutBox
 // (plain-text description only) cannot render.
 class AboutDialog : public wxGenericAboutDialog {
@@ -504,16 +515,15 @@ class AboutDialog : public wxGenericAboutDialog {
  protected:
   void DoAddCustomControls() override {
     auto* parent = GetCustomControlParent();
-    AddControl(new wxHyperlinkCtrl(parent, wxID_ANY,
-                                   "https://github.com/has207/xenia-edge",
-                                   "https://github.com/has207/xenia-edge"));
+    AddControl(new wxHyperlinkCtrl(parent, wxID_ANY, XE_APP_REPO_URL,
+                                   XE_APP_REPO_URL));
     AddText(wxString::Format(_("Branch: %s\nCommit: %s\nBuild Date: %s"),
                              XE_BUILD_BRANCH, XE_BUILD_COMMIT_SHORT,
                              XE_BUILD_DATE));
     AddText("\n");
     AddLinkedLine(_("Xenia is distributed under the %s"),
                   _("BSD 3-Clause License"),
-                  "https://github.com/has207/xenia-edge/blob/edge/LICENSE");
+                  XE_APP_LICENSE_URL);
     AddText("\n");
     AddLinkedLine(_("UI font: %s (SIL Open Font License 1.1)"),
                   _("Inter by Rasmus Andersson"), "https://rsms.me/inter/");
@@ -565,7 +575,7 @@ using xe::ui::WxMenuItem;
 using namespace xe::hid;
 using namespace xe::gpu;
 
-constexpr std::string_view kBaseTitle = "Xenia-edge";
+constexpr std::string_view kBaseTitle = XE_APP_NAME;
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -3489,11 +3499,9 @@ void EmulatorWindow::ShowFAQ() {
 
 void EmulatorWindow::ShowBuildCommit() {
 #ifdef XE_BUILD_IS_PR
-  LaunchWebBrowser(
-      "https://github.com/has207/xenia-edge/pull/" XE_BUILD_PR_NUMBER);
+  LaunchWebBrowser(XE_APP_REPO_URL "/pull/" XE_BUILD_PR_NUMBER);
 #else
-  LaunchWebBrowser(
-      "https://github.com/has207/xenia-edge/commit/" XE_BUILD_COMMIT);
+  LaunchWebBrowser(XE_APP_REPO_URL "/commit/" XE_BUILD_COMMIT);
 #endif
 }
 
@@ -3509,10 +3517,19 @@ void EmulatorWindow::ShowAbout() {
       info.SetIcon(icon);
     }
   }
+#if XE_PLATFORM_MAC
+  info.SetName(XE_APP_NAME);
+#else
   info.SetName("Xenia Edge");
+#endif
   info.SetVersion(wxString::Format("%s@%s (%s)", XE_BUILD_BRANCH,
                                    XE_BUILD_COMMIT_SHORT, XE_BUILD_DATE));
+#if XE_PLATFORM_MAC
+  info.SetDescription(
+      _("Xbox 360 emulator for iPhone, iPad and Mac, based on Xenia."));
+#else
   info.SetDescription(_("Experimental fork of Xenia Canary."));
+#endif
 
   auto* wx_window = static_cast<ui::WxWindow*>(window_.get());
   wxWindow* parent = wx_window ? wx_window->frame() : nullptr;

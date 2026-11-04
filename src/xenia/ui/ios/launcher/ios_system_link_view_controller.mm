@@ -278,7 +278,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
                              [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]];
       }
       return NSLocalizedString(
-          @"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find "
+          @"Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find "
           @"each other automatically and connect directly where their networks allow, "
           @"otherwise through a relay. The in-game menu shows how the room is connected. "
           @"Players in your room can see your IP address and a profile ID.",
