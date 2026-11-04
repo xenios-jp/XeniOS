@@ -507,6 +507,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // The game page in place of the grid (side layout): the game it is for, its rows, ✕ and ⋯ in
   // the header, and touch layout and settings beside Play.
   XeniaIOSLauncherGameSnapshot* _detailGame;
+  // The page is animating closed: upright, its art stays pinned at the top until it has.
+  BOOL _detailClosing;
   UIView* _detailRows;
   UIButton* _detailCloseButton;
   UIButton* _detailMoreButton;
@@ -1061,13 +1063,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
   }
-  if (!side && _detailGame) {
-    // The page in place is for the side layout only; turning upright goes back to the grid.
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self hideGameDetailAnimated:NO];
-    });
-  }
-  const BOOL hero = _heroGame != nil || _detailGame != nil;
+  const BOOL hero = _heroGame != nil || _detailGame != nil || _detailClosing;
   _heroView.hidden = !hero;
 
   // Header: clear of the Dynamic Island and the corners on both sides.
@@ -1139,9 +1135,19 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       _heroTextBottom.constant = -20.0;
     }
     top_inset = (hero ? hero_height : header_bottom) + stack_block;
+    // The game's rows fill the page under its art.
+    XEPlaceSlidingView(_detailRows, CGRectMake(0.0, hero_height, bounds.size.width,
+                                               bounds.size.height - hero_height));
   }
   XEPlaceSlidingView(_gamesCollectionView, grid_frame);
-  if (hero && !side) {
+  if (hero && !side && (_detailGame || _detailClosing)) {
+    // Upright, a game's page holds its art still at the top while the rows scroll under it.
+    if (_heroView.superview != self) {
+      [_heroView removeFromSuperview];
+      [self insertSubview:_heroView belowSubview:_gamesCollectionView];
+    }
+    _heroView.frame = CGRectMake(0.0, 0.0, grid_frame.size.width, hero_height);
+  } else if (hero && !side) {
     if (_heroView.superview != _gamesCollectionView) {
       [_heroView removeFromSuperview];
       [_gamesCollectionView insertSubview:_heroView atIndex:0];
@@ -1196,7 +1202,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 // The header gets a bar behind it once the art or the first row scrolls under it.
 - (void)updateHeaderBackdrop {
   CGFloat alpha = 0.0;
-  if (_sideLayout) {
+  if (_sideLayout || _detailGame) {
     alpha = 0.0;
     // A scroll view's mask moves with its content; keep the fade pinned under the header.
     UIView* mask = _gamesCollectionView.maskView;
@@ -1318,9 +1324,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 #pragma mark - Game page in place
 
+// Phones, either way up; an iPad keeps the page as a sheet.
 - (BOOL)canShowGameDetailInPlace {
   const CGSize size = self.bounds.size;
-  return self.window && size.width > size.height && size.height < 500.0;
+  return self.window && MIN(size.width, size.height) < 500.0;
 }
 
 - (BOOL)showsGameDetail {
@@ -1356,12 +1363,19 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _detailMoreButton.transform =
       more ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.8, 0.8);
 
+  // The grid gives way toward the art and the rows come in from the far side: from the right
+  // beside the art, from below under it.
   _gamesCollectionView.alpha = detail ? 0.0 : 1.0;
-  _gamesCollectionView.transform = detail ? CGAffineTransformMakeTranslation(-40.0, 0.0)
-                                          : CGAffineTransformIdentity;
+  _gamesCollectionView.transform = !detail       ? CGAffineTransformIdentity
+                                   : _sideLayout ? CGAffineTransformMakeTranslation(-40.0, 0.0)
+                                                 : CGAffineTransformMakeTranslation(0.0, 40.0);
   _detailRows.alpha = detail ? 1.0 : 0.0;
-  _detailRows.transform =
-      detail ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(56.0, 0.0);
+  _detailRows.transform = detail ? CGAffineTransformIdentity : [self detailRowsAwayTransform];
+}
+
+- (CGAffineTransform)detailRowsAwayTransform {
+  return _sideLayout ? CGAffineTransformMakeTranslation(56.0, 0.0)
+                     : CGAffineTransformMakeTranslation(0.0, 56.0);
 }
 
 - (void)showGameDetailForGameIndex:(NSUInteger)gameIndex
@@ -1376,7 +1390,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [_detailRows release];
     _detailRows = nil;
   }
-  const BOOL had_hero = _heroGame != nil;
+  // Upright with the grid scrolled past the art, the art isn't on screen to turn into the page;
+  // it fades in at the top instead.
+  const BOOL hero_on_screen =
+      _sideLayout || !_heroGame ||
+      CGRectGetMaxY([_heroView convertRect:_heroView.bounds toView:self]) > 120.0;
+  const BOOL had_hero = _heroGame != nil && hero_on_screen;
   const BOOL other_game = _detailGame ? _detailGame != game : _heroGame != game;
   [_detailGame release];
   _detailGame = [game retain];
@@ -1408,6 +1427,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                     }
                     completion:nil];
   }
+  // The grid leaves first, so the rows never come in over it.
+  [UIView animateWithDuration:0.16
+                        delay:0.0
+                      options:UIViewAnimationOptionCurveEaseIn |
+                              UIViewAnimationOptionBeginFromCurrentState
+                   animations:^{
+                     _gamesCollectionView.alpha = 0.0;
+                   }
+                   completion:nil];
   UIViewPropertyAnimator* animator =
       [[[UIViewPropertyAnimator alloc] initWithDuration:0.5
                                            dampingRatio:0.88
@@ -1423,7 +1451,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _heroTitle);
     }
   }];
-  [animator startAnimation];
+  [animator startAnimationAfterDelay:0.06];
 }
 
 - (void)hideGameDetailAnimated:(BOOL)animated {
@@ -1437,7 +1465,19 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_detailRows release];
   _detailRows = nil;
   _gamesCollectionView.hidden = NO;
+  _detailClosing = YES;
+  // Upright with the grid scrolled past where the art sits in it, the art fades out at the top
+  // rather than dropping back into the grid off screen.
+  const BOOL art_returns_on_screen =
+      _sideLayout || _gamesCollectionView.contentOffset.y <=
+                         -_gamesCollectionView.contentInset.top + 1.0;
   void (^finish)(void) = ^{
+    // Upright, the art goes back into the grid, in the place it now covers.
+    _detailClosing = NO;
+    [UIView performWithoutAnimation:^{
+      [self setNeedsLayout];
+      [self layoutIfNeeded];
+    }];
     [rows removeFromSuperview];
     _detailCloseButton.hidden = YES;
     _detailMoreButton.hidden = YES;
@@ -1451,8 +1491,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   void (^back)(void) = ^{
     [self applyDetailState:NO];
     detail_rows.alpha = 0.0;
-    detail_rows.transform = CGAffineTransformMakeTranslation(56.0, 0.0);
-    if (!_heroGame) {
+    detail_rows.transform = [self detailRowsAwayTransform];
+    if (!_heroGame || !art_returns_on_screen) {
       _heroView.alpha = 0.0;
     }
     [self setNeedsLayout];
@@ -1476,6 +1516,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                     }
                     completion:nil];
   }
+  // The rows leave first, so they never sit over the grid coming back.
+  [UIView animateWithDuration:0.16
+                        delay:0.0
+                      options:UIViewAnimationOptionCurveEaseIn |
+                              UIViewAnimationOptionBeginFromCurrentState
+                   animations:^{
+                     detail_rows.alpha = 0.0;
+                     detail_rows.transform = [self detailRowsAwayTransform];
+                   }
+                   completion:nil];
   UIViewPropertyAnimator* animator =
       [[[UIViewPropertyAnimator alloc] initWithDuration:0.45 dampingRatio:0.92 animations:back]
           autorelease];
@@ -1487,7 +1537,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     finish();
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _libraryLabel);
   }];
-  [animator startAnimation];
+  [animator startAnimationAfterDelay:0.08];
 }
 
 - (void)heroPlayTapped:(UIButton*)__unused sender {
