@@ -93,3 +93,10 @@ BOOL xe_ios_diagnostics_upload_allowed(void) {
   return xe_ios_diagnostics_available() && xe_ios_online_features_enabled() &&
          xe_ios_share_diagnostics_enabled() && !xe_ios_diagnostics_notice_pending();
 }
+
+BOOL xe_ios_title_reporting_allowed(void) {
+  if (xe_ios_diagnostics_available()) {
+    return xe_ios_diagnostics_upload_allowed();
+  }
+  return xe_ios_online_features_enabled() && !xe_ios_online_features_notice_pending();
+}

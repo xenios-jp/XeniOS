@@ -52,4 +52,11 @@ void xe_ios_set_diagnostics_notice_answered(void);
 // recorded for sending or sent.
 BOOL xe_ios_diagnostics_upload_allowed(void);
 
+// Whether Apple's state reporting may hear the running title, which labels
+// MetricKit reports by game. That stays on the device until the system sends it
+// with the user's own "Share with App Developers" choice. With a diagnostics
+// endpoint it follows upload_allowed; without one there is no Share Diagnostics
+// switch, so Online Features on and the first-launch notice answered are enough.
+BOOL xe_ios_title_reporting_allowed(void);
+
 #endif  // XENIA_UI_IOS_SHARED_IOS_ONLINE_FEATURES_H_
