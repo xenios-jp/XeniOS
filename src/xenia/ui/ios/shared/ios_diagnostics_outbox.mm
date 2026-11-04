@@ -87,9 +87,7 @@ NSDictionary* BuildInfo() {
   dispatch_once(&once, ^{
     NSDictionary* compat = xe_current_compat_report_build_info();
     NSMutableDictionary* info = [NSMutableDictionary dictionary];
-    // The server decides "official" from the attestation, not from our claim.
-    for (NSString* key in @[ @"buildId", @"channel", @"appVersion", @"buildNumber",
-                             @"commitShort", @"stage", @"attestation" ]) {
+    for (NSString* key in @[ @"appVersion", @"buildNumber", @"commitShort" ]) {
       if (compat[key]) {
         info[key] = compat[key];
       }
