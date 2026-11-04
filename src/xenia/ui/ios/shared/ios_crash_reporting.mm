@@ -226,6 +226,9 @@ NSString* SessionSummaryLocked() {
   [summary appendFormat:@"Game running: %@\n",
                         [g_state[@"prev_game"] boolValue] ? @"yes" : @"no"];
   [summary appendFormat:@"Ended: %@\n", ended];
+  if ([g_state[@"prev_jit"] boolValue]) {
+    [summary appendString:@"Crashed in: JIT code\n"];
+  }
   NSString* message = g_state[@"prev_message"];
   if (message.length) {
     [summary appendFormat:@"Message: %s\n", xe::strip_pii([message UTF8String]).c_str()];
@@ -755,7 +758,7 @@ void xe_ios_begin_session_log(const std::filesystem::path& log_path) {
     } else if (was_pending) {
       // Keep the older crash report until it has been offered.
       for (NSString* key in @[ @"pending", @"prev_state", @"prev_version", @"prev_game",
-                               @"prev_message" ]) {
+                               @"prev_message", @"prev_jit" ]) {
         if (previous[key]) {
           state[key] = previous[key];
         }
@@ -838,6 +841,14 @@ void xe_ios_session_note_game_running(BOOL running) {
   WriteStateLocked();
 }
 
+void xe_ios_note_previous_crash_in_jit(void) {
+  std::lock_guard<std::mutex> lock(StateMutex());
+  if (g_state && [g_state[@"pending"] boolValue]) {
+    g_state[@"prev_jit"] = @YES;
+    WriteStateLocked();
+  }
+}
+
 void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter) {
   if (g_offered_this_launch || !presenter || !presenter.view.window ||
       presenter.presentedViewController) {
@@ -851,7 +862,13 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
     }
     NSString* message = g_state[@"prev_message"];
     NSMutableString* text = [NSMutableString string];
-    if ([g_state[@"prev_game"] boolValue]) {
+    if ([g_state[@"prev_jit"] boolValue]) {
+      [text appendString:NSLocalizedString(
+                             @"It crashed in the code XeniOS translated from the game (a JIT "
+                             @"error). Start the game again; if it keeps crashing at the same "
+                             @"place, share the log to help fix it.",
+                             @"Alert message after a crash in JIT code")];
+    } else if ([g_state[@"prev_game"] boolValue]) {
       [text appendString:NSLocalizedString(
                              @"XeniOS quit during a game. Share the log to help fix it.",
                              @"Alert message after a crash during a game")];

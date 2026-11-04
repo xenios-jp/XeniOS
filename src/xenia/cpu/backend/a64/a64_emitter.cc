@@ -11,6 +11,7 @@
 
 #include <cstring>
 
+#include "xenia/base/backend_failure.h"
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
@@ -148,12 +149,18 @@ bool A64Emitter::Emit(GuestFunction* function, hir::HIRBuilder* builder,
   if (!emitted) {
     // Emplace only runs on success, so a failed compile has to reset too.
     ResetPerFunctionState();
+    NoteBackendFailure(BackendFailure::kCompileFailure, current_guest_function_,
+                       true);
     return false;
   }
 
   // Emplace the code into the code cache.
   *out_code_address = Emplace(func_info, function);
   *out_code_size = func_info.code_size.total;
+  if (!*out_code_address) {
+    NoteBackendFailure(BackendFailure::kCodeCache, current_guest_function_,
+                       true);
+  }
 
   // Copy source map.
   source_map_arena_.CloneContents(out_source_map);
@@ -769,6 +776,9 @@ void A64Emitter::tbnz(const Xbyak_aarch64::XReg& rt, uint32_t imm,
 void A64Emitter::UnimplementedInstr(const hir::Instr* i) {
   XELOGE("A64: Unimplemented HIR instruction: {}",
          hir::GetOpcodeName(i->GetOpcodeInfo()));
+  // The compile succeeds, but the game stops when it reaches this code.
+  NoteBackendFailure(BackendFailure::kCompileFailure, current_guest_function_,
+                     true);
   DebugBreak();
 }
 
@@ -1504,6 +1514,9 @@ uint32_t A64Emitter::MapReg(const hir::Value* v, const uint32_t* map, int count,
         v->def ? hir::GetOpcodeName(v->def->GetOpcodeInfo()) : "<none>",
         set_name, index, count);
     assert_always("register allocation missed a value");
+    // The function will compute wrong results without failing. (Static: the
+    // guest function isn't known here; the log names the value.)
+    NoteBackendFailure(BackendFailure::kCompileFailure, 0, true);
     // Clamp so the assembler still produces a decodable instruction.
     return map[0];
   }
