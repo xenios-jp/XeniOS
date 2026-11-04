@@ -16,6 +16,7 @@
 
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
+#import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
 
@@ -32,6 +33,7 @@ static constexpr IOSFocusNodeId kInGameFocusSettings = 105;
 static constexpr IOSFocusNodeId kInGameFocusLog = 106;
 static constexpr IOSFocusNodeId kInGameFocusExit = 107;
 static constexpr IOSFocusNodeId kInGameFocusGraphics = 108;
+static constexpr IOSFocusNodeId kInGameFocusPauseEmulator = 109;
 
 uint64_t GetNowMs() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -67,6 +69,8 @@ XeniaIOSInGameMenuAction InGameActionForFocus(IOSFocusNodeId focus) {
       return XeniaIOSInGameMenuActionExit;
     case kInGameFocusGraphics:
       return XeniaIOSInGameMenuActionGraphics;
+    case kInGameFocusPauseEmulator:
+      return XeniaIOSInGameMenuActionPauseEmulator;
     default:
       return XeniaIOSInGameMenuActionNone;
   }
@@ -85,6 +89,17 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
 // B on a sheet, as a swipe down would: the presentation delegate may refuse,
 // and hears about the dismissal, so whoever waits on the sheet is told.
 void DismissLikeSwipe(UIViewController* presented) {
+  // A sheet that can't be swiped away (Settings, Profiles) closes through its own Close button,
+  // which saves what it has to first.
+  if (presented.modalInPresentation) {
+    UIViewController* top = [presented isKindOfClass:[UINavigationController class]]
+                                ? ((UINavigationController*)presented).topViewController
+                                : presented;
+    if (TriggerBarButtonItem(top.navigationItem.leftBarButtonItem) ||
+        TriggerBarButtonItem(top.navigationItem.rightBarButtonItem)) {
+      return;
+    }
+  }
   UIPresentationController* presentation = presented.presentationController;
   id<UIAdaptivePresentationControllerDelegate> delegate = presentation.delegate;
   if (presented.modalInPresentation ||
@@ -107,6 +122,82 @@ void DismissLikeSwipe(UIViewController* presented) {
                                 }];
 }
 
+// The table a page is built around: the page's own, or the largest one on screen in it (a plain
+// view controller holding a table, or a split view's detail).
+UITableView* PrimaryTableViewForController(UIViewController* controller) {
+  if ([controller isKindOfClass:[UITableViewController class]]) {
+    return ((UITableViewController*)controller).tableView;
+  }
+  if (!controller.isViewLoaded) {
+    return nil;
+  }
+  UITableView* best = nil;
+  CGFloat best_area = 0.0;
+  NSMutableArray<UIView*>* queue = [NSMutableArray arrayWithObject:controller.view];
+  while (queue.count) {
+    UIView* view = queue.firstObject;
+    [queue removeObjectAtIndex:0];
+    if (view.hidden || view.alpha < 0.01) {
+      continue;
+    }
+    if ([view isKindOfClass:[UITableView class]] && view.window) {
+      const CGFloat area = CGRectGetWidth(view.bounds) * CGRectGetHeight(view.bounds);
+      if (area > best_area) {
+        best = (UITableView*)view;
+        best_area = area;
+      }
+      continue;
+    }
+    [queue addObjectsFromArray:view.subviews];
+  }
+  return best;
+}
+
+// A control of |control_class| in the row: in its accessory or anywhere in its content.
+UIControl* RowControlOfClass(UITableViewCell* cell, Class control_class) {
+  NSMutableArray<UIView*>* queue = [NSMutableArray array];
+  if (cell.accessoryView) {
+    [queue addObject:cell.accessoryView];
+  }
+  [queue addObject:cell.contentView];
+  while (queue.count) {
+    UIView* view = queue.firstObject;
+    [queue removeObjectAtIndex:0];
+    if ([view isKindOfClass:control_class] && !view.hidden) {
+      return (UIControl*)view;
+    }
+    [queue addObjectsFromArray:view.subviews];
+  }
+  return nil;
+}
+
+// The row under the controller's cursor is ringed, since toggle, slider and field rows don't
+// show a selection, and a tap on a row clears it.
+constexpr NSInteger kControllerCursorRingTag = 0x58430001;
+
+void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
+  UIView* ring = [table_view viewWithTag:kControllerCursorRingTag];
+  if (!ring) {
+    ring = [[[UIView alloc] init] autorelease];
+    ring.tag = kControllerCursorRingTag;
+    ring.userInteractionEnabled = NO;
+    ring.layer.borderWidth = 2.5;
+    ring.layer.cornerRadius = 12.0;
+    ring.layer.cornerCurve = kCACornerCurveContinuous;
+    [table_view addSubview:ring];
+  }
+  ring.layer.borderColor = [XeniaTheme accent].CGColor;
+  UITableViewCell* cell = [table_view cellForRowAtIndexPath:path];
+  CGRect frame = [table_view rectForRowAtIndexPath:path];
+  if (cell) {
+    // The visible card of an inset grouped row is its content view's width.
+    frame = [cell.contentView convertRect:cell.contentView.bounds toView:table_view];
+  }
+  ring.frame = CGRectInset(frame, 2.0, 1.0);
+  ring.hidden = NO;
+  [table_view bringSubviewToFront:ring];
+}
+
 }  // namespace
 
 @implementation XeniaIOSControllerNavigationCoordinator {
@@ -119,7 +210,12 @@ void DismissLikeSwipe(UIViewController* presented) {
   NSInteger _focusedGameIndex;
   BOOL _launcherLibraryFocusActive;
   BOOL _navigationWasEnabled;
+  // The Library's focus ring waits for the controller's first press, so a connected but idle
+  // controller doesn't leave a ring on a tile.
+  BOOL _launcherFocusShown;
   uint32_t _nativeControllerPacketNumber;
+  // The cursor row of each table the controller has moved through.
+  NSMapTable<UITableView*, NSIndexPath*>* _tableCursors;
 }
 
 - (instancetype)initWithHost:(id<XeniaIOSControllerNavigationHost>)host {
@@ -131,12 +227,14 @@ void DismissLikeSwipe(UIViewController* presented) {
   _launcherLibraryFocusActive = NO;
   _navigationWasEnabled = NO;
   _nativeControllerPacketNumber = 0;
+  _tableCursors = [[NSMapTable weakToStrongObjectsMapTable] retain];
   _mapper.Reset();
   return self;
 }
 
 - (void)dealloc {
   [self invalidate];
+  [_tableCursors release];
   [super dealloc];
 }
 
@@ -340,7 +438,7 @@ void DismissLikeSwipe(UIViewController* presented) {
   xe::ui::apple::FocusNode graphics;
   graphics.id = kInGameFocusGraphics;
   graphics.up = kInGameFocusEdit;
-  graphics.down = kInGameFocusLog;
+  graphics.down = kInGameFocusPauseEmulator;
   graphics.right = kInGameFocusDisplay;
   graphics.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                 XeniaIOSInGameMenuActionGraphics];
@@ -362,10 +460,19 @@ void DismissLikeSwipe(UIViewController* presented) {
   achievements.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                      XeniaIOSInGameMenuActionAchievements];
 
-  // Footer: Live Log
+  // Footer: Pause Emulator, Live Log
+  xe::ui::apple::FocusNode pause_emulator;
+  pause_emulator.id = kInGameFocusPauseEmulator;
+  pause_emulator.up = kInGameFocusGraphics;
+  pause_emulator.down = kInGameFocusResume;
+  pause_emulator.right = kInGameFocusLog;
+  pause_emulator.enabled = [_host controllerNavigationInGameMenuActionEnabled:
+                                      XeniaIOSInGameMenuActionPauseEmulator];
+
   xe::ui::apple::FocusNode log;
   log.id = kInGameFocusLog;
-  log.up = kInGameFocusDisplay;
+  log.up = kInGameFocusAchievements;
+  log.left = kInGameFocusPauseEmulator;
   log.down = kInGameFocusResume;
   log.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                            XeniaIOSInGameMenuActionLiveLog];
@@ -377,6 +484,7 @@ void DismissLikeSwipe(UIViewController* presented) {
   _inGameFocusGraph.AddOrUpdateNode(settings);
   _inGameFocusGraph.AddOrUpdateNode(achievements);
   _inGameFocusGraph.AddOrUpdateNode(exit_node);
+  _inGameFocusGraph.AddOrUpdateNode(pause_emulator);
   _inGameFocusGraph.AddOrUpdateNode(log);
 
   if (previous_focus != xe::ui::apple::kInvalidFocusNodeId) {
@@ -385,7 +493,7 @@ void DismissLikeSwipe(UIViewController* presented) {
 }
 
 - (void)applyLauncherFocusVisuals {
-  if (!_navigationWasEnabled) {
+  if (!_navigationWasEnabled || !_launcherFocusShown) {
     _launcherLibraryFocusActive = NO;
     [_host controllerNavigationApplyLauncherFocusEnabled:NO
                                          settingsFocused:NO
@@ -426,10 +534,10 @@ void DismissLikeSwipe(UIViewController* presented) {
                                                             _inGameFocusGraph.current())];
 }
 
-- (BOOL)handleControllerActionsForTableController:(UITableViewController*)table_controller
+- (BOOL)handleControllerActionsForTableController:(UIViewController*)table_controller
                                           actions:
                                               (const xe::ui::apple::ControllerActionSet&)actions {
-  UITableView* table_view = table_controller.tableView;
+  UITableView* table_view = PrimaryTableViewForController(table_controller);
   if (!table_view) {
     return NO;
   }
@@ -446,7 +554,12 @@ void DismissLikeSwipe(UIViewController* presented) {
     return NO;
   }
 
-  NSIndexPath* selected = table_view.indexPathForSelectedRow;
+  // The cursor is kept here, per table, rather than read back from the selection: tapping a row
+  // clears its selection, and the cursor stays where it was.
+  NSIndexPath* selected = [_tableCursors objectForKey:table_view];
+  if (selected && [all_paths indexOfObject:selected] == NSNotFound) {
+    selected = nil;
+  }
   NSInteger selected_index = 0;
   if (selected) {
     NSUInteger found = [all_paths indexOfObject:selected];
@@ -455,9 +568,9 @@ void DismissLikeSwipe(UIViewController* presented) {
     }
   } else {
     selected = all_paths.firstObject;
-    [table_view selectRowAtIndexPath:selected
-                            animated:NO
-                      scrollPosition:UITableViewScrollPositionMiddle];
+    [table_view scrollToRowAtIndexPath:selected
+                      atScrollPosition:UITableViewScrollPositionNone
+                              animated:NO];
   }
 
   BOOL handled = NO;
@@ -503,16 +616,43 @@ void DismissLikeSwipe(UIViewController* presented) {
     selected = all_paths[selected_index];
   }
 
-  if (handled && selected) {
-    [table_view selectRowAtIndexPath:selected
-                            animated:YES
-                      scrollPosition:UITableViewScrollPositionMiddle];
+  if (selected) {
+    [_tableCursors setObject:selected forKey:table_view];
+    if (handled) {
+      [table_view scrollToRowAtIndexPath:selected
+                        atScrollPosition:UITableViewScrollPositionMiddle
+                                animated:YES];
+    }
+    [table_view layoutIfNeeded];
+    ShowCursorRing(table_view, selected);
+  }
+
+  // Left and right change a slider or stepper in the row by one step.
+  if ((actions.navigate_left || actions.navigate_right) && selected) {
+    UITableViewCell* cell = [table_view cellForRowAtIndexPath:selected];
+    const double direction = actions.navigate_right ? 1.0 : -1.0;
+    if (UIStepper* stepper = (UIStepper*)RowControlOfClass(cell, [UIStepper class])) {
+      const double value = std::min(stepper.maximumValue,
+                                    std::max(stepper.minimumValue,
+                                             stepper.value + direction * stepper.stepValue));
+      if (value != stepper.value) {
+        stepper.value = value;
+        [stepper sendActionsForControlEvents:UIControlEventValueChanged];
+      }
+      handled = YES;
+    } else if (UISlider* slider = (UISlider*)RowControlOfClass(cell, [UISlider class])) {
+      const float step = (slider.maximumValue - slider.minimumValue) / 20.0f;
+      [slider setValue:slider.value + static_cast<float>(direction) * step animated:YES];
+      [slider sendActionsForControlEvents:UIControlEventValueChanged];
+      [slider sendActionsForControlEvents:UIControlEventTouchUpInside];
+      handled = YES;
+    }
   }
 
   if (actions.accept && selected) {
     UITableViewCell* cell = [table_view cellForRowAtIndexPath:selected];
-    if ([cell.accessoryView isKindOfClass:[UISwitch class]]) {
-      UISwitch* toggle = (UISwitch*)cell.accessoryView;
+    UISwitch* toggle = (UISwitch*)RowControlOfClass(cell, [UISwitch class]);
+    if (toggle && toggle.enabled) {
       [toggle setOn:!toggle.isOn animated:YES];
       [toggle sendActionsForControlEvents:UIControlEventValueChanged];
     } else {
@@ -568,7 +708,8 @@ void DismissLikeSwipe(UIViewController* presented) {
       XeniaAlertMoveSelection(alert, 1);
       return YES;
     }
-    return NO;
+    // Nothing behind an alert answers while it is up.
+    return YES;
   }
 
   if ([presented isKindOfClass:[UINavigationController class]]) {
@@ -576,14 +717,6 @@ void DismissLikeSwipe(UIViewController* presented) {
     UIViewController* top = nav.topViewController;
     if ([top isKindOfClass:[XeniaLogViewController class]] &&
         [(XeniaLogViewController*)top handleControllerActions:actions]) {
-      return YES;
-    }
-    if ([top isKindOfClass:[UITableViewController class]] &&
-        [self handleControllerActionsForTableController:(UITableViewController*)top
-                                                actions:actions]) {
-      return YES;
-    }
-    if (actions.quick_action && TriggerBarButtonItem(top.navigationItem.rightBarButtonItem)) {
       return YES;
     }
     if (actions.back) {
@@ -594,19 +727,38 @@ void DismissLikeSwipe(UIViewController* presented) {
       }
       return YES;
     }
-    return NO;
+    if ([self handleControllerActionsForTableController:top actions:actions]) {
+      return YES;
+    }
+    if (actions.quick_action) {
+      TriggerBarButtonItem(top.navigationItem.rightBarButtonItem);
+    }
+    // A sheet takes every press: none reaches the Library or game behind it.
+    return YES;
   }
 
   if (actions.back) {
     DismissLikeSwipe(presented);
     return YES;
   }
-  return NO;
+  [self handleControllerActionsForTableController:presented actions:actions];
+  return YES;
 }
 
 - (BOOL)handleLauncherControllerActions:(const xe::ui::apple::ControllerActionSet&)actions {
   if (![_host controllerNavigationLauncherVisible]) {
     return NO;
+  }
+  // A game's page in place of the grid: its rows move and open with A, Y plays, B closes it.
+  if (UIViewController* page = [_host controllerNavigationGameDetailController]) {
+    if (actions.back) {
+      [_host controllerNavigationCloseGameDetail];
+    } else if (actions.quick_action) {
+      [_host controllerNavigationPlayGameDetail];
+    } else {
+      [self handleControllerActionsForTableController:page actions:actions];
+    }
+    return YES;
   }
 
   [self rebuildLauncherFocusGraph];
@@ -845,6 +997,7 @@ void DismissLikeSwipe(UIViewController* presented) {
   if (!navigation_enabled) {
     if (_navigationWasEnabled) {
       _navigationWasEnabled = NO;
+      _launcherFocusShown = NO;
       _mapper.Reset();
       _launcherFocusGraph.Clear();
       _inGameFocusGraph.Clear();
@@ -873,6 +1026,16 @@ void DismissLikeSwipe(UIViewController* presented) {
   if (!actions.Any()) {
     return;
   }
+  // The first press on the Library shows where focus is rather than acting on it.
+  if (!_launcherFocusShown && [_host controllerNavigationLauncherVisible] &&
+      ![_host controllerNavigationInGameMenuVisible] &&
+      ![_host controllerNavigationPresentedController] &&
+      ![_host controllerNavigationGameDetailController]) {
+    _launcherFocusShown = YES;
+    [self applyLauncherFocusVisuals];
+    return;
+  }
+  _launcherFocusShown = YES;
 
   if ([self handlePresentedControllerActions:actions]) {
     return;
