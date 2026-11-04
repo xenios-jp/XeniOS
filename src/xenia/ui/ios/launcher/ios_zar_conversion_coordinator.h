@@ -27,6 +27,16 @@
 - (void)zarConversionCoordinatorRefreshImportedGamesWithCompletion:(void (^)(void))completion;
 @end
 
+// One way to convert a game, as the game page lists it.
+@interface XeniaIOSZarConversionChoice : NSObject
+@property(nonatomic, copy) NSString* title;
+@property(nonatomic, copy) NSString* detail;
+// It deletes or unlinks the original afterwards.
+@property(nonatomic, assign) BOOL destructive;
+// Starts the conversion; its progress shows in a sheet.
+@property(nonatomic, copy) void (^handler)(void);
+@end
+
 @interface XeniaIOSZarConversionCoordinator : NSObject
 
 - (instancetype)initWithHost:(id<XeniaIOSZarConversionCoordinatorHost>)host;
@@ -39,6 +49,14 @@
                                         addedPath:(const std::filesystem::path&)addedPath
                                   externalLibrary:(BOOL)externalLibrary
                                        completion:(void (^)(BOOL conversionChosen))completion;
+// The ways to convert a game, for the game page to list in place: |update| comes at once with
+// |estimating| set, and again with the archive's estimated size. |summary| is nil for a game that
+// is already a ZAR archive.
+- (void)loadConversionChoicesForGames:(const std::vector<xe::ui::IOSDiscoveredGame>&)games
+                                index:(size_t)gameIndex
+                               update:(void (^)(NSString* summary, BOOL estimating,
+                                                NSArray<XeniaIOSZarConversionChoice*>* choices))
+                                          update;
 - (void)convertGameToZarForGames:(const std::vector<xe::ui::IOSDiscoveredGame>&)games
                            index:(size_t)gameIndex;
 

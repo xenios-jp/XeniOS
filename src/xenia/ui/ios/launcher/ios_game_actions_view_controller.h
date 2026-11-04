@@ -18,6 +18,9 @@
 
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
+@protocol XeniaGameContentHost;
+@class XeniaIOSZarConversionChoice;
+
 namespace xe {
 namespace ui {
 class IOSWindowedAppContext;
@@ -51,6 +54,20 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
 // Just the rows, for the Library to show in place of its grid beside art it already shows. Set
 // before the view loads.
 @property(nonatomic, assign) BOOL showsRowsOnly;
+// Every row opens in place under its heading. What the rows need besides the title ID:
+// Launch Disc's discs, by label with where each is under it; |discHandler| plays one.
+@property(nonatomic, copy) NSArray<NSString*>* discLabels;
+@property(nonatomic, copy) NSArray<NSString*>* discDetails;
+@property(nonatomic, copy) void (^discHandler)(NSUInteger discIndex);
+// Updates & Add-ons installs through it and asks it to rescan the library.
+@property(nonatomic, assign) id<XeniaGameContentHost> contentHost;
+// Compatibility's performance and notes, under the status.
+@property(nonatomic, copy) NSString* compatibilityPerformance;
+@property(nonatomic, copy) NSString* compatibilityNotes;
+// Convert to ZAR: fetches the ways to convert, and the size, when the row opens.
+@property(nonatomic, copy) void (^conversionChoicesLoader)
+    (void (^update)(NSString* summary, BOOL estimating,
+                    NSArray<XeniaIOSZarConversionChoice*>* choices));
 // What ⋯ offers: copy the launch link, reset the game's settings.
 - (UIMenu*)moreMenu;
 
