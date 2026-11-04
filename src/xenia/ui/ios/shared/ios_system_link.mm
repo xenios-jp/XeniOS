@@ -633,8 +633,8 @@ NSString* const XeniaIOSSystemLinkOnlineDidChangeNotification =
 
 namespace {
 
-// The lobby answers from a copy up to a minute old, so asking more often gains nothing.
-constexpr NSTimeInterval kOnlineInterval = 60.0;
+// The lobby answers from a copy up to two minutes old, so asking more often gains nothing.
+constexpr NSTimeInterval kOnlineInterval = 120.0;
 // Counts that haven't been answered again for this long are dropped rather than shown.
 constexpr NSTimeInterval kOnlineStale = 5 * 60.0;
 // How often the app tells the lobby it's open, in the library or in a game.
@@ -796,17 +796,164 @@ void SetOnline(NSDictionary<NSNumber*, NSNumber*>* online, NSInteger here = -1,
   }
 }
 
-// Asks for the counts about once a minute while they're wanted, and every 5 minutes says the app
-// is open, also while a game runs, except while a System Link room counts it (the room tells the
-// lobby). Coming to the foreground always says so, which also undoes a `gone`.
+// While the app is in the foreground with Online Features on, it keeps a socket open to the lobby,
+// which counts the app while it's open and sends the counts on it when they change, in place of
+// asking for them and checking in. The app sends only WebSocket pings on it. While it fails to
+// open (an older lobby, or one that's full), the app asks and checks in meanwhile.
+constexpr NSTimeInterval kPresencePing = 30.0;
+constexpr NSTimeInterval kPresenceRetry = 5.0;
+constexpr NSTimeInterval kPresenceMaxRetry = 5 * 60.0;
+
+NSURLSessionWebSocketTask* g_presence = nil;
+NSTimer* g_presence_pinger = nil;
+// Counts have arrived on the socket.
+bool g_presence_up = false;
+// Sockets that failed in a row without counts arriving, and when to try again.
+int g_presence_failures = 0;
+NSTimeInterval g_presence_retry_at = 0;
+
+// wss://<lobby>/v1/presence?id=<the app's ID>.
+NSURL* PresenceURL() {
+  NSString* text =
+      [NSString stringWithUTF8String:(cvars::systemlink_lobby + "/v1/presence").c_str()];
+  NSURLComponents* url = text ? [NSURLComponents componentsWithString:text] : nil;
+  NSString* scheme = url.scheme.lowercaseString;
+  if (!([scheme isEqualToString:@"wss"] || [scheme isEqualToString:@"ws"]) || !url.host.length) {
+    return nil;
+  }
+  url.queryItems = @[ [NSURLQueryItem queryItemWithName:@"id" value:HereID()] ];
+  return url.URL;
+}
+
+NSURLSession* PresenceSession() {
+  static NSURLSession* session = [] {
+    NSURLSessionConfiguration* configuration =
+        [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    // Pongs arrive every kPresencePing, so a socket quiet for longer than this is gone.
+    configuration.timeoutIntervalForRequest = 2 * kPresencePing;
+    configuration.waitsForConnectivity = NO;
+    return [[NSURLSession sessionWithConfiguration:configuration] retain];
+  }();
+  return session;
+}
+
+// Closes the socket normally, which tells the lobby the app is leaving.
+void ClosePresence() {
+  [g_presence_pinger invalidate];
+  [g_presence_pinger release];
+  g_presence_pinger = nil;
+  g_presence_up = false;
+  if (!g_presence) {
+    return;
+  }
+  NSURLSessionWebSocketTask* task = g_presence;
+  g_presence = nil;
+  [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
+  [task release];
+}
+
+void PresenceFailed(NSURLSessionWebSocketTask* task) {
+  if (task != g_presence) {
+    return;
+  }
+  const bool was_up = g_presence_up;
+  ClosePresence();
+  // One that was working is tried again soon, and the counts it sent stay until they're stale.
+  g_presence_failures = was_up ? 0 : g_presence_failures + 1;
+  g_presence_retry_at = Uptime() + std::min(kPresenceMaxRetry,
+                                            kPresenceRetry * (1 << std::min(g_presence_failures, 6)));
+  AskOnline();
+}
+
+void ReceivePresence(NSURLSessionWebSocketTask* task) {
+  [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage* message,
+                                              NSError* error) {
+    NSDictionary<NSNumber*, NSNumber*>* online = nil;
+    NSInteger here = -1;
+    NSInteger in_private = -1;
+    if (!error && message.type == NSURLSessionWebSocketMessageTypeString) {
+      online =
+          ParseOnline([message.string dataUsingEncoding:NSUTF8StringEncoding], &here, &in_private);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (task != g_presence) {
+        return;
+      }
+      if (error) {
+        PresenceFailed(task);
+        return;
+      }
+      if (online && OnlineAllowed()) {
+        g_presence_up = true;
+        g_presence_failures = 0;
+        g_online_answered = Uptime();
+        SaveHere();
+        SetOnline(online, here, in_private);
+      }
+      ReceivePresence(task);
+    });
+  }];
+}
+
+// Opens the socket while it's wanted, and closes it when it isn't.
+void KeepPresence() {
+  if (!OnlineAllowed() ||
+      [UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+    ClosePresence();
+    return;
+  }
+  if (g_presence || Uptime() < g_presence_retry_at) {
+    return;
+  }
+  NSURL* url = PresenceURL();
+  if (!url) {
+    return;
+  }
+  SaveHere();
+  NSURLSessionWebSocketTask* task = [[PresenceSession() webSocketTaskWithURL:url] retain];
+  g_presence = task;
+  [task resume];
+  ReceivePresence(task);
+  g_presence_pinger = [[NSTimer
+      timerWithTimeInterval:kPresencePing
+                    repeats:YES
+                      block:^(NSTimer* __unused t) {
+                        [task sendPingWithPongReceiveHandler:^(NSError* error) {
+                          dispatch_async(dispatch_get_main_queue(), ^{
+                            if (task != g_presence) {
+                              return;
+                            }
+                            if (error) {
+                              PresenceFailed(task);
+                            } else if (g_presence_up) {
+                              // Unchanged counts are still current.
+                              g_online_answered = Uptime();
+                            }
+                          });
+                        }];
+                      }] retain];
+  g_presence_pinger.tolerance = 5.0;
+  [[NSRunLoop mainRunLoop] addTimer:g_presence_pinger forMode:NSRunLoopCommonModes];
+}
+
+// Keeps the presence socket open. Without it, asks for the counts every 2 minutes while they're
+// wanted, and every 5 minutes says the app is open, also while a game runs, except while a System
+// Link room counts it (the room tells the lobby). Coming to the foreground always says so, which
+// also undoes a `gone`.
 void AskOnline() {
   if (!OnlineAllowed()) {
+    ClosePresence();
     SetOnline(nil);
     return;
   }
   const NSTimeInterval now = Uptime();
   if (g_online && now - g_online_answered >= kOnlineStale) {
     SetOnline(nil);
+  }
+  KeepPresence();
+  // The socket answers, or is about to; asking starts once it has failed.
+  if (g_presence_up || !g_presence_failures) {
+    return;
   }
   const bool wanted = !g_online_wanted || g_online_wanted() || g_online_kept;
   const bool say_here =
@@ -852,15 +999,16 @@ void AskOnline() {
 }
 
 // Tells the lobby the app has gone to the background or is closing, so it stops counting it right
-// away rather than in 6 minutes. Coming back checks in again, with the same ID: a lobby that missed
-// this, or doesn't know it, still counts the app once.
+// away rather than in 6 minutes: by closing the socket, and with `gone` if it checked in. Coming
+// back opens the socket or checks in again, with the same ID: a lobby that missed this, or doesn't
+// know it, still counts the app once.
 void SayGone() {
-  if (!g_here_said) {
-    return;
-  }
+  const bool present = g_presence != nil;
+  ClosePresence();
+  g_presence_retry_at = 0;
+  NSURL* url = g_here_said && OnlineAllowed() ? OnlineURLSaying(@"gone") : nil;
   g_here_said = 0;
-  NSURL* url = OnlineAllowed() ? OnlineURLSaying(@"gone") : nil;
-  if (!url) {
+  if (!present && !url) {
     return;
   }
   UIApplication* app = [UIApplication sharedApplication];
@@ -872,6 +1020,12 @@ void SayGone() {
     }
   };
   task = [app beginBackgroundTaskWithName:@"SystemLinkGone" expirationHandler:end];
+  if (!url) {
+    // Time for the close to go out.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(),
+                   end);
+    return;
+  }
   [[OnlineSession() dataTaskWithURL:url
                   completionHandler:^(NSData* __unused data, NSURLResponse* __unused response,
                                       NSError* __unused error) {
@@ -886,7 +1040,7 @@ void xe_ios_system_link_watch_online(BOOL (^wanted)(void), void (^changed)(void)
   dispatch_once(&once, ^{
     g_online_wanted = [wanted copy];
     g_online_changed = [changed copy];
-    // Checks often, asks only once a minute: a player leaving a game sees counts within seconds.
+    // Checks often, asks only every 2 minutes: a player leaving a game sees counts within seconds.
     NSTimer* timer = [NSTimer timerWithTimeInterval:15.0
                                             repeats:YES
                                               block:^(NSTimer* __unused t) {
