@@ -2104,6 +2104,7 @@ void MetalCommandProcessor::EncodeDeferredShaderDoneFences() {
   NS::UInteger source_offset = 0;
   MTL::BlitCommandEncoder* encoder = nullptr;
   if (AcquireSpirvArgumentBufferSlice(size, 16, &source, &source_offset)) {
+    EndSharedComputeEncoder();
     encoder = current_command_buffer_->blitCommandEncoder();
   }
   if (encoder) {
@@ -2732,6 +2733,7 @@ void MetalCommandProcessor::ShutdownContext() {
 
   // Submit and wait for any pending command buffer
   if (current_command_buffer_) {
+    EndSharedComputeEncoder();
     uint64_t wait_value = 0;
     if (wait_shared_event_) {
       wait_value = ++wait_shared_event_value_;
@@ -3774,6 +3776,7 @@ void MetalCommandProcessor::NoteGpuWait(GpuWaitReason reason,
 
 void MetalCommandProcessor::CommitAndAwait(MTL::CommandBuffer* command_buffer,
                                             GpuWaitReason reason) {
+  EndSharedComputeEncoder(command_buffer);
   command_buffer->commit();
   int64_t wait_start_ns = GetSteadyTimeNs();
   command_buffer->waitUntilCompleted();
@@ -7053,8 +7056,43 @@ void MetalCommandProcessor::ResetMslCrossEncoderReuseCaches() {
   msl_last_argbuf_pixel_layout_uid_ = 0;
 }
 
+MTL::ComputeCommandEncoder* MetalCommandProcessor::BeginSharedComputeEncoder(
+    MTL::CommandBuffer* command_buffer,
+    MetalBufferHazards::Encoder** hazards_out) {
+  if (!command_buffer || command_buffer != current_command_buffer_) {
+    return nullptr;
+  }
+  if (!shared_compute_encoder_) {
+    EndRenderEncoder();
+    shared_compute_encoder_ = command_buffer->computeCommandEncoder();
+    if (!shared_compute_encoder_) {
+      return nullptr;
+    }
+    shared_compute_encoder_->retain();
+    shared_compute_command_buffer_ = command_buffer;
+    if (shared_memory_ && shared_memory_->hazards()) {
+      shared_compute_hazards_.Begin(*shared_memory_->hazards(), command_buffer,
+                                    shared_compute_encoder_);
+    }
+  }
+  *hazards_out = &shared_compute_hazards_;
+  return shared_compute_encoder_;
+}
+
+void MetalCommandProcessor::EndSharedComputeEncoder() {
+  if (!shared_compute_encoder_) {
+    return;
+  }
+  shared_compute_hazards_.End();
+  shared_compute_encoder_->endEncoding();
+  shared_compute_encoder_->release();
+  shared_compute_encoder_ = nullptr;
+  shared_compute_command_buffer_ = nullptr;
+}
+
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
+  EndSharedComputeEncoder();
   render_encoder_memexport_ranges_.clear();
   render_encoder_tile_resolve_ranges_.clear();
   render_encoder_index_count_ = 0;
@@ -7330,6 +7368,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       render_target_cache_->SetRenderPassArea(pass_descriptor,
                                               GetDrawScissorBottom());
     }
+    EndSharedComputeEncoder();
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
     render_encoder_shared_memory_hazards_.Abandon();
