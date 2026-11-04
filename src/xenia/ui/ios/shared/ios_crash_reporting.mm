@@ -843,7 +843,7 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
                              @"Alert message after a crash during a game")];
     } else {
       [text appendString:NSLocalizedString(
-                             @"XeniOS quit unexpectedly. Share the log to help fix it.",
+                             @"Share the log to help fix it.",
                              @"Alert message after a crash outside a game")];
     }
     if (message.length) {

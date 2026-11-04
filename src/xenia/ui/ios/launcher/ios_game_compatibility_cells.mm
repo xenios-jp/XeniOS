@@ -17,6 +17,21 @@ namespace {
 
 constexpr NSInteger kXeniaDiscussionPreviewCount = 3;
 
+// Reports store the backend's short id ("msl"); players know it by its API's name.
+NSString* XeniaCompatGPUBackendName(NSString* backend) {
+  NSString* key = backend.lowercaseString;
+  if ([key isEqualToString:@"msl"] || [key isEqualToString:@"metal"]) {
+    return @"Metal";
+  }
+  if ([key isEqualToString:@"vulkan"] || [key isEqualToString:@"spirv"]) {
+    return @"Vulkan";
+  }
+  if ([key isEqualToString:@"d3d12"] || [key isEqualToString:@"dxbc"]) {
+    return @"Direct3D 12";
+  }
+  return backend.uppercaseString;
+}
+
 UIView* XeniaCompatCardViewForCell(UITableViewCell* cell) {
   UIView* card = [[[UIView alloc] init] autorelease];
   card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -157,7 +172,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   NSString* gpu_backend =
       [report[@"gpuBackend"] isKindOfClass:[NSString class]] ? report[@"gpuBackend"] : nil;
   if (gpu_backend.length > 0) {
-    [info_parts addObject:[gpu_backend uppercaseString]];
+    [info_parts addObject:XeniaCompatGPUBackendName(gpu_backend)];
   }
   NSString* info_text = [info_parts componentsJoinedByString:@" · "];
 
@@ -294,6 +309,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
 
 }  // namespace
 
+
 @implementation XeniaGameCompatibilityCells
 
 + (UITableViewCell*)detailsCellWithCompatInfo:(NSDictionary*)compat_info
@@ -338,7 +354,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   if (gpu.length == 0) {
     gpu = NSLocalizedString(@"Unknown", @"game compatibility cells: user-visible text");
   } else {
-    gpu = [gpu uppercaseString];
+    gpu = XeniaCompatGPUBackendName(gpu);
   }
 
   NSString* based_on_date =

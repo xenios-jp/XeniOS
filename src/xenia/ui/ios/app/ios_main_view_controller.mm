@@ -68,6 +68,7 @@
 #import "xenia/ui/ios/launcher/ios_game_library.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/launcher/ios_game_patches_view_controller.h"
+#import "xenia/ui/ios/launcher/ios_jit_sheet_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_picker_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_tile_cell.h"
 #import "xenia/ui/ios/launcher/ios_launcher_overlay_view.h"
@@ -2490,7 +2491,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   } else if (self.jitPollTimedOut) {
     [self.launcherOverlayView
         setJITStatusText:NSLocalizedString(
-                             @"JIT unavailable. Open StikDebug, then restart polling.",
+                             @"JIT didn't turn on. Open StikDebug and try again.",
                              @"Launcher status: JIT is unavailable")];
   } else {
     [self.launcherOverlayView setJITStatusText:xe_jit_waiting_status_message()];
@@ -2600,51 +2601,25 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)presentJITRequiredAlertForLaunchPath:(const std::filesystem::path&)gamePath
                                  displayName:(NSString*)displayName {
   NSString* launch_path_string = gamePath.empty() ? nil : ToNSString(gamePath.string());
-  NSString* message = xe_jit_not_detected_guidance_message();
-  if (displayName.length > 0) {
-    message =
-        [NSString stringWithFormat:
-                      NSLocalizedString(
-                          @"%1$@\n\nStikDebug can enable JIT and return to XeniOS to launch %2$@.",
-                          @"Alert message; %1$@ is the guidance text, %2$@ the game title"),
-                      message, displayName];
-  }
-
-  UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"JIT Not Detected",
-                                                 @"Alert title: JIT was not detected")
-                       message:message
-                preferredStyle:UIAlertControllerStyleAlert];
-  [alert
-      addAction:[UIAlertAction
-                    actionWithTitle:NSLocalizedString(@"Enable via StikDebug",
-                                                      @"Alert button: enable JIT through StikDebug")
-                              style:UIAlertActionStyleDefault
-                            handler:^(__unused UIAlertAction* action) {
-                              std::filesystem::path launch_path;
-                              if (launch_path_string.length > 0) {
-                                launch_path = std::filesystem::path(launch_path_string.UTF8String);
-                              }
-                              const std::filesystem::path* launch_path_ptr =
-                                  launch_path.empty() ? nullptr : &launch_path;
-                              if ([self
-                                      requestStikDebugJITHandoffForPendingLaunchPath:launch_path_ptr
-                                                                   requirePreference:NO
-                                                        promptForAutomationOnSuccess:YES]) {
-                                self->pending_external_launch_path_ = launch_path;
-                              }
-                            }]];
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Open Settings",
-                                                         @"Alert button: opens the Settings app")
-                                 style:UIAlertActionStyleDefault
-                               handler:^(__unused UIAlertAction* action) {
-                                 [self openSettingsTapped:nil];
-                               }]];
-  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
-  [self presentViewController:alert animated:YES completion:nil];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  XeniaIOSJITSheetViewController* sheet = [[XeniaIOSJITSheetViewController alloc]
+      initWithGameTitle:displayName
+          openStikDebug:^{
+            std::filesystem::path launch_path;
+            if (launch_path_string.length > 0) {
+              launch_path = std::filesystem::path(launch_path_string.UTF8String);
+            }
+            const std::filesystem::path* launch_path_ptr =
+                launch_path.empty() ? nullptr : &launch_path;
+            if ([unsafe_self requestStikDebugJITHandoffForPendingLaunchPath:launch_path_ptr
+                                                          requirePreference:NO
+                                               promptForAutomationOnSuccess:YES]) {
+              unsafe_self->pending_external_launch_path_ = launch_path;
+            }
+          }];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:sheet animated:YES completion:nil];
+  [sheet release];
 }
 
 - (void)presentMemoryEntitlementWarningForLaunchPath:(const std::filesystem::path&)gamePath

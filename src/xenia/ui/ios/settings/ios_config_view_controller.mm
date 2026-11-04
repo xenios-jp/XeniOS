@@ -11,6 +11,7 @@
 
 #include "xenia/ui/ios/shared/ios_edge_adapter.h"
 
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -233,6 +234,7 @@ UIView* XeniaConfigMakeValueAccessoryView(NSString* value, CGFloat max_width, BO
 static const NSInteger kXeniaConfigIntegerFieldTag = 9101;
 static const NSInteger kXeniaConfigDoubleFieldTag = 9102;
 static const NSInteger kXeniaConfigStringFieldTag = 9103;
+static const NSInteger kXeniaConfigStepperLabelTag = 9104;
 
 @interface XeniaConfigViewController () <UISearchResultsUpdating>
 - (void)confirmResetGameSettings;
@@ -1126,6 +1128,14 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
             stringByAppendingString:content.secondaryText ?: @""];
     cell.accessibilityTraits = UIAccessibilityTraitNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  } else if (item->control_type == IOSConfigControlType::kDouble && item->step > 0.0) {
+    content.secondaryText = [self secondaryTextForItem:*item];
+    cell.contentConfiguration = content;
+    cell.accessoryView = [self stepperAccessoryForItem:*item];
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    // The stepper carries the label and value; VoiceOver adjusts it directly.
+    cell.isAccessibilityElement = NO;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (item->control_type == IOSConfigControlType::kDouble) {
     content.secondaryText = [self secondaryTextForItem:*item];
     UITextField* field = [self fieldForCell:cell
@@ -1369,6 +1379,74 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
       [NSString stringWithFormat:NSLocalizedString(@"%1$@ was not changed. %2$@",
                                                    @"config view controller: user-visible text"),
                                  ToNSString(item->title), ToNSString(problem)]);
+}
+
+// A stepped decimal setting: its value with its unit ("0.10 s"), then a stepper.
+- (UIView*)stepperAccessoryForItem:(const IOSConfigItem&)item {
+  UILabel* label = [[[UILabel alloc] init] autorelease];
+  label.tag = kXeniaConfigStepperLabelTag;
+  label.text = ToNSString(IOSConfigItemValueText(item));
+  label.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+      scaledFontForFont:[UIFont monospacedDigitSystemFontOfSize:17.0
+                                                         weight:UIFontWeightRegular]];
+  label.adjustsFontForContentSizeCategory = YES;
+  label.textColor = [XeniaTheme textSecondary];
+  label.isAccessibilityElement = NO;
+
+  UIStepper* stepper = [[[UIStepper alloc] init] autorelease];
+  // A hand-edited value outside the range stays reachable.
+  stepper.minimumValue = MIN(item.min_value, item.double_value);
+  stepper.maximumValue = MAX(item.max_value, item.double_value);
+  stepper.stepValue = item.step;
+  stepper.value = item.double_value;
+  stepper.accessibilityLabel = ToNSString(item.title);
+  stepper.accessibilityValue = label.text;
+  [stepper addTarget:self
+                action:@selector(stepperChanged:)
+      forControlEvents:UIControlEventValueChanged];
+
+  UIStackView* stack =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ label, stepper ]] autorelease];
+  stack.axis = UILayoutConstraintAxisHorizontal;
+  stack.alignment = UIStackViewAlignmentCenter;
+  stack.spacing = 12.0;
+  const CGSize size = [stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+  stack.frame = CGRectMake(0.0, 0.0, ceil(size.width), ceil(size.height));
+  return stack;
+}
+
+- (void)stepperChanged:(UIStepper*)sender {
+  CGPoint point = [sender convertPoint:CGPointZero toView:self.tableView];
+  NSIndexPath* indexPath = [self.tableView indexPathForRowAtPoint:point];
+  if (!indexPath) return;
+  IOSConfigItem* item = [self itemAtIndexPath:indexPath];
+  if (!item || item->control_type != IOSConfigControlType::kDouble || item->step <= 0.0) return;
+
+  // Land on the step grid so repeated taps don't collect rounding error. Dividing by the step's
+  // inverse (10 for 0.1) gives the nearest double, so 1.2 saves as 1.2, not 1.2000000000000002.
+  if (item->step < 1.0) {
+    const double per_unit = std::round(1.0 / item->step);
+    item->double_value = std::round(sender.value * per_unit) / per_unit;
+  } else {
+    item->double_value = std::round(sender.value / item->step) * item->step;
+  }
+  NSString* text = ToNSString(IOSConfigItemValueText(*item));
+  sender.accessibilityValue = text;
+  UIView* stack = sender.superview;
+  UILabel* label = [[stack viewWithTag:kXeniaConfigStepperLabelTag] isKindOfClass:[UILabel class]]
+                       ? (UILabel*)[stack viewWithTag:kXeniaConfigStepperLabelTag]
+                       : nil;
+  label.text = text;
+  const CGSize size = [stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+  stack.frame = CGRectMake(0.0, 0.0, ceil(size.width), ceil(size.height));
+  [stack.superview setNeedsLayout];
+
+  [self markPendingChangesForItem:item];
+  if (live_override_) {
+    [self applyLiveOverrideForItem:item];
+  }
+  [self configItemDidChange:item];
+  [self refreshSecondaryTextForItem:item];
 }
 
 - (void)doubleFieldChanged:(UITextField*)sender {

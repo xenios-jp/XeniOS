@@ -48,18 +48,14 @@
       cell.detailTextLabel.text = xe_device_display_name();
       break;
     case 1:
-      cell.textLabel.text = NSLocalizedString(@"OS Version", @"compat report cells: label text");
+      cell.textLabel.text = NSLocalizedString(@"iOS Version", @"compat report cells: label text");
       cell.detailTextLabel.text = [UIDevice currentDevice].systemVersion;
       break;
     case 2:
-      cell.textLabel.text = NSLocalizedString(@"Architecture", @"compat report cells: label text");
-      cell.detailTextLabel.text = @"arm64";
+      cell.textLabel.text = NSLocalizedString(@"Graphics", @"compat report cells: label text");
+      cell.detailTextLabel.text = @"Metal";
       break;
     case 3:
-      cell.textLabel.text = NSLocalizedString(@"GPU Backend", @"compat report cells: label text");
-      cell.detailTextLabel.text = @"msl";
-      break;
-    case 4:
       cell.textLabel.text = NSLocalizedString(@"Build", @"compat report cells: label text");
       cell.detailTextLabel.text = xe_user_facing_build_label(build_info);
       break;

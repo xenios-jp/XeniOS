@@ -9,6 +9,9 @@
 
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 
+#include <algorithm>
+#include <utility>
+
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
@@ -216,12 +219,16 @@ static BOOL XeniaSettingsHubItemMatches(XeniaSettingsHubItem* item,
 
 // Every word of the query somewhere in the setting's text, underscores read as spaces, so
 // "protect zero" finds protect_zero and "metal shader" finds a Metal shader setting.
+// Raw emulator options match by name only: their descriptions are long and technical, and would
+// bury the curated settings under debug options for everyday words.
 static BOOL XeniaSettingsSearchEntryMatches(const IOSConfigSearchEntry& entry,
                                             NSString* query) {
-  std::string text = entry.title + "\n" + entry.subtitle + "\n" + entry.key + "\n" +
-                     entry.section + "\n" + entry.page;
-  if (entry.value_searchable) {
-    text += "\n" + entry.value_text;
+  std::string text = entry.title + "\n" + entry.key;
+  if (!entry.advanced) {
+    text += "\n" + entry.subtitle + "\n" + entry.section + "\n" + entry.page;
+    if (entry.value_searchable) {
+      text += "\n" + entry.value_text;
+    }
   }
   NSString* haystack = [ToNSString(text) stringByReplacingOccurrencesOfString:@"_"
                                                                    withString:@" "];
@@ -232,6 +239,26 @@ static BOOL XeniaSettingsSearchEntryMatches(const IOSConfigSearchEntry& entry,
     }
   }
   return YES;
+}
+
+// Lower ranks first: the title starts with the query, then a word in the title does, then the
+// title contains it, then only the description or path matched.
+static int XeniaSettingsSearchRank(const IOSConfigSearchEntry& entry, NSString* query) {
+  NSString* title = ToNSString(entry.title);
+  NSStringCompareOptions options = NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch;
+  NSRange range = [title rangeOfString:query options:options];
+  if (range.location == NSNotFound) {
+    return 3;
+  }
+  if (range.location == 0) {
+    return 0;
+  }
+  for (NSString* word in [title componentsSeparatedByString:@" "]) {
+    if ([word rangeOfString:query options:options | NSAnchoredSearch].location != NSNotFound) {
+      return 1;
+    }
+  }
+  return 2;
 }
 
 static XeniaSettingsHubCategoryKind XeniaSettingsKindForCatalog(
@@ -316,8 +343,13 @@ static UIColor* XeniaSettingsTintForCatalog(IOSConfigCatalogKind kind) {
 static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry& entry) {
   NSString* page = ToNSString(entry.page);
   NSString* section = ToNSString(entry.section);
-  NSString* path = section.length ? [NSString stringWithFormat:@"%@ \u203A %@", page, section]
-                                  : page;
+  // A section already named for its page ("Display", "Audio") is the whole path.
+  NSString* path = page;
+  if (section.length && [section hasPrefix:page]) {
+    path = section;
+  } else if (section.length) {
+    path = [NSString stringWithFormat:@"%@ \u203A %@", page, section];
+  }
   if (entry.per_game) {
     path = [path stringByAppendingFormat:@"\n%@",
                  NSLocalizedString(@"Can be overridden per game",
@@ -1384,7 +1416,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindAudio
                               title:NSLocalizedString(@"Audio",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Spatial audio and mute.",
+                           subtitle:NSLocalizedString(@"Spatial sound and head tracking.",
                                                       @"settings hub view controller: title")
                          symbolName:@"speaker.wave.2.fill"
                           tintColor:orange],
@@ -1769,15 +1801,24 @@ titleForFooterInSection:(NSInteger)section {
     search_index_valid_ = YES;
   }
   NSMutableArray* advanced_results = [NSMutableArray array];
+  std::vector<std::pair<int, const IOSConfigSearchEntry*>> curated_matches;
   for (const IOSConfigSearchEntry& entry : search_index_) {
     if (!XeniaSettingsSearchEntryMatches(entry, query)) {
       continue;
     }
     if (entry.advanced) {
-      [advanced_results addObject:XeniaSettingsResultItem(entry)];
+      // Two letters match half the emulator's option names; wait for a real word.
+      if (query.length >= 3) {
+        [advanced_results addObject:XeniaSettingsResultItem(entry)];
+      }
     } else {
-      [setting_results addObject:XeniaSettingsResultItem(entry)];
+      curated_matches.emplace_back(XeniaSettingsSearchRank(entry, query), &entry);
     }
+  }
+  std::stable_sort(curated_matches.begin(), curated_matches.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& match : curated_matches) {
+    [setting_results addObject:XeniaSettingsResultItem(*match.second)];
   }
   if (setting_results.count) {
     [filtered_sections
