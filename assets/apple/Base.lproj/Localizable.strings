@@ -488,9 +488,6 @@
 "Cancelling after the current file" = "Cancelling after the current file";
 
 /* config view controller: title */
-"Change Settings Before Launch" = "Change Settings Before Launch";
-
-/* config view controller: title */
 "Changes apply immediately and are saved for this game" = "Changes apply immediately and are saved for this game";
 
 /* config view controller: title */
@@ -1191,7 +1188,7 @@
 "Estimating…" = "Estimating…";
 
 /* settings hub view controller: title */
-"Every setting, emulator options included. Search by name, key or value." = "Every setting, emulator options included. Search by name, key or value.";
+"Every option in one searchable list." = "Every option in one searchable list.";
 
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
@@ -2917,6 +2914,9 @@
    settings hub view controller: title */
 "Settings" = "Settings";
 
+/* config view controller: label text */
+"Settings apply when a game starts. If a game is running, relaunch XeniOS after saving." = "Settings apply when a game starts. If a game is running, relaunch XeniOS after saving.";
+
 /* config view controller: user-visible text */
 "Settings could not be reset. Check xenia.log." = "Settings could not be reset. Check xenia.log.";
 
@@ -3477,9 +3477,6 @@
 
 /* game content view controller: message */
 "Title update installed successfully." = "Title update installed successfully.";
-
-/* config view controller: label text */
-"To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them." = "To avoid partial updates, change settings before launching a game. If you save changes while a game is already running, fully relaunch XeniOS before testing them.";
 
 /* game patches view controller: accessibility hint */
 "Toggles this patch for the next launch." = "Toggles this patch for the next launch.";
