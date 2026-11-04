@@ -32,6 +32,20 @@ NSString* PatchDisplayName(const std::string& name) {
   return text;
 }
 
+}  // namespace
+
+NSString* XeniaPatchDisplayName(const xe::ui::IOSPatchEntrySummary& patch) {
+  if (patch.name.empty()) {
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Patch %zu",
+                                           @"game patches view controller: label text"),
+                         patch.patch_index + 1];
+  }
+  return PatchDisplayName(patch.name);
+}
+
+namespace {
+
 // The description in secondary text, the author quieter under it.
 NSAttributedString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   NSMutableAttributedString* text = [[[NSMutableAttributedString alloc] init] autorelease];
@@ -202,13 +216,7 @@ NSAttributedString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   }
 
   const auto& patch = file.patches[static_cast<size_t>(indexPath.row)];
-  cell.textLabel.text =
-      patch.name.empty()
-          ? [NSString
-                stringWithFormat:NSLocalizedString(@"Patch %zu",
-                                                   @"game patches view controller: label text"),
-                                 patch.patch_index + 1]
-          : PatchDisplayName(patch.name);
+  cell.textLabel.text = XeniaPatchDisplayName(patch);
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.attributedText = PatchDetailText(patch);
   cell.selectionStyle = UITableViewCellSelectionStyleNone;

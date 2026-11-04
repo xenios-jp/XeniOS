@@ -69,6 +69,9 @@ struct RelayStatus {
   Reject reject = Reject::kFull;
   // Another player runs another title or another version of it.
   bool version_mismatch = false;
+  // The round trip to the slowest player reached directly, in ms, rounded to
+  // 5 ms above 10 so it doesn't change with every probe. 0 until measured.
+  uint32_t ping_ms = 0;
   bool operator==(const RelayStatus&) const = default;
 };
 
@@ -173,6 +176,10 @@ class RelayClient {
     uint64_t sent_ms = 0;
     uint64_t next_probe_ms = 0;
     uint32_t probes = 0;
+    // When the latest keepalive left for the direct path, until it is
+    // answered, and the round trip the answers average to.
+    uint64_t keepalive_sent_ms = 0;
+    uint32_t rtt_ms = 0;
     // What the latest probes carry, and the ones before, which a reply may
     // still answer.
     std::array<uint64_t, 2> nonces{};

@@ -9,7 +9,13 @@
 
 #import "xenia/ui/ios/launcher/ios_game_actions_view_controller.h"
 
+#include <string>
+#include <utility>
+#include <vector>
+
+#import "xenia/ui/ios/app/windowed_app_context_ios.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
+#import "xenia/ui/ios/launcher/ios_game_patches_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 
@@ -26,6 +32,11 @@ constexpr CGFloat kArtHeight = 330.0;
 constexpr CGFloat kArtHeightShort = 230.0;
 constexpr CGFloat kMargin = 20.0;
 constexpr CGFloat kCoverWidth = 88.0;
+// Where a row's title starts after its symbol, which the patch switches under Patches line up with.
+constexpr CGFloat kSymbolWidth = 24.0;
+constexpr CGFloat kSymbolPadding = 16.0;
+NSString* const kActionCellIdentifier = @"XeniaIOSGameActionCell";
+NSString* const kPatchCellIdentifier = @"XeniaIOSGamePatchCell";
 
 UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
@@ -77,11 +88,20 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   UIVisualEffectView* top_bar_;
   UILabel* top_title_;
   NSLayoutConstraint* cover_top_;
+
+  xe::ui::IOSWindowedAppContext* app_context_;
+  // Each patch with the file it comes from, read when Patches first opens.
+  std::vector<std::pair<std::string, xe::ui::IOSPatchEntrySummary>> patches_;
+  BOOL patches_loaded_;
+  BOOL patches_expanded_;
+  BOOL shows_rows_only_;
 }
 
 @synthesize actionHandler = action_handler_;
 @synthesize statusText = status_text_;
 @synthesize statusColor = status_color_;
+@synthesize appContext = app_context_;
+@synthesize showsRowsOnly = shows_rows_only_;
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
                           titleID:(uint32_t)titleID
@@ -173,12 +193,17 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   table_view_.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
   table_view_.separatorColor = [XeniaTheme border];
   table_view_.separatorInset = UIEdgeInsetsMake(0.0, kMargin, 0.0, kMargin);
-  table_view_.rowHeight = 58.0;
+  table_view_.rowHeight = UITableViewAutomaticDimension;
+  table_view_.estimatedRowHeight = 58.0;
   table_view_.sectionHeaderTopPadding = 0.0;
   // Insets come from viewWillLayoutSubviews alone, measured from the screen edge.
   table_view_.insetsContentViewsToSafeArea = NO;
   table_view_.cellLayoutMarginsFollowReadableWidth = NO;
   [self.view addSubview:table_view_];
+  if (shows_rows_only_) {
+    self.view.backgroundColor = [UIColor clearColor];
+    return;
+  }
 
   [self buildHeader];
 
@@ -226,6 +251,11 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
   [self.navigationController setNavigationBarHidden:YES animated:animated];
+  // The full Patches page may have changed them while this page was under it.
+  if (patches_loaded_) {
+    [self loadPatches];
+    [table_view_ reloadData];
+  }
 }
 
 - (UIMenu*)moreMenu {
@@ -437,10 +467,34 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   [super viewWillLayoutSubviews];
   const CGSize size = self.view.bounds.size;
   const UIEdgeInsets safe = self.view.safeAreaInsets;
+  if (shows_rows_only_) {
+    table_view_.frame = self.view.bounds;
+    // Rows fade out as they scroll up under the Library's header, as its covers do.
+    CAGradientLayer* fade = [CAGradientLayer layer];
+    fade.frame = self.view.bounds;
+    fade.colors = @[ (id)UIColor.clearColor.CGColor, (id)UIColor.blackColor.CGColor ];
+    fade.locations = @[ @0.0, @(16.0 / MAX(size.height, 1.0)) ];
+    UIView* mask = [[[UIView alloc] initWithFrame:self.view.bounds] autorelease];
+    [mask.layer addSublayer:fade];
+    self.view.maskView = mask;
+    table_view_.contentInset = UIEdgeInsetsMake(0.0, 0.0, safe.bottom + 16.0, 0.0);
+    const UIEdgeInsets table_safe = table_view_.safeAreaInsets;
+    table_view_.separatorInset = UIEdgeInsetsMake(
+        0.0, table_safe.left + kMargin + kSymbolWidth + kSymbolPadding, 0.0,
+        table_safe.right + kMargin);
+    for (UITableViewCell* cell in table_view_.visibleCells) {
+      [self applyMarginsToCell:cell];
+    }
+    return;
+  }
   // A phone on its side: art, cover, title and Play on the left half, the rows on the right, so
   // the whole page fits on one screen instead of a portrait page stretched wide.
   const BOOL side = size.width > size.height && size.height < 500.0;
-  const CGFloat column = side ? floor(size.width * 0.52) : size.width;
+  // The left column is as wide as Play and its two buttons need, so the rows sit right beside
+  // them instead of past an empty stretch of art.
+  const CGFloat column =
+      side ? floor(MIN(size.width * 0.52, MAX(size.width * 0.4, safe.left + kMargin + 300.0)))
+           : size.width;
   const CGFloat art_height = side ? size.height : (size.height < 500.0 ? kArtHeightShort : kArtHeight);
   const CGFloat leading = safe.left + kMargin;
   const CGFloat trailing = side ? size.width - column + 8.0 : safe.right + kMargin;
@@ -564,13 +618,58 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (void)loadPatches {
+  patches_.clear();
+  if (app_context_ && title_id_) {
+    for (const auto& file : app_context_->ListPatchFiles(title_id_)) {
+      for (const auto& patch : file.patches) {
+        patches_.emplace_back(file.filename, patch);
+      }
+    }
+  }
+  patches_loaded_ = YES;
+}
+
+// The Patches row's place among the rows, or NSNotFound.
+- (NSInteger)patchesRow {
+  for (NSUInteger i = 0; i < rows_.count; ++i) {
+    XeniaIOSGameActionRow row = {};
+    [rows_[i] getValue:&row];
+    if (row.action == XeniaIOSGameActionPatches) {
+      return static_cast<NSInteger>(i);
+    }
+  }
+  return NSNotFound;
+}
+
+- (NSInteger)shownPatchCount {
+  return patches_expanded_ ? static_cast<NSInteger>(patches_.size()) : 0;
+}
+
+// The patch a table row shows when Patches is open, or -1 for an action row.
+- (NSInteger)patchIndexForRow:(NSInteger)row {
+  const NSInteger patches_row = [self patchesRow];
+  if (patches_row == NSNotFound || row <= patches_row ||
+      row > patches_row + [self shownPatchCount]) {
+    return -1;
+  }
+  return row - patches_row - 1;
+}
+
 - (XeniaIOSGameActionRow)rowAtIndexPath:(NSIndexPath*)indexPath {
   XeniaIOSGameActionRow row = {};
-  if (indexPath.section != 0 || indexPath.row < 0 ||
-      indexPath.row >= static_cast<NSInteger>(rows_.count)) {
+  if (indexPath.section != 0 || [self patchIndexForRow:indexPath.row] >= 0) {
     return row;
   }
-  [rows_[indexPath.row] getValue:&row];
+  NSInteger index = indexPath.row;
+  const NSInteger patches_row = [self patchesRow];
+  if (patches_row != NSNotFound && index > patches_row) {
+    index -= [self shownPatchCount];
+  }
+  if (index < 0 || index >= static_cast<NSInteger>(rows_.count)) {
+    return row;
+  }
+  [rows_[index] getValue:&row];
   return row;
 }
 
@@ -579,7 +678,7 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
 }
 
 - (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
-  return section == 0 ? static_cast<NSInteger>(rows_.count) : 0;
+  return section == 0 ? static_cast<NSInteger>(rows_.count) + [self shownPatchCount] : 0;
 }
 
 // The symbol sits on the page's leading edge and the chevron on its trailing one, both clear of
@@ -592,46 +691,260 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   UIListContentConfiguration* content = (UIListContentConfiguration*)cell.contentConfiguration;
   if ([content isKindOfClass:[UIListContentConfiguration class]]) {
     content = [[content copy] autorelease];
-    // These margins start from the safe area already.
-    content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(0.0, kMargin - 4.0, 0.0, 0.0);
+    // These margins start from the safe area already. Patch switches start where row titles do.
+    const BOOL patch = [cell.reuseIdentifier isEqualToString:kPatchCellIdentifier];
+    content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
+        patch ? 8.0 : 0.0, kMargin - 4.0 + (patch ? kSymbolWidth + kSymbolPadding : 0.0),
+        patch ? 8.0 : 0.0, 0.0);
     cell.contentConfiguration = content;
   }
 }
 
 // Plain rows on the page, no cards: a symbol, the title and a chevron.
-- (UITableViewCell*)tableView:(UITableView*)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  static NSString* const kCellIdentifier = @"XeniaIOSGameActionCell";
-  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
+// "2 On", or "Off" when none is.
+- (NSString*)patchesSummary {
+  NSUInteger enabled = 0;
+  for (const auto& entry : patches_) {
+    enabled += entry.second.is_enabled ? 1 : 0;
+  }
+  return enabled ? [NSString stringWithFormat:NSLocalizedString(@"%lu On",
+                                                                @"game page: Patches row; %lu is "
+                                                                @"how many patches are on"),
+                                              static_cast<unsigned long>(enabled)]
+                 : NSLocalizedString(@"Off", @"game page: Patches row; no patch is on");
+}
+
+// A switch under Patches: the patch's name, its description under it when it has one.
+- (UITableViewCell*)patchCellForRow:(NSInteger)patch_index tableView:(UITableView*)tableView {
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kPatchCellIdentifier];
   if (!cell) {
     cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                   reuseIdentifier:kCellIdentifier] autorelease];
+                                   reuseIdentifier:kPatchCellIdentifier] autorelease];
     cell.backgroundColor = [UIColor clearColor];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+    [toggle addTarget:self
+                  action:@selector(patchSwitchChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
   }
+  const auto& patch = patches_[static_cast<size_t>(patch_index)].second;
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  content.text = XeniaPatchDisplayName(patch);
+  content.textProperties.color = [XeniaTheme textPrimary];
+  content.textProperties.font =
+      xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  if (!patch.description.empty()) {
+    content.secondaryText = ToNSString(patch.description);
+    content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+    content.secondaryTextProperties.font =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
+    content.secondaryTextProperties.numberOfLines = 2;
+    content.textToSecondaryTextVerticalPadding = 2.0;
+  }
+  cell.contentConfiguration = content;
+  UISwitch* toggle = (UISwitch*)cell.accessoryView;
+  toggle.tag = patch_index;
+  toggle.on = patch.is_enabled;
+  toggle.accessibilityLabel = content.text;
+  return cell;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  const NSInteger patch_index = [self patchIndexForRow:indexPath.row];
+  UITableViewCell* cell = nil;
+  if (patch_index >= 0) {
+    cell = [self patchCellForRow:patch_index tableView:tableView];
+  } else {
+    cell = [self actionCellAtIndexPath:indexPath tableView:tableView];
+  }
+  [self applyMarginsToCell:cell];
+  [self applySeparatorToCell:cell atRow:indexPath.row];
+  return cell;
+}
+
+// Separators go between rows only, never under the last one.
+- (void)applySeparatorToCell:(UITableViewCell*)cell atRow:(NSInteger)row {
+  const BOOL last = row == [table_view_ numberOfRowsInSection:0] - 1;
+  cell.separatorInset =
+      last ? UIEdgeInsetsMake(0.0, CGRectGetWidth(table_view_.bounds) + 1000.0, 0.0, 0.0)
+           : table_view_.separatorInset;
+}
+
+// After rows come or go, the row that is last changes.
+- (void)updateSeparators {
+  for (UITableViewCell* cell in table_view_.visibleCells) {
+    NSIndexPath* path = [table_view_ indexPathForCell:cell];
+    if (path) {
+      [self applySeparatorToCell:cell atRow:path.row];
+    }
+  }
+}
+
+- (UITableViewCell*)actionCellAtIndexPath:(NSIndexPath*)indexPath
+                                tableView:(UITableView*)tableView {
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kActionCellIdentifier];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                   reuseIdentifier:kActionCellIdentifier] autorelease];
+    cell.backgroundColor = [UIColor clearColor];
+  }
+  [self configureActionCell:cell atIndexPath:indexPath];
+  return cell;
+}
+
+- (void)configureActionCell:(UITableViewCell*)cell atIndexPath:(NSIndexPath*)indexPath {
   XeniaIOSGameActionRow row = [self rowAtIndexPath:indexPath];
-  UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
+  const BOOL patches = row.action == XeniaIOSGameActionPatches;
+  UIListContentConfiguration* content = patches && patches_loaded_ && !patches_.empty()
+                                            ? [UIListContentConfiguration valueCellConfiguration]
+                                            : [UIListContentConfiguration cellConfiguration];
   content.text = row.title;
   content.textProperties.color = [XeniaTheme textPrimary];
   content.textProperties.font =
       xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   content.image = [UIImage systemImageNamed:row.symbol];
   content.imageProperties.tintColor = [XeniaTheme textSecondary];
-  content.imageToTextPadding = 16.0;
-  content.imageProperties.reservedLayoutSize = CGSizeMake(24.0, 0.0);
+  content.imageToTextPadding = kSymbolPadding;
+  content.imageProperties.reservedLayoutSize = CGSizeMake(kSymbolWidth, 0.0);
+  if (patches && patches_loaded_ && !patches_.empty()) {
+    content.secondaryText = [self patchesSummary];
+    content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+    content.secondaryTextProperties.font =
+        xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  }
   cell.contentConfiguration = content;
+  // One chevron for every row; Patches opens in place, so its chevron turns down instead.
+  {
+    UIImageView* chevron = [[[UIImageView alloc]
+        initWithImage:[UIImage
+                          systemImageNamed:@"chevron.right"
+                          withConfiguration:[UIImageSymbolConfiguration
+                                                configurationWithPointSize:14.0
+                                                                    weight:
+                                                                        UIImageSymbolWeightSemibold]]]
+        autorelease];
+    chevron.tintColor = [UIColor tertiaryLabelColor];
+    chevron.transform = patches && patches_expanded_ ? CGAffineTransformMakeRotation(M_PI_2)
+                                                     : CGAffineTransformIdentity;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = chevron;
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
+    cell.accessibilityValue =
+        !patches ? nil
+        : patches_expanded_ ? NSLocalizedString(@"Expanded", @"game page: Patches row state")
+                            : NSLocalizedString(@"Collapsed", @"game page: Patches row state");
+  }
+}
+
+// The Patches row's count and chevron, on the cell already showing.
+- (void)refreshPatchesRow:(BOOL)animated {
+  const NSInteger patches_row = [self patchesRow];
+  if (patches_row == NSNotFound) {
+    return;
+  }
+  NSIndexPath* path = [NSIndexPath indexPathForRow:patches_row inSection:0];
+  UITableViewCell* cell = [table_view_ cellForRowAtIndexPath:path];
+  if (!cell) {
+    return;
+  }
+  UIView* chevron = cell.accessoryView;
+  const CGAffineTransform turned = chevron.transform;
+  [self configureActionCell:cell atIndexPath:path];
   [self applyMarginsToCell:cell];
-  // Separators go between rows only, never under the last one.
-  const BOOL last = indexPath.row == [tableView numberOfRowsInSection:indexPath.section] - 1;
-  cell.separatorInset =
-      last ? UIEdgeInsetsMake(0.0, CGRectGetWidth(tableView.bounds) + 1000.0, 0.0, 0.0)
-           : tableView.separatorInset;
-  return cell;
+  if (animated && cell.accessoryView) {
+    const CGAffineTransform target = cell.accessoryView.transform;
+    cell.accessoryView.transform = turned;
+    [UIView animateWithDuration:0.3
+                     animations:^{
+                       cell.accessoryView.transform = target;
+                     }];
+  }
+}
+
+- (void)togglePatchesAtRow:(NSInteger)patches_row {
+  if (!patches_loaded_) {
+    [self loadPatches];
+  }
+  // Nothing to switch: the page says where patch files go.
+  if (patches_.empty()) {
+    [self perform:XeniaIOSGameActionPatches];
+    return;
+  }
+  NSMutableArray<NSIndexPath*>* paths = [NSMutableArray array];
+  for (size_t i = 0; i < patches_.size(); ++i) {
+    [paths addObject:[NSIndexPath indexPathForRow:patches_row + 1 + static_cast<NSInteger>(i)
+                                        inSection:0]];
+  }
+  patches_expanded_ = !patches_expanded_;
+  [table_view_ performBatchUpdates:^{
+    if (patches_expanded_) {
+      [table_view_ insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+      [table_view_ deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    }
+  }
+                        completion:nil];
+  // Patches keeps its place, so its chevron and count change in place.
+  [self refreshPatchesRow:YES];
+  [self updateSeparators];
+  if (patches_expanded_) {
+    // The switches read under their heading, so Patches goes to the top when they don't fit.
+    const CGFloat needed = table_view_.estimatedRowHeight * (paths.count + 1);
+    if (needed > CGRectGetHeight(table_view_.bounds) - table_view_.contentInset.bottom) {
+      [table_view_ scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:patches_row inSection:0]
+                         atScrollPosition:UITableViewScrollPositionTop
+                                 animated:YES];
+    } else {
+      [table_view_ scrollToRowAtIndexPath:paths.lastObject
+                         atScrollPosition:UITableViewScrollPositionNone
+                                 animated:YES];
+    }
+  }
+}
+
+- (void)patchSwitchChanged:(UISwitch*)sender {
+  const NSInteger index = sender.tag;
+  if (index < 0 || index >= static_cast<NSInteger>(patches_.size())) {
+    return;
+  }
+  auto& entry = patches_[static_cast<size_t>(index)];
+  std::string status;
+  const bool saved = app_context_ && app_context_->SetPatchEnabled(
+                                         title_id_, entry.first, entry.second.patch_index,
+                                         sender.on, &status);
+  if (!saved) {
+    sender.on = !sender.on;
+    XEPresentOKAlert(
+        self, NSLocalizedString(@"Patch Not Saved", @"game patches view controller: user-visible text"),
+        status.empty() ? NSLocalizedString(@"Failed to update patch state.",
+                                           @"game patches view controller: user-visible text")
+                       : ToNSString(status));
+    return;
+  }
+  entry.second.is_enabled = sender.on;
+  [self refreshPatchesRow:NO];
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  [self perform:[self rowAtIndexPath:indexPath].action];
+  const NSInteger patch_index = [self patchIndexForRow:indexPath.row];
+  if (patch_index >= 0) {
+    // The whole row flips its switch.
+    UISwitch* toggle = (UISwitch*)[tableView cellForRowAtIndexPath:indexPath].accessoryView;
+    if ([toggle isKindOfClass:[UISwitch class]]) {
+      [toggle setOn:!toggle.on animated:YES];
+      [self patchSwitchChanged:toggle];
+    }
+    return;
+  }
+  XeniaIOSGameActionRow row = [self rowAtIndexPath:indexPath];
+  if (row.action == XeniaIOSGameActionPatches && app_context_) {
+    [self togglePatchesAtRow:indexPath.row];
+    return;
+  }
+  [self perform:row.action];
 }
 
 @end
