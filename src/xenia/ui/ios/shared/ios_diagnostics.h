@@ -58,7 +58,7 @@ void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, 
 void xe_ios_diagnostics_settings_changed(void);
 
 @class UIViewController;
-// Settings > About > Pending Reports: the queued records, as they will be sent.
+// Settings > Privacy > Pending Reports: the queued records, as they will be sent.
 UIViewController* xe_ios_diagnostics_make_pending_reports_controller(void);
 
 #endif  // XENIA_UI_IOS_SHARED_IOS_DIAGNOSTICS_H_

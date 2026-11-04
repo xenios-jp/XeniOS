@@ -406,7 +406,7 @@ void RunDebugTriggers() {
 
 }  // namespace
 
-// Settings > About > Pending Reports. Laid out like the log viewer: the text
+// Settings > Privacy > Pending Reports. Laid out like the log viewer: the text
 // view is a constrained subview and gets its text once it is on screen.
 @interface XeniaPendingReportsViewController : UIViewController
 @end

@@ -64,7 +64,7 @@ void xe_ios_confirm_turn_on_online_features(UIViewController* presenter, void (^
   }
   message = [message
       stringByAppendingFormat:@"\n\n%@", NSLocalizedString(@"You can change this in Settings > "
-                                                            @"About > Privacy.",
+                                                            @"Privacy.",
                                                             @"system link view controller: alert "
                                                             @"message")];
   UIAlertController* alert = [UIAlertController
