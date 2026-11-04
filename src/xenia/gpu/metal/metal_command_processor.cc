@@ -6834,15 +6834,13 @@ void MetalCommandProcessor::UseRenderEncoderResource(MTL::Resource* resource,
   // No useHeap: tracking on a tracked heap is heap-granular, so declaring the
   // heap would make this encoder depend on every write to anything in it.
   uint32_t usage_bits = static_cast<uint32_t>(usage);
-  auto it = render_encoder_resource_usage_.find(resource);
-  if (it != render_encoder_resource_usage_.end()) {
-    if ((it->second & usage_bits) == usage_bits) {
-      return;
-    }
-    it->second |= usage_bits;
-  } else {
-    render_encoder_resource_usage_.emplace(resource, usage_bits);
+  bool inserted;
+  uint32_t& declared_usage_bits =
+      render_encoder_resource_usage_.FindOrInsert(resource, inserted);
+  if (!inserted && (declared_usage_bits & usage_bits) == usage_bits) {
+    return;
   }
+  declared_usage_bits |= usage_bits;
   current_render_encoder_->useResource(resource, usage);
 }
 

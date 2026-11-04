@@ -636,7 +636,72 @@ class MetalCommandProcessor : public CommandProcessor {
 
   // Tracks resources marked via useResource for the current render encoder
   // to avoid redundant driver calls across draws within the same encoder.
-  std::unordered_map<MTL::Resource*, uint32_t> render_encoder_resource_usage_;
+  // Every draw looks up each resource it reaches, so this is an open-addressed
+  // table whose entries from earlier encoders are dropped by bumping the epoch.
+  class EncoderResourceUsage {
+   public:
+    // The usage already declared for the resource on this encoder, which the
+    // caller updates, or a new entry with no usage if it is not there yet.
+    uint32_t& FindOrInsert(MTL::Resource* resource, bool& inserted) {
+      if ((size_ + 1) * 2 > entries_.size()) {
+        Grow();
+      }
+      Entry* entry = Find(resource);
+      inserted = entry->epoch != epoch_;
+      if (inserted) {
+        entry->resource = resource;
+        entry->usage = 0;
+        entry->epoch = epoch_;
+        ++size_;
+      }
+      return entry->usage;
+    }
+    bool empty() const { return !size_; }
+    void clear() {
+      size_ = 0;
+      if (++epoch_ == 0) {
+        std::fill(entries_.begin(), entries_.end(), Entry());
+        epoch_ = 1;
+      }
+    }
+
+   private:
+    struct Entry {
+      MTL::Resource* resource = nullptr;
+      uint32_t usage = 0;
+      // 0 is never current.
+      uint32_t epoch = 0;
+    };
+    Entry* Find(MTL::Resource* resource) {
+      const size_t mask = entries_.size() - 1;
+      size_t index =
+          size_t((uint64_t(uintptr_t(resource)) * UINT64_C(0x9E3779B97F4A7C15)) >>
+                 32) &
+          mask;
+      while (entries_[index].epoch == epoch_ &&
+             entries_[index].resource != resource) {
+        index = (index + 1) & mask;
+      }
+      return &entries_[index];
+    }
+    void Grow() {
+      std::vector<Entry> old_entries(entries_.size() * 2);
+      old_entries.swap(entries_);
+      const uint32_t old_epoch = epoch_;
+      epoch_ = 1;
+      for (const Entry& old_entry : old_entries) {
+        if (old_entry.epoch == old_epoch) {
+          Entry* entry = Find(old_entry.resource);
+          *entry = old_entry;
+          entry->epoch = epoch_;
+        }
+      }
+    }
+    std::vector<Entry> entries_ = std::vector<Entry>(64);
+    size_t size_ = 0;
+    uint32_t epoch_ = 1;
+  };
+  EncoderResourceUsage render_encoder_resource_usage_;
 
   // Shared memory for Xbox 360 memory access
   std::unique_ptr<MetalSharedMemory> shared_memory_;
