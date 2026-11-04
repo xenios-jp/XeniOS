@@ -14,6 +14,7 @@
 #include <vector>
 
 #import "xenia/ui/ios/app/windowed_app_context_ios.h"
+#import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_content_management.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/launcher/ios_game_content_view_controller.h"
@@ -56,6 +57,13 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
   button.translatesAutoresizingMaskIntoConstraints = NO;
   button.accessibilityLabel = label;
+  // A symbol alone: its name shows on hover with a pointer, and on a press and hold at the
+  // larger text sizes.
+  button.toolTip = label;
+  button.showsLargeContentViewer = YES;
+  button.largeContentTitle = label;
+  button.largeContentImage = [UIImage systemImageNamed:symbol];
+  [button addInteraction:[[[UILargeContentViewerInteraction alloc] init] autorelease]];
   [NSLayoutConstraint activateConstraints:@[
     [button.widthAnchor constraintEqualToConstant:side],
     [button.heightAnchor constraintEqualToConstant:side],
@@ -146,6 +154,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   NSArray<NSString*>* disc_labels_;
   NSArray<NSString*>* disc_details_;
   void (^disc_handler_)(NSUInteger disc_index);
+  NSString* compatibility_status_;
   NSString* compatibility_performance_;
   NSString* compatibility_notes_;
   void (^conversion_choices_loader_)(void (^)(NSString*, BOOL,
@@ -164,6 +173,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 @synthesize discDetails = disc_details_;
 @synthesize discHandler = disc_handler_;
 @synthesize contentHost = content_host_;
+@synthesize compatibilityStatus = compatibility_status_;
 @synthesize compatibilityPerformance = compatibility_performance_;
 @synthesize compatibilityNotes = compatibility_notes_;
 @synthesize conversionChoicesLoader = conversion_choices_loader_;
@@ -196,6 +206,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   [disc_labels_ release];
   [disc_details_ release];
   [disc_handler_ release];
+  [compatibility_status_ release];
   [compatibility_performance_ release];
   [compatibility_notes_ release];
   [conversion_choices_loader_ release];
@@ -236,10 +247,6 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   if (supports_manage_content_) {
     add(XeniaIOSGameActionManageContent,
         NSLocalizedString(@"Updates & Add-ons", @"game page: row"), @"square.stack.3d.up");
-  }
-  if (supports_compatibility_) {
-    add(XeniaIOSGameActionCompatibility,
-        NSLocalizedString(@"Compatibility", @"game page: row"), @"checkmark.shield");
   }
   if (title_id_) {
     add(XeniaIOSGameActionSystemLink,
@@ -420,7 +427,8 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   title.minimumScaleFactor = 0.6;
   title.accessibilityTraits = UIAccessibilityTraitHeader;
   NSMutableArray<UIView*>* lines = [NSMutableArray arrayWithObject:title];
-  if (status_text_.length) {
+  // With a capsule beside Play, the status reads there instead.
+  if (status_text_.length && !supports_compatibility_) {
     UILabel* status = [[[UILabel alloc] init] autorelease];
     UIFont* font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
     NSMutableAttributedString* text = [[[NSMutableAttributedString alloc]
@@ -489,6 +497,16 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
         forControlEvents:UIControlEventTouchUpInside];
     [buttons addObject:touch];
     [buttons addObject:settings];
+  }
+  if (supports_compatibility_) {
+    UIButton* capsule = xe_new_compat_capsule();
+    __unsafe_unretained XeniaIOSGameActionsViewController* unsafe_self = self;
+    xe_update_compat_capsule(capsule, compatibility_status_, compatibility_performance_,
+                             compatibility_notes_, ^{
+                               [unsafe_self perform:XeniaIOSGameActionCompatibility];
+                             });
+    [capsule.heightAnchor constraintEqualToConstant:54.0].active = YES;
+    [buttons addObject:capsule];
   }
   button_row_ = [[UIStackView alloc] initWithArrangedSubviews:buttons];
   button_row_.translatesAutoresizingMaskIntoConstraints = NO;
@@ -813,6 +831,8 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   for (UITableViewCell* cell in table_view_.visibleCells) {
     [self applyMarginsToCell:cell];
   }
+  // Each row copies the table's separator inset, so they follow it too.
+  [self updateSeparators];
 }
 
 // The symbol sits on the page's leading edge and the chevron on its trailing one, both clear of
@@ -859,8 +879,6 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
       return content_.empty()
                  ? NSLocalizedString(@"None", @"game page: Updates & Add-ons row; nothing added")
                  : [NSString localizedStringWithFormat:@"%lu", (unsigned long)content_.size()];
-    case XeniaIOSGameActionCompatibility:
-      return status_text_;
     case XeniaIOSGameActionSystemLink: {
       if (!xe_ios_online_features_enabled()) {
         return NSLocalizedString(@"Off", @"game page: System Link row; Online Features are off");
@@ -965,32 +983,6 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
         [unsafe_self addContent];
       };
       [children addObject:add];
-    } break;
-    case XeniaIOSGameActionCompatibility: {
-      if (compatibility_performance_.length || compatibility_notes_.length) {
-        [children addObject:[self newChild:XeniaGameRowChildKindInfo
-                                     title:compatibility_performance_.length
-                                               ? compatibility_performance_
-                                               : compatibility_notes_
-                                    detail:compatibility_performance_.length
-                                               ? compatibility_notes_
-                                               : nil]];
-      } else if (!status_text_.length) {
-        [children addObject:[self newChild:XeniaGameRowChildKindInfo
-                                     title:NSLocalizedString(@"Not tested yet.",
-                                                             @"game page: under Compatibility")
-                                    detail:nil]];
-      }
-      XeniaGameRowChild* reports =
-          [self newChild:XeniaGameRowChildKindButton
-                   title:NSLocalizedString(@"Reports & Discussion",
-                                           @"game page: under Compatibility")
-                  detail:nil];
-      reports.opensPage = YES;
-      reports.handler = ^(XeniaGameRowChild* __unused tapped, UIView* __unused source) {
-        [unsafe_self perform:XeniaIOSGameActionCompatibility];
-      };
-      [children addObject:reports];
     } break;
     case XeniaIOSGameActionSystemLink:
       [self addSystemLinkChildrenTo:children];
@@ -1254,9 +1246,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   content.imageProperties.reservedLayoutSize = CGSizeMake(kSymbolWidth, 0.0);
   if (summary) {
     content.secondaryText = summary;
-    content.secondaryTextProperties.color =
-        row.action == XeniaIOSGameActionCompatibility && status_color_ ? status_color_
-                                                                       : [XeniaTheme textSecondary];
+    content.secondaryTextProperties.color = [XeniaTheme textSecondary];
     content.secondaryTextProperties.font =
         xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   }
@@ -1331,25 +1321,42 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
       });
     }
   }
-  const NSInteger heading_row = [self tableRowForAction:action];
-  if (heading_row == NSNotFound) {
+  if ([self tableRowForAction:action] == NSNotFound) {
     return;
   }
   NSArray<XeniaGameRowChild*>* shown = [self shownChildrenForAction:action];
   NSArray<XeniaGameRowChild*>* children = shown ? nil : [self childrenForAction:action];
-  NSArray<NSIndexPath*>* paths =
-      [self childPathsFromRow:heading_row count:(shown ?: children).count];
+  // One heading is open at a time, so the page keeps its shape: opening one closes the other.
+  NSMutableArray<NSNumber*>* closing = [NSMutableArray array];
+  NSMutableArray<NSIndexPath*>* removed = [NSMutableArray array];
+  for (NSNumber* open in shown_children_.allKeys) {
+    if (shown && open.integerValue != action) {
+      continue;
+    }
+    const XeniaIOSGameAction open_action = XeniaIOSGameAction(open.integerValue);
+    [closing addObject:open];
+    [removed addObjectsFromArray:[self childPathsFromRow:[self tableRowForAction:open_action]
+                                                   count:shown_children_[open].count]];
+  }
+  __block NSInteger heading_row = NSNotFound;
+  __block NSArray<NSIndexPath*>* paths = nil;
   [table_view_ performBatchUpdates:^{
-    if (shown) {
-      [shown_children_ removeObjectForKey:@(action)];
-      [table_view_ deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
-    } else {
+    [shown_children_ removeObjectsForKeys:closing];
+    [table_view_ deleteRowsAtIndexPaths:removed withRowAnimation:UITableViewRowAnimationFade];
+    heading_row = [self tableRowForAction:action];
+    if (!shown) {
       shown_children_[@(action)] = children;
+      paths = [self childPathsFromRow:heading_row count:children.count];
       [table_view_ insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     }
   }
                         completion:nil];
-  // The heading keeps its place, so its chevron and summary change in place.
+  // The headings keep their places, so their chevrons and summaries change in place.
+  for (NSNumber* closed in closing) {
+    if (closed.integerValue != action) {
+      [self refreshHeadingForAction:XeniaIOSGameAction(closed.integerValue) animated:YES];
+    }
+  }
   [self refreshHeadingForAction:action animated:YES];
   [self updateSeparators];
   if (children.count) {

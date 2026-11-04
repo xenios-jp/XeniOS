@@ -48,6 +48,13 @@ NSArray<NSString*>* xe_compat_status_labels(void);
 NSArray<NSString*>* xe_compat_perfs(void);
 NSArray<NSString*>* xe_compat_perf_labels(void);
 
+// The capsule beside Play on a game's page: a dot in the status's colour, the verdict, and how
+// well it runs under it. Tapping it shows what the reports say and opens them all.
+UIButton* xe_new_compat_capsule(void);
+void xe_update_compat_capsule(UIButton* capsule, NSString* _Nullable status,
+                              NSString* _Nullable perf, NSString* _Nullable notes,
+                              void (^reports)(void));
+
 // Channel labels used in the build pill.
 
 // Build labels.
