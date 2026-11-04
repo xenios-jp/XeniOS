@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -271,7 +272,9 @@ static void AddIntegerSetting(std::vector<IOSConfigItem>& items, const std::stri
 }
 
 static void AddDoubleSetting(std::vector<IOSConfigItem>& items, const std::string& key,
-                             const std::string& title, const std::string& subtitle) {
+                             const std::string& title, const std::string& subtitle,
+                             const std::string& value_unit = std::string(), double min_value = 0.0,
+                             double max_value = 0.0, double step = 0.0) {
   if (!IOSConfigHasConfigVar(key)) {
     return;
   }
@@ -280,6 +283,10 @@ static void AddDoubleSetting(std::vector<IOSConfigItem>& items, const std::strin
   item.title = title;
   item.subtitle = subtitle;
   item.control_type = IOSConfigControlType::kDouble;
+  item.value_unit = value_unit;
+  item.min_value = min_value;
+  item.max_value = max_value;
+  item.step = step;
   std::string raw = IOSConfigGetConfigVarString(key, "0");
   if (!raw.empty()) {
     char* end = nullptr;
@@ -340,20 +347,23 @@ static std::vector<IOSConfigSection> BuildDisplaySections() {
 static std::vector<IOSConfigSection> BuildGraphicsSections() {
   std::vector<IOSConfigSection> sections;
 
+  // Metal is the only renderer on iOS, so the one-option "gpu" picker isn't shown.
   IOSConfigSection backend;
-  backend.title = "Graphics Backend";
-  AddStringChoiceSetting(backend.items, "gpu", "Graphics Backend",
-                         "Select the renderer used after the next full relaunch. Metal is the "
-                         "only iOS backend.",
-                         "metal", {{"Metal", "metal"}});
-  AddBoolSetting(backend.items, "metal_presenter_force_10bpc",
-                 "Force High-Precision Presenter Output",
-                 "Metal-only. Uses a high-precision presenter target, which is the default "
-                 "path and usually reduces gamma-conversion cost on Apple GPUs. Disable only "
-                 "if colors, captures, or display compatibility look wrong.",
+  backend.title = "Image Quality";
+  AddBoolSetting(backend.items, "metal_presenter_force_10bpc", "High-Precision Color",
+                 "Smoother gradients, and the fastest path on Apple GPUs. Turn off only if "
+                 "colors look wrong.",
                  true);
-  AddIntegerSetting(backend.items, "anisotropic_override", "Anisotropic Override",
-                    "Override anisotropic filtering level (-1 = auto, 0 = off, 1-5).");
+  // Values are xenos::AnisoFilter levels; 1 (1x) is the same as off, so it isn't offered.
+  AddChoiceSetting(backend.items, IOSConfigControlType::kChoiceInt32, "anisotropic_override",
+                   "Texture Filtering", "Keeps textures sharp at an angle. Higher uses more GPU.",
+                   -1,
+                   {{"Game Default", -1},
+                    {"Off", 0},
+                    {"2x", 2},
+                    {"4x", 3},
+                    {"8x", 4},
+                    {"16x", 5}});
   PushIfNotEmpty(sections, std::move(backend));
   // Shader cache and async compilation live under Performance, render target path under
   // Compatibility, so each setting has one home.
@@ -364,47 +374,31 @@ static std::vector<IOSConfigSection> BuildPerformanceSections() {
   std::vector<IOSConfigSection> sections;
 
   IOSConfigSection caching;
-  caching.title = "Caching & Compilation";
-  caching.footer = "These settings trade stutter, battery usage, and cache size.";
-  AddBoolSetting(caching.items, "store_shaders", "Persistent Shader Cache",
-                 "Keeps translated shaders and pipelines on disk so later boots stutter "
-                 "less. Disable only if you suspect cache corruption after an update.",
+  caching.title = "Shaders";
+  AddBoolSetting(caching.items, "store_shaders", "Save Shaders",
+                 "Games stutter less the next time you play. Turn off only if graphics "
+                 "break after an update.",
                  true);
-  AddBoolSetting(caching.items, "async_shader_compilation", "Async Shader Compilation",
-                 "Compiles Metal shaders and pipelines in background threads to reduce "
-                 "stutter. New effects may appear a moment late; turn this off if you "
-                 "prefer blocking correctness over smoother frame pacing.",
+  AddBoolSetting(caching.items, "async_shader_compilation", "Compile in Background",
+                 "Less stutter, but new effects can appear a moment late.",
                  true);
   PushIfNotEmpty(sections, std::move(caching));
 
   IOSConfigSection scheduler;
-  scheduler.title = "Thread QoS";
-  scheduler.footer = "Xenia's regular iOS threads use Default QoS unless promoted "
-                     "here. Changes require a full relaunch.";
+  scheduler.title = "Priority";
+  scheduler.footer = "Higher priority runs games smoother and uses more battery. Changes "
+                     "apply after you relaunch XeniOS.";
   AddBoolSetting(scheduler.items, "ios_gpu_commands_user_interactive_qos",
-                 "GPU Commands User-Interactive QoS",
-                 "Runs the Metal command processor host thread at user-interactive QoS "
-                 "so frame submission and presentation get latency-critical scheduling. "
-                 "Uses more battery.",
-                 true);
+                 "Prioritize Graphics", "Gets each frame to the screen sooner.", true);
   AddBoolSetting(scheduler.items, "ios_guest_threads_user_initiated_qos",
-                 "Guest Threads User-Initiated QoS",
-                 "Runs guest XThreads and GuestScheduler dispatch threads at "
-                 "user-initiated QoS for CPU-bound game execution. Uses more battery.",
-                 true);
-  AddStringChoiceSetting(scheduler.items, "ios_audio_worker_qos", "Audio Worker QoS",
-                         "Sets the audio worker host thread QoS. Higher priority keeps audio "
-                         "smoother and uses more battery.",
-                         "user_interactive",
-                         {{"Default", "default"},
-                          {"User-Initiated", "user_initiated"},
-                          {"User-Interactive", "user_interactive"}});
+                 "Prioritize Game", "Gives the game more CPU time.", true);
+  AddStringChoiceSetting(scheduler.items, "ios_audio_worker_qos", "Audio Priority",
+                         "Higher keeps sound from crackling.", "user_interactive",
+                         {{"Normal", "default"},
+                          {"High", "user_initiated"},
+                          {"Highest", "user_interactive"}});
   AddBoolSetting(scheduler.items, "ios_emulator_thread_user_initiated_qos",
-                 "Emulator Thread User-Initiated QoS",
-                 "Runs the high-level emulator setup and launch thread at "
-                 "user-initiated QoS. This usually matters less than GPU commands or "
-                 "guest threads. Uses more battery.",
-                 false);
+                 "Prioritize Loading", "Starts games a little faster.", false);
   PushIfNotEmpty(sections, std::move(scheduler));
   return sections;
 }
@@ -421,29 +415,20 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
   // Surface the head-pose entitlement status when PHASE is in use, since head
   // tracking silently falls back to a fixed listener without it.
   if (phase_selected && !head_pose_entitlement) {
-    audio.footer =
-        "Spatial audio uses a fixed listener. AirPods head tracking needs the head-pose "
-        "entitlement (com.apple.developer.coremotion.head-pose), which this install's "
-        "signing profile doesn't include; SideStore can't add it.";
+    // The head-pose entitlement isn't in this install's signing profile (SideStore can't
+    // add it), so PHASE keeps a fixed listener.
+    audio.footer = "This install can't use AirPods head tracking, so spatial sound stays "
+                   "fixed in front of you.";
   }
-  AddStringChoiceSetting(audio.items, "apu", "Audio Backend",
-                         "Select the audio output backend, applied after the next full "
-                         "relaunch. SDL is the stereo path. PHASE renders the game's 5.1 "
-                         "mix as spatial audio over headphones (Apple PHASE engine); "
-                         "requires compatible headphones for the full effect.",
-                         "phase", {{"SDL (Stereo)", "sdl"}, {"PHASE (Spatial)", "phase"}});
-  std::string head_tracking_subtitle =
-      "Only affects the PHASE backend. Tracks compatible AirPods head motion so the sound "
-      "stage stays anchored to the screen as you turn your head. Applied after a full "
-      "relaunch.";
-  if (!head_pose_entitlement) {
-    head_tracking_subtitle +=
-        "  \xE2\x9A\xA0\xEF\xB8\x8F Head-pose entitlement NOT detected in this build — head "
-        "tracking will not run (PHASE keeps a fixed listener).";
-  }
-  AddBoolSetting(audio.items, "apu_phase_head_tracking", "PHASE Head Tracking",
-                 head_tracking_subtitle, false);
-  AddBoolSetting(audio.items, "mute", "Mute Audio", "Silences all game audio.", false);
+  AddStringChoiceSetting(audio.items, "apu", "Sound",
+                         "Spatial plays surround sound over headphones. Applies after "
+                         "relaunch.",
+                         "phase", {{"Stereo", "sdl"}, {"Spatial", "phase"}});
+  AddBoolSetting(audio.items, "apu_phase_head_tracking", "Head Tracking",
+                 head_pose_entitlement
+                     ? "Spatial sound stays with the screen as you turn your head."
+                     : "Not available in this install.",
+                 false);
   PushIfNotEmpty(sections, std::move(audio));
   return sections;
 }
@@ -460,18 +445,20 @@ static std::vector<IOSConfigSection> BuildControlsSections() {
                  true);
   AddDoubleSetting(touch.items, "ios_touch_look_points_per_full_scale",
                    "Look Swipe Distance",
-                   "How far to swipe to turn at full speed. Lower turns faster.");
+                   "How far to swipe to turn at full speed. Lower turns faster.", "pt", 1.0, 20.0,
+                   0.5);
   AddDoubleSetting(touch.items, "ios_touch_look_vertical_scale", "Vertical Look Speed",
-                   "Speed of looking up and down, relative to left and right.");
+                   "Speed of looking up and down, relative to left and right.",
+                   "\xC3\x97", 0.5, 3.0, 0.1);
   PushIfNotEmpty(sections, std::move(touch));
 
   IOSConfigSection low_fps;
   low_fps.title = "Slow Games";
   low_fps.footer = "Helps games running at a low frame rate notice quick swipes and taps.";
   AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold Time",
-                   "Seconds a swipe keeps turning the camera.");
+                   "How long a swipe keeps turning the camera.", "s", 0.0, 0.5, 0.02);
   AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Tap Hold Time",
-                   "Seconds a tap keeps a button pressed.");
+                   "How long a tap keeps a button pressed.", "s", 0.0, 0.5, 0.02);
   PushIfNotEmpty(sections, std::move(low_fps));
   return sections;
 }
@@ -483,9 +470,9 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
   audio_workarounds.title = "Audio Workarounds";
   audio_workarounds.footer = "Only for games whose audio stutters or breaks.";
   AddChoiceSetting(audio_workarounds.items, IOSConfigControlType::kChoiceUInt32, "apu_max_queued_frames",
-                   "Audio Queue Depth",
-                   "Larger queues reduce underruns at the cost of latency. 8 is the default; "
-                   "try 32, 48 or 64 only if audio still stutters after a full relaunch.",
+                   "Audio Buffer",
+                   "A larger buffer stops crackling but delays sound. Applies after "
+                   "relaunch.",
                    8,
                    {{"8 Frames (Default)", 8},
                     {"16 Frames", 16},
@@ -493,85 +480,62 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
                     {"48 Frames", 48},
                     {"64 Frames", 64}},
                    "Frames");
-  AddStringChoiceSetting(audio_workarounds.items, "xma_decoder", "XMA Decoder",
-                         "Select the XMA decoder implementation. New is the current general "
-                         "default; Old and Master are fallback paths for regressions, and Fake "
-                         "disables XMA decode entirely.",
-                         "new",
-                         {{"New (Recommended)", "new"},
-                          {"Old", "old"},
-                          {"Master", "master"},
-                          {"Fake (No XMA Audio)", "fake"}});
-  AddBoolSetting(audio_workarounds.items, "use_dedicated_xma_thread", "Dedicated XMA Thread",
-                 "Runs XMA decode work on a separate thread. On arm64 this is off by "
-                 "default; enable only if audio stutters or decode work blocks the title, "
-                 "since timing can change.",
-                 false);
+  AddStringChoiceSetting(audio_workarounds.items, "xma_decoder", "Audio Decoder",
+                         "Try another decoder if a game's sound is broken.", "new",
+                         {{"Standard", "new"},
+                          {"Legacy", "old"},
+                          {"Alternate", "master"},
+                          {"Off (No Game Sound)", "fake"}});
+  AddBoolSetting(audio_workarounds.items, "use_dedicated_xma_thread", "Separate Audio Thread",
+                 "Try only if sound stutters or the game stalls.", false);
   PushIfNotEmpty(sections, std::move(audio_workarounds));
 
   IOSConfigSection gpu;
   gpu.title = "GPU Workarounds";
   gpu.footer = "Leave these at their defaults unless a specific title needs them.";
   AddBoolSetting(gpu.items, "half_pixel_offset", "Half-Pixel Offset",
-                 "D3D9-style sampling behavior. Keep this on for correct post-processing "
-                 "and UI in most games; disable only if a specific title shows blurred UI "
-                 "or edge artifacts.",
+                 "Keeps menus and effects aligned. Turn off only if a game looks blurry.",
                  true);
   AddBoolSetting(gpu.items, "gpu_3d_to_2d_texture", "Treat 3D Textures as 2D",
-                 "Compatibility workaround for titles that incorrectly sample 3D textures "
-                 "as 2D. Keep this on unless it causes a specific regression.",
-                 true);
-  AddBoolSetting(gpu.items, "gpu_allow_invalid_fetch_constants",
-                 "Allow Invalid Fetch Constants",
-                 "Unsafe workaround for titles with broken texture or vertex fetch "
-                 "metadata. This can help a game boot or draw, but it may also introduce "
-                 "corruption or hide a deeper bug.",
-                 true);
+                 "Fixes textures in some games. Leave on unless a game breaks.", true);
+  AddBoolSetting(gpu.items, "gpu_allow_invalid_fetch_constants", "Allow Broken Textures",
+                 "Can get a game to boot or draw, but may cause glitches.", true);
   AddEnumSetting(gpu.items, "readback_resolve", "Readback Resolve",
-                 "Controls CPU readback of render-to-texture resolve results.");
+                 "Some effects need rendered images read back. Slower when on.");
   AddEnumSetting(gpu.items, "occlusion_query", "Occlusion Query",
-                 "Selects the occlusion query implementation.");
+                 "How the game finds what's hidden. Change if objects pop in or vanish.");
   PushIfNotEmpty(sections, std::move(gpu));
 
   IOSConfigSection memory;
   memory.title = "Memory & Boot";
-  AddBoolSetting(memory.items, "mount_cache", "Mount Cache",
-                 "Mounts the Xbox cache partition for titles that expect it. Keep "
-                 "this on for normal behavior, but disabling it may fix cutscene "
-                 "loop issues in games like Halo 3, ODST, Reach, etc.",
+  AddBoolSetting(memory.items, "mount_cache", "Cache Drive",
+                 "Gives games the cache drive they expect. Turning it off can fix looping "
+                 "cutscenes in Halo 3, ODST and Reach.",
                  true);
-  AddBoolSetting(memory.items, "clear_memory_page_state", "Clear Memory Page State",
-                 "Clear memory page tracking state between frames.", false);
-  AddBoolSetting(memory.items, "submit_on_primary_buffer_end", "Submit on Primary Buffer End",
-                 "Submit command buffers at primary buffer end boundaries.", true);
+  AddBoolSetting(memory.items, "clear_memory_page_state", "Reset Memory Tracking",
+                 "Clears memory tracking every frame. Try only if a game glitches.", false);
+  AddBoolSetting(memory.items, "submit_on_primary_buffer_end", "Submit Work Early",
+                 "Sends graphics work in smaller batches. Leave on unless a game breaks.",
+                 true);
   PushIfNotEmpty(sections, std::move(memory));
 
   IOSConfigSection jit;
-  jit.title = "JIT & Codegen";
-  AddBoolSetting(jit.items, "a64_enable_host_guest_stack_synchronization",
-                 "A64 Stack Synchronization",
-                 "ARM64-only compatibility path that keeps host and guest stacks "
-                 "synchronized across calls. Fixes crashes in games that use "
-                 "setjmp/longjmp, at a slight performance cost. Leave this on unless "
-                 "you are diagnosing a problem.",
-                 true);
+  jit.title = "Game Code";
+  // Keeps host and guest stacks in step across setjmp/longjmp.
+  AddBoolSetting(jit.items, "a64_enable_host_guest_stack_synchronization", "Stack Sync",
+                 "Prevents crashes in some games at a small speed cost. Leave on.", true);
   PushIfNotEmpty(sections, std::move(jit));
 
   IOSConfigSection broker;
-  broker.title = "External JIT Broker";
-  broker.footer = "Only for external JIT brokers.";
-  AddBoolSetting(broker.items, "ios_jit_brk_prepare_fallback",
-                 "External JIT Prepare Fallback",
-                 "iOS ARM64 only. If iOS denies JIT page protection changes, ask an "
-                 "external broker or helper to prepare the region and retry. This is only "
-                 "useful on TXM or broker setups; otherwise it is unnecessary.",
+  broker.title = "JIT Helper";
+  broker.footer = "Only matters when a JIT helper like StikDebug stays attached.";
+  // If iOS denies a JIT page protection change, BRK into the attached broker so it prepares
+  // the region, then retry. 0xF00D is the universal command; 0x69 is the legacy one.
+  AddBoolSetting(broker.items, "ios_jit_brk_prepare_fallback", "Ask Helper When Blocked",
+                 "If iOS blocks JIT memory, the helper sets it up and the game carries on.",
                  true);
-  AddBoolSetting(broker.items, "ios_jit_brk_use_universal_0xf00d",
-                 "Universal 0xF00D JIT Breakpoint",
-                 "Use the modern universal BRK command for the external JIT broker. Keep "
-                 "this on for current broker scripts; disable it only if you are using an "
-                 "older legacy 0x69-only setup. This only matters when External JIT "
-                 "Prepare Fallback is enabled.",
+  AddBoolSetting(broker.items, "ios_jit_brk_use_universal_0xf00d", "Current Helper Scripts",
+                 "Turn off only for an old script that predates the universal command.",
                  true);
   PushIfNotEmpty(sections, std::move(broker));
   return sections;
@@ -1056,7 +1020,7 @@ static std::vector<IOSConfigSection> BuildCuratedPageSections(IOSConfigCatalogKi
 
 // Every curated page in one list, then everything else. A setting that appears on two pages is
 // kept once, on the first.
-// Section titles carry their page ("Graphics · Graphics Backend").
+// Section titles carry their page ("Graphics · Image Quality").
 static std::vector<IOSConfigSection> BuildAllSettingsSections() {
   std::vector<IOSConfigSection> result;
   std::set<std::string> seen_keys;
@@ -1075,7 +1039,7 @@ static std::vector<IOSConfigSection> BuildAllSettingsSections() {
       }
       section.items = std::move(kept);
       // "Audio · Output", or just the section's name where it already starts with the page's
-      // ("Display", "Graphics Backend").
+      // ("Display" on Display, "Audio" on Audio).
       if (section.title.empty()) {
         section.title = page;
       } else if (section.title.compare(0, page.size(), page) == 0) {
@@ -1138,26 +1102,24 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
       PushFilteredSection(sections, all_sections, "Display",
                           {"present_letterbox", "framerate_limit", "guest_display_refresh_cap",
                            "use_50Hz_mode"});
-      PushFilteredSection(sections, all_sections, "Graphics Backend", {"gpu"});
-      PushFilteredSection(sections, all_sections, "Caching & Compilation",
+      PushFilteredSection(sections, all_sections, "Shaders",
                           {"async_shader_compilation"});
-      PushFilteredSection(sections, all_sections, "Audio",
+      PushFilteredSection(sections, all_sections, "Audio Workarounds",
                           {"apu_max_queued_frames", "xma_decoder", "use_dedicated_xma_thread"});
       PushWholeSection(sections, all_sections, "GPU Workarounds");
       PushWholeSection(sections, all_sections, "Memory & Boot");
-      PushWholeSection(sections, all_sections, "JIT & Codegen");
-      PushWholeSection(sections, all_sections, "External JIT Broker");
+      PushWholeSection(sections, all_sections, "Game Code");
+      PushWholeSection(sections, all_sections, "JIT Helper");
       IOSConfigSection all_config;
       all_config.title = "All Config";
       AddActionSetting(all_config.items, IOSConfigAction::kOpenAllConfigSettings,
-                       "Search All Config",
-                       "Find any non-transient cvar and save it as a title-specific "
-                       "override.");
+                       "All Settings",
+                       "Find any setting and change it just for this game.");
       PushIfNotEmpty(sections, std::move(all_config));
       IOSConfigSection reset;
       reset.title = "Reset";
       AddActionSetting(reset.items, IOSConfigAction::kResetGameSettings, "Reset Game Settings",
-                       "Delete saved overrides for this title and return to defaults.");
+                       "Remove this game's changes and use your usual settings.");
       PushIfNotEmpty(sections, std::move(reset));
       return sections;
     }
@@ -1177,8 +1139,6 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
       PushFilteredSection(sections, all_sections, "Display",
                           {"present_letterbox", "framerate_limit",
                            "guest_display_refresh_cap"});
-      PushFilteredSection(sections, all_sections, "Audio",
-                          {"mute"});
       PushWholeSection(sections, all_sections, "Automation");
       return sections;
     }
@@ -1214,6 +1174,23 @@ static std::string FormatDoubleText(double value) {
   return buffer;
 }
 
+// A stepped value with as many decimals as its step needs and its unit: "0.10 s", "1.2×",
+// "4.0 pt". "×" sits against the number, as Apple writes zoom levels.
+static std::string FormatSteppedDoubleText(const IOSConfigItem& item, double value) {
+  int decimals = 0;
+  for (double step = item.step; decimals < 3 && step - std::floor(step) > 1e-9; step *= 10.0) {
+    ++decimals;
+  }
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "%.*f", decimals, value);
+  std::string text = buffer;
+  if (item.value_unit.empty()) {
+    return text;
+  }
+  return item.value_unit == "\xC3\x97" ? text + item.value_unit
+                                        : text + " " + item.value_unit;
+}
+
 static std::string OnOffText(bool on) {
   return [(on ? NSLocalizedString(@"On", @"config catalog: toggle value")
               : NSLocalizedString(@"Off", @"config catalog: toggle value")) UTF8String];
@@ -1226,7 +1203,8 @@ std::string IOSConfigItemValueText(const IOSConfigItem& item) {
     case IOSConfigControlType::kInteger:
       return std::to_string(item.integer_value);
     case IOSConfigControlType::kDouble:
-      return FormatDoubleText(item.double_value);
+      return item.step > 0.0 ? FormatSteppedDoubleText(item, item.double_value)
+                             : FormatDoubleText(item.double_value);
     case IOSConfigControlType::kString:
     case IOSConfigControlType::kPath:
       return item.string_value;
@@ -1269,6 +1247,15 @@ bool IOSConfigItemDefaultText(const IOSConfigItem& item, std::string* text_out) 
       for (size_t i = 0; i < item.choice_string_values.size() && i < item.choices.size(); ++i) {
         if (item.choice_string_values[i] == item.default_value && !item.choices[i].is_custom) {
           text = item.choices[i].title;
+        }
+      }
+      break;
+    case IOSConfigControlType::kDouble:
+      if (item.step > 0.0) {
+        char* end = nullptr;
+        double value = std::strtod(item.default_value.c_str(), &end);
+        if (end != item.default_value.c_str()) {
+          text = FormatSteppedDoubleText(item, value);
         }
       }
       break;

@@ -86,6 +86,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_game_compatibility_view_controller.mm
   launcher/ios_game_actions_view_controller.h
   launcher/ios_game_actions_view_controller.mm
+  launcher/ios_jit_sheet_view_controller.h
+  launcher/ios_jit_sheet_view_controller.mm
   launcher/ios_game_picker_view_controller.h
   launcher/ios_game_picker_view_controller.mm
   launcher/ios_game_content_view_controller.h
