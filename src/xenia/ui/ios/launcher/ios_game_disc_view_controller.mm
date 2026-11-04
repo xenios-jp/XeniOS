@@ -10,29 +10,23 @@
 #import "xenia/ui/ios/launcher/ios_game_disc_view_controller.h"
 
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
 
 NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   NSString* filename = ToNSString(disc.path.filename().string());
-  NSString* source = nil;
+  // Only a disc outside XeniOS's storage says where it is; the file name tells discs apart.
   if (!disc.source_label.empty()) {
-    source = ToNSString(disc.source_label);
-  } else if (disc.has_imported_source && disc.has_external_source) {
-    source =
-        NSLocalizedString(@"Imported + External", @"game disc view controller: user-visible text");
-  } else {
-    source = disc.is_external || disc.has_external_source
-                 ? NSLocalizedString(@"External", @"game disc view controller: user-visible text")
-                 : NSLocalizedString(@"Imported", @"game disc view controller: user-visible text");
+    return [NSString stringWithFormat:@"%@ · %@", ToNSString(disc.source_label), filename];
   }
-  if (disc.media_id) {
+  if (disc.is_external || disc.has_external_source) {
     return [NSString
-        stringWithFormat:NSLocalizedString(@"%1$@ - %2$@ - Media %3$08X",
-                                           @"game disc view controller: user-visible text"),
-                         source, filename, disc.media_id];
+        stringWithFormat:NSLocalizedString(@"External · %@",
+                                           @"game disc view controller: detail; %@ is a file name"),
+                         filename];
   }
-  return [NSString stringWithFormat:@"%@ - %@", source, filename];
+  return filename;
 }
 
 }  // namespace
@@ -102,8 +96,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
     return NSLocalizedString(@"No alternate discs were found for this title.",
                              @"game disc view controller: user-visible text");
   }
-  return NSLocalizedString(@"Choose the disc to boot. Saves, title updates, and installed content "
-                           @"remain shared by title ID.",
+  return NSLocalizedString(@"Saves, updates and add-ons are shared by every disc.",
                            @"game disc view controller: user-visible text");
 }
 
@@ -121,6 +114,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
     cell.textLabel.text =
         NSLocalizedString(@"No discs available", @"game disc view controller: label text");
     cell.detailTextLabel.text = nil;
+    cell.imageView.image = nil;
     cell.textLabel.textColor = [XeniaTheme textMuted];
     cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
     cell.accessoryType = UITableViewCellAccessoryNone;
@@ -133,8 +127,7 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text = DetailForDisc(disc);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  cell.imageView.image = [UIImage systemImageNamed:@"opticaldisc"];
-  cell.imageView.tintColor = self.view.tintColor;
+  cell.imageView.image = XESettingsBadgeImage(@"opticaldisc", [XeniaTheme accent]);
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityLabel = cell.textLabel.text;

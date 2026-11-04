@@ -7,9 +7,6 @@
 /* Version text; %1$@ is the version, %2$lld the build number */
 "%1$@ (%2$lld)" = "%1$@ (%2$lld)";
 
-/* game disc view controller: user-visible text */
-"%1$@ - %2$@ - Media %3$08X" = "%1$@ - %2$@ - Media %3$08X";
-
 /* zar conversion coordinator: user-visible text */
 "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone." = "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone.";
 
@@ -556,9 +553,6 @@
 
 /* Prompt of the per-game touch layout picker */
 "Choose a title to edit before launch." = "Choose a title to edit before launch.";
-
-/* game disc view controller: user-visible text */
-"Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID." = "Choose the disc to boot. Saves, title updates, and installed content remain shared by title ID.";
 
 /* Name of a touch control shape */
 "Circle" = "Circle";
@@ -1233,8 +1227,7 @@
 /* settings hub view controller: title */
 "Export Running Layout" = "Export Running Layout";
 
-/* game disc view controller: user-visible text
-   Game source label: file is external */
+/* Game source label: file is external */
 "External" = "External";
 
 /* zar conversion coordinator: user-visible text */
@@ -1256,6 +1249,9 @@
 
 /* zar conversion coordinator: detail text */
 "External library item." = "External library item.";
+
+/* game disc view controller: detail; %@ is a file name */
+"External · %@" = "External · %@";
 
 /* Badge text when a button has no extra assignment */
 "Extra" = "Extra";
@@ -1616,9 +1612,6 @@
 /* settings hub view controller: title */
 "Import Layout" = "Import Layout";
 
-/* game disc view controller: user-visible text */
-"Imported" = "Imported";
-
 /* document import coordinator: label text
    Toast; %@ is the layout name */
 "Imported %@." = "Imported %@.";
@@ -1626,8 +1619,7 @@
 /* document import coordinator: label text */
 "Imported %@. Waiting for JIT." = "Imported %@. Waiting for JIT.";
 
-/* game disc view controller: user-visible text
-   Game source label: file is both imported and external */
+/* Game source label: file is both imported and external */
 "Imported + External" = "Imported + External";
 
 /* document import coordinator: title */
@@ -2811,6 +2803,9 @@
 
 /* config view controller: message */
 "Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing." = "Saved to XeniOS settings.\n\nFor reliable results, change settings before launching a game. If you saved while a game was already running, fully relaunch XeniOS before testing.";
+
+/* game disc view controller: user-visible text */
+"Saves, updates and add-ons are shared by every disc." = "Saves, updates and add-ons are shared by every disc.";
 
 /* Title of the Scaling submenu */
 "Scaling" = "Scaling";
