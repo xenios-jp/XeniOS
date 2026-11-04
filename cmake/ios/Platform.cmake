@@ -1,7 +1,17 @@
+# Devices, plus an arm64 simulator build for UI work (games can't run there).
+if(CMAKE_OSX_SYSROOT MATCHES "[iI][pP]hone[sS]imulator")
+  set(XE_IOS_SIMULATOR ON)
+  set(XE_IOS_SDK iphonesimulator)
+  set(XE_IOS_TARGET_SUFFIX "-simulator")
+else()
+  set(XE_IOS_SIMULATOR OFF)
+  set(XE_IOS_SDK iphoneos)
+  set(XE_IOS_TARGET_SUFFIX "")
+endif()
 if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" OR
-   NOT CMAKE_OSX_SYSROOT MATCHES "[iI][pP]hone[oO][sS]")
+   NOT (XE_IOS_SIMULATOR OR CMAKE_OSX_SYSROOT MATCHES "[iI][pP]hone[oO][sS]"))
   message(FATAL_ERROR
-    "The iOS app supports devices only: use arm64 and the iPhoneOS SDK.")
+    "The iOS app builds for arm64 with the iPhoneOS or iPhoneSimulator SDK.")
 endif()
 if(XENIA_BUILD_MISC OR XENIA_BUILD_TESTS)
   message(FATAL_ERROR "Desktop misc/test targets are not part of the iOS app build.")

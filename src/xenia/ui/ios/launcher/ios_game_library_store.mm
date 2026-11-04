@@ -1276,8 +1276,12 @@ static std::vector<IOSDiscoveredGame> ScanIOSGameLibraryImpl(NSDictionary* title
            xe::strip_pii(root.path.string()), BoolForLog(root.is_external),
            BoolForLog(is_documents_fallback_root),
            xe::strip_pii(root.external_location_name));
-    std::filesystem::recursive_directory_iterator it(
-        root.path, std::filesystem::directory_options::skip_permission_denied, ec);
+    auto scan_options = std::filesystem::directory_options::skip_permission_denied;
+#if TARGET_OS_SIMULATOR
+    // UI work in the simulator links games from the Mac into Documents.
+    scan_options |= std::filesystem::directory_options::follow_directory_symlink;
+#endif
+    std::filesystem::recursive_directory_iterator it(root.path, scan_options, ec);
     if (ec) {
       XELOGD("iOS library scan: failed opening root path='{}' error='{}'",
              xe::strip_pii(root.path.string()),
