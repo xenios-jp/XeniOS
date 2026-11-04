@@ -11,9 +11,10 @@
 // crashes, with the crashed process's read-only task port. It reads the app's
 // crash context (ios_crash_context.h, imported as the bridging header), which
 // holds the consent flag, the endpoint and the envelope fields, so it needs no
-// App Group and no settings of its own. It sends one "crash" record with
-// on-device symbolicated frames, the system's included, and nothing at all
-// unless the app had diagnostics sharing on.
+// App Group and no settings of its own. It sends one schema 2 batch
+// (ios_diagnostics_outbox.h) of one "crash" record with on-device symbolicated
+// frames, the system's included, under the crashed launch's own build and
+// device, and nothing at all unless the app had diagnostics sharing on.
 
 import CrashReportExtension
 import Darwin
@@ -47,6 +48,27 @@ private func string<T>(fromTuple tuple: T) -> String {
     let end = bytes.firstIndex(of: 0) ?? bytes.count
     return String(decoding: bytes[..<end], as: UTF8.self)
   }
+}
+
+// RFC 1952 around the raw deflate stream of Foundation's zlib compression.
+private func gzip(_ data: Data) -> Data? {
+  guard let deflated = try? (data as NSData).compressed(using: .zlib) as Data else {
+    return nil
+  }
+  var crc: UInt32 = 0xffff_ffff
+  for byte in data {
+    crc ^= UInt32(byte)
+    for _ in 0..<8 {
+      crc = (crc >> 1) ^ (0xedb8_8320 & (0 &- (crc & 1)))
+    }
+  }
+  var out = Data([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff])
+  out.append(deflated)
+  withUnsafeBytes(of: (~crc).littleEndian) { out.append(contentsOf: $0) }
+  withUnsafeBytes(of: UInt32(truncatingIfNeeded: data.count).littleEndian) {
+    out.append(contentsOf: $0)
+  }
+  return out
 }
 
 private func hex(_ value: UInt64) -> String {
@@ -202,15 +224,14 @@ struct XeniOSCrashReporter: CrashReporterExtension {
         && context.fault_pc - context.jit_base < context.jit_size
     }
 
-    var envelope = header
-    envelope["schema"] = 1
-    envelope["kind"] = "crash"
-    envelope["id"] = UUID().uuidString
-    envelope["body"] = body
-    guard let json = try? JSONSerialization.data(withJSONObject: envelope) else {
+    var batch = header
+    batch["schema"] = 2
+    batch["records"] = [["kind": "crash", "id": UUID().uuidString, "body": body]]
+    guard let json = try? JSONSerialization.data(withJSONObject: batch), let compressed = gzip(json)
+    else {
       return
     }
-    send(json, to: url)
+    send(compressed, to: url)
   }
 
   // The app's endpoint, from its Info.plist rather than the crashed process's
@@ -234,7 +255,7 @@ struct XeniOSCrashReporter: CrashReporterExtension {
   }
 
   // The extension has seconds to finish; one try, no retries.
-  private func send(_ json: Data, to url: URL) {
+  private func send(_ gzipped: Data, to url: URL) {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.allowsConstrainedNetworkAccess = false
     configuration.timeoutIntervalForRequest = 10
@@ -243,7 +264,8 @@ struct XeniOSCrashReporter: CrashReporterExtension {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = json
+    request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
+    request.httpBody = gzipped
     let done = DispatchSemaphore(value: 0)
     session.dataTask(with: request) { _, _, _ in done.signal() }.resume()
     _ = done.wait(timeout: .now() + 15)

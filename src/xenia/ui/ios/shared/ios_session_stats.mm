@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <ctime>
 #include <iterator>
 
 #include "xenia/gpu/gpu_flags.h"
@@ -195,6 +196,8 @@ std::atomic<uint32_t> g_window_counts[kWindowBucketCount];
 // Written by the stats queue before the session starts running; read by the
 // presenting thread too.
 uint64_t g_begin_ticks = 0;
+// Stats queue only: when the session started, for its day.
+time_t g_begin_time = 0;
 
 // Stats queue only.
 uint64_t g_last_sample_ticks = 0;
@@ -365,6 +368,15 @@ void AddWindowsLocked(NSMutableDictionary* record) {
   }
 }
 
+// "2026-11-04": the UTC day of |time|.
+NSString* UTCDay(time_t time) {
+  struct tm utc = {};
+  gmtime_r(&time, &utc);
+  char day[16];
+  strftime(day, sizeof(day), "%Y-%m-%d", &utc);
+  return @(day);
+}
+
 NSMutableDictionary* RecordLocked(NSString* end) {
   NSMutableArray* edges = [NSMutableArray array];
   for (double edge : kIntervalEdgesMs) {
@@ -430,6 +442,9 @@ NSMutableDictionary* RecordLocked(NSString* end) {
   record[@"memoryWarnings"] = @(g_memory_warnings);
   AddWindowsLocked(record);
   record[@"end"] = end;
+  // The day it was played: the day it ended, or for a checkpoint (a session
+  // the next launch may report as cut short), the day it started.
+  record[@"day"] = UTCDay([end isEqualToString:@"unfinished"] ? g_begin_time : time(nullptr));
   return record;
 }
 
@@ -521,6 +536,7 @@ void xe_ios_session_stats_begin(void) {
     g_active_ticks.store(0, std::memory_order_relaxed);
     g_first_frame_ticks.store(0, std::memory_order_relaxed);
     g_begin_ticks = mach_absolute_time();
+    g_begin_time = time(nullptr);
     g_last_sample_ticks = g_begin_ticks;
     g_next_checkpoint_seconds = kFirstCheckpointSeconds;
     g_begin_lifetime_peak = ReadFootprint().lifetime_peak;
