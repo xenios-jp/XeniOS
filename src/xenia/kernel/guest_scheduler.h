@@ -174,6 +174,12 @@ class GuestScheduler {
   // YieldCurrentThread, returning false without a switch if nothing could run.
   bool YieldExecution(bool quantum_end);
 
+  // A JIT spin-wait release on the running fiber: yields if another fiber
+  // could run on this CPU, otherwise sleeps the dispatch thread for
+  // |sleep_ns|, as a spinning host thread would, so the core goes to other
+  // host threads instead of to a switch out and straight back in.
+  void ReleaseCoreInSpinWait(uint64_t sleep_ns);
+
   // Parks the running guest fiber on its CPU's blocked list and yields. Returns
   // once the dispatcher re-readies it so the wait can re-poll. A single-object
   // wait on an epoch-bumping type is re-readied only when the epoch moves past
@@ -211,6 +217,10 @@ class GuestScheduler {
  private:
   // Xbox 360 logical CPU count, also the maximum number of dispatch threads.
   static constexpr int kMaxCpus = 6;
+
+  // Whether RunLoop has anything to act on before re-dispatching |self|, the
+  // fiber running on this dispatch thread.
+  bool DispatchWanted(XThread* self) const;
   // Re-poll cadence for waiters that resolve only by polling: ungated waits
   // and the APC check of alertable waiters. Quiet gated waiters do not tick
   // at this rate, they wake on signals, deadlines and the backstop.
@@ -416,6 +426,7 @@ class GuestScheduler {
     std::atomic<uint64_t> idle_wakes{0};      // timed wakes of a parked CPU
     std::atomic<uint64_t> switches{0};        // fiber dispatches
     std::atomic<uint64_t> skipped_yields{0};  // yields with nothing to run
+    std::atomic<uint64_t> spin_sleeps{0};     // spin releases that slept
     std::atomic<uint64_t> yield_downs{0};     // yields that ran a lower prio
     // Of those, the ones the starvation escape hatch forced.
     std::atomic<uint64_t> starvation_yields{0};
