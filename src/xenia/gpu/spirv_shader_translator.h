@@ -609,6 +609,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
     bool fetch_state_function_constants = false;
     bool structured_vertex_control_flow = false;
     bool optimize_finite_multiplication = false;
+    // 32-bit Fma stays fused through the host compiler, so a product's exact
+    // rounding error is one Fma.
+    bool fused_float32_fma = false;
     bool allow_float_contraction = false;
     // Keep fragment derivatives within their primitive on Metal drivers that
     // otherwise reuse values from adjacent primitives in a merged quad.

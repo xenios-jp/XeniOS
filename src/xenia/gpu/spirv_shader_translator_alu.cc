@@ -648,9 +648,19 @@ spv::Id SpirvShaderTranslator::AluMultiply(spv::Id a, spv::Id b) {
   if (!RoundsTowardZero() || RoundsTowardZeroInHardware()) {
     return product;
   }
-  // Fma isn't guaranteed to be fused (spirv_to_dxil splits 32-bit Fma into a
-  // multiply and an add), so recover the product error with a Veltkamp split
-  // and Dekker error sum instead.
+  if (features_.fused_float32_fma) {
+    // The fused product's exact error, free of nsz like UseFiniteProduct's.
+    builder_->addCapability(spv::Capability::FloatControls2);
+    builder_->addExtension("SPV_KHR_float_controls2");
+    spv::Id error = builder_->createTriBuiltinCall(
+        type, ext_inst_glsl_std_450_, GLSLstd450Fma, a, b,
+        builder_->createNoContractionUnaryOp(spv::OpFNegate, type, product));
+    builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
+    return RoundTowardZero(product, error, a, b);
+  }
+  // Without a guaranteed fused Fma (spirv_to_dxil splits 32-bit Fma into a
+  // multiply and an add), recover the product error with a Veltkamp split and
+  // Dekker error sum instead.
   auto mul = [&](spv::Id x, spv::Id y) {
     return builder_->createNoContractionBinOp(spv::OpFMul, type, x, y);
   };

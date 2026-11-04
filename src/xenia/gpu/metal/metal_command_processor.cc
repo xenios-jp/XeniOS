@@ -2553,6 +2553,8 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   spirv_features.optimize_finite_multiplication =
       cvars::metal_finite_multiply &&
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
+  spirv_features.fused_float32_fma =
+      UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
   // A live primitive-specific input prevents adjacent primitives from sharing
