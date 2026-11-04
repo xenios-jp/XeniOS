@@ -232,6 +232,16 @@ bool PreferEfficiencyCores() {
 #endif  // XE_PLATFORM_MAC
 }
 
+bool PreferPerformanceCores() {
+#if XE_PLATFORM_IOS
+  // A thread left at the default QoS runs on the efficiency cores whenever
+  // the performance ones are busy, which with two of them is most of the time.
+  return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0;
+#else
+  return false;
+#endif  // XE_PLATFORM_IOS
+}
+
 static void SleepFor(timespec rqtp) {
   timespec rmtp = {};
   auto p_rqtp = &rqtp;
