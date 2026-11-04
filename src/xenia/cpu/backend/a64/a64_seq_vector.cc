@@ -1136,6 +1136,31 @@ struct SWIZZLE
       } else if (w0 == 2 && w1 == 3 && w2 == 2 && w3 == 3) {
         // Broadcast high 64-bit half.
         e.dup(VReg(d).d2, VReg(s).d2[1]);
+      } else if (w0 == w1 && w2 == w3 && w2 == w0 + 2 && w0 <= 1) {
+        // Each even (trn1) or odd (trn2) word twice.
+        if (w0 == 0) {
+          e.trn1(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        } else {
+          e.trn2(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        }
+      } else if (w0 == w1 && w2 == w3 && w2 == w0 + 1 && (w0 & 1) == 0) {
+        // Each word of the low (zip1) or high (zip2) half twice.
+        if (w0 == 0) {
+          e.zip1(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        } else {
+          e.zip2(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        }
+      } else if (w0 == w2 && w1 == w3 && w1 == w0 + 2 && w0 <= 1) {
+        // The even (uzp1) or odd (uzp2) words, twice.
+        if (w0 == 0) {
+          e.uzp1(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        } else {
+          e.uzp2(VReg(d).s4, VReg(s).s4, VReg(s).s4);
+        }
+      } else if (w1 == ((w0 + 1) & 3) && w2 == ((w0 + 2) & 3) &&
+                 w3 == ((w0 + 3) & 3)) {
+        // A rotation by w0 words (w0 == 2 and 0 are handled above).
+        e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, w0 * 4);
       } else {
         // General case: TBL.
         uint8_t ctrl[16];
