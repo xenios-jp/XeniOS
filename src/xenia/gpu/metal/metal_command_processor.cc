@@ -1314,17 +1314,23 @@ bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
 
 const MetalCommandProcessor::FiniteMultiplyInfo&
 MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
-  auto found = finite_multiply_requirements_.find(&shader);
-  if (found != finite_multiply_requirements_.end()) {
-    return found->second;
+  const size_t last_index = shader.type() == xenos::ShaderType::kPixel;
+  if (finite_multiply_last_shader_[last_index] == &shader) {
+    return *finite_multiply_last_info_[last_index];
   }
-  SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
-  SpirvShaderTranslator::AnalyzeFiniteMultiplications(shader, analysis);
-  FiniteMultiplyInfo info;
-  info.required = analysis.dynamic_inputs;
-  std::memcpy(info.direct_constants, analysis.direct_constants,
-              sizeof(info.direct_constants));
-  return finite_multiply_requirements_.emplace(&shader, info).first->second;
+  auto found = finite_multiply_requirements_.find(&shader);
+  if (found == finite_multiply_requirements_.end()) {
+    SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
+    SpirvShaderTranslator::AnalyzeFiniteMultiplications(shader, analysis);
+    FiniteMultiplyInfo info;
+    info.required = analysis.dynamic_inputs;
+    std::memcpy(info.direct_constants, analysis.direct_constants,
+                sizeof(info.direct_constants));
+    found = finite_multiply_requirements_.emplace(&shader, info).first;
+  }
+  finite_multiply_last_shader_[last_index] = &shader;
+  finite_multiply_last_info_[last_index] = &found->second;
+  return found->second;
 }
 
 uint64_t MetalCommandProcessor::GetFiniteMultiplyRequirements(
@@ -2778,6 +2784,8 @@ void MetalCommandProcessor::ShutdownContext() {
     tessellator_tables_buffer_ = nullptr;
   }
   finite_multiply_requirements_.clear();
+  std::fill(std::begin(finite_multiply_last_shader_),
+            std::end(finite_multiply_last_shader_), nullptr);
   guest_shader_cache_.clear();
   memexport_format_profiles_.Clear();
   spirv_shader_translator_.reset();

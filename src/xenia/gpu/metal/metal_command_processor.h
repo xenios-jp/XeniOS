@@ -827,6 +827,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // Accessed only while assembling requests on the command thread.
   mutable std::unordered_map<const Shader*, FiniteMultiplyInfo>
       finite_multiply_requirements_;
+  // The last lookup per shader type: a draw asks for its two shaders' entries
+  // several times. Elements of an unordered_map keep their address on insert.
+  mutable const Shader* finite_multiply_last_shader_[2] = {};
+  mutable const FiniteMultiplyInfo* finite_multiply_last_info_[2] = {};
   std::mutex specialized_functions_mutex_;
   // Compare the complete specialization identity; a hash alone may collide.
   using SpecializedFunctionKey =
