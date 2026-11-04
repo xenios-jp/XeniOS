@@ -131,6 +131,13 @@ class CodeCacheBase : public CodeCache {
                : kGeneratedCodeExecuteBase;
   }
   size_t total_size() const override { return kGeneratedCodeSize; }
+  // Where generated code can be read. The execute view cannot be on iOS, so
+  // this is the write view at the same offset.
+  const uint8_t* readable_base_address() const {
+    return generated_code_write_base_
+               ? generated_code_write_base_
+               : reinterpret_cast<const uint8_t*>(execute_base_address());
+  }
 
   bool PatchCode(void* execute_address, const void* data,
                  size_t size) override {
