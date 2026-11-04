@@ -14,6 +14,11 @@
 @property(nonatomic, strong) UIStackView* metadataStackView;
 @end
 
+namespace {
+// The cover's corners, as in the mockups' grid.
+constexpr CGFloat kCoverRadius = 8.0;
+}  // namespace
+
 @implementation XeniaGameTileCell
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -21,24 +26,22 @@
   if (!self) {
     return nil;
   }
-
+  // The cover on its own, with the title and status under it on the page, like
+  // the Games app's library: no card behind the text.
   self.backgroundColor = [UIColor clearColor];
-  self.layer.cornerRadius = XeniaRadiusLg;
-  self.layer.masksToBounds = NO;
-  self.layer.shadowOffset = CGSizeMake(0.0f, 6.0f);
   self.contentView.backgroundColor = [UIColor clearColor];
   self.isAccessibilityElement = YES;
   self.accessibilityTraits = UIAccessibilityTraitButton;
   // Pointer: lift the tile under a trackpad or mouse pointer on iPad.
   self.hoverStyle = [UIHoverStyle styleWithEffect:[UIHoverLiftEffect effect]
-                                            shape:[UIShape rectShapeWithCornerRadius:XeniaRadiusLg]];
+                                            shape:[UIShape rectShapeWithCornerRadius:kCoverRadius]];
 
+  // `cardView` is the cover: what a press dims and a long press lifts.
   self.cardView = [[UIView alloc] init];
   self.cardView.translatesAutoresizingMaskIntoConstraints = NO;
-  self.cardView.backgroundColor = [XeniaTheme bgSurface];
-  self.cardView.layer.cornerRadius = XeniaRadiusLg;
-  self.cardView.layer.borderWidth = 0.5;
-  self.cardView.layer.borderColor = [XeniaTheme border].CGColor;
+  self.cardView.backgroundColor = [XeniaTheme bgSurface2];
+  self.cardView.layer.cornerRadius = kCoverRadius;
+  self.cardView.layer.cornerCurve = kCACornerCurveContinuous;
   self.cardView.clipsToBounds = YES;
   [self.contentView addSubview:self.cardView];
 
@@ -46,22 +49,22 @@
   self.iconView.translatesAutoresizingMaskIntoConstraints = NO;
   self.iconView.contentMode = UIViewContentModeScaleAspectFill;
   self.iconView.clipsToBounds = YES;
-  self.iconView.backgroundColor = [XeniaTheme bgSurface2];
   [self.cardView addSubview:self.iconView];
 
+  // A hairline inside the cover's edge, so dark art keeps its shape on black.
   self.footerView = [[UIView alloc] init];
   self.footerView.translatesAutoresizingMaskIntoConstraints = NO;
-  self.footerView.backgroundColor = [XeniaTheme bgSurface];
+  self.footerView.userInteractionEnabled = NO;
+  self.footerView.layer.cornerRadius = kCoverRadius;
+  self.footerView.layer.cornerCurve = kCACornerCurveContinuous;
+  self.footerView.layer.borderWidth = 0.5;
   [self.cardView addSubview:self.footerView];
 
   self.contentTypePill = [[XeniaPaddedLabel alloc] init];
   self.contentTypePill.translatesAutoresizingMaskIntoConstraints = NO;
   self.contentTypePill.padding = UIEdgeInsetsZero;
   self.contentTypePill.textAlignment = NSTextAlignmentLeft;
-  self.contentTypePill.layer.cornerRadius = 0.0;
-  self.contentTypePill.layer.borderWidth = 0.0;
-  self.contentTypePill.clipsToBounds = NO;
-  xe_apply_label_font(self.contentTypePill, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
+  xe_apply_label_font(self.contentTypePill, UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
   self.contentTypePill.textColor = [XeniaTheme textMuted];
   self.contentTypePill.backgroundColor = [UIColor clearColor];
   self.contentTypePill.hidden = YES;
@@ -72,89 +75,62 @@
 
   self.titleLabel = [[UILabel alloc] init];
   self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  xe_apply_label_font(self.titleLabel, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+  xe_apply_label_font(self.titleLabel, UIFontTextStyleFootnote, 13.5, UIFontWeightSemibold);
   self.titleLabel.textColor = [XeniaTheme textPrimary];
   self.titleLabel.textAlignment = NSTextAlignmentLeft;
   self.titleLabel.numberOfLines = 1;
   self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
   self.titleLabel.allowsDefaultTighteningForTruncation = YES;
-  self.titleLabel.adjustsFontSizeToFitWidth = NO;
-  [self.titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                                   forAxis:UILayoutConstraintAxisHorizontal];
   [self.titleLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
                                                    forAxis:UILayoutConstraintAxisVertical];
-  [self.footerView addSubview:self.titleLabel];
+  [self.contentView addSubview:self.titleLabel];
 
   self.compatPill = [[XeniaPaddedLabel alloc] init];
   self.compatPill.translatesAutoresizingMaskIntoConstraints = NO;
   self.compatPill.padding = UIEdgeInsetsZero;
   self.compatPill.textAlignment = NSTextAlignmentLeft;
-  self.compatPill.layer.cornerRadius = 0.0;
-  self.compatPill.layer.borderWidth = 0.0;
-  self.compatPill.clipsToBounds = NO;
   self.compatPill.backgroundColor = [UIColor clearColor];
-  xe_apply_label_font(self.compatPill, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
+  xe_apply_label_font(self.compatPill, UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
   self.compatPill.hidden = YES;
   [self.compatPill setContentHuggingPriority:UILayoutPriorityRequired
                                      forAxis:UILayoutConstraintAxisHorizontal];
-  [self.compatPill setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                                   forAxis:UILayoutConstraintAxisHorizontal];
 
   self.metadataStackView =
       [[UIStackView alloc] initWithArrangedSubviews:@[ self.compatPill, self.contentTypePill ]];
   self.metadataStackView.translatesAutoresizingMaskIntoConstraints = NO;
   self.metadataStackView.axis = UILayoutConstraintAxisHorizontal;
   self.metadataStackView.alignment = UIStackViewAlignmentCenter;
-  self.metadataStackView.distribution = UIStackViewDistributionFill;
   self.metadataStackView.spacing = 8.0;
   [self.metadataStackView setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                                           forAxis:UILayoutConstraintAxisHorizontal];
-  [self.metadataStackView setContentHuggingPriority:UILayoutPriorityRequired
-                                            forAxis:UILayoutConstraintAxisVertical];
-  [self.footerView addSubview:self.metadataStackView];
+  [self.contentView addSubview:self.metadataStackView];
 
-  // Apply the default chrome (shadow + border + label color) up front.
-  // The configuration pass only runs once the cell is in a view hierarchy, so
-  // without this call a freshly-created cell inherits the layer-default
-  // shadowOpacity = 0 until its first state change.
   [self updateConfigurationUsingState:self.configurationState];
 
   [NSLayoutConstraint activateConstraints:@[
     [self.cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
     [self.cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
     [self.cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
-    [self.cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+    [self.cardView.heightAnchor constraintEqualToAnchor:self.cardView.widthAnchor
+                                             multiplier:300.0 / 219.0],
     [self.iconView.topAnchor constraintEqualToAnchor:self.cardView.topAnchor],
     [self.iconView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor],
     [self.iconView.trailingAnchor constraintEqualToAnchor:self.cardView.trailingAnchor],
-    [self.iconView.heightAnchor constraintEqualToAnchor:self.iconView.widthAnchor
-                                             multiplier:300.0 / 219.0],
-    [self.footerView.topAnchor constraintEqualToAnchor:self.iconView.bottomAnchor],
+    [self.iconView.bottomAnchor constraintEqualToAnchor:self.cardView.bottomAnchor],
+    [self.footerView.topAnchor constraintEqualToAnchor:self.cardView.topAnchor],
     [self.footerView.leadingAnchor constraintEqualToAnchor:self.cardView.leadingAnchor],
     [self.footerView.trailingAnchor constraintEqualToAnchor:self.cardView.trailingAnchor],
     [self.footerView.bottomAnchor constraintEqualToAnchor:self.cardView.bottomAnchor],
-    [self.titleLabel.topAnchor constraintEqualToAnchor:self.footerView.topAnchor constant:8.0],
-    [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.footerView.leadingAnchor
-                                                  constant:10.0],
-    [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.footerView.trailingAnchor
-                                                   constant:-10.0],
-    [self.titleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:self.metadataStackView.topAnchor
-                                                           constant:-2.0],
-    [self.metadataStackView.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
+    [self.titleLabel.topAnchor constraintEqualToAnchor:self.cardView.bottomAnchor constant:7.0],
+    [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+    [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor],
+    [self.metadataStackView.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor
+                                                     constant:1.0],
+    [self.metadataStackView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
     [self.metadataStackView.trailingAnchor
-        constraintLessThanOrEqualToAnchor:self.titleLabel.trailingAnchor],
-    [self.metadataStackView.bottomAnchor constraintEqualToAnchor:self.footerView.bottomAnchor
-                                                        constant:-8.0],
+        constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor],
   ]];
-
   return self;
-}
-
-- (void)layoutSubviews {
-  [super layoutSubviews];
-  self.layer.shadowPath =
-      [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:XeniaRadiusLg].CGPath;
-  self.titleLabel.preferredMaxLayoutWidth = MAX(CGRectGetWidth(self.footerView.bounds) - 20.0, 0.0);
 }
 
 - (void)prepareForReuse {
@@ -210,40 +186,19 @@
       accessibilityText ? UIStackViewAlignmentLeading : UIStackViewAlignmentCenter;
   self.metadataStackView.spacing = accessibilityText ? 4.0 : 8.0;
 
-  self.footerView.backgroundColor = [XeniaTheme bgSurface];
-  if (self.controllerFocused || state.isFocused) {
-    self.cardView.layer.borderWidth = 1.5f;
-    self.cardView.layer.borderColor = resolved([XeniaTheme accent]);
-    self.titleLabel.textColor = [XeniaTheme textPrimary];
-    self.layer.shadowColor = resolved([XeniaTheme accent]);
-    self.layer.shadowOpacity = 0.24f;
-    self.layer.shadowRadius = 10.0f;
-    self.layer.zPosition = 1.0f;
-  } else {
-    self.cardView.layer.borderWidth = 0.5f;
-    self.cardView.layer.borderColor = resolved([XeniaTheme border]);
-    self.titleLabel.textColor = [XeniaTheme textPrimary];
-    // A subtle always-on shadow so light-mode tiles read as floating cards
-    // against a near-white background. In dark mode the shadow is black-on-
-    // black at 18% opacity, which still gives a soft separation without
-    // looking out of place.
-    self.layer.shadowColor = [[UIColor blackColor]
-                                 colorWithAlphaComponent:traits.userInterfaceStyle ==
-                                                                 UIUserInterfaceStyleLight
-                                                             ? 0.18
-                                                             : 0.42].CGColor;
-    self.layer.shadowOpacity = 0.18f;
-    self.layer.shadowRadius = 6.0f;
-    self.layer.zPosition = 0.0f;
-  }
+  self.footerView.layer.borderColor =
+      resolved([[XeniaTheme textPrimary] colorWithAlphaComponent:0.1]);
+  // Controller focus: an accent ring around the cover. Keyboard focus gets the system's halo.
+  const BOOL focused = self.controllerFocused;
+  self.cardView.layer.borderWidth = focused ? 2.5f : 0.0f;
+  self.cardView.layer.borderColor = focused ? resolved([XeniaTheme accent]) : nil;
+  self.layer.zPosition = focused ? 1.0f : 0.0f;
   // Pressed look: dim the card slightly while the tile is highlighted.
   self.cardView.alpha = state.isHighlighted ? 0.85 : 1.0;
   self.contentTypePill.textColor = [XeniaTheme textMuted];
   self.contentTypePill.backgroundColor = [UIColor clearColor];
   self.contentTypePill.layer.borderColor = [UIColor clearColor].CGColor;
   self.compatPill.backgroundColor = [UIColor clearColor];
-  self.compatPill.layer.borderWidth = 0.0f;
-  self.compatPill.layer.borderColor = [UIColor clearColor].CGColor;
 }
 
 @end

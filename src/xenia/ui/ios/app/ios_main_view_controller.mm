@@ -727,12 +727,6 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [presenter presentViewController:sheet animated:YES completion:nil];
 }
 
-// The launcher's grid leads with the Dashboard tile while there are games, so
-// the controller's item indexes run one ahead of the games'.
-- (NSInteger)launcherGameItemOffset {
-  return discovered_games_.empty() ? 0 : 1;
-}
-
 // A title the emulator starts itself, like a game the dashboard launches, gets
 // what a launch from the library sets up: its touch layout and access to the
 // folder it is in and to every linked folder. A game the dashboard starts exits
@@ -1018,8 +1012,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       return;
     }
     std::filesystem::path focused_path;
-    const NSInteger focused_game_index =
-        self.controllerNavigationCoordinator.focusedGameIndex - [self launcherGameItemOffset];
+    const NSInteger focused_game_index = [self.launcherOverlayView
+        gameIndexForItem:self.controllerNavigationCoordinator.focusedGameIndex];
     const BOOL has_focused_path =
         focused_game_index >= 0 &&
         focused_game_index < static_cast<NSInteger>(self->discovered_games_.size());
@@ -1030,19 +1024,22 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     self->compat_data_ = [data retain];
     [self applyCompatDataToDiscoveredGames];
     SortDiscoveredGames(&self->discovered_games_);
+    // The grid's order comes from the launcher (search and sort), so find the item after it
+    // has the new games.
+    [self refreshLauncherGameSnapshots];
     if (has_focused_path) {
       auto focused_it = std::find_if(
           self->discovered_games_.begin(), self->discovered_games_.end(),
           [&focused_path](const IOSDiscoveredGame& game) { return game.path == focused_path; });
-      if (focused_it != self->discovered_games_.end()) {
-        [self.controllerNavigationCoordinator
-            setFocusedGameIndex:static_cast<NSInteger>(
-                                    std::distance(self->discovered_games_.begin(), focused_it)) +
-                                [self launcherGameItemOffset]
-                         scroll:NO];
+      const NSInteger item =
+          focused_it == self->discovered_games_.end()
+              ? -1
+              : [self.launcherOverlayView
+                    itemForGameIndex:std::distance(self->discovered_games_.begin(), focused_it)];
+      if (item >= 0) {
+        [self.controllerNavigationCoordinator setFocusedGameIndex:item scroll:NO];
       }
     }
-    [self refreshLauncherGameSnapshots];
     [self.controllerNavigationCoordinator refreshLauncherFocus];
   });
 }
@@ -1053,8 +1050,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return;
   }
   std::filesystem::path focused_path;
-  const NSInteger focused_game_index =
-      self.controllerNavigationCoordinator.focusedGameIndex - [self launcherGameItemOffset];
+  const NSInteger focused_game_index = [self.launcherOverlayView
+      gameIndexForItem:self.controllerNavigationCoordinator.focusedGameIndex];
   const BOOL has_focused_path =
       focused_game_index >= 0 &&
       focused_game_index < static_cast<NSInteger>(discovered_games_.size());
@@ -1065,19 +1062,20 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   compat_data_ = [cached_compat_data retain];
   [self applyCompatDataToDiscoveredGames];
   SortDiscoveredGames(&discovered_games_);
+  [self refreshLauncherGameSnapshots];
   if (has_focused_path) {
     auto focused_it = std::find_if(
         discovered_games_.begin(), discovered_games_.end(),
         [&focused_path](const IOSDiscoveredGame& game) { return game.path == focused_path; });
-    if (focused_it != discovered_games_.end()) {
-      [self.controllerNavigationCoordinator
-          setFocusedGameIndex:static_cast<NSInteger>(
-                                  std::distance(discovered_games_.begin(), focused_it)) +
-                              [self launcherGameItemOffset]
-                       scroll:NO];
+    const NSInteger item =
+        focused_it == discovered_games_.end()
+            ? -1
+            : [self.launcherOverlayView
+                  itemForGameIndex:std::distance(discovered_games_.begin(), focused_it)];
+    if (item >= 0) {
+      [self.controllerNavigationCoordinator setFocusedGameIndex:item scroll:NO];
     }
   }
-  [self refreshLauncherGameSnapshots];
   [self.controllerNavigationCoordinator refreshLauncherFocus];
 }
 
@@ -1092,7 +1090,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (NSInteger)controllerNavigationGameCount {
-  return static_cast<NSInteger>(discovered_games_.size()) + [self launcherGameItemOffset];
+  return [self.launcherOverlayView libraryItemCount];
 }
 
 - (NSInteger)controllerNavigationLauncherColumnCount {
@@ -1169,11 +1167,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)controllerNavigationManageGameAtIndex:(NSInteger)index {
-  if ([self launcherGameItemOffset] && index == 0) {
+  if ([self.launcherOverlayView isDashboardItem:index]) {
     [self openSystemSoftware];
     return;
   }
-  index -= [self launcherGameItemOffset];
+  index = [self.launcherOverlayView gameIndexForItem:index];
   if (index < 0 || index >= static_cast<NSInteger>(discovered_games_.size())) {
     return;
   }
@@ -1181,11 +1179,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 }
 
 - (void)controllerNavigationLaunchGameAtIndex:(NSInteger)index {
-  if ([self launcherGameItemOffset] && index == 0) {
+  if ([self.launcherOverlayView isDashboardItem:index]) {
     [self openDashboard];
     return;
   }
-  index -= [self launcherGameItemOffset];
+  index = [self.launcherOverlayView gameIndexForItem:index];
   if (index < 0 || index >= static_cast<NSInteger>(discovered_games_.size())) {
     return;
   }
@@ -1399,6 +1397,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     const IOSDiscoveredGame& game = unsafe_self->discovered_games_[gameIndex];
     [unsafe_self launchGameAtPath:game.path displayName:ToNSString(game.title)];
   };
+  self.launcherOverlayView.gameActionsHandler = ^(NSUInteger gameIndex) {
+    if (gameIndex < unsafe_self->discovered_games_.size()) {
+      [unsafe_self presentGameActionsSheetForIndex:gameIndex];
+    }
+  };
   self.launcherOverlayView.compatibilityHandler = ^(NSUInteger gameIndex) {
     [unsafe_self presentCompatibilitySheetForIndex:gameIndex];
   };
@@ -1444,6 +1447,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     snapshot.title =
         game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
     snapshot.titleId = game.title_id;
+    snapshot.lastPlayed = XeniaIOSLastPlayedDate(game.title_id);
     snapshot.hasCompatInfo = game.has_compat_info;
     snapshot.compatStatus = ToNSString(game.compat_status);
     NSMutableArray<NSString*>* detail_parts = [NSMutableArray array];
@@ -1510,7 +1514,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       snapshot.iconData = icon;
       [next_icon_cache setObject:icon forKey:icon_key];
     }
-    [signature addObject:[NSString stringWithFormat:@"%@|%@|%u|%d|%@|%@|%d%d%d%d%d%d|%zu|%lu",
+    [signature addObject:[NSString stringWithFormat:@"%@|%@|%u|%d|%@|%@|%d%d%d%d%d%d|%zu|%lu|%.0f",
                                                     ToNSString(game.path.string()), snapshot.title,
                                                     snapshot.titleId, (int)snapshot.hasCompatInfo,
                                                     snapshot.compatStatus,
@@ -1522,7 +1526,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                     (int)snapshot.supportsZarConversion,
                                                     (int)snapshot.supportsRemoteArt,
                                                     snapshot.discCount,
-                                                    (unsigned long)snapshot.iconData.length]];
+                                                    (unsigned long)snapshot.iconData.length,
+                                                    snapshot.lastPlayed.timeIntervalSince1970]];
     [snapshots addObject:snapshot];
     [snapshot release];
   }
@@ -2581,16 +2586,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   // The dashboard lists the library as its games.
   xe::ui::PublishIOSLibraryToDashboard(discovered_games_);
 
+  [self refreshLauncherGameSnapshots];
   NSInteger focused_game_index = self.controllerNavigationCoordinator.focusedGameIndex;
   if (discovered_games_.empty()) {
     focused_game_index = -1;
   } else if (focused_game_index < 0 ||
-             focused_game_index >=
-                 static_cast<NSInteger>(discovered_games_.size()) + [self launcherGameItemOffset]) {
+             focused_game_index >= [self.launcherOverlayView libraryItemCount]) {
     focused_game_index = 0;
   }
   [self.controllerNavigationCoordinator setFocusedGameIndex:focused_game_index scroll:NO];
-  [self refreshLauncherGameSnapshots];
   [self.controllerNavigationCoordinator refreshLauncherFocus];
 }
 
@@ -3198,6 +3202,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   return YES;
 }
 
+// The library leads with the game played last (Continue Playing).
+- (void)recordGamePlayed:(uint32_t)title_id dashboard:(BOOL)dashboard {
+  if (dashboard || !title_id) {
+    return;
+  }
+  XeniaIOSRecordGamePlayed(title_id);
+  [self refreshLauncherGameSnapshots];
+}
+
 - (void)launchGameAtPath:(const std::filesystem::path&)game_path
              displayName:(NSString*)display_name {
   [self launchGameAtPath:game_path displayName:display_name skipMemoryEntitlementWarning:NO];
@@ -3316,6 +3329,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
             [self updateTouchControlsOverlayVisibilityAnimated:YES];
           }];
       [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:NO];
+      [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
       [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
@@ -3342,6 +3356,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (self.appContext) {
     [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:YES];
+    [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
     [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
