@@ -227,6 +227,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   xenia-ui
   "-framework AVFoundation"
   "-framework AudioToolbox"
+  "-framework CoreImage"
   "-framework Foundation"
   "-framework GameController"
   "-framework ImageIO"
