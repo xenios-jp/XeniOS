@@ -3462,9 +3462,26 @@ static MetalTextureCache::SamplerParameters BuildSamplerParametersFromFetch(
 MetalTextureCache::SamplerParameters MetalTextureCache::GetSamplerParameters(
     const SpirvShader::SamplerBinding& binding) const {
   SCOPE_profile_cpu_f("gpu");
-  return BuildSamplerParametersFromFetch(
+  SamplerParametersMemo& memo =
+      sampler_parameters_memo_[binding.fetch_constant];
+  const uint32_t* fetch_words =
+      &register_file().values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
+                              binding.fetch_constant * 6];
+  const uint32_t filters = uint32_t(binding.mag_filter) |
+                           (uint32_t(binding.min_filter) << 8) |
+                           (uint32_t(binding.mip_filter) << 16) |
+                           (uint32_t(binding.aniso_filter) << 24);
+  if (memo.valid && memo.filters == filters &&
+      !std::memcmp(&memo.fetch, fetch_words, sizeof(memo.fetch))) {
+    return memo.parameters;
+  }
+  std::memcpy(&memo.fetch, fetch_words, sizeof(memo.fetch));
+  memo.filters = filters;
+  memo.parameters = BuildSamplerParametersFromFetch(
       register_file(), binding.fetch_constant, binding.mag_filter,
       binding.min_filter, binding.mip_filter, binding.aniso_filter);
+  memo.valid = true;
+  return memo.parameters;
 }
 
 MTL::SamplerState* MetalTextureCache::GetOrCreateSampler(
