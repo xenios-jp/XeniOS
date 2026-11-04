@@ -86,15 +86,28 @@ bool ClobbersGuestContext(const Instr* i) {
 
 bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
   // Block::ordinal is 16 bits.
-  size_t block_count = 0;
+  std::vector<const Block*> blocks;
   for (Block* b = builder->first_block(); b; b = b->next) {
-    if (block_count > UINT16_MAX) {
+    if (blocks.size() > UINT16_MAX) {
       return false;
     }
-    b->ordinal = static_cast<uint16_t>(block_count++);
+    b->ordinal = static_cast<uint16_t>(blocks.size());
+    blocks.push_back(b);
   }
+  const size_t block_count = blocks.size();
   if (!block_count) {
     return false;
+  }
+  // A branch into a block that is no longer in the function, which code that
+  // never runs (data decoded as instructions) can leave, has no edge to track.
+  for (const Block* b : blocks) {
+    for (const Instr* i = b->instr_head; i; i = i->next) {
+      const Label* target = i->BranchLabel();
+      if (target && (!target->block || target->block->ordinal >= block_count ||
+                     blocks[target->block->ordinal] != target->block)) {
+        return false;
+      }
+    }
   }
 
   constexpr uint32_t kAllClean = ~uint32_t(0);
