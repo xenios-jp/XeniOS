@@ -22,6 +22,10 @@
 namespace xe {
 namespace gpu {
 
+// TODO(alu-exact): spirv2air could lower this guard's NMin(|x|, |y|) == 0 as
+// x == 0 || y == 0, which Apple's compiler makes smaller. That lowering is
+// parked: images changed in 4 of 92 traces and no device got faster. See
+// park/zero-multiply-two-compare in spirv2air and ~/xenia/tools/PARKED.md.
 spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
                                                       spv::Id operand_0_abs,
                                                       spv::Id operand_1_abs) {
