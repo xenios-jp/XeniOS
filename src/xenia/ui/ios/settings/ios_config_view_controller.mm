@@ -1239,10 +1239,37 @@ static bool IsSliderItem(const IOSConfigItem* item) {
     // trailing edge, like in Settings; the description stays below the title.
     std::string value_title = ChoiceTitleForItem(*item);
     content.secondaryText = [self secondaryTextForItem:*item];
+    // At large text sizes the value gets its own line under the title, as in Settings, so the
+    // title isn't squeezed against it.
+    const BOOL value_below =
+        !value_title.empty() &&
+        UIContentSizeCategoryCompareToCategory(self.traitCollection.preferredContentSizeCategory,
+                                               UIContentSizeCategoryExtraLarge) !=
+            NSOrderedAscending;
+    if (value_below) {
+      NSMutableAttributedString* secondary = [[[NSMutableAttributedString alloc]
+          initWithString:ToNSString(value_title)
+              attributes:@{
+                NSFontAttributeName : [UIFont preferredFontForTextStyle:UIFontTextStyleBody],
+                NSForegroundColorAttributeName : [XeniaTheme textSecondary],
+              }] autorelease];
+      if (content.secondaryText.length) {
+        [secondary appendAttributedString:
+                       [[[NSAttributedString alloc]
+                           initWithString:[@"\n" stringByAppendingString:content.secondaryText]
+                               attributes:@{
+                                 NSFontAttributeName :
+                                     [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote],
+                                 NSForegroundColorAttributeName : [XeniaTheme textSecondary],
+                               }] autorelease]];
+      }
+      content.secondaryAttributedText = secondary;
+    }
     cell.contentConfiguration = content;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.accessoryView = XeniaConfigMakeValueAccessoryView(
-        ToNSString(value_title), [self estimatedTableAccessoryWidth] * 0.5, YES);
+        value_below ? @"" : ToNSString(value_title), [self estimatedTableAccessoryWidth] * 0.5,
+        YES);
     cell.isAccessibilityElement = YES;
     cell.accessibilityLabel = ToNSString(item->title);
     cell.accessibilityValue = value_title.empty() ? nil : ToNSString(value_title);

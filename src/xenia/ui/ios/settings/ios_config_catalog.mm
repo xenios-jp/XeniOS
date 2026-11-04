@@ -18,6 +18,8 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -574,13 +576,12 @@ static std::vector<IOSConfigSection> BuildDiagnosticsSections() {
   IOSConfigSection diagnostics;
   diagnostics.title = "Logging";
   AddChoiceSetting(diagnostics.items, IOSConfigControlType::kChoiceInt32, "log_level",
-                   "Log Verbosity",
-                   "Controls how much goes into xenia.log. Higher levels help debug issues "
-                   "but increase log size and background overhead.",
+                   "Log Detail",
+                   "How much XeniOS writes to its log. More detail helps track down a problem "
+                   "but can slow games down.",
                    2, {{"Errors Only", 0}, {"Warnings", 1}, {"Info", 2}, {"Debug", 3}});
-  AddActionSetting(diagnostics.items, IOSConfigAction::kViewRecentLog, "View Live Log",
-                   "Open a live-updating xenia.log viewer so you can capture boot failures "
-                   "without Xcode.");
+  AddActionSetting(diagnostics.items, IOSConfigAction::kViewRecentLog, "View Log",
+                   "Shows the log as it is written, to see why a game won't start.");
   PushIfNotEmpty(sections, std::move(diagnostics));
   return sections;
 }
@@ -630,17 +631,42 @@ static std::vector<IOSConfigSection> BuildGraphicsCompatSections() {
 }
 
 // "occlusion_query_fake_lower_threshold" -> "Occlusion Query Fake Lower Threshold".
+// A title-case name for a cvar with no curated title: "gpu_3d_to_2d_texture" reads
+// "GPU 3D to 2D Texture". Abbreviations keep their capitals and short joining words stay lower case.
 static std::string ReadableTitleForKey(const std::string& key) {
+  static const std::unordered_map<std::string, std::string> kSpecialWords = {
+      {"2d", "2D"},       {"3d", "3D"},     {"apu", "APU"},   {"cpu", "CPU"},
+      {"d3d9", "D3D9"},   {"dxbc", "DXBC"}, {"edram", "EDRAM"}, {"fsi", "FSI"},
+      {"gpu", "GPU"},     {"hz", "Hz"},     {"id", "ID"},     {"jit", "JIT"},
+      {"msaa", "MSAA"},   {"mrt", "MRT"},   {"pm4", "PM4"},   {"psi", "PSI"},
+      {"rov", "ROV"},     {"rt", "RT"},     {"srgb", "sRGB"}, {"ui", "UI"},
+      {"vs", "VS"},       {"xma", "XMA"},   {"vfs", "VFS"},   {"hid", "HID"},
+  };
+  static const std::unordered_set<std::string> kJoiningWords = {
+      "a", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"};
   std::string title;
-  bool word_start = true;
-  for (char c : key) {
-    if (c == '_') {
+  size_t start = 0;
+  while (start <= key.size()) {
+    size_t end = key.find('_', start);
+    if (end == std::string::npos) {
+      end = key.size();
+    }
+    std::string word = key.substr(start, end - start);
+    start = end + 1;
+    if (word.empty()) {
+      continue;
+    }
+    if (!title.empty()) {
       title.push_back(' ');
-      word_start = true;
+    }
+    auto special = kSpecialWords.find(word);
+    if (special != kSpecialWords.end()) {
+      title += special->second;
+    } else if (!title.empty() && kJoiningWords.count(word)) {
+      title += word;
     } else {
-      title.push_back(word_start ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
-                                 : c);
-      word_start = false;
+      word[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(word[0])));
+      title += word;
     }
   }
   return title;
