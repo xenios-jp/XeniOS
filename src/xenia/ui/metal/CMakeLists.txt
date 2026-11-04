@@ -18,7 +18,7 @@ target_link_libraries(xenia-ui-metal PUBLIC
   "-framework Foundation"
   "-framework Metal"
   "-framework MetalKit"
-  "-framework MetalFX"
+  "$<$<NOT:$<BOOL:${XE_IOS_SIMULATOR}>>:-framework MetalFX>"
   "-framework QuartzCore"
   "$<$<NOT:$<BOOL:${XE_PLATFORM_IOS}>>:-framework AppKit>"
 )

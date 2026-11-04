@@ -23,16 +23,16 @@ if(NOT _xe_mesa_prepare_result EQUAL 0)
 endif()
 find_program(XE_MESON_EXECUTABLE meson REQUIRED)
 find_program(XE_NINJA_EXECUTABLE ninja REQUIRED)
-execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path
+execute_process(COMMAND xcrun --sdk ${XE_IOS_SDK} --show-sdk-path
   OUTPUT_VARIABLE _xe_ios_sdk OUTPUT_STRIP_TRAILING_WHITESPACE
   COMMAND_ERROR_IS_FATAL ANY)
 set(_xe_mesa_build "${CMAKE_BINARY_DIR}/third_party/mesa-ios-build")
 set(_xe_mesa_cross "${CMAKE_CURRENT_BINARY_DIR}/mesa-ios-cross.ini")
 file(CONFIGURE OUTPUT "${_xe_mesa_cross}" CONTENT
 "[binaries]
-c = ['@CMAKE_C_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@', '-isysroot', '@_xe_ios_sdk@']
-cpp = ['@CMAKE_CXX_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@', '-isysroot', '@_xe_ios_sdk@']
-objc = ['@CMAKE_OBJC_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@', '-isysroot', '@_xe_ios_sdk@']
+c = ['@CMAKE_C_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@@XE_IOS_TARGET_SUFFIX@', '-isysroot', '@_xe_ios_sdk@']
+cpp = ['@CMAKE_CXX_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@@XE_IOS_TARGET_SUFFIX@', '-isysroot', '@_xe_ios_sdk@']
+objc = ['@CMAKE_OBJC_COMPILER@', '-target', 'arm64-apple-ios@CMAKE_OSX_DEPLOYMENT_TARGET@@XE_IOS_TARGET_SUFFIX@', '-isysroot', '@_xe_ios_sdk@']
 ar = '@CMAKE_AR@'
 strip = '@CMAKE_STRIP@'
 pkg-config = '/usr/bin/false'
