@@ -45,15 +45,21 @@ void ReportTitleState(uint32_t title_id) {
   }
 }
 
-// Launches and the games they ran, oldest first: [{launch, title, at}], one
-// entry per launch, made when it starts or diagnostics are turned on and
+// Launches and the games they ran, oldest first: [{launch, title, at, header}],
+// one entry per launch, made when it starts or diagnostics are turned on and
 // updated in place with the last game it ran (so playing doesn't push the
 // launches of the last day or two out: a MetricKit crash report comes up to a
 // day late). Kept on the device and only while diagnostics can be sent:
 // turning them off, or a launch without them, clears it. So a non-empty log at
 // launch means the previous launch ended with diagnostics on, and an entry
 // covering a time means they were on then, which MetricKit's crash reports (a
-// launch later, with a time but no launch) need to be sent and placed.
+// launch later, with a time but no launch) need to be sent and placed. header
+// is the launch's build and device (xe_ios_diagnostics_envelope_header), which
+// records about it found by a later launch carry. crashed is set once the app
+// has queued its own crash record for the launch with XeniOS frames: the
+// Worker keeps one report per launch and prefers that one to MetricKit's, so
+// MetricKit's isn't sent. (One without such frames, a fatal error's, doesn't
+// win over MetricKit's, which then goes too.)
 constexpr NSUInteger kLaunchLogEntries = 64;
 NSString* const kLaunchLogKey = @"XeniaDiagnosticsLaunchLog";
 // A MetricKit payload spanning longer than this can't be placed in a launch.
@@ -93,6 +99,7 @@ void NoteLaunchLog() {
         @"launch" : g_launch_id,
         @"title" : @(title_id),
         @"at" : @([NSDate date].timeIntervalSince1970),
+        @"header" : xe_ios_diagnostics_envelope_header(),
       }];
     }
     if (log.count > kLaunchLogEntries) {
@@ -122,6 +129,58 @@ NSDictionary* LaunchLogEntryAt(NSDate* time) {
                  ![found[@"launch"] isEqualToString:g_launch_id]
              ? found
              : nil;
+}
+
+// The headers of the launches in the log, newest first.
+NSArray<NSDictionary*>* LoggedHeaders() {
+  NSMutableArray<NSDictionary*>* headers = [NSMutableArray array];
+  @synchronized(LaunchLogLock()) {
+    for (id entry in [[[NSUserDefaults standardUserDefaults] arrayForKey:kLaunchLogKey]
+             reverseObjectEnumerator]) {
+      if ([entry isKindOfClass:[NSDictionary class]] &&
+          [entry[@"header"] isKindOfClass:[NSDictionary class]]) {
+        [headers addObject:entry[@"header"]];
+      }
+    }
+  }
+  return headers;
+}
+
+void NoteLaunchCrashed(NSString* launch_id) {
+  @synchronized(LaunchLogLock()) {
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    NSMutableArray* log =
+        [NSMutableArray arrayWithArray:[defaults arrayForKey:kLaunchLogKey] ?: @[]];
+    for (NSUInteger i = log.count; i-- > 0;) {
+      if ([log[i] isKindOfClass:[NSDictionary class]] && [log[i][@"launch"] isEqual:launch_id]) {
+        NSMutableDictionary* entry = [NSMutableDictionary dictionaryWithDictionary:log[i]];
+        entry[@"crashed"] = @YES;
+        log[i] = entry;
+        [defaults setObject:log forKey:kLaunchLogKey];
+        return;
+      }
+    }
+  }
+}
+
+// The launch log's header for |launch_id|, or, without one, for its last
+// entry: at launch, before this launch's entry, the previous launch.
+NSDictionary* LoggedHeaderForPreviousLaunch(NSString* launch_id) {
+  NSDictionary* found = nil;
+  @synchronized(LaunchLogLock()) {
+    NSArray* log = [[NSUserDefaults standardUserDefaults] arrayForKey:kLaunchLogKey];
+    for (id entry in log) {
+      if ([entry isKindOfClass:[NSDictionary class]] &&
+          (!found || [entry[@"launch"] isEqual:launch_id])) {
+        found = entry;
+      }
+    }
+    if (![found[@"launch"] isEqual:launch_id]) {
+      found = [log.lastObject isKindOfClass:[NSDictionary class]] ? log.lastObject : nil;
+    }
+    found = [[found[@"header"] retain] autorelease];
+  }
+  return [found isKindOfClass:[NSDictionary class]] ? found : nil;
 }
 
 // How a session the previous launch didn't end came to an end, from its fault
@@ -163,9 +222,15 @@ void QueuePreviousLaunch(NSDictionary* previous_marker, BOOL diagnostics_were_on
   NSString* session_launch_id = session[@"launchId"];
   [[session_launch_id retain] autorelease];
   [session removeObjectForKey:@"launchId"];
+  // Both records are about the previous launch, and carry its build.
+  NSString* fault_launch_id =
+      [fault[@"launchId"] isKindOfClass:[NSString class]] ? fault[@"launchId"] : nil;
+  NSDictionary* logged = LoggedHeaderForPreviousLaunch(fault_launch_id ?: session_launch_id);
   if (session) {
     session[@"end"] = UnfinishedSessionEnd(fault, state);
-    xe_ios_diagnostics_enqueue(@"session", session);
+    xe_ios_diagnostics_enqueue_with_header(
+        @"session", session,
+        xe_ios_diagnostics_header_for_earlier_launch(logged, nil, LoggedHeaders()));
   }
   if (!fault && !fatal) {
     return;
@@ -191,7 +256,20 @@ void QueuePreviousLaunch(NSDictionary* previous_marker, BOOL diagnostics_were_on
                             ? [message substringToIndex:kMaxMessageChars]
                             : message;
   }
-  xe_ios_diagnostics_enqueue(@"crash", crash);
+  NSString* binary_uuid =
+      [fault[@"binaryUUID"] isKindOfClass:[NSString class]] ? fault[@"binaryUUID"] : nil;
+  xe_ios_diagnostics_enqueue_with_header(
+      @"crash", crash,
+      xe_ios_diagnostics_header_for_earlier_launch(logged, binary_uuid, LoggedHeaders()));
+  BOOL xenios_frames = NO;
+  for (id frame in [crash[@"frames"] isKindOfClass:[NSArray class]] ? crash[@"frames"] : @[]) {
+    if ([frame isKindOfClass:[NSDictionary class]] && [frame[@"image"] isEqual:@"XeniOS"]) {
+      xenios_frames = YES;
+    }
+  }
+  if (xenios_frames && [crash[@"launchId"] isKindOfClass:[NSString class]]) {
+    NoteLaunchCrashed(crash[@"launchId"]);
+  }
 }
 
 }  // namespace
@@ -272,10 +350,23 @@ void xe_ios_diagnostics_start(NSDictionary* previous_marker) {
     xe_ios_fault_record_note_upload_allowed(xe_ios_diagnostics_upload_allowed());
     xe::ui::Presenter::SetGuestOutputRefreshObserver(xe_ios_session_stats_note_guest_frame);
 
+    // Pending records go out at launch and on coming back to the foreground,
+    // and at no other time.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kLaunchUploadDelaySeconds * NSEC_PER_SEC),
                    dispatch_get_main_queue(), ^{
                      xe_ios_diagnostics_upload_pending();
                    });
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationWillEnterForegroundNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification* __unused note) {
+                  dispatch_after(
+                      dispatch_time(DISPATCH_TIME_NOW, kLaunchUploadDelaySeconds * NSEC_PER_SEC),
+                      dispatch_get_main_queue(), ^{
+                        xe_ios_diagnostics_upload_pending();
+                      });
+                }];
   });
 }
 
@@ -297,7 +388,6 @@ void xe_ios_diagnostics_note_game_running(BOOL running) {
   ReportTitleState(0);
   if (NSDictionary* session = xe_ios_session_stats_end()) {
     xe_ios_diagnostics_enqueue(@"session", session);
-    xe_ios_diagnostics_upload_pending();
   }
 }
 
@@ -316,7 +406,7 @@ void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, 
     return;
   }
   NSDictionary* entry = LaunchLogEntryAt(end);
-  if (!entry) {
+  if (!entry || [entry[@"crashed"] boolValue]) {
     return;
   }
   NSMutableDictionary* crash = [NSMutableDictionary dictionaryWithDictionary:body];
@@ -324,7 +414,20 @@ void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, 
   if (const uint32_t title_id = [entry[@"title"] unsignedIntValue]) {
     crash[@"titleId"] = [NSString stringWithFormat:@"%08X", title_id];
   }
-  xe_ios_diagnostics_enqueue(@"crash", crash);
+  // The build of the launch it placed the crash in, unless XeniOS's frames
+  // name another binary.
+  NSString* binary_uuid = nil;
+  for (id frame in [body[@"frames"] isKindOfClass:[NSArray class]] ? body[@"frames"] : @[]) {
+    if ([frame isKindOfClass:[NSDictionary class]] &&
+        [frame[@"binaryUUID"] isKindOfClass:[NSString class]]) {
+      binary_uuid = frame[@"binaryUUID"];
+      break;
+    }
+  }
+  xe_ios_diagnostics_enqueue_with_header(
+      @"crash", crash,
+      xe_ios_diagnostics_header_for_earlier_launch(entry[@"header"], binary_uuid,
+                                                   LoggedHeaders()));
 }
 
 void xe_ios_diagnostics_settings_changed(void) {
@@ -336,7 +439,6 @@ void xe_ios_diagnostics_settings_changed(void) {
                        : 0);
   if (allowed) {
     NoteLaunchLog();
-    xe_ios_diagnostics_upload_pending();
   } else {
     // Nothing recorded while they were on is sent later, and nothing more is
     // recorded.

@@ -22,13 +22,19 @@
 //   or a fatal error, sent at the next launch; on iOS 27 the crash reporter
 //   extension's report of the same launch; and MetricKit's crash reports,
 //   reduced to the crashing thread, with the launch and game they came from.
-// They wait in the outbox (ios_diagnostics_outbox.h) until sent. A launch,
-// crash or session from a time diagnostics were off is never sent.
+// They wait in the outbox (ios_diagnostics_outbox.h) until sent, each with the
+// build and device of the launch it is about: a crash or unfinished session
+// found at launch carries the previous launch's (kept in the launch log), a
+// MetricKit crash that of the launch it is placed in, the crash reporter
+// extension's the crashed launch's (from its crash context), which it sends
+// itself. A launch, crash or session from a time diagnostics were off is never
+// sent.
 
 // At launch, from the session log setup, with the previous launch's session
 // marker (its "state", "version" and "message"): queues what that launch left
 // behind, arms the fault record and the guest frame observer, and sends
-// pending records a little later.
+// pending records a little later, and again a little after each return to the
+// foreground (never at any other time).
 void xe_ios_diagnostics_start(NSDictionary* previous_marker);
 
 // Random per launch: joins a crash with its session and with the crash
