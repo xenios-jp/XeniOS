@@ -473,15 +473,6 @@
 /* game patches view controller: user-visible text */
 "by %@" = "by %@";
 
-/* settings hub view controller: title */
-"Cache Cleanup" = "Cache Cleanup";
-
-/* settings hub view controller: title */
-"Cache Cleanup · Removes saved shaders for every game." = "Cache Cleanup · Removes saved shaders for every game.";
-
-/* settings hub view controller: title */
-"Cache Cleanup · Removes the running game's saved shaders." = "Cache Cleanup · Removes the running game's saved shaders.";
-
 /* settings hub view controller: search result note */
 "Can be overridden per game" = "Can be overridden per game";
 
@@ -592,9 +583,6 @@
 
 /* settings hub view controller: title */
 "Clear All Shaders" = "Clear All Shaders";
-
-/* settings hub view controller: title */
-"Clear saved shaders." = "Clear saved shaders.";
 
 /* Alert title: confirm clearing the current game's shader cache */
 "Clear Shader Cache?" = "Clear Shader Cache?";
@@ -1818,7 +1806,8 @@
    Display settings toggle */
 "Letterbox" = "Letterbox";
 
-/* launcher overlay view: label text */
+/* launcher overlay view: label text
+   settings hub view controller: section */
 "Library" = "Library";
 
 /* settings hub view controller: title
@@ -3107,8 +3096,20 @@
 /* VoiceOver hint for the Pause Emulator button */
 "Stops the game until you resume it or close the menu." = "Stops the game until you resume it or close the menu.";
 
+/* settings hub view controller: section */
+"Storage" = "Storage";
+
 /* file transfer: user-visible text */
 "Storage is full. Free up space on this device and try again." = "Storage is full. Free up space on this device and try again.";
+
+/* settings hub view controller: title */
+"Storage · Makes disc images smaller." = "Storage · Makes disc images smaller.";
+
+/* settings hub view controller: title */
+"Storage · Removes saved shaders for every game." = "Storage · Removes saved shaders for every game.";
+
+/* settings hub view controller: title */
+"Storage · Removes the running game's saved shaders." = "Storage · Removes the running game's saved shaders.";
 
 /* Screen mode option: ignore the aspect ratio */
 "Stretch" = "Stretch";
