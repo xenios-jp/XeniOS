@@ -1363,6 +1363,8 @@ titleForFooterInSection:(NSInteger)section {
   // Every searchable setting with its current value, built once per search session.
   std::vector<IOSConfigSearchEntry> search_index_;
   BOOL search_index_valid_;
+  // The category open beside this list on iPad, or -1.
+  NSInteger sidebar_kind_;
 }
 
 @synthesize dismissalHandler = dismissal_handler_;
@@ -1385,6 +1387,7 @@ titleForFooterInSection:(NSInteger)section {
     app_context_ = app_context;
     on_status_ = [on_status copy];
     initial_section_ = initial_section;
+    sidebar_kind_ = -1;
     all_sections_ = [[self buildSections] retain];
     sections_ = [all_sections_ retain];
     self.title = NSLocalizedString(@"Settings", @"settings hub view controller: title");
@@ -1617,6 +1620,40 @@ titleForFooterInSection:(NSInteger)section {
     [self.tableView reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:0 inSection:0] ]
                           withRowAnimation:UITableViewRowAnimationNone];
   }
+  self.tableView.selectionFollowsFocus = [self showsSidebarSelection];
+  [self updateSidebarSelection];
+}
+
+// On iPad the list sits beside the page it opened, and marks that page as Settings does.
+- (BOOL)showsSidebarSelection {
+  return self.selectionDelegate && self.splitViewController &&
+         !self.splitViewController.collapsed;
+}
+
+- (void)updateSidebarSelection {
+  NSIndexPath* selected = self.tableView.indexPathForSelectedRow;
+  NSIndexPath* target = nil;
+  if ([self showsSidebarSelection] && ![self showsSearchResults]) {
+    for (NSUInteger section = 0; section < sections_.count && !target; ++section) {
+      NSArray* items = [[sections_ objectAtIndex:section] items];
+      for (NSUInteger row = 0; row < items.count; ++row) {
+        XeniaSettingsHubItem* item = [items objectAtIndex:row];
+        if (item.kind == sidebar_kind_ && item.focusKey.length == 0) {
+          target = [NSIndexPath indexPathForRow:row inSection:section];
+          break;
+        }
+      }
+    }
+  }
+  if (target) {
+    if (![selected isEqual:target]) {
+      [self.tableView selectRowAtIndexPath:target
+                                  animated:NO
+                            scrollPosition:UITableViewScrollPositionNone];
+    }
+  } else if (selected) {
+    [self.tableView deselectRowAtIndexPath:selected animated:NO];
+  }
 }
 
 #pragma mark - UISearchControllerDelegate
@@ -1641,6 +1678,7 @@ titleForFooterInSection:(NSInteger)section {
   [sections_ release];
   sections_ = [sections retain];
   [self.tableView reloadData];
+  [self updateSidebarSelection];
 }
 
 - (void)appendTouchLayoutSearchResults:(NSMutableArray*)results query:(NSString*)query {
@@ -1993,6 +2031,44 @@ titleForFooterInSection:(NSInteger)section {
   return [section.items objectAtIndex:indexPath.row];
 }
 
+// Beside the page on iPad: no chevrons, and the open page filled in the accent with white text.
+- (void)applySidebarStyleToCell:(UITableViewCell*)cell hasValue:(BOOL)has_value {
+  if (![self showsSidebarSelection]) {
+    cell.selectedBackgroundView = nil;
+    cell.configurationUpdateHandler = nil;
+    cell.focusEffect = [UIFocusHaloEffect effect];
+    return;
+  }
+  if (!has_value) {
+    cell.accessoryType = UITableViewCellAccessoryNone;
+  }
+  // A rounded fill of its own rather than the group's corners; with a keyboard it is also the
+  // focus, as the selection follows it.
+  UIView* background =
+      [[[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 100.0, 44.0)] autorelease];
+  UIView* fill = [[[UIView alloc] initWithFrame:CGRectMake(0.0, 2.0, 100.0, 40.0)] autorelease];
+  fill.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  fill.backgroundColor = [XeniaTheme accent];
+  fill.layer.cornerRadius = 12.0;
+  fill.layer.cornerCurve = kCACornerCurveContinuous;
+  [background addSubview:fill];
+  cell.selectedBackgroundView = background;
+  cell.focusEffect = nil;
+  cell.configurationUpdateHandler = ^(UITableViewCell* updated_cell,
+                                      UICellConfigurationState* state) {
+    if (![updated_cell.contentConfiguration isKindOfClass:[UIListContentConfiguration class]]) {
+      return;
+    }
+    const BOOL filled = state.isSelected || state.isHighlighted;
+    UIListContentConfiguration* content =
+        [[(UIListContentConfiguration*)updated_cell.contentConfiguration copy] autorelease];
+    content.textProperties.color = filled ? [UIColor whiteColor] : [XeniaTheme textPrimary];
+    content.secondaryTextProperties.color =
+        filled ? [UIColor colorWithWhite:1.0 alpha:0.8] : [XeniaTheme textSecondary];
+    updated_cell.contentConfiguration = content;
+  };
+}
+
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   static NSString* const kCellIdentifier = @"XeniaSettingsHubCell";
@@ -2009,11 +2085,14 @@ titleForFooterInSection:(NSInteger)section {
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.isAccessibilityElement = NO;
+    cell.selectedBackgroundView = nil;
+    cell.configurationUpdateHandler = nil;
     return cell;
   }
 
   if (item.kind == XeniaSettingsHubCategoryKindProfile && item.focusKey.length == 0) {
     [self configureAccountCell:cell];
+    [self applySidebarStyleToCell:cell hasValue:NO];
     return cell;
   }
 
@@ -2052,6 +2131,7 @@ titleForFooterInSection:(NSInteger)section {
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   }
+  [self applySidebarStyleToCell:cell hasValue:item.valueText.length > 0];
 
   // A result reads as: setting, current value, and where it opens.
   const BOOL is_result = item.focusKey.length > 0;
@@ -2065,11 +2145,18 @@ titleForFooterInSection:(NSInteger)section {
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  const BOOL sidebar = [self showsSidebarSelection];
+  if (!sidebar) {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  }
   XeniaSettingsHubItem* item = [self itemAtIndexPath:indexPath];
   UIViewController* detail = [self makeDetailControllerForItem:item];
   if (!detail) {
+    [self updateSidebarSelection];
     return;
+  }
+  if (sidebar) {
+    sidebar_kind_ = item.kind;
   }
   if (search_controller_.active) {
     search_controller_.active = NO;
@@ -2078,6 +2165,7 @@ titleForFooterInSection:(NSInteger)section {
   if ([self.selectionDelegate respondsToSelector:
           @selector(settingsHubViewController:didSelectController:)]) {
     [self.selectionDelegate settingsHubViewController:self didSelectController:detail];
+    [self updateSidebarSelection];
     return;
   }
   [self.navigationController pushViewController:detail animated:YES];
@@ -2102,6 +2190,7 @@ titleForFooterInSection:(NSInteger)section {
           symbolName:@"display"
            tintColor:[XeniaTheme sectionIconIndigo]];
   }
+  sidebar_kind_ = item.kind;
   return [self makeDetailControllerForItem:item];
 }
 
@@ -2339,6 +2428,9 @@ titleForFooterInSection:(NSInteger)section {
     self.title = NSLocalizedString(@"Settings", @"settings hub view controller: title");
     self.preferredDisplayMode = UISplitViewControllerDisplayModeOneBesideSecondary;
     self.preferredSplitBehavior = UISplitViewControllerSplitBehaviorTile;
+    // Wide enough for every category on one line at the default text size.
+    self.minimumPrimaryColumnWidth = 340.0;
+    self.preferredPrimaryColumnWidth = 340.0;
 
     XeniaSettingsHubViewController* hub =
         [[[XeniaSettingsHubViewController alloc] initWithAppContext:app_context
