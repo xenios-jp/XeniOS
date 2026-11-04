@@ -262,6 +262,9 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
         } else if (is_http && http.statusCode == 404) {
           [[NSData data] writeToFile:missing_path atomically:YES];
         }
+        // A dropped or timed-out connection (cellular, a tunnel) is worth asking again soon; a
+        // server that answered without the image, much later.
+        const NSTimeInterval retry_delay = is_http ? 300.0 : 30.0;
         [image retain];
         dispatch_async(dispatch_get_main_queue(), ^{
           NSArray* completions = [waiters[key] retain];
@@ -272,7 +275,7 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
           } else {
             // Throttle repeated failed downloads while still allowing
             // periodic retries.
-            xe_art_retry_after()[key] = [NSDate dateWithTimeIntervalSinceNow:300.0];
+            xe_art_retry_after()[key] = [NSDate dateWithTimeIntervalSinceNow:retry_delay];
           }
           xe_art_call_all(completions, image);
           [completions release];
