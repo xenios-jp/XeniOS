@@ -1242,7 +1242,17 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock,
           SpinPause();
         }
         if (*owner_raw) {
+#if XE_PLATFORM_APPLE
+          // As below, a holder descheduled mid-hold needs the core more than
+          // the spinner does.
+          if (++contended_yields > 64) {
+            xe::threading::NanoSleep(20000);
+          } else {
+            xe::threading::MaybeYield();
+          }
+#else
           xe::threading::MaybeYield();
+#endif  // XE_PLATFORM_APPLE
         }
         continue;
       }
