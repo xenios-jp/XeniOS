@@ -158,7 +158,8 @@ NSString* SymbolForStyle(XeniaIOSStatusToastStyle style) {
 
   UILayoutGuide* safe = view.safeAreaLayoutGuide;
   [NSLayoutConstraint activateConstraints:@[
-    [toast.topAnchor constraintEqualToAnchor:safe.topAnchor constant:14],
+    // Below the library's title row (its gear and profile buttons), not over it.
+    [toast.topAnchor constraintEqualToAnchor:safe.topAnchor constant:62],
     [toast.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
     [toast.widthAnchor constraintLessThanOrEqualToAnchor:safe.widthAnchor constant:-32],
     [toast.widthAnchor constraintGreaterThanOrEqualToConstant:220],
