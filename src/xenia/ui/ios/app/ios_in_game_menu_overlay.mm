@@ -321,7 +321,7 @@ constexpr CGFloat kPanelRadius = 34.0;
   UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
   config.image = [UIImage systemImageNamed:imageName];
-  config.titleLineBreakMode = NSLineBreakByTruncatingTail;
+  config.titleLineBreakMode = resume || footer ? NSLineBreakByTruncatingTail : NSLineBreakByClipping;
   UIColor* tile_fill = [UIColor colorWithWhite:1.0 alpha:0.1];
   if (resume) {
     config.baseForegroundColor = [UIColor blackColor];
@@ -353,6 +353,13 @@ constexpr CGFloat kPanelRadius = 34.0;
     xe_apply_button_title_font(button, UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
   } else {
     xe_apply_button_title_font(button, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  }
+  if (!resume && !footer) {
+    // A tile's label stays whole on its one line ("Achievements", "Edit Controls"): it shrinks a
+    // little at larger text sizes rather than ending in "…".
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.7;
+    button.titleLabel.lineBreakMode = NSLineBreakByClipping;
   }
   // The controller focus ring follows the button's shape.
   button.layer.cornerRadius = resume ? kResumeHeight / 2.0 : (footer ? 12.0 : kTileRadius);
