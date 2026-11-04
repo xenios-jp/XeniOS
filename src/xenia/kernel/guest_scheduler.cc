@@ -141,10 +141,10 @@ static bool TakeHeadRequeue(XThread::SchedulerLinks& links) {
 // Reporting threshold for the lock case.
 static constexpr uint32_t kLockPreemptDeferReport = 65536;
 
-// Sleeping a fiber would stall its dispatch thread.
+// A fiber sleeps only when no other fiber could use its dispatch thread.
 static void ReleaseSpinWait(void* /*raw_context*/, uint64_t sleep_ns) {
-  if (XThread::GetCurrentFiberThread()) {
-    GuestScheduler::SpinYield();
+  if (XThread* self = XThread::GetCurrentFiberThread()) {
+    self->kernel_state()->guest_scheduler()->ReleaseCoreInSpinWait(sleep_ns);
   } else {
     xe::threading::NanoSleep(int64_t(sleep_ns));
   }
@@ -1068,29 +1068,49 @@ bool GuestScheduler::YieldCurrentThread(bool quantum_end, bool to_lower) {
              1;
 }
 
+bool GuestScheduler::DispatchWanted(XThread* self) const {
+  const auto& links = self->scheduler_links();
+  int cpu_index = t_current_cpu;
+  const Cpu& cpu = cpus_[cpu_index];
+  return cpu.ready_summary.load(std::memory_order_relaxed) ||
+         self->thread_state()->context()->preempt_requested ||
+         links.preempted || links.repoll_preempt ||
+         links.terminate_pending.load(std::memory_order_relaxed) ||
+         cpu.repoll_now.load(std::memory_order_relaxed) ||
+         self->suspend_count() || CpuOf(self) != cpu_index ||
+         Clock::QueryHostUptimeMillis() >= cpu.next_timed_repoll_ms;
+}
+
 bool GuestScheduler::YieldExecution(bool quantum_end) {
   if (!OnDispatchThread("YieldExecution")) {
     return false;
   }
   XThread* self = XThread::GetCurrentThread();
-  auto& links = self->scheduler_links();
-  int cpu_index = t_current_cpu;
-  Cpu& cpu = cpus_[cpu_index];
-  // Anything RunLoop would act on before re-dispatching this fiber.
-  if (cpu.ready_summary.load(std::memory_order_relaxed) ||
-      self->thread_state()->context()->preempt_requested || links.preempted ||
-      links.repoll_preempt ||
-      links.terminate_pending.load(std::memory_order_relaxed) ||
-      cpu.repoll_now.load(std::memory_order_relaxed) || self->suspend_count() ||
-      CpuOf(self) != cpu_index ||
-      Clock::QueryHostUptimeMillis() >= cpu.next_timed_repoll_ms) {
+  if (DispatchWanted(self)) {
     return YieldCurrentThread(quantum_end);
   }
-  links.unyielded_quanta = 0;
+  self->scheduler_links().unyielded_quanta = 0;
   if (cvars::guest_scheduler_stats) {
     stats_.skipped_yields.fetch_add(1, std::memory_order_relaxed);
   }
   return false;
+}
+
+void GuestScheduler::ReleaseCoreInSpinWait(uint64_t sleep_ns) {
+  if (!OnDispatchThread("ReleaseCoreInSpinWait")) {
+    return;
+  }
+  XThread* self = XThread::GetCurrentThread();
+  if (DispatchWanted(self)) {
+    YieldCurrentThread(false);
+    return;
+  }
+  // Alone on this CPU: a switch would come straight back here. A fiber readied
+  // meanwhile waits out the sleep, as one readied during a slice does.
+  if (cvars::guest_scheduler_stats) {
+    stats_.spin_sleeps.fetch_add(1, std::memory_order_relaxed);
+  }
+  xe::threading::NanoSleep(int64_t(sleep_ns));
 }
 
 void GuestScheduler::SpinYield(std::chrono::milliseconds host_sleep) {
@@ -1935,6 +1955,7 @@ void GuestScheduler::ReportStatsIfDue() {
   uint64_t idle_wakes = take(stats_.idle_wakes);
   uint64_t switches = take(stats_.switches);
   uint64_t skipped_yields = take(stats_.skipped_yields);
+  uint64_t spin_sleeps = take(stats_.spin_sleeps);
   uint64_t yield_downs = take(stats_.yield_downs);
   uint64_t starved = take(stats_.starvation_yields);
   uint64_t bg_windows = take(stats_.background_windows);
@@ -1953,11 +1974,12 @@ void GuestScheduler::ReportStatsIfDue() {
   };
   XELOGI(
       "GuestScheduler: repolls {}/s (rereadied {}), idle wakes {}, switches "
-      "{}, skipped yields {}, yields down {} (starvation "
+      "{}, skipped yields {}, spin sleeps {}, yields down {} (starvation "
       "{}), background {} windows {} picks, ready wait avg "
       "{} us max {} us | io {} calls, queued avg {} us max {} us, ran avg "
       "{} us, pool {} threads peak {} in flight",
-      repolls, rereadied, idle_wakes, switches, skipped_yields, yield_downs,
+      repolls, rereadied, idle_wakes, switches, skipped_yields, spin_sleeps,
+      yield_downs,
       starved, bg_windows, bg_picks, rw_count ? to_us(rw_ticks / rw_count) : 0,
       to_us(rw_max), io_calls, io_calls ? to_us(io_queue / io_calls) : 0,
       to_us(io_queue_max), io_calls ? to_us(io_run / io_calls) : 0,
