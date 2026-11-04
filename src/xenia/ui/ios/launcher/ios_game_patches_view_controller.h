@@ -19,8 +19,12 @@
 namespace xe {
 namespace ui {
 class IOSWindowedAppContext;
+struct IOSPatchEntrySummary;
 }  // namespace ui
 }  // namespace xe
+
+// A patch's name as written for people: trimmed, capitalised, "Patch 3" when it has none.
+NSString* XeniaPatchDisplayName(const xe::ui::IOSPatchEntrySummary& patch);
 
 // Per-title patch toggle sheet backed by the same bundled patch database and
 // storage override files used by the desktop UI.

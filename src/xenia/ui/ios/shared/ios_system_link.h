@@ -61,6 +61,8 @@ struct XeniaIOSSystemLinkSnapshot {
   size_t relayed = 0;
   // Another player runs another title or another version of it.
   bool other_version = false;
+  // The round trip to the slowest player reached directly; 0 until measured.
+  uint32_t ping_ms = 0;
 };
 XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void);
 // "Private Room ABC123", or "Public Lobby" for a nil code.

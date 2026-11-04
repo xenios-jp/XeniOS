@@ -98,6 +98,17 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id) {
 namespace {
 // Minimum touch target for the plain icon buttons.
 constexpr CGFloat kMinTapTarget = 44.0;
+
+// The grid and the game's rows slide by transform while the page opens in place, and a frame is
+// undefined under a transform: size and centre instead, keeping a scroll view's offset.
+void XEPlaceSlidingView(UIView* view, CGRect frame) {
+  if (!view) {
+    return;
+  }
+  const CGRect bounds = view.bounds;
+  view.bounds = CGRectMake(bounds.origin.x, bounds.origin.y, frame.size.width, frame.size.height);
+  view.center = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+}
 // Side margin of the library: the title, the notices and the tiles' edges all line up on it.
 constexpr CGFloat kLibraryMargin = 16.0;
 // Height over width of a tile's art: a box cover (300 x 219).
@@ -493,6 +504,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSLayoutConstraint* _heroTextBottom;
   XeniaIOSLauncherGameSnapshot* _heroGame;
   uint32_t _heroArtTitleId;
+  // The game page in place of the grid (side layout): the game it is for, its rows, ✕ and ⋯ in
+  // the header, and touch layout and settings beside Play.
+  XeniaIOSLauncherGameSnapshot* _detailGame;
+  UIView* _detailRows;
+  UIButton* _detailCloseButton;
+  UIButton* _detailMoreButton;
+  UIButton* _heroTouchButton;
+  UIButton* _heroSettingsButton;
   // Art on the left and the grid on the right, for windows wider than tall.
   BOOL _sideLayout;
   // The games the grid shows, in order: all of them, sorted, or the search's matches.
@@ -509,6 +528,22 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   BOOL _actionsEnabled;
   BOOL _controllerNavigationEnabled;
   BOOL _libraryFocusActive;
+}
+
+// A 44 pt glass circle with a white symbol, autoreleased.
+- (UIButton*)newGlassCircle:(NSString*)symbol label:(NSString*)label {
+  UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
+  config.image = [UIImage systemImageNamed:symbol];
+  config.baseForegroundColor = UIColor.whiteColor;
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.accessibilityLabel = label;
+  [NSLayoutConstraint activateConstraints:@[
+    [button.widthAnchor constraintEqualToConstant:kMinTapTarget],
+    [button.heightAnchor constraintEqualToConstant:kMinTapTarget],
+  ]];
+  return button;
 }
 
 - (UIButton*)newHeaderIconButton:(NSString*)symbol action:(SEL)action {
@@ -625,8 +660,24 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroMoreButton.accessibilityLabel =
       NSLocalizedString(@"More", @"launcher overlay view: Continue Playing actions button");
 
+  _heroTouchButton = [[self newGlassCircle:@"hand.raised"
+                                     label:NSLocalizedString(@"Touch Layout",
+                                                             @"game page: button")] retain];
+  [_heroTouchButton addTarget:self
+                       action:@selector(heroTouchLayoutTapped:)
+             forControlEvents:UIControlEventTouchUpInside];
+  _heroTouchButton.hidden = YES;
+  _heroSettingsButton = [[self newGlassCircle:@"slider.horizontal.3"
+                                        label:NSLocalizedString(@"Game Settings",
+                                                                @"game page: button")] retain];
+  [_heroSettingsButton addTarget:self
+                          action:@selector(heroGameSettingsTapped:)
+                forControlEvents:UIControlEventTouchUpInside];
+  _heroSettingsButton.hidden = YES;
+
   UIStackView* heroButtons = [[[UIStackView alloc]
-      initWithArrangedSubviews:@[ _heroPlayButton, _heroMoreButton ]] autorelease];
+      initWithArrangedSubviews:@[ _heroPlayButton, _heroMoreButton, _heroTouchButton,
+                                  _heroSettingsButton ]] autorelease];
   heroButtons.spacing = 10.0;
   heroButtons.alignment = UIStackViewAlignmentCenter;
   _heroText = [[UIStackView alloc]
@@ -797,6 +848,30 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _headerActions.spacing = 8.0;
   [_headerView addSubview:_headerActions];
 
+  // The game page's ✕ and ⋯, where Library and the header's actions were.
+  _detailCloseButton = [[self newGlassCircle:@"xmark"
+                                       label:NSLocalizedString(@"Close", @"sheet close button")]
+      retain];
+  [_detailCloseButton addTarget:self
+                         action:@selector(detailCloseTapped:)
+               forControlEvents:UIControlEventTouchUpInside];
+  _detailCloseButton.alpha = 0.0;
+  _detailCloseButton.hidden = YES;
+  [_headerView addSubview:_detailCloseButton];
+  _detailMoreButton = [[self newGlassCircle:@"ellipsis"
+                                      label:NSLocalizedString(@"More", @"game page: more button")]
+      retain];
+  _detailMoreButton.showsMenuAsPrimaryAction = YES;
+  _detailMoreButton.alpha = 0.0;
+  _detailMoreButton.hidden = YES;
+  [_headerView addSubview:_detailMoreButton];
+  [NSLayoutConstraint activateConstraints:@[
+    [_detailCloseButton.leadingAnchor constraintEqualToAnchor:_libraryLabel.leadingAnchor],
+    [_detailCloseButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
+    [_detailMoreButton.trailingAnchor constraintEqualToAnchor:_headerActions.trailingAnchor],
+    [_detailMoreButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
+  ]];
+
   // ── Notices: one row each, while something needs fixing ────────────────
 
   _jitStatusIcon = [[UIImageView alloc]
@@ -965,7 +1040,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
   }
-  const BOOL hero = _heroGame != nil;
+  if (!side && _detailGame) {
+    // The page in place is for the side layout only; turning upright goes back to the grid.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self hideGameDetailAnimated:NO];
+    });
+  }
+  const BOOL hero = _heroGame != nil || _detailGame != nil;
   _heroView.hidden = !hero;
 
   // Header: clear of the Dynamic Island and the corners on both sides.
@@ -1003,6 +1084,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     const CGFloat grid_left = hero ? hero_width : safe.left;
     grid_frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left - safe.right,
                             bounds.size.height);
+    // The game's rows start where the grid's first row does.
+    XEPlaceSlidingView(_detailRows,
+                       CGRectMake(grid_left, header_bottom + 6.0, bounds.size.width - grid_left,
+                                  bounds.size.height - header_bottom - 6.0));
     top_inset = header_bottom + 6.0 + stack_block;
     _headerBackdrop.frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left,
                                        header_bottom + 6.0);
@@ -1034,7 +1119,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     }
     top_inset = (hero ? hero_height : header_bottom) + stack_block;
   }
-  _gamesCollectionView.frame = grid_frame;
+  XEPlaceSlidingView(_gamesCollectionView, grid_frame);
   if (hero && !side) {
     if (_heroView.superview != _gamesCollectionView) {
       [_heroView removeFromSuperview];
@@ -1131,6 +1216,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
   [_heroGame release];
   _heroGame = [latest retain];
+  if (_detailGame) {
+    // The page in place keeps its game; the hero comes back to this one when it closes.
+    return;
+  }
+  [self applyHeroGame:latest];
+}
+
+// The hero's title, line under it and art, for the last game played or the open page's game.
+- (void)applyHeroGame:(XeniaIOSLauncherGameSnapshot*)latest {
   if (!latest) {
     _heroArtTitleId = 0;
     _heroArt.image = nil;
@@ -1140,15 +1234,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroTitle.text = latest.title;
   NSRelativeDateTimeFormatter* formatter = [[[NSRelativeDateTimeFormatter alloc] init] autorelease];
   formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleFull;
-  NSString* when = [NSString
+  NSString* when = !latest.lastPlayed ? nil : [NSString
       stringWithFormat:NSLocalizedString(@"Played %@",
                                          @"launcher overlay view: Continue Playing; %@ is like "
                                          @"\"2 hours ago\""),
                        [formatter localizedStringForDate:latest.lastPlayed relativeToDate:[NSDate date]]];
-  _heroDetail.text = latest.hasCompatInfo
-                         ? [NSString stringWithFormat:@"%@ · %@", when,
-                                                      xe_compat_status_label(latest.compatStatus)]
-                         : when;
+  NSString* compat = latest.hasCompatInfo ? xe_compat_status_label(latest.compatStatus) : nil;
+  _heroDetail.text = when && compat ? [NSString stringWithFormat:@"%@ · %@", when, compat]
+                                    : (when ?: compat);
   _heroPlayButton.accessibilityLabel = [NSString
       stringWithFormat:NSLocalizedString(@"Play %@", @"launcher overlay view: accessibility "
                                                      @"label; %@ is the game"),
@@ -1176,8 +1269,206 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [self setNeedsLayout];
 }
 
+// The game the hero shows: the open page's, else the last one played.
+- (NSUInteger)heroGameIndex {
+  XeniaIOSLauncherGameSnapshot* game = _detailGame ?: _heroGame;
+  return game ? [_games indexOfObjectIdenticalTo:game] : NSNotFound;
+}
+
+- (void)heroTouchLayoutTapped:(UIButton*)__unused sender {
+  const NSUInteger index = [self heroGameIndex];
+  if (index != NSNotFound && _touchLayoutHandler) {
+    _touchLayoutHandler(index);
+  }
+}
+
+- (void)heroGameSettingsTapped:(UIButton*)__unused sender {
+  const NSUInteger index = [self heroGameIndex];
+  if (index != NSNotFound && _gameSettingsHandler) {
+    _gameSettingsHandler(index);
+  }
+}
+
+- (void)detailCloseTapped:(UIButton*)__unused sender {
+  [self hideGameDetailAnimated:YES];
+}
+
+#pragma mark - Game page in place
+
+- (BOOL)canShowGameDetailInPlace {
+  const CGSize size = self.bounds.size;
+  return self.window && size.width > size.height && size.height < 500.0;
+}
+
+- (BOOL)showsGameDetail {
+  return _detailGame != nil;
+}
+
+// What changes between the Library and a game's page; everything else stays where it is.
+- (void)applyDetailState:(BOOL)detail {
+  _heroCaption.hidden = detail || !_heroGame;
+  _heroDetail.hidden = detail;
+  _heroCaption.alpha = _heroCaption.hidden ? 0.0 : 1.0;
+  _heroDetail.alpha = detail ? 0.0 : 1.0;
+  _heroMoreButton.hidden = detail;
+  _heroMoreButton.alpha = detail ? 0.0 : 1.0;
+  const BOOL game_buttons = detail && _detailGame.titleId != 0;
+  _heroTouchButton.hidden = !game_buttons;
+  _heroSettingsButton.hidden = !game_buttons;
+  _heroTouchButton.alpha = game_buttons ? 1.0 : 0.0;
+  _heroSettingsButton.alpha = game_buttons ? 1.0 : 0.0;
+  // Title straight onto the buttons once the lines between them have gone.
+  [_heroText setCustomSpacing:detail ? 16.0 : UIStackViewSpacingUseDefault afterView:_heroTitle];
+
+  _libraryLabel.alpha = detail ? 0.0 : 1.0;
+  _headerActions.alpha = detail ? 0.0 : 1.0;
+  _headerActions.transform = detail ? CGAffineTransformMakeTranslation(-24.0, 0.0)
+                                    : CGAffineTransformIdentity;
+  _headerActions.userInteractionEnabled = !detail;
+  _detailCloseButton.alpha = detail ? 1.0 : 0.0;
+  _detailCloseButton.transform =
+      detail ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.8, 0.8);
+  const BOOL more = detail && _detailMoreButton.menu.children.count > 0;
+  _detailMoreButton.alpha = more ? 1.0 : 0.0;
+  _detailMoreButton.transform =
+      more ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.8, 0.8);
+
+  _gamesCollectionView.alpha = detail ? 0.0 : 1.0;
+  _gamesCollectionView.transform = detail ? CGAffineTransformMakeTranslation(-40.0, 0.0)
+                                          : CGAffineTransformIdentity;
+  _detailRows.alpha = detail ? 1.0 : 0.0;
+  _detailRows.transform =
+      detail ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(56.0, 0.0);
+}
+
+- (void)showGameDetailForGameIndex:(NSUInteger)gameIndex
+                          rowsView:(UIView*)rowsView
+                          moreMenu:(UIMenu*)moreMenu {
+  if (gameIndex >= _games.count || !rowsView) {
+    return;
+  }
+  XeniaIOSLauncherGameSnapshot* game = _games[gameIndex];
+  if (_detailRows && _detailRows != rowsView) {
+    [_detailRows removeFromSuperview];
+    [_detailRows release];
+    _detailRows = nil;
+  }
+  const BOOL had_hero = _heroGame != nil;
+  const BOOL other_game = _detailGame ? _detailGame != game : _heroGame != game;
+  [_detailGame release];
+  _detailGame = [game retain];
+  _detailRows = [rowsView retain];
+  [self insertSubview:_detailRows aboveSubview:_gamesCollectionView];
+  _detailMoreButton.menu = moreMenu;
+  _detailCloseButton.hidden = NO;
+  _detailMoreButton.hidden = moreMenu.children.count == 0;
+
+  // Start from where the Library is, with the rows waiting off to the right.
+  [UIView performWithoutAnimation:^{
+    [self applyDetailState:NO];
+    if (!had_hero) {
+      // No art yet: it fades in with this game rather than sliding in.
+      [self applyHeroGame:game];
+      _heroView.alpha = 0.0;
+    }
+    [self setNeedsLayout];
+    [self layoutIfNeeded];
+  }];
+  if (other_game && had_hero) {
+    // The art and title turn to this game in place.
+    [UIView transitionWithView:_heroView
+                      duration:0.3
+                       options:UIViewAnimationOptionTransitionCrossDissolve |
+                               UIViewAnimationOptionAllowUserInteraction
+                    animations:^{
+                      [self applyHeroGame:game];
+                    }
+                    completion:nil];
+  }
+  UIViewPropertyAnimator* animator =
+      [[[UIViewPropertyAnimator alloc] initWithDuration:0.5
+                                           dampingRatio:0.88
+                                             animations:^{
+                                               [self applyDetailState:YES];
+                                               _heroView.alpha = 1.0;
+                                               [_heroText layoutIfNeeded];
+                                               [self layoutIfNeeded];
+                                             }] autorelease];
+  [animator addCompletion:^(UIViewAnimatingPosition position) {
+    if (position == UIViewAnimatingPositionEnd && _detailGame) {
+      _gamesCollectionView.hidden = YES;
+      UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _heroTitle);
+    }
+  }];
+  [animator startAnimation];
+}
+
+- (void)hideGameDetailAnimated:(BOOL)animated {
+  if (!_detailGame) {
+    return;
+  }
+  XeniaIOSLauncherGameSnapshot* shown = [[_detailGame retain] autorelease];
+  [_detailGame release];
+  _detailGame = nil;
+  UIView* rows = [[_detailRows retain] autorelease];
+  [_detailRows release];
+  _detailRows = nil;
+  _gamesCollectionView.hidden = NO;
+  void (^finish)(void) = ^{
+    [rows removeFromSuperview];
+    _detailCloseButton.hidden = YES;
+    _detailMoreButton.hidden = YES;
+    _detailMoreButton.menu = nil;
+    if (_gameDetailClosedHandler) {
+      _gameDetailClosedHandler();
+    }
+  };
+  // The rows keep sliding with the state below until they are gone.
+  UIView* detail_rows = rows;
+  void (^back)(void) = ^{
+    [self applyDetailState:NO];
+    detail_rows.alpha = 0.0;
+    detail_rows.transform = CGAffineTransformMakeTranslation(56.0, 0.0);
+    if (!_heroGame) {
+      _heroView.alpha = 0.0;
+    }
+    [self setNeedsLayout];
+    [_heroText layoutIfNeeded];
+    [self layoutIfNeeded];
+  };
+  if (!animated) {
+    back();
+    _heroView.alpha = 1.0;
+    [self applyHeroGame:_heroGame];
+    finish();
+    return;
+  }
+  if (_heroGame && _heroGame != shown) {
+    [UIView transitionWithView:_heroView
+                      duration:0.3
+                       options:UIViewAnimationOptionTransitionCrossDissolve |
+                               UIViewAnimationOptionAllowUserInteraction
+                    animations:^{
+                      [self applyHeroGame:_heroGame];
+                    }
+                    completion:nil];
+  }
+  UIViewPropertyAnimator* animator =
+      [[[UIViewPropertyAnimator alloc] initWithDuration:0.45 dampingRatio:0.92 animations:back]
+          autorelease];
+  [animator addCompletion:^(UIViewAnimatingPosition __unused position) {
+    _heroView.alpha = 1.0;
+    if (!_heroGame) {
+      [self applyHeroGame:nil];
+    }
+    finish();
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _libraryLabel);
+  }];
+  [animator startAnimation];
+}
+
 - (void)heroPlayTapped:(UIButton*)__unused sender {
-  const NSUInteger index = _heroGame ? [_games indexOfObjectIdenticalTo:_heroGame] : NSNotFound;
+  const NSUInteger index = [self heroGameIndex];
   if (index != NSNotFound && _actionsEnabled && _gameLaunchedHandler) {
     _gameLaunchedHandler(index);
   }
@@ -1335,6 +1626,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_heroTextLeading release];
   [_heroTextBottom release];
   [_heroGame release];
+  [_detailGame release];
+  [_detailRows release];
+  [_detailCloseButton release];
+  [_detailMoreButton release];
+  [_heroTouchButton release];
+  [_heroSettingsButton release];
+  [_gameDetailClosedHandler release];
   [_shownGames release];
   [_query release];
   [_gameActionsHandler release];

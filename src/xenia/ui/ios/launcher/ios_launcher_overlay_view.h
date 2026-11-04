@@ -118,6 +118,17 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 
 - (void)setOverlayVisible:(BOOL)visible animated:(BOOL)animated;
 
+// A phone on its side opens a game's page in place: the art on the left turns to that game, Play
+// gains touch layout and settings beside it, and the game's rows take the grid's place.
+@property(nonatomic, readonly) BOOL canShowGameDetailInPlace;
+@property(nonatomic, readonly) BOOL showsGameDetail;
+// Runs once the rows have left, so their owner can let them go.
+@property(nonatomic, copy) void (^gameDetailClosedHandler)(void);
+- (void)showGameDetailForGameIndex:(NSUInteger)gameIndex
+                          rowsView:(UIView*)rowsView
+                          moreMenu:(UIMenu*)moreMenu;
+- (void)hideGameDetailAnimated:(BOOL)animated;
+
 @end
 
 #endif  // __OBJC__
