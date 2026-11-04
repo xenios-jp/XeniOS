@@ -4912,7 +4912,28 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 }
 
 - (void)presentTouchLayoutLibrarySheet {
-  [self.touchLayoutCoordinator presentLibrary];
+  if (self.gameRunning && self.touchControlsOverlay) {
+    [self.touchLayoutCoordinator presentLibrary];
+    return;
+  }
+
+  // The library lives in the touch overlay, which only exists in game. Outside a game, open the
+  // standalone editor straight into its library; title 0 edits the shared default layouts.
+  XeniaIOSTouchLayoutEditorViewController* editor_controller =
+      [[XeniaIOSTouchLayoutEditorViewController alloc]
+          initWithTitleID:0
+                    title:NSLocalizedString(@"Touch Layouts",
+                                            @"Touch layout editor prompt when no game is chosen")];
+  editor_controller.opensLayoutLibraryOnAppear = YES;
+  XeniaLandscapeNavigationController* navigation_controller =
+      [[XeniaLandscapeNavigationController alloc] initWithRootViewController:editor_controller];
+  navigation_controller.landscapeOnly = YES;
+  navigation_controller.modalPresentationStyle = UIModalPresentationFullScreen;
+  navigation_controller.navigationBarHidden = YES;
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:navigation_controller animated:YES completion:nil];
+  [navigation_controller release];
+  [editor_controller release];
 }
 
 - (void)presentRenameTouchLayoutSheet {
