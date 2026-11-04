@@ -338,6 +338,23 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     return true;
   }
 
+  // Gives a value another register for the rest of this function's emission;
+  // the allocator's comes back with the loop plan's recolorings.
+  void RecolorForEmission(hir::Value* value, int32_t index) {
+    loop_plan_.recolored.emplace_back(value, value->reg.index);
+    value->reg.index = index;
+  }
+  // Whether a promoted context store in a loop writes the register.
+  bool PromotedStoreWrites(const hir::Instr* instr,
+                           const hir::RegAssignment& reg) const {
+    auto it = loop_plan_.accesses.find(instr);
+    return it != loop_plan_.accesses.end() &&
+           instr->GetOpcodeNum() == hir::OPCODE_STORE_CONTEXT &&
+           it->second->type != hir::VEC128_TYPE &&
+           reg.set == instr->src2.value->reg.set &&
+           it->second->reg_index == reg.index;
+  }
+
   // A compare whose only reader is the branch right after it makes no
   // boolean: the branch reads the flags the compare set. Keyed on the
   // register the cset would have written; cleared on read. Only instructions
