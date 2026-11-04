@@ -204,9 +204,14 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Every guest function is entered and left, and every host call made, in
   // the scalar (Fpu) mode. Unknown may be VMX at runtime, but only in a
   // function that touches VEC128.
+  // Whether EnsureFpuFpcrModeForTransition emits a mode change, which
+  // clobbers w0.
+  bool FpuFpcrTransitionChangesMode() const {
+    return IsVmxFpcrMode(fpcr_mode_) ||
+           (fpcr_mode_ == FPCRMode::Unknown && function_has_vmx_);
+  }
   void EnsureFpuFpcrModeForTransition() {
-    if (IsVmxFpcrMode(fpcr_mode_) ||
-        (fpcr_mode_ == FPCRMode::Unknown && function_has_vmx_)) {
+    if (FpuFpcrTransitionChangesMode()) {
       ChangeFpcrMode(FPCRMode::Fpu);
     }
     fpcr_mode_ = FPCRMode::Fpu;
@@ -394,6 +399,11 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   bool X0HoldsConstant(const hir::Instr* reader, uint64_t value) const {
     return reader == x0_constant_reader_ && value == x0_constant_;
   }
+  // Whether x0 still holds the return address the last SetReturnAddress
+  // stored, for the call `reader`, which passes it in x0.
+  bool X0HoldsCallReturnAddress(const hir::Instr* reader) const {
+    return X0HoldsConstant(reader, call_return_address_);
+  }
 
   // Where the host maps coarser than 4 KB, w7 holds 0xE0000000 for the
   // physical remap wherever guest code runs: the prolog loads it, and so does
@@ -576,6 +586,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   const hir::Instr* fused_quirk_select_ = nullptr;
   const hir::Instr* x0_constant_reader_ = nullptr;
   uint64_t x0_constant_ = 0;
+  uint64_t call_return_address_ = 0;
   bool synchronize_stack_on_next_instruction_ = false;
 };
 
