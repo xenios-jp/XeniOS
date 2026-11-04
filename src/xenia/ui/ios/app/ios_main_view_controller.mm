@@ -1390,10 +1390,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                               requirePreference:NO
                                    promptForAutomationOnSuccess:NO];
   };
-  self.launcherOverlayView.bulkZarConversionHandler = ^{
-    [unsafe_self.zarConversionCoordinator
-        presentBulkConversionOptionsForGames:unsafe_self->discovered_games_];
-  };
+  self.launcherOverlayView.addMenu = [self libraryAddMenu];
   self.launcherOverlayView.gameLaunchedHandler = ^(NSUInteger gameIndex) {
     if (gameIndex >= unsafe_self->discovered_games_.size()) {
       return;
@@ -3586,6 +3583,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
                                                  gameTitleID:game.title_id
                                                    gameTitle:game_title];
   config_controller.appContext = self.appContext;
+  config_controller.gameRunning = self.gameRunning;
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:config_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(640.0, 760.0),
@@ -4183,17 +4181,83 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self presentLibraryAddSheetFromView:sender ?: self.launcherOverlayView];
 }
 
+// The + menu: the ways to add games, each with a line on what it does, then converting the
+// library when it has games that can be converted.
+- (UIMenu*)libraryAddMenu {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  UIAction* import_copy = [UIAction
+      actionWithTitle:NSLocalizedString(@"Import Copy", @"Add menu: copies a game into the app")
+                image:[UIImage systemImageNamed:@"doc.badge.plus"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                XELOGI("iOS library action: Import Copy selected");
+                [unsafe_self.documentImportCoordinator presentGameImportPicker];
+              }];
+  import_copy.subtitle = NSLocalizedString(@"Copies the game into XeniOS.",
+                                           @"Add menu: subtitle of Import Copy");
+  UIAction* link_folder = [UIAction
+      actionWithTitle:NSLocalizedString(@"Link Folder", @"Add menu: links a folder in place")
+                image:[UIImage systemImageNamed:@"folder.badge.plus"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                XELOGI("iOS library action: Link External Folder selected");
+                [unsafe_self.documentImportCoordinator presentExternalLibraryFolderPicker];
+              }];
+  link_folder.subtitle = NSLocalizedString(@"Plays large games in place, without copying.",
+                                           @"Add menu: subtitle of Link Folder");
+  UIAction* manage_folders = [UIAction
+      actionWithTitle:NSLocalizedString(@"Manage Folders", @"Add menu: manages linked folders")
+                image:[UIImage systemImageNamed:@"folder"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                [unsafe_self presentExternalFoldersSheet];
+              }];
+  UIMenu* add_section = [UIMenu menuWithTitle:@""
+                                        image:nil
+                                   identifier:nil
+                                      options:UIMenuOptionsDisplayInline
+                                     children:@[ import_copy, link_folder, manage_folders ]];
+  // Built each time the menu opens, so Convert shows only while some game can be converted.
+  UIDeferredMenuElement* convert = [UIDeferredMenuElement
+      elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement*>*)) {
+        bool any_convertible = false;
+        for (const auto& game : unsafe_self->discovered_games_) {
+          if (xe_game_supports_zar_conversion(game)) {
+            any_convertible = true;
+            break;
+          }
+        }
+        if (!any_convertible) {
+          completion(@[]);
+          return;
+        }
+        UIAction* convert_action = [UIAction
+            actionWithTitle:NSLocalizedString(@"Convert Library to ZAR",
+                                              @"Add menu: converts disc images to ZAR")
+                      image:[UIImage systemImageNamed:@"opticaldisc"]
+                 identifier:nil
+                    handler:^(__unused UIAction* action) {
+                      [unsafe_self.zarConversionCoordinator
+                          presentBulkConversionOptionsForGames:unsafe_self->discovered_games_];
+                    }];
+        convert_action.subtitle = NSLocalizedString(@"Makes disc images smaller.",
+                                                    @"Add menu: subtitle of Convert Library");
+        completion(@[ [UIMenu menuWithTitle:@""
+                                      image:nil
+                                 identifier:nil
+                                    options:UIMenuOptionsDisplayInline
+                                   children:@[ convert_action ]] ]);
+      }];
+  return [UIMenu menuWithTitle:@"" children:@[ add_section, convert ]];
+}
+
 - (void)presentLibraryAddSheetFromView:(UIView*)sourceView {
   XELOGI("iOS library action: presenting Add to Library sheet games={}", discovered_games_.size());
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:NSLocalizedString(@"Add to Library",
                                                  @"Action sheet title: add games to the library")
-                       message:NSLocalizedString(
-                                   @"Import Copy duplicates the game into XeniOS storage and needs "
-                                   @"that much free space. For very large images, Link External "
-                                   @"Folder plays them in place without copying.",
-                                   @"Action sheet message: explains the two import options")
+                       message:nil
                 preferredStyle:UIAlertControllerStyleActionSheet];
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
@@ -4208,7 +4272,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                                }]];
   [alert
       addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
-                                                   @"Link External Folder",
+                                                   @"Link Folder",
                                                    @"Action sheet button: links a folder in place")
                                          style:UIAlertActionStyleDefault
                                        handler:^(__unused UIAlertAction* action) {
@@ -4219,7 +4283,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                                        }]];
   [alert
       addAction:[UIAlertAction actionWithTitle:NSLocalizedString(
-                                                   @"Manage External Folders…",
+                                                   @"Manage Folders",
                                                    @"Action sheet button: manages linked folders")
                                          style:UIAlertActionStyleDefault
                                        handler:^(__unused UIAlertAction* action) {

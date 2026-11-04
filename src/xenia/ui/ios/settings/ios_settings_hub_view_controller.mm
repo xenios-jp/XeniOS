@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/settings/ios_settings_hub_view_controller.h"
 
+#import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_catalog.h"
@@ -1020,6 +1021,14 @@ titleForFooterInSection:(NSInteger)section {
         @"Account or location. Logs are only sent when you share them yourself.",
         @"settings hub view controller: footer of the Share Diagnostics switch");
   }
+  if (section == XeniaAboutSectionLinks) {
+    NSString* memorial = NSLocalizedString(
+        @"XeniOS is one of several apps with dedication keeping the memory of \"Lily\" alive "
+        @"11/03/2023",
+        @"settings hub view controller: footer under the links");
+    NSString* build = xe_user_facing_build_label(xe_current_compat_report_build_info());
+    return build.length ? [NSString stringWithFormat:@"%@\n\n%@", build, memorial] : memorial;
+  }
   return nil;
 }
 
@@ -1926,6 +1935,7 @@ titleForFooterInSection:(NSInteger)section {
   if ([detail isKindOfClass:[XeniaConfigViewController class]]) {
     XeniaConfigViewController* config = (XeniaConfigViewController*)detail;
     config.appContext = app_context_;
+    config.gameRunning = !no_game_running_;
     // A search result opens its page scrolled to the setting.
     config.focusKey = item.focusKey;
   }

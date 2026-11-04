@@ -175,11 +175,15 @@ enum InstallRow : NSInteger {
                             destructive:(BOOL)destructive {
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
-  UIColor* color = destructive ? [XeniaTheme statusError] : [XeniaTheme accent];
+  // Settings-style badge, as on every other list; only Remove reads in red.
+  UIColor* badge_color = !enabled      ? [XeniaTheme sectionIconGray]
+                         : destructive ? [XeniaTheme sectionIconRed]
+                                       : [XeniaTheme sectionIconBlue];
   cell.textLabel.text = title;
-  cell.textLabel.textColor = enabled ? color : [XeniaTheme textMuted];
-  cell.imageView.image = [UIImage systemImageNamed:symbol_name];
-  cell.imageView.tintColor = enabled ? color : [XeniaTheme textMuted];
+  cell.textLabel.textColor = !enabled      ? [XeniaTheme textMuted]
+                             : destructive ? [XeniaTheme statusError]
+                                           : [XeniaTheme textPrimary];
+  cell.imageView.image = XESettingsBadgeImage(symbol_name, badge_color);
   cell.userInteractionEnabled = enabled;
   cell.accessibilityTraits =
       UIAccessibilityTraitButton | (enabled ? UIAccessibilityTraitNone : UIAccessibilityTraitNotEnabled);
@@ -196,7 +200,7 @@ enum InstallRow : NSInteger {
     if (indexPath.row == kRowGetUpdate) {
       return [self actionCellWithTitle:NSLocalizedString(@"Get the Update from Microsoft",
                                                          @"system software view controller: action")
-                            symbolName:@"arrow.down.circle"
+                            symbolName:@"arrow.down"
                                   hint:NSLocalizedString(
                                            @"Opens Microsoft's system update page.",
                                            @"system software view controller: accessibility hint")
@@ -218,7 +222,7 @@ enum InstallRow : NSInteger {
   }
   return [self actionCellWithTitle:NSLocalizedString(@"Remove System Software",
                                                      @"system software view controller: action")
-                        symbolName:@"trash"
+                        symbolName:@"trash.fill"
                               hint:info_.has_unrestored_files
                                        ? NSLocalizedString(
                                              @"Removes the system software and the unrestored "

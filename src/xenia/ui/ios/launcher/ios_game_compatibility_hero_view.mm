@@ -262,16 +262,17 @@
 
   // Sheet title: centered, below handle.
   CGFloat title_y = CGRectGetMaxY(hero_handle_view_.frame) + 16.0;
-  CGFloat title_max_w = card_w - 72.0 - 60.0;  // left margin + close button area
+  CGSize close_size = [hero_close_button_ sizeThatFits:CGSizeMake(card_w / 3.0, 64.0)];
+  // Keep the centred title clear of the Close capsule on both sides.
+  CGFloat title_max_w = MAX(0.0, card_w - 2.0 * (16.0 + close_size.width + 8.0));
   CGSize title_size = [hero_sheet_title_label_ sizeThatFits:CGSizeMake(title_max_w, CGFLOAT_MAX)];
   hero_sheet_title_label_.frame = CGRectMake(floor((card_w - title_size.width) / 2.0), title_y,
                                              ceil(title_size.width), ceil(title_size.height));
 
-  // Close button: 48x48, right-aligned, vertically centered with title.
-  CGFloat btn_size = 48.0;
+  // Close: leading, vertically centred with the title, as on every other sheet.
   CGFloat title_center_y = CGRectGetMidY(hero_sheet_title_label_.frame);
-  hero_close_button_.frame = CGRectMake(card_w - 16.0 - btn_size,
-                                        floor(title_center_y - btn_size / 2.0), btn_size, btn_size);
+  hero_close_button_.frame = CGRectMake(16.0, floor(title_center_y - close_size.height / 2.0),
+                                        ceil(close_size.width), ceil(close_size.height));
 }
 
 - (void)updateGradientFrames {

@@ -347,7 +347,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* _settingsButton;
   UIButton* _profileButton;
   UIButton* _openGameButton;
-  UIButton* _convertLibraryButton;
   BOOL _dashboardInstalled;
   UIView* _jitWarningCard;
   UIImageView* _jitStatusIcon;
@@ -531,7 +530,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   XEApplyAccessibility(_memoryWarningCard, memoryTitleLabel.text, _memoryStatusLabel.text, nil,
                        UIAccessibilityTraitStaticText);
 
-  // ── Library header: "Library" (left) + convert + "+" (right) ───────────
+  // ── Library header: "Library" (left) + Online and "+" (right) ──────────
 
   UIView* libraryRow = [[UIView alloc] init];
   libraryRow.translatesAutoresizingMaskIntoConstraints = NO;
@@ -543,31 +542,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   xe_apply_label_font(_libraryLabel, UIFontTextStyleTitle3, 20.0, UIFontWeightSemibold);
   _libraryLabel.accessibilityTraits = UIAccessibilityTraitHeader;
   [libraryRow addSubview:_libraryLabel];
-
-  UIButtonConfiguration* convertCfg = [UIButtonConfiguration plainButtonConfiguration];
-  convertCfg.image =
-      [UIImage systemImageNamed:@"opticaldisc"
-              withConfiguration:[[UIImageSymbolConfiguration
-                                    configurationWithTextStyle:UIFontTextStyleSubheadline
-                                                         scale:UIImageSymbolScaleMedium]
-                                    configurationByApplyingConfiguration:
-                                        [UIImageSymbolConfiguration
-                                            configurationWithWeight:UIImageSymbolWeightSemibold]]];
-  convertCfg.baseForegroundColor = [XeniaTheme textPrimary];
-  convertCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
-  _convertLibraryButton = [[UIButton buttonWithConfiguration:convertCfg primaryAction:nil] retain];
-  _convertLibraryButton.translatesAutoresizingMaskIntoConstraints = NO;
-  _convertLibraryButton.hidden = YES;
-  [_convertLibraryButton addTarget:self
-                            action:@selector(convertLibraryTapped:)
-                  forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(
-      _convertLibraryButton,
-      NSLocalizedString(@"Convert library to ZAR", @"launcher overlay view: user-visible text"),
-      nil,
-      NSLocalizedString(@"Converts non-ZAR games in the library.",
-                        @"launcher overlay view: user-visible text"),
-      UIAccessibilityTraitButton);
 
   UIButtonConfiguration* importCfg = [UIButtonConfiguration plainButtonConfiguration];
   importCfg.image =
@@ -587,13 +561,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
             forControlEvents:UIControlEventTouchUpInside];
   XEApplyAccessibility(
       _openGameButton,
-      NSLocalizedString(@"Import game", @"launcher overlay view: user-visible text"), nil,
-      NSLocalizedString(@"Opens the document picker to import a game.",
+      NSLocalizedString(@"Add Games", @"launcher overlay view: user-visible text"), nil,
+      NSLocalizedString(@"Import games, link a folder, or convert the library.",
                         @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
 
   UIStackView* libraryActionsStack = [[UIStackView alloc] initWithArrangedSubviews:@[
-    xe_ios_new_system_link_online_button(), _convertLibraryButton, _openGameButton
+    xe_ios_new_system_link_online_button(), _openGameButton
   ]];
   libraryActionsStack.axis = UILayoutConstraintAxisHorizontal;
   libraryActionsStack.alignment = UIStackViewAlignmentCenter;
@@ -668,8 +642,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [_settingsButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
     [_profileButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
     [_profileButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_convertLibraryButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_convertLibraryButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
     [_openGameButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
     [_openGameButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
 
@@ -768,7 +740,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_settingsHandler release];
   [_profileHandler release];
   [_importHandler release];
-  [_bulkZarConversionHandler release];
+  [_addMenu release];
   [_gameLaunchedHandler release];
   [_copyLaunchURLHandler release];
   [_gameSettingsHandler release];
@@ -782,7 +754,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_settingsButton release];
   [_profileButton release];
   [_openGameButton release];
-  [_convertLibraryButton release];
   [_dashboardHandler release];
   [_dashboardSystemSoftwareHandler release];
   [_jitWarningCard release];
@@ -917,10 +888,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _jitOpenButton.hidden = _openStikDebugHandler == nil;
 }
 
-- (void)convertLibraryTapped:(UIButton*)__unused sender {
-  if (_bulkZarConversionHandler) {
-    _bulkZarConversionHandler();
+// Touch opens the menu straight from +; a controller press still goes through importHandler.
+- (void)setAddMenu:(UIMenu*)addMenu {
+  if (_addMenu == addMenu) {
+    return;
   }
+  [_addMenu release];
+  _addMenu = [addMenu retain];
+  _openGameButton.menu = addMenu;
+  _openGameButton.showsMenuAsPrimaryAction = addMenu != nil;
 }
 
 #pragma mark - Focus visuals
@@ -929,13 +905,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _settingsButton.enabled = _actionsEnabled;
   _profileButton.enabled = _actionsEnabled;
   _openGameButton.enabled = _actionsEnabled;
-  _convertLibraryButton.enabled = _actionsEnabled && !_convertLibraryButton.hidden;
 
   CGFloat actionAlpha = _actionsEnabled ? 1.0 : 0.5;
   _settingsButton.alpha = actionAlpha;
   _profileButton.alpha = actionAlpha;
   _openGameButton.alpha = actionAlpha;
-  _convertLibraryButton.alpha = _convertLibraryButton.hidden ? 0.0 : actionAlpha;
 }
 
 - (void)setActionsEnabled:(BOOL)actionsEnabled {
@@ -989,7 +963,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [self clearButtonFocusChrome:_settingsButton];
     [self clearButtonFocusChrome:_profileButton];
     [self clearButtonFocusChrome:_openGameButton];
-    [self clearButtonFocusChrome:_convertLibraryButton];
     if (_focusedGameIndex >= 0 && _focusedGameIndex < [self libraryItemCount]) {
       NSIndexPath* focusedPath = [NSIndexPath indexPathForItem:_focusedGameIndex inSection:0];
       [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ focusedPath ]];
@@ -1000,7 +973,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [self setButton:_settingsButton controllerFocused:settingsFocused];
   [self setButton:_profileButton controllerFocused:profileFocused];
   [self setButton:_openGameButton controllerFocused:importFocused];
-  [self clearButtonFocusChrome:_convertLibraryButton];
 
   if (_libraryFocusActive && _focusedGameIndex < 0 && _games.count > 0) {
     [self setFocusedGameIndex:0 scroll:NO];
@@ -1061,14 +1033,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _games = [games copy];
   const NSInteger newOffset = [self gameItemOffset];
   _gamesLoaded = YES;
-  BOOL hasConvertibleGames = NO;
-  for (XeniaIOSLauncherGameSnapshot* game in _games) {
-    if (game.supportsZarConversion) {
-      hasConvertibleGames = YES;
-      break;
-    }
-  }
-  _convertLibraryButton.hidden = !hasConvertibleGames;
   [self updateEmptyState];
 
   // Pair the games that are in both lists (identity: title id and title) so

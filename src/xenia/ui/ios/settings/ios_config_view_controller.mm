@@ -39,37 +39,6 @@
 
 namespace {
 
-NSString* const kXeniOSWebsiteURL = @"https://xenios.jp";
-NSString* const kXeniOSDiscordURL = @"https://discord.gg/QwcTtNKTGf";
-NSString* const kXeniOSGitHubURL = @"https://github.com/xenios-jp/XeniOS";
-NSString* const kXeniOSKoFiURL = @"https://ko-fi.com/xenios";
-
-typedef NS_ENUM(NSInteger, XeniaConfigFooterLinkTag) {
-  kXeniaConfigFooterLinkWebsite = 1,
-  kXeniaConfigFooterLinkGitHub = 2,
-  kXeniaConfigFooterLinkDiscord = 3,
-  kXeniaConfigFooterLinkKoFi = 4,
-};
-
-void OpenExternalURLString(NSString* url_string) {
-  if (!url_string || url_string.length == 0) {
-    return;
-  }
-  NSURL* url = [NSURL URLWithString:url_string];
-  if (!url) {
-    XELOGW("iOS: Failed to create URL from string: {}",
-           xe::strip_pii(url_string ? [url_string UTF8String] : "(null)"));
-    return;
-  }
-  [[UIApplication sharedApplication] openURL:url
-      options:@{}
-      completionHandler:^(BOOL success) {
-        if (!success) {
-          XELOGW("iOS: Failed to open external URL: {}", xe::strip_pii([url_string UTF8String]));
-        }
-      }];
-}
-
 bool OverrideCvarByName(const std::string& key, bool value) {
   if (!cvar::ConfigVars) return false;
   auto it = cvar::ConfigVars->find(key);
@@ -280,7 +249,8 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   xe::ui::IOSWindowedAppContext* app_context_;
   uint32_t game_title_id_;
   NSString* game_title_;
-  UIBarButtonItem* saveButton_;
+  BOOL save_scheduled_;
+  BOOL game_running_;
   void (^dismissal_handler_)(void);
   // Pages with search keep the unfiltered list here; sections_ is what the table shows.
   std::vector<IOSConfigSection> full_sections_;
@@ -295,6 +265,7 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
 @synthesize dismissalHandler = dismissal_handler_;
 @synthesize showsRootDismissButton = shows_root_dismiss_button_;
 @synthesize liveOverride = live_override_;
+@synthesize gameRunning = game_running_;
 @synthesize appContext = app_context_;
 
 - (NSString*)focusKey {
@@ -394,7 +365,6 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   [focus_key_ release];
   [focus_path_ release];
   [game_title_ release];
-  [saveButton_ release];
   [dismissal_handler_ release];
   [super dealloc];
 }
@@ -428,6 +398,12 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     }
   }
   return NO;
+}
+
+// Changes save as they are made, so the note above the list is only needed where they don't take
+// effect right away: a title's own overrides, or any page opened while a game is running.
+- (BOOL)showsRestartNotice {
+  return [self hasConfigVarItems] && (game_title_id_ || game_running_);
 }
 
 - (UIView*)restartNoticeHeaderView {
@@ -466,13 +442,13 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                               : NSLocalizedString(@"this game", @"config view controller: title");
     body.text = [NSString
         stringWithFormat:NSLocalizedString(
-                             @"Overrides here apply only to %1$@ (%2$@). They are read when the title "
-                             @"launches, so relaunch the game after saving.",
+                             @"These apply only to %1$@ (%2$@) and take effect the next time it "
+                             @"starts.",
                              @"config view controller: label text"),
                          game_name, title_id];
   } else {
-    body.text = NSLocalizedString(@"Settings apply when a game starts. If a game is running, "
-                                  @"relaunch XeniOS after saving.",
+    body.text = NSLocalizedString(@"A game is running. Changes take effect after you relaunch "
+                                  @"XeniOS.",
                                   @"config view controller: label text");
   }
   body.textColor = [XeniaTheme textSecondary];
@@ -666,153 +642,12 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     [self updateTableHeaderAndFooterLayout];
   } else {
     self.tableView.tableHeaderView =
-        [self hasConfigVarItems] ? [self restartNoticeHeaderView] : nil;
-    self.tableView.tableFooterView = [self versionFooterView];
+        [self showsRestartNotice] ? [self restartNoticeHeaderView] : nil;
+    self.tableView.tableFooterView = nil;
     [self updateTableHeaderAndFooterLayout];
   }
 
-  if (!live_override_) {
-    saveButton_ = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Save", @"config view controller: title")
-                style:UIBarButtonItemStyleDone
-               target:self
-               action:@selector(saveTapped:)];
-    saveButton_.enabled = NO;
-  }
   [self updateNavigationItems];
-}
-
-- (void)footerLinkTapped:(UIButton*)sender {
-  switch ((XeniaConfigFooterLinkTag)sender.tag) {
-    case kXeniaConfigFooterLinkWebsite:
-      OpenExternalURLString(kXeniOSWebsiteURL);
-      break;
-    case kXeniaConfigFooterLinkGitHub:
-      OpenExternalURLString(kXeniOSGitHubURL);
-      break;
-    case kXeniaConfigFooterLinkDiscord:
-      OpenExternalURLString(kXeniOSDiscordURL);
-      break;
-    case kXeniaConfigFooterLinkKoFi:
-      OpenExternalURLString(kXeniOSKoFiURL);
-      break;
-    default:
-      break;
-  }
-}
-
-- (UIView*)versionFooterView {
-  NSString* footer_text = xe_user_facing_build_label(xe_current_compat_report_build_info());
-  const BOOL has_footer_text = footer_text.length > 0;
-  NSString* memorial_text =
-      NSLocalizedString(@"XeniOS is one of several apps with dedication keeping the memory of "
-                        @"\"Lily\" alive 11/03/2023",
-                        @"config view controller: label text");
-  UIView* footer =
-      [[[UIView alloc]
-          initWithFrame:[self initialTableAccessoryFrameWithHeight:(has_footer_text ? 176.0
-                                                                                    : 78.0)]]
-          autorelease];
-  footer.backgroundColor = [UIColor clearColor];
-
-  UILabel* links_label = [[[UILabel alloc] init] autorelease];
-  links_label.translatesAutoresizingMaskIntoConstraints = NO;
-  links_label.backgroundColor = [UIColor clearColor];
-  links_label.text = NSLocalizedString(@"Links", @"config view controller: label text");
-  links_label.textAlignment = NSTextAlignmentCenter;
-  links_label.textColor = [XeniaTheme textMuted];
-  links_label.numberOfLines = 1;
-  xe_apply_label_font(links_label, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
-  [links_label setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                               forAxis:UILayoutConstraintAxisVertical];
-  [footer addSubview:links_label];
-
-  UIStackView* links_row = [[[UIStackView alloc] initWithArrangedSubviews:@[
-    xe_make_settings_footer_button(
-        @"", @"globe", NSLocalizedString(@"Website", @"config view controller: section footer"),
-        kXeniaConfigFooterLinkWebsite, YES, self, @selector(footerLinkTapped:)),
-    xe_make_settings_footer_button(
-        @"SettingsLinkGitHub", @"chevron.left.forwardslash.chevron.right", @"GitHub",
-        kXeniaConfigFooterLinkGitHub, YES, self, @selector(footerLinkTapped:)),
-    xe_make_settings_footer_button(@"SettingsLinkDiscord", @"bubble.left.and.bubble.right",
-                                   @"Discord", kXeniaConfigFooterLinkDiscord, YES, self,
-                                   @selector(footerLinkTapped:)),
-    xe_make_settings_footer_button(@"SettingsLinkKoFi", @"cup.and.saucer", @"Ko-fi",
-                                   kXeniaConfigFooterLinkKoFi, YES, self,
-                                   @selector(footerLinkTapped:)),
-  ]] autorelease];
-  links_row.translatesAutoresizingMaskIntoConstraints = NO;
-  links_row.axis = UILayoutConstraintAxisHorizontal;
-  links_row.alignment = UIStackViewAlignmentCenter;
-  links_row.distribution = UIStackViewDistributionEqualCentering;
-  links_row.spacing = 18.0;
-  [footer addSubview:links_row];
-
-  UIView* build_separator = nil;
-  UILabel* build_label = nil;
-  UILabel* memorial_label = nil;
-  if (has_footer_text) {
-    build_separator = [[[UIView alloc] init] autorelease];
-    build_separator.translatesAutoresizingMaskIntoConstraints = NO;
-    build_separator.backgroundColor = [XeniaTheme border];
-    [footer addSubview:build_separator];
-
-    build_label = [[[UILabel alloc] init] autorelease];
-    build_label.translatesAutoresizingMaskIntoConstraints = NO;
-    build_label.backgroundColor = [UIColor clearColor];
-    build_label.text = footer_text;
-    build_label.textAlignment = NSTextAlignmentCenter;
-    build_label.textColor = [XeniaTheme textMuted];
-    build_label.numberOfLines = 1;
-    xe_apply_label_font(build_label, UIFontTextStyleFootnote, 14.0, UIFontWeightMedium);
-    [build_label setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                                 forAxis:UILayoutConstraintAxisVertical];
-    [footer addSubview:build_label];
-
-    memorial_label = [[[UILabel alloc] init] autorelease];
-    memorial_label.translatesAutoresizingMaskIntoConstraints = NO;
-    memorial_label.backgroundColor = [UIColor clearColor];
-    memorial_label.text = memorial_text;
-    memorial_label.textAlignment = NSTextAlignmentCenter;
-    memorial_label.textColor = [XeniaTheme textSecondary];
-    memorial_label.numberOfLines = 0;
-    xe_apply_label_font(memorial_label, UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
-    [memorial_label setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                                    forAxis:UILayoutConstraintAxisVertical];
-    [footer addSubview:memorial_label];
-  }
-
-  NSMutableArray<NSLayoutConstraint*>* constraints = [NSMutableArray arrayWithArray:@[
-    [links_label.topAnchor constraintEqualToAnchor:footer.topAnchor constant:6],
-    [links_label.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:24],
-    [links_label.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-24],
-    [links_row.topAnchor constraintEqualToAnchor:links_label.bottomAnchor constant:8],
-    [links_row.leadingAnchor constraintGreaterThanOrEqualToAnchor:footer.leadingAnchor constant:24],
-    [links_row.trailingAnchor constraintLessThanOrEqualToAnchor:footer.trailingAnchor constant:-24],
-    [links_row.centerXAnchor constraintEqualToAnchor:footer.centerXAnchor],
-  ]];
-
-  if (has_footer_text) {
-    [constraints addObjectsFromArray:@[
-      [build_separator.topAnchor constraintEqualToAnchor:links_row.bottomAnchor constant:16],
-      [build_separator.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:24],
-      [build_separator.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-24],
-      [build_separator.heightAnchor constraintEqualToConstant:0.5],
-      [build_label.topAnchor constraintEqualToAnchor:build_separator.bottomAnchor constant:12],
-      [build_label.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:24],
-      [build_label.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-24],
-      [memorial_label.topAnchor constraintEqualToAnchor:build_label.bottomAnchor constant:8],
-      [memorial_label.leadingAnchor constraintEqualToAnchor:footer.leadingAnchor constant:24],
-      [memorial_label.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-24],
-      [memorial_label.bottomAnchor constraintEqualToAnchor:footer.bottomAnchor constant:-8],
-    ]];
-  } else {
-    [constraints addObject:[links_row.bottomAnchor constraintEqualToAnchor:footer.bottomAnchor
-                                                                  constant:-10]];
-  }
-
-  [NSLayoutConstraint activateConstraints:constraints];
-  return footer;
 }
 
 - (void)viewDidLayoutSubviews {
@@ -918,8 +753,8 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
       self.tableView.tableHeaderView = [self liveOverrideHeaderView];
     } else {
       self.tableView.tableHeaderView =
-          [self hasConfigVarItems] ? [self restartNoticeHeaderView] : nil;
-      self.tableView.tableFooterView = [self versionFooterView];
+          [self showsRestartNotice] ? [self restartNoticeHeaderView] : nil;
+      self.tableView.tableFooterView = nil;
     }
     [self updateTableHeaderAndFooterLayout];
   }
@@ -933,7 +768,17 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     dirty_keys_.insert(item->key);
   }
   hasPendingChanges_ = YES;
-  saveButton_.enabled = YES;
+  // Settings save as they change, as in Settings. Changes made in one pass (a reset, a picker)
+  // are written together on the next turn of the run loop.
+  if (!save_scheduled_) {
+    save_scheduled_ = YES;
+    [self retain];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      save_scheduled_ = NO;
+      [self savePendingChanges];
+      [self release];
+    });
+  }
 }
 
 // Pages with search edit a filtered copy of the rows; keep the unfiltered list (what Save writes)
@@ -1047,18 +892,18 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
 - (void)updateNavigationItems {
   if ([self isRootSettingsController]) {
     if (shows_root_dismiss_button_) {
-      self.navigationItem.leftBarButtonItem =
-          [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                                                         target:self
-                                                         action:@selector(cancelTapped:)]
-              autorelease];
+      self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+          initWithTitle:NSLocalizedString(@"Close", @"config view controller: button")
+                  style:UIBarButtonItemStylePlain
+                 target:self
+                 action:@selector(closeTapped:)] autorelease];
     } else {
       self.navigationItem.leftBarButtonItem = nil;
     }
   } else {
     self.navigationItem.leftBarButtonItem = nil;
   }
-  self.navigationItem.rightBarButtonItem = live_override_ ? nil : saveButton_;
+  self.navigationItem.rightBarButtonItem = nil;
 }
 
 - (IOSConfigItem*)itemAtIndexPath:(NSIndexPath*)indexPath {
@@ -1625,6 +1470,7 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   config_vc.dismissalHandler = self.dismissalHandler;
   config_vc.showsRootDismissButton = self.showsRootDismissButton;
   config_vc.appContext = app_context_;
+  config_vc.gameRunning = game_running_;
   [self.navigationController pushViewController:config_vc animated:YES];
   [config_vc release];
 }
@@ -1754,7 +1600,6 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                         if (deleted) {
                           dirty_keys_.clear();
                           hasPendingChanges_ = NO;
-                          saveButton_.enabled = NO;
                           [self reloadSectionsFromCatalog];
                         }
 
@@ -1817,8 +1662,7 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                               }
                               dirty_keys_.clear();
                               hasPendingChanges_ = NO;
-                              saveButton_.enabled = NO;
-                              [self reloadSectionsFromCatalog];
+                                  [self reloadSectionsFromCatalog];
                               XEPresentOKAlert(
                                   self,
                                   ok ? NSLocalizedString(
@@ -1851,67 +1695,24 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                            }];
 }
 
-- (void)cancelTapped:(id)sender {
-  if (!hasPendingChanges_) {
-    [self dismissSettingsControllerAnimated:YES];
-    return;
-  }
-
-  UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Discard Changes?",
-                                                 @"config view controller: title")
-                       message:NSLocalizedString(@"You have unsaved setting changes.",
-                                                 @"config view controller: message")
-                preferredStyle:UIAlertControllerStyleAlert];
-  [confirm
-      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Keep Editing",
-                                                                 @"config view controller: title")
-                                         style:UIAlertActionStyleCancel
-                                       handler:nil]];
-  [confirm
-      addAction:[UIAlertAction
-                    actionWithTitle:NSLocalizedString(@"Discard", @"config view controller: title")
-                              style:UIAlertActionStyleDestructive
-                            handler:^(__unused UIAlertAction* action) {
-                              [self dismissSettingsControllerAnimated:YES];
-                            }]];
-  [self presentViewController:confirm animated:YES completion:nil];
-}
-
-- (void)backTapped:(id)sender {
+- (void)closeTapped:(id)sender {
   (void)sender;
-  if (!hasPendingChanges_) {
-    [self.navigationController popViewControllerAnimated:YES];
-    return;
-  }
-
-  UIAlertController* confirm = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Discard Changes?",
-                                                 @"config view controller: title")
-                       message:NSLocalizedString(@"You have unsaved setting changes.",
-                                                 @"config view controller: message")
-                preferredStyle:UIAlertControllerStyleAlert];
-  [confirm
-      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Keep Editing",
-                                                                 @"config view controller: title")
-                                         style:UIAlertActionStyleCancel
-                                       handler:nil]];
-  [confirm
-      addAction:[UIAlertAction
-                    actionWithTitle:NSLocalizedString(@"Discard", @"config view controller: title")
-                              style:UIAlertActionStyleDestructive
-                            handler:^(__unused UIAlertAction* action) {
-                              [self.navigationController popViewControllerAnimated:YES];
-                            }]];
-  [self presentViewController:confirm animated:YES completion:nil];
+  [self.view endEditing:YES];
+  [self savePendingChanges];
+  [self dismissSettingsControllerAnimated:YES];
 }
 
-- (void)saveTapped:(id)sender {
-  if (live_override_) {
+- (void)viewWillDisappear:(BOOL)animated {
+  [super viewWillDisappear:animated];
+  // A field still being edited commits on end editing; write it before the page goes away.
+  [self.view endEditing:YES];
+  [self savePendingChanges];
+}
+
+- (void)savePendingChanges {
+  if (live_override_ || !hasPendingChanges_) {
     return;
   }
-  [self.view endEditing:YES];
-  [self.tableView endEditing:YES];
   const std::vector<IOSConfigSection> sections_for_save = [self sectionsForSaving];
   BOOL saved = NO;
   if (game_title_id_) {
@@ -1930,46 +1731,13 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   }
   hasPendingChanges_ = NO;
   dirty_keys_.clear();
-  saveButton_.enabled = NO;
-
-  NSString* title = nil;
-  NSString* message = nil;
-  if (game_title_id_) {
-    title = saved ? NSLocalizedString(@"Game Settings Saved", @"config view controller: title")
-                  : NSLocalizedString(@"Save Completed With Warnings",
-                                      @"config view controller: title");
-    message = saved ? NSLocalizedString(
-                          @"Saved title-specific overrides. Relaunch the game before testing them.",
-                          @"config view controller: message")
-                    : NSLocalizedString(
-                          @"Some title-specific overrides could not be saved. Check xenia.log.",
-                          @"config view controller: message");
-  } else {
-    title = saved ? NSLocalizedString(@"Settings Saved", @"config view controller: title")
-                  : NSLocalizedString(@"Save Completed With Warnings",
-                                      @"config view controller: title");
-    message =
-        saved
-            ? NSLocalizedString(@"Saved to XeniOS settings.\n\nFor reliable results, change "
-                                @"settings before launching a game. If you saved while a game was "
-                                @"already running, fully relaunch XeniOS before testing.",
-                                @"config view controller: message")
-            : NSLocalizedString(@"Some settings could not be applied. Check xenia.log.\n\nAny "
-                                @"settings that were saved should be tested after a full XeniOS "
-                                @"relaunch, or by changing them before launching a game.",
-                                @"config view controller: user-visible text");
+  if (!saved) {
+    XEPresentOKAlert(self,
+                     NSLocalizedString(@"Some Settings Weren't Saved",
+                                       @"config view controller: title"),
+                     NSLocalizedString(@"Check xenia.log for details.",
+                                       @"config view controller: message"));
   }
-  UIAlertController* alert =
-      [UIAlertController alertControllerWithTitle:title
-                                          message:message
-                                   preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Done", @"config view controller: title")
-                                 style:UIAlertActionStyleDefault
-                               handler:^(__unused UIAlertAction* action) {
-                                 [self dismissSettingsControllerAnimated:YES];
-                               }]];
-  [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

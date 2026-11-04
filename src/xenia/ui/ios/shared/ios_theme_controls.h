@@ -33,10 +33,5 @@ void xe_apply_text_view_font(UITextView* text_view, UIFontTextStyle text_style, 
 // Reusable controls.
 XeniaPaddedLabel* xe_make_tag_pill(NSString* text, UIColor* text_color);
 UIButton* xe_make_ios_sheet_close_button(id target, SEL action);
-UIImage* xe_settings_footer_image(NSString* asset_name, NSString* fallback_symbol_name,
-                                  BOOL tintable);
-UIButton* xe_make_settings_footer_button(NSString* asset_name, NSString* fallback_symbol_name,
-                                         NSString* accessibility_label, NSInteger tag,
-                                         BOOL tintable, id target, SEL action);
 
 #endif  // XENIA_UI_IOS_THEME_CONTROLS_H_
