@@ -115,7 +115,6 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindAllSettings,
   XeniaSettingsHubCategoryKindCacheCleanup,
   XeniaSettingsHubCategoryKindLibrary,
-  XeniaSettingsHubCategoryKindGameContent,
   XeniaSettingsHubCategoryKindSystemSoftware,
   XeniaSettingsHubCategoryKindAutomation,
   XeniaSettingsHubCategoryKindAbout,
@@ -1406,16 +1405,6 @@ titleForFooterInSection:(NSInteger)section {
                          symbolName:@"externaldrive.fill"
                           tintColor:gray],
                    [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindGameContent
-                              title:NSLocalizedString(@"Game Content & Patches",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Add-ons, updates and patches.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"puzzlepiece.extension.fill"
-                          tintColor:gray],
-                   [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindSystemSoftware
                               title:NSLocalizedString(@"Xbox 360 System Software",
                                                       @"settings hub view controller: title")
@@ -1717,14 +1706,6 @@ titleForFooterInSection:(NSInteger)section {
                     @"settings hub view controller: title")
           symbolName:@"trash.fill"
            tintColor:[XeniaTheme sectionIconRed]],
-    [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindGameContent
-               title:NSLocalizedString(@"Game Content and Patches",
-                                       @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Games · Add-ons, updates and patches.",
-                                       @"settings hub view controller: title")
-          symbolName:@"puzzlepiece.extension.fill"
-           tintColor:[XeniaTheme sectionIconGray]],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindSystemSoftware
                title:NSLocalizedString(@"Xbox 360 System Software",
@@ -2061,22 +2042,6 @@ titleForFooterInSection:(NSInteger)section {
       ];
       return [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:NSLocalizedString(@"Cache Cleanup", @"settings hub view controller: title")
-                  items:items
-          actionHandler:action_handler_] autorelease];
-    }
-    case XeniaSettingsHubCategoryKindGameContent: {
-      NSArray* items = @[
-        [XeniaSettingsActionListItem
-            infoItemWithTitle:NSLocalizedString(@"Game Content and Patches",
-                                                @"settings hub view controller: title")
-                     subtitle:NSLocalizedString(@"Manage title-specific installed content, discs, "
-                                                @"and patches from a game tile's context menu.",
-                                                @"settings hub view controller: title")
-                   symbolName:@"puzzlepiece.extension.fill"],
-      ];
-      return [[[XeniaSettingsActionListViewController alloc]
-          initWithTitle:NSLocalizedString(@"Game Content & Patches",
-                                          @"settings hub view controller: title")
                   items:items
           actionHandler:action_handler_] autorelease];
     }

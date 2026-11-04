@@ -211,7 +211,37 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   return card;
 }
 
-// The small capsule action a notice card carries.
+// At accessibility text sizes the action moves under the detail, so the text keeps the full
+// width instead of wrapping one word per line beside the button.
+void xe_set_notice_card_stacked(UIView* card, bool stacked) {
+  UIStackView* row = (UIStackView*)card.subviews.firstObject;
+  if (![row isKindOfClass:[UIStackView class]] || row.arrangedSubviews.count < 2) {
+    return;
+  }
+  UIStackView* text = (UIStackView*)row.arrangedSubviews[1];
+  UIView* action = nil;
+  for (UIView* view in [row.arrangedSubviews arrayByAddingObjectsFromArray:text.arrangedSubviews]) {
+    if ([view isKindOfClass:[UIButton class]]) {
+      action = view;
+    }
+  }
+  row.alignment = stacked ? UIStackViewAlignmentTop : UIStackViewAlignmentCenter;
+  if (!action || (action.superview == text) == stacked) {
+    return;
+  }
+  [action retain];
+  [action removeFromSuperview];
+  if (stacked) {
+    text.alignment = UIStackViewAlignmentLeading;
+    [text addArrangedSubview:action];
+    [text setCustomSpacing:8.0 afterView:text.arrangedSubviews[text.arrangedSubviews.count - 2]];
+  } else {
+    text.alignment = UIStackViewAlignmentFill;
+    [row addArrangedSubview:action];
+  }
+  [action release];
+}
+
 // The notices in one rounded group, a hairline between rows, like an inset grouped list.
 UIStackView* xe_new_notice_group(NSArray<UIView*>* rows, NSArray<UIView*>** separators_out) {
   NSMutableArray<UIView*>* items = [NSMutableArray array];
@@ -693,6 +723,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [self setMemoryEntitlementEnabled:YES];
   [self updateNoticeGroup];
   [self applyActionsEnabledState];
+  [self updateNoticeCardsForTextSize];
   [self registerForTraitChanges:@[
     [UITraitPreferredContentSizeCategory class], [UITraitHorizontalSizeClass class],
     [UITraitVerticalSizeClass class]
@@ -1254,7 +1285,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
+- (void)updateNoticeCardsForTextSize {
+  const bool stacked = xe_uses_accessibility_text(self.traitCollection);
+  xe_set_notice_card_stacked(_jitWarningCard, stacked);
+  xe_set_notice_card_stacked(_memoryWarningCard, stacked);
+}
+
 - (void)layoutTraitsChanged {
+  [self updateNoticeCardsForTextSize];
   [_gamesCollectionView.collectionViewLayout invalidateLayout];
   [self reconfigureVisibleGames];
 }
