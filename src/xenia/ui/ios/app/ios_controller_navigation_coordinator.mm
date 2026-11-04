@@ -251,6 +251,8 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   BOOL _launcherFocusShown;
   // The header button the games' top row goes up to: the one used last, Import at first.
   IOSFocusNodeId _lastHeaderFocus;
+  // On a game's page, the button the controller is on, or NSNotFound while it's in the rows.
+  NSUInteger _detailButtonFocus;
   uint32_t _nativeControllerPacketNumber;
   // The cursor row of each table the controller has moved through.
   NSMapTable<UITableView*, NSIndexPath*>* _tableCursors;
@@ -266,6 +268,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   _focusedGameIndex = -1;
   _launcherLibraryFocusActive = NO;
   _lastHeaderFocus = kLauncherFocusImport;
+  _detailButtonFocus = NSNotFound;
   _navigationWasEnabled = NO;
   _nativeControllerPacketNumber = 0;
   _tableCursors = [[NSMapTable weakToStrongObjectsMapTable] retain];
@@ -819,20 +822,89 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   return YES;
 }
 
+// A game's page has two parts: Play and the round buttons beside the art, and the rows. Beside
+// the art, left from the rows goes to the buttons and right from the last button comes back;
+// upright, up from the first row goes to them and down comes back. B closes the page, Y plays.
+- (void)handleGameDetailControllerActions:(const xe::ui::apple::ControllerActionSet&)actions
+                                     page:(UIViewController*)page {
+  if (actions.back) {
+    _detailButtonFocus = NSNotFound;
+    [_host controllerNavigationApplyGameDetailButtonFocus:NSNotFound];
+    [_host controllerNavigationCloseGameDetail];
+    return;
+  }
+  if (actions.quick_action) {
+    [_host controllerNavigationPlayGameDetail];
+    return;
+  }
+  UITableView* table_view = PrimaryTableViewForController(page);
+  const BOOL side = [_host controllerNavigationLauncherSideLayout];
+  const NSUInteger count = [_host controllerNavigationGameDetailButtonCount];
+
+  if (_detailButtonFocus != NSNotFound) {
+    if (!count) {
+      _detailButtonFocus = NSNotFound;
+      return;
+    }
+    _detailButtonFocus = std::min(_detailButtonFocus, count - 1);
+    BOOL to_rows = NO;
+    if (actions.navigate_left && _detailButtonFocus > 0) {
+      --_detailButtonFocus;
+    }
+    if (actions.navigate_right) {
+      if (_detailButtonFocus + 1 < count) {
+        ++_detailButtonFocus;
+      } else if (side) {
+        to_rows = YES;
+      }
+    }
+    if (actions.navigate_down && !side) {
+      to_rows = YES;
+    }
+    if (actions.accept) {
+      [_host controllerNavigationActivateGameDetailButton:_detailButtonFocus];
+    }
+    if (to_rows && table_view) {
+      _detailButtonFocus = NSNotFound;
+      NSIndexPath* cursor = [_tableCursors objectForKey:table_view];
+      if (!cursor && [table_view numberOfSections] > 0 &&
+          [table_view numberOfRowsInSection:0] > 0) {
+        cursor = [NSIndexPath indexPathForRow:0 inSection:0];
+        [_tableCursors setObject:cursor forKey:table_view];
+      }
+      if (cursor) {
+        ShowCursorRing(table_view, cursor);
+        [_ringTable removeAllObjects];
+        [_ringTable addObject:table_view];
+      }
+    }
+    [_host controllerNavigationApplyGameDetailButtonFocus:_detailButtonFocus];
+    return;
+  }
+
+  NSIndexPath* cursor = table_view ? [_tableCursors objectForKey:table_view] : nil;
+  const BOOL first_row = !cursor || (cursor.section == 0 && cursor.row == 0);
+  if (count && ((side && actions.navigate_left) || (!side && actions.navigate_up && first_row))) {
+    _detailButtonFocus = 0;
+    [[table_view viewWithTag:kControllerCursorRingTag] setHidden:YES];
+    [_host controllerNavigationApplyGameDetailButtonFocus:_detailButtonFocus];
+    return;
+  }
+  [self handleControllerActionsForTableController:page actions:actions];
+}
+
 - (BOOL)handleLauncherControllerActions:(const xe::ui::apple::ControllerActionSet&)actions {
   if (![_host controllerNavigationLauncherVisible]) {
     return NO;
   }
   // A game's page in place of the grid: its rows move and open with A, Y plays, B closes it.
   if (UIViewController* page = [_host controllerNavigationGameDetailController]) {
-    if (actions.back) {
-      [_host controllerNavigationCloseGameDetail];
-    } else if (actions.quick_action) {
-      [_host controllerNavigationPlayGameDetail];
-    } else {
-      [self handleControllerActionsForTableController:page actions:actions];
-    }
+    [self handleGameDetailControllerActions:actions page:page];
     return YES;
+  }
+  if (_detailButtonFocus != NSNotFound) {
+    _detailButtonFocus = NSNotFound;
+    [_host controllerNavigationApplyGameDetailButtonFocus:NSNotFound];
   }
   // Typing in Search: A or B ends it, back on Search; the rest is the keyboard's.
   if ([_host controllerNavigationLauncherSearchEditing]) {
