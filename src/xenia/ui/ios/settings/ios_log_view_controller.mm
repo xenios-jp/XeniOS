@@ -261,9 +261,8 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 - (void)updateCloseButton {
   if ([self shouldShowCloseButton]) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Close", @"log view controller: button")
-                style:UIBarButtonItemStylePlain
-               target:self
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                action:@selector(closeTapped:)] autorelease];
   } else {
     self.navigationItem.leftBarButtonItem = nil;

@@ -122,8 +122,8 @@
 
   _resumeButton = [self newButtonWithTitle:NSLocalizedString(@"Resume", @"In-game menu button")
                                  imageName:nil
-                           backgroundColor:[XeniaTheme accent]
-                           foregroundColor:[XeniaTheme accentFg]
+                           backgroundColor:[XeniaTheme textPrimary]
+                           foregroundColor:[XeniaTheme bgPrimary]
                                 menuAction:XeniaIOSInGameMenuActionResume
                                     action:@selector(resumePressed:)];
 
@@ -330,7 +330,7 @@
                          action:(SEL)action {
   const BOOL resume = menuAction == XeniaIOSInGameMenuActionResume;
   // Resume is the one prominent glass button; the rest are plain glass. Only Resume and Exit
-  // carry a tint (accent and error), the others keep the neutral glass.
+  // carry a tint (white, as the one primary button, and error); the others keep the neutral glass.
   UIButtonConfiguration* config = resume ? [UIButtonConfiguration prominentGlassButtonConfiguration]
                                          : [UIButtonConfiguration glassButtonConfiguration];
   config.title = title;

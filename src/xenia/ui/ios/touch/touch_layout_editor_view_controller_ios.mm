@@ -59,10 +59,8 @@
   }
   self.view.backgroundColor = [UIColor blackColor];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close",
-                                      @"Navigation bar button that closes the touch layout editor")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
   self.navigationItem.rightBarButtonItem =
       [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone

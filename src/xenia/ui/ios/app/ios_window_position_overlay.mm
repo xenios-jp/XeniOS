@@ -38,9 +38,9 @@
 
   UIButtonConfiguration* done_config = [UIButtonConfiguration filledButtonConfiguration];
   done_config.title = NSLocalizedString(@"Done", @"Button that finishes repositioning");
-  done_config.baseBackgroundColor = [XeniaTheme accent];
-  done_config.baseForegroundColor = [XeniaTheme accentFg];
-  done_config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
+  done_config.baseBackgroundColor = [XeniaTheme textPrimary];
+  done_config.baseForegroundColor = [XeniaTheme bgPrimary];
+  done_config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   _doneButton = [[UIButton buttonWithConfiguration:done_config primaryAction:nil] retain];
   [_doneButton addTarget:self
                   action:@selector(donePressed:)

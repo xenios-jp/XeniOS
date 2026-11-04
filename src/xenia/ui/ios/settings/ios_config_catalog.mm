@@ -433,32 +433,44 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
   return sections;
 }
 
+// A range shown as a slider between two words, with its value and unit beside the title.
+static void AddSliderSetting(std::vector<IOSConfigItem>& items, const std::string& key,
+                             const std::string& title, const std::string& value_unit,
+                             double min_value, double max_value, double step,
+                             const std::string& min_label, const std::string& max_label) {
+  const size_t count = items.size();
+  AddDoubleSetting(items, key, title, std::string(), value_unit, min_value, max_value, step);
+  if (items.size() > count) {
+    items.back().min_label = min_label;
+    items.back().max_label = max_label;
+  }
+}
+
 static std::vector<IOSConfigSection> BuildControlsSections() {
   std::vector<IOSConfigSection> sections;
   IOSConfigSection touch;
-  touch.title = "Touch Behavior";
-  AddBoolSetting(touch.items, "ios_touch_haptics", "Haptics",
-                 "Vibrate when you press a touch button.",
-                 true);
-  AddBoolSetting(touch.items, "ios_touch_overlay", "Touch Controls",
-                 "Show on-screen controls when no controller is connected.",
-                 true);
-  AddDoubleSetting(touch.items, "ios_touch_look_points_per_full_scale",
-                   "Look Swipe Distance",
-                   "How far to swipe to turn at full speed. Lower turns faster.", "pt", 1.0, 20.0,
-                   0.5);
-  AddDoubleSetting(touch.items, "ios_touch_look_vertical_scale", "Vertical Look Speed",
-                   "Speed of looking up and down, relative to left and right.",
-                   "\xC3\x97", 0.5, 3.0, 0.1);
+  AddBoolSetting(touch.items, "ios_touch_overlay", "Show Touch Controls",
+                 "When no controller is connected.", true);
+  AddBoolSetting(touch.items, "ios_touch_haptics", "Haptics", "", true);
   PushIfNotEmpty(sections, std::move(touch));
 
+  IOSConfigSection look;
+  look.title = "Looking Around";
+  look.footer = "A shorter swipe turns at full speed sooner.";
+  AddSliderSetting(look.items, "ios_touch_look_points_per_full_scale", "Swipe Distance", "pt",
+                   1.0, 20.0, 0.5, "Short", "Long");
+  AddSliderSetting(look.items, "ios_touch_look_vertical_scale", "Vertical Speed", "\xC3\x97",
+                   0.5, 3.0, 0.1, "Slower", "Faster");
+  PushIfNotEmpty(sections, std::move(look));
+
   IOSConfigSection low_fps;
-  low_fps.title = "Slow Games";
-  low_fps.footer = "Helps games running at a low frame rate notice quick swipes and taps.";
-  AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold Time",
-                   "How long a swipe keeps turning the camera.", "s", 0.0, 0.5, 0.02);
-  AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Tap Hold Time",
-                   "How long a tap keeps a button pressed.", "s", 0.0, 0.5, 0.02);
+  low_fps.title = "For Slow Games";
+  low_fps.footer =
+      "Keeps quick swipes and taps from being missed when a game runs below 30 fps.";
+  AddDoubleSetting(low_fps.items, "ios_touch_look_hold_seconds", "Look Hold", "", "s", 0.0, 0.5,
+                   0.05);
+  AddDoubleSetting(low_fps.items, "ios_touch_button_tap_hold_seconds", "Tap Hold", "", "s", 0.0,
+                   0.5, 0.05);
   PushIfNotEmpty(sections, std::move(low_fps));
   return sections;
 }
@@ -961,7 +973,7 @@ std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind) {
     case IOSConfigCatalogKind::kAudio:
       return "Audio";
     case IOSConfigCatalogKind::kControls:
-      return "Touch Behavior";
+      return "Touch Controls";
     case IOSConfigCatalogKind::kPerformance:
       return "Performance";
     case IOSConfigCatalogKind::kCompatibility:
