@@ -287,9 +287,6 @@
 /* Feedback while dragging; %@ is the name of the other control */
 "Aligned with %@" = "Aligned with %@";
 
-/* settings hub view controller: title */
-"All Config" = "All Config";
-
 /* Swipe action in the layout library: use for all games */
 "All Games" = "All Games";
 
@@ -1194,7 +1191,7 @@
 "Estimating…" = "Estimating…";
 
 /* settings hub view controller: title */
-"Every setting in one list. Search by name or value." = "Every setting in one list. Search by name or value.";
+"Every setting, emulator options included. Search by name, key or value." = "Every setting, emulator options included. Search by name, key or value.";
 
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
@@ -1609,8 +1606,7 @@
 /* settings hub view controller: title */
 "Import Layout" = "Import Layout";
 
-/* game disc view controller: user-visible text
-   Game source label: file is imported */
+/* game disc view controller: user-visible text */
 "Imported" = "Imported";
 
 /* document import coordinator: label text
@@ -2194,6 +2190,9 @@
 /* choice list view controller: accessibility value */
 "Not selected" = "Not selected";
 
+/* launcher overlay view: Dashboard tile status, before the system software is installed */
+"Not Set Up" = "Not Set Up";
+
 /* launcher overlay view: accessibility value */
 "Not set up" = "Not set up";
 
@@ -2617,6 +2616,9 @@
 /* file transfer: error message */
 "Reading the selected file failed." = "Reading the selected file failed.";
 
+/* launcher overlay view: Dashboard tile status, once the system software is installed */
+"Ready" = "Ready";
+
 /* zar conversion coordinator: user-visible text */
 "Ready to convert" = "Ready to convert";
 
@@ -2850,9 +2852,6 @@
 /* compat report view controller: user-visible text */
 "Screenshots" = "Screenshots";
 
-/* settings hub view controller: title */
-"Search and edit every registered cvar." = "Search and edit every registered cvar.";
-
 /* dashboard disc tray: search field placeholder */
 "Search Games" = "Search Games";
 
@@ -2899,9 +2898,6 @@
 
 /* Toast; %1$lu is the number of games, %2$@ the receiving app */
 "Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
-
-/* launcher overlay view: Dashboard tile label, before the system software is installed */
-"Set Up" = "Set Up";
 
 /* launcher overlay view: menu action */
 "Set Up Dashboard" = "Set Up Dashboard";
