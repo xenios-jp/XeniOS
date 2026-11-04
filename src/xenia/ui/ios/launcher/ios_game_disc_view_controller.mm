@@ -66,10 +66,11 @@ NSString* DetailForDisc(const xe::ui::IOSDiscoveredGame::Disc& disc) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                     target:self
-                                                     action:@selector(doneTapped:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Close", @"game disc view controller: button")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(doneTapped:)] autorelease];
 }
 
 - (void)doneTapped:(id)__unused sender {

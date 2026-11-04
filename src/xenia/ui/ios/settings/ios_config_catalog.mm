@@ -584,14 +584,11 @@ static std::vector<IOSConfigSection> BuildSystemSections() {
   std::vector<IOSConfigSection> sections;
   IOSConfigSection automation;
   automation.title = "Automation";
-  automation.footer =
-      "These options are stored locally in the iOS frontend rather than xenios.config.toml.";
   AddUserDefaultBoolSetting(
       automation.items, kXeniaAutoOpenStikDebugOnLaunchPreferenceKey,
       "Auto-Enable JIT via StikDebug",
-      "On app open, jump into StikDebug with XeniOS's bundle ID so it can enable JIT and "
-      "relaunch XeniOS. Requires StikDebug, a valid pairing file, and your normal VPN / loopback "
-      "setup.",
+      "Opens StikDebug when XeniOS starts, to turn on JIT and come back. Needs StikDebug set "
+      "up with a pairing file.",
       false);
   PushIfNotEmpty(sections, std::move(automation));
 
@@ -602,7 +599,7 @@ static std::vector<IOSConfigSection> BuildSystemSections() {
       "them into XeniOS.";
   AddActionSetting(library.items, IOSConfigAction::kManageExternalFolders,
                    "Manage External Folders",
-                   "Review, add, or unlink the external folders scanned for games.");
+                   "Folders XeniOS looks in for games.");
   PushIfNotEmpty(sections, std::move(library));
 
   return sections;
