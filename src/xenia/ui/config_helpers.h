@@ -63,7 +63,7 @@ inline const std::vector<CvarAlias>& GetCvarAliases() {
       {"hid", "any", "hid", "sdl"},
 #elif XE_PLATFORM_MAC
       {"gpu", "any", "gpu", "metal"},
-      {"apu", "any", "apu", "sdl"},
+      {"apu", "any", "apu", "phase"},
       {"hid", "any", "hid", "sdl"},
 #elif XE_PLATFORM_IOS
       {"gpu", "any", "gpu", "metal"},
@@ -333,7 +333,7 @@ GetKnownEnumOptions() {
         {"hid", {"sdl", "nop"}},
 #elif XE_PLATFORM_MAC
         {"gpu", {"metal", "vulkan", "null"}},
-        {"apu", {"nop", "sdl"}},
+        {"apu", {"phase", "sdl", "nop"}},
         {"hid", {"sdl", "nop"}},
 #elif XE_PLATFORM_IOS
         {"gpu", {"metal"}},
