@@ -204,15 +204,41 @@ BOOL IsMicrosoftDownload(NSURL* url) {
 }
 
 - (void)showInstructions {
-  // Microsoft's page is shown as Microsoft serves it; these two steps say where its link is.
-  [self setBannerText:NSLocalizedString(
-                          @"1. Open the highlighted “How to update”, then “Copy to a USB flash "
-                          @"drive”.\n"
-                          @"2. Tap the highlighted “XBOX 360 system update file”.\n"
-                          @"XeniOS installs the update when the download finishes.",
-                          @"system update page: instructions")
+  // Until the page has drawn and its first step is found.
+  [self setBannerText:NSLocalizedString(@"Microsoft's page is loading. XeniOS shows you each tap.",
+                                        @"system update page: instructions while the page loads")
                symbol:@"arrow.down.circle"
                 color:[XeniaTheme accent]];
+}
+
+// When none of the steps can be found on the page, as when Microsoft has changed it.
+- (void)showWrittenSteps {
+  [self setBannerText:NSLocalizedString(@"Under How to update, open “Copy to a USB flash drive” and "
+                                        @"tap its download link. XeniOS installs the update when it "
+                                        @"has downloaded.",
+                                        @"system update page: instructions")
+               symbol:@"arrow.down.circle"
+                color:[XeniaTheme accent]];
+}
+
+- (void)showStep:(NSUInteger)step {
+  NSString* text;
+  switch (step) {
+    case 3:
+      text = NSLocalizedString(@"Step 3 of 3: Tap “XBOX 360 system update file”. XeniOS installs it "
+                               @"when it has downloaded.",
+                               @"system update page: last step");
+      break;
+    case 2:
+      text = NSLocalizedString(@"Step 2 of 3: Open “Copy to a USB flash drive”.",
+                               @"system update page: second step");
+      break;
+    default:
+      text = NSLocalizedString(@"Step 1 of 3: Open “How to update”.",
+                               @"system update page: first step");
+      break;
+  }
+  [self setBannerText:text symbol:@"hand.tap" color:[XeniaTheme accent]];
 }
 
 - (void)updateBarButtons {
@@ -264,47 +290,65 @@ BOOL IsMicrosoftDownload(NSURL* url) {
   if (generation != find_generation_ || download_ || !web_view_.window) {
     return;
   }
-  // Innermost first: the link, the section that holds it, then the heading that holds that.
-  [self findFirstOf:@[ @"XBOX 360 system update file", @"system update file", @"Copy to a USB flash drive",
-                       @"How to update" ]
-         generation:generation
-           attempts:attempts];
+  [self findStep:3 text:0 generation:generation attempts:attempts];
 }
 
-- (void)findFirstOf:(NSArray<NSString*>*)texts
-         generation:(NSUInteger)generation
-           attempts:(NSUInteger)attempts {
-  if (!texts.count) {
+// The text each step taps, last step first: the link, the section that holds it, then the
+// heading that holds that. Several texts are tried for a step, in order.
+static NSArray<NSString*>* StepTexts(NSUInteger step) {
+  switch (step) {
+    case 3:
+      return @[ @"XBOX 360 system update file", @"system update file" ];
+    case 2:
+      return @[ @"Copy to a USB flash drive" ];
+    default:
+      return @[ @"How to update" ];
+  }
+}
+
+- (void)findStep:(NSUInteger)step
+            text:(NSUInteger)text
+      generation:(NSUInteger)generation
+        attempts:(NSUInteger)attempts {
+  NSArray<NSString*>* texts = StepTexts(step);
+  if (text >= texts.count) {
+    if (step > 1) {
+      [self findStep:step - 1 text:0 generation:generation attempts:attempts];
+      return;
+    }
     // The page draws itself after it has loaded, so look again for a while.
     if (attempts > 1) {
       [self findDownloadLinkAfter:1.0 attempts:attempts - 1];
+    } else {
+      [self hideGuide];
+      [self showWrittenSteps];
     }
     return;
   }
   WKFindConfiguration* configuration = [[[WKFindConfiguration alloc] init] autorelease];
-  [web_view_ findString:texts.firstObject
+  [web_view_ findString:texts[text]
       withConfiguration:configuration
       completionHandler:^(WKFindResult* found) {
         if (generation != find_generation_) {
           return;
         }
         if (found.matchFound) {
-          [self showGuideGeneration:generation];
+          [self showGuideForStep:step generation:generation];
           return;
         }
-        [self findFirstOf:[texts subarrayWithRange:NSMakeRange(1, texts.count - 1)]
-               generation:generation
-                 attempts:attempts];
+        [self findStep:step text:text + 1 generation:generation attempts:attempts];
       }];
 }
 
 // Where Find in Page's selection is, in page coordinates. It runs in WebKit's client world, which
-// the page's own scripts can't see, and only reads.
-- (void)showGuideGeneration:(NSUInteger)generation {
+// the page's own scripts can't see; it reads the box and lets go of the selection, as a tap
+// elsewhere would, so XeniOS's ring is the only mark on the page.
+- (void)showGuideForStep:(NSUInteger)step generation:(NSUInteger)generation {
   [web_view_ callAsyncJavaScript:
                  @"const s = getSelection();"
                  @"if (!s || !s.rangeCount) return null;"
                  @"const r = s.getRangeAt(0).getBoundingClientRect();"
+                 @"s.removeAllRanges();"
                  @"if (!r.width || !r.height) return null;"
                  @"return [r.left + scrollX, r.top + scrollY, r.width, r.height];"
                        arguments:nil
@@ -323,6 +367,7 @@ BOOL IsMicrosoftDownload(NSURL* url) {
                  const CGRect found = CGRectMake([box[0] doubleValue] * zoom, [box[1] doubleValue] * zoom,
                                                  [box[2] doubleValue] * zoom, [box[3] doubleValue] * zoom);
                  [self placeGuideAround:found];
+                 [self showStep:step];
                }];
 }
 
