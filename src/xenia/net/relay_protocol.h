@@ -23,7 +23,7 @@
 #include "xenia/net/xnet_secure.h"
 
 // System Link over the internet: the instances in one room meet in a lobby
-// (tools/systemlink-lobby) and exchange their Ethernet frames directly where
+// and exchange their Ethernet frames directly where
 // their NATs let them, and through a TURN relay otherwise. These are the
 // messages they send each other.
 namespace xe::net::relay {

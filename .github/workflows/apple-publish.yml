@@ -476,16 +476,9 @@ jobs:
           maps=(scratch/artifacts/symbols/*.map.gz)
           test -f "${maps[0]}"
 
-          # The diagnostics Worker symbolicates crashes only for builds whose map is
-          # in its database; loading it needs the Worker's wrangler.toml.
           {
             echo "### Crash symbol map"
-            echo "Load \`$(basename "${maps[0]}")\` into the diagnostics database:"
-            echo '```'
-            echo "gh run download ${GITHUB_RUN_ID} -R ${GITHUB_REPOSITORY} -n xenios_ios_symbols -D xenios-symbols"
-            echo "node tools/ios/diagnostics/symbols.mjs xenios-symbols/*.map.gz > symbols.sql"
-            echo "(cd tools/ios/diagnostics && wrangler d1 execute xenios-diagnostics --remote --file ../../../symbols.sql)"
-            echo '```'
+            echo "\`$(basename "${maps[0]}")\` is in the xenios_ios_symbols artifact."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the IPA

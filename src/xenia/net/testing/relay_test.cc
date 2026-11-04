@@ -335,7 +335,7 @@ class FakeTurn {
   std::map<Endpoint, Allocation> allocations_;
 };
 
-// The Worker's rooms (tools/systemlink-lobby/PROTOCOL.md) without its
+// The lobby Worker's rooms without its
 // timeouts. Used from one thread.
 class FakeLobby {
  public:

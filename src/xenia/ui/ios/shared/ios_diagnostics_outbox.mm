@@ -31,7 +31,7 @@ constexpr NSUInteger kMaxRecords = 50;
 constexpr unsigned long long kMaxOutboxBytes = 2ull << 20;
 constexpr NSTimeInterval kMaxCrashAge = 14 * 24 * 3600;
 constexpr NSTimeInterval kMaxSessionAge = 48 * 3600;
-// A batch, as the Worker takes it (tools/ios/diagnostics/worker/lib.mjs).
+// A batch, as the Worker takes it.
 constexpr NSUInteger kMaxBatchRecords = 50;
 // Crash records cost the Worker far more CPU than sessions (frames, text to
 // scrub); this many stay well inside the Free plan's 10 ms a request.
@@ -714,8 +714,7 @@ NSDictionary* xe_ios_diagnostics_header_for_earlier_launch(NSDictionary* logged,
 // A file name may hold spaces ("Halo 3 Reach.iso") and a relative path may
 // start anywhere ("Alice Games/Halo/default.xex"), so the file rule replaces the
 // whole run of words up to the extension, from the first word that isn't plain
-// message text (kFileContextWords). Kept in step with the Worker's scrub()
-// (tools/ios/diagnostics/worker/lib.mjs).
+// message text (kFileContextWords). Kept in step with the Worker's scrub().
 #define XE_FILE_EXTENSIONS \
   "iso|xex|xexp|xbe|xcp|zar|god|stfs|svod|bin|dat|pkg|rar|zip|7z|cue|img|ini|toml|log|txt|json|plist|xml"
 #define XE_FILE_CONTEXT_WORDS                                                                   \
