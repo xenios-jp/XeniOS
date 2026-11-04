@@ -79,6 +79,8 @@ class MetalDxilBinder {
   struct Slice {
     MTL::Buffer* buffer = nullptr;
     NS::UInteger offset = 0;
+    // buffer->gpuAddress() + offset, taken once when the slice is written.
+    uint64_t gpu_address = 0;
   };
   static constexpr uint32_t kConstantCount = 5;
   // Keyed by the block size and the revision the command processor bumps
