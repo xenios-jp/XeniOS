@@ -290,12 +290,12 @@ xe::hid::touch::IOSTouchLayoutModel MakeOfficialIOSFPSCompactLayoutModel() {
                               "FPS Compact");
 
   IOSTouchControlDefinition move = MakeOfficialTouchMoveStick(
-      IOSTouchRect{0.055f, 0.560f, 0.190f, 0.315f}, true);
+      IOSTouchRect{0.040f, 0.535f, 0.225f, 0.395f}, true);
   move.secondary_behavior =
       MakeSecondaryAction(IOSTouchInteractionTrigger::kDoubleTapForward,
                           IOSTouchAction::kLeftThumb);
   AddOfficialTouchControl(&layout, std::move(move),
-                          IOSTouchRect{0.060f, 0.675f, 0.290f, 0.205f});
+                          IOSTouchRect{0.045f, 0.665f, 0.330f, 0.245f});
   AddOfficialTouchControl(&layout, MakeOfficialTouchLookBackdrop(),
                           IOSTouchRect{0.0f, 0.0f, 1.0f, 1.0f});
   AddTopSystemButtons(&layout);
@@ -335,7 +335,7 @@ xe::hid::touch::IOSTouchLayoutModel MakeOfficialIOSFPSFullLayoutModel() {
       MakeOfficialTouchLayout(kOfficialTouchLayoutFPSFullLocalID, "FPS Full");
 
   IOSTouchControlDefinition move = MakeOfficialTouchMoveStick(
-      IOSTouchRect{0.055f, 0.560f, 0.175f, 0.305f});
+      IOSTouchRect{0.045f, 0.545f, 0.200f, 0.350f});
   move.secondary_behavior =
       MakeSecondaryAction(IOSTouchInteractionTrigger::kDoubleTapForward,
                           IOSTouchAction::kLeftThumb);
