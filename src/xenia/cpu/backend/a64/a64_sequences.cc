@@ -1025,6 +1025,41 @@ inline bool TruncationOnlyReadAsWord(const hir::Instr* instr) {
   return true;
 }
 
+// True when the truncation's source register keeps its value until the last
+// reader of the result, all of which are in its block.
+inline bool SourceHeldThroughUses(A64Emitter& e, const hir::Instr* instr) {
+  const hir::Value* src = instr->src1.value;
+  const hir::Value* result = instr->dest;
+  if (src->IsConstant() || src->reg.index < 0 || !src->reg.set ||
+      src->reg.set != result->reg.set) {
+    return false;
+  }
+  size_t readers_left = 0;
+  for (const hir::Value::Use* use = result->use_head; use; use = use->next) {
+    if (use->instr->block != instr->block) {
+      return false;
+    }
+    ++readers_left;
+  }
+  for (const hir::Instr* i = instr->next; i; i = i->next) {
+    for (const hir::Value::Use* use = result->use_head; use; use = use->next) {
+      if (use->instr == i) {
+        // An instruction may read the result in more than one operand.
+        --readers_left;
+      }
+    }
+    if (!readers_left) {
+      return true;
+    }
+    if ((i->dest && i->dest->reg.set == src->reg.set &&
+         i->dest->reg.index == src->reg.index) ||
+        e.PromotedStoreWrites(i, src->reg)) {
+      return false;
+    }
+  }
+  return false;
+}
+
 struct TRUNCATE_I8_I16
     : Sequence<TRUNCATE_I8_I16, I<OPCODE_TRUNCATE, I8Op, I16Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
@@ -1067,6 +1102,12 @@ struct TRUNCATE_I32_I64
         TruncationOnlyReadAsWord(i.instr)) {
       // The move only clears the upper half, which ZERO_EXTEND_I64_I32
       // relies on in general but no compare reads.
+      return;
+    }
+    if (TruncationOnlyReadAsWord(i.instr) &&
+        SourceHeldThroughUses(e, i.instr)) {
+      // The compares read the low half of the source register instead.
+      e.RecolorForEmission(i.instr->dest, i.instr->src1.value->reg.index);
       return;
     }
     e.mov(i.dest, w_src);
