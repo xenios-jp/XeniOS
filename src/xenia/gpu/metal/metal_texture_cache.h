@@ -400,6 +400,16 @@ class MetalTextureCache : public TextureCache {
 
   MetalCommandProcessor* command_processor_;
   uint64_t binding_state_generation_ = 1;
+  // GetSamplerParameters runs for every sampler of every draw, and its result
+  // is a function of the fetch constant's words and the binding's filters.
+  struct SamplerParametersMemo {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    uint32_t filters;
+    SamplerParameters parameters;
+    bool valid;
+  };
+  mutable std::array<SamplerParametersMemo, xenos::kTextureFetchConstantCount>
+      sampler_parameters_memo_ = {};
 
   // Pre-created null textures for invalid bindings (following existing
   // patterns)
