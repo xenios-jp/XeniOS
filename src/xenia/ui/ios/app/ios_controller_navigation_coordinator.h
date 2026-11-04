@@ -18,6 +18,7 @@
 #include "xenia/ui/ios/shared/apple_ui_navigation.h"
 
 #import "xenia/ui/ios/app/ios_in_game_menu_overlay.h"
+#import "xenia/ui/ios/launcher/ios_launcher_overlay_view.h"
 
 @protocol XeniaIOSControllerNavigationHost <NSObject>
 
@@ -40,10 +41,15 @@
 
 - (void)controllerNavigationApplyFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll;
 - (void)controllerNavigationApplyLauncherFocusEnabled:(BOOL)enabled
-                                      settingsFocused:(BOOL)settingsFocused
-                                       profileFocused:(BOOL)profileFocused
-                                        importFocused:(BOOL)importFocused
-                                   libraryFocusActive:(BOOL)libraryFocusActive;
+                                          focusTarget:(XeniaIOSLauncherFocusTarget)target;
+// Continue Playing and the Search row, when they're on screen; the art beside the games.
+- (BOOL)controllerNavigationLauncherShowsHero;
+- (BOOL)controllerNavigationLauncherShowsSearch;
+- (BOOL)controllerNavigationLauncherSideLayout;
+- (BOOL)controllerNavigationLauncherSearchEditing;
+- (void)controllerNavigationEndLauncherSearch;
+// A on Search, Sort, Online or the hero's Play and ⋯.
+- (void)controllerNavigationActivateLauncherTarget:(XeniaIOSLauncherFocusTarget)target;
 - (void)controllerNavigationApplyInGameMenuFocusEnabled:(BOOL)enabled
                                           focusedAction:(XeniaIOSInGameMenuAction)focusedAction;
 
