@@ -143,6 +143,7 @@ class MetalCommandProcessor : public CommandProcessor {
     kScaledResolveCopy,
     kSnapshot,
     kDump,
+    kResolveBeforeGuestRead,
     kCount,
   };
 
@@ -265,6 +266,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // the autorelease pool is drained, preventing hangs from deferred
   // deallocation.
   void PrepareForWait() override;
+  void AwaitGpuWritesBeforeGuestRead() override;
+  uint64_t GetHeldGpuWritesSubmission() override;
   void SubmitBeforeShortMemoryPoll() override { PrepareForWait(); }
   void PollCompletedSubmission() override;
 
@@ -1353,6 +1356,8 @@ class MetalCommandProcessor : public CommandProcessor {
   uint32_t current_draw_index_ = 0;
   // Resolve or memexport output written by the open submission.
   bool copy_resolve_writes_pending_ = false;
+  // The last submission a resolve wrote guest RAM in, with zero-copy.
+  uint64_t resolve_last_submission_ = 0;
 
   // Host viewport of the previous draw, reused while the inputs it was derived
   // from stay the same.
