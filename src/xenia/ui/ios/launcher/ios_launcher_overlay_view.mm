@@ -527,6 +527,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIStackView* _heroButtons;  // not retained; _heroText holds it
   // Art on the left and the grid on the right, for windows wider than tall.
   BOOL _sideLayout;
+  // How far the keyboard covers the bottom of the library.
+  CGFloat _keyboardOverlap;
   // The games the grid shows, in order: all of them, sorted, or the search's matches.
   NSArray<XeniaIOSLauncherGameSnapshot*>* _shownGames;
   NSString* _query;
@@ -655,6 +657,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   playCfg.baseForegroundColor = UIColor.blackColor;
   playCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   playCfg.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 26.0, 0.0, 26.0);
+  playCfg.titleLineBreakMode = NSLineBreakByClipping;
   playCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
       NSDictionary<NSAttributedStringKey, id>* attributes) {
     NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
@@ -664,6 +667,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   };
   _heroPlayButton = [[UIButton buttonWithConfiguration:playCfg primaryAction:nil] retain];
   _heroPlayButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [_heroPlayButton setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                                   forAxis:UILayoutConstraintAxisHorizontal];
   [_heroPlayButton addTarget:self
                       action:@selector(heroPlayTapped:)
             forControlEvents:UIControlEventTouchUpInside];
@@ -778,9 +783,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIVisualEffectView* capsule =
       [[[UIVisualEffectView alloc] initWithEffect:xe_make_chrome_visual_effect(NO)] autorelease];
   capsule.translatesAutoresizingMaskIntoConstraints = NO;
-  capsule.layer.cornerRadius = 22.0;
-  capsule.layer.cornerCurve = kCACornerCurveContinuous;
-  capsule.clipsToBounds = YES;
+  // The glass's own shape: a layer corner radius is lost when the + menu folds back into it.
+  capsule.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
   UIStackView* capsuleStack = [[[UIStackView alloc]
       initWithArrangedSubviews:@[ _openGameButton, _settingsButton, _profileButton ]] autorelease];
   capsuleStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1057,6 +1061,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [UITraitVerticalSizeClass class]
   ]
                      withAction:@selector(layoutTraitsChanged)];
+  NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+  [center addObserver:self
+             selector:@selector(keyboardWillChangeFrame:)
+                 name:UIKeyboardWillChangeFrameNotification
+               object:nil];
+  [center addObserver:self
+             selector:@selector(keyboardDidShow:)
+                 name:UIKeyboardDidShowNotification
+               object:nil];
   return self;
 }
 
@@ -1087,6 +1100,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 // Search and sort sit in the header with the side layout, and above the grid otherwise.
 - (void)placeSearchRow {
   _searchWidth.active = _sideLayout;
+  [self updateSearchPlaceholder];
   if (_sideLayout) {
     if (_searchRow.superview != _headerActions) {
       [_searchRow removeFromSuperview];
@@ -1119,15 +1133,35 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [CATransaction commit];
 }
 
-// Upright, the compatibility capsule ends the row of buttons; beside the art the column is too
-// narrow for it, so it sits on its own line above them.
+// Whether Play, the round buttons and the capsule fit across the page in one row.
+- (BOOL)heroButtonRowFits {
+  if (_heroCompatButton.hidden) {
+    return YES;
+  }
+  CGFloat width = 0.0;
+  NSUInteger count = 0;
+  for (UIView* view in @[ _heroPlayButton, _heroMoreButton, _heroTouchButton, _heroSettingsButton,
+                          _heroCompatButton ]) {
+    if (view.hidden) {
+      continue;
+    }
+    width += [view systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].width;
+    ++count;
+  }
+  width += _heroButtons.spacing * (count > 0 ? count - 1 : 0);
+  return width <= CGRectGetWidth(self.bounds) - 2.0 * _heroTextLeading.constant;
+}
+
+// Upright, the compatibility capsule ends the row of buttons. Beside the art, or when larger text
+// leaves no room for it, it sits on its own line above them.
 - (void)placeHeroCompatButton {
-  UIView* row = _sideLayout ? _heroText : _heroButtons;
+  const BOOL own_line = _sideLayout || ![self heroButtonRowFits];
+  UIView* row = own_line ? _heroText : _heroButtons;
   if (_heroCompatButton.superview == row) {
     return;
   }
   [_heroCompatButton removeFromSuperview];
-  if (_sideLayout) {
+  if (own_line) {
     [_heroText insertArrangedSubview:_heroCompatButton
                              atIndex:[_heroText.arrangedSubviews indexOfObject:_heroButtons]];
     [_heroText setCustomSpacing:12.0 afterView:_heroCompatButton];
@@ -1267,7 +1301,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
   [CATransaction commit];
 
-  const CGFloat bottom = (side ? 0.0 : safe.bottom) + 16.0;
+  const CGFloat bottom = MAX(side ? 0.0 : safe.bottom, _keyboardOverlap) + 16.0;
   UIEdgeInsets insets = _gamesCollectionView.contentInset;
   if (insets.top != top_inset || insets.bottom != bottom) {
     // Keep the top in view when the list was scrolled to its top.
@@ -1346,11 +1380,17 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroTitle.text = latest.title;
   NSRelativeDateTimeFormatter* formatter = [[[NSRelativeDateTimeFormatter alloc] init] autorelease];
   formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleFull;
-  NSString* when = !latest.lastPlayed ? nil : [NSString
-      stringWithFormat:NSLocalizedString(@"Played %@",
-                                         @"launcher overlay view: Continue Playing; %@ is like "
-                                         @"\"2 hours ago\""),
-                       [formatter localizedStringForDate:latest.lastPlayed relativeToDate:[NSDate date]]];
+  // Under a minute (or a clock a little ahead) would read "in 0 seconds".
+  NSDate* now = [NSDate date];
+  NSString* when =
+      !latest.lastPlayed ? nil
+      : [now timeIntervalSinceDate:latest.lastPlayed] < 60.0
+          ? NSLocalizedString(@"Played just now", @"launcher overlay view: Continue Playing")
+          : [NSString stringWithFormat:NSLocalizedString(@"Played %@",
+                                                         @"launcher overlay view: Continue "
+                                                         @"Playing; %@ is like \"2 hours ago\""),
+                                       [formatter localizedStringForDate:latest.lastPlayed
+                                                          relativeToDate:now]];
   NSString* compat = latest.hasCompatInfo ? xe_compat_status_label(latest.compatStatus) : nil;
   _heroDetail.text = when && compat ? [NSString stringWithFormat:@"%@ · %@", when, compat]
                                     : (when ?: compat);
@@ -1435,6 +1475,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   const BOOL compat = game_buttons && _detailGame.supportsCompatibility;
   _heroCompatButton.hidden = !compat;
   _heroCompatButton.alpha = compat ? 1.0 : 0.0;
+  [self placeHeroCompatButton];
   // Title straight onto the buttons once the lines between them have gone.
   [_heroText setCustomSpacing:detail ? 16.0 : UIStackViewSpacingUseDefault afterView:_heroTitle];
 
@@ -1704,6 +1745,51 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return NO;
 }
 
+#pragma mark - Keyboard
+
+- (void)keyboardWillChangeFrame:(NSNotification*)notification {
+  if (!self.window) {
+    return;
+  }
+  const CGRect frame =
+      [self convertRect:[notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue]
+               fromView:nil];
+  const CGFloat overlap = MAX(0.0, CGRectGetMaxY(self.bounds) - CGRectGetMinY(frame));
+  if (overlap == _keyboardOverlap) {
+    return;
+  }
+  _keyboardOverlap = overlap;
+  [self setNeedsLayout];
+  [self layoutIfNeeded];
+  if (overlap == 0.0) {
+    // Back inside the list's range: typing can leave it scrolled past either end.
+    UIScrollView* grid = _gamesCollectionView;
+    const CGFloat min_y = -grid.contentInset.top;
+    const CGFloat max_y = MAX(min_y, grid.contentSize.height + grid.contentInset.bottom -
+                                         CGRectGetHeight(grid.bounds));
+    const CGFloat y = MIN(MAX(grid.contentOffset.y, min_y), max_y);
+    if (y != grid.contentOffset.y) {
+      [grid setContentOffset:CGPointMake(grid.contentOffset.x, y) animated:YES];
+    }
+  }
+}
+
+// Searching upright, the search row moves up under the header so the matches show above the keys.
+- (void)keyboardDidShow:(NSNotification*)__unused notification {
+  if (!_searchField.isFirstResponder || _searchRow.superview != _topInfoStack) {
+    return;
+  }
+  UIScrollView* grid = _gamesCollectionView;
+  const CGFloat row_top =
+      CGRectGetMinY([_searchRow convertRect:_searchRow.bounds toView:grid]);
+  const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame) - CGRectGetMinY(grid.frame);
+  const CGFloat y = MAX(row_top - header_bottom - 8.0, -grid.contentInset.top);
+  // After UIKit's own keyboard adjustment, which runs once this notification has been handled.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [grid setContentOffset:CGPointMake(grid.contentOffset.x, y) animated:YES];
+  });
+}
+
 // The games to show from `games`: the search's matches, in the chosen order.
 - (NSArray<XeniaIOSLauncherGameSnapshot*>*)shownGamesFrom:
     (NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
@@ -1736,8 +1822,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (void)updateSearchPlaceholder {
+  // The header's field is narrow beside the title; the count would be cut off at larger sizes.
   _searchField.placeholder =
-      _games.count == 1
+      _sideLayout ? NSLocalizedString(@"Search", @"launcher overlay view: search placeholder")
+      : _games.count == 1
           ? NSLocalizedString(@"Search 1 Game", @"launcher overlay view: search placeholder")
           : [NSString stringWithFormat:NSLocalizedString(@"Search %lu Games",
                                                          @"launcher overlay view: search "
@@ -1755,6 +1843,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   _emptyStateProxy.owner = nil;
   [_emptyStateProxy release];
   [_pendingArtLoads release];
