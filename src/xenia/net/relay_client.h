@@ -147,7 +147,9 @@ class RelayClient {
   };
 
  private:
-  static constexpr uint64_t kLobbyPingMs = 20000;
+  // Each ping counts against the lobby's daily requests. Two fit in the time
+  // the lobby (and this client) waits before calling a connection lost.
+  static constexpr uint64_t kLobbyPingMs = 30000;
   static constexpr uint64_t kLobbyLostMs = 60000;
   // A player turned away, or refused, tries again after this long, twice as
   // long each time in a row, up to kMaxRefusedBackoffMs, so a lobby at its
