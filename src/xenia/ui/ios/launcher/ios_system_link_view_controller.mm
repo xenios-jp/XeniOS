@@ -154,7 +154,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
 - (void)viewDidLoad {
   [super viewDidLoad];
   if (game_title_.length) {
-    self.navigationItem.prompt = game_title_;
+    self.navigationItem.subtitle = game_title_;
   }
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
