@@ -236,6 +236,8 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   // The Library's focus ring waits for the controller's first press, so a connected but idle
   // controller doesn't leave a ring on a tile.
   BOOL _launcherFocusShown;
+  // The header button the games' top row goes up to: the one used last, Import at first.
+  IOSFocusNodeId _lastHeaderFocus;
   uint32_t _nativeControllerPacketNumber;
   // The cursor row of each table the controller has moved through.
   NSMapTable<UITableView*, NSIndexPath*>* _tableCursors;
@@ -250,6 +252,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   _host = host;
   _focusedGameIndex = -1;
   _launcherLibraryFocusActive = NO;
+  _lastHeaderFocus = kLauncherFocusImport;
   _navigationWasEnabled = NO;
   _nativeControllerPacketNumber = 0;
   _tableCursors = [[NSMapTable weakToStrongObjectsMapTable] retain];
@@ -386,30 +389,30 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   const BOOL actions_enabled =
       launcher_visible && [_host controllerNavigationLauncherActionsEnabled];
 
+  // The header's buttons are one row, left to right: Import (+), Settings, Profile. Down from any
+  // of them goes to the games; up from the games' top row goes back to the one used last.
+  xe::ui::apple::FocusNode import_button;
+  import_button.id = kLauncherFocusImport;
+  import_button.right = kLauncherFocusSettings;
+  import_button.down = kLauncherFocusLibrary;
+  import_button.enabled = actions_enabled;
+
   xe::ui::apple::FocusNode settings;
   settings.id = kLauncherFocusSettings;
+  settings.left = kLauncherFocusImport;
   settings.right = kLauncherFocusProfile;
-  settings.down = kLauncherFocusImport;
+  settings.down = kLauncherFocusLibrary;
   settings.enabled = actions_enabled;
 
   xe::ui::apple::FocusNode profile;
   profile.id = kLauncherFocusProfile;
   profile.left = kLauncherFocusSettings;
-  profile.down = kLauncherFocusImport;
+  profile.down = kLauncherFocusLibrary;
   profile.enabled = actions_enabled;
-
-  xe::ui::apple::FocusNode import_button;
-  import_button.id = kLauncherFocusImport;
-  import_button.left = kLauncherFocusProfile;
-  import_button.right = kLauncherFocusLibrary;
-  import_button.up = kLauncherFocusSettings;
-  import_button.down = kLauncherFocusLibrary;
-  import_button.enabled = actions_enabled;
 
   xe::ui::apple::FocusNode library;
   library.id = kLauncherFocusLibrary;
-  library.left = kLauncherFocusImport;
-  library.up = kLauncherFocusImport;
+  library.up = _lastHeaderFocus;
   library.enabled = [_host controllerNavigationGameCount] > 0;
 
   _launcherFocusGraph.AddOrUpdateNode(settings);
@@ -535,6 +538,9 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   BOOL profile_focused = current_focus == kLauncherFocusProfile;
   BOOL import_focused = current_focus == kLauncherFocusImport;
   BOOL library_focused = current_focus == kLauncherFocusLibrary;
+  if (settings_focused || profile_focused || import_focused) {
+    _lastHeaderFocus = current_focus;
+  }
 
   if (library_focused && _focusedGameIndex < 0 &&
       [_host controllerNavigationGameCount] > 0) {
@@ -806,7 +812,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
 
   if (actions.section_prev) {
     IOSFocusNodeId target =
-        current_focus == kLauncherFocusLibrary ? kLauncherFocusImport : kLauncherFocusSettings;
+        current_focus == kLauncherFocusLibrary ? _lastHeaderFocus : kLauncherFocusImport;
     if (_launcherFocusGraph.SetCurrent(target)) {
       focus_changed = YES;
     }
