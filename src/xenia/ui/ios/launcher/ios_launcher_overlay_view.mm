@@ -26,10 +26,41 @@
   [_contentTypeName release];
   [_compatStatus release];
   [_iconData release];
+  [_lastPlayed release];
   [super dealloc];
 }
 
 @end
+
+namespace {
+NSString* const kLastPlayedDefaultsKey = @"XeniaLastPlayedDates";
+NSString* const kLibrarySortDefaultsKey = @"XeniaLibrarySort";
+
+NSString* xe_last_played_key(uint32_t title_id) {
+  return [NSString stringWithFormat:@"%08X", title_id];
+}
+}  // namespace
+
+void XeniaIOSRecordGamePlayed(uint32_t title_id) {
+  if (!title_id) {
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSMutableDictionary* dates =
+      [[[defaults dictionaryForKey:kLastPlayedDefaultsKey] mutableCopy] autorelease]
+          ?: [NSMutableDictionary dictionary];
+  dates[xe_last_played_key(title_id)] = [NSDate date];
+  [defaults setObject:dates forKey:kLastPlayedDefaultsKey];
+}
+
+NSDate* XeniaIOSLastPlayedDate(uint32_t title_id) {
+  if (!title_id) {
+    return nil;
+  }
+  id date = [[NSUserDefaults standardUserDefaults]
+      dictionaryForKey:kLastPlayedDefaultsKey][xe_last_played_key(title_id)];
+  return [date isKindOfClass:[NSDate class]] ? date : nil;
+}
 
 // Target for the empty-state button. The button's action lives inside the
 // collection view's configuration, so it must not retain the overlay; the
@@ -42,7 +73,8 @@
 
 @interface XeniaIOSLauncherOverlayView () <UICollectionViewDataSource,
                                            UICollectionViewDataSourcePrefetching,
-                                           UICollectionViewDelegateFlowLayout>
+                                           UICollectionViewDelegateFlowLayout,
+                                           UITextFieldDelegate>
 @property(nonatomic, strong) NSArray<XeniaIOSLauncherGameSnapshot*>* games;
 @property(nonatomic, assign) BOOL jitAcquired;
 @property(nonatomic, assign) BOOL memoryEntitlementEnabled;
@@ -74,11 +106,10 @@ constexpr CGFloat kCoverAspect = 300.0 / 219.0;
 constexpr CGFloat kLibraryHeaderTop = 12.0;
 constexpr CGFloat kLibraryHeaderGap = 12.0;
 
-// The Xbox 360 Dashboard tile's art, at a cover's size: the accent fading
-// into the surface, under a grid of tiles. Drawn once per appearance.
-UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
-  static UIImage* art[2] = {nil, nil};
-  UIImage*& cached = art[traits.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0];
+// The Xbox 360 Dashboard tile's art, at a cover's size: Xbox green with a soft
+// highlight behind a grid of tiles. Drawn once.
+UIImage* xe_dashboard_tile_art(UITraitCollection* __unused traits) {
+  static UIImage* cached = nil;
   if (cached) {
     return cached;
   }
@@ -88,16 +119,75 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
   format.opaque = YES;
   UIGraphicsImageRenderer* renderer =
       [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
-  UIColor* top = [[XeniaTheme accent] resolvedColorWithTraitCollection:traits];
-  UIColor* bottom = [[XeniaTheme bgSurface2] resolvedColorWithTraitCollection:traits];
   UIImage* symbol =
       [[UIImage systemImageNamed:@"square.grid.2x2.fill"
                withConfiguration:[UIImageSymbolConfiguration
-                                     configurationWithPointSize:64.0
-                                                         weight:UIImageSymbolWeightSemibold]]
-          imageWithTintColor:[UIColor colorWithWhite:1.0 alpha:0.92]
+                                     configurationWithPointSize:52.0
+                                                         weight:UIImageSymbolWeightMedium]]
+          imageWithTintColor:UIColor.whiteColor
                renderingMode:UIImageRenderingModeAlwaysOriginal];
   cached = [[renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+    CGContextRef cg = context.CGContext;
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    // 160°: from the top left to the bottom right, light to deep green.
+    CGGradientRef green = CGGradientCreateWithColors(
+        space,
+        (CFArrayRef) @[
+          (id)[UIColor colorWithRed:0x3f / 255.0 green:0xbf / 255.0 blue:0x5a / 255.0 alpha:1.0]
+              .CGColor,
+          (id)[UIColor colorWithRed:0x0f / 255.0 green:0x5f / 255.0 blue:0x2a / 255.0 alpha:1.0]
+              .CGColor
+        ],
+        nullptr);
+    CGContextDrawLinearGradient(cg, green, CGPointMake(size.width * 0.33, 0.0),
+                                CGPointMake(size.width * 0.67, size.height), 0);
+    CGGradientRelease(green);
+    // The highlight, an ellipse above the middle.
+    CGGradientRef glow = CGGradientCreateWithColors(
+        space,
+        (CFArrayRef) @[
+          (id)[UIColor colorWithWhite:1.0 alpha:0.18].CGColor,
+          (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor
+        ],
+        nullptr);
+    CGContextSaveGState(cg);
+    CGContextTranslateCTM(cg, size.width * 0.5, size.height * 0.35);
+    CGContextScaleCTM(cg, 1.0, (size.height * 0.6) / (size.width * 0.8));
+    CGContextDrawRadialGradient(cg, glow, CGPointZero, 0.0, CGPointZero, size.width * 0.8 * 0.7,
+                                0);
+    CGContextRestoreGState(cg);
+    CGGradientRelease(glow);
+    CGColorSpaceRelease(space);
+    const CGSize symbol_size = symbol.size;
+    [symbol drawInRect:CGRectMake((size.width - symbol_size.width) * 0.5,
+                                  (size.height - symbol_size.height) * 0.5, symbol_size.width,
+                                  symbol_size.height)];
+  }] retain];
+  return cached;
+}
+
+// A cover for a game with no art and no icon: its name, set large on the surface
+// colours, so the grid never shows a row of identical boxes.
+UIImage* xe_title_cover_art(NSString* title, UITraitCollection* traits) {
+  const CGSize size = CGSizeMake(219.0, 300.0);
+  UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
+  format.scale = 2.0;
+  format.opaque = YES;
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
+  UIColor* top = [[XeniaTheme bgSurface2] resolvedColorWithTraitCollection:traits];
+  UIColor* bottom = [[XeniaTheme bgSurface] resolvedColorWithTraitCollection:traits];
+  UIColor* ink = [[XeniaTheme textPrimary] resolvedColorWithTraitCollection:traits];
+  NSMutableParagraphStyle* paragraph = [[[NSMutableParagraphStyle alloc] init] autorelease];
+  paragraph.lineHeightMultiple = 0.92;
+  paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+  NSDictionary* attributes = @{
+    NSFontAttributeName : [UIFont systemFontOfSize:30.0 weight:UIFontWeightHeavy],
+    NSForegroundColorAttributeName : [ink colorWithAlphaComponent:0.88],
+    NSParagraphStyleAttributeName : paragraph,
+    NSKernAttributeName : @(-0.6),
+  };
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
     CGGradientRef gradient = CGGradientCreateWithColors(
         space, (CFArrayRef) @[ (id)top.CGColor, (id)bottom.CGColor ], nullptr);
@@ -105,12 +195,13 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
                                 CGPointMake(0.0, size.height), 0);
     CGGradientRelease(gradient);
     CGColorSpaceRelease(space);
-    const CGSize symbol_size = symbol.size;
-    [symbol drawInRect:CGRectMake((size.width - symbol_size.width) * 0.5,
-                                  (size.height - symbol_size.height) * 0.42, symbol_size.width,
-                                  symbol_size.height)];
-  }] retain];
-  return cached;
+    const CGRect text_rect = CGRectMake(18.0, 22.0, size.width - 36.0, size.height - 44.0);
+    [title ?: @"" drawWithRect:text_rect
+                       options:NSStringDrawingUsesLineFragmentOrigin |
+                               NSStringDrawingTruncatesLastVisibleLine
+                    attributes:attributes
+                       context:nil];
+  }];
 }
 
 // A cover-sized placeholder for a game without cover art: the surface
@@ -169,7 +260,7 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   UIView* card = [[UIView alloc] init];
   card.translatesAutoresizingMaskIntoConstraints = NO;
 
-  // |icon| shows a Settings-style badge (XESettingsBadgeImage).
+  // |icon| is a tinted symbol, sized like a Settings badge.
   icon.translatesAutoresizingMaskIntoConstraints = NO;
   icon.contentMode = UIViewContentModeCenter;
   icon.isAccessibilityElement = NO;
@@ -203,7 +294,7 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   [NSLayoutConstraint activateConstraints:@[
     [icon.widthAnchor constraintEqualToConstant:29.0],
     [icon.heightAnchor constraintEqualToConstant:29.0],
-    [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+    [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
     [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12.0],
     [row.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
     [row.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
@@ -256,7 +347,7 @@ UIStackView* xe_new_notice_group(NSArray<UIView*>* rows, NSArray<UIView*>** sepa
       [line addSubview:hairline];
       [NSLayoutConstraint activateConstraints:@[
         [line.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
-        [hairline.leadingAnchor constraintEqualToAnchor:line.leadingAnchor constant:56.0],
+        [hairline.leadingAnchor constraintEqualToAnchor:line.leadingAnchor constant:57.0],
         [hairline.trailingAnchor constraintEqualToAnchor:line.trailingAnchor],
         [hairline.topAnchor constraintEqualToAnchor:line.topAnchor],
         [hairline.bottomAnchor constraintEqualToAnchor:line.bottomAnchor],
@@ -268,8 +359,8 @@ UIStackView* xe_new_notice_group(NSArray<UIView*>* rows, NSArray<UIView*>** sepa
   }
   UIStackView* group = [[UIStackView alloc] initWithArrangedSubviews:items];
   group.axis = UILayoutConstraintAxisVertical;
-  group.backgroundColor = [XeniaTheme bgSurface];
-  group.layer.cornerRadius = XeniaRadiusLg;
+  group.backgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.08];
+  group.layer.cornerRadius = 22.0;
   group.layer.cornerCurve = kCACornerCurveContinuous;
   group.clipsToBounds = YES;
   if (separators_out) {
@@ -280,7 +371,7 @@ UIStackView* xe_new_notice_group(NSArray<UIView*>* rows, NSArray<UIView*>** sepa
 
 // "● Playable": the status's colour in the dot only, the words in the secondary colour.
 NSAttributedString* xe_status_text(NSString* text, UIColor* color) {
-  UIFont* font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
+  UIFont* font = xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
   NSMutableAttributedString* out = [[[NSMutableAttributedString alloc]
       initWithString:@"\u25CF "
           attributes:@{
@@ -298,12 +389,13 @@ NSAttributedString* xe_status_text(NSString* text, UIColor* color) {
 }
 
 UIButton* xe_new_notice_action(NSString* title) {
-  UIButtonConfiguration* config = [UIButtonConfiguration tintedButtonConfiguration];
+  // A grey capsule with the action in the accent, so the row's one action reads as one.
+  UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
   config.title = title;
   config.baseForegroundColor = [XeniaTheme accent];
-  config.baseBackgroundColor = [XeniaTheme accent];
+  config.baseBackgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.14];
   config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(7.0, 14.0, 7.0, 14.0);
+  config.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 14.0, 6.0, 14.0);
   config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
       NSDictionary<NSAttributedStringKey, id>* attributes) {
     NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
@@ -342,8 +434,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }  // namespace
 
 @implementation XeniaIOSLauncherOverlayView {
-  UIView* _navSep;
-  UILabel* _titleLabel;
+  // The header: the large "Library" title, then Online, the settings capsule and,
+  // with the side layout, search and sort. It floats over the art and the grid.
+  UIView* _headerView;
+  UIVisualEffectView* _headerBackdrop;
+  UIStackView* _headerActions;
+  UILabel* _libraryLabel;
   UIButton* _settingsButton;
   UIButton* _profileButton;
   UIButton* _openGameButton;
@@ -356,12 +452,36 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIView* _memoryWarningCard;
   UIImageView* _memoryStatusIcon;
   UILabel* _memoryStatusLabel;
-  UIImageView* _jitReadyIcon;
-  UILabel* _jitReadyLabel;
-  UILabel* _libraryLabel;
+  // Above the grid: the notices, then search and sort (search and sort move into
+  // the header with the side layout).
   UIStackView* _topInfoStack;
   UIStackView* _noticeGroup;
   UIView* _noticeSeparator;
+  UIStackView* _searchRow;
+  UISearchTextField* _searchField;
+  UIButton* _sortButton;
+  NSLayoutConstraint* _searchWidth;
+  // Continue Playing: the last game played, as full-bleed art with Play.
+  UIView* _heroView;
+  UIImageView* _heroArt;
+  CAGradientLayer* _heroScrim;
+  CAGradientLayer* _heroTopScrim;
+  UIStackView* _heroText;
+  UILabel* _heroCaption;
+  UILabel* _heroTitle;
+  UILabel* _heroDetail;
+  UIButton* _heroPlayButton;
+  UIButton* _heroMoreButton;
+  NSLayoutConstraint* _heroTextLeading;
+  NSLayoutConstraint* _heroTextBottom;
+  XeniaIOSLauncherGameSnapshot* _heroGame;
+  uint32_t _heroArtTitleId;
+  // Art on the left and the grid on the right, for windows wider than tall.
+  BOOL _sideLayout;
+  // The games the grid shows, in order: all of them, sorted, or the search's matches.
+  NSArray<XeniaIOSLauncherGameSnapshot*>* _shownGames;
+  NSString* _query;
+  NSInteger _sortMode;
   UICollectionView* _gamesCollectionView;
   XeniaLauncherEmptyStateActionProxy* _emptyStateProxy;
   NSMutableSet<NSNumber*>* _pendingArtLoads;
@@ -374,6 +494,27 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   BOOL _libraryFocusActive;
 }
 
+- (UIButton*)newHeaderIconButton:(NSString*)symbol action:(SEL)action {
+  UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
+  config.image = [UIImage
+      systemImageNamed:symbol
+      withConfiguration:[UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleBody
+                                                                         scale:
+                                                                             UIImageSymbolScaleLarge]];
+  config.baseForegroundColor = [XeniaTheme textPrimary];
+  config.contentInsets = NSDirectionalEdgeInsetsZero;
+  UIButton* button = [[UIButton buttonWithConfiguration:config primaryAction:nil] retain];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  if (action) {
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+  }
+  [NSLayoutConstraint activateConstraints:@[
+    [button.widthAnchor constraintEqualToConstant:40.0],
+    [button.heightAnchor constraintEqualToConstant:40.0],
+  ]];
+  return button;
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
   if (!(self = [super initWithFrame:frame])) {
     return nil;
@@ -384,131 +525,284 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _actionsEnabled = YES;
   _controllerNavigationEnabled = NO;
   _libraryFocusActive = NO;
+  _shownGames = [@[] retain];
+  _query = [@"" copy];
+  _sortMode = [[NSUserDefaults standardUserDefaults] integerForKey:kLibrarySortDefaultsKey];
 
   self.backgroundColor = [XeniaTheme bgPrimary];
   self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-  UILayoutGuide* safe = self.safeAreaLayoutGuide;
   const CGFloat hPad = kLibraryMargin;
 
-  // ── Nav bar: XeniOS (left) · gear + profile (right) ────────────────────
+  // ── Continue Playing ───────────────────────────────────────────────────
+  // Laid out by hand in -layoutSubviews: across the top of the page, scrolling
+  // with the grid, or down the left side with the side layout.
 
-  _titleLabel = [[UILabel alloc] init];
-  {
-    UIFont* titleFont = xe_scaled_system_font(UIFontTextStyleTitle2, 22.0, UIFontWeightBold);
-    NSDictionary* whiteAttrs = @{
-      NSFontAttributeName : titleFont,
-      NSForegroundColorAttributeName : [XeniaTheme textPrimary],
-      NSKernAttributeName : @(0.8),
-    };
-    NSDictionary* accentAttrs = @{
-      NSFontAttributeName : titleFont,
-      NSForegroundColorAttributeName : [XeniaTheme accent],
-      NSKernAttributeName : @(0.8),
-    };
-    NSMutableAttributedString* title =
-        [[NSMutableAttributedString alloc] initWithString:@"Xeni" attributes:whiteAttrs];
-    NSAttributedString* titleSuffix = [[NSAttributedString alloc] initWithString:@"OS"
-                                                                      attributes:accentAttrs];
-    [title appendAttributedString:titleSuffix];
-    [titleSuffix release];
-    _titleLabel.attributedText = title;
-    [title release];
-  }
-  _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _titleLabel.adjustsFontForContentSizeCategory = YES;
-  [self addSubview:_titleLabel];
+  _heroView = [[UIView alloc] init];
+  _heroView.clipsToBounds = YES;
+  _heroView.hidden = YES;
+  _heroView.backgroundColor = [XeniaTheme bgPrimary];
+  _heroArt = [[UIImageView alloc] init];
+  _heroArt.contentMode = UIViewContentModeScaleAspectFill;
+  _heroArt.clipsToBounds = YES;
+  _heroArt.isAccessibilityElement = NO;
+  [_heroView addSubview:_heroArt];
+  // A dim band under the header, and the fade into the page behind the text.
+  _heroTopScrim = [[CAGradientLayer layer] retain];
+  _heroTopScrim.colors =
+      @[ (id)[UIColor colorWithWhite:0.0 alpha:0.4].CGColor, (id)[UIColor clearColor].CGColor ];
+  [_heroView.layer addSublayer:_heroTopScrim];
+  _heroScrim = [[CAGradientLayer layer] retain];
+  [_heroView.layer addSublayer:_heroScrim];
 
-  UIButtonConfiguration* settingsCfg = [UIButtonConfiguration plainButtonConfiguration];
-  settingsCfg.image =
-      [UIImage systemImageNamed:@"gearshape"
-              withConfiguration:[[UIImageSymbolConfiguration
-                                    configurationWithTextStyle:UIFontTextStyleTitle3
-                                                         scale:UIImageSymbolScaleMedium]
-                                    configurationByApplyingConfiguration:
-                                        [UIImageSymbolConfiguration
-                                            configurationWithWeight:UIImageSymbolWeightRegular]]];
-  settingsCfg.baseForegroundColor = [XeniaTheme textMuted];
-  settingsCfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
-  _settingsButton = [[UIButton buttonWithConfiguration:settingsCfg primaryAction:nil] retain];
-  _settingsButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [_settingsButton addTarget:self
-                      action:@selector(settingsTapped:)
+  _heroCaption = [[UILabel alloc] init];
+  _heroCaption.text =
+      NSLocalizedString(@"Continue Playing", @"launcher overlay view: label above the last game");
+  _heroCaption.textColor = [UIColor colorWithWhite:1.0 alpha:0.75];
+  xe_apply_label_font(_heroCaption, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  _heroTitle = [[UILabel alloc] init];
+  _heroTitle.textColor = UIColor.whiteColor;
+  _heroTitle.numberOfLines = 2;
+  _heroTitle.adjustsFontSizeToFitWidth = YES;
+  _heroTitle.minimumScaleFactor = 0.7;
+  _heroTitle.accessibilityTraits = UIAccessibilityTraitHeader;
+  _heroDetail = [[UILabel alloc] init];
+  _heroDetail.textColor = [UIColor colorWithWhite:1.0 alpha:0.7];
+  _heroDetail.numberOfLines = 0;
+  xe_apply_label_font(_heroDetail, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+
+  // White on the art in either appearance: the one primary button on the page.
+  UIButtonConfiguration* playCfg = [UIButtonConfiguration filledButtonConfiguration];
+  playCfg.title = NSLocalizedString(@"Play", @"launcher overlay view: Continue Playing button");
+  playCfg.image = [UIImage
+      systemImageNamed:@"play.fill"
+      withConfiguration:[UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleBody
+                                                                         scale:
+                                                                             UIImageSymbolScaleSmall]];
+  playCfg.imagePadding = 6.0;
+  playCfg.baseBackgroundColor = UIColor.whiteColor;
+  playCfg.baseForegroundColor = UIColor.blackColor;
+  playCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  playCfg.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 26.0, 0.0, 26.0);
+  playCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] =
+        xe_scaled_system_font(UIFontTextStyleHeadline, 16.0, UIFontWeightSemibold);
+    return updated;
+  };
+  _heroPlayButton = [[UIButton buttonWithConfiguration:playCfg primaryAction:nil] retain];
+  _heroPlayButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [_heroPlayButton addTarget:self
+                      action:@selector(heroPlayTapped:)
             forControlEvents:UIControlEventTouchUpInside];
+
+  UIButtonConfiguration* moreCfg = [UIButtonConfiguration glassButtonConfiguration];
+  moreCfg.image = [UIImage systemImageNamed:@"ellipsis"];
+  moreCfg.baseForegroundColor = UIColor.whiteColor;
+  moreCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  _heroMoreButton = [[UIButton buttonWithConfiguration:moreCfg primaryAction:nil] retain];
+  _heroMoreButton.translatesAutoresizingMaskIntoConstraints = NO;
+  [_heroMoreButton addTarget:self
+                      action:@selector(heroMoreTapped:)
+            forControlEvents:UIControlEventTouchUpInside];
+  _heroMoreButton.accessibilityLabel =
+      NSLocalizedString(@"More", @"launcher overlay view: Continue Playing actions button");
+
+  UIStackView* heroButtons = [[[UIStackView alloc]
+      initWithArrangedSubviews:@[ _heroPlayButton, _heroMoreButton ]] autorelease];
+  heroButtons.spacing = 10.0;
+  heroButtons.alignment = UIStackViewAlignmentCenter;
+  _heroText = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _heroCaption, _heroTitle, _heroDetail, heroButtons ]];
+  _heroText.axis = UILayoutConstraintAxisVertical;
+  _heroText.alignment = UIStackViewAlignmentLeading;
+  _heroText.spacing = 2.0;
+  [_heroText setCustomSpacing:14.0 afterView:_heroDetail];
+  _heroText.translatesAutoresizingMaskIntoConstraints = NO;
+  [_heroView addSubview:_heroText];
+  _heroTextLeading = [[_heroText.leadingAnchor constraintEqualToAnchor:_heroView.leadingAnchor
+                                                              constant:hPad] retain];
+  _heroTextBottom = [[_heroText.bottomAnchor constraintEqualToAnchor:_heroView.bottomAnchor
+                                                            constant:-20.0] retain];
+  [NSLayoutConstraint activateConstraints:@[
+    _heroTextLeading,
+    _heroTextBottom,
+    [_heroText.trailingAnchor constraintLessThanOrEqualToAnchor:_heroView.trailingAnchor
+                                                       constant:-hPad],
+    [_heroPlayButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
+    [_heroMoreButton.widthAnchor constraintEqualToConstant:kMinTapTarget],
+    [_heroMoreButton.heightAnchor constraintEqualToConstant:kMinTapTarget],
+  ]];
+
+  // ── Header: Library (left) · Online and the settings capsule (right) ───
+
+  _headerBackdrop = [[UIVisualEffectView alloc]
+      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial]];
+  _headerBackdrop.alpha = 0.0;
+  _headerBackdrop.userInteractionEnabled = NO;
+  [self addSubview:_headerBackdrop];
+
+  _headerView = [[UIView alloc] init];
+  [self addSubview:_headerView];
+
+  _libraryLabel = [[UILabel alloc] init];
+  _libraryLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  _libraryLabel.text = NSLocalizedString(@"Library", @"launcher overlay view: label text");
+  _libraryLabel.textColor = [XeniaTheme textPrimary];
+  _libraryLabel.adjustsFontSizeToFitWidth = YES;
+  _libraryLabel.minimumScaleFactor = 0.6;
+  _libraryLabel.accessibilityTraits = UIAccessibilityTraitHeader;
+  // Readable over bright art.
+  _libraryLabel.layer.shadowColor = UIColor.blackColor.CGColor;
+  _libraryLabel.layer.shadowOpacity = 0.35f;
+  _libraryLabel.layer.shadowRadius = 6.0f;
+  _libraryLabel.layer.shadowOffset = CGSizeMake(0.0, 1.0);
+  [_libraryLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                 forAxis:UILayoutConstraintAxisHorizontal];
+  [_headerView addSubview:_libraryLabel];
+
+  _openGameButton = [self newHeaderIconButton:@"plus" action:@selector(importTapped:)];
+  XEApplyAccessibility(
+      _openGameButton,
+      NSLocalizedString(@"Add Games", @"launcher overlay view: user-visible text"), nil,
+      NSLocalizedString(@"Import games, link a folder, or convert the library.",
+                        @"launcher overlay view: user-visible text"),
+      UIAccessibilityTraitButton);
+  _settingsButton = [self newHeaderIconButton:@"gearshape" action:@selector(settingsTapped:)];
   XEApplyAccessibility(
       _settingsButton, NSLocalizedString(@"Settings", @"launcher overlay view: user-visible text"),
       nil,
       NSLocalizedString(@"Opens XeniOS settings.", @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
-  [self addSubview:_settingsButton];
-
-  UIButtonConfiguration* profileCfg = [UIButtonConfiguration plainButtonConfiguration];
-  profileCfg.image =
-      [UIImage systemImageNamed:@"person.circle"
-              withConfiguration:[[UIImageSymbolConfiguration
-                                    configurationWithTextStyle:UIFontTextStyleTitle3
-                                                         scale:UIImageSymbolScaleMedium]
-                                    configurationByApplyingConfiguration:
-                                        [UIImageSymbolConfiguration
-                                            configurationWithWeight:UIImageSymbolWeightRegular]]];
-  profileCfg.baseForegroundColor = [XeniaTheme textMuted];
-  profileCfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
-  _profileButton = [[UIButton buttonWithConfiguration:profileCfg primaryAction:nil] retain];
-  _profileButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [_profileButton addTarget:self
-                     action:@selector(profileTapped:)
-           forControlEvents:UIControlEventTouchUpInside];
+  _profileButton = [self newHeaderIconButton:@"person.crop.circle"
+                                      action:@selector(profileTapped:)];
   XEApplyAccessibility(
       _profileButton, NSLocalizedString(@"Profile", @"launcher overlay view: user-visible text"),
       nil,
       NSLocalizedString(@"Opens profile management.", @"launcher overlay view: user-visible text"),
       UIAccessibilityTraitButton);
-  [self addSubview:_profileButton];
 
-  // JIT ready indicator in nav bar: a checkmark and a short label.
-  _jitReadyIcon = [[UIImageView alloc]
-      initWithImage:[UIImage systemImageNamed:@"checkmark.circle.fill"
-                            withConfiguration:[UIImageSymbolConfiguration
-                                                  configurationWithTextStyle:UIFontTextStyleCaption1
-                                                                       scale:
-                                                                           UIImageSymbolScaleMedium]]];
-  _jitReadyIcon.translatesAutoresizingMaskIntoConstraints = NO;
-  _jitReadyIcon.tintColor = [XeniaTheme accent];
-  _jitReadyIcon.contentMode = UIViewContentModeScaleAspectFit;
-  _jitReadyIcon.isAccessibilityElement = NO;
-  [self addSubview:_jitReadyIcon];
+  // +, settings and the profile share one glass capsule.
+  UIVisualEffectView* capsule =
+      [[[UIVisualEffectView alloc] initWithEffect:xe_make_chrome_visual_effect(NO)] autorelease];
+  capsule.translatesAutoresizingMaskIntoConstraints = NO;
+  capsule.layer.cornerRadius = 22.0;
+  capsule.layer.cornerCurve = kCACornerCurveContinuous;
+  capsule.clipsToBounds = YES;
+  UIStackView* capsuleStack = [[[UIStackView alloc]
+      initWithArrangedSubviews:@[ _openGameButton, _settingsButton, _profileButton ]] autorelease];
+  capsuleStack.translatesAutoresizingMaskIntoConstraints = NO;
+  capsuleStack.spacing = 2.0;
+  capsuleStack.alignment = UIStackViewAlignmentCenter;
+  [capsule.contentView addSubview:capsuleStack];
+  [NSLayoutConstraint activateConstraints:@[
+    [capsule.heightAnchor constraintEqualToConstant:44.0],
+    [capsuleStack.leadingAnchor constraintEqualToAnchor:capsule.contentView.leadingAnchor
+                                               constant:4.0],
+    [capsuleStack.trailingAnchor constraintEqualToAnchor:capsule.contentView.trailingAnchor
+                                                constant:-4.0],
+    [capsuleStack.centerYAnchor constraintEqualToAnchor:capsule.contentView.centerYAnchor],
+  ]];
 
-  _jitReadyLabel = [[UILabel alloc] init];
-  _jitReadyLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _jitReadyLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
-  _jitReadyLabel.textColor = [XeniaTheme textSecondary];
-  xe_apply_label_font(_jitReadyLabel, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
-  [self addSubview:_jitReadyLabel];
+  // ── Search and sort ────────────────────────────────────────────────────
 
-  // Thin separator below the nav bar.
-  _navSep = [[UIView alloc] init];
-  _navSep.translatesAutoresizingMaskIntoConstraints = NO;
-  _navSep.backgroundColor = [XeniaTheme border];
-  [self addSubview:_navSep];
+  _searchField = [[UISearchTextField alloc] init];
+  _searchField.translatesAutoresizingMaskIntoConstraints = NO;
+  _searchField.delegate = self;
+  _searchField.borderStyle = UITextBorderStyleNone;
+  _searchField.backgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.1];
+  _searchField.layer.cornerRadius = 22.0;
+  _searchField.layer.cornerCurve = kCACornerCurveContinuous;
+  _searchField.clipsToBounds = YES;
+  _searchField.textColor = [XeniaTheme textPrimary];
+  _searchField.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  _searchField.adjustsFontForContentSizeCategory = YES;
+  _searchField.returnKeyType = UIReturnKeySearch;
+  _searchField.autocorrectionType = UITextAutocorrectionTypeNo;
+  _searchField.enablesReturnKeyAutomatically = NO;
+  // Sort keeps its one line; the field gives up the width.
+  [_searchField setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                forAxis:UILayoutConstraintAxisHorizontal];
+  [_searchField setContentHuggingPriority:UILayoutPriorityDefaultLow
+                                  forAxis:UILayoutConstraintAxisHorizontal];
+  [_searchField addTarget:self
+                   action:@selector(searchChanged:)
+         forControlEvents:UIControlEventEditingChanged];
 
-  // ── JIT card shown only when JIT is not enabled: symbol, status and the
-  // way to fix it (open StikDebug) ───────────────────────────────────────
+  UIButtonConfiguration* sortCfg = [UIButtonConfiguration filledButtonConfiguration];
+  sortCfg.baseBackgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.1];
+  sortCfg.baseForegroundColor = [XeniaTheme textPrimary];
+  sortCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  sortCfg.image = [UIImage
+      systemImageNamed:@"chevron.down"
+      withConfiguration:[UIImageSymbolConfiguration
+                            configurationWithTextStyle:UIFontTextStyleCaption1
+                                                 scale:UIImageSymbolScaleMedium]];
+  sortCfg.imagePlacement = NSDirectionalRectEdgeTrailing;
+  sortCfg.imagePadding = 4.0;
+  sortCfg.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 16.0, 0.0, 14.0);
+  sortCfg.title = NSLocalizedString(@"Sort", @"launcher overlay view: sort menu button");
+  sortCfg.titleLineBreakMode = NSLineBreakByClipping;
+  sortCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+    return updated;
+  };
+  _sortButton = [[UIButton buttonWithConfiguration:sortCfg primaryAction:nil] retain];
+  _sortButton.translatesAutoresizingMaskIntoConstraints = NO;
+  _sortButton.showsMenuAsPrimaryAction = YES;
+  [_sortButton setContentHuggingPriority:UILayoutPriorityRequired
+                                 forAxis:UILayoutConstraintAxisHorizontal];
+  [_sortButton setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                               forAxis:UILayoutConstraintAxisHorizontal];
+  [self updateSortMenu];
+
+  _searchRow = [[UIStackView alloc] initWithArrangedSubviews:@[ _searchField, _sortButton ]];
+  _searchRow.spacing = 10.0;
+  _searchRow.alignment = UIStackViewAlignmentFill;
+  _searchRow.hidden = YES;  // Until there are games.
+  _searchWidth = [[_searchField.widthAnchor constraintEqualToConstant:210.0] retain];
+  [NSLayoutConstraint activateConstraints:@[
+    [_searchField.heightAnchor constraintEqualToConstant:44.0],
+    [_sortButton.heightAnchor constraintEqualToConstant:44.0],
+  ]];
+
+  // Online, the capsule's height and only as wide as its text.
+  UIButton* online = xe_ios_new_system_link_online_button();
+  [online setContentHuggingPriority:UILayoutPriorityRequired
+                            forAxis:UILayoutConstraintAxisHorizontal];
+  [online.heightAnchor constraintEqualToConstant:44.0].active = YES;
+  _headerActions = [[UIStackView alloc] initWithArrangedSubviews:@[ online, capsule ]];
+  _headerActions.translatesAutoresizingMaskIntoConstraints = NO;
+  _headerActions.alignment = UIStackViewAlignmentCenter;
+  _headerActions.spacing = 8.0;
+  [_headerView addSubview:_headerActions];
+
+  // ── Notices: one row each, while something needs fixing ────────────────
 
   _jitStatusIcon = [[UIImageView alloc]
-      initWithImage:XESettingsBadgeImage(@"bolt.slash.fill", [XeniaTheme statusError])];
+      initWithImage:[UIImage systemImageNamed:@"bolt.fill"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleBody
+                                                                       scale:
+                                                                           UIImageSymbolScaleLarge]]];
+  _jitStatusIcon.tintColor = [XeniaTheme sectionIconOrange];
   _jitTitleLabel = [[UILabel alloc] init];
   _jitTitleLabel.text = NSLocalizedString(@"JIT Is Off", @"launcher overlay view: JIT card title");
   _jitStatusLabel = [[UILabel alloc] init];
   _jitStatusLabel.text =
-      NSLocalizedString(@"Waiting for JIT...", @"launcher overlay view: label text");
+      NSLocalizedString(@"Games need it to start.", @"launcher overlay view: JIT card detail");
   _jitOpenButton = [xe_new_notice_action(NSLocalizedString(
-      @"StikDebug", @"launcher overlay view: button that opens StikDebug")) retain];
+      @"Turn On", @"launcher overlay view: button that turns on JIT")) retain];
   _jitOpenButton.hidden = YES;  // Until `openStikDebugHandler` is set.
   [_jitOpenButton addTarget:self
                      action:@selector(openStikDebugTapped:)
            forControlEvents:UIControlEventTouchUpInside];
   XEApplyAccessibility(
       _jitOpenButton,
-      NSLocalizedString(@"Open StikDebug", @"launcher overlay view: accessibility label"), nil,
+      NSLocalizedString(@"Turn On JIT", @"launcher overlay view: accessibility label"), nil,
       NSLocalizedString(@"Switches to StikDebug to enable JIT.",
                         @"launcher overlay view: accessibility hint"),
       UIAccessibilityTraitButton);
@@ -518,7 +812,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // Shown when the installed signature lacks
   // com.apple.developer.kernel.increased-memory-limit.
   _memoryStatusIcon = [[UIImageView alloc]
-      initWithImage:XESettingsBadgeImage(@"memorychip.fill", [XeniaTheme statusWarning])];
+      initWithImage:[UIImage systemImageNamed:@"memorychip.fill"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleBody
+                                                                       scale:
+                                                                           UIImageSymbolScaleLarge]]];
+  _memoryStatusIcon.tintColor = [XeniaTheme statusWarning];
   UILabel* memoryTitleLabel = [[[UILabel alloc] init] autorelease];
   memoryTitleLabel.text =
       NSLocalizedString(@"Memory Limit Is Low", @"launcher overlay view: memory card title");
@@ -530,61 +829,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   XEApplyAccessibility(_memoryWarningCard, memoryTitleLabel.text, _memoryStatusLabel.text, nil,
                        UIAccessibilityTraitStaticText);
 
-  // ── Library header: "Library" (left) + Online and "+" (right) ──────────
-
-  UIView* libraryRow = [[UIView alloc] init];
-  libraryRow.translatesAutoresizingMaskIntoConstraints = NO;
-
-  _libraryLabel = [[UILabel alloc] init];
-  _libraryLabel.translatesAutoresizingMaskIntoConstraints = NO;
-  _libraryLabel.text = NSLocalizedString(@"Library", @"launcher overlay view: label text");
-  _libraryLabel.textColor = [XeniaTheme textPrimary];
-  xe_apply_label_font(_libraryLabel, UIFontTextStyleTitle3, 20.0, UIFontWeightSemibold);
-  _libraryLabel.accessibilityTraits = UIAccessibilityTraitHeader;
-  [libraryRow addSubview:_libraryLabel];
-
-  UIButtonConfiguration* importCfg = [UIButtonConfiguration plainButtonConfiguration];
-  importCfg.image =
-      [UIImage systemImageNamed:@"plus"
-              withConfiguration:[[UIImageSymbolConfiguration
-                                    configurationWithTextStyle:UIFontTextStyleSubheadline
-                                                         scale:UIImageSymbolScaleMedium]
-                                    configurationByApplyingConfiguration:
-                                        [UIImageSymbolConfiguration
-                                            configurationWithWeight:UIImageSymbolWeightSemibold]]];
-  importCfg.baseForegroundColor = [XeniaTheme textPrimary];
-  importCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 6, 6, 6);
-  _openGameButton = [[UIButton buttonWithConfiguration:importCfg primaryAction:nil] retain];
-  _openGameButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [_openGameButton addTarget:self
-                      action:@selector(importTapped:)
-            forControlEvents:UIControlEventTouchUpInside];
-  XEApplyAccessibility(
-      _openGameButton,
-      NSLocalizedString(@"Add Games", @"launcher overlay view: user-visible text"), nil,
-      NSLocalizedString(@"Import games, link a folder, or convert the library.",
-                        @"launcher overlay view: user-visible text"),
-      UIAccessibilityTraitButton);
-
-  UIStackView* libraryActionsStack = [[UIStackView alloc] initWithArrangedSubviews:@[
-    xe_ios_new_system_link_online_button(), _openGameButton
-  ]];
-  libraryActionsStack.axis = UILayoutConstraintAxisHorizontal;
-  libraryActionsStack.alignment = UIStackViewAlignmentCenter;
-  libraryActionsStack.spacing = 4.0;
-  libraryActionsStack.translatesAutoresizingMaskIntoConstraints = NO;
-  [libraryRow addSubview:libraryActionsStack];
-
-  // ── Collapsible stack: warnings → library header ───────────────────────
-
   NSArray<UIView*>* noticeSeparators = nil;
   _noticeGroup = xe_new_notice_group(@[ _jitWarningCard, _memoryWarningCard ], &noticeSeparators);
   _noticeSeparator = [noticeSeparators.firstObject retain];
 
-  _topInfoStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ _noticeGroup, libraryRow ]];
+  _topInfoStack = [[UIStackView alloc] initWithArrangedSubviews:@[ _noticeGroup, _searchRow ]];
   _topInfoStack.axis = UILayoutConstraintAxisVertical;
-  _topInfoStack.spacing = 12;
+  _topInfoStack.spacing = 18.0;
   _topInfoStack.translatesAutoresizingMaskIntoConstraints = NO;
 
   // ── Games grid ─────────────────────────────────────────────────────────
@@ -595,18 +846,17 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   gridLayout.sectionInset = UIEdgeInsetsZero;
   _gamesCollectionView = [[UICollectionView alloc] initWithFrame:CGRectZero
                                             collectionViewLayout:gridLayout];
-  _gamesCollectionView.translatesAutoresizingMaskIntoConstraints = NO;
   _gamesCollectionView.dataSource = self;
   _gamesCollectionView.prefetchDataSource = self;
   _gamesCollectionView.delegate = self;
   _gamesCollectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
   _gamesCollectionView.backgroundColor = [UIColor clearColor];
   _gamesCollectionView.alwaysBounceVertical = YES;
+  _gamesCollectionView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
   [_gamesCollectionView registerClass:[XeniaGameTileCell class]
            forCellWithReuseIdentifier:@"ImportedGameCell"];
-  [self addSubview:_gamesCollectionView];
-  // The notices and the Library row scroll with the games, in the grid's top inset, so they
-  // don't hold a third of the screen.
+  [self insertSubview:_gamesCollectionView belowSubview:_headerBackdrop];
+  // The art, the notices and search scroll with the games, in the grid's top inset.
   [_gamesCollectionView addSubview:_topInfoStack];
 
   // Empty state: a content-unavailable view behind the grid, shown once the
@@ -617,42 +867,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _pendingIconDecodes = [[NSMutableSet alloc] init];
 
   // ── Layout ─────────────────────────────────────────────────────────────
+  // The header, the art and the grid have frames from -layoutSubviews; what is
+  // inside them uses constraints.
 
-  NSLayoutConstraint* libraryRowHug = [libraryRow.heightAnchor constraintEqualToConstant:0];
-  libraryRowHug.priority = UILayoutPriorityDefaultLow;
   [NSLayoutConstraint activateConstraints:@[
-    // Nav bar.
-    [_titleLabel.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:hPad],
-    [_titleLabel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
-    [_profileButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
-    [_profileButton.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
-    [_settingsButton.trailingAnchor constraintEqualToAnchor:_profileButton.leadingAnchor
-                                                   constant:-2],
-    [_settingsButton.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
-    // JIT ready checkmark + label sit right after the title.
-    [_jitReadyIcon.leadingAnchor constraintEqualToAnchor:_titleLabel.trailingAnchor constant:10],
-    [_jitReadyIcon.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
-    [_jitReadyLabel.leadingAnchor constraintEqualToAnchor:_jitReadyIcon.trailingAnchor constant:4],
-    [_jitReadyLabel.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
-    [_jitReadyLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_settingsButton.leadingAnchor
-                                                            constant:-8],
+    [_libraryLabel.leadingAnchor constraintEqualToAnchor:_headerView.leadingAnchor],
+    [_libraryLabel.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
+    [_libraryLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_headerActions.leadingAnchor
+                                                           constant:-8.0],
+    [_headerActions.trailingAnchor constraintEqualToAnchor:_headerView.trailingAnchor],
+    [_headerActions.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
 
-    // Minimum touch targets for the icon buttons.
-    [_settingsButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_settingsButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_profileButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_profileButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_openGameButton.widthAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    [_openGameButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-
-    // Nav separator.
-    [_navSep.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:6],
-    [_navSep.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-    [_navSep.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-    [_navSep.heightAnchor constraintEqualToConstant:0.5],
-    [_navSep.topAnchor constraintGreaterThanOrEqualToAnchor:_settingsButton.bottomAnchor],
-
-    // Header stack (notices + library row), above the grid's content.
+    // Notices and search, above the grid's content.
     [_topInfoStack.bottomAnchor
         constraintEqualToAnchor:_gamesCollectionView.contentLayoutGuide.topAnchor
                        constant:-kLibraryHeaderGap],
@@ -662,40 +888,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [_topInfoStack.trailingAnchor
         constraintEqualToAnchor:_gamesCollectionView.frameLayoutGuide.trailingAnchor
                        constant:-hPad],
-
-    // Library row internals.
-    [_libraryLabel.leadingAnchor constraintEqualToAnchor:libraryRow.leadingAnchor],
-    [_libraryLabel.centerYAnchor constraintEqualToAnchor:libraryRow.centerYAnchor],
-    [_libraryLabel.trailingAnchor
-        constraintLessThanOrEqualToAnchor:libraryActionsStack.leadingAnchor
-                                 constant:-8],
-    [libraryActionsStack.trailingAnchor constraintEqualToAnchor:libraryRow.trailingAnchor],
-    [libraryActionsStack.centerYAnchor constraintEqualToAnchor:libraryRow.centerYAnchor],
-    [libraryRow.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget],
-    // Tall enough for its content at any text size, and no taller: the grid below has no
-    // height of its own, so an open-ended row would take all of its space.
-    [_libraryLabel.topAnchor constraintGreaterThanOrEqualToAnchor:libraryRow.topAnchor],
-    [_libraryLabel.bottomAnchor constraintLessThanOrEqualToAnchor:libraryRow.bottomAnchor],
-    [libraryActionsStack.topAnchor constraintGreaterThanOrEqualToAnchor:libraryRow.topAnchor],
-    [libraryActionsStack.bottomAnchor constraintLessThanOrEqualToAnchor:libraryRow.bottomAnchor],
-    libraryRowHug,
-
-    // Games grid.
-    [_gamesCollectionView.topAnchor constraintEqualToAnchor:_navSep.bottomAnchor],
-    // Edge to edge, so tile shadows have room; the section inset puts the tiles on the margin.
-    [_gamesCollectionView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
-    [_gamesCollectionView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
-    [_gamesCollectionView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
   ]];
 
   [gridLayout release];
-  [libraryActionsStack release];
-  [libraryRow release];
   [self setJITAcquired:NO];
   [self setMemoryEntitlementEnabled:YES];
   [self updateNoticeGroup];
   [self applyActionsEnabledState];
   [self updateNoticeCardsForTextSize];
+  [self updateHeaderFonts];
   [self registerForTraitChanges:@[
     [UITraitPreferredContentSizeCategory class], [UITraitHorizontalSizeClass class],
     [UITraitVerticalSizeClass class]
@@ -704,29 +905,351 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return self;
 }
 
+// One notice at a time, the one that stops games first: JIT, then the memory limit.
 - (void)updateNoticeGroup {
-  _noticeSeparator.hidden = _jitWarningCard.hidden || _memoryWarningCard.hidden;
+  _jitWarningCard.hidden = _jitAcquired;
+  _memoryWarningCard.hidden = _memoryEntitlementEnabled || !_jitAcquired;
+  _noticeSeparator.hidden = YES;
   _noticeGroup.hidden = _jitWarningCard.hidden && _memoryWarningCard.hidden;
   [self setNeedsLayout];
 }
 
+// Large titles: 34 pt, or 30 pt in the shorter side layout; the game's name a little bigger.
+- (void)updateHeaderFonts {
+  const CGFloat title_size = _sideLayout ? 30.0 : 34.0;
+  _libraryLabel.font = xe_scaled_system_font(UIFontTextStyleLargeTitle, title_size,
+                                             UIFontWeightBold);
+  _heroTitle.font = xe_scaled_system_font(UIFontTextStyleLargeTitle, _sideLayout ? 32.0 : 34.0,
+                                          UIFontWeightHeavy);
+}
+
+// Search and sort sit in the header with the side layout, and above the grid otherwise.
+- (void)placeSearchRow {
+  _searchWidth.active = _sideLayout;
+  if (_sideLayout) {
+    if (_searchRow.superview != _headerActions) {
+      [_searchRow removeFromSuperview];
+      [_headerActions insertArrangedSubview:_searchRow atIndex:0];
+    }
+  } else if (_searchRow.superview != _topInfoStack) {
+    [_searchRow removeFromSuperview];
+    [_topInfoStack addArrangedSubview:_searchRow];
+  }
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
+  const CGRect bounds = self.bounds;
+  const UIEdgeInsets safe = self.safeAreaInsets;
+  const BOOL side = bounds.size.width > bounds.size.height;
+  if (side != _sideLayout) {
+    _sideLayout = side;
+    // Short windows keep the grid in view: each notice shows its title line only.
+    _jitStatusLabel.hidden = side;
+    _memoryStatusLabel.hidden = side;
+    _jitWarningCard.accessibilityValue = side ? _jitStatusLabel.text : nil;
+    [self placeSearchRow];
+    [self updateHeaderFonts];
+    [_gamesCollectionView.collectionViewLayout invalidateLayout];
+  }
+  const BOOL hero = _heroGame != nil;
+  _heroView.hidden = !hero;
+
+  // Header: clear of the Dynamic Island and the corners on both sides.
+  const CGFloat left = MAX(safe.left, kLibraryMargin);
+  const CGFloat right = MAX(safe.right, kLibraryMargin);
+  const CGFloat header_height = 52.0;
+  const CGFloat header_top = side ? MAX(safe.top, 10.0) : safe.top;
+  _headerView.frame =
+      CGRectMake(left, header_top, bounds.size.width - left - right, header_height);
+  const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame);
+  _headerBackdrop.frame = CGRectMake(0.0, 0.0, bounds.size.width, header_bottom);
+
   [_topInfoStack layoutIfNeeded];
-  const CGFloat top = kLibraryHeaderTop + _topInfoStack.bounds.size.height + kLibraryHeaderGap;
-  const CGFloat bottom = self.safeAreaInsets.bottom + 16.0;
+  const CGFloat stack_height = _topInfoStack.hidden ? 0.0 : _topInfoStack.bounds.size.height;
+  const CGFloat stack_block =
+      stack_height > 0.0 ? kLibraryHeaderTop + stack_height + kLibraryHeaderGap : kLibraryHeaderTop;
+
+  CGRect grid_frame;
+  CGFloat top_inset;
+  CGFloat hero_height = 0.0;
+  if (side) {
+    // Art down the left side, under the header; the grid to its right, below the header.
+    const CGFloat hero_width = hero ? floor(bounds.size.width * 0.42) : 0.0;
+    if (hero) {
+      if (_heroView.superview != self) {
+        [_heroView removeFromSuperview];
+        [self insertSubview:_heroView belowSubview:_gamesCollectionView];
+      }
+      _heroView.frame = CGRectMake(0.0, 0.0, hero_width, bounds.size.height);
+      _heroTextLeading.constant = left;
+      _heroTextBottom.constant = -MAX(safe.bottom, 24.0);
+    }
+    const CGFloat grid_left = hero ? hero_width : safe.left;
+    grid_frame = CGRectMake(grid_left, header_bottom + 6.0,
+                            bounds.size.width - grid_left - safe.right,
+                            bounds.size.height - header_bottom - 6.0);
+    top_inset = stack_block;
+  } else {
+    // Art across the top, under the header, scrolling away with the grid.
+    grid_frame = bounds;
+    if (hero) {
+      [_heroText layoutIfNeeded];
+      const CGFloat text_height =
+          [_heroText systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].height;
+      hero_height = MAX(318.0, header_bottom + 24.0 + text_height + 20.0);
+      _heroTextLeading.constant = left + 4.0;
+      _heroTextBottom.constant = -20.0;
+    }
+    top_inset = (hero ? hero_height : header_bottom) + stack_block;
+  }
+  _gamesCollectionView.frame = grid_frame;
+  if (hero && !side) {
+    if (_heroView.superview != _gamesCollectionView) {
+      [_heroView removeFromSuperview];
+      [_gamesCollectionView insertSubview:_heroView atIndex:0];
+    }
+    _heroView.frame = CGRectMake(0.0, -top_inset, grid_frame.size.width, hero_height);
+  }
+  _heroArt.frame = _heroView.bounds;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  const CGRect hero_bounds = _heroView.bounds;
+  _heroTopScrim.frame = CGRectMake(0.0, 0.0, hero_bounds.size.width, 150.0);
+  _heroScrim.frame = hero_bounds;
+  UIColor* page = [[XeniaTheme bgPrimary] resolvedColorWithTraitCollection:self.traitCollection];
+  if (side) {
+    // Fades into the page on the right, where the grid starts.
+    _heroScrim.colors = @[
+      (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
+      (id)[page colorWithAlphaComponent:0.65].CGColor, (id)page.CGColor
+    ];
+    _heroScrim.locations = @[ @0.0, @0.5, @0.8, @1.0 ];
+    _heroScrim.startPoint = CGPointMake(0.0, 0.5);
+    _heroScrim.endPoint = CGPointMake(1.0, 0.5);
+  } else {
+    // Fades into the page at the bottom, behind the text.
+    _heroScrim.colors = @[
+      (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
+      (id)[page colorWithAlphaComponent:0.55].CGColor, (id)page.CGColor
+    ];
+    _heroScrim.locations = @[ @0.0, @0.38, @0.68, @1.0 ];
+    _heroScrim.startPoint = CGPointMake(0.5, 0.0);
+    _heroScrim.endPoint = CGPointMake(0.5, 1.0);
+  }
+  [CATransaction commit];
+
+  const CGFloat bottom = (side ? 0.0 : safe.bottom) + 16.0;
   UIEdgeInsets insets = _gamesCollectionView.contentInset;
-  if (insets.top != top || insets.bottom != bottom) {
-    // Keep the header in view when the list was scrolled to its top.
+  if (insets.top != top_inset || insets.bottom != bottom) {
+    // Keep the top in view when the list was scrolled to its top.
     const BOOL at_top = _gamesCollectionView.contentOffset.y <= -insets.top + 1.0;
-    insets.top = top;
+    insets.top = top_inset;
     insets.bottom = bottom;
     _gamesCollectionView.contentInset = insets;
-    _gamesCollectionView.verticalScrollIndicatorInsets = UIEdgeInsetsMake(top, 0, bottom, 0);
+    _gamesCollectionView.verticalScrollIndicatorInsets =
+        UIEdgeInsetsMake(side ? 0.0 : header_bottom, 0, bottom, 0);
     if (at_top) {
-      _gamesCollectionView.contentOffset = CGPointMake(0.0, -top);
+      _gamesCollectionView.contentOffset = CGPointMake(0.0, -top_inset);
     }
   }
+  [self updateHeaderBackdrop];
+}
+
+// The header gets a bar behind it once the art or the first row scrolls under it.
+- (void)updateHeaderBackdrop {
+  CGFloat alpha = 0.0;
+  if (!_sideLayout) {
+    const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame);
+    const CGFloat content_top = -_gamesCollectionView.contentInset.top;
+    const CGFloat under = _heroGame ? (CGRectGetHeight(_heroView.frame) - header_bottom) : 0.0;
+    const CGFloat scrolled = _gamesCollectionView.contentOffset.y - content_top - under;
+    alpha = MIN(MAX(scrolled / 24.0, 0.0), 1.0);
+  }
+  _headerBackdrop.alpha = alpha;
+  _libraryLabel.layer.shadowOpacity = alpha > 0.5 ? 0.0f : 0.35f;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView*)scrollView {
+  if (scrollView == _gamesCollectionView) {
+    [self updateHeaderBackdrop];
+  }
+}
+
+#pragma mark - Continue Playing
+
+// The game played most recently that is still in the library.
+- (void)updateHero {
+  XeniaIOSLauncherGameSnapshot* latest = nil;
+  for (XeniaIOSLauncherGameSnapshot* game in _games) {
+    if (game.lastPlayed && (!latest || [game.lastPlayed compare:latest.lastPlayed] ==
+                                           NSOrderedDescending)) {
+      latest = game;
+    }
+  }
+  [_heroGame release];
+  _heroGame = [latest retain];
+  if (!latest) {
+    _heroArtTitleId = 0;
+    _heroArt.image = nil;
+    [self setNeedsLayout];
+    return;
+  }
+  _heroTitle.text = latest.title;
+  NSRelativeDateTimeFormatter* formatter = [[[NSRelativeDateTimeFormatter alloc] init] autorelease];
+  formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleFull;
+  NSString* when = [NSString
+      stringWithFormat:NSLocalizedString(@"Played %@",
+                                         @"launcher overlay view: Continue Playing; %@ is like "
+                                         @"\"2 hours ago\""),
+                       [formatter localizedStringForDate:latest.lastPlayed relativeToDate:[NSDate date]]];
+  _heroDetail.text = latest.hasCompatInfo
+                         ? [NSString stringWithFormat:@"%@ · %@", when,
+                                                      xe_compat_status_label(latest.compatStatus)]
+                         : when;
+  _heroPlayButton.accessibilityLabel = [NSString
+      stringWithFormat:NSLocalizedString(@"Play %@", @"launcher overlay view: accessibility "
+                                                     @"label; %@ is the game"),
+                       latest.title];
+  if (_heroArtTitleId != latest.titleId) {
+    _heroArtTitleId = latest.titleId;
+    // The wide background art, else the cover, else the game's own art.
+    _heroArt.image = xe_cached_game_background_art(latest.titleId)
+                         ?: (xe_cached_game_art(latest.titleId) ?: latest.decodedIcon);
+    if (latest.supportsRemoteArt && !xe_cached_game_background_art(latest.titleId)) {
+      const uint32_t title_id = latest.titleId;
+      xe_fetch_game_background_art(title_id, ^(UIImage* image) {
+        if (image && self->_heroArtTitleId == title_id) {
+          self->_heroArt.image = image;
+        } else if (!image && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
+          xe_fetch_game_art(title_id, ^(UIImage* cover) {
+            if (cover && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
+              self->_heroArt.image = cover;
+            }
+          });
+        }
+      });
+    }
+  }
+  [self setNeedsLayout];
+}
+
+- (void)heroPlayTapped:(UIButton*)__unused sender {
+  const NSUInteger index = _heroGame ? [_games indexOfObjectIdenticalTo:_heroGame] : NSNotFound;
+  if (index != NSNotFound && _actionsEnabled && _gameLaunchedHandler) {
+    _gameLaunchedHandler(index);
+  }
+}
+
+- (void)heroMoreTapped:(UIButton*)__unused sender {
+  const NSUInteger index = _heroGame ? [_games indexOfObjectIdenticalTo:_heroGame] : NSNotFound;
+  if (index != NSNotFound && _gameActionsHandler) {
+    _gameActionsHandler(index);
+  }
+}
+
+#pragma mark - Search and sort
+
+- (void)updateSortMenu {
+  NSArray<NSString*>* titles = @[
+    NSLocalizedString(@"Name", @"launcher overlay view: sort by name"),
+    NSLocalizedString(@"Recently Played", @"launcher overlay view: sort by last played"),
+  ];
+  NSMutableArray<UIMenuElement*>* actions = [NSMutableArray array];
+  // Not retained (MRC __block): the menu belongs to the overlay's own button.
+  __block XeniaIOSLauncherOverlayView* owner = self;
+  for (NSUInteger i = 0; i < titles.count; ++i) {
+    UIAction* action = [UIAction actionWithTitle:titles[i]
+                                           image:nil
+                                      identifier:nil
+                                         handler:^(__unused UIAction* a) {
+                                           [owner setSortMode:static_cast<NSInteger>(i)];
+                                         }];
+    action.state = static_cast<NSInteger>(i) == _sortMode ? UIMenuElementStateOn
+                                                          : UIMenuElementStateOff;
+    [actions addObject:action];
+  }
+  _sortButton.menu = [UIMenu menuWithTitle:NSLocalizedString(@"Sort By",
+                                                             @"launcher overlay view: sort menu")
+                                  children:actions];
+  _sortButton.accessibilityValue = titles[static_cast<NSUInteger>(
+      MIN(MAX(_sortMode, (NSInteger)0), (NSInteger)titles.count - 1))];
+}
+
+- (void)setSortMode:(NSInteger)mode {
+  if (mode == _sortMode) {
+    return;
+  }
+  _sortMode = mode;
+  [[NSUserDefaults standardUserDefaults] setInteger:mode forKey:kLibrarySortDefaultsKey];
+  [self updateSortMenu];
+  [self reloadShownGames];
+}
+
+- (void)searchChanged:(UITextField*)__unused field {
+  NSString* query = [_searchField.text
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if ([query isEqualToString:_query]) {
+    return;
+  }
+  [_query release];
+  _query = [query copy];
+  [self reloadShownGames];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField*)textField {
+  [textField resignFirstResponder];
+  return NO;
+}
+
+// The games to show from `games`: the search's matches, in the chosen order.
+- (NSArray<XeniaIOSLauncherGameSnapshot*>*)shownGamesFrom:
+    (NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
+  NSArray<XeniaIOSLauncherGameSnapshot*>* shown = games ?: @[];
+  if (_query.length) {
+    shown = [shown filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(
+                                                   XeniaIOSLauncherGameSnapshot* game,
+                                                   __unused NSDictionary* bindings) {
+                     return [game.title rangeOfString:_query
+                                              options:NSCaseInsensitiveSearch |
+                                                      NSDiacriticInsensitiveSearch]
+                                .location != NSNotFound;
+                   }]];
+  }
+  if (_sortMode == 1) {
+    // Most recent first; games never played keep their order after them.
+    shown = [shown sortedArrayWithOptions:NSSortStable
+                          usingComparator:^NSComparisonResult(XeniaIOSLauncherGameSnapshot* a,
+                                                              XeniaIOSLauncherGameSnapshot* b) {
+                            if (a.lastPlayed && b.lastPlayed) {
+                              return [b.lastPlayed compare:a.lastPlayed];
+                            }
+                            if (a.lastPlayed || b.lastPlayed) {
+                              return a.lastPlayed ? NSOrderedAscending : NSOrderedDescending;
+                            }
+                            return NSOrderedSame;
+                          }];
+  }
+  return shown;
+}
+
+- (void)updateSearchPlaceholder {
+  _searchField.placeholder =
+      _games.count == 1
+          ? NSLocalizedString(@"Search 1 Game", @"launcher overlay view: search placeholder")
+          : [NSString stringWithFormat:NSLocalizedString(@"Search %lu Games",
+                                                         @"launcher overlay view: search "
+                                                         @"placeholder; %lu is the game count"),
+                                       (unsigned long)_games.count];
+}
+
+- (void)reloadShownGames {
+  [_shownGames release];
+  _shownGames = [[self shownGamesFrom:_games] copy];
+  if (_focusedGameIndex >= [self libraryItemCount]) {
+    _focusedGameIndex = [self libraryItemCount] > 0 ? 0 : -1;
+  }
+  [_gamesCollectionView reloadData];
 }
 
 - (void)dealloc {
@@ -750,7 +1273,29 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_discSelectionHandler release];
   [_patchesHandler release];
   [_zarConversionHandler release];
-  [_titleLabel release];
+  [_headerView release];
+  [_headerBackdrop release];
+  [_headerActions release];
+  [_searchRow release];
+  [_searchField release];
+  [_sortButton release];
+  [_searchWidth release];
+  [_heroView release];
+  [_heroArt release];
+  [_heroScrim release];
+  [_heroTopScrim release];
+  [_heroText release];
+  [_heroCaption release];
+  [_heroTitle release];
+  [_heroDetail release];
+  [_heroPlayButton release];
+  [_heroMoreButton release];
+  [_heroTextLeading release];
+  [_heroTextBottom release];
+  [_heroGame release];
+  [_shownGames release];
+  [_query release];
+  [_gameActionsHandler release];
   [_settingsButton release];
   [_profileButton release];
   [_openGameButton release];
@@ -764,13 +1309,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_memoryWarningCard release];
   [_memoryStatusIcon release];
   [_memoryStatusLabel release];
-  [_jitReadyIcon release];
-  [_jitReadyLabel release];
   [_libraryLabel release];
   [_topInfoStack release];
   [_noticeGroup release];
   [_noticeSeparator release];
-  [_navSep release];
   [super dealloc];
 }
 
@@ -805,7 +1347,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     return;
   }
   _dashboardInstalled = installed;
-  if (_games.count > 0) {
+  if ([self gameItemOffset]) {
     [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ [NSIndexPath indexPathForItem:0
                                                                               inSection:0] ]];
   } else {
@@ -818,25 +1360,46 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 // The Dashboard tile leads the grid while the library has games, so the
 // games' items come after it.
+// The Dashboard tile leads the grid while the library has games and no
+// search is narrowing it.
+- (NSInteger)gameItemOffsetFor:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
+  return games.count > 0 && _query.length == 0 ? 1 : 0;
+}
+
 - (NSInteger)gameItemOffset {
-  return _games.count > 0 ? 1 : 0;
+  return [self gameItemOffsetFor:_games];
 }
 
 - (NSInteger)libraryItemCount {
-  return static_cast<NSInteger>(_games.count) + [self gameItemOffset];
+  return static_cast<NSInteger>(_shownGames.count) + [self gameItemOffset];
 }
 
 - (BOOL)isDashboardItem:(NSInteger)item {
-  return _games.count > 0 && item == 0;
+  return [self gameItemOffset] && item == 0;
 }
 
 // The game an item shows: nil for the Dashboard tile and past the end.
 - (XeniaIOSLauncherGameSnapshot*)gameAtItem:(NSInteger)item {
   const NSInteger index = item - [self gameItemOffset];
-  if (index < 0 || index >= static_cast<NSInteger>(_games.count)) {
+  if (index < 0 || index >= static_cast<NSInteger>(_shownGames.count)) {
     return nil;
   }
-  return _games[static_cast<NSUInteger>(index)];
+  return _shownGames[static_cast<NSUInteger>(index)];
+}
+
+- (NSInteger)gameIndexForItem:(NSInteger)item {
+  XeniaIOSLauncherGameSnapshot* game = [self gameAtItem:item];
+  const NSUInteger index = game ? [_games indexOfObjectIdenticalTo:game] : NSNotFound;
+  return index == NSNotFound ? -1 : static_cast<NSInteger>(index);
+}
+
+- (NSInteger)itemForGameIndex:(NSInteger)gameIndex {
+  if (gameIndex < 0 || gameIndex >= static_cast<NSInteger>(_games.count)) {
+    return -1;
+  }
+  const NSUInteger shown =
+      [_shownGames indexOfObjectIdenticalTo:_games[static_cast<NSUInteger>(gameIndex)]];
+  return shown == NSNotFound ? -1 : static_cast<NSInteger>(shown) + [self gameItemOffset];
 }
 
 - (void)configureDashboardCell:(XeniaGameTileCell*)cell {
@@ -1030,16 +1593,24 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (void)setGames:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
-  NSArray<XeniaIOSLauncherGameSnapshot*>* oldGames = [_games retain];
+  // The grid shows `_shownGames`, so the diff runs over what it showed and what it will show.
+  const BOOL hadGames = _games != nil;
+  NSArray<XeniaIOSLauncherGameSnapshot*>* oldGames = [_shownGames retain];
   const NSInteger oldOffset = [self gameItemOffset];
+  [_games release];
   _games = [games copy];
+  [_shownGames release];
+  _shownGames = [[self shownGamesFrom:_games] copy];
   const NSInteger newOffset = [self gameItemOffset];
   _gamesLoaded = YES;
   [self updateEmptyState];
+  [self updateSearchPlaceholder];
+  _searchRow.hidden = _games.count == 0;
+  [self updateHero];
 
   // Pair the games that are in both lists (identity: title id and title) so
   // that only inserted, removed and changed tiles are touched.
-  NSOrderedCollectionDifference<XeniaIOSLauncherGameSnapshot*>* diff = [_games
+  NSOrderedCollectionDifference<XeniaIOSLauncherGameSnapshot*>* diff = [_shownGames
       differenceFromArray:oldGames ?: @[]
               withOptions:0
      usingEquivalenceTest:^BOOL(XeniaIOSLauncherGameSnapshot* a,
@@ -1067,7 +1638,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSInteger newFocus = -1;
   NSUInteger oldIndex = 0;
   NSUInteger newIndex = 0;
-  while (oldIndex < oldGames.count && newIndex < _games.count) {
+  while (oldIndex < oldGames.count && newIndex < _shownGames.count) {
     if ([removedOld containsIndex:oldIndex]) {
       ++oldIndex;
       continue;
@@ -1077,7 +1648,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       continue;
     }
     XeniaIOSLauncherGameSnapshot* before = oldGames[oldIndex];
-    XeniaIOSLauncherGameSnapshot* after = _games[newIndex];
+    XeniaIOSLauncherGameSnapshot* after = _shownGames[newIndex];
     if (xe_snapshot_same_content(before, after)) {
       // Carry the decoded fallback icon over so it is not decoded again.
       if (!after.decodedIcon) {
@@ -1117,7 +1688,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [oldGames release];
     return;
   }
-  if (!oldGames || !self.window || self.hidden || oldOffset != newOffset) {
+  if (!hadGames || !self.window || self.hidden || oldOffset != newOffset) {
     // Not on screen (or first load), or the Dashboard tile came or went: a
     // plain reload is cheaper than a diff.
     [_gamesCollectionView reloadData];
@@ -1140,22 +1711,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)setJITAcquired:(BOOL)acquired {
   BOOL previous_acquired = _jitAcquired;
   _jitAcquired = acquired;
-  _jitReadyIcon.hidden = !acquired;
-  _jitReadyLabel.hidden = !acquired;
-  if (acquired) {
-    _jitStatusLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
-    _jitReadyLabel.text = NSLocalizedString(@"JIT Enabled", @"launcher overlay view: label text");
-  }
 
-  BOOL previousHidden = _jitWarningCard.hidden;
-  _jitWarningCard.hidden = acquired;
-  if (previousHidden != _jitWarningCard.hidden) {
-    [self updateNoticeGroup];
-  }
-  _jitReadyLabel.accessibilityLabel =
-      acquired
-          ? NSLocalizedString(@"JIT is enabled", @"launcher overlay view: accessibility label")
-          : NSLocalizedString(@"JIT is not enabled", @"launcher overlay view: accessibility label");
+  [self updateNoticeGroup];
   if (previous_acquired != acquired) {
     UIAccessibilityPostNotification(
         UIAccessibilityAnnouncementNotification,
@@ -1173,11 +1730,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   BOOL previous_enabled = _memoryEntitlementEnabled;
   _memoryEntitlementEnabled = enabled;
 
-  BOOL previous_hidden = _memoryWarningCard.hidden;
-  _memoryWarningCard.hidden = enabled;
-  if (previous_hidden != _memoryWarningCard.hidden) {
-    [self updateNoticeGroup];
-  }
+  [self updateNoticeGroup];
 
   if (!enabled && !_memoryStatusLabel.text.length) {
     _memoryStatusLabel.text = xe_memory_entitlement_missing_status_message();
@@ -1282,7 +1835,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)refreshChromeForCurrentTraits {
   _jitWarningCard.layer.borderColor = [XeniaTheme border].CGColor;
   _memoryWarningCard.layer.borderColor = [XeniaTheme border].CGColor;
-  _jitReadyIcon.tintColor = [XeniaTheme accent];
   [self reconfigureVisibleGames];
 }
 
@@ -1330,8 +1882,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (NSInteger)columnCountForContentSize:(CGSize)contentSize {
   CGFloat contentWidth = contentSize.width;
   BOOL compactLandscape = [self usesCompactLandscapeLayoutForContentSize:contentSize];
-  CGFloat gridSpacing = compactLandscape ? 12.0f : 16.0f;
-  CGFloat minimumTileWidth = compactLandscape ? 170.0f : 190.0f;
+  CGFloat gridSpacing = 12.0f;
+  // Phones in portrait show three covers across, like Photos' and Files' grids.
+  const BOOL compactWidth =
+      self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact;
+  CGFloat minimumTileWidth = compactLandscape ? 170.0f : (compactWidth ? 100.0f : 190.0f);
   NSInteger minimumColumns = compactLandscape ? 4 : 2;
   // Wide iPad windows (13-inch, Stage Manager) have room for more columns.
   BOOL wideRegular = !compactLandscape && contentWidth >= 1100.0f &&
@@ -1350,11 +1905,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (CGFloat)interitemSpacingForCollectionView:(UICollectionView*)collectionView {
-  return [self usesCompactLandscapeLayoutForContentSize:collectionView.bounds.size] ? 12.0f : 16.0f;
+  return 12.0f;
 }
 
 - (CGFloat)lineSpacingForCollectionView:(UICollectionView*)collectionView {
-  return [self usesCompactLandscapeLayoutForContentSize:collectionView.bounds.size] ? 14.0f : 20.0f;
+  return [self usesCompactLandscapeLayoutForContentSize:collectionView.bounds.size] ? 14.0f : 18.0f;
 }
 
 // Footer height under the cover, from the fonts it shows (the title, then the status line in
@@ -1362,13 +1917,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (CGFloat)titleHeightForCollectionView:(UICollectionView*)collectionView {
   BOOL accessibilitySize = xe_uses_accessibility_text(collectionView.traitCollection);
   CGFloat titleLine =
-      xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold).lineHeight;
+      xe_scaled_system_font(UIFontTextStyleFootnote, 13.5, UIFontWeightSemibold).lineHeight;
   CGFloat metaLine =
-      xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular).lineHeight;
+      xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightRegular).lineHeight;
   CGFloat lines = accessibilitySize ? 2.0 : 1.0;
-  // 8 top inset + title + 2 gap + status (+ 4 between stacked items) + 8 bottom.
-  return 8.0 + ceil(titleLine * lines) + 2.0 + ceil(metaLine * lines) +
-         (accessibilitySize ? 4.0 : 0.0) + 8.0;
+  // 7 above the title + title + 1 gap + status (+ 4 between stacked items).
+  return 7.0 + ceil(titleLine * lines) + 1.0 + ceil(metaLine * lines) +
+         (accessibilitySize ? 4.0 : 0.0);
 }
 
 - (CGFloat)tileWidthForCollectionView:(UICollectionView*)collectionView
@@ -1492,14 +2047,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (game.iconData.length) {
     [self decodeIconForGame:game];
   }
-  // One shared fallback per appearance.
-  static UIImage* fallback[2] = {nil, nil};
-  UIImage*& cached =
-      fallback[self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0];
-  if (!cached) {
-    cached = [xe_placeholder_cover_art(nil, self.traitCollection) retain];
+  // The game's name as its cover, drawn once per name and appearance.
+  static NSCache<NSString*, UIImage*>* covers = [[NSCache alloc] init];
+  NSString* key = [NSString
+      stringWithFormat:@"%d|%@",
+                       (int)(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark),
+                       game.title ?: @""];
+  UIImage* cover = [covers objectForKey:key];
+  if (!cover) {
+    cover = xe_title_cover_art(game.title, self.traitCollection);
+    [covers setObject:cover forKey:key];
   }
-  return cached;
+  return cover;
 }
 
 - (void)decodeIconForGame:(XeniaIOSLauncherGameSnapshot*)game {
@@ -1601,7 +2160,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     return;
   }
   if (_gameLaunchedHandler) {
-    _gameLaunchedHandler(static_cast<NSUInteger>(indexPath.item - [self gameItemOffset]));
+    const NSInteger gameIndex = [self gameIndexForItem:indexPath.item];
+    if (gameIndex >= 0) {
+      _gameLaunchedHandler(static_cast<NSUInteger>(gameIndex));
+    }
   }
 }
 
@@ -1620,7 +2182,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIPreviewParameters* parameters = [[[UIPreviewParameters alloc] init] autorelease];
   parameters.backgroundColor = [UIColor clearColor];
   parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:cell.cardView.bounds
-                                                      cornerRadius:XeniaRadiusLg];
+                                                      cornerRadius:cell.cardView.layer.cornerRadius];
   return [[[UITargetedPreview alloc] initWithView:cell.cardView parameters:parameters] autorelease];
 }
 
@@ -1687,7 +2249,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     return nil;
   }
 
-  NSUInteger gameIndex = static_cast<NSUInteger>(indexPath.item - [self gameItemOffset]);
+  NSUInteger gameIndex = static_cast<NSUInteger>([self gameIndexForItem:indexPath.item]);
   return [UIContextMenuConfiguration
       configurationWithIdentifier:indexPath
                   previewProvider:nil

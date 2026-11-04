@@ -33,7 +33,14 @@
 // Filled in by the launcher view: the decoded `iconData`, decoded once off the
 // main thread and carried across refreshes. The root controller leaves it nil.
 @property(nonatomic, strong) UIImage* decodedIcon;
+// When the game was last started from XeniOS (XeniaIOSLastPlayedDate), or nil.
+@property(nonatomic, copy) NSDate* lastPlayed;
 @end
+
+// When a game was last started, kept per title id in the user defaults. The
+// most recent one leads the library as Continue Playing.
+void XeniaIOSRecordGamePlayed(uint32_t title_id);
+NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 
 // Replaces the launcher overlay previously constructed inline in
 // XeniaViewController. Owns the nav bar, JIT status card,
@@ -66,6 +73,8 @@
 @property(nonatomic, copy) void (^discSelectionHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^patchesHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^zarConversionHandler)(NSUInteger gameIndex);
+// The ⋯ beside Play on Continue Playing: the game's actions.
+@property(nonatomic, copy) void (^gameActionsHandler)(NSUInteger gameIndex);
 
 #pragma mark - Data ingestion
 
@@ -80,6 +89,13 @@
 - (void)setFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll;
 - (NSInteger)focusedGameIndex;
 - (void)reloadGames;
+// Search and sort decide which games the grid shows and in what order, so the
+// grid's items map to game indexes through these. -1 when there is none (the
+// Dashboard tile, past the end, or a game the search hides).
+- (NSInteger)libraryItemCount;
+- (BOOL)isDashboardItem:(NSInteger)item;
+- (NSInteger)gameIndexForItem:(NSInteger)item;
+- (NSInteger)itemForGameIndex:(NSInteger)gameIndex;
 @property(nonatomic, assign, getter=isActionsEnabled) BOOL actionsEnabled;
 
 #pragma mark - Focus visual (called by root when controller nav state changes)
