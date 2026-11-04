@@ -2132,7 +2132,7 @@ static void EmitPartialVectorStore(A64Emitter& e,
   e.cbnz_near(count, from1);
   e.b(done);
 
-  e.LKeepingRemapBound(from8);
+  e.L(from8);
   e.sub(e.w17, count, 8);
   e.ldr(e.x3, ptr(src));
   e.str(e.x3, ptr(dst));
@@ -2140,7 +2140,7 @@ static void EmitPartialVectorStore(A64Emitter& e,
   e.str(e.x3, ptr(dst, e.x17));
   e.b(done);
 
-  e.LKeepingRemapBound(from4);
+  e.L(from4);
   e.sub(e.w17, count, 4);
   e.ldr(e.w3, ptr(src));
   e.str(e.w3, ptr(dst));
@@ -2148,7 +2148,7 @@ static void EmitPartialVectorStore(A64Emitter& e,
   e.str(e.w3, ptr(dst, e.x17));
   e.b(done);
 
-  e.LKeepingRemapBound(from2);
+  e.L(from2);
   e.sub(e.w17, count, 2);
   e.ldrh(e.w3, ptr(src));
   e.strh(e.w3, ptr(dst));
@@ -2156,7 +2156,7 @@ static void EmitPartialVectorStore(A64Emitter& e,
   e.strh(e.w3, ptr(dst, e.x17));
   e.b(done);
 
-  e.LKeepingRemapBound(from1);
+  e.L(from1);
   e.ldrb(e.w3, ptr(src));
   e.strb(e.w3, ptr(dst));
 }
@@ -2189,9 +2189,9 @@ struct STVL_V128 : Sequence<STVL_V128, I<OPCODE_STVL, VoidOp, I64Op, V128Op>> {
     e.add(e.x1, e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH));
     EmitPartialVectorStore(e, e.x0, e.x1, e.w2, done);
     e.b(done);
-    e.LKeepingRemapBound(aligned);
+    e.L(aligned);
     e.str(QReg(0), ptr(e.x0));
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_STVL, STVL_V128);
@@ -2218,7 +2218,7 @@ struct STVR_V128 : Sequence<STVR_V128, I<OPCODE_STVR, VoidOp, I64Op, V128Op>> {
     e.add(e.x1, e.sp, static_cast<uint32_t>(StackLayout::GUEST_SCRATCH) + 16);
     e.sub(e.x1, e.x1, e.x2);
     EmitPartialVectorStore(e, e.x0, e.x1, e.w2, done);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_STVR, STVR_V128);

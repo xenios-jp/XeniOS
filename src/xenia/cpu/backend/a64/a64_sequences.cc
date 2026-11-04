@@ -767,7 +767,7 @@ static void BindNanExit(A64Emitter& e, Xbyak_aarch64::Label& exit,
                         int dest_idx) {
   const hir::Instr* to_single = e.fused_to_single();
   if (!to_single) {
-    e.LKeepingRemapBound(exit);
+    e.L(exit);
     return;
   }
   DReg to_single_dest(0);
@@ -843,7 +843,7 @@ static void BranchIfOutsideSingleRange(A64Emitter& e, const DReg* operands,
     e.sub(e.x0, e.x0, e.x1);
     e.cmp(e.x0, e.x2);
     e.b(HS, target);
-    e.LKeepingRemapBound(next);
+    e.L(next);
   }
 }
 
@@ -854,8 +854,7 @@ static void BranchIfOutsideSingleRange(A64Emitter& e, const DReg* operands,
 // might be out of range are tested, and none at all when every one is known to
 // be in it: an infinite or NaN operand only matters once another is out of
 // range, and the tail tests all of them for that. operands are instr's sources
-// in order. Returns a label to bind after the operation, if one's needed. The
-// tail makes no call, so both labels keep the remap bound.
+// in order. Returns a label to bind after the operation, if one's needed.
 static Xbyak_aarch64::Label* EmitSingleRangeCheck(
     A64Emitter& e, const hir::Instr* instr, DReg dest,
     std::initializer_list<DReg> operands) {
@@ -894,7 +893,7 @@ static Xbyak_aarch64::Label* EmitSingleRangeCheck(
         e.b(done);
       });
   BranchIfOutsideSingleRange(e, unknown.data(), unknown.size(), out_of_range);
-  e.LKeepingRemapBound(resume);
+  e.L(resume);
   return &done;
 }
 
@@ -3737,7 +3736,7 @@ struct SINGLE_RANGE_QUIRK
     BranchIfOutsideSingleRange(e, ops, n, slow_path);
     // movz form: mov(dest, WReg(31)) would assemble as the SP-alias ADD.
     e.mov(i.dest, uint64_t(0));
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_SINGLE_RANGE_QUIRK, SINGLE_RANGE_QUIRK);
@@ -5126,7 +5125,7 @@ struct RECIP_F64 : Sequence<RECIP_F64, I<OPCODE_RECIP, F64Op, F64Op>> {
           e.ldr(e.x9, e.BackendCtxPtr(offsetof(A64BackendContext,
                                                guest_to_host_thunk_address)));
           e.blr(e.x9);
-          e.NoteCallClobbersRemapBound();
+          e.ReloadPhysicalRemapBound();
           e.fmov(dest, e.x0);
           if (held_mode != FPCRMode::Unknown && held_mode != FPCRMode::Fpu) {
             e.ReloadFpcrMode(held_mode);
@@ -5236,7 +5235,7 @@ struct TOSINGLE : Sequence<TOSINGLE, I<OPCODE_TO_SINGLE, F64Op, F64Op>> {
                        !i.src1.value->IsNeverWideNan());
     if (past_nan) {
       // The stubs that jump here only move a register.
-      e.LKeepingRemapBound(*past_nan);
+      e.L(*past_nan);
     }
   }
 
@@ -5281,7 +5280,7 @@ struct TOSINGLE : Sequence<TOSINGLE, I<OPCODE_TO_SINGLE, F64Op, F64Op>> {
       e.b(Xbyak_aarch64::VS, nan_tail);
       e.fcvt(i.dest, e.s0);
       // The tail works in x0.
-      e.LKeepingRemapBound(done);
+      e.L(done);
       return;
     }
     auto& done = e.NewCachedLabel();
@@ -5309,7 +5308,7 @@ struct TOSINGLE : Sequence<TOSINGLE, I<OPCODE_TO_SINGLE, F64Op, F64Op>> {
     e.fmov(e.w16, e.s0);
     BranchIfDenormalSingle(e, e.w16, in_fpu);
     e.fmov(dest, e.d1);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_TO_SINGLE, TOSINGLE);
@@ -5352,7 +5351,7 @@ struct UNPACK_SINGLE
           e.b(done);
         });
     e.b(VS, snan_fixup);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_UNPACK_SINGLE, UNPACK_SINGLE);
@@ -5409,7 +5408,7 @@ struct PACK_SINGLE
       e.cbz(e.x17, in_fpu);
       BranchIfDenormalSingle(e, dest, in_fpu);
     }
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_PACK_SINGLE, PACK_SINGLE);
