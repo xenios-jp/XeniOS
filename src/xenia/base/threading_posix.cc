@@ -209,7 +209,7 @@ uint32_t current_thread_system_id() {
 }
 
 void MaybeYield() {
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
   // sched_yield on Darwin is swtch_pri, which drops the caller to the lowest
   // priority until it runs again or a scheduler quantum (10 ms) passes, so with
   // any other thread runnable each yield of a guest polling loop can cost
