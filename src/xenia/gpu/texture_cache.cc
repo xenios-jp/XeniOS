@@ -903,30 +903,41 @@ uint32_t TextureCache::GetIntegerScaleBits(
   return scale_bits;
 }
 
-uint32_t TextureCache::GetFetchIntegerScaleBits(
+const TextureCache::FetchDecodeBits& TextureCache::GetFetchDecode(
     uint32_t fetch_constant_index) const {
-  xenos::xe_gpu_texture_fetch_t fetch =
-      register_file().GetTextureFetch(fetch_constant_index);
+  FetchDecodeBits& decode = fetch_decode_bits_[fetch_constant_index];
+  const uint32_t* fetch_words =
+      &register_file().values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
+                              fetch_constant_index * 6];
+  if (decode.valid &&
+      !std::memcmp(&decode.fetch, fetch_words, sizeof(decode.fetch))) {
+    return decode;
+  }
+  std::memcpy(&decode.fetch, fetch_words, sizeof(decode.fetch));
   TextureKey key;
   uint8_t swizzled_signs;
-  BindingInfoFromFetchConstant(fetch, key, &swizzled_signs);
-  if (!key.is_valid) {
-    return 0;
+  BindingInfoFromFetchConstant(decode.fetch, key, &swizzled_signs);
+  if (key.is_valid) {
+    decode.integer_scale_bits =
+        GetIntegerScaleBits(decode.fetch, swizzled_signs);
+  } else {
+    decode.integer_scale_bits = 0;
+    swizzled_signs = kSwizzledSignsUnsigned;
   }
-  return GetIntegerScaleBits(fetch, swizzled_signs);
+  decode.decode_bits = uint32_t(swizzled_signs) |
+                       ((uint32_t(decode.fetch.exp_adjust) & 0x3F) << 8);
+  decode.valid = true;
+  return decode;
+}
+
+uint32_t TextureCache::GetFetchIntegerScaleBits(
+    uint32_t fetch_constant_index) const {
+  return GetFetchDecode(fetch_constant_index).integer_scale_bits;
 }
 
 uint32_t TextureCache::GetFetchDecodeBits(
     uint32_t fetch_constant_index) const {
-  xenos::xe_gpu_texture_fetch_t fetch =
-      register_file().GetTextureFetch(fetch_constant_index);
-  TextureKey key;
-  uint8_t swizzled_signs;
-  BindingInfoFromFetchConstant(fetch, key, &swizzled_signs);
-  if (!key.is_valid) {
-    swizzled_signs = kSwizzledSignsUnsigned;
-  }
-  return uint32_t(swizzled_signs) | ((uint32_t(fetch.exp_adjust) & 0x3F) << 8);
+  return GetFetchDecode(fetch_constant_index).decode_bits;
 }
 
 void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {

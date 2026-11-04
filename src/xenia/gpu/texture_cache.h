@@ -822,6 +822,20 @@ class TextureCache {
   // Bit vector with bits reset on fetch constant writes to avoid parsing fetch
   // constants again and again.
   uint32_t texture_bindings_in_sync_ = 0;
+
+  // GetFetchIntegerScaleBits and GetFetchDecodeBits run for every texture of
+  // every draw's pipeline key, before RequestTextures. Both are functions of
+  // the fetch constant's words alone, so the last decoding is kept along with
+  // the words it came from.
+  struct FetchDecodeBits {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    uint32_t integer_scale_bits;
+    uint32_t decode_bits;
+    bool valid;
+  };
+  const FetchDecodeBits& GetFetchDecode(uint32_t fetch_constant_index) const;
+  mutable std::array<FetchDecodeBits, xenos::kTextureFetchConstantCount>
+      fetch_decode_bits_ = {};
 };
 
 }  // namespace gpu
