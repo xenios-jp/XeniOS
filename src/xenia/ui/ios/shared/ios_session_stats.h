@@ -44,6 +44,11 @@ void xe_ios_session_stats_discard(void);
 // the game-running note that ends the session.
 void xe_ios_session_stats_note_halted_faults(uint32_t count);
 
+// A CPU backend failure that left the game running but possibly broken
+// (xe::BackendFailure): counted in the running session as "backendFailures"
+// (left out when 0). Lock-free; any thread.
+void xe_ios_session_stats_note_backend_failure(void);
+
 // One guest frame was presented (Presenter's refresh observer). Lock-free.
 void xe_ios_session_stats_note_guest_frame(void);
 

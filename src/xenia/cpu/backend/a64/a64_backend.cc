@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/backend_failure.h"
 #include "xenia/base/byte_order.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/exception_handler.h"
@@ -1486,6 +1487,8 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
   if (!function || !function->is_guest()) {
     XELOGE("No guest code at {:08X} for a dynamic call",
            static_cast<uint32_t>(target_address));
+    NoteBackendFailure(BackendFailure::kBackendException,
+                       static_cast<uint32_t>(target_address), true);
     return 0;
   }
   const uint64_t host_address = reinterpret_cast<uint64_t>(
@@ -1712,6 +1715,7 @@ bool A64Backend::Initialize(Processor* processor) {
   code_cache_->set_allow_fast_indirection(guest_trampolines_sub4gb_);
   if (!code_cache_->Initialize()) {
     XELOGE("A64Backend: Failed to initialize code cache");
+    NoteBackendFailure(BackendFailure::kCodeCache, 0, false);
     return false;
   }
 
@@ -1749,6 +1753,7 @@ bool A64Backend::Initialize(Processor* processor) {
   if (!host_to_guest_thunk_ || !guest_to_host_thunk_ ||
       !guest_to_host_thunk_no_vec_ || !resolve_function_thunk_) {
     XELOGE("A64Backend: Failed to generate thunks");
+    NoteBackendFailure(BackendFailure::kJitUnavailable, 0, false);
     return false;
   }
 
