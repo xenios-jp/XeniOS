@@ -433,8 +433,18 @@ struct LaunchPreparation {
                              completion:(void (^)(void))completion;
 @end
 
+// Under 2 GB isn't worth a notice. One the person closed stays closed until the library could
+// save 5 GB more than it could then.
+namespace {
+constexpr uint64_t kZarSuggestionMinimumBytes = 2ull << 30;
+constexpr uint64_t kZarSuggestionRegrowBytes = 5ull << 30;
+NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedBytes";
+}  // namespace
+
 @implementation XeniaViewController {
   std::vector<IOSDiscoveredGame> discovered_games_;
+  // What converting the library to ZAR would save, by the last estimate.
+  uint64_t zar_suggestion_bytes_;
   // The game page's rows while the Library shows them in place of its grid.
   XeniaIOSGameActionsViewController* in_place_actions_controller_;
   NSDictionary* compat_data_;
@@ -1427,6 +1437,15 @@ struct LaunchPreparation {
                                    promptForAutomationOnSuccess:NO];
   };
   self.launcherOverlayView.addMenu = [self libraryAddMenu];
+  self.launcherOverlayView.zarSuggestionHandler = ^{
+    [unsafe_self.zarConversionCoordinator
+        presentBulkConversionOptionsForGames:unsafe_self->discovered_games_];
+  };
+  self.launcherOverlayView.zarSuggestionDismissHandler = ^{
+    [[NSUserDefaults standardUserDefaults]
+        setObject:@(unsafe_self->zar_suggestion_bytes_)
+           forKey:kZarSuggestionDismissedBytesKey];
+  };
   self.launcherOverlayView.gameLaunchedHandler = ^(NSUInteger gameIndex) {
     if (gameIndex >= unsafe_self->discovered_games_.size()) {
       return;
@@ -1487,6 +1506,8 @@ struct LaunchPreparation {
     snapshot.lastPlayed = XeniaIOSLastPlayedDate(game.title_id);
     snapshot.hasCompatInfo = game.has_compat_info;
     snapshot.compatStatus = ToNSString(game.compat_status);
+    snapshot.compatPerf = ToNSString(game.compat_perf);
+    snapshot.compatNotes = ToNSString(game.compat_notes);
     NSMutableArray<NSString*>* detail_parts = [NSMutableArray array];
     bool has_imported_source = false;
     bool has_external_source = false;
@@ -1551,10 +1572,11 @@ struct LaunchPreparation {
       snapshot.iconData = icon;
       [next_icon_cache setObject:icon forKey:icon_key];
     }
-    [signature addObject:[NSString stringWithFormat:@"%@|%@|%u|%d|%@|%@|%d%d%d%d%d%d|%zu|%lu|%.0f",
+    [signature addObject:[NSString stringWithFormat:@"%@|%@|%u|%d|%@|%@|%lu|%@|%d%d%d%d%d%d|%zu|%lu|%.0f",
                                                     ToNSString(game.path.string()), snapshot.title,
                                                     snapshot.titleId, (int)snapshot.hasCompatInfo,
-                                                    snapshot.compatStatus,
+                                                    snapshot.compatStatus, snapshot.compatPerf,
+                                                    (unsigned long)snapshot.compatNotes.hash,
                                                     snapshot.contentTypeName ?: @"",
                                                     (int)snapshot.supportsCompatibility,
                                                     (int)snapshot.supportsManageContent,
@@ -1578,9 +1600,42 @@ struct LaunchPreparation {
   [launcher_snapshot_signature_ release];
   launcher_snapshot_signature_ = [signature copy];
   [self.launcherOverlayView setGames:snapshots];
+  [self updateZarSuggestion];
   [self.launcherOverlayView
       setFocusedGameIndex:self.controllerNavigationCoordinator.focusedGameIndex
                    scroll:NO];
+}
+
+- (void)updateZarSuggestion {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  [self.zarConversionCoordinator
+      estimateLibrarySavingsForGames:discovered_games_
+                          completion:^(uint64_t saved_bytes, NSUInteger __unused games) {
+                            unsafe_self->zar_suggestion_bytes_ = saved_bytes;
+                            const uint64_t dismissed = [[[NSUserDefaults standardUserDefaults]
+                                objectForKey:kZarSuggestionDismissedBytesKey] unsignedLongLongValue];
+                            const BOOL show =
+                                saved_bytes >= kZarSuggestionMinimumBytes &&
+                                (!dismissed || saved_bytes >= dismissed + kZarSuggestionRegrowBytes);
+                            if (!show) {
+                              [unsafe_self.launcherOverlayView setZarSuggestionTitle:nil detail:nil];
+                              return;
+                            }
+                            NSString* size = [NSByteCountFormatter
+                                stringFromByteCount:static_cast<long long>(saved_bytes)
+                                         countStyle:NSByteCountFormatterCountStyleFile];
+                            [unsafe_self.launcherOverlayView
+                                setZarSuggestionTitle:
+                                    [NSString stringWithFormat:NSLocalizedString(
+                                                                   @"Save %@",
+                                                                   @"Library: ZAR suggestion; %@ "
+                                                                   @"is a size, like 18 GB"),
+                                                               size]
+                                               detail:NSLocalizedString(
+                                                          @"with ZAR.",
+                                                          @"Library: ZAR suggestion, after "
+                                                          @"\"Save 18 GB\"")];
+                          }];
 }
 
 - (void)setupInGameMenuOverlay {
@@ -2118,6 +2173,9 @@ struct LaunchPreparation {
       break;
     case XeniaSettingsHubActionRefreshLibrary:
       [self refreshImportedGamesAsync];
+      break;
+    case XeniaSettingsHubActionConvertLibraryToZar:
+      [self.zarConversionCoordinator presentBulkConversionOptionsForGames:discovered_games_];
       break;
     case XeniaSettingsHubActionClearCurrentGameShaderCache:
       [self confirmClearCurrentGameShaderCache];
@@ -3540,16 +3598,9 @@ struct LaunchPreparation {
     actions_controller.discDetails = details;
   }
   if (game.has_compat_info) {
-    if (!game.compat_perf.empty()) {
-      actions_controller.compatibilityPerformance = [NSString
-          stringWithFormat:NSLocalizedString(@"Performance: %@",
-                                             @"game page: under Compatibility; %@ is how well "
-                                             @"it runs, such as Okay"),
-                           xe_compat_perf_label(ToNSString(game.compat_perf))];
-    }
-    if (!game.compat_notes.empty()) {
-      actions_controller.compatibilityNotes = ToNSString(game.compat_notes);
-    }
+    actions_controller.compatibilityStatus = ToNSString(game.compat_status);
+    actions_controller.compatibilityPerformance = ToNSString(game.compat_perf);
+    actions_controller.compatibilityNotes = ToNSString(game.compat_notes);
   }
 
   // A phone: the Library turns into the game's page where it stands.

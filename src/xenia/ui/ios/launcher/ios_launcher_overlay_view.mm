@@ -25,6 +25,8 @@
   [_title release];
   [_contentTypeName release];
   [_compatStatus release];
+  [_compatPerf release];
+  [_compatNotes release];
   [_iconData release];
   [_lastPlayed release];
   [super dealloc];
@@ -325,6 +327,9 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   return card;
 }
 
+// A notice's close button stays at the row's end when its action moves under the text.
+constexpr NSInteger kNoticeDismissTag = 0x2E7;
+
 // At accessibility text sizes the action moves under the detail, so the text keeps the full
 // width instead of wrapping one word per line beside the button.
 void xe_set_notice_card_stacked(UIView* card, bool stacked) {
@@ -335,7 +340,7 @@ void xe_set_notice_card_stacked(UIView* card, bool stacked) {
   UIStackView* text = (UIStackView*)row.arrangedSubviews[1];
   UIView* action = nil;
   for (UIView* view in [row.arrangedSubviews arrayByAddingObjectsFromArray:text.arrangedSubviews]) {
-    if ([view isKindOfClass:[UIButton class]]) {
+    if ([view isKindOfClass:[UIButton class]] && view.tag != kNoticeDismissTag) {
       action = view;
     }
   }
@@ -356,7 +361,7 @@ void xe_set_notice_card_stacked(UIView* card, bool stacked) {
     [text addArrangedSubview:action];
     [text setCustomSpacing:8.0 afterView:text.arrangedSubviews[text.arrangedSubviews.count - 2]];
   } else {
-    [row addArrangedSubview:action];
+    [row insertArrangedSubview:action atIndex:2];
   }
   [action release];
 }
@@ -448,6 +453,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   };
   if (!xe_snapshot_same_game(a, b) || !same_string(a.contentTypeName, b.contentTypeName) ||
       !same_string(a.compatStatus, b.compatStatus) || a.hasCompatInfo != b.hasCompatInfo ||
+      !same_string(a.compatPerf, b.compatPerf) || !same_string(a.compatNotes, b.compatNotes) ||
       a.supportsCompatibility != b.supportsCompatibility ||
       a.supportsManageContent != b.supportsManageContent ||
       a.supportsDiscSelection != b.supportsDiscSelection ||
@@ -478,13 +484,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UILabel* _jitStatusLabel;
   UIButton* _jitOpenButton;
   UIView* _memoryWarningCard;
+  UIView* _zarSuggestionCard;
+  UILabel* _zarSuggestionTitle;
+  UILabel* _zarSuggestionDetail;
   UIImageView* _memoryStatusIcon;
   UILabel* _memoryStatusLabel;
   // Above the grid: the notices, then search and sort (search and sort move into
   // the header with the side layout).
   UIStackView* _topInfoStack;
   UIStackView* _noticeGroup;
-  UIView* _noticeSeparator;
+  NSArray<UIView*>* _noticeSeparators;
   UIStackView* _searchRow;
   UISearchTextField* _searchField;
   UIButton* _sortButton;
@@ -514,6 +523,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* _detailMoreButton;
   UIButton* _heroTouchButton;
   UIButton* _heroSettingsButton;
+  UIButton* _heroCompatButton;
+  UIStackView* _heroButtons;  // not retained; _heroText holds it
   // Art on the left and the grid on the right, for windows wider than tall.
   BOOL _sideLayout;
   // The games the grid shows, in order: all of them, sorted, or the search's matches.
@@ -541,6 +552,13 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
   button.translatesAutoresizingMaskIntoConstraints = NO;
   button.accessibilityLabel = label;
+  // A symbol alone: its name shows on hover with a pointer, and on a press and hold at the
+  // larger text sizes.
+  button.toolTip = label;
+  button.showsLargeContentViewer = YES;
+  button.largeContentTitle = label;
+  button.largeContentImage = [UIImage systemImageNamed:symbol];
+  [button addInteraction:[[[UILargeContentViewerInteraction alloc] init] autorelease]];
   [NSLayoutConstraint activateConstraints:@[
     [button.widthAnchor constraintEqualToConstant:kMinTapTarget],
     [button.heightAnchor constraintEqualToConstant:kMinTapTarget],
@@ -676,12 +694,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                           action:@selector(heroGameSettingsTapped:)
                 forControlEvents:UIControlEventTouchUpInside];
   _heroSettingsButton.hidden = YES;
+  _heroCompatButton = [xe_new_compat_capsule() retain];
+  [_heroCompatButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget].active = YES;
+  _heroCompatButton.hidden = YES;
 
   UIStackView* heroButtons = [[[UIStackView alloc]
       initWithArrangedSubviews:@[ _heroPlayButton, _heroMoreButton, _heroTouchButton,
-                                  _heroSettingsButton ]] autorelease];
+                                  _heroSettingsButton, _heroCompatButton ]] autorelease];
   heroButtons.spacing = 10.0;
   heroButtons.alignment = UIStackViewAlignmentCenter;
+  _heroButtons = heroButtons;
   _heroText = [[UIStackView alloc]
       initWithArrangedSubviews:@[ _heroCaption, _heroTitle, _heroDetail, heroButtons ]];
   _heroText.axis = UILayoutConstraintAxisVertical;
@@ -923,9 +945,48 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   XEApplyAccessibility(_memoryWarningCard, memoryTitleLabel.text, _memoryStatusLabel.text, nil,
                        UIAccessibilityTraitStaticText);
 
+  // Shown while converting the library's disc images to ZAR would save real space.
+  UIImageView* zarIcon = [[[UIImageView alloc]
+      initWithImage:[UIImage systemImageNamed:@"archivebox.fill"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleBody
+                                                                       scale:
+                                                                           UIImageSymbolScaleMedium]]]
+      autorelease];
+  zarIcon.tintColor = [XeniaTheme accent];
+  _zarSuggestionTitle = [[UILabel alloc] init];
+  _zarSuggestionDetail = [[UILabel alloc] init];
+  UIButton* zarConvert = xe_new_notice_action(
+      NSLocalizedString(@"Convert", @"launcher overlay view: ZAR suggestion button"));
+  [zarConvert addTarget:self
+                 action:@selector(zarSuggestionTapped:)
+       forControlEvents:UIControlEventTouchUpInside];
+  _zarSuggestionCard =
+      xe_new_notice_card(zarIcon, _zarSuggestionTitle, _zarSuggestionDetail, zarConvert);
+  UIButtonConfiguration* dismissCfg = [UIButtonConfiguration plainButtonConfiguration];
+  dismissCfg.image = [UIImage
+      systemImageNamed:@"xmark"
+      withConfiguration:[UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleFootnote
+                                                                         scale:
+                                                                             UIImageSymbolScaleSmall]];
+  dismissCfg.baseForegroundColor = [XeniaTheme textSecondary];
+  dismissCfg.contentInsets = NSDirectionalEdgeInsetsMake(8.0, 6.0, 8.0, 6.0);
+  UIButton* zarDismiss = [UIButton buttonWithConfiguration:dismissCfg primaryAction:nil];
+  zarDismiss.tag = kNoticeDismissTag;
+  zarDismiss.accessibilityLabel =
+      NSLocalizedString(@"Not Now", @"launcher overlay view: hides the ZAR suggestion");
+  [zarDismiss setContentHuggingPriority:UILayoutPriorityRequired
+                                forAxis:UILayoutConstraintAxisHorizontal];
+  [zarDismiss addTarget:self
+                 action:@selector(zarSuggestionDismissTapped:)
+       forControlEvents:UIControlEventTouchUpInside];
+  [(UIStackView*)_zarSuggestionCard.subviews.firstObject addArrangedSubview:zarDismiss];
+  _zarSuggestionCard.hidden = YES;
+
   NSArray<UIView*>* noticeSeparators = nil;
-  _noticeGroup = xe_new_notice_group(@[ _jitWarningCard, _memoryWarningCard ], &noticeSeparators);
-  _noticeSeparator = [noticeSeparators.firstObject retain];
+  _noticeGroup = xe_new_notice_group(@[ _jitWarningCard, _memoryWarningCard, _zarSuggestionCard ],
+                                     &noticeSeparators);
+  _noticeSeparators = [noticeSeparators retain];
 
   _topInfoStack = [[UIStackView alloc] initWithArrangedSubviews:@[ _noticeGroup, _searchRow ]];
   _topInfoStack.axis = UILayoutConstraintAxisVertical;
@@ -999,12 +1060,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return self;
 }
 
-// One notice at a time, the one that stops games first: JIT, then the memory limit.
+// One notice at a time, the one that stops games first: JIT, then the memory limit, and only
+// then the suggestion to make the library smaller.
 - (void)updateNoticeGroup {
   _jitWarningCard.hidden = _jitAcquired;
   _memoryWarningCard.hidden = _memoryEntitlementEnabled || !_jitAcquired;
-  _noticeSeparator.hidden = YES;
-  _noticeGroup.hidden = _jitWarningCard.hidden && _memoryWarningCard.hidden;
+  _zarSuggestionCard.hidden = !_zarSuggestionTitle.text.length || !_jitWarningCard.hidden ||
+                              !_memoryWarningCard.hidden;
+  for (UIView* separator in _noticeSeparators) {
+    separator.hidden = YES;
+  }
+  _noticeGroup.hidden =
+      _jitWarningCard.hidden && _memoryWarningCard.hidden && _zarSuggestionCard.hidden;
   [self setNeedsLayout];
 }
 
@@ -1052,6 +1119,23 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [CATransaction commit];
 }
 
+// Upright, the compatibility capsule ends the row of buttons; beside the art the column is too
+// narrow for it, so it sits on its own line above them.
+- (void)placeHeroCompatButton {
+  UIView* row = _sideLayout ? _heroText : _heroButtons;
+  if (_heroCompatButton.superview == row) {
+    return;
+  }
+  [_heroCompatButton removeFromSuperview];
+  if (_sideLayout) {
+    [_heroText insertArrangedSubview:_heroCompatButton
+                             atIndex:[_heroText.arrangedSubviews indexOfObject:_heroButtons]];
+    [_heroText setCustomSpacing:12.0 afterView:_heroCompatButton];
+  } else {
+    [_heroButtons addArrangedSubview:_heroCompatButton];
+  }
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
   const CGRect bounds = self.bounds;
@@ -1060,6 +1144,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (side != _sideLayout) {
     _sideLayout = side;
     [self placeSearchRow];
+    [self placeHeroCompatButton];
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
   }
@@ -1347,6 +1432,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroSettingsButton.hidden = !game_buttons;
   _heroTouchButton.alpha = game_buttons ? 1.0 : 0.0;
   _heroSettingsButton.alpha = game_buttons ? 1.0 : 0.0;
+  const BOOL compat = game_buttons && _detailGame.supportsCompatibility;
+  _heroCompatButton.hidden = !compat;
+  _heroCompatButton.alpha = compat ? 1.0 : 0.0;
   // Title straight onto the buttons once the lines between them have gone.
   [_heroText setCustomSpacing:detail ? 16.0 : UIStackViewSpacingUseDefault afterView:_heroTitle];
 
@@ -1401,6 +1489,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _detailGame = [game retain];
   _detailRows = [rowsView retain];
   [self insertSubview:_detailRows aboveSubview:_gamesCollectionView];
+  __unsafe_unretained XeniaIOSLauncherOverlayView* unsafe_self = self;
+  xe_update_compat_capsule(_heroCompatButton, game.hasCompatInfo ? game.compatStatus : nil,
+                           game.compatPerf, game.compatNotes, ^{
+                             const NSUInteger index = [unsafe_self heroGameIndex];
+                             if (index != NSNotFound && unsafe_self->_compatibilityHandler) {
+                               unsafe_self->_compatibilityHandler(index);
+                             }
+                           });
   _detailMoreButton.menu = moreMenu;
   _detailCloseButton.hidden = NO;
   _detailMoreButton.hidden = moreMenu.children.count == 0;
@@ -1705,6 +1801,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_detailMoreButton release];
   [_heroTouchButton release];
   [_heroSettingsButton release];
+  [_heroCompatButton release];
   [_gameDetailClosedHandler release];
   [_shownGames release];
   [_query release];
@@ -1720,12 +1817,17 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_jitStatusLabel release];
   [_jitOpenButton release];
   [_memoryWarningCard release];
+  [_zarSuggestionCard release];
+  [_zarSuggestionTitle release];
+  [_zarSuggestionDetail release];
+  [_zarSuggestionHandler release];
+  [_zarSuggestionDismissHandler release];
   [_memoryStatusIcon release];
   [_memoryStatusLabel release];
   [_libraryLabel release];
   [_topInfoStack release];
   [_noticeGroup release];
-  [_noticeSeparator release];
+  [_noticeSeparators release];
   [super dealloc];
 }
 
@@ -1849,6 +1951,30 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                : NSLocalizedString(@"Sets up the Xbox 360 Dashboard.",
                                                    @"launcher overlay view: accessibility hint");
   cell.accessibilityTraits = UIAccessibilityTraitButton;
+}
+
+- (void)setZarSuggestionTitle:(NSString*)title detail:(NSString*)detail {
+  _zarSuggestionTitle.text = title;
+  _zarSuggestionDetail.text = detail;
+  _zarSuggestionCard.accessibilityLabel = title;
+  [self updateNoticeGroup];
+}
+
+- (void)zarSuggestionTapped:(UIButton*)__unused sender {
+  if (_zarSuggestionHandler) {
+    _zarSuggestionHandler();
+  }
+}
+
+- (void)zarSuggestionDismissTapped:(UIButton*)__unused sender {
+  [UIView animateWithDuration:0.25
+                   animations:^{
+                     [self setZarSuggestionTitle:nil detail:nil];
+                     [self layoutIfNeeded];
+                   }];
+  if (_zarSuggestionDismissHandler) {
+    _zarSuggestionDismissHandler();
+  }
 }
 
 - (void)openStikDebugTapped:(UIButton*)__unused sender {
