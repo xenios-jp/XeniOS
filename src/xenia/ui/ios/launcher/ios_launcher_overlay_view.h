@@ -16,6 +16,20 @@
 
 // Lightweight snapshot the root controller builds from its IOSDiscoveredGame
 // vector. The launcher view never imports files or launches games directly.
+// A controller's focus in the Library, other than a game.
+typedef NS_ENUM(NSInteger, XeniaIOSLauncherFocusTarget) {
+  XeniaIOSLauncherFocusTargetNone = 0,
+  XeniaIOSLauncherFocusTargetSearch,
+  XeniaIOSLauncherFocusTargetSort,
+  XeniaIOSLauncherFocusTargetOnline,
+  XeniaIOSLauncherFocusTargetImport,
+  XeniaIOSLauncherFocusTargetSettings,
+  XeniaIOSLauncherFocusTargetProfile,
+  XeniaIOSLauncherFocusTargetHeroPlay,
+  XeniaIOSLauncherFocusTargetHeroMore,
+  XeniaIOSLauncherFocusTargetLibrary,
+};
+
 @interface XeniaIOSLauncherGameSnapshot : NSObject
 @property(nonatomic, copy) NSString* title;
 @property(nonatomic, copy) NSString* contentTypeName;
@@ -107,11 +121,21 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 
 #pragma mark - Focus visual (called by root when controller nav state changes)
 
+// What a controller's focus is on: one of the Library's buttons, or the games.
 - (void)setControllerNavigationEnabled:(BOOL)enabled
-                       settingsFocused:(BOOL)settingsFocused
-                        profileFocused:(BOOL)profileFocused
-                         importFocused:(BOOL)importFocused
-                    libraryFocusActive:(BOOL)libraryFocusActive;
+                           focusTarget:(XeniaIOSLauncherFocusTarget)target;
+// Presses the focused button: Search starts typing, Online and the hero's buttons act as if
+// tapped. Sort's menu can't be opened from code, so it returns the same choices as an action sheet
+// for the caller to present; everything else returns nil.
+- (UIAlertController*)activateControllerFocusTarget:(XeniaIOSLauncherFocusTarget)target;
+// Whether Continue Playing (Play and ⋯) and the Search row are on screen to be focused, and
+// whether the art sits beside the games (landscape) rather than above them.
+@property(nonatomic, readonly) BOOL controllerShowsHero;
+@property(nonatomic, readonly) BOOL controllerShowsSearch;
+@property(nonatomic, readonly) BOOL controllerSideLayout;
+// Typing in Search: B or A ends it.
+@property(nonatomic, readonly) BOOL controllerSearchEditing;
+- (void)endControllerSearch;
 
 #pragma mark - Read-only accessors for root layout/state queries
 

@@ -588,7 +588,14 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
     UIView* mask = [[[UIView alloc] initWithFrame:self.view.bounds] autorelease];
     [mask.layer addSublayer:fade];
     self.view.maskView = mask;
-    table_view_.contentInset = UIEdgeInsetsMake(0.0, 0.0, safe.bottom + 16.0, 0.0);
+    // Beside the art the rows start at the top of the screen, so the first one starts below the
+    // fade rather than in it.
+    const CGFloat top = size.width > size.height ? 16.0 : 0.0;
+    const BOOL at_top = table_view_.contentOffset.y <= -table_view_.contentInset.top + 1.0;
+    table_view_.contentInset = UIEdgeInsetsMake(top, 0.0, safe.bottom + 16.0, 0.0);
+    if (at_top) {
+      table_view_.contentOffset = CGPointMake(0.0, -top);
+    }
     [self applyTableInsets];
     return;
   }
