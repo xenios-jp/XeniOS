@@ -17,7 +17,7 @@ namespace touch {
 
 namespace {
 
-constexpr IOSTouchRect kMoveStickFrame = {0.055f, 0.56f, 0.190f, 0.315f};
+constexpr IOSTouchRect kMoveStickFrame = {0.040f, 0.535f, 0.225f, 0.395f};
 constexpr IOSTouchRect kLookZoneFrame = {0.0f, 0.0f, 1.0f, 1.0f};
 constexpr IOSTouchRect kPauseFrame = {0.040f, 0.045f, 0.120f, 0.112f};
 constexpr IOSTouchRect kBackFrame = {0.390f, 0.045f, 0.080f, 0.112f};
