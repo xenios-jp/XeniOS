@@ -4089,6 +4089,8 @@ MetalTextureCache::MetalTexture::MetalTexture(MetalTextureCache& texture_cache,
       metal_texture_(metal_texture) {
   if (metal_texture_) {
     SetHostMemoryUsage(metal_texture_->allocatedSize());
+    metal_pixel_format_ = metal_texture_->pixelFormat();
+    metal_texture_type_ = metal_texture_->textureType();
   }
   if (track_usage && texture_cache_.IsResolveRefreshKey(key)) {
     resolve_refresh_registered_ = true;
@@ -4201,9 +4203,9 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
   };
 
   MTL::PixelFormat view_format =
-      get_view_pixel_format(key(), is_signed, metal_texture_->pixelFormat());
+      get_view_pixel_format(key(), is_signed, metal_pixel_format_);
 
-  MTL::TextureType view_type = metal_texture_->textureType();
+  MTL::TextureType view_type = metal_texture_type_;
   switch (dimension) {
     case xenos::FetchOpDimension::kCube:
       // MSC ForceTextureArray changes the DXIL cube resource interface.
@@ -4222,8 +4224,8 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
   }
 
   if (host_swizzle == xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA) {
-    if ((!is_signed || view_format == metal_texture_->pixelFormat()) &&
-        metal_texture_->textureType() == view_type) {
+    if ((!is_signed || view_format == metal_pixel_format_) &&
+        metal_texture_type_ == view_type) {
       return metal_texture_;
     }
   }
@@ -4265,7 +4267,7 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
       view_format, view_type, level_range, slice_range, swizzle);
   if (!view) {
     // Returning a mismatched base type can trigger Metal validation asserts.
-    return metal_texture_->textureType() == view_type ? metal_texture_
+    return metal_texture_type_ == view_type ? metal_texture_
                                                       : nullptr;
   }
 
