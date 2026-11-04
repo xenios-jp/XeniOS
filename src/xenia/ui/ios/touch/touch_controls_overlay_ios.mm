@@ -3165,6 +3165,25 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   return best_frame;
 }
 
+// Whether the inspector at |frame| covers any control other than the look zone.
+- (BOOL)editChromeFrameCoversControls:(CGRect)frame {
+  if (!runtime_model_) {
+    return NO;
+  }
+  const auto& controls = runtime_model_->layout().controls;
+  const NSUInteger control_count = MIN(static_cast<NSUInteger>(controls.size()),
+                                       static_cast<NSUInteger>(resolved_control_frames_.size()));
+  for (NSUInteger control_index = 0; control_index < control_count; ++control_index) {
+    if (controls[control_index].type == xe::hid::touch::IOSTouchControlType::kLookSwipeZone) {
+      continue;
+    }
+    if (CGRectIntersectsRect(frame, CGRectFromTouchRect(resolved_control_frames_[control_index]))) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
 - (CGFloat)editCommandBarCollisionPenaltyForFrame:(CGRect)candidate
                                          safeArea:
                                              (const xe::hid::touch::IOSTouchLayoutSpace&)safe_area {
@@ -5253,13 +5272,33 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
       showing_layout_library
           ? expanded_chrome_width
           : (inspector_expanded ? expanded_chrome_width : collapsed_chrome_width);
-  const CGFloat chrome_width = MIN(safe_area.width - chrome_margin * 2.0f, target_chrome_width);
-  const CGFloat chrome_height = [edit_chrome_ preferredHeightForWidth:chrome_width
-                                                      availableHeight:panel_space.height
-                                                               margin:chrome_margin];
-  edit_chrome_.frame = [self resolvedEditChromeFrameForSafeArea:panel_space
-                                                          width:chrome_width
-                                                         height:chrome_height];
+  CGFloat chrome_width = MIN(safe_area.width - chrome_margin * 2.0f, target_chrome_width);
+  CGFloat chrome_height = [edit_chrome_ preferredHeightForWidth:chrome_width
+                                                availableHeight:panel_space.height
+                                                         margin:chrome_margin];
+  CGRect chrome_frame = [self resolvedEditChromeFrameForSafeArea:panel_space
+                                                           width:chrome_width
+                                                          height:chrome_height];
+  // Where the docked inspector still covers a control, as between the stick and the face
+  // buttons on a phone in landscape, a narrower one that clears them all is used instead.
+  if (!showing_layout_library && !edit_chrome_drag_active_ && !edit_chrome_has_free_frame_ &&
+      [self editChromeFrameCoversControls:chrome_frame]) {
+    for (CGFloat width = chrome_width - 12.0f; width >= 300.0f; width -= 12.0f) {
+      const CGFloat height = [edit_chrome_ preferredHeightForWidth:width
+                                                   availableHeight:panel_space.height
+                                                            margin:chrome_margin];
+      const CGRect frame = [self preferredEditChromeFrameForSafeArea:panel_space
+                                                               width:width
+                                                              height:height];
+      if (![self editChromeFrameCoversControls:frame]) {
+        chrome_width = width;
+        chrome_height = height;
+        chrome_frame = frame;
+        break;
+      }
+    }
+  }
+  edit_chrome_.frame = chrome_frame;
   [edit_chrome_ setNeedsLayout];
   [self bringSubviewToFront:edit_chrome_];
   if (!showing_layout_library) {
