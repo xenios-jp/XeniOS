@@ -594,7 +594,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroView.hidden = YES;
   _heroView.backgroundColor = [XeniaTheme bgPrimary];
   _heroArt = [[UIImageView alloc] init];
-  _heroArt.contentMode = UIViewContentModeScaleAspectFill;
+  _heroArt.contentMode = UIViewContentModeScaleToFill;  // cropped by layoutHeroArt
   _heroArt.clipsToBounds = YES;
   _heroArt.isAccessibilityElement = NO;
   [_heroView addSubview:_heroArt];
@@ -1029,6 +1029,27 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
+// The art fills the hero pinned to its left edge, so a narrow hero crops the
+// right of a wide image rather than both sides (the left is where the subject
+// usually stands and where the title reads from).
+- (void)layoutHeroArt {
+  const CGRect bounds = _heroView.bounds;
+  _heroArt.frame = bounds;
+  const CGSize image_size = _heroArt.image.size;
+  CGRect visible = CGRectMake(0.0, 0.0, 1.0, 1.0);
+  if (image_size.width > 0.0 && image_size.height > 0.0 && !CGRectIsEmpty(bounds)) {
+    const CGFloat scale =
+        MAX(bounds.size.width / image_size.width, bounds.size.height / image_size.height);
+    visible.size.width = MIN(1.0, bounds.size.width / (image_size.width * scale));
+    visible.size.height = MIN(1.0, bounds.size.height / (image_size.height * scale));
+    visible.origin.y = (1.0 - visible.size.height) * 0.5;
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  _heroArt.layer.contentsRect = visible;
+  [CATransaction commit];
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
   const CGRect bounds = self.bounds;
@@ -1127,7 +1148,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     }
     _heroView.frame = CGRectMake(0.0, -top_inset, grid_frame.size.width, hero_height);
   }
-  _heroArt.frame = _heroView.bounds;
+  [self layoutHeroArt];
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
   const CGRect hero_bounds = _heroView.bounds;
@@ -1256,10 +1277,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       xe_fetch_game_background_art(title_id, ^(UIImage* image) {
         if (image && self->_heroArtTitleId == title_id) {
           self->_heroArt.image = image;
+          [self layoutHeroArt];
         } else if (!image && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
           xe_fetch_game_art(title_id, ^(UIImage* cover) {
             if (cover && self->_heroArtTitleId == title_id && !self->_heroArt.image) {
               self->_heroArt.image = cover;
+              [self layoutHeroArt];
             }
           });
         }
