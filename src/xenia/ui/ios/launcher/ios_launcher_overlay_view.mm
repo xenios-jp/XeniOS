@@ -66,6 +66,8 @@
 namespace {
 // Minimum touch target for the plain icon buttons.
 constexpr CGFloat kMinTapTarget = 44.0;
+// Side margin of the library: the title, the notices and the tiles' edges all line up on it.
+constexpr CGFloat kLibraryMargin = 16.0;
 // Height over width of a tile's art: a box cover (300 x 219).
 constexpr CGFloat kCoverAspect = 300.0 / 219.0;
 // Space above the notices and between the Library row and the first games.
@@ -357,7 +359,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   self.backgroundColor = [XeniaTheme bgPrimary];
   self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   UILayoutGuide* safe = self.safeAreaLayoutGuide;
-  CGFloat hPad = 16.0;
+  const CGFloat hPad = kLibraryMargin;
 
   // ── Nav bar: XeniOS (left) · gear + profile (right) ────────────────────
 
@@ -653,9 +655,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
         constraintEqualToAnchor:_gamesCollectionView.contentLayoutGuide.topAnchor
                        constant:-kLibraryHeaderGap],
     [_topInfoStack.leadingAnchor
-        constraintEqualToAnchor:_gamesCollectionView.frameLayoutGuide.leadingAnchor],
+        constraintEqualToAnchor:_gamesCollectionView.frameLayoutGuide.leadingAnchor
+                       constant:hPad],
     [_topInfoStack.trailingAnchor
-        constraintEqualToAnchor:_gamesCollectionView.frameLayoutGuide.trailingAnchor],
+        constraintEqualToAnchor:_gamesCollectionView.frameLayoutGuide.trailingAnchor
+                       constant:-hPad],
 
     // Library row internals.
     [_libraryLabel.leadingAnchor constraintEqualToAnchor:libraryRow.leadingAnchor],
@@ -676,9 +680,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
     // Games grid.
     [_gamesCollectionView.topAnchor constraintEqualToAnchor:_navSep.bottomAnchor],
-    [_gamesCollectionView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:hPad],
-    [_gamesCollectionView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor
-                                                        constant:-hPad],
+    // Edge to edge, so tile shadows have room; the section inset puts the tiles on the margin.
+    [_gamesCollectionView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+    [_gamesCollectionView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
     [_gamesCollectionView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
   ]];
 
@@ -1349,24 +1353,18 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return [self usesCompactLandscapeLayoutForContentSize:collectionView.bounds.size] ? 14.0f : 20.0f;
 }
 
-// Footer height under the cover: sized from the preferred fonts so the title
-// and the metadata row never clip at larger Dynamic Type sizes. The fixed
-// heights remain the floor so the default size keeps its grid.
+// Footer height under the cover, from the fonts it shows (the title, then the status line in
+// xe_status_text's font), so it fits its text at every Dynamic Type size.
 - (CGFloat)titleHeightForCollectionView:(UICollectionView*)collectionView {
-  CGFloat floorHeight =
-      [self usesCompactLandscapeLayoutForContentSize:collectionView.bounds.size] ? 56.0f : 60.0f;
-  UITraitCollection* traits = collectionView.traitCollection;
-  BOOL accessibilitySize = xe_uses_accessibility_text(traits);
+  BOOL accessibilitySize = xe_uses_accessibility_text(collectionView.traitCollection);
   CGFloat titleLine =
       xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold).lineHeight;
   CGFloat metaLine =
-      xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold).lineHeight;
-  CGFloat titleLines = accessibilitySize ? 2.0 : 1.0;
-  CGFloat metaLines = accessibilitySize ? 2.0 : 1.0;
-  // 8 top inset + title + 2 gap + metadata (+ 4 between stacked pills) + 8 bottom.
-  CGFloat needed = 8.0 + ceil(titleLine * titleLines) + 2.0 + ceil(metaLine * metaLines) +
-                   (accessibilitySize ? 4.0 : 0.0) + 8.0;
-  return MAX(floorHeight, needed);
+      xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular).lineHeight;
+  CGFloat lines = accessibilitySize ? 2.0 : 1.0;
+  // 8 top inset + title + 2 gap + status (+ 4 between stacked items) + 8 bottom.
+  return 8.0 + ceil(titleLine * lines) + 2.0 + ceil(metaLine * lines) +
+         (accessibilitySize ? 4.0 : 0.0) + 8.0;
 }
 
 - (CGFloat)tileWidthForCollectionView:(UICollectionView*)collectionView
@@ -1374,8 +1372,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                      interitemSpacing:(CGFloat)spacing {
   CGFloat contentWidth = collectionView.bounds.size.width;
   CGFloat totalSpacing = spacing * MAX(columns - 1, 0);
-  static constexpr CGFloat kTileShadowMargin = 16.0f;
-  CGFloat availableWidth = MAX(contentWidth - totalSpacing - kTileShadowMargin, 0.0f);
+  CGFloat availableWidth = MAX(contentWidth - totalSpacing - 2.0 * kLibraryMargin, 0.0f);
   CGFloat tileWidth = availableWidth / MAX(columns, 1);
   CGFloat screenScale =
       collectionView.window.screen ? collectionView.window.screen.scale : UIScreen.mainScreen.scale;
@@ -1787,32 +1784,48 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                      unsafeSelf->_copyLaunchURLHandler(gameIndex);
                                    }
                                  }];
-                     if (!game.supportsCompatibility) {
-                       compatAction.attributes = UIMenuElementAttributesDisabled;
+                     // Grouped like a system menu, divided by section, with only the actions
+                     // that apply to this game.
+                     auto group = ^UIMenu*(NSArray<UIAction*>* actions) {
+                       return [UIMenu menuWithTitle:@""
+                                              image:nil
+                                         identifier:nil
+                                            options:UIMenuOptionsDisplayInline
+                                           children:actions];
+                     };
+                     NSMutableArray<UIAction*>* setup = [NSMutableArray array];
+                     NSMutableArray<UIAction*>* content = [NSMutableArray array];
+                     NSMutableArray<UIAction*>* info = [NSMutableArray array];
+                     if (game.titleId) {
+                       [setup addObject:gameSettingsAction];
+                       [setup addObject:touchLayoutAction];
                      }
-                     if (!game.supportsManageContent) {
-                       contentAction.attributes = UIMenuElementAttributesDisabled;
+                     if (game.supportsPatches) {
+                       [setup addObject:patchesAction];
                      }
-                     if (!game.supportsDiscSelection) {
-                       discAction.attributes = UIMenuElementAttributesDisabled;
+                     if (game.supportsDiscSelection) {
+                       [content addObject:discAction];
                      }
-                     if (!game.supportsPatches) {
-                       patchesAction.attributes = UIMenuElementAttributesDisabled;
+                     if (game.supportsManageContent) {
+                       [content addObject:contentAction];
                      }
-                     if (!game.supportsZarConversion) {
-                       zarConversionAction.attributes = UIMenuElementAttributesDisabled;
+                     if (game.supportsZarConversion) {
+                       [content addObject:zarConversionAction];
                      }
-                     if (!game.titleId) {
-                       gameSettingsAction.attributes = UIMenuElementAttributesDisabled;
-                       touchLayoutAction.attributes = UIMenuElementAttributesDisabled;
-                       copyURLAction.attributes = UIMenuElementAttributesDisabled;
+                     if (game.supportsCompatibility) {
+                       [info addObject:compatAction];
                      }
-                     return [UIMenu menuWithTitle:@""
-                                         children:@[
-                                           playAction, gameSettingsAction, touchLayoutAction,
-                                           discAction, compatAction, contentAction, patchesAction,
-                                           zarConversionAction, copyURLAction
-                                         ]];
+                     if (game.titleId) {
+                       [info addObject:copyURLAction];
+                     }
+                     NSMutableArray<UIMenuElement*>* children =
+                         [NSMutableArray arrayWithObject:group(@[ playAction ])];
+                     for (NSArray<UIAction*>* actions in @[ setup, content, info ]) {
+                       if (actions.count) {
+                         [children addObject:group(actions)];
+                       }
+                     }
+                     return [UIMenu menuWithTitle:@"" children:children];
                    }];
 }
 
