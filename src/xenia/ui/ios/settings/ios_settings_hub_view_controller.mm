@@ -1562,9 +1562,9 @@ titleForFooterInSection:(NSInteger)section {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.tableView.separatorInset = UIEdgeInsetsMake(0, 16.0, 0, 16.0);
+  self.tableView.separatorInset = UIEdgeInsetsMake(0, 59.0, 0, 0);
   self.tableView.rowHeight = UITableViewAutomaticDimension;
-  self.tableView.estimatedRowHeight = 74.0;
+  self.tableView.estimatedRowHeight = 52.0;
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
   search_controller_ = [[UISearchController alloc] initWithSearchResultsController:nil];
   search_controller_.searchResultsUpdater = self;
@@ -1575,6 +1575,8 @@ titleForFooterInSection:(NSInteger)section {
       NSLocalizedString(@"Search Settings", @"settings hub view controller: placeholder");
   self.navigationItem.searchController = search_controller_;
   self.navigationItem.hidesSearchBarWhenScrolling = NO;
+  // Under the title, not floating over the rows at the bottom of a phone in landscape.
+  self.navigationItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementStacked;
   self.definesPresentationContext = YES;
   if (shows_close_button_) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
@@ -1890,20 +1892,27 @@ titleForFooterInSection:(NSInteger)section {
 
   // List content configuration so titles and subtitles wrap at large text sizes (a search result
   // carries a path and a per-game note as well as a description).
+  // A category is one line, as in Settings; a search result also says where it is.
+  const BOOL search_result = item.focusKey.length > 0;
   UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
   content.text = item.title;
   content.textProperties.color = [XeniaTheme textPrimary];
   content.textProperties.numberOfLines = 0;
   content.textProperties.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
-                                                      UIFontWeightSemibold);
-  content.secondaryText = item.subtitle;
+                                                      UIFontWeightRegular);
+  content.secondaryText = search_result ? item.subtitle : nil;
+  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
+      search_result ? 10.0 : 11.5, 16.0, search_result ? 10.0 : 11.5, 16.0);
   content.secondaryTextProperties.color = [XeniaTheme textSecondary];
   content.secondaryTextProperties.numberOfLines = 0;
   content.secondaryTextProperties.font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0,
                                                                UIFontWeightRegular);
   content.prefersSideBySideTextAndSecondaryText = NO;
   content.image = XESettingsBadgeImage(item.symbolName, item.tintColor);
-  content.imageProperties.cornerRadius = 7.0;
+  content.imageProperties.cornerRadius = 8.0;
+  content.imageProperties.reservedLayoutSize = CGSizeMake(29.0, 29.0);
+  content.imageProperties.maximumSize = CGSizeMake(29.0, 29.0);
+  content.imageToTextPadding = 14.0;
   cell.contentConfiguration = content;
 
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;

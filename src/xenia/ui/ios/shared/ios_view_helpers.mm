@@ -11,6 +11,7 @@
 
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_theme_controls.h"
 
 NSString* ToNSString(const std::string& value) {
   return [NSString stringWithUTF8String:value.c_str()];
@@ -52,7 +53,8 @@ void XEConfigureTaskSheet(UINavigationController* navigation_controller,
   if (!navigation_controller) {
     return;
   }
-  navigation_controller.navigationBar.prefersLargeTitles = NO;
+  // Pages open with a large title on the leading edge, which folds into the bar on scroll.
+  navigation_controller.navigationBar.prefersLargeTitles = YES;
   navigation_controller.preferredContentSize = preferred_size;
   navigation_controller.modalInPresentation = prevent_interactive_dismissal;
 
@@ -103,7 +105,8 @@ void XEConfigureDestinationControllerPresentation(
   if ([view_controller isKindOfClass:[UINavigationController class]]) {
     UINavigationController* navigation_controller =
         (UINavigationController*)view_controller;
-    navigation_controller.navigationBar.prefersLargeTitles = NO;
+    // Pages open with a large title on the leading edge, which folds into the bar on scroll.
+    navigation_controller.navigationBar.prefersLargeTitles = YES;
   }
   view_controller.preferredContentSize = content_size;
   view_controller.modalInPresentation = prevent_interactive_dismissal;
@@ -289,6 +292,29 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
   [super viewDidLoad];
   // Dragging the list puts the keyboard away, as in Settings.
   self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+}
+
+// Group titles as drawn: 13 pt semibold in the secondary colour, in sentence case.
+- (void)tableView:(UITableView* __unused)tableView
+    willDisplayHeaderView:(UIView*)view
+               forSection:(NSInteger __unused)section {
+  if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) {
+    return;
+  }
+  UITableViewHeaderFooterView* header = (UITableViewHeaderFooterView*)view;
+  UIFont* font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  id configuration = header.contentConfiguration;
+  if (![configuration isKindOfClass:[UIListContentConfiguration class]]) {
+    // A title from titleForHeaderInSection: shows in the legacy label.
+    header.textLabel.font = font;
+    header.textLabel.textColor = [XeniaTheme textSecondary];
+    return;
+  }
+  UIListContentConfiguration* content = [[configuration copy] autorelease];
+  content.textProperties.font = font;
+  content.textProperties.color = [XeniaTheme textSecondary];
+  content.textProperties.transform = UIListContentTextTransformNone;
+  header.contentConfiguration = content;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
