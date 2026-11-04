@@ -17,6 +17,7 @@
 
 #include "xenia/base/arena.h"
 #include "xenia/base/vec128.h"
+#include "xenia/cpu/backend/a64/a64_loop_promotion.h"
 #include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/backend/code_cache_base.h"
 #include "xenia/cpu/function.h"
@@ -409,8 +410,14 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // tables rather than the membase. Decided when the function is emitted.
   bool guest_tlb() const { return guest_tlb_; }
 
-  // Get or create a xbyak_aarch64 label for a HIR label ID.
+  // Get or create a xbyak_aarch64 label for a HIR label ID. Inside a promoted
+  // loop a label outside it names a stub that writes the loop's registers back
+  // first.
   Xbyak_aarch64::Label& GetLabel(uint32_t label_id);
+
+  // A promoted loop's guest registers, into their host registers and back.
+  void EmitPromotedLoads(const PromotedLoop& loop);
+  void EmitPromotedStores(const PromotedLoop& loop);
 
   // Get or create a pool slot for a v128 constant with no immediate form.
   Xbyak_aarch64::Label& GetV128ConstLabel(const vec128_t& value);
@@ -481,6 +488,15 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   // Map from HIR label IDs to xbyak_aarch64 Labels.
   std::unordered_map<uint32_t, Xbyak_aarch64::Label*> label_map_;
+  Xbyak_aarch64::Label& GetBlockLabel(uint32_t label_id);
+
+  // Loops whose guest registers live in host registers, and the one being
+  // emitted.
+  LoopPromotionPlan loop_plan_;
+  const PromotedLoop* active_loop_ = nullptr;
+  // The register moves a promoted slot's load or store becomes; false for any
+  // other instruction.
+  bool EmitPromotedAccess(const hir::Instr* instr);
 
   // Byte offsets at which labels were bound (keyed by xbyak label id).
   // Used to emit short-form backward branches when the distance is known
