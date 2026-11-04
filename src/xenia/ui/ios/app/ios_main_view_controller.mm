@@ -268,6 +268,22 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   return !ec;
 }
 
+
+// What a launch needs from the file system and linked folders, gathered off the
+// main thread: resolving a folder's bookmark can block on a slow or unreachable
+// share.
+struct LaunchPreparation {
+  NSString* problem = nil;  // retained; the launch can't go ahead
+  bool refresh_library = false;
+  bool missing_god_data = false;
+  uint32_t title_id = 0;
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [[NSMutableArray alloc] init];
+  ~LaunchPreparation() {
+    [problem release];
+    [accesses release];
+  }
+};
+
 }  // namespace
 
 // Private touch-overlay/library methods and internal UI state. Kept out of the
@@ -376,6 +392,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)resetToOfficialTouchLayoutPreset;
 - (void)saveTouchLayoutModelForTitleID:(uint32_t)title_id;
 - (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path;
+- (uint32_t)knownTitleIDForGamePath:(const std::filesystem::path&)game_path;
 - (BOOL)handleExternalTouchLayoutFileURL:(NSURL*)url;
 - (void)presentURLConfirmation:(UIAlertController*)alert;
 - (void)clearURLConfirmation;
@@ -447,6 +464,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   std::string active_touch_layout_local_id_;
   UITapGestureRecognizer* in_game_menu_tap_recognizer_;  // owned by self.view
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* active_external_game_accesses_;
+  // A launch is gathering its folders off the main thread; another waits for it.
+  BOOL launch_preparing_;
+  // The last library launch and the folders it holds, so the title's start
+  // needn't resolve them again on the main thread.
+  std::filesystem::path launched_path_;
+  NSArray<XeniaIOSExternalLibraryAccess*>* launched_accesses_;
 }
 
 - (void)viewDidLoad {
@@ -739,19 +762,30 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     return;
   }
   const std::filesystem::path path([path_ns fileSystemRepresentation]);
+  const BOOL starts_dashboard = xe::ui::IsIOSInstalledDashboardPath(path);
+  self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
+  self.inGameMenuOverlay.sessionStartDate = [NSDate date];
+  active_game_title_id_ = [self titleIDForGamePath:path];
+  if (launched_accesses_ && path == launched_path_) {
+    // Started from the library: its launch already holds the folders.
+    [self retainExternalGameAccessesForLaunch:launched_accesses_ replaceExisting:YES];
+    [launched_accesses_ release];
+    launched_accesses_ = nil;
+    launched_path_.clear();
+    [self applyTouchLayoutModelForTitleID:active_game_title_id_];
+    return;
+  }
+  // Started by the dashboard. The emulator starts once this returns, so the
+  // folders are resolved here; the ones the last scan couldn't reach are skipped.
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [NSMutableArray array];
   BOOL matched_external_location = NO;
   if (XeniaIOSExternalLibraryAccess* access = xe::ui::StartIOSExternalLibraryAccessForPath(
           path, &matched_external_location, nil)) {
     [accesses addObject:access];
   }
-  const BOOL starts_dashboard = xe::ui::IsIOSInstalledDashboardPath(path);
   // Every linked folder, as at a launch from the library, so a disc swap in a
   // game the dashboard starts can reach the other folders too.
   [accesses addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
-  self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
-  self.inGameMenuOverlay.sessionStartDate = [NSDate date];
-  active_game_title_id_ = [self titleIDForGamePath:path];
   [self appendLinkedContentAccessesForTitleID:active_game_title_id_
                                      accesses:accesses
                                  errorMessage:nil];
@@ -3235,18 +3269,44 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 - (void)launchGameAtPath:(const std::filesystem::path&)game_path
                      displayName:(NSString*)display_name
     skipMemoryEntitlementWarning:(BOOL)skipMemoryEntitlementWarning {
-  std::filesystem::path launch_path = game_path;
+  if (launch_preparing_) {
+    return;
+  }
+  launch_preparing_ = YES;
+  const std::filesystem::path launch_path = game_path;
+  const uint32_t known_title_id = [self knownTitleIDForGamePath:launch_path];
+  auto preparation = std::make_shared<LaunchPreparation>();
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @autoreleasepool {
+      [self prepareLaunchAtPath:launch_path
+                 knownTitleID:known_title_id
+                  preparation:preparation.get()];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      launch_preparing_ = NO;
+      [self finishLaunchGameAtPath:launch_path
+                       displayName:display_name
+      skipMemoryEntitlementWarning:skipMemoryEntitlementWarning
+                       preparation:*preparation];
+    });
+  });
+}
+
+// Any thread: touches only the file system and the saved folder list.
+- (void)prepareLaunchAtPath:(const std::filesystem::path&)launch_path
+               knownTitleID:(uint32_t)known_title_id
+                preparation:(LaunchPreparation*)preparation {
   NSError* external_access_error = nil;
   BOOL matched_external_location = NO;
   XeniaIOSExternalLibraryAccess* external_access = xe::ui::StartIOSExternalLibraryAccessForPath(
       launch_path, &matched_external_location, &external_access_error);
   if (matched_external_location && !external_access) {
-    NSString* message =
-        external_access_error.localizedDescription
-            ?: NSLocalizedString(@"External library folder is unavailable.",
-                                 @"Error text: the external library folder cannot be reached");
-    [self presentLaunchProblemAlertWithMessage:message];
-    [self refreshImportedGamesAsync];
+    preparation->problem =
+        [external_access_error.localizedDescription
+                ?: NSLocalizedString(@"External library folder is unavailable.",
+                                     @"Error text: the external library folder cannot be reached")
+            retain];
+    preparation->refresh_library = true;
     return;
   }
 
@@ -3256,13 +3316,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   // launchable file alone orphaned it from its companion data and broke booting.
   // The library scan already covers Documents, so in-place launch just works.
 
-  NSString* path_ns = ToNSString(launch_path.string());
   std::error_code path_exists_ec;
   if (!std::filesystem::exists(launch_path, path_exists_ec)) {
-    [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
-        @"Game file is no longer available.",
-        @"Alert message: the game file is gone")];
-    [self refreshImportedGamesAsync];
+    preparation->problem = [NSLocalizedString(@"Game file is no longer available.",
+                                              @"Alert message: the game file is gone") retain];
+    preparation->refresh_library = true;
     return;
   }
 
@@ -3270,16 +3328,59 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     auto metadata = xe::vfs::ExtractStfsMetadata(launch_path);
     if (metadata.has_value() && xe::ui::IOSContentDataFileCount(launch_path) > 0 &&
         !HasContentSidecarDataDirectory(launch_path)) {
-      XEPresentOKAlert(
-          self,
-          NSLocalizedString(@"Missing Game Data",
-                            @"Alert title: GOD package lacks its .data folder"),
-          NSLocalizedString(
-              @"This GOD package needs its matching .data folder in the same directory. Transfer "
-              @"both the GOD file and its .data folder, then try again.",
-              @"Alert message: GOD package lacks its .data folder"));
+      preparation->missing_god_data = true;
       return;
     }
+  }
+
+  uint32_t title_id = known_title_id;
+  if (!title_id) {
+    IOSDiscoveredGame discovered_game;
+    if (BuildDiscoveredGameFromPath(launch_path, &discovered_game)) {
+      title_id = discovered_game.title_id;
+    }
+  }
+  preparation->title_id = title_id;
+  if (external_access) {
+    [preparation->accesses addObject:external_access];
+  }
+  // Hold every linked folder for the session: the dashboard starts the games in
+  // them, and a disc swap can pick a disc from a folder other than this game's.
+  [preparation->accesses addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
+  NSString* linked_content_access_error = nil;
+  if (![self appendLinkedContentAccessesForTitleID:title_id
+                                          accesses:preparation->accesses
+                                      errorMessage:&linked_content_access_error]) {
+    preparation->problem =
+        [linked_content_access_error
+                ?: NSLocalizedString(@"Linked content is unavailable.",
+                                     @"Error text: linked content cannot be reached") retain];
+    preparation->refresh_library = true;
+  }
+}
+
+- (void)finishLaunchGameAtPath:(const std::filesystem::path&)launch_path
+                     displayName:(NSString*)display_name
+    skipMemoryEntitlementWarning:(BOOL)skipMemoryEntitlementWarning
+                     preparation:(const LaunchPreparation&)preparation {
+  NSString* path_ns = ToNSString(launch_path.string());
+  if (preparation.missing_god_data) {
+    XEPresentOKAlert(
+        self,
+        NSLocalizedString(@"Missing Game Data",
+                          @"Alert title: GOD package lacks its .data folder"),
+        NSLocalizedString(
+            @"This GOD package needs its matching .data folder in the same directory. Transfer "
+            @"both the GOD file and its .data folder, then try again.",
+            @"Alert message: GOD package lacks its .data folder"));
+    return;
+  }
+  if (preparation.problem) {
+    [self presentLaunchProblemAlertWithMessage:preparation.problem];
+    if (preparation.refresh_library) {
+      [self refreshImportedGamesAsync];
+    }
+    return;
   }
 
   if (!self.jitAcquired) {
@@ -3295,26 +3396,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     }
   }
 
-  const uint32_t launch_title_id = [self titleIDForGamePath:launch_path];
-  NSMutableArray<XeniaIOSExternalLibraryAccess*>* launch_external_accesses = [NSMutableArray array];
-  if (external_access) {
-    [launch_external_accesses addObject:external_access];
-  }
-  // Hold every linked folder for the session: the dashboard starts the games in
-  // them, and a disc swap can pick a disc from a folder other than this game's.
+  const uint32_t launch_title_id = preparation.title_id;
+  NSMutableArray<XeniaIOSExternalLibraryAccess*>* launch_external_accesses = preparation.accesses;
   const BOOL launches_dashboard = xe::ui::IsIOSInstalledDashboardPath(launch_path);
-  [launch_external_accesses
-      addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
-  NSString* linked_content_access_error = nil;
-  if (![self appendLinkedContentAccessesForTitleID:launch_title_id
-                                          accesses:launch_external_accesses
-                                      errorMessage:&linked_content_access_error]) {
-    [self presentLaunchProblemAlertWithMessage:(linked_content_access_error
-        ?: NSLocalizedString(@"Linked content is unavailable.",
-                             @"Error text: linked content cannot be reached"))];
-    [self refreshImportedGamesAsync];
-    return;
-  }
+  launched_path_ = launch_path;
+  [launched_accesses_ release];
+  launched_accesses_ = [launch_external_accesses copy];
   dashboard_session_ = launches_dashboard;
   self.inGameMenuOverlay.exitsToDashboard = NO;
 
@@ -4786,6 +4873,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_achievementNotificationPresenter release];
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];
+  [launched_accesses_ release];
   [pending_url_confirmation_ release];
   [_metalView release];
   [super dealloc];
@@ -4797,7 +4885,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   return touch_runtime_model_.get();
 }
 
-- (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path {
+- (uint32_t)knownTitleIDForGamePath:(const std::filesystem::path&)game_path {
   for (const IOSDiscoveredGame& game : discovered_games_) {
     if (game.path == game_path && game.title_id) {
       return game.title_id;
@@ -4807,6 +4895,13 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
         return game.title_id;
       }
     }
+  }
+  return 0;
+}
+
+- (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path {
+  if (const uint32_t title_id = [self knownTitleIDForGamePath:game_path]) {
+    return title_id;
   }
   IOSDiscoveredGame discovered_game;
   if (BuildDiscoveredGameFromPath(game_path, &discovered_game)) {
