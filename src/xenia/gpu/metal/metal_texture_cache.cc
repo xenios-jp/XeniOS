@@ -898,18 +898,32 @@ bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
                                            LoadCommands& commands) {
   SCOPE_profile_cpu_f("gpu");
   bool encoded = true;
-  command_processor_->EndEncodersForCommandBuffer(cmd);
   if (!commands.dispatches.empty()) {
-    MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+    // In the current command buffer, share the compute encoder with the
+    // resolves and loads around these.
+    MetalBufferHazards::Encoder own_hazards;
+    MetalBufferHazards::Encoder* hazards = &own_hazards;
+    MTL::ComputeCommandEncoder* encoder =
+        command_processor_->BeginSharedComputeEncoder(cmd, &hazards);
+    bool shared_encoder = encoder != nullptr;
+    if (!shared_encoder) {
+      command_processor_->EndEncodersForCommandBuffer(cmd);
+      encoder = cmd->computeCommandEncoder();
+    }
     if (encoder) {
       MetalSharedMemory& metal_shared_memory =
           static_cast<MetalSharedMemory&>(shared_memory());
-      MetalBufferHazards::Encoder hazards;
       if (metal_shared_memory.hazards()) {
-        hazards.Begin(*metal_shared_memory.hazards(), cmd, encoder);
+        if (!shared_encoder) {
+          own_hazards.Begin(*metal_shared_memory.hazards(), cmd, encoder);
+        }
+        bool conflict = false;
         for (const std::pair<uint32_t, uint32_t>& read :
              commands.shared_memory_reads) {
-          hazards.Access(read.first, read.second, false);
+          conflict |= hazards->Access(read.first, read.second, false);
+        }
+        if (conflict) {
+          encoder->memoryBarrier(MTL::BarrierScopeBuffers);
         }
       }
       MTL::ComputePipelineState* bound_pipeline = nullptr;
@@ -937,13 +951,16 @@ bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
         encoder->dispatchThreadgroups(dispatch.threadgroups,
                                       dispatch.threads_per_group);
       }
-      hazards.End();
-      encoder->endEncoding();
+      if (!shared_encoder) {
+        own_hazards.End();
+        encoder->endEncoding();
+      }
     } else {
       encoded = false;
     }
   }
   if (encoded && !commands.copies.empty()) {
+    command_processor_->EndEncodersForCommandBuffer(cmd);
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (blit) {
       for (const LoadCopy& copy : commands.copies) {
@@ -2302,6 +2319,7 @@ void MetalTextureCache::DumpTextureToFile(MTL::Texture* texture,
     XELOGE("DumpTextureToFile: failed to create command buffer");
     return;
   }
+  command_processor_->EndSharedComputeEncoder(cmd);
   MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
   if (!blit) {
     command_processor_->DiscardAccountedCommandBuffer(
@@ -4031,6 +4049,7 @@ bool MetalTextureCache::EnsureScaledResolveBufferRange(uint64_t start_scaled,
       }
     }
 
+    command_processor_->EndSharedComputeEncoder(cmd);
     MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
     if (!blit) {
       new_buffer->release();

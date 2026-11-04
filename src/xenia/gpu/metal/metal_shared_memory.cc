@@ -182,6 +182,7 @@ bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
     return false;
   }
   command_processor_.EndEncodersForCommandBuffer(command_buffer);
+  command_processor_.EndSharedComputeEncoder(command_buffer);
   MTL::BlitCommandEncoder* encoder = command_buffer->blitCommandEncoder();
   if (!encoder) {
     return false;

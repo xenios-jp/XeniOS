@@ -109,6 +109,22 @@ class MetalCommandProcessor : public CommandProcessor {
       EndRenderEncoder();
     }
   }
+  // A compute encoder that resolves and texture loads share on the current
+  // command buffer, so the compute work between two render passes takes one
+  // encoder rather than one per resolve or load. EndRenderEncoder ends it, and
+  // so must anything else encoding into the command buffer. Returns nullptr
+  // for any other command buffer. Shared memory isn't hazard tracked, so a
+  // user reporting an access that conflicts with an earlier one in the
+  // encoder (hazards->Access returning true) adds a memory barrier.
+  MTL::ComputeCommandEncoder* BeginSharedComputeEncoder(
+      MTL::CommandBuffer* command_buffer,
+      MetalBufferHazards::Encoder** hazards_out);
+  void EndSharedComputeEncoder();
+  void EndSharedComputeEncoder(MTL::CommandBuffer* command_buffer) {
+    if (command_buffer && command_buffer == shared_compute_command_buffer_) {
+      EndSharedComputeEncoder();
+    }
+  }
   uint32_t current_draw_index() const { return current_draw_index_; }
   uint64_t GetCurrentSubmission() const;
   uint64_t GetCompletedSubmission() const override;
@@ -716,6 +732,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // Whether the descriptor the current encoder was created from carried the
   // visibility result buffer, so a ZPD segment may be opened on it.
   bool render_encoder_has_zpd_visibility_ = false;
+  // The command buffer shared_compute_encoder_ is open on, or nullptr.
+  MTL::CommandBuffer* shared_compute_command_buffer_ = nullptr;
+  MTL::ComputeCommandEncoder* shared_compute_encoder_ = nullptr;
+  MetalBufferHazards::Encoder shared_compute_hazards_;
   bool debug_labels_ = false;
 
   // Tracks resources marked via useResource for the current render encoder
