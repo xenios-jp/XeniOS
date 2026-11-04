@@ -318,7 +318,9 @@ void GraphicsSystem::OnHostGpuLossFromAnyThread(
     return;
   }
 
-  config::SaveConfig();
+  // Nothing changed here to persist; the values-only save rewrites the file
+  // with every key as it is on disk, so edits made while running survive.
+  config::SaveConfigValues({});
 
   xe::FatalError("Graphics device lost (probably due to an internal error)");
 }
