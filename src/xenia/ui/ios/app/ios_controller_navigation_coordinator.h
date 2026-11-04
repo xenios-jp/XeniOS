@@ -50,6 +50,10 @@
 - (void)controllerNavigationEndLauncherSearch;
 // A on Search, Sort, Online or the hero's Play and ⋯.
 - (void)controllerNavigationActivateLauncherTarget:(XeniaIOSLauncherFocusTarget)target;
+// A game's page: Play, its round buttons, ⋯ and the capsule, left to right.
+- (NSUInteger)controllerNavigationGameDetailButtonCount;
+- (void)controllerNavigationApplyGameDetailButtonFocus:(NSUInteger)index;
+- (void)controllerNavigationActivateGameDetailButton:(NSUInteger)index;
 - (void)controllerNavigationApplyInGameMenuFocusEnabled:(BOOL)enabled
                                           focusedAction:(XeniaIOSInGameMenuAction)focusedAction;
 
