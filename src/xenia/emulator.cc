@@ -150,10 +150,12 @@ DEFINE_string(gpu, "d3d12", "Graphics system. Use: " GPU_OPTIONS, "GPU");
 DEFINE_string(apu, "phase", "Audio system. Use: " APU_OPTIONS, "APU");
 DEFINE_string(gpu, "metal", "Graphics system. Use: " GPU_OPTIONS, "GPU");
 #elif XE_PLATFORM_MAC
-#define APU_OPTIONS "[sdl, nop]"
+#define APU_OPTIONS "[phase, sdl, nop]"
 #define GPU_OPTIONS "[metal, vulkan, null]"
-DEFINE_string(apu, "sdl", "Audio system. Use: " APU_OPTIONS, "APU");
+DEFINE_string(apu, "phase", "Audio system. Use: " APU_OPTIONS, "APU");
 DEFINE_string(gpu, "metal", "Graphics system. Use: " GPU_OPTIONS, "GPU");
+// PHASE, as on iOS, for configs that kept the old SDL default.
+UPDATE_from_string(apu, 2026, 11, 3, 14, "sdl");
 #else
 #define APU_OPTIONS "[sdl, nop]"
 #define GPU_OPTIONS "[vulkan, null]"
