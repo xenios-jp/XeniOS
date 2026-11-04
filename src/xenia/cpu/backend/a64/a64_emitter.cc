@@ -106,6 +106,8 @@ bool A64Emitter::Emit(GuestFunction* function, hir::HIRBuilder* builder,
 
   EmitFunctionInfo func_info = {};
   bool emitted = false;
+  // Once for both tries: it recolors values, and the plan puts them back.
+  PlanLoopPromotion(builder, &loop_plan_);
   // The short branch forms nearly always reach, so a function is emitted with
   // them on the estimate of a typical code size first, and again with the
   // bound on the largest one if a branch turns out to be too far. Emitting
@@ -142,6 +144,8 @@ bool A64Emitter::Emit(GuestFunction* function, hir::HIRBuilder* builder,
     }
     break;
   }
+  loop_plan_.Clear();
+  active_loop_ = nullptr;
   if (!emitted) {
     // Emplace only runs on success, so a failed compile has to reset too.
     ResetPerFunctionState();
@@ -316,6 +320,13 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
     fpcr_mode_ = incoming_fpcr == FPCRMode::Unknown ? UntrackedFpcrMode()
                                                     : incoming_fpcr;
 
+    // Only the fall-through from the block before reaches a promoted loop's
+    // entry loads, the back edges branching to the labels below.
+    if (const PromotedLoop* loop = loop_plan_.LoopAt(block)) {
+      EmitPromotedLoads(*loop);
+      active_loop_ = loop;
+    }
+
     // Bind all labels targeting this block.
     auto label = block->label_head;
     while (label) {
@@ -342,6 +353,17 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
           synchronize_stack_on_next_instruction_ = false;
           EnsureSynchronizedGuestAndHostStack();
         }
+      }
+      if (active_loop_ && EmitPromotedAccess(instr)) {
+        if (sequence_handoff_pending()) {
+          XELOGE(
+              "A64: promoted context access took no handoff in guest "
+              "function {:08X}",
+              current_guest_function_);
+          return false;
+        }
+        instr = instr->next;
+        continue;
       }
       const hir::Instr* new_tail = instr;
       bool selected = false;
@@ -383,6 +405,13 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
         return false;
       }
       instr = new_tail;
+    }
+
+    if (active_loop_ && block == active_loop_->tail) {
+      if (BlockFallsThrough(block)) {
+        EmitPromotedStores(*active_loop_);
+      }
+      active_loop_ = nullptr;
     }
 
     if (!MaybeFlushV128ConstPool()) {
@@ -1320,6 +1349,82 @@ Label& A64Emitter::AddToTail(TailEmitCallback callback, uint32_t alignment) {
   return tail_code_.back().label;
 }
 
+void A64Emitter::EmitPromotedLoads(const PromotedLoop& loop) {
+  for (const PromotedSlot& slot : loop.slots) {
+    switch (slot.type) {
+      case hir::INT8_TYPE:
+        ldrb(WReg(gpr_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+      case hir::INT64_TYPE:
+        ldr(XReg(gpr_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+      default:
+        ldr(QReg(vec_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+    }
+  }
+}
+
+void A64Emitter::EmitPromotedStores(const PromotedLoop& loop) {
+  for (const PromotedSlot& slot : loop.slots) {
+    if (!slot.dirty) {
+      continue;
+    }
+    switch (slot.type) {
+      case hir::INT8_TYPE:
+        strb(WReg(gpr_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+      case hir::INT64_TYPE:
+        str(XReg(gpr_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+      default:
+        str(QReg(vec_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
+        break;
+    }
+  }
+}
+
+bool A64Emitter::EmitPromotedAccess(const hir::Instr* instr) {
+  auto it = loop_plan_.accesses.find(instr);
+  if (it == loop_plan_.accesses.end()) {
+    return false;
+  }
+  const PromotedSlot& slot = *it->second;
+  const bool vec = slot.type == hir::VEC128_TYPE;
+  const uint32_t* map = vec ? vec_reg_map_ : gpr_reg_map_;
+  const uint32_t reg = map[slot.reg_index];
+  auto move = [&](uint32_t to, uint32_t from) {
+    if (vec) {
+      orr(VReg(to).b16, VReg(from).b16, VReg(from).b16);
+    } else if (slot.type == hir::INT64_TYPE) {
+      mov(XReg(to), XReg(from));
+    } else {
+      mov(WReg(to), WReg(from));
+    }
+  };
+  if (instr->GetOpcodeNum() == hir::OPCODE_LOAD_CONTEXT) {
+    // A recolored load already has its value in place.
+    const hir::Value* dest = instr->dest;
+    if (dest->reg.index != slot.reg_index) {
+      move(map[dest->reg.index], reg);
+    }
+    return true;
+  }
+  const hir::Value* src = instr->src2.value;
+  if (src->IsConstant()) {
+    if (vec) {
+      ldr(QReg(reg), GetV128ConstLabel(src->constant.v128));
+    } else if (slot.type == hir::INT64_TYPE) {
+      mov(XReg(reg), src->constant.u64);
+    } else {
+      mov(WReg(reg), static_cast<uint64_t>(src->constant.u8));
+    }
+  } else if (src->reg.index != slot.reg_index) {
+    move(reg, map[src->reg.index]);
+  }
+  return true;
+}
+
 Label& A64Emitter::NewCachedLabel() {
   auto* label = new Label();
   label_cache_.push_back(label);
@@ -1357,8 +1462,11 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
       static_cast<uint32_t>(offsetof(ppc::PPCContext, preempt_requested));
   // The thunk returns in Fpu, while the hot path may hold a VMX mode.
   const FPCRMode held_mode = fpcr_mode_;
+  // The yield may let anything read or write this thread's registers, so a
+  // promoted loop's go to memory around it.
+  const PromotedLoop* loop = active_loop_;
   Label& do_yield =
-      AddToTail([&after, flag_offset, held_mode](A64Emitter& e, Label&) {
+      AddToTail([&after, flag_offset, held_mode, loop](A64Emitter& e, Label&) {
         e.strb(e.wzr, ptr(e.x20, flag_offset));
         // Null until the scheduler starts, and a stale flag can reach here
         // after it shuts down, so check before calling.
@@ -1368,8 +1476,14 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
         e.cbz(e.x0, after);
         e.ldr(e.x9, e.BackendCtxPtr(offsetof(A64BackendContext,
                                              guest_to_host_thunk_address)));
+        if (loop) {
+          e.EmitPromotedStores(*loop);
+        }
         e.blr(e.x9);
         e.NoteCallClobbersRemapBound();
+        if (loop) {
+          e.EmitPromotedLoads(*loop);
+        }
         if (held_mode != FPCRMode::Unknown && held_mode != FPCRMode::Fpu) {
           e.ReloadFpcrMode(held_mode);
         }
@@ -1389,6 +1503,22 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
 }
 
 Label& A64Emitter::GetLabel(uint32_t label_id) {
+  if (active_loop_ && active_loop_->exit_label_ids.count(label_id)) {
+    // Cached labels stay put; tail entries move as more are added.
+    Label* exit = &NewCachedLabel();
+    Label* target = &GetBlockLabel(label_id);
+    const PromotedLoop* loop = active_loop_;
+    AddToTail([exit, target, loop](A64Emitter& e, Label&) {
+      e.L(*exit);
+      e.EmitPromotedStores(*loop);
+      e.b(*target);
+    });
+    return *exit;
+  }
+  return GetBlockLabel(label_id);
+}
+
+Label& A64Emitter::GetBlockLabel(uint32_t label_id) {
   auto it = label_map_.find(label_id);
   if (it != label_map_.end()) {
     return *it->second;
