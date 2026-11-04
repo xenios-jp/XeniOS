@@ -2786,6 +2786,9 @@ void MetalCommandProcessor::ShutdownContext() {
   finite_multiply_requirements_.clear();
   std::fill(std::begin(finite_multiply_last_shader_),
             std::end(finite_multiply_last_shader_), nullptr);
+  for (RecentShaderLoad& recent : recent_shader_loads_) {
+    recent = RecentShaderLoad();
+  }
   guest_shader_cache_.clear();
   memexport_format_profiles_.Clear();
   spirv_shader_translator_.reset();
@@ -3882,8 +3885,27 @@ bool MetalCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
 Shader* MetalCommandProcessor::LoadShader(xenos::ShaderType shader_type,
                                           const uint32_t* host_address,
                                           uint32_t dword_count) {
-  return LoadShader(shader_type, host_address, dword_count,
-                    XXH3_64bits(host_address, dword_count * sizeof(uint32_t)));
+  const size_t ucode_size = dword_count * sizeof(uint32_t);
+  for (auto it = recent_shader_loads_.begin(); it != recent_shader_loads_.end();
+       ++it) {
+    if (!it->shader) {
+      break;
+    }
+    if (it->ucode.size() == dword_count &&
+        !std::memcmp(it->ucode.data(), host_address, ucode_size)) {
+      std::rotate(recent_shader_loads_.begin(), it, std::next(it));
+      return recent_shader_loads_.front().shader;
+    }
+  }
+  SpirvShader* shader =
+      LoadShader(shader_type, host_address, dword_count,
+                 XXH3_64bits(host_address, ucode_size));
+  std::rotate(recent_shader_loads_.begin(), std::prev(recent_shader_loads_.end()),
+              recent_shader_loads_.end());
+  RecentShaderLoad& recent = recent_shader_loads_.front();
+  recent.shader = shader;
+  recent.ucode.assign(host_address, host_address + dword_count);
+  return shader;
 }
 
 SpirvShader* MetalCommandProcessor::LoadShader(xenos::ShaderType shader_type,

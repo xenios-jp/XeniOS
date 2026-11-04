@@ -746,6 +746,15 @@ class MetalCommandProcessor : public CommandProcessor {
   uint32_t spirv_translator_resolution_scale_y_ = 1;
   std::unordered_map<uint64_t, std::unique_ptr<SpirvShader>>
       guest_shader_cache_;
+  // The guest loads the same few shaders draw after draw. The most recently
+  // loaded ones, most recent first, keep the guest words they were loaded
+  // from, so a repeat is found by comparing the words instead of hashing them.
+  // A shader stays in guest_shader_cache_ under the hash of its own words.
+  struct RecentShaderLoad {
+    SpirvShader* shader = nullptr;
+    std::vector<uint32_t> ucode;
+  };
+  std::array<RecentShaderLoad, 8> recent_shader_loads_;
   // Owns the root signature the DXIL shaders are compiled against.
   MetalShaderConverter metal_shader_converter_;
   MetalDxilBinder dxil_binder_;
