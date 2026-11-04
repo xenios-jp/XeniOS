@@ -615,6 +615,15 @@ class MetalCommandProcessor : public CommandProcessor {
   // Retained for the lifetime of current_render_encoder_. The render target
   // cache may rebuild and release its cached descriptor between draws.
   MTL::RenderPassDescriptor* current_render_pass_descriptor_ = nullptr;
+  // The attachment formats every pipeline of the current encoder must match,
+  // read from current_render_pass_descriptor_ when the encoder is created.
+  struct RenderPassPipelineFormats {
+    MTL::PixelFormat color[4];
+    MTL::PixelFormat depth;
+    MTL::PixelFormat stencil;
+    uint32_t sample_count;
+  };
+  RenderPassPipelineFormats current_render_pass_pipeline_formats_ = {};
   // The dimensions of the encoded pass, refreshed when creating its encoder.
   uint32_t render_encoder_width_ = 1;
   uint32_t render_encoder_height_ = 1;
