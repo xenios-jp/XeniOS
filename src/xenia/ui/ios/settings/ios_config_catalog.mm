@@ -1094,9 +1094,12 @@ static std::vector<IOSConfigSection> BuildAllSettingsSections() {
         continue;
       }
       section.items = std::move(kept);
-      // "Graphics · Backend", or just "Display" where the section has the page's name.
-      if (section.title.empty() || section.title == page) {
+      // "Audio · Output", or just the section's name where it already starts with the page's
+      // ("Display", "Graphics Backend").
+      if (section.title.empty()) {
         section.title = page;
+      } else if (section.title.compare(0, page.size(), page) == 0) {
+        // Already names the page.
       } else {
         section.title = page + " \xC2\xB7 " + section.title;
       }

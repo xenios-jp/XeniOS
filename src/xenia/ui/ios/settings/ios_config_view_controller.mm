@@ -425,19 +425,17 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
 
   UIView* card = [[[UIView alloc] init] autorelease];
   card.translatesAutoresizingMaskIntoConstraints = NO;
-  card.backgroundColor = [XeniaTheme bgSurface];
-  card.layer.cornerRadius = 12.0;
-  card.layer.borderWidth = 0.5;
-  card.layer.borderColor = [XeniaTheme border].CGColor;
+  // Plain explanatory text above the list, as in Settings, not a card.
+  card.backgroundColor = [UIColor clearColor];
   [container addSubview:card];
 
   UILabel* title = [[[UILabel alloc] init] autorelease];
   title.translatesAutoresizingMaskIntoConstraints = NO;
   title.backgroundColor = [UIColor clearColor];
-  title.text =
-      game_title_id_
-          ? NSLocalizedString(@"Game-Specific Settings", @"config view controller: title")
-          : NSLocalizedString(@"Change Settings Before Launch", @"config view controller: title");
+  // Only the per-game page needs a heading; the global note is one line of guidance.
+  title.text = game_title_id_
+                   ? NSLocalizedString(@"Game-Specific Settings", @"config view controller: title")
+                   : nil;
   title.textColor = [XeniaTheme textPrimary];
   title.numberOfLines = 0;
   xe_apply_label_font(title, UIFontTextStyleHeadline, 17.0, UIFontWeightSemibold);
@@ -460,15 +458,13 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
                              @"config view controller: label text"),
                          game_name, title_id];
   } else {
-    body.text =
-        NSLocalizedString(@"To avoid partial updates, change settings before launching a game. If "
-                          @"you save changes while a game is already running, fully relaunch "
-                          @"XeniOS before testing them.",
-                          @"config view controller: label text");
+    body.text = NSLocalizedString(@"Settings apply when a game starts. If a game is running, "
+                                  @"relaunch XeniOS after saving.",
+                                  @"config view controller: label text");
   }
   body.textColor = [XeniaTheme textSecondary];
   body.numberOfLines = 0;
-  xe_apply_label_font(body, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  xe_apply_label_font(body, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
   [body setContentCompressionResistancePriority:UILayoutPriorityRequired
                                         forAxis:UILayoutConstraintAxisVertical];
   [card addSubview:body];
@@ -479,14 +475,15 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16.0],
     [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-4.0],
 
-    [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:14.0],
-    [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
-    [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
+    [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:4.0],
+    [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
+    [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
 
-    [body.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:6.0],
-    [body.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
-    [body.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
-    [body.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14.0],
+    [body.topAnchor constraintEqualToAnchor:title.bottomAnchor
+                                   constant:game_title_id_ ? 4.0 : 0.0],
+    [body.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
+    [body.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
+    [body.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-4.0],
   ]];
 
   return container;

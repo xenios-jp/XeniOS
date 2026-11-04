@@ -1271,25 +1271,20 @@ titleForFooterInSection:(NSInteger)section {
   UIColor* red = [XeniaTheme sectionIconRed];
   UIColor* gray = [XeniaTheme sectionIconGray];
 
-  // Every setting in one searchable list; the pages below group the same settings by topic.
+  // Every setting in one searchable list, and the profile, at the top without a header like the
+  // first group in Settings; the pages below group the same settings by topic.
   XeniaSettingsHubSection* all_settings = [XeniaSettingsHubSection
-      sectionWithTitle:NSLocalizedString(@"Settings", @"settings hub view controller: title")
+      sectionWithTitle:@""
                  items:@[
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAllSettings
                               title:NSLocalizedString(@"All Settings",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Every setting, emulator options included. Search by "
-                                        @"name, key or value.",
+                                        @"Every option in one searchable list.",
                                         @"settings hub view controller: title")
                          symbolName:@"list.bullet"
                           tintColor:mint],
-                 ]];
-
-  XeniaSettingsHubSection* account = [XeniaSettingsHubSection
-      sectionWithTitle:NSLocalizedString(@"Profile", @"settings hub view controller: title")
-                 items:@[
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindProfile
                               title:NSLocalizedString(@"Profile",
@@ -1470,7 +1465,7 @@ titleForFooterInSection:(NSInteger)section {
                  ]];
 
   return @[
-    all_settings, account, gameplay, graphics_performance, games, compatibility, app, advanced
+    all_settings, gameplay, graphics_performance, games, compatibility, app, advanced
   ];
 }
 
@@ -1765,7 +1760,8 @@ titleForFooterInSection:(NSInteger)section {
 
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForHeaderInSection:(NSInteger)section {
-  return [self sectionAtIndex:section].title;
+  NSString* title = [self sectionAtIndex:section].title;
+  return title.length ? title : nil;
 }
 
 - (XeniaSettingsHubSection*)sectionAtIndex:(NSInteger)section {
@@ -1814,7 +1810,7 @@ titleForFooterInSection:(NSInteger)section {
   content.secondaryText = item.subtitle;
   content.secondaryTextProperties.color = [XeniaTheme textSecondary];
   content.secondaryTextProperties.numberOfLines = 0;
-  content.secondaryTextProperties.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0,
+  content.secondaryTextProperties.font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0,
                                                                UIFontWeightRegular);
   content.prefersSideBySideTextAndSecondaryText = NO;
   content.image = XESettingsBadgeImage(item.symbolName, item.tintColor);
