@@ -70,7 +70,10 @@ constexpr CGFloat kCoverRadius = 8.0;
   self.contentTypePill.hidden = YES;
   [self.contentTypePill setContentHuggingPriority:UILayoutPriorityRequired
                                           forAxis:UILayoutConstraintAxisHorizontal];
-  [self.contentTypePill setContentCompressionResistancePriority:UILayoutPriorityRequired
+  // The tag ("External", "2 Discs") gives way to the status; -layoutSubviews drops it when
+  // both don't fit.
+  self.contentTypePill.lineBreakMode = NSLineBreakByTruncatingTail;
+  [self.contentTypePill setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                                         forAxis:UILayoutConstraintAxisHorizontal];
 
   self.titleLabel = [[UILabel alloc] init];
@@ -94,6 +97,8 @@ constexpr CGFloat kCoverRadius = 8.0;
   self.compatPill.hidden = YES;
   [self.compatPill setContentHuggingPriority:UILayoutPriorityRequired
                                      forAxis:UILayoutConstraintAxisHorizontal];
+  [self.compatPill setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh + 10
+                                                   forAxis:UILayoutConstraintAxisHorizontal];
 
   self.metadataStackView =
       [[UIStackView alloc] initWithArrangedSubviews:@[ self.compatPill, self.contentTypePill ]];
@@ -155,6 +160,26 @@ constexpr CGFloat kCoverRadius = 8.0;
   // request the configuration pass by hand to keep recycled cells looking
   // identical to fresh ones.
   [self setNeedsUpdateConfiguration];
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  // Status first: with a status beside it, the tag shows only if both fit whole, so a tile never
+  // reads "● In-…  2 Discs". Without a status the tag truncates on its own.
+  if (!self.contentTypePill.text.length) {
+    return;
+  }
+  BOOL show_tag = YES;
+  if (!self.compatPill.hidden &&
+      self.metadataStackView.axis == UILayoutConstraintAxisHorizontal) {
+    const CGFloat needed = self.compatPill.intrinsicContentSize.width +
+                           self.metadataStackView.spacing +
+                           self.contentTypePill.intrinsicContentSize.width;
+    show_tag = needed <= CGRectGetWidth(self.metadataStackView.bounds) + 0.5;
+  }
+  if (self.contentTypePill.hidden == show_tag) {
+    self.contentTypePill.hidden = !show_tag;
+  }
 }
 
 - (void)setControllerFocused:(BOOL)controllerFocused {
