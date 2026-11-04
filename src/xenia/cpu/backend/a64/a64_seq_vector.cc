@@ -2081,7 +2081,7 @@ struct STVL_V128 : Sequence<STVL_V128, I<OPCODE_STVL, VoidOp, I64Op, V128Op>> {
     e.b(Xbyak_aarch64::NE, partial);
     e.str(QReg(0), ptr(e.x0));
     // The partial store works in scratch registers.
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_STVL, STVL_V128);
@@ -2112,7 +2112,7 @@ struct STVR_V128 : Sequence<STVR_V128, I<OPCODE_STVR, VoidOp, I64Op, V128Op>> {
     });
     e.tst(e.x0, 0xF);
     e.b(Xbyak_aarch64::NE, partial);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_STVR, STVR_V128);
