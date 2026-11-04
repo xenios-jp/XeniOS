@@ -22,6 +22,9 @@
 namespace xe {
 namespace gpu {
 
+// TODO(xenios-jp): spirv2air could lower this guard's NMin(|x|, |y|) == 0 as
+// x == 0 || y == 0, which Apple's compiler makes smaller. That lowering
+// changed rendered images and made no device faster, so it isn't done.
 spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
                                                       spv::Id operand_0_abs,
                                                       spv::Id operand_1_abs) {
