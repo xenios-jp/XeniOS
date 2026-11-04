@@ -1006,8 +1006,23 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     top_inset = header_bottom + 6.0 + stack_block;
     _headerBackdrop.frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left,
                                        header_bottom + 6.0);
+    // Covers fade out as they reach the header instead of sliding under its controls or a bar.
+    CAGradientLayer* fade = [CAGradientLayer layer];
+    fade.frame = CGRectMake(0.0, 0.0, grid_frame.size.width, grid_frame.size.height);
+    const CGFloat clear_to = (header_bottom + 2.0) / MAX(grid_frame.size.height, 1.0);
+    const CGFloat solid_from = (header_bottom + 22.0) / MAX(grid_frame.size.height, 1.0);
+    fade.colors = @[
+      (id)[UIColor clearColor].CGColor, (id)[UIColor clearColor].CGColor,
+      (id)[UIColor blackColor].CGColor, (id)[UIColor blackColor].CGColor
+    ];
+    fade.locations = @[ @0.0, @(clear_to), @(solid_from), @1.0 ];
+    _gamesCollectionView.maskView = nil;
+    UIView* mask = [[[UIView alloc] initWithFrame:fade.frame] autorelease];
+    [mask.layer addSublayer:fade];
+    _gamesCollectionView.maskView = mask;
   } else {
     // Art across the top, under the header, scrolling away with the grid.
+    _gamesCollectionView.maskView = nil;
     grid_frame = bounds;
     if (hero) {
       [_heroText layoutIfNeeded];
@@ -1076,9 +1091,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 - (void)updateHeaderBackdrop {
   CGFloat alpha = 0.0;
   if (_sideLayout) {
-    const CGFloat scrolled =
-        _gamesCollectionView.contentOffset.y + _gamesCollectionView.contentInset.top;
-    alpha = MIN(MAX(scrolled / 24.0, 0.0), 1.0);
+    alpha = 0.0;
+    // A scroll view's mask moves with its content; keep the fade pinned under the header.
+    UIView* mask = _gamesCollectionView.maskView;
+    if (mask) {
+      [CATransaction begin];
+      [CATransaction setDisableActions:YES];
+      mask.frame = CGRectMake(0.0, _gamesCollectionView.contentOffset.y,
+                              CGRectGetWidth(mask.bounds), CGRectGetHeight(mask.bounds));
+      [CATransaction commit];
+    }
   } else {
     const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame);
     const CGFloat content_top = -_gamesCollectionView.contentInset.top;

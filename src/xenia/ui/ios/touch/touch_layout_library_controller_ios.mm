@@ -318,7 +318,7 @@
                                  completion_handler(YES);
                                }];
   favorite_action.backgroundColor =
-      favorite ? [[UIColor whiteColor] colorWithAlphaComponent:0.32] : [XeniaTheme touchTintAmber];
+      favorite ? [[UIColor whiteColor] colorWithAlphaComponent:0.32] : [XeniaTheme accent];
 
   UIContextualAction* default_action = [UIContextualAction
       contextualActionWithStyle:UIContextualActionStyleNormal

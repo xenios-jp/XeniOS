@@ -2510,7 +2510,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   } else if (self.jitPollTimedOut) {
     [self.launcherOverlayView
         setJITStatusText:NSLocalizedString(
-                             @"JIT didn't turn on. Open StikDebug and try again.",
+                             @"Try again in StikDebug.",
                              @"Launcher status: JIT is unavailable")];
   } else {
     [self.launcherOverlayView setJITStatusText:xe_jit_waiting_status_message()];

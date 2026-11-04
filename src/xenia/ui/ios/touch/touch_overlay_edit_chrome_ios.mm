@@ -102,8 +102,8 @@ UIButton* CreateChromeButton(NSString* title, id target, SEL selector) {
   layout_library_filter_control_.hidden = YES;
   layout_library_filter_control_.backgroundColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySubtle]];
-  layout_library_filter_control_.tintColor = [XeniaTheme touchTintAmber];
-  layout_library_filter_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
+  layout_library_filter_control_.tintColor = [XeniaTheme accent];
+  layout_library_filter_control_.selectedSegmentTintColor = [XeniaTheme accent];
   [layout_library_filter_control_
       setTitleTextAttributes:@{
         NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]

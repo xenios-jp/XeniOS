@@ -175,6 +175,9 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   table_view_.separatorInset = UIEdgeInsetsMake(0.0, kMargin, 0.0, kMargin);
   table_view_.rowHeight = 58.0;
   table_view_.sectionHeaderTopPadding = 0.0;
+  // Insets come from viewWillLayoutSubviews alone, measured from the screen edge.
+  table_view_.insetsContentViewsToSafeArea = NO;
+  table_view_.cellLayoutMarginsFollowReadableWidth = NO;
   [self.view addSubview:table_view_];
 
   [self buildHeader];
@@ -256,6 +259,7 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
 
 - (void)buildHeader {
   header_ = [[UIView alloc] init];
+  header_.insetsLayoutMarginsFromSafeArea = NO;
   header_.clipsToBounds = NO;
 
   art_view_ = [[UIImageView alloc] init];
@@ -317,6 +321,11 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   title_stack_.translatesAutoresizingMaskIntoConstraints = NO;
   title_stack_.axis = UILayoutConstraintAxisVertical;
   title_stack_.spacing = 4.0;
+  // Keeps the title and status legible where they sit over bright art.
+  title_stack_.layer.shadowColor = UIColor.blackColor.CGColor;
+  title_stack_.layer.shadowOpacity = 0.6;
+  title_stack_.layer.shadowRadius = 10.0;
+  title_stack_.layer.shadowOffset = CGSizeZero;
   [header_ addSubview:title_stack_];
 
   // Play is the one white button; touch layout and settings sit beside it as glass circles.
@@ -427,14 +436,25 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
 - (void)viewWillLayoutSubviews {
   [super viewWillLayoutSubviews];
   const CGSize size = self.view.bounds.size;
-  const BOOL short_window = size.height < 500.0;
-  const CGFloat art_height = short_window ? kArtHeightShort : kArtHeight;
-  cover_top_.constant = art_height - (short_window ? 110.0 : 150.0);
   const UIEdgeInsets safe = self.view.safeAreaInsets;
-  header_.layoutMargins =
-      UIEdgeInsetsMake(0.0, MAX(safe.left, kMargin), 0.0, MAX(safe.right, kMargin));
-  table_view_.separatorInset = UIEdgeInsetsMake(0.0, MAX(safe.left, kMargin) + 40.0, 0.0,
-                                                MAX(safe.right, kMargin));
+  // A phone on its side: art, cover, title and Play on the left half, the rows on the right, so
+  // the whole page fits on one screen instead of a portrait page stretched wide.
+  const BOOL side = size.width > size.height && size.height < 500.0;
+  const CGFloat column = side ? floor(size.width * 0.52) : size.width;
+  const CGFloat art_height = side ? size.height : (size.height < 500.0 ? kArtHeightShort : kArtHeight);
+  const CGFloat leading = safe.left + kMargin;
+  const CGFloat trailing = side ? size.width - column + 8.0 : safe.right + kMargin;
+  header_.layoutMargins = UIEdgeInsetsMake(0.0, leading, 0.0, trailing);
+
+  // In the side layout the art stays put behind the left column; otherwise it scrolls with the
+  // header.
+  UIView* art_parent = side ? self.view : header_;
+  if (art_view_.superview != art_parent) {
+    [art_view_ removeFromSuperview];
+    [art_parent insertSubview:art_view_ atIndex:0];
+  }
+
+  cover_top_.constant = side ? 0.0 : art_height - 150.0;
   header_.frame = CGRectMake(0.0, 0.0, size.width, 0.0);
   [header_ layoutIfNeeded];
   const CGFloat height =
@@ -442,23 +462,64 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
              withHorizontalFittingPriority:UILayoutPriorityRequired
                    verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
           .height;
-  if (header_.frame.size.height != height) {
-    header_.frame = CGRectMake(0.0, 0.0, size.width, height);
-    table_view_.tableHeaderView = header_;
+  if (side) {
+    // Centred in the space under ✕, nudged down a little so it sits on the art's lower half.
+    const CGFloat top = safe.top + 60.0;
+    const CGFloat y = MAX(top, top + (size.height - top - safe.bottom - height) * 0.6);
+    if (table_view_.tableHeaderView == header_) {
+      table_view_.tableHeaderView = nil;
+    }
+    if (header_.superview != self.view) {
+      [header_ removeFromSuperview];
+      [self.view insertSubview:header_ aboveSubview:art_view_];
+    }
+    header_.frame = CGRectMake(0.0, y, size.width, height);
+    table_view_.frame = CGRectMake(column, 0.0, size.width - column, size.height);
+    // The first row lines up with the top of the cover.
+    table_view_.contentInset = UIEdgeInsetsMake(y, 0.0, safe.bottom + 16.0, 0.0);
+  } else {
+    if (header_.superview == self.view) {
+      [header_ removeFromSuperview];
+    }
+    table_view_.frame = self.view.bounds;
+    if (header_.frame.size.height != height || table_view_.tableHeaderView != header_) {
+      header_.frame = CGRectMake(0.0, 0.0, size.width, height);
+      table_view_.tableHeaderView = header_;
+    }
+    table_view_.contentInset = UIEdgeInsetsMake(0.0, 0.0, safe.bottom + 16.0, 0.0);
   }
-  art_view_.frame = CGRectMake(0.0, 0.0, size.width, art_height);
+  [self.view bringSubviewToFront:top_bar_];
+  [self.view bringSubviewToFront:close_button_];
+  [self.view bringSubviewToFront:more_button_];
+
+  const UIEdgeInsets table_safe = table_view_.safeAreaInsets;
+  table_view_.separatorInset =
+      UIEdgeInsetsMake(0.0, table_safe.left + kMargin + 40.0, 0.0, table_safe.right + kMargin);
+  for (UITableViewCell* cell in table_view_.visibleCells) {
+    [self applyMarginsToCell:cell];
+  }
+
+  art_view_.frame = CGRectMake(0.0, 0.0, side ? column + 120.0 : size.width, art_height);
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  art_top_.frame = CGRectMake(0.0, 0.0, size.width, 120.0);
+  art_top_.frame = CGRectMake(0.0, 0.0, art_view_.bounds.size.width, 120.0);
   art_fade_.frame = art_view_.bounds;
   UIColor* page = [[XeniaTheme bgPrimary] resolvedColorWithTraitCollection:self.traitCollection];
   art_fade_.colors = @[
     (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
     (id)[page colorWithAlphaComponent:0.7].CGColor, (id)page.CGColor
   ];
-  art_fade_.locations = @[ @0.0, @0.42, @0.75, @1.0 ];
+  if (side) {
+    // Fades into the page towards the rows, and darkens under the title.
+    art_fade_.startPoint = CGPointMake(0.0, 0.3);
+    art_fade_.endPoint = CGPointMake(1.0, 0.7);
+    art_fade_.locations = @[ @0.0, @0.35, @0.7, @0.9 ];
+  } else {
+    art_fade_.startPoint = CGPointMake(0.5, 0.0);
+    art_fade_.endPoint = CGPointMake(0.5, 1.0);
+    art_fade_.locations = @[ @0.0, @0.42, @0.75, @1.0 ];
+  }
   [CATransaction commit];
-  table_view_.contentInset = UIEdgeInsetsMake(0.0, 0.0, safe.bottom + 16.0, 0.0);
   top_bar_.frame = CGRectMake(0.0, 0.0, size.width, safe.top + 60.0);
   top_title_.frame = CGRectMake(MAX(safe.left, 16.0) + 60.0, safe.top + 8.0,
                                 size.width - 2.0 * (MAX(safe.left, safe.right) + 76.0), 44.0);
@@ -469,7 +530,12 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   if (scrollView != table_view_) {
     return;
   }
-  // The bar is fully in by the time the title would pass under it.
+  // The bar is fully in by the time the title would pass under it. The side layout keeps the
+  // title in view, so it never needs one.
+  if (table_view_.tableHeaderView != header_) {
+    top_bar_.alpha = 0.0;
+    return;
+  }
   const CGFloat bar = self.view.safeAreaInsets.top + 60.0;
   const CGFloat start = cover_top_.constant + 40.0 - bar;
   top_bar_.alpha = MIN(1.0, MAX(0.0, (scrollView.contentOffset.y - start) / 40.0));
@@ -516,6 +582,22 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   return section == 0 ? static_cast<NSInteger>(rows_.count) : 0;
 }
 
+// The symbol sits on the page's leading edge and the chevron on its trailing one, both clear of
+// the sensor housing in landscape.
+- (void)applyMarginsToCell:(UITableViewCell*)cell {
+  const UIEdgeInsets safe = table_view_.safeAreaInsets;
+  cell.insetsLayoutMarginsFromSafeArea = NO;
+  cell.preservesSuperviewLayoutMargins = NO;
+  cell.layoutMargins = UIEdgeInsetsMake(0.0, safe.left + kMargin, 0.0, safe.right + kMargin);
+  UIListContentConfiguration* content = (UIListContentConfiguration*)cell.contentConfiguration;
+  if ([content isKindOfClass:[UIListContentConfiguration class]]) {
+    content = [[content copy] autorelease];
+    // These margins start from the safe area already.
+    content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(0.0, kMargin - 4.0, 0.0, 0.0);
+    cell.contentConfiguration = content;
+  }
+}
+
 // Plain rows on the page, no cards: a symbol, the title and a chevron.
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
@@ -537,9 +619,8 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   content.imageProperties.tintColor = [XeniaTheme textSecondary];
   content.imageToTextPadding = 16.0;
   content.imageProperties.reservedLayoutSize = CGSizeMake(24.0, 0.0);
-  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
-      0.0, MAX(self.view.safeAreaInsets.left, kMargin) - 4.0, 0.0, 0.0);
   cell.contentConfiguration = content;
+  [self applyMarginsToCell:cell];
   // Separators go between rows only, never under the last one.
   const BOOL last = indexPath.row == [tableView numberOfRowsInSection:indexPath.section] - 1;
   cell.separatorInset =

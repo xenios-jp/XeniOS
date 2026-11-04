@@ -174,7 +174,7 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     slider_ = [[XeTEPWideSlider alloc] initWithFrame:CGRectZero];
     slider_.continuous = YES;
     slider_.exclusiveTouch = YES;
-    slider_.minimumTrackTintColor = [XeniaTheme touchTintAmber];
+    slider_.minimumTrackTintColor = [XeniaTheme accent];
     [slider_ addTarget:self
                   action:@selector(sliderChanged:)
         forControlEvents:UIControlEventValueChanged];
@@ -450,7 +450,7 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     return nil;
   }
   self.backgroundColor = PanelFill();
-  self.layer.cornerRadius = 16.0f;
+  self.layer.cornerRadius = 26.0f;
   self.layer.borderWidth = 1.0f;
   self.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08f].CGColor;
   self.clipsToBounds = YES;
@@ -464,20 +464,16 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   header_title_.textColor = PrimaryText();
   [header_ addSubview:header_title_];
   primary_binding_button_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
-  primary_binding_button_.backgroundColor =
-      [[XeniaTheme touchTintSky] colorWithAlphaComponent:0.18f];
-  primary_binding_button_.layer.cornerRadius = 15.0f;
-  primary_binding_button_.layer.borderWidth = 1.0f;
-  primary_binding_button_.layer.borderColor =
-      [[XeniaTheme touchTintSky] colorWithAlphaComponent:0.55f].CGColor;
+  // What the control presses: a gray capsule like the app's secondary buttons.
+  primary_binding_button_.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.14];
+  primary_binding_button_.layer.cornerRadius = 22.0f;
   primary_binding_button_.clipsToBounds = YES;
-  primary_binding_button_.tintColor = [[XeniaTheme touchTintSky] colorWithAlphaComponent:1.0f];
+  primary_binding_button_.tintColor = [UIColor whiteColor];
   primary_binding_button_.titleLabel.adjustsFontSizeToFitWidth = YES;
   primary_binding_button_.titleLabel.minimumScaleFactor = 0.68f;
   xe_apply_button_title_font(primary_binding_button_, UIFontTextStyleHeadline, 17.0,
-                             UIFontWeightBold);
-  [primary_binding_button_ setTitleColor:[[XeniaTheme touchTintSky] colorWithAlphaComponent:1.0f]
-                                forState:UIControlStateNormal];
+                             UIFontWeightSemibold);
+  [primary_binding_button_ setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
   primary_binding_button_.accessibilityTraits = UIAccessibilityTraitButton;
   primary_binding_button_.hidden = YES;
   [header_ addSubview:primary_binding_button_];
@@ -488,20 +484,18 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   header_subtitle_.minimumScaleFactor = 0.72f;
   [header_ addSubview:header_subtitle_];
   assignment_badge_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
-  assignment_badge_.backgroundColor = [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.16f];
-  [assignment_badge_ setTitleColor:[[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.98f]
-                          forState:UIControlStateNormal];
-  assignment_badge_.tintColor = [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.98f];
+  // Extra gestures, in words ("D-Pad Ring · Double Tap Forward: LS"), quieter than the binding.
+  assignment_badge_.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+  [assignment_badge_ setTitleColor:SecondaryText() forState:UIControlStateNormal];
+  assignment_badge_.tintColor = SecondaryText();
   assignment_badge_.titleLabel.adjustsFontSizeToFitWidth = YES;
-  assignment_badge_.titleLabel.minimumScaleFactor = 0.62f;
+  assignment_badge_.titleLabel.minimumScaleFactor = 0.8f;
+  assignment_badge_.titleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
   assignment_badge_.hidden = YES;
-  assignment_badge_.layer.cornerRadius = 15.0f;
-  assignment_badge_.layer.borderWidth = 0.9f;
-  assignment_badge_.layer.borderColor =
-      [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.45f].CGColor;
+  assignment_badge_.layer.cornerRadius = 22.0f;
   assignment_badge_.clipsToBounds = YES;
-  xe_apply_button_title_font(assignment_badge_, UIFontTextStyleCaption2, 10.5,
-                             UIFontWeightSemibold);
+  xe_apply_button_title_font(assignment_badge_, UIFontTextStyleFootnote, 13.0,
+                             UIFontWeightRegular);
   assignment_badge_.accessibilityTraits = UIAccessibilityTraitButton;
   assignment_badge_.showsMenuAsPrimaryAction = YES;
   [header_ addSubview:assignment_badge_];
@@ -681,40 +675,38 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
   collapse_button_.frame =
       CGRectMake(width - kRowInset - collapse_w, kHeaderTextTop, collapse_w, 44.0f);
   CGFloat top_right_x = CGRectGetMinX(collapse_button_.frame) - 8.0f;
-  NSString* assignment_title = [assignment_badge_ titleForState:UIControlStateNormal];
-  const BOOL show_assignment = !assignment_badge_.hidden && assignment_title.length > 0;
-  if (show_assignment) {
-    CGFloat assignment_max_w = MAX(88.0f, MIN(176.0f, top_right_x - kRowInset - 86.0f));
-    CGSize fit = [assignment_badge_ sizeThatFits:CGSizeMake(assignment_max_w, 44.0f)];
-    CGFloat assignment_w = MIN(MAX(std::ceil(fit.width) + 18.0f, 84.0f), assignment_max_w);
-    assignment_badge_.frame =
-        CGRectIntegral(CGRectMake(top_right_x - assignment_w, kHeaderTextTop, assignment_w, 44.0f));
-    top_right_x = CGRectGetMinX(assignment_badge_.frame) - 8.0f;
-  } else {
-    assignment_badge_.frame = CGRectZero;
-  }
+  // The binding on the left, the extra gestures filling the rest of the line. The old size and
+  // opacity summary squeezed between them only ever showed "Analog S…"; the rows below say it.
   CGFloat title_w = MAX(0.0f, top_right_x - kRowInset);
+  CGFloat left_edge = kRowInset;
   if (!primary_binding_button_.hidden) {
     CGSize fit = [primary_binding_button_ sizeThatFits:CGSizeMake(title_w, 44.0f)];
-    CGFloat binding_w = MIN(MAX(std::ceil(fit.width) + 22.0f, 64.0f), MAX(64.0f, title_w));
+    CGFloat binding_w = MIN(MAX(std::ceil(fit.width) + 28.0f, 72.0f), MAX(72.0f, title_w * 0.5f));
     primary_binding_button_.frame =
         CGRectIntegral(CGRectMake(kRowInset, kHeaderTextTop, binding_w, 44.0f));
     header_title_.hidden = YES;
     header_title_.frame = CGRectZero;
+    left_edge = CGRectGetMaxX(primary_binding_button_.frame) + 8.0f;
   } else {
     primary_binding_button_.frame = CGRectZero;
     header_title_.hidden = NO;
-    header_title_.frame = CGRectMake(kRowInset, kHeaderTextTop, MIN(title_w, 120.0f), 44.0f);
+    CGFloat name_w = MIN(title_w, 160.0f);
+    header_title_.frame = CGRectMake(kRowInset, kHeaderTextTop, name_w, 44.0f);
+    left_edge = CGRectGetMaxX(header_title_.frame) + 8.0f;
   }
-  CGFloat subtitle_x = !primary_binding_button_.hidden
-                           ? CGRectGetMaxX(primary_binding_button_.frame) + 8.0f
-                           : kRowInset;
-  if (!header_title_.hidden) {
-    subtitle_x = CGRectGetMaxX(header_title_.frame) + 8.0f;
+  NSString* assignment_title = [assignment_badge_ titleForState:UIControlStateNormal];
+  const BOOL show_assignment = !assignment_badge_.hidden && assignment_title.length > 0;
+  if (show_assignment) {
+    CGFloat assignment_max_w = MAX(0.0f, top_right_x - left_edge);
+    CGSize fit = [assignment_badge_ sizeThatFits:CGSizeMake(assignment_max_w, 44.0f)];
+    CGFloat assignment_w = MIN(std::ceil(fit.width) + 28.0f, assignment_max_w);
+    assignment_badge_.frame =
+        CGRectIntegral(CGRectMake(left_edge, kHeaderTextTop, assignment_w, 44.0f));
+  } else {
+    assignment_badge_.frame = CGRectZero;
   }
-  CGFloat subtitle_w = MAX(0.0f, top_right_x - subtitle_x);
-  header_subtitle_.frame =
-      CGRectIntegral(CGRectMake(subtitle_x, kHeaderTextTop + 13.0f, subtitle_w, 18.0f));
+  header_subtitle_.hidden = YES;
+  header_subtitle_.frame = CGRectZero;
 
   CGFloat available = MAX(0.0f, width - kRowInset * 2.0f);
   CGFloat button_side = kQuickButtonHeight;
@@ -1002,7 +994,7 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
     [parts addObject:behavior];
   }
 
-  return [parts componentsJoinedByString:@" | "];
+  return [parts componentsJoinedByString:@" · "];
 }
 
 - (IOSTouchAnalogOutput)effectiveDragOutput:(IOSTouchAnalogOutput)output

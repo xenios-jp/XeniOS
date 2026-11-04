@@ -109,7 +109,7 @@
   defaultBadgeView_ = [[UIImageView alloc] initWithFrame:CGRectZero];
   defaultBadgeView_.image = [UIImage systemImageNamed:@"star.fill"];
   defaultBadgeView_.tintColor =
-      [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.95];
+      [[XeniaTheme accent] colorWithAlphaComponent:0.95];
   defaultBadgeView_.contentMode = UIViewContentModeScaleAspectFit;
   defaultBadgeView_.hidden = YES;
   [card_view addSubview:defaultBadgeView_];
@@ -217,7 +217,7 @@
   } else if (showsCheckmark_) {
     overlayAccessoryView_.image = [UIImage systemImageNamed:@"checkmark"];
     overlayAccessoryView_.tintColor =
-        [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.95];
+        [[XeniaTheme accent] colorWithAlphaComponent:0.95];
   }
   overlayAccessoryView_.frame = CGRectMake(
       CGRectGetWidth(card_frame) - horizontal_inset - accessory_size,

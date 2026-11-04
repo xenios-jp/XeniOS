@@ -204,7 +204,7 @@ NSString* XeniaTouchBehaviorBadgeText(
   [self addSubview:label_];
 
   behavior_badge_ = [[UILabel alloc] initWithFrame:CGRectZero];
-  behavior_badge_.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.78f];
+  behavior_badge_.backgroundColor = [UIColor colorWithWhite:0.32f alpha:1.0f];
   behavior_badge_.textColor = [UIColor whiteColor];
   behavior_badge_.textAlignment = NSTextAlignmentCenter;
   behavior_badge_.numberOfLines = 1;
@@ -212,10 +212,7 @@ NSString* XeniaTouchBehaviorBadgeText(
   behavior_badge_.minimumScaleFactor = 0.45f;
   behavior_badge_.hidden = YES;
   behavior_badge_.userInteractionEnabled = NO;
-  behavior_badge_.layer.cornerRadius = 5.0f;
-  behavior_badge_.layer.borderWidth = 0.8f;
-  behavior_badge_.layer.borderColor =
-      [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.82f].CGColor;
+  behavior_badge_.layer.cornerRadius = 9.0f;
   behavior_badge_.clipsToBounds = YES;
   xe_apply_label_font(behavior_badge_, UIFontTextStyleCaption2, 6.5,
                       UIFontWeightSemibold);
@@ -277,7 +274,22 @@ NSString* XeniaTouchBehaviorBadgeText(
   NSString* label_text = xe::ui::XeniaTouchVisibleControlLabelText(control_, NO);
   label_.text = label_text;
   label_.hidden = chrome_suppressed_ || label_text.length == 0;
-  behavior_badge_.text = XeniaTouchBehaviorBadgeText(control_);
+  // A control that also does something on hold, double tap or drag carries one small mark; the
+  // inspector says what. Coded chips like "2xF:LS+1" meant nothing to players.
+  if (control_.type != xe::hid::touch::IOSTouchControlType::kLookSwipeZone &&
+      XeniaTouchBehaviorBadgeText(control_).length) {
+    UIImage* glyph = [UIImage
+        systemImageNamed:@"hand.tap.fill"
+        withConfiguration:[UIImageSymbolConfiguration
+                              configurationWithPointSize:9.0
+                                                  weight:UIImageSymbolWeightSemibold]];
+    NSTextAttachment* attachment = [NSTextAttachment
+        textAttachmentWithImage:[glyph imageWithTintColor:[UIColor whiteColor]
+                                            renderingMode:UIImageRenderingModeAlwaysOriginal]];
+    behavior_badge_.attributedText = [NSAttributedString attributedStringWithAttachment:attachment];
+  } else {
+    behavior_badge_.text = @"";
+  }
   [self updateBehaviorBadgeVisibility];
 
   if ([self isMoveDpadComboControl]) {
@@ -303,7 +315,7 @@ NSString* XeniaTouchBehaviorBadgeText(
 
 - (void)updateBehaviorBadgeVisibility {
   behavior_badge_.hidden = chrome_suppressed_ || !behavior_annotations_visible_ ||
-                           behavior_badge_.text.length == 0;
+                           behavior_badge_.attributedText.length == 0;
 }
 
 - (void)setBehaviorAnnotationsVisible:(BOOL)visible {
@@ -472,17 +484,13 @@ NSString* XeniaTouchBehaviorBadgeText(
                    centre_y - arrow_size * 0.5f, arrow_size, arrow_size);
   }
 
-  const CGFloat badge_max_width =
-      MIN(MAX(CGRectGetWidth(self.bounds) * 0.46f, 18.0f), 38.0f);
-  CGSize badge_size =
-      [behavior_badge_ sizeThatFits:CGSizeMake(badge_max_width, 14.0f)];
-  badge_size.width = MIN(std::ceil(badge_size.width) + 6.0f, badge_max_width);
-  badge_size.height = 12.0f;
-  const CGFloat badge_x =
-      MAX(2.0f, CGRectGetWidth(self.bounds) - badge_size.width - 3.0f);
-  const CGFloat badge_y = 3.0f;
-  behavior_badge_.frame =
-      CGRectIntegral(CGRectMake(badge_x, badge_y, badge_size.width, badge_size.height));
+  // The mark sits on the outline at the top-right, where the corner arc crosses 45 degrees, so it
+  // reads as part of round and capsule controls instead of floating off their bounding box.
+  const CGFloat badge_side = 18.0f;
+  const CGFloat arc_inset = corner_radius * (1.0f - (CGFloat)M_SQRT1_2);
+  behavior_badge_.frame = CGRectIntegral(
+      CGRectMake(CGRectGetWidth(self.bounds) - arc_inset - badge_side * 0.5f,
+                 arc_inset - badge_side * 0.5f, badge_side, badge_side));
 }
 
 @end

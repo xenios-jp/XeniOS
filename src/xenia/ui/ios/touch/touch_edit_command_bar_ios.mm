@@ -138,7 +138,8 @@ UIView* MakePill() {
   [command_pill_ addSubview:add_button_];
 
   done_button_ = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
-  done_button_.backgroundColor = [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.95f];
+  // The screen's one white button, as everywhere else in the app.
+  done_button_.backgroundColor = [UIColor whiteColor];
   done_button_.layer.cornerRadius = kPillHeight * 0.5f;
   xe_apply_button_title_font(done_button_, UIFontTextStyleSubheadline, 17.0, UIFontWeightSemibold);
   [done_button_ setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
@@ -172,7 +173,7 @@ UIView* MakePill() {
 
 - (void)applyIcon:(UIButton*)button active:(BOOL)active {
   if (active) {
-    button.backgroundColor = [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.95f];
+    button.backgroundColor = [[XeniaTheme accent] colorWithAlphaComponent:0.95f];
     button.tintColor = [UIColor blackColor];
   } else {
     button.backgroundColor = [UIColor clearColor];

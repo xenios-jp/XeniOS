@@ -123,3 +123,28 @@ UIButton* xe_make_ios_sheet_close_button(id target, SEL action) {
   return button;
 }
 
+UIImage* xe_profile_avatar_image(NSString* gamertag, BOOL signed_in, CGFloat diameter) {
+  NSMutableString* initials = [NSMutableString string];
+  for (NSString* word in [gamertag componentsSeparatedByCharactersInSet:
+                                       [NSCharacterSet whitespaceCharacterSet]]) {
+    if (word.length && initials.length < 2) {
+      [initials appendString:[[word substringToIndex:1] uppercaseString]];
+    }
+  }
+  const CGSize size = CGSizeMake(diameter, diameter);
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:size] autorelease];
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
+    UIColor* fill = signed_in ? [XeniaTheme accent] : [UIColor colorWithWhite:0.25 alpha:1.0];
+    [fill setFill];
+    [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, size.width, size.height)] fill];
+    NSDictionary* attributes = @{
+      NSFontAttributeName : [UIFont systemFontOfSize:diameter * 0.38 weight:UIFontWeightBold],
+      NSForegroundColorAttributeName : signed_in ? [XeniaTheme accentFg] : [UIColor whiteColor],
+    };
+    const CGSize text = [initials sizeWithAttributes:attributes];
+    [initials drawAtPoint:CGPointMake((size.width - text.width) / 2.0,
+                                      (size.height - text.height) / 2.0)
+           withAttributes:attributes];
+  }];
+}

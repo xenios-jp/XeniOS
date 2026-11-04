@@ -224,13 +224,13 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   CGContextStrokeEllipseInRect(
       context, CGRectMake(center.x - radius, center.y - radius, radius * 2.0, radius * 2.0));
 
-  [[[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.28] setFill];
+  [[[XeniaTheme accent] colorWithAlphaComponent:0.28] setFill];
   CGFloat deadzone_radius = radius * deadzone_;
   CGContextFillEllipseInRect(context,
                              CGRectMake(center.x - deadzone_radius, center.y - deadzone_radius,
                                         deadzone_radius * 2.0, deadzone_radius * 2.0));
 
-  [[[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.90] setStroke];
+  [[[XeniaTheme accent] colorWithAlphaComponent:0.90] setStroke];
   CGContextSetLineWidth(context, 2.0);
   CGFloat active_radius = radius * activation_radius_;
   CGContextStrokeEllipseInRect(
@@ -257,7 +257,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
     fast_endpoint.y = center.y + fast_dy * fast_scale;
   }
   if (tuning_.acceleration_scale > 0.001f) {
-    [[[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.56] setStroke];
+    [[[XeniaTheme accent] colorWithAlphaComponent:0.56] setStroke];
     CGContextSetLineWidth(context, 4.0);
     CGContextMoveToPoint(context, center.x, center.y);
     CGContextAddLineToPoint(context, fast_endpoint.x, fast_endpoint.y);
@@ -307,7 +307,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   }
   CGContextStrokePath(context);
   if (tuning_.acceleration_scale > 0.001f) {
-    [[[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.72] setStroke];
+    [[[XeniaTheme accent] colorWithAlphaComponent:0.72] setStroke];
     CGContextSetLineWidth(context, 1.5);
     CGContextBeginPath(context);
     const CGFloat dash_pattern[] = {4.0, 4.0};
@@ -428,8 +428,8 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   tuning_section_control_.selectedSegmentIndex = active_section_;
   tuning_section_control_.backgroundColor =
       [[UIColor whiteColor] colorWithAlphaComponent:[XeniaTheme opacitySubtle]];
-  tuning_section_control_.tintColor = [XeniaTheme touchTintAmber];
-  tuning_section_control_.selectedSegmentTintColor = [XeniaTheme touchTintAmber];
+  tuning_section_control_.tintColor = [XeniaTheme accent];
+  tuning_section_control_.selectedSegmentTintColor = [XeniaTheme accent];
   [tuning_section_control_ setTitleTextAttributes:@{
     NSForegroundColorAttributeName : [[UIColor whiteColor] colorWithAlphaComponent:0.86]
   }
@@ -627,7 +627,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   slider.minimumValue = min_value;
   slider.maximumValue = max_value;
   slider.continuous = YES;
-  slider.minimumTrackTintColor = [XeniaTheme touchTintAmber];
+  slider.minimumTrackTintColor = [XeniaTheme accent];
   slider.maximumTrackTintColor = [[UIColor whiteColor] colorWithAlphaComponent:0.18];
   [slider addTarget:self
                 action:@selector(sliderChanged:)
@@ -653,7 +653,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   [row addSubview:title_label];
 
   UISwitch* toggle = [[[UISwitch alloc] initWithFrame:CGRectZero] autorelease];
-  toggle.onTintColor = [XeniaTheme touchTintAmber];
+  toggle.onTintColor = [XeniaTheme accent];
   toggle.tag = field == TouchAnalogTuningField::kInvertX ? 9101 : 9102;
   [toggle addTarget:self
                 action:@selector(switchChanged:)
@@ -1018,7 +1018,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   edit_snap_guides_layer_.hidden = YES;
   edit_snap_guides_layer_.fillColor = nil;
   edit_snap_guides_layer_.strokeColor =
-      [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.96].CGColor;
+      [[XeniaTheme accent] colorWithAlphaComponent:0.96].CGColor;
   edit_snap_guides_layer_.lineWidth = kEditSnapGuideLineWidth;
   edit_snap_guides_layer_.lineDashPattern = @[ @6.0f, @5.0f ];
   edit_snap_guides_layer_.lineCap = kCALineCapRound;
@@ -1028,7 +1028,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   edit_snap_feedback_label_.alpha = 0.0;
   edit_snap_feedback_label_.padding = UIEdgeInsetsMake(4.0, 9.0, 4.0, 9.0);
   edit_snap_feedback_label_.backgroundColor =
-      [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.95];
+      [[XeniaTheme accent] colorWithAlphaComponent:0.95];
   edit_snap_feedback_label_.textColor = [UIColor blackColor];
   edit_snap_feedback_label_.layer.cornerRadius = 9.0;
   edit_snap_feedback_label_.clipsToBounds = YES;
@@ -1060,7 +1060,7 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
 
   edit_resize_handle_ = [[UIView alloc] initWithFrame:CGRectZero];
   edit_resize_handle_.hidden = YES;
-  edit_resize_handle_.backgroundColor = [[XeniaTheme touchTintAmber] colorWithAlphaComponent:0.92];
+  edit_resize_handle_.backgroundColor = [[XeniaTheme accent] colorWithAlphaComponent:0.92];
   // Resize handle is a 28pt-diameter visual element; 14pt = 28/2 keeps the
   // circle a true circle even when the handle is offset off-corner.
   edit_resize_handle_.layer.cornerRadius = 14.0;
