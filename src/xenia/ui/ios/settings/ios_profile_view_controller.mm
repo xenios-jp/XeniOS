@@ -270,6 +270,12 @@ UIImage* ProfileAvatar(NSString* gamertag, BOOL signed_in) {
   button.baseBackgroundColor = [UIColor whiteColor];
   button.baseForegroundColor = [UIColor blackColor];
   button.contentInsets = NSDirectionalEdgeInsetsMake(10.0, 22.0, 10.0, 22.0);
+  button.titleTextAttributesTransformer =
+      ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
+        NSMutableDictionary* out = [[in mutableCopy] autorelease];
+        out[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        return out;
+      };
   config.button = button;
   __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
   config.buttonProperties.primaryAction =

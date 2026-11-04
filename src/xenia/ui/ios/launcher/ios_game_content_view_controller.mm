@@ -39,7 +39,7 @@
     title_id_ = title_id;
     game_title_ = [title copy];
     host_ = host;
-    self.title = NSLocalizedString(@"Manage Content", @"game content view controller: title");
+    self.title = NSLocalizedString(@"Updates & Add-ons", @"game content view controller: title");
   }
   return self;
 }
@@ -57,6 +57,56 @@
       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                target:self
              action:@selector(doneTapped:)] autorelease];
+  UIBarButtonItem* add = [[[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+                           target:self
+                           action:@selector(addTapped:)] autorelease];
+  add.accessibilityLabel =
+      NSLocalizedString(@"Add from Files", @"game content view controller: add button");
+  self.navigationItem.rightBarButtonItem = add;
+}
+
+- (void)addTapped:(id)__unused sender {
+  [self presentAddContentPicker];
+}
+
+// Nothing installed: one centred message and the screen's one primary button.
+- (void)updateContentUnavailableConfigurationUsingState:(UIContentUnavailableConfigurationState*)
+                                                            __unused state {
+  if (!installed_content_.empty() || content_reload_generation_ == 0) {
+    self.contentUnavailableConfiguration = nil;
+    return;
+  }
+  UIContentUnavailableConfiguration* empty = [UIContentUnavailableConfiguration emptyConfiguration];
+  empty.image = [UIImage systemImageNamed:@"square.stack.3d.up"];
+  empty.text = NSLocalizedString(@"No Updates or Add-ons",
+                                 @"game content view controller: empty title");
+  empty.secondaryText =
+      game_title_.length
+          ? [NSString stringWithFormat:NSLocalizedString(
+                                           @"Add title updates and DLC for %@ from Files.",
+                                           @"game content view controller: empty detail"),
+                                       game_title_]
+          : NSLocalizedString(@"Add title updates and DLC for this game from Files.",
+                              @"game content view controller: empty detail");
+  UIButtonConfiguration* button = [UIButtonConfiguration filledButtonConfiguration];
+  button.title = NSLocalizedString(@"Add from Files", @"game content view controller: add button");
+  button.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  button.baseBackgroundColor = [UIColor whiteColor];
+  button.baseForegroundColor = [UIColor blackColor];
+  button.contentInsets = NSDirectionalEdgeInsetsMake(10.0, 22.0, 10.0, 22.0);
+  button.titleTextAttributesTransformer =
+      ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
+        NSMutableDictionary* out = [[in mutableCopy] autorelease];
+        out[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        return out;
+      };
+  empty.button = button;
+  __unsafe_unretained XeniaGameContentViewController* unsafe_self = self;
+  empty.buttonProperties.primaryAction = [UIAction actionWithHandler:^(__unused UIAction* action) {
+    [unsafe_self presentAddContentPicker];
+  }];
+  self.contentUnavailableConfiguration = empty;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -86,6 +136,7 @@
       }
       installed_content_ = std::move(content);
       [self.tableView reloadData];
+      [self setNeedsUpdateContentUnavailableConfiguration];
     });
   });
 }
@@ -108,86 +159,23 @@
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 2;
+  return installed_content_.empty() ? 0 : 1;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
-  if (section == 0) {
-    return 1;
-  }
-  return installed_content_.empty() ? 1 : static_cast<NSInteger>(installed_content_.size());
+- (NSInteger)tableView:(UITableView* __unused)tableView
+    numberOfRowsInSection:(NSInteger __unused)section {
+  return static_cast<NSInteger>(installed_content_.size());
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  if (section == 0) {
-    return NSLocalizedString(@"Actions", @"game content view controller: user-visible text");
-  }
-  return NSLocalizedString(@"Installed Content",
-                           @"game content view controller: user-visible text");
-}
-
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  if (section == 0) {
-    if (game_title_.length > 0) {
-      return [NSString
-          stringWithFormat:NSLocalizedString(@"Install title updates or DLC packages for %@.",
-                                             @"game content view controller: user-visible text"),
-                           game_title_];
-    }
-    return NSLocalizedString(@"Install title updates or DLC packages for this game.",
-                             @"game content view controller: user-visible text");
-  }
-  if (installed_content_.empty()) {
-    return NSLocalizedString(@"No title updates or DLC are installed for this title.",
-                             @"game content view controller: user-visible text");
-  }
+- (NSString*)tableView:(UITableView* __unused)tableView
+    titleForFooterInSection:(NSInteger __unused)section {
   return NSLocalizedString(
-      @"Linked DLC stays in its external folder. Swipe left on an installed entry to delete it.",
+      @"Swipe left on an item to delete it. Linked DLC stays in its folder.",
       @"game content view controller: user-visible text");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (indexPath.section == 0) {
-    static NSString* const kActionCellIdentifier = @"XeniaGameContentActionCell";
-    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kActionCellIdentifier];
-    if (!cell) {
-      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                     reuseIdentifier:kActionCellIdentifier] autorelease];
-    }
-    cell.textLabel.text =
-        NSLocalizedString(@"Add Content", @"game content view controller: label text");
-    cell.textLabel.textColor = self.view.tintColor;
-    cell.detailTextLabel.text =
-        NSLocalizedString(@"Import a title update or DLC package for this game. Large "
-                          @"packages can be linked from a Link Folder instead of copied.",
-                          @"game content view controller: detail text");
-    cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-    cell.imageView.image = [UIImage systemImageNamed:@"plus.circle.fill"];
-    cell.imageView.tintColor = self.view.tintColor;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    return cell;
-  }
-
-  if (installed_content_.empty()) {
-    static NSString* const kEmptyCellIdentifier = @"XeniaGameContentEmptyCell";
-    UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kEmptyCellIdentifier];
-    if (!cell) {
-      cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                     reuseIdentifier:kEmptyCellIdentifier] autorelease];
-    }
-    cell.textLabel.text =
-        NSLocalizedString(@"No content installed", @"game content view controller: label text");
-    cell.detailTextLabel.text = NSLocalizedString(@"Add a title update or DLC package from Files.",
-                                                  @"game content view controller: detail text");
-    cell.textLabel.textColor = [XeniaTheme textMuted];
-    cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    return cell;
-  }
-
   static NSString* const kContentCellIdentifier = @"XeniaGameContentCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kContentCellIdentifier];
   if (!cell) {
@@ -200,7 +188,7 @@
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text =
       entry.linked ? [NSString stringWithFormat:NSLocalizedString(
-                                                    @"%@ - Linked",
+                                                    @"%@ · Linked",
                                                     @"game content view controller: detail text"),
                                                 xe_installed_content_kind_label(entry.kind)]
                    : xe_installed_content_kind_label(entry.kind);
@@ -211,13 +199,13 @@
 }
 
 - (BOOL)tableView:(UITableView* __unused)tableView canEditRowAtIndexPath:(NSIndexPath*)indexPath {
-  return indexPath.section == 1 && !installed_content_.empty();
+  return indexPath.section == 0 && !installed_content_.empty();
 }
 
 - (void)tableView:(UITableView*)tableView
     commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
      forRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (editingStyle != UITableViewCellEditingStyleDelete || indexPath.section != 1 ||
+  if (editingStyle != UITableViewCellEditingStyleDelete || indexPath.section != 0 ||
       installed_content_.empty()) {
     return;
   }
@@ -292,9 +280,6 @@
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section == 0) {
-    [self presentAddContentPicker];
-  }
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController* __unused)controller

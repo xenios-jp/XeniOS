@@ -101,6 +101,8 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   void (^open_stikdebug_)(void);
   UIView* other_ways_group_;
   UIButton* other_ways_button_;
+  UIStackView* content_stack_;
+  UIStackView* button_stack_;
 }
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
@@ -111,8 +113,16 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
     open_stikdebug_ = [openStikDebug copy];
     self.modalPresentationStyle = UIModalPresentationPageSheet;
     UISheetPresentationController* sheet = self.sheetPresentationController;
+    // Opens tall enough for all three steps and both buttons, never cut off mid-list.
+    __unsafe_unretained XeniaIOSJITSheetViewController* unsafe_self = self;
     sheet.detents = @[
-      [UISheetPresentationControllerDetent mediumDetent],
+      [UISheetPresentationControllerDetent
+          customDetentWithIdentifier:@"xe.jit.fit"
+                            resolver:^CGFloat(
+                                id<UISheetPresentationControllerDetentResolutionContext> context) {
+                              return MIN([unsafe_self fittingSheetHeight],
+                                         context.maximumDetentValue);
+                            }],
       [UISheetPresentationControllerDetent largeDetent],
     ];
     sheet.prefersGrabberVisible = YES;
@@ -120,7 +130,30 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   return self;
 }
 
+- (CGFloat)fittingSheetHeight {
+  [self loadViewIfNeeded];
+  CGFloat width = CGRectGetWidth(self.view.readableContentGuide.layoutFrame) - 16.0;
+  if (width <= 0.0) {
+    width = MIN(CGRectGetWidth(UIScreen.mainScreen.bounds), 672.0) - 48.0;
+  }
+  const CGSize target = CGSizeMake(width, UILayoutFittingCompressedSize.height);
+  const CGFloat content =
+      [content_stack_ systemLayoutSizeFittingSize:target
+                    withHorizontalFittingPriority:UILayoutPriorityRequired
+                          verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+          .height;
+  const CGFloat buttons =
+      [button_stack_ systemLayoutSizeFittingSize:target
+                   withHorizontalFittingPriority:UILayoutPriorityRequired
+                         verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+          .height;
+  // The scroll view's 40 + 20 padding, 8 above the buttons and 8 under them.
+  return 40.0 + content + 20.0 + 8.0 + buttons + 8.0;
+}
+
 - (void)dealloc {
+  [content_stack_ release];
+  [button_stack_ release];
   [game_title_ release];
   [open_stikdebug_ release];
   [other_ways_group_ release];
@@ -169,7 +202,12 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
       game_title_.length
           ? [NSString stringWithFormat:NSLocalizedString(@"You come back here and %@ starts.",
                                                          @"JIT sheet: step 3; %@ is the game"),
-                                       game_title_]
+                                       // A short name never breaks across lines.
+                                       game_title_.length <= 24
+                                           ? [game_title_
+                                                 stringByReplacingOccurrencesOfString:@" "
+                                                                           withString:@"\u00A0"]
+                                           : game_title_]
           : NSLocalizedString(@"You come back here and pick a game.",
                               @"JIT sheet: step 3 without a game");
   UIView* steps = NewGroup(@[
@@ -203,6 +241,7 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   [stack setCustomSpacing:26.0 afterView:summary];
   [stack setCustomSpacing:16.0 afterView:steps];
   stack.translatesAutoresizingMaskIntoConstraints = NO;
+  content_stack_ = [stack retain];
 
   // The screen's one primary button, white on dark; the tertiary one is accent text.
   UIButtonConfiguration* primary_config = [UIButtonConfiguration filledButtonConfiguration];
@@ -244,6 +283,7 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   buttons.alignment = UIStackViewAlignmentFill;
   buttons.spacing = 4.0;
   buttons.translatesAutoresizingMaskIntoConstraints = NO;
+  button_stack_ = [buttons retain];
 
   UIScrollView* scroll = [[[UIScrollView alloc] init] autorelease];
   scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -292,6 +332,9 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
                      other_ways_button_.hidden = YES;
                      [self.view layoutIfNeeded];
                    }];
+  [self.sheetPresentationController animateChanges:^{
+    [self.sheetPresentationController invalidateDetents];
+  }];
   UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, other_ways_group_);
 }
 

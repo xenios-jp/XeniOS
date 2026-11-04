@@ -540,6 +540,11 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
   content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
       0.0, MAX(self.view.safeAreaInsets.left, kMargin) - 4.0, 0.0, 0.0);
   cell.contentConfiguration = content;
+  // Separators go between rows only, never under the last one.
+  const BOOL last = indexPath.row == [tableView numberOfRowsInSection:indexPath.section] - 1;
+  cell.separatorInset =
+      last ? UIEdgeInsetsMake(0.0, CGRectGetWidth(tableView.bounds) + 1000.0, 0.0, 0.0)
+           : tableView.separatorInset;
   return cell;
 }
 
