@@ -37,10 +37,10 @@
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
-/* online view controller: summary row detail, after \"3 Players Online\"; %1$ld players, %2$ld games */
+/* online view controller: summary row detail, after \"3 Devices Online\"; %1$ld players, %2$ld games */
 "%1$ld of them are in %2$ld games." = "%1$ld of them are in %2$ld games.";
 
-/* online view controller: summary row detail, after \"3 Players Online\"; %1$ld and %2$ld are how many */
+/* online view controller: summary row detail, after \"3 Devices Online\"; %1$ld and %2$ld are how many */
 "%1$ld of them are in public lobbies, %2$ld in private rooms." = "%1$ld of them are in public lobbies, %2$ld in private rooms.";
 
 /* In-game menu: System Link card; %1$lu and %2$lu are counts */
@@ -76,10 +76,13 @@
 /* system software view controller: install progress */
 "%d%% done" = "%d%% done";
 
-/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+/* online view controller: summary row; %ld is how many */
+"%ld Devices Online" = "%ld Devices Online";
+
+/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
 "%ld of them are in 1 game." = "%ld of them are in 1 game.";
 
-/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
 "%ld of them are in private rooms." = "%ld of them are in private rooms.";
 
 /* Game library: Online button, with how many players are in public System Link lobbies */
@@ -96,9 +99,6 @@
 
 /* system link status view controller: footer; %ld is how many */
 "%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed." = "%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed.";
-
-/* online view controller: summary row; %ld is how many */
-"%ld Players Online" = "%ld Players Online";
 
 /* Game library, VoiceOver: players in the game's public System Link lobby */
 "%ld players online" = "%ld players online";
@@ -136,13 +136,16 @@
 /* zar conversion coordinator: user-visible text */
 "...and %lu more" = "...and %lu more";
 
+/* online view controller: summary row */
+"1 Device Online" = "1 Device Online";
+
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
 
-/* online view controller: summary row detail, after \"3 Players Online\" */
+/* online view controller: summary row detail, after \"3 Devices Online\" */
 "1 of them is in a game." = "1 of them is in a game.";
 
-/* online view controller: summary row detail, after \"3 Players Online\" */
+/* online view controller: summary row detail, after \"3 Devices Online\" */
 "1 of them is in a private room." = "1 of them is in a private room.";
 
 /* In-game menu: System Link card */
@@ -156,9 +159,6 @@
 
 /* system link view controller: players in a game's public lobby */
 "1 player" = "1 player";
-
-/* online view controller: summary row */
-"1 Player Online" = "1 Player Online";
 
 /* Game library, VoiceOver: one player in the game's public System Link lobby */
 "1 player online" = "1 player online";
@@ -1577,10 +1577,10 @@
 /* document import coordinator: title */
 "Importing" = "Importing";
 
-/* online view controller: summary row detail, after \"3 Players Online\"; %ld is how many */
+/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
 "In %ld games." = "In %ld games.";
 
-/* online view controller: summary row detail, after \"3 Players Online\" */
+/* online view controller: summary row detail, after \"3 Devices Online\" */
 "In 1 game." = "In 1 game.";
 
 /* JIT sheet: other ways to enable JIT */
@@ -2057,7 +2057,7 @@
 /* game content view controller: empty title */
 "No Updates or Add-ons" = "No Updates or Add-ons";
 
-/* online view controller: summary row detail, after \"3 Players Online\" */
+/* online view controller: summary row detail, after \"3 Devices Online\" */
 "Nobody is in a game yet." = "Nobody is in a game yet.";
 
 /* system link view controller: row */
