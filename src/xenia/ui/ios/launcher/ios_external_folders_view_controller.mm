@@ -50,13 +50,8 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 64.0;
 
-  self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-                           target:self
-                           action:@selector(addFolderTapped:)] autorelease];
-
   // Presented modally as the root of its own navigation controller (from the
-  // launcher's Add-to-Library sheet) we need a Done button; pushed onto an
+  // launcher's Add-to-Library sheet) we need a Close button; pushed onto an
   // existing stack (from Settings) the back button already handles dismissal.
   if (self.navigationController.viewControllers.firstObject == self) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
