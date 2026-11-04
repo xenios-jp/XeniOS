@@ -79,7 +79,9 @@ class LobbySocket {
   struct Events {
     std::function<void()> opened;
     std::function<void(std::string text)> message;
-    // Also when it couldn't connect. Nothing follows it.
+    // Also when it couldn't connect. Nothing follows it. When the server
+    // answered with an HTTP error instead of the connection, |reason| is
+    // "http <status>".
     std::function<void(std::string reason)> closed;
   };
   virtual ~LobbySocket() = default;

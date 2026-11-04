@@ -286,7 +286,7 @@ class RelayTransport final : public PacketTransport {
             last_close_ = event.text;
           }
           CloseLobby();
-          client_.LobbyClosed(now);
+          client_.LobbyClosed(now, event.text.starts_with("http "));
           return;
       }
     }

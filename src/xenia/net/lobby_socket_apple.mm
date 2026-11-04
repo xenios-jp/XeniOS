@@ -73,7 +73,16 @@ using xe::net::secure::LobbySocket;
   closed(reason.UTF8String);
 }
 
-- (void)finishWithError:(NSError*)error {
+- (void)finishWithError:(NSError*)error task:(NSURLSessionTask*)task {
+  // The server answered with an HTTP error instead of upgrading: the lobby, or
+  // Cloudflare in front of it (such as a 1027 page at the daily limit).
+  if ([task.response isKindOfClass:[NSHTTPURLResponse class]]) {
+    NSInteger status = ((NSHTTPURLResponse*)task.response).statusCode;
+    if (status >= 400) {
+      [self finish:[NSString stringWithFormat:@"http %ld", (long)status]];
+      return;
+    }
+  }
   [self finish:[NSString stringWithFormat:@"%@ %ld", error.domain, (long)error.code]];
 }
 
@@ -81,7 +90,7 @@ using xe::net::secure::LobbySocket;
   [task
       receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage* message, NSError* error) {
         if (error) {
-          [self finishWithError:error];
+          [self finishWithError:error task:task];
           return;
         }
         if (message.type == NSURLSessionWebSocketMessageTypeString && message.string) {
@@ -113,10 +122,10 @@ using xe::net::secure::LobbySocket;
 }
 
 - (void)URLSession:(NSURLSession* __unused)session
-                    task:(NSURLSessionTask* __unused)task
+                    task:(NSURLSessionTask*)task
     didCompleteWithError:(NSError*)error {
   if (error) {
-    [self finishWithError:error];
+    [self finishWithError:error task:task];
   } else {
     [self finish:@"ended"];
   }

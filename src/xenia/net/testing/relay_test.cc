@@ -1600,6 +1600,41 @@ TEST_CASE("Relay players wait for a welcome only so long", "[relay]") {
   CHECK(!rejected.LobbyStale(now + 30000));
 }
 
+TEST_CASE("Relay players back off from a lobby that turns them away",
+          "[relay]") {
+  RelayClient client(kMacA, Config());
+  Outbox out;
+  uint64_t now = 100000;
+  // Turned away again and again: 10 seconds, twice as long each time in a
+  // row, and at most 5 minutes.
+  for (uint64_t wait : {10000ull, 20000ull, 40000ull, 80000ull, 160000ull,
+                        300000ull, 300000ull}) {
+    client.LobbyConnecting(now);
+    client.LobbyOpened(now, out);
+    client.LobbyMessage(R"({"t":"reject","reason":"full"})", now, out);
+    client.LobbyClosed(now);
+    CHECK(!client.WantsLobby(now + wait - 1));
+    CHECK(client.WantsLobby(now + wait));
+    now += wait;
+  }
+
+  // A welcome starts over, and a dropped connection is tried again soon.
+  JoinRoom(client, now);
+  client.LobbyClosed(now);
+  CHECK(client.WantsLobby(now + 1000));
+
+  // An HTTP error instead of the connection (the lobby is out of its daily
+  // quota) backs off the same way.
+  now += 1000;
+  for (uint64_t wait : {10000ull, 20000ull, 40000ull}) {
+    client.LobbyConnecting(now);
+    client.LobbyClosed(now, true);
+    CHECK(!client.WantsLobby(now + wait - 1));
+    CHECK(client.WantsLobby(now + wait));
+    now += wait;
+  }
+}
+
 TEST_CASE("Relay players rejoining their own room are reconnecting",
           "[relay]") {
   constexpr std::string_view kDuplicate =

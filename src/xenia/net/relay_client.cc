@@ -304,6 +304,7 @@ void RelayClient::OnWelcome(uint64_t room_secret, std::optional<IceServers> ice,
   last_joined_ms_ = now_ms;
   rejected_ = false;
   failures_ = 0;
+  refusals_ = 0;
   down_since_ms_.reset();
   if (ice) {
     // An allocation that still works keeps its credentials until they're
@@ -365,7 +366,7 @@ void RelayClient::PermitRelays(uint64_t now_ms, Outbox& out) {
   turn_->Permit(relays, now_ms, out.datagrams);
 }
 
-void RelayClient::LobbyClosed(uint64_t now_ms) {
+void RelayClient::LobbyClosed(uint64_t now_ms, bool refused) {
   lobby_ = Lobby::kClosed;
   if (joined_) {
     last_joined_ms_ = now_ms;
@@ -374,11 +375,18 @@ void RelayClient::LobbyClosed(uint64_t now_ms) {
   if (!down_since_ms_) {
     down_since_ms_ = now_ms;
   }
-  next_connect_ms_ =
-      now_ms + (rejected_
-                    ? (Reconnecting(now_ms) ? kRejoinRetryMs : kRejectRetryMs)
-                    : std::min<uint64_t>(kMaxBackoffMs,
-                                         1000ull << std::min(failures_, 4u)));
+  uint64_t wait_ms;
+  if (rejected_ && Reconnecting(now_ms)) {
+    wait_ms = kRejoinRetryMs;
+  } else if (rejected_ || refused) {
+    wait_ms = std::min<uint64_t>(kMaxRefusedBackoffMs,
+                                 kRejectRetryMs << std::min(refusals_, 5u));
+    ++refusals_;
+  } else {
+    wait_ms =
+        std::min<uint64_t>(kMaxBackoffMs, 1000ull << std::min(failures_, 4u));
+  }
+  next_connect_ms_ = now_ms + wait_ms;
   ++failures_;
   UpdateStatus(now_ms);
 }

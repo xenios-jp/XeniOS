@@ -104,7 +104,9 @@ class RelayClient {
   void LobbyConnecting(uint64_t now_ms);
   void LobbyOpened(uint64_t now_ms, Outbox& out);
   void LobbyMessage(std::string_view text, uint64_t now_ms, Outbox& out);
-  void LobbyClosed(uint64_t now_ms);
+  // |refused|: the lobby answered with an HTTP error instead of the connection,
+  // as it does while it's overloaded or out of its daily quota.
+  void LobbyClosed(uint64_t now_ms, bool refused = false);
   // An open lobby connection that has gone quiet, to be closed.
   bool LobbyStale(uint64_t now_ms) const;
 
@@ -147,7 +149,11 @@ class RelayClient {
  private:
   static constexpr uint64_t kLobbyPingMs = 20000;
   static constexpr uint64_t kLobbyLostMs = 60000;
+  // A player turned away, or refused, tries again after this long, twice as
+  // long each time in a row, up to kMaxRefusedBackoffMs, so a lobby at its
+  // limits isn't kept there by retries.
   static constexpr uint64_t kRejectRetryMs = 10000;
+  static constexpr uint64_t kMaxRefusedBackoffMs = 300000;
   // The lobby drops a connection that went quiet after this long, so a
   // duplicate this soon after leaving is this player's own.
   static constexpr uint64_t kRejoinGraceMs = 70000;
@@ -228,6 +234,8 @@ class RelayClient {
   Lobby lobby_ = Lobby::kClosed;
   uint64_t next_connect_ms_ = 0;
   uint32_t failures_ = 0;
+  // Connections in a row that were turned away or refused.
+  uint32_t refusals_ = 0;
   std::optional<uint64_t> down_since_ms_;
   uint64_t lobby_heard_ms_ = 0;
   uint64_t join_sent_ms_ = 0;
