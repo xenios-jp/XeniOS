@@ -1247,7 +1247,15 @@ bool SimplificationPass::SimplifyBitArith(hir::HIRBuilder* builder) {
     while (i) {
       // vector types use the same opcodes as scalar ones for AND/OR/XOR! we
       // don't handle these in our simplifications, so skip
-      if (i->AllScalarIntegral()) {
+      if (i->dest && i->dest->type == VEC128_TYPE &&
+          (i->opcode->num == OPCODE_OR || i->opcode->num == OPCODE_AND) &&
+          i->src1.value == i->src2.value) {
+        // vor/vand of a register with itself (vmr, and vnor's first half).
+        auto value = i->src1.value;
+        i->Replace(&OPCODE_ASSIGN_info, 0);
+        i->set_src1(value);
+        result = true;
+      } else if (i->AllScalarIntegral()) {
         Opcode iop = i->opcode->num;
 
         if (iop == OPCODE_OR) {
