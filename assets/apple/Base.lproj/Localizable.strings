@@ -3051,7 +3051,8 @@
 /* Alert title: a game or link failed */
 "Something Went Wrong" = "Something Went Wrong";
 
-/* launcher overlay view: sort menu button */
+/* launcher overlay view: sort menu button
+   launcher overlay view: sort sheet title */
 "Sort" = "Sort";
 
 /* launcher overlay view: sort menu */

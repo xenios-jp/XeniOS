@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <vector>
 
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
@@ -21,10 +22,16 @@
 namespace {
 
 using IOSFocusNodeId = xe::ui::apple::FocusNodeId;
-static constexpr IOSFocusNodeId kLauncherFocusSettings = 1;
-static constexpr IOSFocusNodeId kLauncherFocusProfile = 2;
-static constexpr IOSFocusNodeId kLauncherFocusImport = 3;
-static constexpr IOSFocusNodeId kLauncherFocusLibrary = 4;
+// The Library's nodes are its focus targets, so a node is the target the overlay draws.
+static constexpr IOSFocusNodeId kLauncherFocusSearch = XeniaIOSLauncherFocusTargetSearch;
+static constexpr IOSFocusNodeId kLauncherFocusSort = XeniaIOSLauncherFocusTargetSort;
+static constexpr IOSFocusNodeId kLauncherFocusOnline = XeniaIOSLauncherFocusTargetOnline;
+static constexpr IOSFocusNodeId kLauncherFocusImport = XeniaIOSLauncherFocusTargetImport;
+static constexpr IOSFocusNodeId kLauncherFocusSettings = XeniaIOSLauncherFocusTargetSettings;
+static constexpr IOSFocusNodeId kLauncherFocusProfile = XeniaIOSLauncherFocusTargetProfile;
+static constexpr IOSFocusNodeId kLauncherFocusHeroPlay = XeniaIOSLauncherFocusTargetHeroPlay;
+static constexpr IOSFocusNodeId kLauncherFocusHeroMore = XeniaIOSLauncherFocusTargetHeroMore;
+static constexpr IOSFocusNodeId kLauncherFocusLibrary = XeniaIOSLauncherFocusTargetLibrary;
 static constexpr IOSFocusNodeId kInGameFocusResume = 101;
 static constexpr IOSFocusNodeId kInGameFocusEdit = 102;
 static constexpr IOSFocusNodeId kInGameFocusAchievements = 103;
@@ -175,6 +182,23 @@ UIControl* RowControlOfClass(UITableViewCell* cell, Class control_class) {
 // show a selection, and a tap on a row clears it.
 constexpr NSInteger kControllerCursorRingTag = 0x58430001;
 
+// Round the whole row: from its content to where its divider ends, so the value and chevron on the
+// trailing side are inside the ring.
+CGRect CursorRingFrame(UITableView* table_view, NSIndexPath* path) {
+  UITableViewCell* cell = [table_view cellForRowAtIndexPath:path];
+  CGRect frame = [table_view rectForRowAtIndexPath:path];
+  if (cell) {
+    const CGRect content = [cell.contentView convertRect:cell.contentView.bounds
+                                                  toView:table_view];
+    const CGRect row = [cell convertRect:cell.bounds toView:table_view];
+    const CGFloat right = MAX(CGRectGetMaxX(content),
+                              CGRectGetMaxX(row) - table_view.separatorInset.right);
+    frame = CGRectMake(CGRectGetMinX(content), CGRectGetMinY(content),
+                       right - CGRectGetMinX(content), CGRectGetHeight(content));
+  }
+  return CGRectInset(frame, 2.0, 1.0);
+}
+
 void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
   UIView* ring = [table_view viewWithTag:kControllerCursorRingTag];
   if (!ring) {
@@ -187,13 +211,7 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
     [table_view addSubview:ring];
   }
   ring.layer.borderColor = [XeniaTheme accent].CGColor;
-  UITableViewCell* cell = [table_view cellForRowAtIndexPath:path];
-  CGRect frame = [table_view rectForRowAtIndexPath:path];
-  if (cell) {
-    // The visible card of an inset grouped row is its content view's width.
-    frame = [cell.contentView convertRect:cell.contentView.bounds toView:table_view];
-  }
-  ring.frame = CGRectInset(frame, 2.0, 1.0);
+  ring.frame = CursorRingFrame(table_view, path);
   ring.hidden = NO;
   [table_view bringSubviewToFront:ring];
 }
@@ -210,12 +228,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
     ring.hidden = YES;
     return;
   }
-  UITableViewCell* cell = [table_view cellForRowAtIndexPath:path];
-  CGRect frame = [table_view rectForRowAtIndexPath:path];
-  if (cell) {
-    frame = [cell.contentView convertRect:cell.contentView.bounds toView:table_view];
-  }
-  frame = CGRectInset(frame, 2.0, 1.0);
+  const CGRect frame = CursorRingFrame(table_view, path);
   if (!CGRectEqualToRect(ring.frame, frame)) {
     ring.frame = frame;
   }
@@ -381,6 +394,20 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   [self applyInGameMenuFocusVisuals];
 }
 
+// The header's row, left to right, as it is laid out now: beside the art, Search and Sort lead it;
+// upright they sit in their own row under Continue Playing.
+- (std::vector<IOSFocusNodeId>)launcherHeaderRow {
+  std::vector<IOSFocusNodeId> row;
+  if ([_host controllerNavigationLauncherSideLayout] &&
+      [_host controllerNavigationLauncherShowsSearch]) {
+    row = {kLauncherFocusSearch, kLauncherFocusSort};
+  }
+  row.insert(row.end(),
+             {kLauncherFocusOnline, kLauncherFocusImport, kLauncherFocusSettings,
+              kLauncherFocusProfile});
+  return row;
+}
+
 - (void)rebuildLauncherFocusGraph {
   IOSFocusNodeId previous_focus = _launcherFocusGraph.current();
   _launcherFocusGraph.Clear();
@@ -388,43 +415,62 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   const BOOL launcher_visible = [_host controllerNavigationLauncherVisible];
   const BOOL actions_enabled =
       launcher_visible && [_host controllerNavigationLauncherActionsEnabled];
+  const BOOL side = [_host controllerNavigationLauncherSideLayout];
+  const BOOL hero = actions_enabled && [_host controllerNavigationLauncherShowsHero];
+  const BOOL search = actions_enabled && [_host controllerNavigationLauncherShowsSearch];
+  const BOOL games = [_host controllerNavigationGameCount] > 0;
+  const IOSFocusNodeId none = xe::ui::apple::kInvalidFocusNodeId;
 
-  // The header's buttons are one row, left to right: Import (+), Settings, Profile. Down from any
-  // of them goes to the games; up from the games' top row goes back to the one used last.
-  xe::ui::apple::FocusNode import_button;
-  import_button.id = kLauncherFocusImport;
-  import_button.right = kLauncherFocusSettings;
-  import_button.down = kLauncherFocusLibrary;
-  import_button.enabled = actions_enabled;
+  const std::vector<IOSFocusNodeId> header = [self launcherHeaderRow];
+  if (std::find(header.begin(), header.end(), _lastHeaderFocus) == header.end()) {
+    _lastHeaderFocus = kLauncherFocusImport;
+  }
+  // Upright, from the top down: header, Continue Playing, Search and Sort, the games. Beside the
+  // art, the header runs across the top, the games under it, Continue Playing to their left.
+  const IOSFocusNodeId games_node = games ? kLauncherFocusLibrary : none;
+  const IOSFocusNodeId search_node = search && !side ? kLauncherFocusSearch : none;
+  const IOSFocusNodeId hero_node = hero ? kLauncherFocusHeroPlay : none;
+  IOSFocusNodeId under_header = side ? (games ? games_node : hero_node)
+                                     : (hero ? hero_node : search ? search_node : games_node);
 
-  xe::ui::apple::FocusNode settings;
-  settings.id = kLauncherFocusSettings;
-  settings.left = kLauncherFocusImport;
-  settings.right = kLauncherFocusProfile;
-  settings.down = kLauncherFocusLibrary;
-  settings.enabled = actions_enabled;
+  auto add = [&](IOSFocusNodeId id, IOSFocusNodeId up, IOSFocusNodeId down, IOSFocusNodeId left,
+                 IOSFocusNodeId right, bool enabled) {
+    xe::ui::apple::FocusNode node;
+    node.id = id;
+    node.up = up;
+    node.down = down;
+    node.left = left;
+    node.right = right;
+    node.enabled = enabled;
+    _launcherFocusGraph.AddOrUpdateNode(node);
+  };
 
-  xe::ui::apple::FocusNode profile;
-  profile.id = kLauncherFocusProfile;
-  profile.left = kLauncherFocusSettings;
-  profile.down = kLauncherFocusLibrary;
-  profile.enabled = actions_enabled;
+  for (size_t i = 0; i < header.size(); ++i) {
+    add(header[i], none, under_header, i > 0 ? header[i - 1] : none,
+        i + 1 < header.size() ? header[i + 1] : none, actions_enabled);
+  }
+  if (hero) {
+    const IOSFocusNodeId hero_down = side ? none : (search ? search_node : games_node);
+    add(kLauncherFocusHeroPlay, _lastHeaderFocus, hero_down, none, kLauncherFocusHeroMore, true);
+    add(kLauncherFocusHeroMore, _lastHeaderFocus, hero_down, kLauncherFocusHeroPlay,
+        side ? games_node : none, true);
+  }
+  if (search && !side) {
+    const IOSFocusNodeId search_up = hero ? hero_node : _lastHeaderFocus;
+    add(kLauncherFocusSearch, search_up, games_node, none, kLauncherFocusSort, true);
+    add(kLauncherFocusSort, search_up, games_node, kLauncherFocusSearch, none, true);
+  }
+  IOSFocusNodeId games_up =
+      side ? _lastHeaderFocus : (search ? search_node : hero ? hero_node : _lastHeaderFocus);
+  add(kLauncherFocusLibrary, games_up, none, side && hero ? kLauncherFocusHeroMore : none, none,
+      games);
 
-  xe::ui::apple::FocusNode library;
-  library.id = kLauncherFocusLibrary;
-  library.up = _lastHeaderFocus;
-  library.enabled = [_host controllerNavigationGameCount] > 0;
-
-  _launcherFocusGraph.AddOrUpdateNode(settings);
-  _launcherFocusGraph.AddOrUpdateNode(profile);
-  _launcherFocusGraph.AddOrUpdateNode(import_button);
-  _launcherFocusGraph.AddOrUpdateNode(library);
-
-  if (previous_focus != xe::ui::apple::kInvalidFocusNodeId) {
-    _launcherFocusGraph.SetCurrent(previous_focus);
-  } else if (library.enabled) {
-    // A controller starts on the games, not the Settings button.
-    _launcherFocusGraph.SetCurrent(kLauncherFocusLibrary);
+  if (previous_focus != none && _launcherFocusGraph.SetCurrent(previous_focus)) {
+    return;
+  }
+  // A controller starts on the games, not a button; one whose button went away goes there too.
+  if (!_launcherFocusGraph.SetCurrent(kLauncherFocusLibrary)) {
+    _launcherFocusGraph.SetCurrent(kLauncherFocusImport);
   }
 }
 
@@ -526,19 +572,14 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   if (!_navigationWasEnabled || !_launcherFocusShown) {
     _launcherLibraryFocusActive = NO;
     [_host controllerNavigationApplyLauncherFocusEnabled:NO
-                                         settingsFocused:NO
-                                          profileFocused:NO
-                                           importFocused:NO
-                                      libraryFocusActive:NO];
+                                             focusTarget:XeniaIOSLauncherFocusTargetNone];
     return;
   }
 
   IOSFocusNodeId current_focus = _launcherFocusGraph.current();
-  BOOL settings_focused = current_focus == kLauncherFocusSettings;
-  BOOL profile_focused = current_focus == kLauncherFocusProfile;
-  BOOL import_focused = current_focus == kLauncherFocusImport;
   BOOL library_focused = current_focus == kLauncherFocusLibrary;
-  if (settings_focused || profile_focused || import_focused) {
+  const std::vector<IOSFocusNodeId> header = [self launcherHeaderRow];
+  if (std::find(header.begin(), header.end(), current_focus) != header.end()) {
     _lastHeaderFocus = current_focus;
   }
 
@@ -549,10 +590,8 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
 
   _launcherLibraryFocusActive = library_focused;
   [_host controllerNavigationApplyLauncherFocusEnabled:YES
-                                      settingsFocused:settings_focused
-                                       profileFocused:profile_focused
-                                        importFocused:import_focused
-                                   libraryFocusActive:_launcherLibraryFocusActive];
+                                          focusTarget:static_cast<XeniaIOSLauncherFocusTarget>(
+                                                          current_focus)];
 }
 
 - (void)applyInGameMenuFocusVisuals {
@@ -795,6 +834,13 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
     }
     return YES;
   }
+  // Typing in Search: A or B ends it, back on Search; the rest is the keyboard's.
+  if ([_host controllerNavigationLauncherSearchEditing]) {
+    if (actions.accept || actions.back) {
+      [_host controllerNavigationEndLauncherSearch];
+    }
+    return YES;
+  }
 
   [self rebuildLauncherFocusGraph];
   IOSFocusNodeId current_focus = _launcherFocusGraph.current();
@@ -930,6 +976,15 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
           [_host controllerNavigationLaunchGameAtIndex:_focusedGameIndex];
           handled = YES;
         }
+        break;
+      case kLauncherFocusSearch:
+      case kLauncherFocusSort:
+      case kLauncherFocusOnline:
+      case kLauncherFocusHeroPlay:
+      case kLauncherFocusHeroMore:
+        [_host controllerNavigationActivateLauncherTarget:static_cast<XeniaIOSLauncherFocusTarget>(
+                                                              _launcherFocusGraph.current())];
+        handled = YES;
         break;
       default:
         break;

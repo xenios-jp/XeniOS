@@ -1212,15 +1212,35 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 }
 
 - (void)controllerNavigationApplyLauncherFocusEnabled:(BOOL)enabled
-                                      settingsFocused:(BOOL)settingsFocused
-                                       profileFocused:(BOOL)profileFocused
-                                        importFocused:(BOOL)importFocused
-                                   libraryFocusActive:(BOOL)libraryFocusActive {
-  [self.launcherOverlayView setControllerNavigationEnabled:enabled
-                                           settingsFocused:settingsFocused
-                                            profileFocused:profileFocused
-                                             importFocused:importFocused
-                                        libraryFocusActive:libraryFocusActive];
+                                          focusTarget:(XeniaIOSLauncherFocusTarget)target {
+  [self.launcherOverlayView setControllerNavigationEnabled:enabled focusTarget:target];
+}
+
+- (BOOL)controllerNavigationLauncherShowsHero {
+  return self.launcherOverlayView.controllerShowsHero;
+}
+
+- (BOOL)controllerNavigationLauncherShowsSearch {
+  return self.launcherOverlayView.controllerShowsSearch;
+}
+
+- (BOOL)controllerNavigationLauncherSideLayout {
+  return self.launcherOverlayView.controllerSideLayout;
+}
+
+- (BOOL)controllerNavigationLauncherSearchEditing {
+  return self.launcherOverlayView.controllerSearchEditing;
+}
+
+- (void)controllerNavigationEndLauncherSearch {
+  [self.launcherOverlayView endControllerSearch];
+}
+
+- (void)controllerNavigationActivateLauncherTarget:(XeniaIOSLauncherFocusTarget)target {
+  UIAlertController* sheet = [self.launcherOverlayView activateControllerFocusTarget:target];
+  if (sheet && !self.presentedViewController) {
+    [self presentViewController:sheet animated:YES completion:nil];
+  }
 }
 
 - (void)controllerNavigationApplyInGameMenuFocusEnabled:(BOOL)enabled
