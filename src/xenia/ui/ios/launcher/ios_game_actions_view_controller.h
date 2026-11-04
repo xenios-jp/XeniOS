@@ -32,9 +32,14 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
   XeniaIOSGameActionSystemLink,
 };
 
-@interface XeniaIOSGameActionsViewController : XESheetTableViewController
+// The game page: the game's art, its cover and status, Play with touch layout and
+// settings beside it, then the rest of what can be done with the game.
+@interface XeniaIOSGameActionsViewController : XESheetViewController
 
 @property(nonatomic, copy) void (^actionHandler)(XeniaIOSGameAction action);
+// The compatibility status under the title ("● Playable"); hidden when nil.
+@property(nonatomic, copy) NSString* statusText;
+@property(nonatomic, retain) UIColor* statusColor;
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
                           titleID:(uint32_t)titleID

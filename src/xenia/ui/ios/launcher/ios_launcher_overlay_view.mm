@@ -265,17 +265,26 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   icon.contentMode = UIViewContentModeCenter;
   icon.isAccessibilityElement = NO;
 
+  // One slim line: the title, then the detail beside it in the secondary colour.
   title.textColor = [XeniaTheme textPrimary];
   xe_apply_label_font(title, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-  title.numberOfLines = 0;
+  title.numberOfLines = 1;
   title.accessibilityTraits = UIAccessibilityTraitHeader;
+  [title setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                         forAxis:UILayoutConstraintAxisHorizontal];
+  [title setContentHuggingPriority:UILayoutPriorityRequired
+                           forAxis:UILayoutConstraintAxisHorizontal];
   detail.textColor = [XeniaTheme textSecondary];
-  xe_apply_label_font(detail, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
-  detail.numberOfLines = 0;
+  xe_apply_label_font(detail, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  detail.numberOfLines = 1;
+  detail.lineBreakMode = NSLineBreakByTruncatingTail;
+  [detail setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                          forAxis:UILayoutConstraintAxisHorizontal];
 
   UIStackView* text = [[[UIStackView alloc] initWithArrangedSubviews:@[ title, detail ]] autorelease];
-  text.axis = UILayoutConstraintAxisVertical;
-  text.spacing = 1.0;
+  text.axis = UILayoutConstraintAxisHorizontal;
+  text.alignment = UIStackViewAlignmentFirstBaseline;
+  text.spacing = 6.0;
 
   NSMutableArray* items = [NSMutableArray arrayWithObjects:icon, text, nil];
   if (action) {
@@ -289,15 +298,16 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   row.translatesAutoresizingMaskIntoConstraints = NO;
   row.axis = UILayoutConstraintAxisHorizontal;
   row.alignment = UIStackViewAlignmentCenter;
-  row.spacing = 12.0;
+  row.spacing = 10.0;
   [card addSubview:row];
   [NSLayoutConstraint activateConstraints:@[
-    [icon.widthAnchor constraintEqualToConstant:29.0],
-    [icon.heightAnchor constraintEqualToConstant:29.0],
-    [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
-    [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12.0],
-    [row.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
-    [row.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
+    [icon.widthAnchor constraintEqualToConstant:22.0],
+    [icon.heightAnchor constraintEqualToConstant:22.0],
+    [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+    [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-7.0],
+    [row.topAnchor constraintEqualToAnchor:card.topAnchor constant:7.0],
+    [row.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-7.0],
+    [card.heightAnchor constraintGreaterThanOrEqualToConstant:44.0],
   ]];
   return card;
 }
@@ -317,17 +327,22 @@ void xe_set_notice_card_stacked(UIView* card, bool stacked) {
     }
   }
   row.alignment = stacked ? UIStackViewAlignmentTop : UIStackViewAlignmentCenter;
+  text.axis = stacked ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+  text.alignment = stacked ? UIStackViewAlignmentLeading : UIStackViewAlignmentFirstBaseline;
+  for (UIView* view in text.arrangedSubviews) {
+    if ([view isKindOfClass:[UILabel class]]) {
+      ((UILabel*)view).numberOfLines = stacked ? 0 : 1;
+    }
+  }
   if (!action || (action.superview == text) == stacked) {
     return;
   }
   [action retain];
   [action removeFromSuperview];
   if (stacked) {
-    text.alignment = UIStackViewAlignmentLeading;
     [text addArrangedSubview:action];
     [text setCustomSpacing:8.0 afterView:text.arrangedSubviews[text.arrangedSubviews.count - 2]];
   } else {
-    text.alignment = UIStackViewAlignmentFill;
     [row addArrangedSubview:action];
   }
   [action release];
@@ -395,12 +410,12 @@ UIButton* xe_new_notice_action(NSString* title) {
   config.baseForegroundColor = [XeniaTheme accent];
   config.baseBackgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.14];
   config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 14.0, 6.0, 14.0);
+  config.contentInsets = NSDirectionalEdgeInsetsMake(5.0, 12.0, 5.0, 12.0);
   config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
       NSDictionary<NSAttributedStringKey, id>* attributes) {
     NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
     updated[NSFontAttributeName] =
-        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+        xe_scaled_system_font(UIFontTextStyleFootnote, 14.0, UIFontWeightSemibold);
     return updated;
   };
   UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
@@ -787,7 +802,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                             withConfiguration:[UIImageSymbolConfiguration
                                                   configurationWithTextStyle:UIFontTextStyleBody
                                                                        scale:
-                                                                           UIImageSymbolScaleLarge]]];
+                                                                           UIImageSymbolScaleMedium]]];
   _jitStatusIcon.tintColor = [XeniaTheme sectionIconOrange];
   _jitTitleLabel = [[UILabel alloc] init];
   _jitTitleLabel.text = NSLocalizedString(@"JIT Is Off", @"launcher overlay view: JIT card title");
@@ -816,7 +831,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                             withConfiguration:[UIImageSymbolConfiguration
                                                   configurationWithTextStyle:UIFontTextStyleBody
                                                                        scale:
-                                                                           UIImageSymbolScaleLarge]]];
+                                                                           UIImageSymbolScaleMedium]]];
   _memoryStatusIcon.tintColor = [XeniaTheme statusWarning];
   UILabel* memoryTitleLabel = [[[UILabel alloc] init] autorelease];
   memoryTitleLabel.text =
@@ -944,10 +959,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   const BOOL side = bounds.size.width > bounds.size.height;
   if (side != _sideLayout) {
     _sideLayout = side;
-    // Short windows keep the grid in view: each notice shows its title line only.
-    _jitStatusLabel.hidden = side;
-    _memoryStatusLabel.hidden = side;
-    _jitWarningCard.accessibilityValue = side ? _jitStatusLabel.text : nil;
     [self placeSearchRow];
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];

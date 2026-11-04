@@ -748,6 +748,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   // game the dashboard starts can reach the other folders too.
   [accesses addObjectsFromArray:xe::ui::StartIOSExternalLibraryAccessForAllLocations()];
   self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
+  self.inGameMenuOverlay.sessionStartDate = [NSDate date];
   active_game_title_id_ = [self titleIDForGamePath:path];
   [self appendLinkedContentAccessesForTitleID:active_game_title_id_
                                      accesses:accesses
@@ -1630,6 +1631,19 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   }
 
   [self refreshInGameDisplayMenu];
+  // The header names the running game and shows its cover.
+  NSString* game_title = nil;
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (active_game_title_id_ && game.title_id == active_game_title_id_) {
+      game_title =
+          game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
+      break;
+    }
+  }
+  if (game_title) {
+    self.inGameMenuOverlay.gameTitle = game_title;
+  }
+  self.inGameMenuOverlay.titleID = active_game_title_id_;
   [self.inGameMenuOverlay setOverlayVisible:YES animated:animated completion:nil];
   [self.controllerNavigationCoordinator focusDefaultInGameAction];
   [self updateTouchControlsOverlayVisibilityAnimated:NO];
@@ -3329,6 +3343,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
             [self updateTouchControlsOverlayVisibilityAnimated:YES];
           }];
       [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:NO];
+      self.inGameMenuOverlay.gameTitle = display_name;
+      self.inGameMenuOverlay.sessionStartDate = [NSDate date];
       [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
@@ -3356,6 +3372,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   if (self.appContext) {
     [self retainExternalGameAccessesForLaunch:launch_external_accesses replaceExisting:YES];
+    self.inGameMenuOverlay.gameTitle = display_name;
+    self.inGameMenuOverlay.sessionStartDate = [NSDate date];
     [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
@@ -3415,6 +3433,11 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       supportsDiscSelection:game.discs.size() > 1
             supportsPatches:self.appContext && game.title_id != 0
       supportsZarConversion:xe_game_supports_zar_conversion(game)];
+  if (game.has_compat_info) {
+    NSString* status = ToNSString(game.compat_status);
+    actions_controller.statusText = xe_compat_status_label(status);
+    actions_controller.statusColor = xe_compat_status_color(status);
+  }
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   actions_controller.actionHandler = ^(XeniaIOSGameAction action) {

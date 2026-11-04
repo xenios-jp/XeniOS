@@ -42,6 +42,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, assign) BOOL emulatorPaused;
 // A game the Xbox 360 Dashboard started exits to the dashboard, not the library.
 @property(nonatomic) BOOL exitsToDashboard;
+// The header: the running game's name, its cover (from the title ID) and how long it has run.
+@property(nonatomic, copy) NSString* gameTitle;
+@property(nonatomic) uint32_t titleID;
+@property(nonatomic, retain) NSDate* sessionStartDate;
 
 - (BOOL)isOverlayVisible;
 - (BOOL)isActionEnabled:(XeniaIOSInGameMenuAction)action;
