@@ -19,7 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Compatibility data layer for the iOS launcher.
 //
 // Loads and caches the public games.json from xenios.jp / the Cloudflare
-// worker, merges in local self-built reports, and exposes formatting helpers
+// worker, merges in reports sent from this device, and exposes formatting helpers
 // for status / perf badges, build labels, hero heights and platform strings
 // used by the compatibility hero card and report sheets.
 //
@@ -49,8 +49,6 @@ NSArray<NSString*>* xe_compat_perfs(void);
 NSArray<NSString*>* xe_compat_perf_labels(void);
 
 // Channel labels used in the build pill.
-UIColor* xe_compat_channel_color(NSString* channel);
-NSString* xe_compat_channel_label(NSString* channel);
 
 // Build labels.
 NSString* xe_compat_build_label(NSDictionary* build_info);
@@ -65,9 +63,7 @@ NSString* xe_platform_display_text(NSString* platform, NSString* os_version);
 // Layout helper for the compatibility hero card.
 CGFloat xe_compat_hero_height_for_width(CGFloat width, UIImage* background_art);
 
-// Summary derivation – mirrors xenios.jp's release-summary semantics for iOS.
-NSDictionary* xe_release_summary_from_compat_info(NSDictionary* compat_info);
-NSDictionary* xe_ios_public_release_summary_from_compat_info(NSDictionary* compat_info);
+// Summary derivation – one verdict from every iOS report, as xenios.jp does.
 NSDictionary* xe_preferred_summary_from_compat_info(NSDictionary* compat_info);
 
 // Cache + discussion paths.

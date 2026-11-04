@@ -289,7 +289,7 @@ static NSString* xe_compat_report_identity(NSDictionary* report) {
     xe_string_from_object(report[@"platform"]) ?: @"",
     xe_string_from_object(report[@"device"]) ?: @"",
     xe_string_from_object(report[@"status"]) ?: @"", xe_string_from_object(report[@"perf"]) ?: @"",
-    xe_string_from_object(report[@"notes"]) ?: @"", xe_string_from_object(build[@"buildId"]) ?: @"",
+    xe_string_from_object(report[@"notes"]) ?: @"", xe_string_from_object(build[@"appVersion"]) ?: @"",
     xe_string_from_object(build[@"buildNumber"]) ?: @"",
     xe_string_from_object(build[@"commitShort"]) ?: @""
   ] componentsJoinedByString:@"|"];

@@ -96,12 +96,6 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
     @"tags" : @[],
     @"screenshots" : screenshot_data,
     @"build" : build_info,
-    @"buildId" : xe_string_from_object(build_info[@"buildId"]) ?: @"",
-    @"channel" : xe_string_from_object(build_info[@"channel"]) ?: @"self-built",
-    @"official" : build_info[@"official"] ?: @NO,
-    @"appVersion" : xe_string_from_object(build_info[@"appVersion"]) ?: @"",
-    @"buildNumber" : xe_string_from_object(build_info[@"buildNumber"]) ?: @"",
-    @"commitShort" : xe_string_from_object(build_info[@"commitShort"]) ?: @"",
   };
 
   NSError* json_error = nil;
@@ -119,11 +113,10 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
     return;
   }
 
-  XELOGI("iOS compat submit: title_id={:08X} status={} perf={} channel={} build_id={} "
+  XELOGI("iOS compat submit: title_id={:08X} status={} perf={} build={} "
          "commit={} screenshots={} screenshot_bytes={} body_bytes={}",
          title_id, [status UTF8String], [perf UTF8String],
-         [xe_string_from_object(build_info[@"channel"]) UTF8String],
-         [xe_string_from_object(build_info[@"buildId"]) UTF8String],
+         [xe_compat_build_label(build_info) UTF8String],
          [xe_string_from_object(build_info[@"commitShort"]) UTF8String], (int)screenshot_data.count,
          static_cast<unsigned long long>(screenshot_total_bytes),
          static_cast<unsigned long long>(request_body.length));
