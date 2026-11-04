@@ -1,12 +1,13 @@
 name: Apple Publish
 
-# Builds the XeniOS IPA and publishes it as a GitHub release, then records it in
-# xenios.jp's build manifests. Ported from the public XeniOS repository's workflow
-# (branch xenios) to this tree's CMake iOS build. iPhone and iPad only: the site's
-# Mac entry is left as it is.
+# Builds the XeniOS IPA and the Apple Silicon Mac DMG and publishes them as one
+# GitHub release, then records both in xenios.jp's build manifests. Ported from
+# the public XeniOS repository's workflow (branch xenios) to this tree's CMake
+# builds. Intel and universal Mac builds are not built: the site's Mac entry
+# lists Apple Silicon only.
 #
-# Pushes to ci/** branches, and manual runs with "publish" off, build the IPA
-# and stop: the IPA is a workflow artifact, nothing is published.
+# Pushes to ci/** branches, and manual runs with "publish" off, build the IPA and
+# the DMG and stop: they are workflow artifacts, nothing is published.
 #
 # Publishing:
 # - Publish from the Actions tab or `gh workflow run apple-publish.yml --ref xenios
@@ -14,7 +15,7 @@ name: Apple Publish
 #   details appended. Release notes live on the release page only, never in the repo.
 # - A push to `xenios` (or `preview`) publishes at once, without notes: the body is
 #   just the build details. Prefer the dispatch above for a real release.
-# - The release is created as a draft, the IPA is uploaded, and only then is it
+# - The release is created as a draft, the IPA and DMG are uploaded, and only then is it
 #   published, so what the Discord webhook announces is complete. Tags are never
 #   a trigger: create them by hand if wanted.
 # - Every push and every published release on xenios-jp/XeniOS posts to Discord,
@@ -496,11 +497,152 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  build-macos:
+    name: Build macOS Apple Silicon
+    needs:
+      - resolve-metadata
+    # Same image as the iOS job, so both platforms build with the same Xcode.
+    runs-on: xcode-27
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "${xcode}" ]; then
+            echo "::error::No Xcode 27 on this runner:"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "${xcode}"
+          xcodebuild -version
+
+      - name: Install Metal Toolchain
+        # Apple's MobileAsset catalog fetch is flaky; retry with backoff.
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo xcodebuild -downloadComponent MetalToolchain; then
+              exit 0
+            fi
+            if [ $attempt -lt 5 ]; then
+              delay=$((attempt * 30))
+              echo "::warning::MetalToolchain download attempt $attempt failed; retrying in ${delay}s"
+              sleep $delay
+            fi
+          done
+          echo "::error::MetalToolchain download failed after 5 attempts"
+          exit 1
+
+      - name: Cache Slang
+        id: cache-slang
+        uses: actions/cache@v4
+        with:
+          path: .slang
+          # Keep in sync with SLANG_VERSION in xenia-build.py.
+          key: ${{ runner.os }}-${{ runner.arch }}-slang-2026.8
+
+      - name: Download Slang
+        if: steps.cache-slang.outputs.cache-hit != 'true'
+        run: ./xenia-build.py slang
+
+      - name: Cache Metal Shader Converter (macOS)
+        id: cache-msc
+        uses: actions/cache@v4
+        with:
+          path: .metal-shader-converter
+          # Keep in sync with MSC_VERSION in xenia-build.py.
+          key: ${{ runner.os }}-metal-shader-converter-4.0-beta2
+
+      - name: Download Metal Shader Converter (macOS)
+        if: steps.cache-msc.outputs.cache-hit != 'true'
+        run: ./xenia-build.py msc
+
+      - name: Fetch submodules and data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth=1 -j"$(sysctl -n hw.ncpu)" \
+            $(grep -oE 'path = .+' .gitmodules | sed 's/path = //' \
+              | grep -v 'DirectXShaderCompiler')
+          git submodule update --init --recursive --depth=1 \
+            -j"$(sysctl -n hw.ncpu)" third_party/wxWidgets
+          ./xenia-build.py fetchdata
+
+      - name: Set up Python for Meson
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Meson for spirv_to_dxil
+        run: python3 -m pip install --upgrade meson mako pyyaml packaging
+
+      - name: Configure the macOS build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-macos -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          # The Mac app's About and crash text read version.h, which xenia-build.py
+          # writes after its own configure.
+          python3 -c "import runpy; runpy.run_path('xenia-build.py')['generate_version_h']('build-macos')"
+
+      - name: Build and package the DMG
+        shell: bash
+        env:
+          # As for the IPA: publishing runs and release candidates are attested,
+          # ci/** trials are not. The script drops the key from its environment
+          # before the compilers start.
+          XENIOS_BUILD_ATTESTATION_KEY: "${{ (needs.resolve-metadata.outputs.publish == 'true' || github.ref == 'refs/heads/xenios') && secrets.XENIOS_BUILD_ATTESTATION_KEY || '' }}"
+          XENIOS_BUILD_ATTESTATION_KEY_ID: "${{ secrets.XENIOS_BUILD_ATTESTATION_KEY_ID }}"
+          PUBLISH: "${{ needs.resolve-metadata.outputs.publish }}"
+          CHANNEL: "${{ needs.resolve-metadata.outputs.channel }}"
+          VERSION: "${{ needs.resolve-metadata.outputs.version }}"
+          BUILD_NUMBER: "${{ needs.resolve-metadata.outputs.build_number }}"
+          STAGE: "${{ needs.resolve-metadata.outputs.stage }}"
+          ISSUED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
+        run: |
+          set -euo pipefail
+          if [ -z "${XENIOS_BUILD_ATTESTATION_KEY}" ]; then
+            if [ "${PUBLISH}" = "true" ]; then
+              echo "::error::XENIOS_BUILD_ATTESTATION_KEY is not configured"
+              exit 1
+            fi
+            echo "::warning::No attestation key: this build-only DMG reports itself as self-built"
+          fi
+
+          ./tools/build_apple_release.sh \
+            --skip-ios \
+            --macos-build-dir build-macos \
+            --out scratch/artifacts \
+            --channel "${CHANNEL}" \
+            --version "${VERSION}" \
+            --build-number "${BUILD_NUMBER}" \
+            --stage "${STAGE}" \
+            --issued-at "${ISSUED_AT}"
+
+          test -f scratch/artifacts/xenios_macos_apple_silicon.dmg
+
+      - name: Upload the DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: "xenios_macos_apple_silicon"
+          path: "scratch/artifacts/xenios_macos_apple_silicon.dmg"
+          if-no-files-found: error
+
   publish-release:
     name: Publish release and xenios.jp manifests
     needs:
       - resolve-metadata
       - build-ios
+      - build-macos
     if: "${{ needs.resolve-metadata.outputs.publish == 'true' }}"
     runs-on: ubuntu-latest
     permissions:
@@ -523,6 +665,12 @@ jobs:
           name: "xenios_ios_iphone_ipad"
           path: "artifacts/ios"
 
+      - name: Download the DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: "xenios_macos_apple_silicon"
+          path: "artifacts/macos-arm64"
+
       - name: Create or update GitHub release
         id: github_release
         shell: bash
@@ -540,8 +688,10 @@ jobs:
           NOTES: "${{ inputs.notes }}"
         run: |
           set -euo pipefail
-          ipa="artifacts/ios/xenios_ios_iphone_ipad.ipa"
-          ipa_name="$(basename "${ipa}")"
+          assets=(
+            artifacts/ios/xenios_ios_iphone_ipad.ipa
+            artifacts/macos-arm64/xenios_macos_apple_silicon.dmg
+          )
           repo_api="repos/${GITHUB_REPOSITORY}"
 
           # Release notes are written on the release page or passed as the notes
@@ -588,7 +738,7 @@ jobs:
           fi
 
           # 1. A draft (or the existing release, body untouched unless notes were
-          #    given), so nothing is announced before the IPA is attached.
+          #    given), so nothing is announced before the IPA and DMG are attached.
           if [ -n "${release_id}" ]; then
             if [ -n "${NOTES}" ]; then
               cat release-payload.json
@@ -604,33 +754,37 @@ jobs:
             }
           fi
 
-          # 2. The IPA. An identical asset from an earlier attempt is kept; anything
-          #    else with that name is replaced. (gh release upload can't see drafts.)
-          ipa_size="$(wc -c < "${ipa}" | tr -d ' ')"
-          release_json="$(gh api "${repo_api}/releases/${release_id}")"
-          asset_id="$(jq -r --arg name "${ipa_name}" --argjson size "${ipa_size}" \
-            '.assets[] | select(.name == $name and .state == "uploaded" and .size == $size) | .id' \
-            <<<"${release_json}")"
-          if [ -z "${asset_id}" ]; then
-            jq -r --arg name "${ipa_name}" '.assets[] | select(.name == $name) | .id' <<<"${release_json}" \
-              | while read -r stale_id; do
-                  gh api "${repo_api}/releases/assets/${stale_id}" --method DELETE
-                done
-            gh api "https://uploads.github.com/${repo_api}/releases/${release_id}/assets?name=${ipa_name}" \
-              --method POST \
-              -H "Content-Type: application/octet-stream" \
-              --input "${ipa}" \
-              >/dev/null
-          fi
-          uploaded="$(gh api "${repo_api}/releases/${release_id}" \
-            --jq ".assets[] | select(.name == \"${ipa_name}\" and .state == \"uploaded\" and .size == ${ipa_size}) | .id")"
-          if [ -z "${uploaded}" ]; then
-            echo "::error::${ipa_name} is not attached to ${RELEASE_TAG} as an uploaded asset of ${ipa_size} bytes"
-            exit 1
-          fi
+          # 2. The IPA and the DMG. An identical asset from an earlier attempt is
+          #    kept; anything else with that name is replaced. (gh release upload
+          #    can't see drafts.)
+          for asset in "${assets[@]}"; do
+            asset_name="$(basename "${asset}")"
+            asset_size="$(wc -c < "${asset}" | tr -d ' ')"
+            release_json="$(gh api "${repo_api}/releases/${release_id}")"
+            asset_id="$(jq -r --arg name "${asset_name}" --argjson size "${asset_size}" \
+              '.assets[] | select(.name == $name and .state == "uploaded" and .size == $size) | .id' \
+              <<<"${release_json}")"
+            if [ -z "${asset_id}" ]; then
+              jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .id' <<<"${release_json}" \
+                | while read -r stale_id; do
+                    gh api "${repo_api}/releases/assets/${stale_id}" --method DELETE
+                  done
+              gh api "https://uploads.github.com/${repo_api}/releases/${release_id}/assets?name=${asset_name}" \
+                --method POST \
+                -H "Content-Type: application/octet-stream" \
+                --input "${asset}" \
+                >/dev/null
+            fi
+            uploaded="$(gh api "${repo_api}/releases/${release_id}" \
+              --jq ".assets[] | select(.name == \"${asset_name}\" and .state == \"uploaded\" and .size == ${asset_size}) | .id")"
+            if [ -z "${uploaded}" ]; then
+              echo "::error::${asset_name} is not attached to ${RELEASE_TAG} as an uploaded asset of ${asset_size} bytes"
+              exit 1
+            fi
+          done
 
           # 3. Publish. Only now does the release become public (and Latest), with
-          #    the IPA already on it.
+          #    the IPA and DMG already on it.
           if [ "${PRERELEASE}" = "true" ]; then
             publish_payload='{"draft": false, "prerelease": true}'
           else
@@ -642,8 +796,9 @@ jobs:
 
           html_url="$(jq -r '.html_url' release.json)"
           ios_download_url="$(jq -r '.assets[] | select(.name == "xenios_ios_iphone_ipad.ipa") | .browser_download_url' release.json)"
+          macos_arm64_download_url="$(jq -r '.assets[] | select(.name == "xenios_macos_apple_silicon.dmg") | .browser_download_url' release.json)"
 
-          for output_name in html_url ios_download_url; do
+          for output_name in html_url ios_download_url macos_arm64_download_url; do
             output_value="${!output_name}"
             if [ -z "${output_value}" ] || [ "${output_value}" = "null" ]; then
               echo "::error::Missing GitHub release output: ${output_name}"
@@ -658,6 +813,7 @@ jobs:
           {
             echo "html_url=${html_url}"
             echo "ios_download_url=${ios_download_url}"
+            echo "macos_arm64_download_url=${macos_arm64_download_url}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out xenios.jp
@@ -679,6 +835,7 @@ jobs:
           DISPLAY_LABEL: "${{ needs.resolve-metadata.outputs.display_label }}"
           RELEASE_URL: "${{ steps.github_release.outputs.html_url }}"
           IOS_DOWNLOAD_URL: "${{ steps.github_release.outputs.ios_download_url }}"
+          MACOS_ARM64_DOWNLOAD_URL: "${{ steps.github_release.outputs.macos_arm64_download_url }}"
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/xenios-website"
@@ -692,7 +849,9 @@ jobs:
               --channel "${CHANNEL}" \
               --release-url "${RELEASE_URL}" \
               --ios-ipa "${GITHUB_WORKSPACE}/artifacts/ios/xenios_ios_iphone_ipad.ipa" \
-              --ios-download-url "${IOS_DOWNLOAD_URL}"
+              --ios-download-url "${IOS_DOWNLOAD_URL}" \
+              --macos-arm64-dmg "${GITHUB_WORKSPACE}/artifacts/macos-arm64/xenios_macos_apple_silicon.dmg" \
+              --macos-arm64-download-url "${MACOS_ARM64_DOWNLOAD_URL}"
 
             git add data/release-builds.json data/builds-history.json
             if git diff --staged --quiet; then

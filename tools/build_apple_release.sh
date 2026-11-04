@@ -4,19 +4,25 @@ set -euo pipefail
 # Ported from the public XeniOS repository's tools/build_apple_release.sh
 # (tag preview-v2.1-build-9857). Version, build number, channel, stage,
 # attestation and iOS bundle identifier are resolved and stamped exactly as
-# there. This tree builds iOS with CMake instead of an Xcode project, so the
-# iOS step builds a configured CMake tree; the macOS packaging is not ported.
+# there. This tree builds with CMake instead of an Xcode project, so each
+# platform step builds a configured CMake tree. The macOS step packages the
+# Apple Silicon DMG; Intel and universal packaging are not ported.
 
 usage() {
   cat <<'USAGE'
 Usage: tools/build_apple_release.sh [options]
 
-Builds and packages the iOS arm64 ad-hoc-signed IPA.
+Builds and packages the iOS arm64 ad-hoc-signed IPA and, with
+--macos-build-dir, the macOS Apple Silicon DMG.
 
 Options:
   --out DIR            Output directory (default: scratch/artifacts)
   --config NAME        checked|debug|release|valgrind (default: release)
   --ios-build-dir DIR  Configured iOS CMake build tree (default: build-ios)
+  --macos-build-dir DIR
+                       Configured macOS arm64 CMake build tree; builds and
+                       packages xenios_macos_apple_silicon.dmg from it
+  --skip-ios           Don't build the IPA
   --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.2)
   --build-number NUM   Build number override (defaults to git commit count)
   --channel NAME       release|preview (default: release)
@@ -34,6 +40,7 @@ Options:
   --random-ios-bundle-id
                        Force a random iOS bundle identifier for this package
   --ios-min VERSION    iOS minimum version (default: 26.0)
+  --macos-min VERSION  macOS minimum version for the app icon (default: 15.0)
   --diagnostics-url URL
                        https endpoint the app sends crash reports and
                        performance statistics to (default: none, nothing is sent)
@@ -46,7 +53,9 @@ Notes:
 - iOS packaging creates an ad-hoc-signed .ipa suitable for re-signing.
 - The iOS build tree must already be configured (cmake -S . -B DIR
   -G "Ninja Multi-Config" -DCMAKE_SYSTEM_NAME=iOS ...); this script builds
-  its xenia-app target.
+  its xenia-app target. The same goes for the macOS tree (cmake -S . -B DIR
+  -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64).
+- The Mac app ships as XeniOS.app (com.xenios), as 2.0.1 did, ad-hoc signed.
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
 - If no matching tag is available, the marketing version falls back to 2.2.
 - Public release stage defaults to stable.
@@ -512,6 +521,71 @@ package_ios_ipa() {
     "$ipa_dir/XeniOS.signed-entitlements.plist"
 }
 
+bundle_executable_path() {
+  local app_bundle="$1"
+  local plist
+  plist="$(bundle_plist_path "$app_bundle")" || return 1
+  local executable_name
+  executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist" 2>/dev/null || true)"
+  [ -n "$executable_name" ] || return 1
+  printf '%s/%s' "$app_bundle/Contents/MacOS" "$executable_name"
+}
+
+# Copies the CMake-built Mac app out of the build tree under the name and
+# identifier 2.0.1 shipped with, so the release replaces it in /Applications.
+stage_macos_app() {
+  local built_app="$1"
+  local staging_dir="$2"
+  local staged_app="$staging_dir/XeniOS.app"
+  rm -rf "$staging_dir"
+  mkdir -p "$staging_dir"
+  ditto "$built_app" "$staged_app"
+  local plist
+  plist="$(bundle_plist_path "$staged_app")" || die "Info.plist not found in $staged_app"
+  plist_set_string "$plist" "CFBundleName" "XeniOS"
+  plist_set_string "$plist" "CFBundleDisplayName" "XeniOS"
+  plist_set_string "$plist" "CFBundleIdentifier" "com.xenios"
+  printf '%s' "$staged_app"
+}
+
+# Ad-hoc signs the nested dylibs, then the bundle with the app's entitlements
+# (JIT, unsigned executable memory, library validation off for the shader
+# converter).
+sign_macos_app() {
+  local app_bundle="$1"
+  local entitlements="$2"
+  local frameworks_dir="$app_bundle/Contents/Frameworks"
+
+  codesign --remove-signature "$app_bundle" >/dev/null 2>&1 || true
+  if [ -d "$frameworks_dir" ]; then
+    find "$frameworks_dir" -name "*.dylib" -type f -print0 | \
+      xargs -0 -I{} codesign --force --sign - --timestamp=none "{}"
+  fi
+  codesign --force --sign - --timestamp=none --entitlements "$entitlements" "$app_bundle"
+  # Provenance and quarantine xattrs from the build break the seal on macOS 15.
+  if ! xattr -cr "$app_bundle" >/dev/null 2>&1; then
+    chmod -R u+w "$app_bundle" >/dev/null 2>&1 || true
+    xattr -cr "$app_bundle" >/dev/null 2>&1 || \
+      echo "warning: failed to clear one or more extended attributes in $app_bundle" >&2
+  fi
+  codesign --verify --strict --deep "$app_bundle"
+}
+
+package_macos_dmg() {
+  local app_bundle="$1"
+  local dmg_out="$2"
+  local license_file="$3"
+
+  rm -f "$dmg_out"
+  local dmg_contents
+  dmg_contents="$(mktemp -d "${TMPDIR:-/tmp}/xenios_dmg.XXXXXX")"
+  ditto "$app_bundle" "$dmg_contents/$(basename "$app_bundle")"
+  cp -f "$license_file" "$dmg_contents/"
+  ln -s /Applications "$dmg_contents/Applications"
+  hdiutil create -volname "XeniOS" -srcfolder "$dmg_contents" -ov -format UDZO "$dmg_out"
+  rm -rf "$dmg_contents"
+}
+
 print_metadata_summary() {
   local channel="$1"
   local stage="$2"
@@ -579,6 +653,8 @@ print_metadata_only=0
 out_dir="scratch/artifacts"
 config="release"
 ios_build_dir="${XENIOS_IOS_BUILD_DIR:-build-ios}"
+macos_build_dir=""
+build_ios=1
 release_version="${XENIOS_BUILD_VERSION:-}"
 release_build_number="${XENIOS_BUILD_NUMBER:-}"
 build_channel="${XENIOS_BUILD_CHANNEL:-release}"
@@ -587,6 +663,7 @@ issued_at_override="${XENIOS_BUILD_ISSUED_AT:-}"
 stamp_bundle=""
 stamp_platform=""
 ios_min="26.0"
+macos_min="15.0"
 attestation_key="${XENIOS_BUILD_ATTESTATION_KEY:-}"
 # Keep the key out of the environment of everything this script starts (cmake, the
 # compilers, codesign): only the stamping below uses it.
@@ -604,6 +681,10 @@ while [ $# -gt 0 ]; do
       config="${2:-}"; shift 2;;
     --ios-build-dir)
       ios_build_dir="${2:-}"; shift 2;;
+    --macos-build-dir)
+      macos_build_dir="${2:-}"; shift 2;;
+    --skip-ios)
+      build_ios=0; shift;;
     --version)
       release_version="${2:-}"; shift 2;;
     --build-number)
@@ -633,6 +714,8 @@ while [ $# -gt 0 ]; do
       print_metadata_only=1; shift;;
     --ios-min)
       ios_min="${2:-}"; shift 2;;
+    --macos-min)
+      macos_min="${2:-}"; shift 2;;
     --diagnostics-url)
       diagnostics_url="${2:-}"; shift 2;;
     -h|--help)
@@ -723,8 +806,18 @@ need_bin codesign
 need_bin ditto
 need_file_exec /usr/libexec/PlistBuddy
 
-[ -f "$ios_build_dir/CMakeCache.txt" ] || \
-  die "no configured iOS CMake build tree in $ios_build_dir (configure one with -DCMAKE_SYSTEM_NAME=iOS, or pass --ios-build-dir)"
+if [ "$build_ios" -eq 0 ] && [ -z "$macos_build_dir" ]; then
+  die "nothing to build: --skip-ios without --macos-build-dir"
+fi
+if [ "$build_ios" -eq 1 ]; then
+  [ -f "$ios_build_dir/CMakeCache.txt" ] || \
+    die "no configured iOS CMake build tree in $ios_build_dir (configure one with -DCMAKE_SYSTEM_NAME=iOS, or pass --ios-build-dir)"
+fi
+if [ -n "$macos_build_dir" ]; then
+  need_bin hdiutil
+  [ -f "$macos_build_dir/CMakeCache.txt" ] || \
+    die "no configured macOS CMake build tree in $macos_build_dir"
+fi
 
 mkdir -p "$out_dir"
 
@@ -735,41 +828,76 @@ if [ -n "$release_version" ] && [ -n "$release_build_number" ]; then
 fi
 echo "Build channel: $build_channel"
 echo "Release stage: $release_stage"
-echo "iOS min: $ios_min"
-echo "iOS bundle ID: $ios_bundle_id"
-echo "Diagnostics: ${diagnostics_url:-off (no endpoint)}"
+if [ "$build_ios" -eq 1 ]; then
+  echo "iOS min: $ios_min"
+  echo "iOS bundle ID: $ios_bundle_id"
+  echo "Diagnostics: ${diagnostics_url:-off (no endpoint)}"
+fi
+if [ -n "$macos_build_dir" ]; then
+  echo "macOS min: $macos_min"
+fi
 if [ -n "$attestation_key" ]; then
   echo "Attestation: enabled (${attestation_key_id})"
 else
   echo "Attestation: disabled"
 fi
 
-echo ""
-echo "== iOS arm64 (CMake-built, ad-hoc-signed ipa) =="
+if [ "$build_ios" -eq 1 ]; then
+  echo ""
+  echo "== iOS arm64 (CMake-built, ad-hoc-signed ipa) =="
 
-cmake --build "$ios_build_dir" --config "$buildcfg" --target xenia-app
+  cmake --build "$ios_build_dir" --config "$buildcfg" --target xenia-app
 
-ios_dir="$ios_build_dir/bin/iOS/$buildcfg"
-app_bundle="$(find_first_app "$ios_dir")" || die "iOS app not found in $ios_dir"
+  ios_dir="$ios_build_dir/bin/iOS/$buildcfg"
+  app_bundle="$(find_first_app "$ios_dir")" || die "iOS app not found in $ios_dir"
 
-stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
-stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
-if [ -n "$diagnostics_url" ]; then
-  plist_set_string "$(bundle_plist_path "$app_bundle")" "XeniOSDiagnosticsURL" "$diagnostics_url"
+  stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
+  stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
+  if [ -n "$diagnostics_url" ]; then
+    plist_set_string "$(bundle_plist_path "$app_bundle")" "XeniOSDiagnosticsURL" "$diagnostics_url"
+  fi
+  # The map the diagnostics Worker symbolicates this build's crash frames with.
+  "$root/tools/ios/make_symbol_map.sh" "$app_bundle" "$out_dir/symbols"
+  # Not compile_bundle_icon_assets: in this tree the CMake build already compiled the whole
+  # asset catalog (alternate icons, launch color, settings images) into the bundle, and
+  # recompiling only the app icon would drop the rest.
+  stamp_bundle_attestation "$app_bundle" "ios" "$build_channel" "$release_version" \
+    "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
+  # Ad-hoc sign to embed entitlements (increased-memory-limit).
+  # Re-signing tools will preserve these when applying a real identity.
+  codesign --force --sign - --entitlements "$root/xenia_ios.entitlements" "$app_bundle"
+
+  package_ios_ipa "$app_bundle" "$out_dir/xenios_ios_iphone_ipad.ipa" "$ios_bundle_id"
+
 fi
-# The map the diagnostics Worker symbolicates this build's crash frames with.
-"$root/tools/ios/make_symbol_map.sh" "$app_bundle" "$out_dir/symbols"
-# Not compile_bundle_icon_assets: in this tree the CMake build already compiled the whole
-# asset catalog (alternate icons, launch color, settings images) into the bundle, and
-# recompiling only the app icon would drop the rest.
-stamp_bundle_attestation "$app_bundle" "ios" "$build_channel" "$release_version" \
-  "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
-# Ad-hoc sign to embed entitlements (increased-memory-limit).
-# Re-signing tools will preserve these when applying a real identity.
-codesign --force --sign - --entitlements "$root/xenia_ios.entitlements" "$app_bundle"
 
-package_ios_ipa "$app_bundle" "$out_dir/xenios_ios_iphone_ipad.ipa" "$ios_bundle_id"
+if [ -n "$macos_build_dir" ]; then
+  echo ""
+  echo "== macOS arm64 (CMake-built, ad-hoc-signed dmg) =="
+
+  cmake --build "$macos_build_dir" --config "$buildcfg" --target xenia-app
+
+  # Ninja puts the app in bin/macOS, Ninja Multi-Config in bin/macOS/<Config>.
+  mac_dir="$macos_build_dir/bin/macOS"
+  if [ -d "$mac_dir/$buildcfg" ]; then
+    mac_dir="$mac_dir/$buildcfg"
+  fi
+  built_app="$(find_first_app "$mac_dir")" || die "macOS app not found in $mac_dir"
+  app_bundle="$(stage_macos_app "$built_app" "$out_dir/macos")"
+  mac_exe="$(bundle_executable_path "$app_bundle")" || die "no executable in $app_bundle"
+  [ "$(lipo -archs "$mac_exe")" = "arm64" ] || \
+    die "$mac_exe is $(lipo -archs "$mac_exe"), not arm64 (configure with -DCMAKE_OSX_ARCHITECTURES=arm64)"
+
+  stamp_bundle_version_metadata "$app_bundle" "$release_version" "$release_build_number"
+  stamp_bundle_stage_metadata "$app_bundle" "$release_stage"
+  # The CMake build's icon is the Xenia one; the release carries XeniOS's.
+  compile_bundle_icon_assets "$app_bundle" "macosx" "$macos_min"
+  stamp_bundle_attestation "$app_bundle" "macos" "$build_channel" "$release_version" \
+    "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
+  sign_macos_app "$app_bundle" "$root/xenia.entitlements"
+  package_macos_dmg "$app_bundle" "$out_dir/xenios_macos_apple_silicon.dmg" "$root/LICENSE"
+fi
 
 echo ""
 echo "Done. Artifacts:"
-find "$out_dir" -maxdepth 1 -type f -name "*.ipa" -print
+find "$out_dir" -maxdepth 1 -type f \( -name "*.ipa" -o -name "*.dmg" \) -print
