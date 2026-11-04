@@ -1524,7 +1524,16 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   UITableViewCell* cell = [self.tableView cellForRowAtIndexPath:indexPath];
   ((UILabel*)[cell.contentView viewWithTag:kXeniaConfigSliderValueTag]).text = text;
 
-  [self markPendingChangesForItem:item];
+  if (sender.isTracking && !live_override_) {
+    // Saved once the thumb is let go: in a game each save applies the settings live, which can
+    // hold the main thread, so it shouldn't happen at every step of a drag.
+    if (!item->key.empty()) {
+      dirty_keys_.insert(item->key);
+    }
+    hasPendingChanges_ = YES;
+  } else {
+    [self markPendingChangesForItem:item];
+  }
   if (live_override_) {
     [self applyLiveOverrideForItem:item];
   }
@@ -1538,6 +1547,9 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   IOSConfigItem* item = indexPath ? [self itemAtIndexPath:indexPath] : nullptr;
   if (IsSliderItem(item)) {
     [sender setValue:static_cast<float>(item->double_value) animated:YES];
+    if (hasPendingChanges_) {
+      [self markPendingChangesForItem:item];
+    }
   }
 }
 

@@ -18,6 +18,12 @@
 
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
+namespace xe {
+namespace ui {
+class IOSWindowedAppContext;
+}  // namespace ui
+}  // namespace xe
+
 typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
   XeniaIOSGameActionPlay = 0,
   XeniaIOSGameActionGameSettings,
@@ -40,6 +46,13 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
 // The compatibility status under the title ("● Playable"); hidden when nil.
 @property(nonatomic, copy) NSString* statusText;
 @property(nonatomic, retain) UIColor* statusColor;
+// Where the Patches row reads and saves its switches when it opens in place.
+@property(nonatomic, assign) xe::ui::IOSWindowedAppContext* appContext;
+// Just the rows, for the Library to show in place of its grid beside art it already shows. Set
+// before the view loads.
+@property(nonatomic, assign) BOOL showsRowsOnly;
+// What ⋯ offers: copy the launch link, reset the game's settings.
+- (UIMenu*)moreMenu;
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
                           titleID:(uint32_t)titleID
