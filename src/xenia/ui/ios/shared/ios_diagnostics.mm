@@ -11,10 +11,17 @@
 
 #import <UIKit/UIKit.h>
 
-#include <atomic>
+#include <sys/mman.h>
+#include <unistd.h>
 
+#include <atomic>
+#include <thread>
+
+#include "xenia/base/backend_failure.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/system.h"
 #include "xenia/ui/presenter.h"
+#import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
 #import "xenia/ui/ios/shared/ios_fault_record.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
@@ -212,6 +219,10 @@ NSString* UnfinishedSessionEnd(NSDictionary* fault, NSString* state) {
 void QueuePreviousLaunch(NSDictionary* previous_marker, BOOL diagnostics_were_on) {
   NSDictionary* fault = xe_ios_fault_record_take_previous();
   NSMutableDictionary* session = xe_ios_session_stats_take_unfinished();
+  // The next-launch notice says so whether or not diagnostics are on.
+  if ([fault[@"inJit"] isKindOfClass:[NSNumber class]] && [fault[@"inJit"] boolValue]) {
+    xe_ios_note_previous_crash_in_jit();
+  }
   if (!diagnostics_were_on) {
     return;
   }
@@ -271,6 +282,127 @@ void QueuePreviousLaunch(NSDictionary* previous_marker, BOOL diagnostics_were_on
     NoteLaunchCrashed(crash[@"launchId"]);
   }
 }
+
+// ---- CPU backend failures (xe::NoteBackendFailure)
+
+// Kinds already shown and recorded in this game session, a bit each: every
+// failure counts in the session, but one of a kind alerts and records once.
+std::atomic<uint32_t> g_backend_failures_seen{0};
+
+NSString* BackendFailureName(xe::BackendFailure failure) {
+  switch (failure) {
+    case xe::BackendFailure::kCompileFailure:
+      return @"compile";
+    case xe::BackendFailure::kCodeCache:
+      return @"code-cache";
+    case xe::BackendFailure::kJitUnavailable:
+      return @"jit-unavailable";
+    case xe::BackendFailure::kBackendException:
+      return @"exception";
+  }
+  return @"exception";
+}
+
+// Called on the failing guest or compiler thread, which mustn't wait on the
+// alert: the record and the alert go from a queue of their own.
+void HandleBackendFailure(xe::BackendFailure failure, uint32_t guest_address, bool continues) {
+  xe_ios_session_stats_note_backend_failure();
+  const uint32_t bit = 1u << static_cast<uint32_t>(failure);
+  if (g_backend_failures_seen.fetch_or(bit, std::memory_order_relaxed) & bit) {
+    return;
+  }
+  const uint32_t title_id = g_title_id.load(std::memory_order_relaxed);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    @autoreleasepool {
+      NSString* name = BackendFailureName(failure);
+      NSMutableDictionary* record = [NSMutableDictionary dictionary];
+      record[@"source"] = @"app";
+      record[@"type"] = @"backend";
+      record[@"failure"] = name;
+      record[@"continued"] = @(continues);
+      if (guest_address) {
+        record[@"guestAddress"] = [NSString stringWithFormat:@"%08X", guest_address];
+      }
+      if (title_id) {
+        record[@"titleId"] = [NSString stringWithFormat:@"%08X", title_id];
+      }
+      if (g_launch_id) {
+        record[@"launchId"] = g_launch_id;
+      }
+      record[@"message"] =
+          guest_address ? [NSString stringWithFormat:@"A64 %@ failure at guest %08X", name,
+                                                     guest_address]
+                        : [NSString stringWithFormat:@"A64 %@ failure", name];
+      // Only with Online Features and Share Diagnostics on (the outbox checks).
+      xe_ios_diagnostics_enqueue(@"crash", record);
+      // A backend that couldn't start fails the launch, which says so itself.
+      if (!continues) {
+        return;
+      }
+      NSString* text = NSLocalizedString(
+          @"XeniOS couldn't translate part of this game's code to run on this device (a JIT "
+          @"error). The game will probably freeze, crash or misbehave when it reaches that code. "
+          @"Quitting and starting it again won't fix it. With Share Diagnostics on, a report goes "
+          @"to the developers.",
+          @"Alert when the CPU recompiler fails during a game");
+      xe::ShowSimpleMessageBox(xe::SimpleMessageBoxType::Warning, text.UTF8String);
+    }
+  });
+}
+
+#if TARGET_OS_SIMULATOR || !defined(NDEBUG)
+// Development checks of the paths above, from launch arguments (never in a
+// device release build):
+//   -XeniOSDebugBackendFailure compile|code-cache|exception|jit-unavailable
+//       in a stand-in game session that ends 5 s later (session and crash records);
+//   -XeniOSDebugFatal YES       xe::FatalError;
+//   -XeniOSDebugJitCrash YES    a jump into a page noted as JIT code, so the
+//       next launch shows the JIT crash notice.
+void RunDebugTriggers() {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* failure = [defaults stringForKey:@"XeniOSDebugBackendFailure"];
+  const BOOL fatal = [defaults boolForKey:@"XeniOSDebugFatal"];
+  const BOOL jit_crash = [defaults boolForKey:@"XeniOSDebugJitCrash"];
+  if (!failure && !fatal && !jit_crash) {
+    return;
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    if (failure) {
+      const NSArray<NSString*>* names = @[ @"compile", @"code-cache", @"jit-unavailable", @"exception" ];
+      const NSUInteger index = [names indexOfObject:failure];
+      if (index == NSNotFound) {
+        return;
+      }
+      XELOGW("iOS: Debug trigger: backend failure {}", failure.UTF8String);
+      xe_ios_diagnostics_note_game_running(YES);
+      xe_ios_diagnostics_note_title(0x4D5307E6, 0, 0);
+      std::thread([index] {
+        xe::NoteBackendFailure(static_cast<xe::BackendFailure>(index), 0x82001234,
+                               index != 2);
+        xe::NoteBackendFailure(static_cast<xe::BackendFailure>(index), 0x82005678,
+                               index != 2);
+      }).detach();
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+                     dispatch_get_main_queue(), ^{
+                       xe_ios_diagnostics_note_game_running(NO);
+                     });
+    }
+    if (fatal) {
+      std::thread([] { xe::FatalError("Debug trigger: a forced fatal error."); }).detach();
+    }
+    if (jit_crash) {
+      const size_t size = getpagesize();
+      void* page = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      if (page == MAP_FAILED) {
+        return;
+      }
+      XELOGW("iOS: Debug trigger: jumping into a non-executable page noted as JIT code");
+      xe_ios_fault_record_note_jit_range(reinterpret_cast<uint64_t>(page), size);
+      reinterpret_cast<void (*)()>(page)();
+    }
+  });
+}
+#endif  // TARGET_OS_SIMULATOR || !defined(NDEBUG)
 
 }  // namespace
 
@@ -349,6 +481,10 @@ void xe_ios_diagnostics_start(NSDictionary* previous_marker) {
                                 header);
     xe_ios_fault_record_note_upload_allowed(xe_ios_diagnostics_upload_allowed());
     xe::ui::Presenter::SetGuestOutputRefreshObserver(xe_ios_session_stats_note_guest_frame);
+    xe::SetBackendFailureHandler(HandleBackendFailure);
+#if TARGET_OS_SIMULATOR || !defined(NDEBUG)
+    RunDebugTriggers();
+#endif
 
     // Pending records go out at launch and on coming back to the foreground,
     // and at no other time.
@@ -377,6 +513,7 @@ void xe_ios_diagnostics_note_game_running(BOOL running) {
     return;
   }
   if (running) {
+    g_backend_failures_seen.store(0, std::memory_order_relaxed);
     if (xe_ios_diagnostics_upload_allowed()) {
       xe_ios_session_stats_begin();
     }
