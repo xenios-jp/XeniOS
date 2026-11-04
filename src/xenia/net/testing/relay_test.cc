@@ -355,6 +355,7 @@ class FakeLobby {
   // Everything clients sent, in order.
   std::vector<std::string> received;
   size_t connects = 0;
+  size_t pings = 0;
   // Appended to every player's candidates, as a forged presence could, and a
   // relay address that replaces every player's own.
   std::vector<std::string> extra_candidates;
@@ -374,6 +375,16 @@ class FakeLobby {
     connections_[id] = {path, std::move(socket)};
     connections_[id].net = std::move(net);
     return id;
+  }
+
+  // A WebSocket ping, answered like the text one but not seen by the room.
+  void Ping(int id) {
+    auto found = connections_.find(id);
+    if (found == connections_.end()) {
+      return;
+    }
+    ++pings;
+    found->second.socket.message("pong");
   }
 
   void Message(int id, const std::string& text) {
@@ -702,6 +713,9 @@ class Network {
       if (node.lobby) {
         lobby.Message(*node.lobby, text);
       }
+    }
+    if (out.lobby_ping && node.lobby) {
+      lobby.Ping(*node.lobby);
     }
     out = {};
   }
@@ -1501,6 +1515,24 @@ TEST_CASE("Relay lobby turns players away", "[relay]") {
   CHECK(newer.lobby.connects == 1);
 }
 
+TEST_CASE("Relay players ping the lobby for free, and tell the room each minute",
+          "[relay]") {
+  Network network;
+  auto& a = network.Add(kMacA);
+  network.Run(1000);
+  REQUIRE(a.client.status().state == State::kOnline);
+  const auto texts = [&] {
+    return std::count(network.lobby.received.begin(),
+                      network.lobby.received.end(), "ping");
+  };
+  network.Run(300000);
+  // WebSocket pings every 30 seconds, every other one the text "ping".
+  CHECK(texts() == 5);
+  CHECK(network.lobby.pings == 5);
+  CHECK(a.client.status().state == State::kOnline);
+  CHECK(network.lobby.connects == 1);
+}
+
 TEST_CASE("Relay players never probe addresses a peer made up", "[relay]") {
   // Everyone lists the others' public addresses and local ones of its own
   // choosing, as a hostile player could.
@@ -1883,6 +1915,12 @@ class FakeLobbySocket : public secure::LobbySocket {
     if (id_) {
       lobby_.Message(*id_, text);
     }
+  }
+  bool Ping() override {
+    if (id_) {
+      lobby_.Ping(*id_);
+    }
+    return true;
   }
 
  private:

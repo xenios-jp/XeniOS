@@ -96,6 +96,8 @@ struct IceServers {
 struct Outbox {
   std::vector<Datagram> datagrams;
   std::vector<std::string> lobby;
+  // A WebSocket ping for the lobby, or the text "ping" where there's none.
+  bool lobby_ping = false;
 };
 
 // One instance's side of a room, without sockets or a clock. The lobby names
@@ -154,9 +156,13 @@ class RelayClient {
   };
 
  private:
-  // Each ping counts against the lobby's daily requests. Two fit in the time
-  // the lobby (and this client) waits before calling a connection lost.
+  // A WebSocket ping keeps the connection up and shows it's alive, two in the
+  // time this client waits before calling it lost. They cost the lobby
+  // nothing, but the room doesn't see them, so it's told the player is there
+  // with the text "ping" every kLobbyTextPingMs, which counts against its
+  // daily requests.
   static constexpr uint64_t kLobbyPingMs = 30000;
+  static constexpr uint64_t kLobbyTextPingMs = 60000;
   static constexpr uint64_t kLobbyLostMs = 60000;
   // A player turned away, or refused, tries again after this long, twice as
   // long each time in a row, up to kMaxRefusedBackoffMs, so a lobby at its
@@ -255,6 +261,7 @@ class RelayClient {
   // The lobby's name for this player's network, when it gives one.
   std::optional<uint64_t> net_;
   uint64_t next_lobby_ping_ms_ = 0;
+  uint64_t next_lobby_text_ping_ms_ = 0;
   bool joined_ = false;
   // The welcome said the room counts the app.
   bool app_counted_ = false;

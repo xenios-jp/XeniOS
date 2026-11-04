@@ -331,6 +331,10 @@ class RelayTransport final : public PacketTransport {
       }
     }
     out_.lobby.clear();
+    if (out_.lobby_ping && lobby_ && !lobby_->Ping()) {
+      lobby_->Send("ping");
+    }
+    out_.lobby_ping = false;
   }
 
   // Online features can be turned off while a game runs: the transport
