@@ -130,6 +130,10 @@ void SyncMemory();
 // runs most guest threads. False where the host offers no such control.
 bool PreferEfficiencyCores();
 
+// Asks the host to run the current thread on its performance cores, for a
+// thread a frame waits on. False where the host offers no such control.
+bool PreferPerformanceCores();
+
 // Sleeps the current thread for at least as long as the given duration.
 void Sleep(std::chrono::microseconds duration);
 void NanoSleep(int64_t ns);

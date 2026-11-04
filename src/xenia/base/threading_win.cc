@@ -163,6 +163,8 @@ void SyncMemory() { MemoryBarrier(); }
 
 bool PreferEfficiencyCores() { return false; }
 
+bool PreferPerformanceCores() { return false; }
+
 void Sleep(std::chrono::microseconds duration) {
   if (duration.count() < 100) {
     MaybeYield();
