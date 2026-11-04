@@ -380,10 +380,18 @@ UIButton* NewGlassCircle(NSString* symbol, CGFloat side, NSString* label) {
     [title_stack_.topAnchor constraintGreaterThanOrEqualToAnchor:header_.topAnchor],
     [button_row_.topAnchor constraintEqualToAnchor:cover_view_.bottomAnchor constant:26.0],
     [button_row_.leadingAnchor constraintEqualToAnchor:header_.layoutMarginsGuide.leadingAnchor],
+    // Full width on a phone in portrait; a readable width beside the cover when wider.
     [button_row_.trailingAnchor
-        constraintEqualToAnchor:header_.layoutMarginsGuide.trailingAnchor],
+        constraintLessThanOrEqualToAnchor:header_.layoutMarginsGuide.trailingAnchor],
+    [button_row_.widthAnchor constraintLessThanOrEqualToConstant:460.0],
     [button_row_.bottomAnchor constraintEqualToAnchor:header_.bottomAnchor constant:-18.0],
     [play_button.heightAnchor constraintEqualToConstant:54.0],
+    ({
+      NSLayoutConstraint* fill = [button_row_.trailingAnchor
+          constraintEqualToAnchor:header_.layoutMarginsGuide.trailingAnchor];
+      fill.priority = UILayoutPriorityDefaultHigh;
+      fill;
+    }),
   ]];
   table_view_.tableHeaderView = header_;
 }
