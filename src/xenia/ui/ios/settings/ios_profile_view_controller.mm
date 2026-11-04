@@ -39,13 +39,12 @@
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
   if (shows_dismiss_button_) {
-    self.navigationItem.leftBarButtonItem =
-        [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                       target:self
-                                                       action:@selector(doneTapped:)]
-            autorelease];
+    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+        initWithTitle:NSLocalizedString(@"Close", @"profile view controller: button")
+                style:UIBarButtonItemStylePlain
+               target:self
+               action:@selector(doneTapped:)] autorelease];
   }
 }
 
@@ -91,37 +90,27 @@
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 2;
+  return 1;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
-  if (section == 0) {
-    return 1;
-  }
-  return static_cast<NSInteger>(profiles_.size());
+// The profiles, then a last row that adds one.
+- (NSInteger)tableView:(UITableView* __unused)tableView
+    numberOfRowsInSection:(NSInteger __unused)section {
+  return static_cast<NSInteger>(profiles_.size()) + 1;
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  if (section == 0) {
-    return NSLocalizedString(@"Actions", @"profile view controller: user-visible text");
-  }
-  return NSLocalizedString(@"Local Profiles", @"profile view controller: user-visible text");
+- (BOOL)isAddRow:(NSIndexPath*)indexPath {
+  return indexPath.row == static_cast<NSInteger>(profiles_.size());
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  if (section == 0) {
-    return NSLocalizedString(@"Create and sign in profiles used by Xbox Live emulation.",
+- (NSString*)tableView:(UITableView* __unused)tableView
+    titleForFooterInSection:(NSInteger __unused)section {
+  if (profiles_.empty() && app_context_ && !app_context_->ProfileServicesReady()) {
+    return NSLocalizedString(@"Loading profiles...",
                              @"profile view controller: user-visible text");
   }
-  if (profiles_.empty()) {
-    if (app_context_ && !app_context_->ProfileServicesReady()) {
-      return NSLocalizedString(@"Loading profiles...",
-                               @"profile view controller: user-visible text");
-    }
-    return NSLocalizedString(@"No profiles created yet.",
-                             @"profile view controller: user-visible text");
-  }
-  return nil;
+  return NSLocalizedString(@"Games save progress and achievements to the signed-in profile.",
+                           @"profile view controller: footer");
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -139,25 +128,12 @@
   cell.accessoryView = nil;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
 
-  if (indexPath.section == 0) {
-    cell.textLabel.text =
-        NSLocalizedString(@"Create Profile", @"profile view controller: label text");
+  if ([self isAddRow:indexPath]) {
+    cell.textLabel.text = NSLocalizedString(@"Add Profile…", @"profile view controller: button");
     cell.textLabel.textColor = [XeniaTheme accent];
-    cell.detailTextLabel.text = NSLocalizedString(@"Create a new profile and sign in.",
-                                                  @"profile view controller: detail text");
-    cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    XEApplyAccessibility(cell, cell.textLabel.text, nil, cell.detailTextLabel.text,
-                         UIAccessibilityTraitButton);
-    return cell;
-  }
-
-  if (indexPath.row < 0 || indexPath.row >= static_cast<NSInteger>(profiles_.size())) {
-    cell.textLabel.text = @"";
-    cell.detailTextLabel.text = @"";
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    XEApplyAccessibility(cell, nil, nil, nil, UIAccessibilityTraitNone);
-    cell.isAccessibilityElement = NO;
+    cell.detailTextLabel.text = nil;
+    cell.imageView.image = XESettingsBadgeImage(@"plus", [XeniaTheme accent]);
+    XEApplyAccessibility(cell, cell.textLabel.text, nil, nil, UIAccessibilityTraitButton);
     return cell;
   }
 
@@ -167,14 +143,18 @@
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   if (profile.signed_in) {
     cell.detailTextLabel.text =
-        [NSString stringWithFormat:NSLocalizedString(@"Signed in on slot %u",
-                                                     @"profile view controller: detail text"),
-                                   profile.signed_in_slot];
+        profile.signed_in_slot
+            ? [NSString stringWithFormat:NSLocalizedString(@"Signed In as Player %u",
+                                                           @"profile view controller: detail text"),
+                                         profile.signed_in_slot + 1]
+            : NSLocalizedString(@"Signed In", @"profile view controller: detail text");
     cell.accessoryType = UITableViewCellAccessoryCheckmark;
   } else {
     cell.detailTextLabel.text =
-        NSLocalizedString(@"Not signed in", @"profile view controller: detail text");
+        NSLocalizedString(@"Tap to sign in", @"profile view controller: detail text");
   }
+  cell.imageView.image = XESettingsBadgeImage(
+      @"person.fill", profile.signed_in ? [XeniaTheme accent] : [UIColor systemGrayColor]);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   XEApplyAccessibility(cell, gamertag, cell.detailTextLabel.text, nil,
                        profile.signed_in ? (UIAccessibilityTraitButton | UIAccessibilityTraitSelected)
@@ -197,9 +177,9 @@
   }
 
   __block UIAlertController* create_alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Create Profile",
+      alertControllerWithTitle:NSLocalizedString(@"Add Profile",
                                                  @"profile view controller: title")
-                       message:NSLocalizedString(@"Enter a gamertag (1-15 characters).",
+                       message:NSLocalizedString(@"Choose a gamertag of up to 15 characters.",
                                                  @"profile view controller: message")
                 preferredStyle:UIAlertControllerStyleAlert];
   [create_alert addTextFieldWithConfigurationHandler:^(UITextField* text_field) {
@@ -249,6 +229,7 @@
                               }
                               [self reloadProfiles];
                             }]];
+  create_alert.preferredAction = create_alert.actions.lastObject;
   [self presentViewController:create_alert animated:YES completion:nil];
 }
 
@@ -258,7 +239,7 @@
     return;
   }
 
-  if (indexPath.section == 0) {
+  if ([self isAddRow:indexPath]) {
     [self presentCreateProfileAlert];
     return;
   }

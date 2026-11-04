@@ -236,8 +236,7 @@
 /* Control tooltip line; %s is the action name */
 "Action: %s" = "Action: %s";
 
-/* game content view controller: user-visible text
-   profile view controller: user-visible text */
+/* game content view controller: user-visible text */
 "Actions" = "Actions";
 
 /* Layout library row detail: the layout in use */
@@ -258,11 +257,20 @@
 /* launcher overlay view: empty library message */
 "Add games with Files or Finder." = "Add games with Files or Finder.";
 
+/* profile view controller: title */
+"Add Profile" = "Add Profile";
+
+/* profile view controller: button */
+"Add Profile…" = "Add Profile…";
+
 /* compat report cells: label text */
 "Add Screenshot" = "Add Screenshot";
 
 /* Action sheet title: add games to the library */
 "Add to Library" = "Add to Library";
+
+/* settings hub view controller: title */
+"Add-ons, updates and patches." = "Add-ons, updates and patches.";
 
 /* game content view controller: title */
 "Adding Content" = "Adding Content";
@@ -324,7 +332,7 @@
 "App Icon" = "App Icon";
 
 /* settings hub view controller: title */
-"App icon selection and interface presentation." = "App icon selection and interface presentation.";
+"App icon and theme." = "App icon and theme.";
 
 /* settings hub view controller: user-visible text */
 "App icon set to %@." = "App icon set to %@.";
@@ -419,8 +427,7 @@
 /* settings hub view controller: title */
 "Browse, rename, duplicate, import, export, and reset touch layouts." = "Browse, rename, duplicate, import, export, and reset touch layouts.";
 
-/* compat report cells: label text
-   settings hub view controller: user-visible text */
+/* compat report cells: label text */
 "Build" = "Build";
 
 /* compat formatting: user-visible text */
@@ -428,9 +435,6 @@
 
 /* Version text when only a build number is known; %lld is the build number */
 "build %lld" = "build %lld";
-
-/* settings hub view controller: title */
-"Build information and project links." = "Build information and project links.";
 
 /* Shader compile indicator title, expanded */
 "Building shaders" = "Building shaders";
@@ -529,6 +533,9 @@
 /* online view controller: footer */
 "Choose a game to play it in its public lobby or a private room." = "Choose a game to play it in its public lobby or a private room.";
 
+/* profile view controller: message */
+"Choose a gamertag of up to 15 characters." = "Choose a gamertag of up to 15 characters.";
+
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -569,17 +576,23 @@
 "Clear Current Game Shader Cache" = "Clear Current Game Shader Cache";
 
 /* settings hub view controller: title */
-"Clear current-title or all-title persistent shader caches." = "Clear current-title or all-title persistent shader caches.";
+"Clear saved shaders." = "Clear saved shaders.";
 
 /* Alert title: confirm clearing the current game's shader cache */
 "Clear Shader Cache?" = "Clear Shader Cache?";
 
-/* game content view controller: title
+/* achievements view controller: button
+   external folders view controller: button
+   game content view controller: title
+   game disc view controller: button
    game patches view controller: title
+   log view controller: button
    Message box button
    Navigation bar button that closes the touch layout editor
+   profile view controller: button
    settings hub view controller: title
-   system link view controller: button */
+   system link view controller: button
+   system software view controller: button */
 "Close" = "Close";
 
 /* VoiceOver hint for the disc tray's Leave Empty button */
@@ -632,7 +645,7 @@
 "Control Label" = "Control Label";
 
 /* settings hub view controller: title */
-"Controller setup, touch layouts, haptics, and look tuning." = "Controller setup, touch layouts, haptics, and look tuning.";
+"Controllers, touch and haptics." = "Controllers, touch and haptics.";
 
 /* settings hub view controller: title
    settings hub view controller: user-visible text */
@@ -808,14 +821,8 @@
 /* game actions view controller: user-visible text */
 "Create a compressed .zar copy in the XeniOS library." = "Create a compressed .zar copy in the XeniOS library.";
 
-/* profile view controller: detail text */
-"Create a new profile and sign in." = "Create a new profile and sign in.";
-
 /* game patches view controller: detail text */
 "Create a patches folder here:\n%@" = "Create a patches folder here:\n%@";
-
-/* profile view controller: user-visible text */
-"Create and sign in profiles used by Xbox Live emulation." = "Create and sign in profiles used by Xbox Live emulation.";
 
 /* system link view controller: button row */
 "Create Private Room" = "Create Private Room";
@@ -824,9 +831,7 @@
 "Create Private Room…" = "Create Private Room…";
 
 /* Action sheet button: create a profile
-   Alert title: create a profile
-   profile view controller: label text
-   profile view controller: title */
+   Alert title: create a profile */
 "Create Profile" = "Create Profile";
 
 /* zar conversion coordinator: title */
@@ -843,9 +848,6 @@
 
 /* Very short badge on a touch control: generic controller input */
 "Ctrl" = "Ctrl";
-
-/* settings hub view controller: title */
-"Curated F8-style debug and compatibility overrides." = "Curated F8-style debug and compatibility overrides.";
 
 /* zar conversion coordinator: label text */
 "Current item" = "Current item";
@@ -888,6 +890,9 @@
 
 /* Row subtitle in the touch control edit panel */
 "Deadzone, curve, smoothing" = "Deadzone, curve, smoothing";
+
+/* settings hub view controller: title */
+"Debug overrides." = "Debug overrides.";
 
 /* VoiceOver label of a touch control edit button */
 "Decrease size" = "Decrease size";
@@ -1152,8 +1157,7 @@
 /* game patches view controller: accessibility value */
 "Enabled" = "Enabled";
 
-/* Alert message: gamertag rules
-   profile view controller: message */
+/* Alert message: gamertag rules */
 "Enter a gamertag (1-15 characters)." = "Enter a gamertag (1-15 characters).";
 
 /* Prompt text: save a copy of the layout */
@@ -1188,7 +1192,7 @@
 "Estimating…" = "Estimating…";
 
 /* settings hub view controller: title */
-"Every emulator option. For troubleshooting only." = "Every emulator option. For troubleshooting only.";
+"Every option, for troubleshooting." = "Every option, for troubleshooting.";
 
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
@@ -1377,6 +1381,9 @@
 /* Display menu item */
 "Fit (Preserve Aspect)" = "Fit (Preserve Aspect)";
 
+/* settings hub view controller: title */
+"Fixes for specific games." = "Fixes for specific games.";
+
 /* Row subtitle in the touch control edit panel */
 "Flick for a 2nd input" = "Flick for a 2nd input";
 
@@ -1449,6 +1456,9 @@
 "Gamertag" = "Gamertag";
 
 /* settings hub view controller: title */
+"Gamertags and sign-in." = "Gamertags and sign-in.";
+
+/* settings hub view controller: title */
 "Games" = "Games";
 
 /* external folders view controller: user-visible text */
@@ -1456,6 +1466,9 @@
 
 /* Detail line of the expanded shader compile indicator */
 "Games may stutter until this finishes." = "Games may stutter until this finishes.";
+
+/* profile view controller: footer */
+"Games save progress and achievements to the signed-in profile." = "Games save progress and achievements to the signed-in profile.";
 
 /* settings hub view controller: title */
 "Games · Install the system update and the Xbox 360 Dashboard." = "Games · Install the system update and the Xbox 360 Dashboard.";
@@ -1481,9 +1494,6 @@
 
 /* compat report cells: label text */
 "GPU Backend" = "GPU Backend";
-
-/* settings hub view controller: title */
-"GPU, memory, boot, and JIT title workarounds." = "GPU, memory, boot, and JIT title workarounds.";
 
 /* In-game menu button
    Pause menu row
@@ -1586,7 +1596,7 @@
 "Import Games" = "Import Games";
 
 /* settings hub view controller: title */
-"Import games, refresh the library, and manage local storage." = "Import games, refresh the library, and manage local storage.";
+"Import games and free up space." = "Import games and free up space.";
 
 /* document import coordinator: title */
 "Import In Progress" = "Import In Progress";
@@ -1667,9 +1677,6 @@
 
 /* system software view controller: action */
 "Install from Files" = "Install from Files";
-
-/* settings hub view controller: title */
-"Install the system update that has the Xbox 360 Dashboard." = "Install the system update that has the Xbox 360 Dashboard.";
 
 /* Alert message; %@ is the host name of the download source */
 "Install the touch layout from %@?" = "Install the touch layout from %@?";
@@ -1940,20 +1947,14 @@
 /* acknowledgements view controller: user-visible text */
 "Loading…" = "Loading…";
 
-/* settings hub view controller: title */
-"Local iOS automation options." = "Local iOS automation options.";
-
-/* profile view controller: user-visible text */
-"Local Profiles" = "Local Profiles";
-
 /* Achievement state for VoiceOver */
 "Locked" = "Locked";
 
+/* settings hub view controller: title */
+"Log level and live log." = "Log level and live log.";
+
 /* Alert title: the log file to share does not exist */
 "Log Not Found" = "Log Not Found";
-
-/* settings hub view controller: title */
-"Log verbosity and live log viewer." = "Log verbosity and live log viewer.";
 
 /* Menu item that assigns a hold-and-drag output */
 "Look" = "Look";
@@ -1981,9 +1982,6 @@
 
 /* game actions view controller: user-visible text */
 "Manage installed title updates and related content." = "Manage installed title updates and related content.";
-
-/* settings hub view controller: title */
-"Manage local profiles and sign-in slots." = "Manage local profiles and sign-in slots.";
 
 /* settings hub view controller: title */
 "Manage title-specific installed content, discs, and patches from a game tile's context menu." = "Manage title-specific installed content, discs, and patches from a game tile's context menu.";
@@ -2048,6 +2046,9 @@
 /* settings hub view controller: title */
 "Name" = "Name";
 
+/* settings hub view controller: title */
+"Needed for the Xbox 360 Dashboard." = "Needed for the Xbox 360 Dashboard.";
+
 /* Alert message; %s is the log file name */
 "No %s file exists yet." = "No %s file exists yet.";
 
@@ -2111,9 +2112,6 @@
 
 /* Launcher label: a profile exists but none is signed in */
 "No profile signed in" = "No profile signed in";
-
-/* profile view controller: user-visible text */
-"No profiles created yet." = "No profiles created yet.";
 
 /* log view controller: label text */
 "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically." = "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically.";
@@ -2186,9 +2184,6 @@
 
 /* launcher overlay view: accessibility value */
 "Not set up" = "Not set up";
-
-/* profile view controller: detail text */
-"Not signed in" = "Not signed in";
 
 /* system link status view controller: state */
 "Not Started" = "Not Started";
@@ -2285,6 +2280,9 @@
 
 /* launcher overlay view: accessibility label */
 "Open StikDebug" = "Open StikDebug";
+
+/* settings hub view controller: title */
+"Open StikDebug on launch." = "Open StikDebug on launch.";
 
 /* settings hub view controller: title */
 "Open the in-game touch editor for the currently running title." = "Open the in-game touch editor for the currently running title.";
@@ -2930,14 +2928,14 @@
 /* Alert title: all shader caches clear result */
 "Shader Caches Not Cleared" = "Shader Caches Not Cleared";
 
-/* settings hub view controller: title */
-"Shader compilation behavior and experimental iOS thread QoS." = "Shader compilation behavior and experimental iOS thread QoS.";
-
 /* Display settings toggle */
 "Shader Compile Status" = "Shader Compile Status";
 
 /* Footer under the display options */
 "Shader Compile Status shows when the game is building shaders, which causes stutter and missing effects until it finishes." = "Shader Compile Status shows when the game is building shaders, which causes stutter and missing effects until it finishes.";
+
+/* settings hub view controller: title */
+"Shader compiles and threads." = "Shader compiles and threads.";
 
 /* Row title in the touch control edit panel */
 "Shape" = "Shape";
@@ -3013,12 +3011,15 @@
 /* In-game menu, VoiceOver: System Link card hint */
 "Shows the System Link room, its players and who's online." = "Shows the System Link room, its players and who's online.";
 
+/* profile view controller: detail text */
+"Signed In" = "Signed In";
+
 /* profile view controller: user-visible text
    Toast; %@ is the gamertag */
 "Signed in as %@." = "Signed in as %@.";
 
 /* profile view controller: detail text */
-"Signed in on slot %u" = "Signed in on slot %u";
+"Signed In as Player %u" = "Signed In as Player %u";
 
 /* Launcher label; %@ is the signed-in gamertag */
 "Signed in: %@" = "Signed in: %@";
@@ -3222,6 +3223,9 @@
 
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
+
+/* profile view controller: detail text */
+"Tap to sign in" = "Tap to sign in";
 
 /* Feedback while snapping; %@ is the name of the matched control */
 "target" = "target";
@@ -3445,9 +3449,6 @@
 /* Fallback heading; %08X is the title ID in hexadecimal */
 "Title %08X" = "Title %08X";
 
-/* settings hub view controller: title */
-"Title content, discs, packages, and patches from game tiles." = "Title content, discs, packages, and patches from game tiles.";
-
 /* compat report cells: label text */
 "Title ID" = "Title ID";
 
@@ -3631,13 +3632,12 @@
 "Update available: %@" = "Update available: %@";
 
 /* settings hub view controller: user-visible text */
-"Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link." = "Update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet. Turn this off and XeniOS does none of these. Games still run, without System Link.";
+"Update checks, cover art, compatibility data, discussions and reports, and System Link over the internet. Games still run with this off." = "Update checks, cover art, compatibility data, discussions and reports, and System Link over the internet. Games still run with this off.";
 
 /* settings hub view controller: footer of the Online Features switch */
-"Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link. To stop only crash reports and statistics, turn off Share Diagnostics instead." = "Update checks, compatibility data, cover art, compatibility discussions and reports, System Link over the internet, and diagnostics. Turn this off and XeniOS does none of these. Games still run, without System Link. To stop only crash reports and statistics, turn off Share Diagnostics instead.";
+"Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics." = "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics.";
 
-/* settings hub view controller: label text
-   settings hub view controller: user-visible text */
+/* settings hub view controller: label text */
 "Updates" = "Updates";
 
 /* Menu item in the touch control label menu */
@@ -3667,6 +3667,12 @@
 /* settings hub view controller: title
    system software view controller: label */
 "Version" = "Version";
+
+/* settings hub view controller: about header; %@ is the version */
+"Version %@" = "Version %@";
+
+/* settings hub view controller: title */
+"Version, updates and privacy." = "Version, updates and privacy.";
 
 /* Slider label in the touch analog tuning screen */
 "Vertical Sensitivity" = "Vertical Sensitivity";

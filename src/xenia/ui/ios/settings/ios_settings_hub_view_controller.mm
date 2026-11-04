@@ -862,7 +862,81 @@ constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor systemBackgroundColor];
+  self.tableView.tableHeaderView = [self makeAboutHeaderView];
   [self refreshUpdateStatusForced:NO];
+}
+
+// The app icon, name and version, centered above the list.
+- (UIView*)makeAboutHeaderView {
+  UIImageView* icon =
+      [[[UIImageView alloc] initWithImage:[UIImage imageNamed:@"AppIcon60x60"]] autorelease];
+  icon.translatesAutoresizingMaskIntoConstraints = NO;
+  icon.layer.cornerRadius = 18.0;
+  icon.layer.cornerCurve = kCACornerCurveContinuous;
+  icon.clipsToBounds = YES;
+
+  UILabel* name = [[[UILabel alloc] init] autorelease];
+  name.text = XeniaBundleValue((NSString*)kCFBundleNameKey) ?: @"XeniOS";
+  name.font = xe_scaled_system_font(UIFontTextStyleTitle2, 22.0, UIFontWeightBold);
+  name.adjustsFontForContentSizeCategory = YES;
+  name.textColor = [XeniaTheme textPrimary];
+
+  NSString* version = XeniaBundleValue(@"CFBundleShortVersionString") ?: @"";
+  NSString* build = XeniaBundleValue((NSString*)kCFBundleVersionKey) ?: @"";
+  UILabel* detail = [[[UILabel alloc] init] autorelease];
+  detail.text =
+      version.length
+          ? [NSString stringWithFormat:NSLocalizedString(@"Version %@",
+                                                         @"settings hub view controller: about "
+                                                         @"header; %@ is the version"),
+                                       build.length && ![build isEqualToString:version]
+                                           ? [NSString stringWithFormat:@"%@ (%@)", version, build]
+                                           : version]
+          : NSLocalizedString(
+                @"Development Build",
+                @"settings hub view controller: build name shown when no version is available");
+  detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  detail.adjustsFontForContentSizeCategory = YES;
+  detail.textColor = [XeniaTheme textSecondary];
+
+  UIStackView* stack =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ icon, name, detail ]] autorelease];
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.alignment = UIStackViewAlignmentCenter;
+  stack.spacing = 4.0;
+  [stack setCustomSpacing:12.0 afterView:icon];
+  stack.isAccessibilityElement = YES;
+  stack.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", name.text, detail.text];
+  stack.accessibilityTraits = UIAccessibilityTraitHeader;
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+  UIView* header = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 180)] autorelease];
+  [header addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [icon.widthAnchor constraintEqualToConstant:80.0],
+    [icon.heightAnchor constraintEqualToConstant:80.0],
+    [stack.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+    [stack.topAnchor constraintEqualToAnchor:header.topAnchor constant:16.0],
+  ]];
+  return header;
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  // Size the header to its content, which grows with Dynamic Type.
+  UIView* header = self.tableView.tableHeaderView;
+  UIView* stack = header.subviews.firstObject;
+  if (!stack) {
+    return;
+  }
+  const CGFloat height =
+      16.0 + [stack systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].height + 8.0;
+  if (fabs(header.frame.size.height - height) > 0.5) {
+    CGRect frame = header.frame;
+    frame.size.height = height;
+    header.frame = frame;
+    self.tableView.tableHeaderView = header;
+  }
 }
 
 - (void)refreshUpdateStatusForced:(BOOL)forced {
@@ -899,7 +973,7 @@ constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
  numberOfRowsInSection:(NSInteger)section {
   switch (section) {
     case XeniaAboutSectionBuild:
-      return 3;
+      return 0;  // The header shows the name and version.
     case XeniaAboutSectionUpdates:
     case XeniaAboutSectionPrivacy:
       return 1;
@@ -914,9 +988,8 @@ constexpr NSInteger kAboutPendingReportsRow = 1;    // After Share Diagnostics.
 titleForHeaderInSection:(NSInteger)section {
   switch (section) {
     case XeniaAboutSectionBuild:
-      return NSLocalizedString(@"Build", @"settings hub view controller: user-visible text");
     case XeniaAboutSectionUpdates:
-      return NSLocalizedString(@"Updates", @"settings hub view controller: user-visible text");
+      return nil;
     case XeniaAboutSectionPrivacy:
       return NSLocalizedString(@"Privacy", @"settings hub view controller: user-visible text");
     case XeniaAboutSectionDiagnostics:
@@ -931,16 +1004,14 @@ titleForFooterInSection:(NSInteger)section {
   if (section == XeniaAboutSectionPrivacy) {
     if (!xe_ios_diagnostics_available()) {
       return NSLocalizedString(
-          @"Update checks, compatibility data, cover art, compatibility discussions and "
-          @"reports, and System Link over the internet. Turn this off and XeniOS does none of "
-          @"these. Games still run, without System Link.",
+          @"Update checks, cover art, compatibility data, discussions and reports, and System "
+          @"Link over the internet. Games still run with this off.",
           @"settings hub view controller: user-visible text");
     }
     return NSLocalizedString(
-        @"Update checks, compatibility data, cover art, compatibility discussions and "
-        @"reports, System Link over the internet, and diagnostics. Turn this off and XeniOS "
-        @"does none of these. Games still run, without System Link. To stop only crash "
-        @"reports and statistics, turn off Share Diagnostics instead.",
+        @"Update checks, cover art, compatibility data, discussions and reports, System Link "
+        @"over the internet, and diagnostics. Games still run with this off. To stop only "
+        @"diagnostics, turn off Share Diagnostics.",
         @"settings hub view controller: footer of the Online Features switch");
   }
   if (section == XeniaAboutSectionDiagnostics) {
@@ -989,6 +1060,7 @@ titleForFooterInSection:(NSInteger)section {
   cell.accessoryView = nil;
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  cell.imageView.image = nil;
 
   if (indexPath.section == XeniaAboutSectionBuild) {
     NSArray* titles = @[
@@ -1096,7 +1168,7 @@ titleForFooterInSection:(NSInteger)section {
         cell.textLabel.text = NSLocalizedString(
             @"Development Build",
             @"settings hub view controller: build name shown when no version is available");
-        cell.detailTextLabel.text = update_info_.currentVersionText ?: @"";
+        cell.detailTextLabel.text = @"";  // The header shows the version.
         break;
       case XeniaUpdateStatusUnknown:
       default:
@@ -1115,8 +1187,14 @@ titleForFooterInSection:(NSInteger)section {
     NSLocalizedString(@"Support", @"settings hub view controller: title"),
     NSLocalizedString(@"Acknowledgements", @"settings hub view controller: title")
   ];
+  NSArray* symbols = @[
+    @"globe", @"chevron.left.forwardslash.chevron.right", @"bubble.left.and.bubble.right.fill",
+    @"heart.fill", @"doc.text.fill"
+  ];
   cell.textLabel.text = [titles objectAtIndex:indexPath.row];
   cell.detailTextLabel.text = @"";
+  cell.imageView.image =
+      XESettingsBadgeImage([symbols objectAtIndex:indexPath.row], [UIColor systemGrayColor]);
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   return cell;
@@ -1280,7 +1358,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindProfile
                               title:NSLocalizedString(@"Profile",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Manage local profiles and sign-in slots.",
+                           subtitle:NSLocalizedString(@"Gamertags and sign-in.",
                                                       @"settings hub view controller: title")
                          symbolName:@"person.crop.circle.fill"
                           tintColor:mint],
@@ -1312,7 +1390,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Controller setup, touch layouts, haptics, and look tuning.",
+                                   @"Controllers, touch and haptics.",
                                    @"settings hub view controller: title")
                          symbolName:@"gamecontroller.fill"
                           tintColor:blue],
@@ -1327,7 +1405,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Import games, refresh the library, and manage local storage.",
+                                   @"Import games and free up space.",
                                    @"settings hub view controller: title")
                          symbolName:@"externaldrive.fill"
                           tintColor:gray],
@@ -1337,7 +1415,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Title content, discs, packages, and patches from game tiles.",
+                                   @"Add-ons, updates and patches.",
                                    @"settings hub view controller: title")
                          symbolName:@"puzzlepiece.extension.fill"
                           tintColor:gray],
@@ -1346,8 +1424,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"Xbox 360 System Software",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Install the system update that has the Xbox 360 "
-                                        @"Dashboard.",
+                                        @"Needed for the Xbox 360 Dashboard.",
                                         @"settings hub view controller: title")
                          symbolName:@"square.stack.3d.up.fill"
                           tintColor:gray],
@@ -1357,7 +1434,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Clear current-title or all-title persistent shader caches.",
+                                   @"Clear saved shaders.",
                                    @"settings hub view controller: title")
                          symbolName:@"trash"
                           tintColor:orange],
@@ -1371,7 +1448,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"Appearance",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"App icon selection and interface presentation.",
+                                        @"App icon and theme.",
                                         @"settings hub view controller: title")
                          symbolName:@"paintpalette.fill"
                           tintColor:mint],
@@ -1379,7 +1456,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindDiagnostics
                               title:NSLocalizedString(@"Diagnostics",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Log verbosity and live log viewer.",
+                           subtitle:NSLocalizedString(@"Log level and live log.",
                                                       @"settings hub view controller: title")
                          symbolName:@"waveform.path.ecg"
                           tintColor:red],
@@ -1387,7 +1464,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindAbout
                               title:NSLocalizedString(@"About",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Build information and project links.",
+                           subtitle:NSLocalizedString(@"Version, updates and privacy.",
                                                       @"settings hub view controller: title")
                          symbolName:@"info.circle.fill"
                           tintColor:gray],
@@ -1401,7 +1478,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"All Settings",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Every emulator option. For troubleshooting only.",
+                                        @"Every option, for troubleshooting.",
                                         @"settings hub view controller: title")
                          symbolName:@"list.bullet"
                           tintColor:gray],
@@ -1421,7 +1498,7 @@ titleForFooterInSection:(NSInteger)section {
                                                       @"settings hub view controller: title")
                            subtitle:
                                NSLocalizedString(
-                                   @"Shader compilation behavior and experimental iOS thread QoS.",
+                                   @"Shader compiles and threads.",
                                    @"settings hub view controller: title")
                          symbolName:@"bolt.fill"
                           tintColor:gray],
@@ -1430,7 +1507,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"Compatibility Workarounds",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"GPU, memory, boot, and JIT title workarounds.",
+                                        @"Fixes for specific games.",
                                         @"settings hub view controller: title")
                          symbolName:@"wrench.and.screwdriver.fill"
                           tintColor:gray],
@@ -1438,7 +1515,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindAutomation
                               title:NSLocalizedString(@"Automation",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Local iOS automation options.",
+                           subtitle:NSLocalizedString(@"Open StikDebug on launch.",
                                                       @"settings hub view controller: title")
                          symbolName:@"wand.and.stars"
                           tintColor:gray],
@@ -1447,7 +1524,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"Advanced Debug",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Curated F8-style debug and compatibility overrides.",
+                                        @"Debug overrides.",
                                         @"settings hub view controller: title")
                          symbolName:@"slider.horizontal.3"
                           tintColor:gray],
@@ -1851,7 +1928,7 @@ titleForFooterInSection:(NSInteger)section {
     item = [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindProfile
                title:NSLocalizedString(@"Profile", @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Manage local profiles and sign-in slots.",
+            subtitle:NSLocalizedString(@"Gamertags and sign-in.",
                                        @"settings hub view controller: title")
           symbolName:@"person.crop.circle.fill"
            tintColor:[XeniaTheme accent]];

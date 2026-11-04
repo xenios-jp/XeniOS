@@ -58,10 +58,11 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   // launcher's Add-to-Library sheet) we need a Done button; pushed onto an
   // existing stack (from Settings) the back button already handles dismissal.
   if (self.navigationController.viewControllers.firstObject == self) {
-    self.navigationItem.leftBarButtonItem =
-        [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                       target:self
-                                                       action:@selector(doneTapped:)] autorelease];
+    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+        initWithTitle:NSLocalizedString(@"Close", @"external folders view controller: button")
+                style:UIBarButtonItemStylePlain
+               target:self
+               action:@selector(doneTapped:)] autorelease];
   }
 
   [self reloadFolders];

@@ -967,7 +967,8 @@ constexpr CGFloat kOnlineIconSize = 36.0;
   cell.detailTextLabel.text = detail;
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.imageView.image =
-      image ?: XESettingsBadgeImage(symbol, empty ? [UIColor systemGrayColor] : [XeniaTheme accent]);
+      image ?: XESettingsBadgeImage(symbol,
+                                    empty ? [UIColor systemGrayColor] : [XeniaTheme accent]);
   cell.accessoryType = row == OnlineRow::kMine ? UITableViewCellAccessoryDisclosureIndicator
                                                : UITableViewCellAccessoryNone;
   cell.selectionStyle =

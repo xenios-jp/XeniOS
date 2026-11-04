@@ -99,10 +99,11 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
               return a.achievement_id < b.achievement_id;
             });
 
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                     target:self
-                                                     action:@selector(closeTapped:)] autorelease];
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Close", @"achievements view controller: button")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(closeTapped:)] autorelease];
   self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
       initWithTitle:NSLocalizedString(@"Show Hidden",
                                       @"Navigation bar button that reveals hidden achievements")

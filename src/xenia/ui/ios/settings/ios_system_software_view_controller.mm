@@ -63,10 +63,11 @@ enum InstallRow : NSInteger {
 - (void)viewDidLoad {
   [super viewDidLoad];
   if (self.showsDoneButton) {
-    self.navigationItem.rightBarButtonItem =
-        [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                       target:self
-                                                       action:@selector(doneTapped:)] autorelease];
+    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+        initWithTitle:NSLocalizedString(@"Close", @"system software view controller: button")
+                style:UIBarButtonItemStylePlain
+               target:self
+               action:@selector(doneTapped:)] autorelease];
   }
   [self reloadInfo];
 }
