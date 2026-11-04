@@ -4683,6 +4683,13 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   constants.dest_offset[0] = dest_coordinate_info.offset_x_div_8 * 8;
   constants.dest_offset[1] = dest_coordinate_info.offset_y_div_8 * 8;
   constants.dest_pitch_macro_tiles = dest_coordinate_info.pitch_aligned_div_32;
+  // Rows wider than the destination pitch wrap onto the next rows' words, and
+  // which pixel lands there depends on write order, which per-tile dispatch
+  // order doesn't match.
+  if (constants.dest_offset[0] + constants.size[0] >
+      constants.dest_pitch_macro_tiles * 32) {
+    return "dest_pitch";
+  }
   constants.dest_slice_pitch_macro_tiles =
       dest_coordinate_info.height_aligned_div_32 << 1;
   constants.dest_base = copy_shader_constants.dest_base;
