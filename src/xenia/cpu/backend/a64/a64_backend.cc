@@ -1881,15 +1881,21 @@ bool A64Backend::DumpCodeMap(const std::filesystem::path& path) {
   std::error_code error;
   std::filesystem::rename(temp_path, path, error);
   ok = ok && !error;
-  // The code itself, from the start of the cache, for disassembling hot spots.
+  // The code itself, at its offset from the start of the cache, for
+  // disassembling hot spots. Only the mapped ranges are read: the gaps between
+  // them may not be mapped at all, and are left as holes in the file.
   if (!code_map.empty()) {
     std::filesystem::path code_path = path;
     code_path.replace_extension(".bin");
     if (FILE* code_file = std::fopen(code_path.string().c_str(), "wb")) {
-      ok = std::fwrite(reinterpret_cast<const void*>(base), 1,
-                       uint32_t(code_map.back().first), code_file) ==
-               uint32_t(code_map.back().first) &&
-           ok;
+      for (const auto& [range, function] : code_map) {
+        const uint32_t start = uint32_t(range >> 32);
+        const uint32_t size = uint32_t(range) - start;
+        ok = std::fseek(code_file, long(start), SEEK_SET) == 0 &&
+             std::fwrite(reinterpret_cast<const void*>(base + start), 1, size,
+                         code_file) == size &&
+             ok;
+      }
       ok = std::fclose(code_file) == 0 && ok;
     } else {
       ok = false;
