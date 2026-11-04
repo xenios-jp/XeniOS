@@ -52,7 +52,8 @@
 // software page.
 @property(nonatomic, copy) void (^dashboardHandler)(void);
 @property(nonatomic, copy) void (^dashboardSystemSoftwareHandler)(void);
-@property(nonatomic, copy) void (^bulkZarConversionHandler)(void);
+// The pull-down menu behind +: ways to add games, and converting the library to ZAR.
+@property(nonatomic, retain) UIMenu* addMenu;
 // Backs the "Open StikDebug" button on the JIT card. The button is hidden
 // while this is nil.
 @property(nonatomic, copy) void (^openStikDebugHandler)(void);
