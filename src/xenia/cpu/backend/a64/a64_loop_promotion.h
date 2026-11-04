@@ -51,8 +51,9 @@ struct LoopPromotionPlan {
   // Gives recolored values their allocated registers back, leaving the HIR as
   // it was.
   void Clear() {
-    for (auto& [value, index] : recolored) {
-      value->reg.index = index;
+    // Last first, as a value may have been recolored more than once.
+    for (auto it = recolored.rbegin(); it != recolored.rend(); ++it) {
+      it->first->reg.index = it->second;
     }
     recolored.clear();
     loops.clear();
