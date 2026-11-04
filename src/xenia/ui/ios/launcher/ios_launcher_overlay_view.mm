@@ -972,13 +972,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _detailMoreButton.showsMenuAsPrimaryAction = YES;
   _detailMoreButton.alpha = 0.0;
   _detailMoreButton.hidden = YES;
-  [_headerView addSubview:_detailMoreButton];
   [NSLayoutConstraint activateConstraints:@[
     [_detailCloseButton.leadingAnchor constraintEqualToAnchor:_libraryLabel.leadingAnchor],
     [_detailCloseButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
-    [_detailMoreButton.trailingAnchor constraintEqualToAnchor:_headerActions.trailingAnchor],
-    [_detailMoreButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
   ]];
+  [self placeDetailMoreButton];
 
   // ── Notices: one row each, while something needs fixing ────────────────
 
@@ -1274,6 +1272,31 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
+// Upright, the game page's ⋯ sits in the header's corner, across from ✕. Beside the art it joins
+// Play and the round buttons, and the rows start at the top, level with ✕, where it was.
+- (void)placeDetailMoreButton {
+  if (_sideLayout) {
+    if (_detailMoreButton.superview == _heroButtons) {
+      return;
+    }
+    [_detailMoreButton removeFromSuperview];
+    const NSUInteger after = [_heroButtons.arrangedSubviews indexOfObject:_heroSettingsButton];
+    [_heroButtons insertArrangedSubview:_detailMoreButton
+                                atIndex:after == NSNotFound ? _heroButtons.arrangedSubviews.count
+                                                            : after + 1];
+    return;
+  }
+  if (_detailMoreButton.superview == _headerView) {
+    return;
+  }
+  [_detailMoreButton removeFromSuperview];
+  [_headerView addSubview:_detailMoreButton];
+  [NSLayoutConstraint activateConstraints:@[
+    [_detailMoreButton.trailingAnchor constraintEqualToAnchor:_headerActions.trailingAnchor],
+    [_detailMoreButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
+  ]];
+}
+
 - (void)layoutSubviews {
   [super layoutSubviews];
   const CGRect bounds = self.bounds;
@@ -1283,6 +1306,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     _sideLayout = side;
     [self placeSearchRow];
     [self placeHeroCompatButton];
+    [self placeDetailMoreButton];
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
   }
@@ -1324,10 +1348,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     const CGFloat grid_left = hero ? hero_width : safe.left;
     grid_frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left - safe.right,
                             bounds.size.height);
-    // The game's rows start where the grid's first row does.
+    // The game's rows start at the top, level with ✕; the header has nothing else on that side.
     XEPlaceSlidingView(_detailRows,
-                       CGRectMake(grid_left, header_bottom + 6.0, bounds.size.width - grid_left,
-                                  bounds.size.height - header_bottom - 6.0));
+                       CGRectMake(grid_left, header_top, bounds.size.width - grid_left,
+                                  bounds.size.height - header_top));
     top_inset = header_bottom + 6.0 + stack_block;
     _headerBackdrop.frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left,
                                        header_bottom + 6.0);
