@@ -28,6 +28,7 @@
 #endif
 
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
@@ -110,6 +111,90 @@ NSString* xe_compat_perf_label(NSString* perf) {
   const CompatTaxonomyEntry* entry = FindCompatPerf(perf);
   return entry ? entry->label
                : NSLocalizedString(@"Unknown", @"compat formatting: user-visible text");
+}
+
+UIButton* xe_new_compat_capsule(void) {
+  UIButton* capsule = [UIButton buttonWithConfiguration:[UIButtonConfiguration
+                                                           glassButtonConfiguration]
+                                          primaryAction:nil];
+  capsule.translatesAutoresizingMaskIntoConstraints = NO;
+  capsule.showsMenuAsPrimaryAction = YES;
+  return capsule;
+}
+
+void xe_update_compat_capsule(UIButton* capsule, NSString* status, NSString* perf,
+                              NSString* notes, void (^reports)(void)) {
+  const BOOL tested = status.length && ![status isEqualToString:kCompatStatusUntested.code];
+  NSString* verdict =
+      tested ? xe_compat_status_label(status)
+             : NSLocalizedString(@"Not Tested", @"game page: compatibility capsule");
+  NSString* runs = nil;
+  if ([perf isEqualToString:@"great"]) {
+    runs = NSLocalizedString(@"Runs Great", @"game page: compatibility capsule");
+  } else if ([perf isEqualToString:@"ok"]) {
+    runs = NSLocalizedString(@"Runs Okay", @"game page: compatibility capsule");
+  } else if ([perf isEqualToString:@"poor"]) {
+    runs = NSLocalizedString(@"Runs Poorly", @"game page: compatibility capsule");
+  }
+
+  UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
+  config.title = verdict;
+  config.subtitle = runs;
+  // Drawn in its own colour: the glass style tints images with the foreground colour.
+  config.image = [[UIImage systemImageNamed:@"circle.fill"
+                          withConfiguration:[UIImageSymbolConfiguration
+                                                configurationWithPointSize:8.0]]
+      imageWithTintColor:tested ? xe_compat_status_color(status) : [XeniaTheme textMuted]
+           renderingMode:UIImageRenderingModeAlwaysOriginal];
+  config.imagePadding = 7.0;
+  config.titleAlignment = UIButtonConfigurationTitleAlignmentLeading;
+  config.titlePadding = 1.0;
+  config.baseForegroundColor = UIColor.whiteColor;
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 16.0, 0.0, 18.0);
+  config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
+    return updated;
+  };
+  config.subtitleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] =
+        xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
+    updated[NSForegroundColorAttributeName] = [UIColor colorWithWhite:1.0 alpha:0.7];
+    return updated;
+  };
+  capsule.configuration = config;
+  // Its words never wrap a letter at a time; the row makes room or puts it on its own line.
+  [capsule setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                           forAxis:UILayoutConstraintAxisHorizontal];
+  capsule.accessibilityLabel =
+      NSLocalizedString(@"Compatibility", @"game page: compatibility capsule");
+  capsule.accessibilityValue = runs ? [NSString stringWithFormat:@"%@, %@", verdict, runs] : verdict;
+
+  // The notes are someone's report, not a verdict, so they read as one.
+  NSString* heading =
+      notes.length ? [NSString stringWithFormat:NSLocalizedString(
+                                                    @"Reported: \u201C%@\u201D",
+                                                    @"game page: compatibility capsule menu; %@ is "
+                                                    @"a player's notes"),
+                                                notes]
+                   : nil;
+  void (^open_reports)(void) = [[reports copy] autorelease];
+  UIAction* all = [UIAction
+      actionWithTitle:NSLocalizedString(@"Reports & Discussion",
+                                        @"game page: compatibility capsule menu")
+                image:[UIImage systemImageNamed:@"bubble.left.and.text.bubble.right"]
+           identifier:nil
+              handler:^(__unused UIAction* action) {
+                if (open_reports) {
+                  open_reports();
+                }
+              }];
+  capsule.menu = [UIMenu menuWithTitle:heading ?: @"" children:@[ all ]];
 }
 
 NSString* xe_format_iso_date(NSString* iso) {

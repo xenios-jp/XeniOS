@@ -2169,6 +2169,14 @@ titleForFooterInSection:(NSInteger)section {
                                              @"settings hub view controller: title")
                 symbolName:@"arrow.clockwise"
                  tintColor:gray],
+        [XeniaSettingsActionListItem
+            itemWithAction:XeniaSettingsHubActionConvertLibraryToZar
+                     title:NSLocalizedString(@"Convert Library to ZAR",
+                                             @"settings hub view controller: title")
+                  subtitle:NSLocalizedString(@"Makes disc images smaller. Games play the same.",
+                                             @"settings hub view controller: title")
+                symbolName:@"archivebox.fill"
+                 tintColor:[XeniaTheme sectionIconOrange]],
       ];
       return [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:NSLocalizedString(@"Library & Storage",
