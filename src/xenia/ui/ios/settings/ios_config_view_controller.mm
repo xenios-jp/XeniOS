@@ -417,6 +417,19 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   return CGRectMake(0.0, 0.0, [self estimatedTableAccessoryWidth], height);
 }
 
+// Whether the page has emulator settings, which the restart notice is about.
+- (BOOL)hasConfigVarItems {
+  for (const IOSConfigSection& section : sections_) {
+    for (const IOSConfigItem& item : section.items) {
+      if (item.storage == IOSConfigStorage::kConfigVar &&
+          item.control_type != IOSConfigControlType::kAction) {
+        return YES;
+      }
+    }
+  }
+  return NO;
+}
+
 - (UIView*)restartNoticeHeaderView {
   UIView* container =
       [[[UIView alloc] initWithFrame:[self initialTableAccessoryFrameWithHeight:136.0]]
@@ -652,7 +665,8 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     self.tableView.tableFooterView = nil;
     [self updateTableHeaderAndFooterLayout];
   } else {
-    self.tableView.tableHeaderView = [self restartNoticeHeaderView];
+    self.tableView.tableHeaderView =
+        [self hasConfigVarItems] ? [self restartNoticeHeaderView] : nil;
     self.tableView.tableFooterView = [self versionFooterView];
     [self updateTableHeaderAndFooterLayout];
   }
@@ -903,7 +917,8 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     if (live_override_) {
       self.tableView.tableHeaderView = [self liveOverrideHeaderView];
     } else {
-      self.tableView.tableHeaderView = [self restartNoticeHeaderView];
+      self.tableView.tableHeaderView =
+          [self hasConfigVarItems] ? [self restartNoticeHeaderView] : nil;
       self.tableView.tableFooterView = [self versionFooterView];
     }
     [self updateTableHeaderAndFooterLayout];
@@ -1073,8 +1088,8 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     return nil;
   }
   NSString* title = ToNSString(sections_[section].title);
-  // A page's only section named like the page ("Display" in Display) needs no header.
-  if (sections_.size() == 1 && [title isEqualToString:self.title]) {
+  // A first section named like the page ("Display" in Display) needs no header.
+  if (section == 0 && [title isEqualToString:self.title]) {
     return nil;
   }
   return title;
@@ -1294,7 +1309,7 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
     const bool destructive_action = item->action == IOSConfigAction::kResetGameSettings ||
                                     item->action == IOSConfigAction::kResetAllSettings;
     content.textProperties.color =
-        destructive_action ? [UIColor systemRedColor] : self.view.tintColor;
+        destructive_action ? [UIColor systemRedColor] : [XeniaTheme textPrimary];
     content.secondaryText = ToNSString(item->subtitle);
     cell.contentConfiguration = content;
     cell.accessoryView = nil;
