@@ -779,7 +779,7 @@ static void EmitFpBinOpWithPpcNan(A64Emitter& e, const hir::Instr* instr,
       });
   e.fcmp(dest, dest);
   e.b(VS, nan_result);
-  e.LKeepingRemapBound(done);
+  e.L(done);
 }
 
 // PPC FMA NaN selection (PowerISA 4.6.7.2):
@@ -834,7 +834,7 @@ static void EmitFmaWithPpcNan(A64Emitter& e, std::type_identity_t<Reg> dest,
   if (negate) {
     e.fneg(dest, dest);
   }
-  e.LKeepingRemapBound(done);
+  e.L(done);
 }
 
 struct ADD_F32 : Sequence<ADD_F32, I<OPCODE_ADD, F32Op, F32Op, F32Op>> {
@@ -3766,7 +3766,7 @@ struct DENORMAL_QUIRK
       e.b(LO, slow_path);
       emit_clear(e);
     }
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_DENORMAL_QUIRK, DENORMAL_QUIRK);
@@ -5188,7 +5188,7 @@ struct TOSINGLE : Sequence<TOSINGLE, I<OPCODE_TO_SINGLE, F64Op, F64Op>> {
     e.fmov(e.w16, e.s0);
     BranchIfDenormalSingle(e, e.w16, in_fpu);
     e.fmov(dest, e.d1);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_TO_SINGLE, TOSINGLE);
@@ -5231,7 +5231,7 @@ struct UNPACK_SINGLE
           e.b(done);
         });
     e.b(VS, snan_fixup);
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_UNPACK_SINGLE, UNPACK_SINGLE);
@@ -5288,7 +5288,7 @@ struct PACK_SINGLE
       e.cbz(e.x17, in_fpu);
       BranchIfDenormalSingle(e, dest, in_fpu);
     }
-    e.LKeepingRemapBound(done);
+    e.L(done);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_PACK_SINGLE, PACK_SINGLE);
