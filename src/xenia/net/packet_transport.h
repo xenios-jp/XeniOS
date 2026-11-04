@@ -86,6 +86,9 @@ class LobbySocket {
   };
   virtual ~LobbySocket() = default;
   virtual void Send(std::string text) = 0;
+  // Sends a WebSocket ping, whose pong comes as the message "pong". False when
+  // the socket can't, and the text "ping" goes instead.
+  virtual bool Ping() { return false; }
 };
 using LobbySocketFactory = std::function<std::unique_ptr<LobbySocket>(
     const std::string& url, LobbySocket::Events events)>;

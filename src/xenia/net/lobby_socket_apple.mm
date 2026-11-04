@@ -187,6 +187,19 @@ class AppleLobbySocket final : public LobbySocket {
     }
   }
 
+  bool Ping() override {
+    @autoreleasepool {
+      XeniaLobbySocketDelegate* delegate = delegate_;
+      [task_ sendPingWithPongReceiveHandler:^(NSError* error) {
+        // No pong ends the connection too, or the client calls it lost.
+        if (!error) {
+          [delegate deliver:"pong"];
+        }
+      }];
+    }
+    return true;
+  }
+
  private:
   XeniaLobbySocketDelegate* delegate_ = nil;
   NSURLSession* session_ = nil;
