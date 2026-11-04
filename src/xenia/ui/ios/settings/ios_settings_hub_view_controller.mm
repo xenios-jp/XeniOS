@@ -1271,20 +1271,11 @@ titleForFooterInSection:(NSInteger)section {
   UIColor* red = [XeniaTheme sectionIconRed];
   UIColor* gray = [XeniaTheme sectionIconGray];
 
-  // Every setting in one searchable list, and the profile, at the top without a header like the
-  // first group in Settings; the pages below group the same settings by topic.
-  XeniaSettingsHubSection* all_settings = [XeniaSettingsHubSection
+  // What a player changes: their profile, then display, audio and controls. Everything that
+  // only tunes the emulator is under Advanced, with All Settings holding every option.
+  XeniaSettingsHubSection* account = [XeniaSettingsHubSection
       sectionWithTitle:@""
                  items:@[
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindAllSettings
-                              title:NSLocalizedString(@"All Settings",
-                                                      @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(
-                                        @"Every option in one searchable list.",
-                                        @"settings hub view controller: title")
-                         symbolName:@"list.bullet"
-                          tintColor:mint],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindProfile
                               title:NSLocalizedString(@"Profile",
@@ -1296,14 +1287,14 @@ titleForFooterInSection:(NSInteger)section {
                  ]];
 
   XeniaSettingsHubSection* gameplay = [XeniaSettingsHubSection
-      sectionWithTitle:NSLocalizedString(@"Gameplay", @"settings hub view controller: title")
+      sectionWithTitle:NSLocalizedString(@"Play", @"settings hub view controller: title")
                  items:@[
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindDisplay
                               title:NSLocalizedString(@"Display",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"Presenter output, aspect, and frame pacing.",
+                                        @"Aspect ratio and frame rate.",
                                         @"settings hub view controller: title")
                          symbolName:@"display"
                           tintColor:indigo],
@@ -1311,7 +1302,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindAudio
                               title:NSLocalizedString(@"Audio",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Output and decoder preferences.",
+                           subtitle:NSLocalizedString(@"Spatial audio and mute.",
                                                       @"settings hub view controller: title")
                          symbolName:@"speaker.wave.2.fill"
                           tintColor:orange],
@@ -1325,42 +1316,6 @@ titleForFooterInSection:(NSInteger)section {
                                    @"settings hub view controller: title")
                          symbolName:@"gamecontroller.fill"
                           tintColor:blue],
-                 ]];
-
-  XeniaSettingsHubSection* graphics_performance = [XeniaSettingsHubSection
-      sectionWithTitle:NSLocalizedString(@"Graphics & Performance",
-                                         @"settings hub view controller: title")
-                 items:@[
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindGraphics
-                              title:NSLocalizedString(@"Graphics",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Backend and anisotropic filtering.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"gearshape.2.fill"
-                          tintColor:purple],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindPerformance
-                              title:NSLocalizedString(@"Performance",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Shader compilation behavior and experimental iOS thread QoS.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"bolt.fill"
-                          tintColor:orange],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
-                              title:NSLocalizedString(@"Cache Cleanup",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Clear current-title or all-title persistent shader caches.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"trash"
-                          tintColor:orange],
                  ]];
 
   XeniaSettingsHubSection* games = [XeniaSettingsHubSection
@@ -1396,20 +1351,16 @@ titleForFooterInSection:(NSInteger)section {
                                         @"settings hub view controller: title")
                          symbolName:@"square.stack.3d.up.fill"
                           tintColor:gray],
-                 ]];
-
-  XeniaSettingsHubSection* compatibility = [XeniaSettingsHubSection
-      sectionWithTitle:NSLocalizedString(@"Compatibility", @"settings hub view controller: title")
-                 items:@[
                    [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindCompatibility
-                              title:NSLocalizedString(@"Compatibility Workarounds",
+                       itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
+                              title:NSLocalizedString(@"Cache Cleanup",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(
-                                        @"GPU, memory, boot, and JIT title workarounds.",
-                                        @"settings hub view controller: title")
-                         symbolName:@"wrench.and.screwdriver.fill"
-                          tintColor:red],
+                           subtitle:
+                               NSLocalizedString(
+                                   @"Clear current-title or all-title persistent shader caches.",
+                                   @"settings hub view controller: title")
+                         symbolName:@"trash"
+                          tintColor:orange],
                  ]];
 
   XeniaSettingsHubSection* app = [XeniaSettingsHubSection
@@ -1423,14 +1374,6 @@ titleForFooterInSection:(NSInteger)section {
                                         @"App icon selection and interface presentation.",
                                         @"settings hub view controller: title")
                          symbolName:@"paintpalette.fill"
-                          tintColor:mint],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindAutomation
-                              title:NSLocalizedString(@"Automation",
-                                                      @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Local iOS automation options.",
-                                                      @"settings hub view controller: title")
-                         symbolName:@"wand.and.stars"
                           tintColor:mint],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindDiagnostics
@@ -1454,6 +1397,52 @@ titleForFooterInSection:(NSInteger)section {
       sectionWithTitle:NSLocalizedString(@"Advanced", @"settings hub view controller: title")
                  items:@[
                    [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindAllSettings
+                              title:NSLocalizedString(@"All Settings",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(
+                                        @"Every emulator option. For troubleshooting only.",
+                                        @"settings hub view controller: title")
+                         symbolName:@"list.bullet"
+                          tintColor:gray],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindGraphics
+                              title:NSLocalizedString(@"Graphics",
+                                                      @"settings hub view controller: title")
+                           subtitle:
+                               NSLocalizedString(
+                                   @"Backend and anisotropic filtering.",
+                                   @"settings hub view controller: title")
+                         symbolName:@"gearshape.2.fill"
+                          tintColor:gray],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindPerformance
+                              title:NSLocalizedString(@"Performance",
+                                                      @"settings hub view controller: title")
+                           subtitle:
+                               NSLocalizedString(
+                                   @"Shader compilation behavior and experimental iOS thread QoS.",
+                                   @"settings hub view controller: title")
+                         symbolName:@"bolt.fill"
+                          tintColor:gray],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindCompatibility
+                              title:NSLocalizedString(@"Compatibility Workarounds",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(
+                                        @"GPU, memory, boot, and JIT title workarounds.",
+                                        @"settings hub view controller: title")
+                         symbolName:@"wrench.and.screwdriver.fill"
+                          tintColor:gray],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindAutomation
+                              title:NSLocalizedString(@"Automation",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(@"Local iOS automation options.",
+                                                      @"settings hub view controller: title")
+                         symbolName:@"wand.and.stars"
+                          tintColor:gray],
+                   [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAdvancedDebug
                               title:NSLocalizedString(@"Advanced Debug",
                                                       @"settings hub view controller: title")
@@ -1461,12 +1450,10 @@ titleForFooterInSection:(NSInteger)section {
                                         @"Curated F8-style debug and compatibility overrides.",
                                         @"settings hub view controller: title")
                          symbolName:@"slider.horizontal.3"
-                          tintColor:purple],
+                          tintColor:gray],
                  ]];
 
-  return @[
-    all_settings, gameplay, graphics_performance, games, compatibility, app, advanced
-  ];
+  return @[ account, gameplay, games, app, advanced ];
 }
 
 - (void)viewDidLoad {

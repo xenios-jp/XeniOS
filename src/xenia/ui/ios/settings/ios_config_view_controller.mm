@@ -1072,7 +1072,12 @@ static const NSInteger kXeniaConfigStringFieldTag = 9103;
   if (section < 0 || section >= static_cast<NSInteger>(sections_.size())) {
     return nil;
   }
-  return ToNSString(sections_[section].title);
+  NSString* title = ToNSString(sections_[section].title);
+  // A page's only section named like the page ("Display" in Display) needs no header.
+  if (sections_.size() == 1 && [title isEqualToString:self.title]) {
+    return nil;
+  }
+  return title;
 }
 
 - (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {

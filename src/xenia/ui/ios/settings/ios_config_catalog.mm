@@ -311,23 +311,13 @@ static std::vector<IOSConfigSection> BuildDisplaySections() {
   std::vector<IOSConfigSection> sections;
   IOSConfigSection display;
   display.title = "Display";
-  display.footer = "These settings affect frame pacing and the Metal presenter output.";
-  AddBoolSetting(display.items, "metal_presenter_force_10bpc",
-                 "Force High-Precision Presenter Output",
-                 "Metal-only. Uses a high-precision presenter target, which is the default "
-                 "path and usually reduces gamma-conversion cost on Apple GPUs. Disable only "
-                 "if colors, captures, or display compatibility look wrong.",
-                 true);
   AddBoolSetting(display.items, "present_letterbox", "Letterbox",
-                 "Maintains the guest display aspect with bars when the presenter surface "
-                 "does not match the guest aspect. Disable for aspect-ratio patches that "
-                 "should fill the current surface.",
+                 "Keeps the game's aspect ratio with bars. Turn off with a widescreen patch "
+                 "that fills the screen.",
                  true);
   AddChoiceSetting(display.items, IOSConfigControlType::kChoiceUInt64, "framerate_limit",
                    "Frame Rate Limit",
-                   "Caps host presentation only; guest timing is separate. Use this to "
-                   "reduce heat and battery drain. 120 FPS only matters on high-refresh "
-                   "displays.",
+                   "Lower limits run cooler and save battery.",
                    0,
                    {{"Unlimited", 0},
                     {"30 FPS", 30},
@@ -337,13 +327,11 @@ static std::vector<IOSConfigSection> BuildDisplaySections() {
                     {"120 FPS", 120}},
                    "FPS");
   AddBoolSetting(display.items, "guest_display_refresh_cap", "Cap Guest Display Refresh",
-                 "Keeps guest vblank at console timing instead of running as fast as "
-                 "possible. Turn this off only for troubleshooting speed or timing-"
-                 "sensitive boot issues.",
+                 "Runs the game at console speed. Turn off only with a frame rate patch "
+                 "that needs it.",
                  true);
   AddBoolSetting(display.items, "use_50Hz_mode", "Use 50Hz PAL Timing",
-                 "Only matters when guest refresh cap is enabled. Required by some PAL "
-                 "titles; leave this off for most games to keep normal 60 Hz timing.",
+                 "For PAL games that need 50 Hz. Leave off for most games.",
                  false);
   PushIfNotEmpty(sections, std::move(display));
   return sections;
@@ -358,6 +346,12 @@ static std::vector<IOSConfigSection> BuildGraphicsSections() {
                          "Select the renderer used after the next full relaunch. Metal is the "
                          "only iOS backend.",
                          "metal", {{"Metal", "metal"}});
+  AddBoolSetting(backend.items, "metal_presenter_force_10bpc",
+                 "Force High-Precision Presenter Output",
+                 "Metal-only. Uses a high-precision presenter target, which is the default "
+                 "path and usually reduces gamma-conversion cost on Apple GPUs. Disable only "
+                 "if colors, captures, or display compatibility look wrong.",
+                 true);
   AddIntegerSetting(backend.items, "anisotropic_override", "Anisotropic Override",
                     "Override anisotropic filtering level (-1 = auto, 0 = off, 1-5).");
   PushIfNotEmpty(sections, std::move(backend));
@@ -423,8 +417,7 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
 
   IOSConfigSection audio;
   audio.title = "Audio";
-  audio.footer = "These settings control the audio backend, mute state and XMA decoding "
-                 "behavior.";
+
   // Surface the head-pose entitlement status when PHASE is in use, since head
   // tracking silently falls back to a fixed listener without it.
   if (phase_selected && !head_pose_entitlement) {
@@ -450,35 +443,7 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
   }
   AddBoolSetting(audio.items, "apu_phase_head_tracking", "PHASE Head Tracking",
                  head_tracking_subtitle, false);
-  AddBoolSetting(audio.items, "mute", "Mute Audio",
-                 "Immediately silences all emulator audio. Useful for background testing "
-                 "or silent repro runs.",
-                 false);
-  AddChoiceSetting(audio.items, IOSConfigControlType::kChoiceUInt32, "apu_max_queued_frames",
-                   "Audio Queue Depth",
-                   "Larger queues reduce underruns at the cost of latency. 8 is the default; "
-                   "try 32, 48 or 64 only if audio still stutters after a full relaunch.",
-                   8,
-                   {{"8 Frames (Default)", 8},
-                    {"16 Frames", 16},
-                    {"32 Frames", 32},
-                    {"48 Frames", 48},
-                    {"64 Frames", 64}},
-                   "Frames");
-  AddStringChoiceSetting(audio.items, "xma_decoder", "XMA Decoder",
-                         "Select the XMA decoder implementation. New is the current general "
-                         "default; Old and Master are fallback paths for regressions, and Fake "
-                         "disables XMA decode entirely.",
-                         "new",
-                         {{"New (Recommended)", "new"},
-                          {"Old", "old"},
-                          {"Master", "master"},
-                          {"Fake (No XMA Audio)", "fake"}});
-  AddBoolSetting(audio.items, "use_dedicated_xma_thread", "Dedicated XMA Thread",
-                 "Runs XMA decode work on a separate thread. On arm64 this is off by "
-                 "default; enable only if audio stutters or decode work blocks the title, "
-                 "since timing can change.",
-                 false);
+  AddBoolSetting(audio.items, "mute", "Mute Audio", "Silences all game audio.", false);
   PushIfNotEmpty(sections, std::move(audio));
   return sections;
 }
@@ -516,6 +481,36 @@ static std::vector<IOSConfigSection> BuildControlsSections() {
 
 static std::vector<IOSConfigSection> BuildCompatibilitySections() {
   std::vector<IOSConfigSection> sections;
+
+  IOSConfigSection audio_workarounds;
+  audio_workarounds.title = "Audio Workarounds";
+  audio_workarounds.footer = "Only for games whose audio stutters or breaks.";
+  AddChoiceSetting(audio_workarounds.items, IOSConfigControlType::kChoiceUInt32, "apu_max_queued_frames",
+                   "Audio Queue Depth",
+                   "Larger queues reduce underruns at the cost of latency. 8 is the default; "
+                   "try 32, 48 or 64 only if audio still stutters after a full relaunch.",
+                   8,
+                   {{"8 Frames (Default)", 8},
+                    {"16 Frames", 16},
+                    {"32 Frames", 32},
+                    {"48 Frames", 48},
+                    {"64 Frames", 64}},
+                   "Frames");
+  AddStringChoiceSetting(audio_workarounds.items, "xma_decoder", "XMA Decoder",
+                         "Select the XMA decoder implementation. New is the current general "
+                         "default; Old and Master are fallback paths for regressions, and Fake "
+                         "disables XMA decode entirely.",
+                         "new",
+                         {{"New (Recommended)", "new"},
+                          {"Old", "old"},
+                          {"Master", "master"},
+                          {"Fake (No XMA Audio)", "fake"}});
+  AddBoolSetting(audio_workarounds.items, "use_dedicated_xma_thread", "Dedicated XMA Thread",
+                 "Runs XMA decode work on a separate thread. On arm64 this is off by "
+                 "default; enable only if audio stutters or decode work blocks the title, "
+                 "since timing can change.",
+                 false);
+  PushIfNotEmpty(sections, std::move(audio_workarounds));
 
   IOSConfigSection gpu;
   gpu.title = "GPU Workarounds";
