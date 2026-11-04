@@ -9,6 +9,8 @@
 
 #include "xenia/ui/metal/metal_presenter.h"
 
+#include <mach/mach_time.h>
+
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -375,7 +377,10 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     }
   }
 
+  const uint64_t drawable_wait_start = mach_absolute_time();
   id<CAMetalDrawable> drawable = [metal_layer_ nextDrawable];
+  drawable_wait_ticks.fetch_add(mach_absolute_time() - drawable_wait_start,
+                                std::memory_order_relaxed);
   if (!drawable) {
     XELOGW("Metal PaintAndPresentImpl failed to get drawable");
     return PaintResult::kNotPresented;

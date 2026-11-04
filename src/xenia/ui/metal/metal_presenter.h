@@ -34,6 +34,10 @@ namespace metal {
 
 class MetalProvider;
 
+// Host ticks (mach_absolute_time) spent blocked in CAMetalLayer nextDrawable
+// since launch, on whichever thread paints, for diagnostics.
+inline std::atomic<uint64_t> drawable_wait_ticks{0};
+
 class MetalGuestOutputRefreshContext final
     : public Presenter::GuestOutputRefreshContext {
  public:

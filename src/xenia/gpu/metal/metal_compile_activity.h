@@ -58,6 +58,25 @@ inline std::atomic<uint64_t> guest_frames_presented{0};
 // since launch, for diagnostics.
 inline std::atomic<uint64_t> command_buffer_failures{0};
 
+// GPU timing of the command processor's command buffers (not the presenter's),
+// for diagnostics that read it every few seconds. Written per command buffer
+// and per blocking wait, never per draw.
+struct GpuTiming {
+  // The union of the command buffers' GPUStartTime..GPUEndTime intervals, in
+  // nanoseconds of host time, added as they complete: command buffers that
+  // overlap on the GPU count once. It still includes GPU idle inside a command
+  // buffer, and runs at whatever clock the GPU had.
+  std::atomic<uint64_t> busy_ns{0};
+  // The end of the latest interval added to busy_ns.
+  std::atomic<uint64_t> busy_end_ns{0};
+  // Host ticks the command processor thread spent blocked on the GPU: waiting
+  // for a submission to complete, or for the queue to hand out a command buffer
+  // while all of them are in flight.
+  std::atomic<uint64_t> wait_ticks{0};
+};
+
+inline GpuTiming gpu_timing;
+
 }  // namespace metal
 }  // namespace gpu
 }  // namespace xe
