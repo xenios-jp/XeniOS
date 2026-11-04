@@ -1069,12 +1069,13 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 @end
 
 UIButton* xe_ios_new_system_link_online_button(void) {
-  UIButtonConfiguration* configuration = [UIButtonConfiguration grayButtonConfiguration];
+  // Glass, like the Library header's other buttons.
+  UIButtonConfiguration* configuration = [UIButtonConfiguration glassButtonConfiguration];
   configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  configuration.baseBackgroundColor = [XeniaTheme bgSurface2];
+  configuration.baseForegroundColor = [XeniaTheme textPrimary];
   UIFont* font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
   configuration.imagePadding = 7.0;
-  configuration.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 11.0, 6.0, 13.0);
+  configuration.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 13.0, 0.0, 14.0);
   configuration.titleTextAttributesTransformer =
       ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
     NSMutableDictionary<NSAttributedStringKey, id>* out = [[in mutableCopy] autorelease];

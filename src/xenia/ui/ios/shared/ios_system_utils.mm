@@ -147,7 +147,7 @@ BOOL xe_ios_requires_debugger_broker(void) {
 }
 
 NSString* xe_jit_waiting_status_message(void) {
-  return NSLocalizedString(@"Turn it on in StikDebug to play games.",
+  return NSLocalizedString(@"Games need it to start.",
                            @"Guidance when JIT is not active");
 }
 
