@@ -323,6 +323,10 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
     if (const PromotedLoop* loop = loop_plan_.LoopAt(block)) {
       EmitPromotedLoads(*loop);
       active_loop_ = loop;
+      if (loop->entry_skips) {
+        loop_entry_ = &NewCachedLabel();
+        b(*loop_entry_);
+      }
     }
 
     // Bind all labels targeting this block.
@@ -396,6 +400,9 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
             hir::GetOpcodeName(instr->GetOpcodeInfo()),
             current_guest_function_);
         return false;
+      }
+      if (active_loop_ && instr == active_loop_->entry_skips) {
+        L(*loop_entry_);
       }
       instr = new_tail;
     }
@@ -1287,7 +1294,8 @@ void A64Emitter::CallNativeSafe(void* fn) {
 
 void A64Emitter::MoveCallerSavedSlots(const PromotedLoop& loop, bool store) {
   for (const PromotedSlot& slot : loop.slots) {
-    if (slot.type == hir::VEC128_TYPE || slot.reg_index < GPR_COUNT) {
+    if (slot.deferred || slot.type == hir::VEC128_TYPE ||
+        slot.reg_index < GPR_COUNT) {
       continue;
     }
     const uint32_t reg = gpr_reg_map_[slot.reg_index];
@@ -1369,6 +1377,9 @@ Label& A64Emitter::AddToTail(TailEmitCallback callback, uint32_t alignment) {
 
 void A64Emitter::EmitPromotedLoads(const PromotedLoop& loop) {
   for (const PromotedSlot& slot : loop.slots) {
+    if (slot.deferred) {
+      continue;
+    }
     switch (slot.type) {
       case hir::INT8_TYPE:
         ldrb(WReg(gpr_reg_map_[slot.reg_index]), ptr(x20, slot.offset));
@@ -1408,6 +1419,9 @@ bool A64Emitter::EmitPromotedAccess(const hir::Instr* instr) {
     return false;
   }
   const PromotedSlot& slot = *it->second;
+  if (slot.deferred) {
+    return true;
+  }
   const bool vec = slot.type == hir::VEC128_TYPE;
   const uint32_t* map = vec ? vec_reg_map_ : gpr_reg_map_;
   const uint32_t reg = map[slot.reg_index];

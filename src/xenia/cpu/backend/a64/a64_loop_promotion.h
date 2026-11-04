@@ -31,6 +31,11 @@ struct PromotedSlot {
   hir::TypeName type;  // INT8_TYPE, INT64_TYPE or VEC128_TYPE.
   int32_t reg_index;   // In the allocator's set for the type.
   bool dirty;          // Stored in the loop.
+  // Only stored, last in the tail with a value another slot's register holds
+  // from there to the tail's end. It shares that register and its stores emit
+  // nothing: the loop leaves only through the tail's end, and the yield at the
+  // head comes only after a pass through it.
+  bool deferred = false;
 };
 
 struct PromotedLoop {
@@ -39,6 +44,9 @@ struct PromotedLoop {
   std::vector<PromotedSlot> slots;
   // Labels outside the loop that its branches target.
   std::unordered_set<uint32_t> exit_label_ids;
+  // The head's preempt check, which the entry jumps past while a deferred
+  // slot's register still holds another slot's value.
+  const hir::Instr* entry_skips = nullptr;
 };
 
 struct LoopPromotionPlan {
