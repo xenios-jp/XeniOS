@@ -113,7 +113,9 @@ constexpr CGFloat kCoverRadius = 8.0;
   self.discBadge = [[XeniaPaddedLabel alloc] init];
   self.discBadge.translatesAutoresizingMaskIntoConstraints = NO;
   self.discBadge.padding = UIEdgeInsetsMake(2.0, 7.0, 2.0, 7.0);
-  xe_apply_label_font(self.discBadge, UIFontTextStyleCaption2, 11.0, UIFontWeightSemibold);
+  // A fixed size, like the art it sits on; the count is also in the tile's accessibility value.
+  self.discBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold];
+  self.discBadge.layer.cornerRadius = ceil(self.discBadge.font.lineHeight + 4.0) / 2.0;
   self.discBadge.textColor = UIColor.whiteColor;
   self.discBadge.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
   self.discBadge.layer.cornerCurve = kCACornerCurveContinuous;
@@ -185,7 +187,6 @@ constexpr CGFloat kCoverRadius = 8.0;
   if (self.contentTypePill.hidden == show_tag) {
     self.contentTypePill.hidden = !show_tag;
   }
-  self.discBadge.layer.cornerRadius = CGRectGetHeight(self.discBadge.bounds) / 2.0;
 }
 
 - (void)setControllerFocused:(BOOL)controllerFocused {

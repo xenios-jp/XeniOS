@@ -198,6 +198,29 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
   [table_view bringSubviewToFront:ring];
 }
 
+// Rows that expand, collapse or reload move under the ring after the press that drew it, so it is
+// placed again from the cursor on every tick, and hidden when the cursor row is gone.
+void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
+  UIView* ring = [table_view viewWithTag:kControllerCursorRingTag];
+  if (!ring || ring.hidden) {
+    return;
+  }
+  if (!path || path.section >= table_view.numberOfSections ||
+      path.row >= [table_view numberOfRowsInSection:path.section]) {
+    ring.hidden = YES;
+    return;
+  }
+  UITableViewCell* cell = [table_view cellForRowAtIndexPath:path];
+  CGRect frame = [table_view rectForRowAtIndexPath:path];
+  if (cell) {
+    frame = [cell.contentView convertRect:cell.contentView.bounds toView:table_view];
+  }
+  frame = CGRectInset(frame, 2.0, 1.0);
+  if (!CGRectEqualToRect(ring.frame, frame)) {
+    ring.frame = frame;
+  }
+}
+
 }  // namespace
 
 @implementation XeniaIOSControllerNavigationCoordinator {
@@ -216,6 +239,8 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
   uint32_t _nativeControllerPacketNumber;
   // The cursor row of each table the controller has moved through.
   NSMapTable<UITableView*, NSIndexPath*>* _tableCursors;
+  // The table whose cursor ring is showing, held weakly.
+  NSHashTable<UITableView*>* _ringTable;
 }
 
 - (instancetype)initWithHost:(id<XeniaIOSControllerNavigationHost>)host {
@@ -228,6 +253,7 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
   _navigationWasEnabled = NO;
   _nativeControllerPacketNumber = 0;
   _tableCursors = [[NSMapTable weakToStrongObjectsMapTable] retain];
+  _ringTable = [[NSHashTable weakObjectsHashTable] retain];
   _mapper.Reset();
   return self;
 }
@@ -235,6 +261,7 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
 - (void)dealloc {
   [self invalidate];
   [_tableCursors release];
+  [_ringTable release];
   [super dealloc];
 }
 
@@ -625,6 +652,8 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
     }
     [table_view layoutIfNeeded];
     ShowCursorRing(table_view, selected);
+    [_ringTable removeAllObjects];
+    [_ringTable addObject:table_view];
   }
 
   // Left and right change a slider or stepper in the row by one step.
@@ -1005,6 +1034,10 @@ void ShowCursorRing(UITableView* table_view, NSIndexPath* path) {
       [self applyInGameMenuFocusVisuals];
     }
     return;
+  }
+
+  if (UITableView* ring_table = _ringTable.anyObject) {
+    FollowCursorRing(ring_table, [_tableCursors objectForKey:ring_table]);
   }
 
   if (!_navigationWasEnabled) {
