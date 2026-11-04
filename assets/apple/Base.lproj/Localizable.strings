@@ -1663,6 +1663,9 @@
 /* compat report cells: label text */
 "iOS Version" = "iOS Version";
 
+/* Alert message after a crash in JIT code */
+"It crashed in the code XeniOS translated from the game (a JIT error). Start the game again; if it keeps crashing at the same place, share the log to help fix it." = "It crashed in the code XeniOS translated from the game (a JIT error). Start the game again; if it keeps crashing at the same place, share the log to help fix it.";
+
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
 
@@ -3706,6 +3709,9 @@
 
 /* compat report submission: user-visible text */
 "XeniOS couldn't reach the report server. Check your connection and try again." = "XeniOS couldn't reach the report server. Check your connection and try again.";
+
+/* Alert when the CPU recompiler fails during a game */
+"XeniOS couldn't translate part of this game's code to run on this device (a JIT error). The game will probably freeze, crash or misbehave when it reaches that code. Quitting and starting it again won't fix it. With Share Diagnostics on, a report goes to the developers." = "XeniOS couldn't translate part of this game's code to run on this device (a JIT error). The game will probably freeze, crash or misbehave when it reaches that code. Quitting and starting it again won't fix it. With Share Diagnostics on, a report goes to the developers.";
 
 /* Title of a fatal or error message box */
 "XeniOS Error" = "XeniOS Error";
