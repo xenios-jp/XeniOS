@@ -931,7 +931,8 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                                @"online view controller: footer");
   } else {
     NSDictionary<NSNumber*, NSNumber*>* titles = xe_ios_system_link_online_titles();
-    // Apps open, this one included, when the lobby says; players in public lobbies.
+    // Apps open, this one included, when the lobby says (one device each, so the row says
+    // devices, not players); players in public lobbies.
     const NSInteger here = xe_ios_system_link_online_here();
     const NSInteger in_lobbies = xe_ios_system_link_online_total();
     const NSInteger in_private = std::max<NSInteger>(0, xe_ios_system_link_online_private());
@@ -959,26 +960,26 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                                  @"online view controller: summary row detail");
     } else if (here >= 0) {
       title = total == 1
-                  ? NSLocalizedString(@"1 Player Online", @"online view controller: summary row")
+                  ? NSLocalizedString(@"1 Device Online", @"online view controller: summary row")
                   : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                            @"%ld Players Online",
+                                                            @"%ld Devices Online",
                                                             @"online view controller: summary "
                                                             @"row; %ld is how many"),
                                                         long(total)];
       if (in_lobbies + in_private == 0) {
         detail = NSLocalizedString(@"Nobody is in a game yet.",
                                    @"online view controller: summary row detail, after \"3 "
-                                   @"Players Online\"");
+                                   @"Devices Online\"");
       } else if (in_private && in_lobbies == 0) {
         detail =
             in_private == 1
                 ? NSLocalizedString(@"1 of them is in a private room.",
                                     @"online view controller: summary row detail, after "
-                                    @"\"3 Players Online\"")
+                                    @"\"3 Devices Online\"")
                 : [NSString localizedStringWithFormat:NSLocalizedString(
                                                           @"%ld of them are in private rooms.",
                                                           @"online view controller: summary row "
-                                                          @"detail, after \"3 Players Online\"; "
+                                                          @"detail, after \"3 Devices Online\"; "
                                                           @"%ld is how many"),
                                                       long(in_private)];
       } else if (in_private) {
@@ -987,7 +988,7 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                                           @"%1$ld of them are in public lobbies, %2$ld in "
                                           @"private rooms.",
                                           @"online view controller: summary row detail, after "
-                                          @"\"3 Players Online\"; %1$ld and %2$ld are how "
+                                          @"\"3 Devices Online\"; %1$ld and %2$ld are how "
                                           @"many"),
                                       long(in_lobbies), long(in_private)];
       } else if (titles.count == 1) {
@@ -995,11 +996,11 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
             in_lobbies == 1
                 ? NSLocalizedString(@"1 of them is in a game.",
                                     @"online view controller: summary row detail, after "
-                                    @"\"3 Players Online\"")
+                                    @"\"3 Devices Online\"")
                 : [NSString localizedStringWithFormat:NSLocalizedString(
                                                           @"%ld of them are in 1 game.",
                                                           @"online view controller: summary row "
-                                                          @"detail, after \"3 Players Online\"; "
+                                                          @"detail, after \"3 Devices Online\"; "
                                                           @"%ld is how many"),
                                                       long(in_lobbies)];
       } else {
@@ -1007,25 +1008,25 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
             localizedStringWithFormat:NSLocalizedString(
                                           @"%1$ld of them are in %2$ld games.",
                                           @"online view controller: summary row detail, after "
-                                          @"\"3 Players Online\"; %1$ld players, %2$ld games"),
+                                          @"\"3 Devices Online\"; %1$ld players, %2$ld games"),
                                       long(in_lobbies), long(titles.count)];
       }
     } else {
       title = total == 1
-                  ? NSLocalizedString(@"1 Player Online", @"online view controller: summary row")
+                  ? NSLocalizedString(@"1 Device Online", @"online view controller: summary row")
                   : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                            @"%ld Players Online",
+                                                            @"%ld Devices Online",
                                                             @"online view controller: summary "
                                                             @"row; %ld is how many"),
                                                         long(total)];
       detail =
           titles.count == 1
               ? NSLocalizedString(@"In 1 game.", @"online view controller: summary row "
-                                                 @"detail, after \"3 Players Online\"")
+                                                 @"detail, after \"3 Devices Online\"")
               : [NSString localizedStringWithFormat:NSLocalizedString(
                                                         @"In %ld games.",
                                                         @"online view controller: summary row "
-                                                        @"detail, after \"3 Players Online\"; "
+                                                        @"detail, after \"3 Devices Online\"; "
                                                         @"%ld is how many"),
                                                     long(titles.count)];
     }
