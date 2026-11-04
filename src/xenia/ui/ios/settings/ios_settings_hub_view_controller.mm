@@ -1419,7 +1419,7 @@ titleForFooterInSection:(NSInteger)section {
                            subtitle:NSLocalizedString(@"Spatial sound and head tracking.",
                                                       @"settings hub view controller: title")
                          symbolName:@"speaker.wave.2.fill"
-                          tintColor:orange],
+                          tintColor:red],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindControls
                               title:NSLocalizedString(@"Controls",
@@ -1453,7 +1453,7 @@ titleForFooterInSection:(NSInteger)section {
                                         @"Needed for the Xbox 360 Dashboard.",
                                         @"settings hub view controller: title")
                          symbolName:@"square.stack.3d.up.fill"
-                          tintColor:gray],
+                          tintColor:mint],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
                               title:NSLocalizedString(@"Cache Cleanup",
@@ -1463,7 +1463,7 @@ titleForFooterInSection:(NSInteger)section {
                                    @"Clear saved shaders.",
                                    @"settings hub view controller: title")
                          symbolName:@"trash"
-                          tintColor:orange],
+                          tintColor:gray],
                  ]];
 
   XeniaSettingsHubSection* app = [XeniaSettingsHubSection
@@ -1477,7 +1477,7 @@ titleForFooterInSection:(NSInteger)section {
                                         @"App icon and theme.",
                                         @"settings hub view controller: title")
                          symbolName:@"paintpalette.fill"
-                          tintColor:mint],
+                          tintColor:purple],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindDiagnostics
                               title:NSLocalizedString(@"Diagnostics",
@@ -1485,7 +1485,7 @@ titleForFooterInSection:(NSInteger)section {
                            subtitle:NSLocalizedString(@"Log level and live log.",
                                                       @"settings hub view controller: title")
                          symbolName:@"waveform.path.ecg"
-                          tintColor:red],
+                          tintColor:orange],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAbout
                               title:NSLocalizedString(@"About",
@@ -1565,6 +1565,11 @@ titleForFooterInSection:(NSInteger)section {
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 59.0, 0, 0);
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 52.0;
+  self.tableView.sectionHeaderTopPadding = 0.0;
+  // Without a header view a grouped table opens with about 35 pt of its own space under the search
+  // field; the first section's header alone sets the gap.
+  self.tableView.tableHeaderView =
+      [[[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 0.0, 1.0)] autorelease];
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
   search_controller_ = [[UISearchController alloc] initWithSearchResultsController:nil];
   search_controller_.searchResultsUpdater = self;
@@ -1590,6 +1595,12 @@ titleForFooterInSection:(NSInteger)section {
   [super viewWillAppear:animated];
   // A page may have changed values while this list was out of sight.
   search_index_valid_ = NO;
+  // Coming back from Profiles: the account card shows whoever is signed in now.
+  if (![self showsSearchResults] && [self.tableView numberOfSections] > 0 &&
+      [self.tableView numberOfRowsInSection:0] > 0) {
+    [self.tableView reloadRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:0 inSection:0] ]
+                          withRowAnimation:UITableViewRowAnimationNone];
+  }
 }
 
 #pragma mark - UISearchControllerDelegate
@@ -1849,10 +1860,92 @@ titleForFooterInSection:(NSInteger)section {
   return static_cast<NSInteger>(hub_section.items.count);
 }
 
+// Like Settings, the groups go untitled and the spacing separates them; search results keep the
+// name of the page each group comes from.
+- (BOOL)showsSearchResults {
+  return search_controller_.active && search_controller_.searchBar.text.length > 0;
+}
+
 - (NSString*)tableView:(UITableView* __unused)tableView
     titleForHeaderInSection:(NSInteger)section {
+  if (![self showsSearchResults]) {
+    return nil;
+  }
   NSString* title = [self sectionAtIndex:section].title;
   return title.length ? title : nil;
+}
+
+- (CGFloat)tableView:(UITableView* __unused)tableView heightForHeaderInSection:(NSInteger)section {
+  if ([self showsSearchResults]) {
+    return UITableViewAutomaticDimension;
+  }
+  return section == 0 ? 16.0 : 20.0;
+}
+
+- (CGFloat)tableView:(UITableView* __unused)tableView
+    heightForFooterInSection:(NSInteger __unused)section {
+  return [self showsSearchResults] ? UITableViewAutomaticDimension : 0.01;
+}
+
+- (void)tableView:(UITableView* __unused)tableView
+      willDisplayCell:(UITableViewCell*)cell
+    forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
+  // The mockup's group: 7.5% white over the black page.
+  cell.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.075];
+}
+
+// The account card at the top, as in Settings: avatar, gamertag, and what signing in is for.
+- (void)configureAccountCell:(UITableViewCell*)cell {
+  xe::ui::IOSProfileSummary signed_in_profile;
+  bool any_profile = false;
+  if (app_context_ && app_context_->ProfileServicesReady()) {
+    for (const auto& profile : app_context_->ListProfiles()) {
+      any_profile = true;
+      if (profile.signed_in) {
+        signed_in_profile = profile;
+        break;
+      }
+    }
+  }
+  NSString* gamertag = signed_in_profile.signed_in ? ToNSString(signed_in_profile.gamertag) : nil;
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  if (gamertag.length) {
+    content.text = gamertag;
+    content.secondaryText = NSLocalizedString(@"Profiles and sign-in",
+                                              @"settings hub view controller: account card");
+    content.image = xe_profile_avatar_image(gamertag, YES, 56.0);
+  } else {
+    content.text = any_profile
+                       ? NSLocalizedString(@"Sign In", @"settings hub view controller: account card")
+                       : NSLocalizedString(@"Add a Profile",
+                                           @"settings hub view controller: account card");
+    content.secondaryText = NSLocalizedString(@"Games save progress and achievements to it.",
+                                              @"settings hub view controller: account card");
+    content.image = [UIImage systemImageNamed:@"person.crop.circle.fill"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithPointSize:52.0]];
+    content.imageProperties.tintColor = [UIColor systemGrayColor];
+  }
+  content.textProperties.color = [XeniaTheme textPrimary];
+  content.textProperties.font =
+      xe_scaled_system_font(UIFontTextStyleTitle3, 20.0, UIFontWeightSemibold);
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  content.secondaryTextProperties.font =
+      xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
+  content.textToSecondaryTextVerticalPadding = 2.0;
+  content.imageProperties.reservedLayoutSize = CGSizeMake(56.0, 56.0);
+  content.imageProperties.maximumSize = CGSizeMake(56.0, 56.0);
+  content.imageToTextPadding = 14.0;
+  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(12.0, 16.0, 12.0, 16.0);
+  cell.contentConfiguration = content;
+  cell.accessoryView = nil;
+  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  cell.isAccessibilityElement = YES;
+  XEApplyAccessibility(cell, content.text, content.secondaryText,
+                       NSLocalizedString(@"Opens your profiles.",
+                                         @"settings hub view controller: account card hint"),
+                       UIAccessibilityTraitButton);
 }
 
 - (XeniaSettingsHubSection*)sectionAtIndex:(NSInteger)section {
@@ -1887,6 +1980,11 @@ titleForFooterInSection:(NSInteger)section {
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.isAccessibilityElement = NO;
+    return cell;
+  }
+
+  if (item.kind == XeniaSettingsHubCategoryKindProfile && item.focusKey.length == 0) {
+    [self configureAccountCell:cell];
     return cell;
   }
 
