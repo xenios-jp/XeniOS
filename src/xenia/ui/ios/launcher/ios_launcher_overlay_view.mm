@@ -66,8 +66,8 @@
 namespace {
 // Minimum touch target for the plain icon buttons.
 constexpr CGFloat kMinTapTarget = 44.0;
-// Height over width of a tile's art: a box cover (300 x 219) without its banner.
-constexpr CGFloat kCoverAspect = 300.0 * 0.87 / 219.0;
+// Height over width of a tile's art: a box cover (300 x 219).
+constexpr CGFloat kCoverAspect = 300.0 / 219.0;
 // Space above the notices and between the Library row and the first games.
 constexpr CGFloat kLibraryHeaderTop = 12.0;
 constexpr CGFloat kLibraryHeaderGap = 12.0;
@@ -80,7 +80,7 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
   if (cached) {
     return cached;
   }
-  const CGSize size = CGSizeMake(219.0, 261.0);
+  const CGSize size = CGSizeMake(219.0, 300.0);
   UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
   format.scale = 2.0;
   format.opaque = YES;
@@ -115,7 +115,7 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* traits) {
 // colours in a soft gradient, with the game's own icon (or a controller
 // symbol) at a modest size in the middle, never stretched to fill the tile.
 UIImage* xe_placeholder_cover_art(UIImage* icon, UITraitCollection* traits) {
-  const CGSize size = CGSizeMake(219.0, 261.0);
+  const CGSize size = CGSizeMake(219.0, 300.0);
   UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
   format.scale = 2.0;
   format.opaque = YES;
@@ -244,28 +244,6 @@ UIStackView* xe_new_notice_group(NSArray<UIView*>* rows, NSArray<UIView*>** sepa
     *separators_out = separators;
   }
   return group;
-}
-
-// Cover art without the Xbox 360 banner across its top (about the top 13% of a box cover),
-// so the tile shows the artwork.
-UIImage* xe_cover_without_banner(UIImage* cover) {
-  CGImageRef image = cover.CGImage;
-  if (!image) {
-    return cover;
-  }
-  const size_t width = CGImageGetWidth(image);
-  const size_t height = CGImageGetHeight(image);
-  const size_t banner = size_t(height * 0.13);
-  CGImageRef cropped =
-      CGImageCreateWithImageInRect(image, CGRectMake(0, banner, width, height - banner));
-  if (!cropped) {
-    return cover;
-  }
-  UIImage* result = [UIImage imageWithCGImage:cropped
-                                        scale:cover.scale
-                                  orientation:cover.imageOrientation];
-  CGImageRelease(cropped);
-  return result;
 }
 
 // "● Playable": the status's colour in the dot only, the words in the secondary colour.
@@ -1480,7 +1458,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   xe_ios_system_link_show_online_label(cell.compatPill.superview, game.titleId);
   UIImage* cover = game.supportsRemoteArt ? xe_cached_game_art_thumbnail(game.titleId) : nil;
   if (cover) {
-    cell.iconView.image = xe_cover_without_banner(cover);
+    cell.iconView.image = cover;
   } else {
     cell.iconView.image = [self placeholderImageForGame:game];
     if (game.supportsRemoteArt) {
