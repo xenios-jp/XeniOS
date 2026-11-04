@@ -302,14 +302,10 @@ inline bool NeedsPhysicalRemap() {
 }
 
 // w0 = src, plus 0x1000 when src >= 0xE0000000. The bound is not an
-// immediate operand, so it is kept in w7 until the emitter drops it.
+// immediate operand, so it lives in w7 (A64Emitter::ReloadPhysicalRemapBound).
 inline void ApplyPhysicalRemapW0(A64Emitter& e,
                                  const Xbyak_aarch64::WReg& src) {
   using namespace Xbyak_aarch64;
-  if (!e.physical_remap_bound_valid()) {
-    e.mov(e.w7, uint64_t(0xE0000000u));
-    e.set_physical_remap_bound_valid();
-  }
   e.cmp(src, e.w7);
   e.add(e.w17, src, 1, 12);  // + 0x1000 via LSL #12
   e.csel(e.w0, e.w17, src, HS);
@@ -407,7 +403,7 @@ inline void EmitGuestTlbLookup(A64Emitter& e, const WReg& address,
   e.orr(e.w17, address, uint64_t(0xFFFFF000u));
   e.cmn(e.w17, size - 1);
   e.b(HS, cross);
-  e.LKeepingRemapBound(join);
+  e.L(join);
 }
 
 // The access size that can reach the next page, 1 when none can. A constant

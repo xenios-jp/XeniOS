@@ -244,10 +244,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   using Xbyak_aarch64::CodeGenerator::cbz;
   using Xbyak_aarch64::CodeGenerator::tbnz;
   using Xbyak_aarch64::CodeGenerator::tbz;
-  void b(const Xbyak_aarch64::Label& label) {
-    CheckRemapKeptBranch(label);
-    CodeGenerator::b(label);
-  }
+  void b(const Xbyak_aarch64::Label& label) { CodeGenerator::b(label); }
   void b(const Xbyak_aarch64::Cond cond, const Xbyak_aarch64::Label& label);
   void cbz(const Xbyak_aarch64::WReg& rt, const Xbyak_aarch64::Label& label);
   void cbz(const Xbyak_aarch64::XReg& rt, const Xbyak_aarch64::Label& label);
@@ -300,26 +297,6 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   void L(Xbyak_aarch64::Label& label) {
     CodeGenerator::L(label);
     label_bind_offsets_.emplace(label.getId(), getSize());
-    // A label may be reached from code that never loaded the bound.
-    DropPhysicalRemapBound();
-  }
-  // Binds a label that is reached only by branches emitted in the state the
-  // emitter is in now, through code that leaves w7 alone: the skip after a
-  // long branch, or the return from a tail stub that works in scratch
-  // registers. The physical remap bound stays valid across it.
-  void LKeepingRemapBound(Xbyak_aarch64::Label& label) {
-    CodeGenerator::L(label);
-    label_bind_offsets_.emplace(label.getId(), getSize());
-    remap_kept_label_ids_.insert(label.getId());
-  }
-  // A call clobbers w7, so tail code that made one must not return through a
-  // label that kept the bound. Emit fails the function if it does.
-  void NoteCallClobbersRemapBound() { tail_item_called_ = true; }
-  void CheckRemapKeptBranch(const Xbyak_aarch64::Label& label) {
-    if (emitting_tail_ && tail_item_called_ &&
-        remap_kept_label_ids_.count(label.getId())) {
-      remap_kept_branch_after_call_ = true;
-    }
   }
 
   // A producer that emits nothing hands the next sequence the register it
@@ -418,14 +395,12 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     return reader == x0_constant_reader_ && value == x0_constant_;
   }
 
-  // w7 holds 0xE0000000 for the physical remap from its first use until the
-  // next host call or label, across a block boundary only when every edge
-  // into the block carries it. Nothing else in the backend uses w7.
-  bool physical_remap_bound_valid() const {
-    return physical_remap_bound_valid_;
-  }
-  void set_physical_remap_bound_valid() { physical_remap_bound_valid_ = true; }
-  void DropPhysicalRemapBound() { physical_remap_bound_valid_ = false; }
+  // Where the host maps coarser than 4 KB, w7 holds 0xE0000000 for the
+  // physical remap wherever guest code runs: the prolog loads it, and so does
+  // the return from every call that can reach host code, right at the return
+  // address, where a longjmp back into the frame lands too. Nothing else in
+  // the backend uses w7.
+  void ReloadPhysicalRemapBound();
 
   // Whether this function translates guest addresses through the context's
   // tables rather than the membase. Decided when the function is emitted.
@@ -527,11 +502,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // to be in range. Must be cleared whenever the code generator is reset
   // (xbyak reuses label ids after reset()).
   std::unordered_map<int, size_t> label_bind_offsets_;
-  // Labels bound with LKeepingRemapBound, keyed like label_bind_offsets_.
-  std::unordered_set<int> remap_kept_label_ids_;
   bool emitting_tail_ = false;
-  bool tail_item_called_ = false;
-  bool remap_kept_branch_after_call_ = false;
 
   // True if `label` is bound at most `max_backward_bytes` behind the
   // current emission offset.
@@ -565,35 +536,26 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   bool function_has_stackpoint_ = true;
   // FPCR tracking across blocks: lattice {Unknown, Fpu, Vmx, VmxDaz}, where
   // meet(a, b) = a if a == b else Unknown. A block starts in the meet of its
-  // incoming edges once all of them have been emitted, else Unknown. The
-  // remap bound in w7 is tracked the same way: a block starts with it loaded
-  // only when every incoming edge left it loaded.
+  // incoming edges once all of them have been emitted, else Unknown.
   struct IncomingState {
     FPCRMode fpcr_meet = FPCRMode::Unknown;
-    bool remap_bound_valid = false;
     uint32_t count = 0;
   };
   std::unordered_map<const hir::Block*, uint32_t> expected_preds_;
   std::unordered_map<const hir::Block*, IncomingState> incoming_state_;
-  void RecordIncomingState(const hir::Block* target, FPCRMode mode,
-                           bool remap_bound_valid) {
+  void RecordIncomingState(const hir::Block* target, FPCRMode mode) {
     auto& in = incoming_state_[target];
     if (in.count == 0) {
       in.fpcr_meet = mode;
-      in.remap_bound_valid = remap_bound_valid;
-    } else {
-      if (in.fpcr_meet != mode) {
-        in.fpcr_meet = FPCRMode::Unknown;
-      }
-      in.remap_bound_valid = in.remap_bound_valid && remap_bound_valid;
+    } else if (in.fpcr_meet != mode) {
+      in.fpcr_meet = FPCRMode::Unknown;
     }
     ++in.count;
   }
   // An edge leaving from where the emitter is now.
   void RecordIncomingState(const hir::Block* target) {
-    RecordIncomingState(target, fpcr_mode_, physical_remap_bound_valid_);
+    RecordIncomingState(target, fpcr_mode_);
   }
-  bool physical_remap_bound_valid_ = false;
   // Handoffs between adjacent sequences; see MarkFusedAddressMask and
   // MarkFusedCompareBranch.
   void ResetSequenceHandoffs() {
