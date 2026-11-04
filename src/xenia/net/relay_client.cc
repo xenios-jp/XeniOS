@@ -258,8 +258,11 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
   const std::string_view type = String(message, "t");
   if (type == "welcome") {
     if (auto secret = ParseHex<uint64_t>(String(message, "secret"), 16)) {
-      // Old lobbies don't name the network.
+      // Old lobbies don't name the network, or count the app.
       net_ = ParseHex<uint64_t>(String(message, "net"), 16);
+      auto here = message.FindMember("here");
+      app_counted_ = here != message.MemberEnd() && here->value.IsBool() &&
+                     here->value.GetBool();
       OnWelcome(*secret, ReadIce(message), now_ms);
     }
   } else if (type == "peers") {
@@ -368,6 +371,7 @@ void RelayClient::PermitRelays(uint64_t now_ms, Outbox& out) {
 
 void RelayClient::LobbyClosed(uint64_t now_ms, bool refused) {
   lobby_ = Lobby::kClosed;
+  app_counted_ = false;
   if (joined_) {
     last_joined_ms_ = now_ms;
   }
@@ -481,6 +485,12 @@ std::string RelayClient::Presence(bool join) const {
     json.String(fmt::format("{:08X}", config_.title_id).c_str());
     json.Key("version");
     json.Uint(config_.title_version);
+    if (config_.app_id.size() == 16 &&
+        config_.app_id.find_first_not_of("0123456789abcdef") ==
+            std::string::npos) {
+      json.Key("here");
+      json.String(config_.app_id.c_str());
+    }
   }
   json.Key("candidates");
   json.StartArray();
@@ -862,6 +872,7 @@ void RelayClient::UpdateStatus(uint64_t now_ms) {
   if (joined_) {
     const bool relaying = turn_ && turn_->relayed();
     status.players = peers_.size();
+    status.app_counted = app_counted_;
     for (const auto& [mac, peer] : peers_) {
       status.direct += peer.direct.has_value();
       status.relayed += !peer.direct && peer.listed.relay && relaying;

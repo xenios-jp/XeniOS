@@ -38,6 +38,10 @@ NSString* const kRoomsKey = @"XeniaSystemLinkRooms";
 // The app's last check-in with the lobby: {"id": ID, "at": seconds since 1970}.
 NSString* const kHereKey = @"XeniaSystemLinkHere";
 
+// With the online counts, below.
+NSString* HereID();
+void AskOnline();
+
 void (^g_toast)(NSString*, XeniaIOSStatusToastStyle) = nil;
 // What the player was last told, so each change is told once.
 RelayStatus g_last;
@@ -138,6 +142,12 @@ NSString* VersionMismatchMessage() {
 void OnStatus(const RelayStatus& status) {
   const RelayStatus last = g_last;
   g_last = status;
+  // Out of the room, the app checks in for itself again.
+  if (last.app_counted && !status.app_counted) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      AskOnline();
+    });
+  }
   const bool chose_room = g_room_code.length != 0;
   const bool was_active = g_active;
   g_active = status.state != State::kStopped && status.state != State::kPaused;
@@ -578,6 +588,12 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
             return code ? std::string(code.UTF8String) : std::string();
           }
         },
+        // The room counts the app while it plays there, in place of check-ins.
+        [] {
+          @autoreleasepool {
+            return std::string(HereID().UTF8String);
+          }
+        },
     });
     // Games ask whether System Link is allowed on every frame, so the answer is kept and read
     // again when the defaults change, which covers Online Features and its notice.
@@ -781,7 +797,8 @@ void SetOnline(NSDictionary<NSNumber*, NSNumber*>* online, NSInteger here = -1,
 }
 
 // Asks for the counts about once a minute while they're wanted, and every 5 minutes says the app
-// is open, also while a game runs.
+// is open, also while a game runs, except while a System Link room counts it (the room tells the
+// lobby). Coming to the foreground always says so, which also undoes a `gone`.
 void AskOnline() {
   if (!OnlineAllowed()) {
     SetOnline(nil);
@@ -792,7 +809,8 @@ void AskOnline() {
     SetOnline(nil);
   }
   const bool wanted = !g_online_wanted || g_online_wanted() || g_online_kept;
-  const bool say_here = !g_here_said || now - g_here_said >= kHereInterval;
+  const bool say_here =
+      !g_here_said || (now - g_here_said >= kHereInterval && !g_last.app_counted);
   if (g_online_asking ||
       [UIApplication sharedApplication].applicationState != UIApplicationStateActive ||
       (!say_here && (!wanted || (g_online_asked && now - g_online_asked < kOnlineInterval)))) {

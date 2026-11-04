@@ -39,6 +39,9 @@ bool SystemLinkEnabled();
 struct SystemLinkRelayPolicy {
   std::function<bool()> allowed;
   std::function<std::string(uint32_t title_id)> room;
+  // The app's ID for counting open apps, which the room counts while the
+  // title plays in it (see relay::RelayConfig::app_id). Optional.
+  std::function<std::string()> app_id;
 };
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy);
 // What the policy's |allowed| says may have changed.

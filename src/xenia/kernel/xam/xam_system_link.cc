@@ -230,6 +230,12 @@ std::unique_ptr<net::secure::PacketTransport> OpenTransport(
     config.title_id = execution.title_id;
     config.title_version = execution.version_value;
     config.allowed = [] { return RelayAllowed(); };
+    {
+      std::lock_guard lock(relay_policy_mutex);
+      if (relay_policy.app_id) {
+        config.app_id = relay_policy.app_id();
+      }
+    }
     // The room is only asked for again once it may have changed.
     config.current_room = [title_id = uint32_t(execution.title_id),
                            seen = relay_room_changes.load()]() mutable

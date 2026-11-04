@@ -1600,6 +1600,42 @@ TEST_CASE("Relay players wait for a welcome only so long", "[relay]") {
   CHECK(!rejected.LobbyStale(now + 30000));
 }
 
+TEST_CASE("Relay players name their app so the room counts it", "[relay]") {
+  RelayConfig config = Config();
+  config.app_id = "0123456789abcdef";
+  RelayClient client(kMacA, config);
+  Outbox out;
+  uint64_t now = 100000;
+  client.LobbyConnecting(now);
+  client.LobbyOpened(now, out);
+  REQUIRE(out.lobby.size() == 1);
+  CHECK(out.lobby[0].find(R"("here":"0123456789abcdef")") != std::string::npos);
+  client.LobbyMessage(
+      R"({"t":"welcome","v":1,"secret":"0123456789abcdef","here":true,"ice":{}})",
+      now, out);
+  CHECK(client.status().app_counted);
+  client.LobbyClosed(now + 1000);
+  CHECK(!client.status().app_counted);
+
+  // A lobby that doesn't say so doesn't count it.
+  RelayClient old(kMacA, config);
+  JoinRoom(old, now);
+  CHECK(old.status().state == State::kOnline);
+  CHECK(!old.status().app_counted);
+
+  // Without an ID, or with one that isn't 16 hex digits, the join names none.
+  for (const char* id : {"", "0123456789ABCDEF", "0123"}) {
+    RelayConfig other = Config();
+    other.app_id = id;
+    RelayClient anonymous(kMacA, other);
+    Outbox sent;
+    anonymous.LobbyConnecting(now);
+    anonymous.LobbyOpened(now, sent);
+    REQUIRE(sent.lobby.size() == 1);
+    CHECK(sent.lobby[0].find("here") == std::string::npos);
+  }
+}
+
 TEST_CASE("Relay players back off from a lobby that turns them away",
           "[relay]") {
   RelayClient client(kMacA, Config());
