@@ -131,7 +131,9 @@ bool ConstantPropagationPass::Run(HIRBuilder* builder, bool& result) {
           if (i->src1.value->IsConstant()) {
             auto function = processor_->LookupFunction(
                 uint32_t(i->src1.value->constant.i32));
-            if (!function) {
+            // A direct call reaches only guest code; anything else stays
+            // resolved at run time.
+            if (!function || !function->is_guest()) {
               break;
             }
             i->Replace(&OPCODE_CALL_info, i->flags);
@@ -153,7 +155,7 @@ bool ConstantPropagationPass::Run(HIRBuilder* builder, bool& result) {
                                                      // const indirect call true
             auto function = processor_->LookupFunction(
                 uint32_t(i->src2.value->constant.i32));
-            if (!function) {
+            if (!function || !function->is_guest()) {
               break;
             }
             // i->Replace(&OPCODE_CALL_TRUE_info, i->flags);
