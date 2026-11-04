@@ -19,6 +19,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -424,13 +425,13 @@ NSString* XEZarSpaceDeltaSummary(uint64_t source_bytes, uint64_t output_bytes) {
   if (source_bytes >= output_bytes) {
     const uint64_t saved_bytes = source_bytes - output_bytes;
     return [NSString
-        stringWithFormat:NSLocalizedString(@"Saved %1$@ (%2$@ -> %3$@).",
+        stringWithFormat:NSLocalizedString(@"Saved %1$@ (%2$@ → %3$@).",
                                            @"zar conversion coordinator: user-visible text"),
                          XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
                          XEZarFormatByteCount(output_bytes)];
   }
   return [NSString
-      stringWithFormat:NSLocalizedString(@"Archive is %1$@ larger (%2$@ -> %3$@).",
+      stringWithFormat:NSLocalizedString(@"Archive is %1$@ larger (%2$@ → %3$@).",
                                          @"zar conversion coordinator: user-visible text"),
                        XEZarFormatByteCount(output_bytes - source_bytes),
                        XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
@@ -444,13 +445,13 @@ NSString* XEZarEstimatedSpaceDeltaSummary(uint64_t source_bytes, uint64_t output
   if (source_bytes >= output_bytes) {
     const uint64_t saved_bytes = source_bytes - output_bytes;
     return [NSString
-        stringWithFormat:NSLocalizedString(@"Estimated savings: %1$@ (%2$@ -> %3$@).",
+        stringWithFormat:NSLocalizedString(@"Estimated savings: %1$@ (%2$@ → %3$@).",
                                            @"zar conversion coordinator: user-visible text"),
                          XEZarFormatByteCount(saved_bytes), XEZarFormatByteCount(source_bytes),
                          XEZarFormatByteCount(output_bytes)];
   }
   return [NSString
-      stringWithFormat:NSLocalizedString(@"Estimated .zar is %1$@ larger (%2$@ -> %3$@).",
+      stringWithFormat:NSLocalizedString(@"Estimated .zar is %1$@ larger (%2$@ → %3$@).",
                                          @"zar conversion coordinator: user-visible text"),
                        XEZarFormatByteCount(output_bytes - source_bytes),
                        XEZarFormatByteCount(source_bytes), XEZarFormatByteCount(output_bytes)];
@@ -1445,7 +1446,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
                              XEZarFormatByteCount(estimated_zar_bytes - source_bytes)];
       }
       detail =
-          [NSString stringWithFormat:@"%@ - %@ -> %@", XEZarPreflightItemCountText(request_count_),
+          [NSString stringWithFormat:@"%@ · %@ → %@", XEZarPreflightItemCountText(request_count_),
                                      XEZarFormatByteCount(source_bytes),
                                      XEZarFormatByteCount(estimated_zar_bytes)];
     } else {
@@ -2274,6 +2275,10 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   UINavigationController* zar_conversion_preflight_navigation_;
   XeniaIOSZarConversionPreflightViewController* zar_conversion_preflight_controller_;
   std::shared_ptr<std::atomic_bool> zar_conversion_cancel_requested_;
+  // Estimated (source, archive) bytes by source path; read and written on savings_queue_ only.
+  std::shared_ptr<std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>> savings_cache_;
+  dispatch_queue_t savings_queue_;
+  uint64_t savings_generation_;
 }
 
 - (instancetype)initWithHost:(id<XeniaIOSZarConversionCoordinatorHost>)host {
@@ -2613,6 +2618,51 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
   XELOGI("iOS ZAR: present single conversion options games={} index={}", games.size(), gameIndex);
   discovered_games_ = games;
   [self presentZarConversionOptionsForIndex:gameIndex];
+}
+
+- (void)estimateLibrarySavingsForGames:(const std::vector<IOSDiscoveredGame>&)games
+                            completion:(void (^)(uint64_t, NSUInteger))completion {
+  if (!savings_queue_) {
+    savings_queue_ = dispatch_queue_create(
+        "jp.xenios.zar-savings",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    savings_cache_ =
+        std::make_shared<std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>>();
+  }
+  const uint64_t generation = ++savings_generation_;
+  auto requests = std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(
+      XEZarBulkConversionRequests(games));
+  auto cache = savings_cache_;
+  void (^done)(uint64_t, NSUInteger) = [[completion copy] autorelease];
+  __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
+  [self retain];
+  dispatch_async(savings_queue_, ^{
+    uint64_t saved = 0;
+    NSUInteger shrinking = 0;
+    for (XeniaIOSZarConversionRequest& request : *requests) {
+      const std::string key = request.source_path.string();
+      auto found = cache->find(key);
+      if (found == cache->end()) {
+        XEZarRefreshConversionRequestEstimate(&request);
+        found = cache
+                    ->emplace(key, std::make_pair(request.source_bytes,
+                                                  request.estimate_available
+                                                      ? request.estimated_zar_bytes
+                                                      : request.source_bytes))
+                    .first;
+      }
+      if (found->second.second < found->second.first) {
+        saved += found->second.first - found->second.second;
+        ++shrinking;
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (unsafe_self->savings_generation_ == generation && done) {
+        done(saved, shrinking);
+      }
+      [unsafe_self release];
+    });
+  });
 }
 
 - (void)presentBulkConversionOptionsForGames:(const std::vector<IOSDiscoveredGame>&)games {

@@ -382,7 +382,7 @@
 "Apply a layout or manage saved copies" = "Apply a layout or manage saved copies";
 
 /* zar conversion coordinator: user-visible text */
-"Archive is %1$@ larger (%2$@ -> %3$@)." = "Archive is %1$@ larger (%2$@ -> %3$@).";
+"Archive is %1$@ larger (%2$@ → %3$@)." = "Archive is %1$@ larger (%2$@ → %3$@).";
 
 /* settings hub view controller: title */
 "Arrange the touch controls in the running game." = "Arrange the touch controls in the running game.";
@@ -617,7 +617,7 @@
 
 /* game compatibility hero view: title
    game compatibility view controller: title
-   game page: row
+   game page: compatibility capsule
    launcher overlay view: title */
 "Compatibility" = "Compatibility";
 
@@ -699,6 +699,9 @@
    zar conversion coordinator: message */
 "Conversion failed." = "Conversion failed.";
 
+/* launcher overlay view: ZAR suggestion button */
+"Convert" = "Convert";
+
 /* zar conversion coordinator: user-visible text */
 "Convert Added Games to ZAR" = "Convert Added Games to ZAR";
 
@@ -733,6 +736,7 @@
 "Convert In Place and Delete Original" = "Convert In Place and Delete Original";
 
 /* Add menu: converts disc images to ZAR
+   settings hub view controller: title
    zar conversion coordinator: title */
 "Convert Library to ZAR" = "Convert Library to ZAR";
 
@@ -1164,14 +1168,14 @@
 "Environment" = "Environment";
 
 /* zar conversion coordinator: user-visible text */
-"Estimated .zar is %1$@ larger (%2$@ -> %3$@)." = "Estimated .zar is %1$@ larger (%2$@ -> %3$@).";
+"Estimated .zar is %1$@ larger (%2$@ → %3$@)." = "Estimated .zar is %1$@ larger (%2$@ → %3$@).";
 
 /* zar conversion coordinator: detail text
    zar conversion coordinator: user-visible text */
 "Estimated savings unavailable." = "Estimated savings unavailable.";
 
 /* zar conversion coordinator: user-visible text */
-"Estimated savings: %1$@ (%2$@ -> %3$@)." = "Estimated savings: %1$@ (%2$@ -> %3$@).";
+"Estimated savings: %1$@ (%2$@ → %3$@)." = "Estimated savings: %1$@ (%2$@ → %3$@).";
 
 /* game page: Convert to ZAR */
 "Estimating its size…" = "Estimating its size…";
@@ -1925,6 +1929,9 @@
 /* Add menu: subtitle of Convert Library */
 "Makes disc images smaller." = "Makes disc images smaller.";
 
+/* settings hub view controller: title */
+"Makes disc images smaller. Games play the same." = "Makes disc images smaller. Games play the same.";
+
 /* launcher overlay view: title */
 "Manage Content" = "Manage Content";
 
@@ -2123,7 +2130,8 @@
 /* system software view controller: status */
 "Not Installed" = "Not Installed";
 
-/* Alert button: dismiss without enabling */
+/* Alert button: dismiss without enabling
+   launcher overlay view: hides the ZAR suggestion */
 "Not Now" = "Not Now";
 
 /* online view controller: summary row */
@@ -2147,8 +2155,8 @@
 /* zar conversion coordinator: user-visible text */
 "Not started: %lu." = "Not started: %lu.";
 
-/* game page: under Compatibility */
-"Not tested yet." = "Not tested yet.";
+/* game page: compatibility capsule */
+"Not Tested" = "Not Tested";
 
 /* compat report view controller: user-visible text */
 "Notes" = "Notes";
@@ -2385,8 +2393,7 @@
 /* Pause menu row */
 "Performance Overlay" = "Performance Overlay";
 
-/* game compatibility hero: performance pill
-   game page: under Compatibility; %@ is how well it runs, such as Okay */
+/* game compatibility hero: performance pill */
 "Performance: %@" = "Performance: %@";
 
 /* settings hub view controller: title */
@@ -2662,7 +2669,10 @@
 /* compat report view controller: title */
 "Report Submitted" = "Report Submitted";
 
-/* game page: under Compatibility */
+/* game page: compatibility capsule menu; %@ is a player's notes */
+"Reported: “%@”" = "Reported: “%@”";
+
+/* game page: compatibility capsule menu */
 "Reports & Discussion" = "Reports & Discussion";
 
 /* compat report view controller: user-visible text */
@@ -2733,6 +2743,15 @@
 /* Name of a touch control shape */
 "Rounded Rectangle" = "Rounded Rectangle";
 
+/* game page: compatibility capsule */
+"Runs Great" = "Runs Great";
+
+/* game page: compatibility capsule */
+"Runs Okay" = "Runs Okay";
+
+/* game page: compatibility capsule */
+"Runs Poorly" = "Runs Poorly";
+
 /* Feedback while resizing; %@ is the name of the other control */
 "Same height as %@" = "Same height as %@";
 
@@ -2751,6 +2770,9 @@
 /* Alert button: save the label */
 "Save" = "Save";
 
+/* Library: ZAR suggestion; %@ is a size, like 18 GB */
+"Save %@" = "Save %@";
+
 /* zar conversion coordinator: user-visible text */
 "Save about %@" = "Save about %@";
 
@@ -2764,7 +2786,7 @@
 "Saved" = "Saved";
 
 /* zar conversion coordinator: user-visible text */
-"Saved %1$@ (%2$@ -> %3$@)." = "Saved %1$@ (%2$@ -> %3$@).";
+"Saved %1$@ (%2$@ → %3$@)." = "Saved %1$@ (%2$@ → %3$@).";
 
 /* Toast; %@ is the new layout name */
 "Saved copy %@." = "Saved copy %@.";
@@ -3702,6 +3724,9 @@
 
 /* online game picker: header */
 "Which game is the room for?" = "Which game is the room for?";
+
+/* Library: ZAR suggestion, after \"Save 18 GB\" */
+"with ZAR." = "with ZAR.";
 
 /* zar conversion coordinator: title */
 "Write .zar archives beside the source games and keep the originals." = "Write .zar archives beside the source games and keep the originals.";

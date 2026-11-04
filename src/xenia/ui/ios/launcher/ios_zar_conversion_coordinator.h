@@ -57,6 +57,11 @@
                                update:(void (^)(NSString* summary, BOOL estimating,
                                                 NSArray<XeniaIOSZarConversionChoice*>* choices))
                                           update;
+// What converting the library would save, worked out in the background and kept per disc image:
+// |completion| comes on the main queue with the bytes saved and how many games would shrink. A
+// newer call supersedes an older one, whose completion never comes.
+- (void)estimateLibrarySavingsForGames:(const std::vector<xe::ui::IOSDiscoveredGame>&)games
+                            completion:(void (^)(uint64_t savedBytes, NSUInteger games))completion;
 - (void)convertGameToZarForGames:(const std::vector<xe::ui::IOSDiscoveredGame>&)games
                            index:(size_t)gameIndex;
 

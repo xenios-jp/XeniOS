@@ -61,7 +61,8 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
 @property(nonatomic, copy) void (^discHandler)(NSUInteger discIndex);
 // Updates & Add-ons installs through it and asks it to rescan the library.
 @property(nonatomic, assign) id<XeniaGameContentHost> contentHost;
-// Compatibility's performance and notes, under the status.
+// The capsule beside Play: the compatibility status and performance codes, and the notes.
+@property(nonatomic, copy) NSString* compatibilityStatus;
 @property(nonatomic, copy) NSString* compatibilityPerformance;
 @property(nonatomic, copy) NSString* compatibilityNotes;
 // Convert to ZAR: fetches the ways to convert, and the size, when the row opens.

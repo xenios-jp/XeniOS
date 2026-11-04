@@ -21,6 +21,8 @@
 @property(nonatomic, copy) NSString* contentTypeName;
 @property(nonatomic, copy) NSString* compatStatus;
 @property(nonatomic, assign) BOOL hasCompatInfo;
+@property(nonatomic, copy) NSString* compatPerf;
+@property(nonatomic, copy) NSString* compatNotes;
 @property(nonatomic, assign) uint32_t titleId;
 @property(nonatomic, assign) BOOL supportsCompatibility;
 @property(nonatomic, assign) BOOL supportsManageContent;
@@ -73,6 +75,9 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 @property(nonatomic, copy) void (^discSelectionHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^patchesHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^zarConversionHandler)(NSUInteger gameIndex);
+// The notice suggesting the library be converted to ZAR: Convert, and its close button.
+@property(nonatomic, copy) void (^zarSuggestionHandler)(void);
+@property(nonatomic, copy) void (^zarSuggestionDismissHandler)(void);
 // The ⋯ beside Play on Continue Playing: the game's actions.
 @property(nonatomic, copy) void (^gameActionsHandler)(NSUInteger gameIndex);
 
@@ -84,6 +89,8 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 - (void)setJITStatusText:(NSString*)text;
 - (void)setMemoryEntitlementEnabled:(BOOL)enabled;
 - (void)setMemoryEntitlementStatusText:(NSString*)text;
+// The ZAR suggestion's line, as "Save 18 GB" and what it takes; nil hides it.
+- (void)setZarSuggestionTitle:(NSString*)title detail:(NSString*)detail;
 // The focus index counts the grid's items, the Dashboard tile included; the
 // game handlers above get indexes into the games.
 - (void)setFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll;

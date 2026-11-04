@@ -33,6 +33,7 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubAction) {
   XeniaSettingsHubActionManageExternalFolders,  // Handled by the Library & Storage page.
   XeniaSettingsHubActionClearCurrentGameShaderCache,
   XeniaSettingsHubActionClearAllShaderCaches,
+  XeniaSettingsHubActionConvertLibraryToZar,
 };
 
 typedef void (^XeniaSettingsHubActionHandler)(XeniaSettingsHubAction action);
