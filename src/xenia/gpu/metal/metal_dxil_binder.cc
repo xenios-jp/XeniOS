@@ -53,6 +53,8 @@ bool MetalDxilBinder::Upload(const void* data, uint32_t size,
           bytes, kSliceAlignment, &slice_out.buffer, &slice_out.offset)) {
     return false;
   }
+  slice_out.gpu_address =
+      uint64_t(slice_out.buffer->gpuAddress()) + uint64_t(slice_out.offset);
   uint8_t* mapping =
       static_cast<uint8_t*>(slice_out.buffer->contents()) + slice_out.offset;
   if (data && size) {
@@ -257,7 +259,7 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   Slice argument_buffer;
   uint32_t argument_buffer_size = converter_.argument_buffer_size();
   auto slice_address = [](const Slice& slice) -> uint64_t {
-    return uint64_t(slice.buffer->gpuAddress()) + uint64_t(slice.offset);
+    return slice.gpu_address;
   };
   ArgumentBufferKey argument_key{};
   auto set_argument = [&](MetalRootParameter parameter, uint64_t address) {
