@@ -66,6 +66,10 @@ DECLARE_bool(log_to_stdout);
   }
   UIWindow* previous_window = self.window;
   self.window = window;
+  // One accent everywhere: bar buttons, checkmarks and switches use the XeniOS mint instead of
+  // system blue and green.
+  window.tintColor = [XeniaTheme accent];
+  [UISwitch appearance].onTintColor = [XeniaTheme accent];
   if (app_) {
     UIViewController* existing_root = previous_window.rootViewController;
     if (!self.window.rootViewController && existing_root) {

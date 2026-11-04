@@ -100,133 +100,23 @@ XeniaPaddedLabel* xe_make_tag_pill(NSString* text, UIColor* text_color) {
   return pill;
 }
 
-// UIButton subclass that re-resolves its layer.borderColor when the host's
-// userInterfaceStyle flips. CGColor is captured at assignment, so a plain
-// dynamic-color initial assignment would freeze its dark variant for the
-// lifetime of the button. Override traitCollectionDidChange: to refresh.
-@interface XeniaSheetCloseButton : UIButton
-@end
-
-@implementation XeniaSheetCloseButton
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if ([self.traitCollection
-          hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
-    self.layer.borderColor =
-        [UIColor colorWithDynamicProvider:^UIColor*(UITraitCollection* traits) {
-          return (traits.userInterfaceStyle == UIUserInterfaceStyleLight)
-                     ? [[UIColor blackColor] colorWithAlphaComponent:0.12]
-                     : [[UIColor whiteColor] colorWithAlphaComponent:0.12];
-        }].CGColor;
-  }
-}
-@end
-
+// The same glass "Close" capsule the navigation bars show on every other sheet, for sheets
+// that draw their own header.
 UIButton* xe_make_ios_sheet_close_button(id target, SEL action) {
-  XeniaSheetCloseButton* button = [XeniaSheetCloseButton buttonWithType:UIButtonTypeSystem];
+  UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
+  config.title = NSLocalizedString(@"Close", @"sheet close button");
+  config.baseForegroundColor = [XeniaTheme textPrimary];
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.contentInsets = NSDirectionalEdgeInsetsMake(11.0, 16.0, 11.0, 16.0);
+  config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
+      NSDictionary<NSAttributedStringKey, id>* attributes) {
+    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
+    updated[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    return updated;
+  };
+  UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
   button.translatesAutoresizingMaskIntoConstraints = NO;
-  button.backgroundColor = [[XeniaTheme bgSurface] colorWithAlphaComponent:0.76];
-  button.layer.cornerRadius = 24.0;
-  button.layer.borderWidth = 0.5;
-  button.layer.borderColor =
-      [UIColor colorWithDynamicProvider:^UIColor*(UITraitCollection* traits) {
-        return (traits.userInterfaceStyle == UIUserInterfaceStyleLight)
-                   ? [[UIColor blackColor] colorWithAlphaComponent:0.12]
-                   : [[UIColor whiteColor] colorWithAlphaComponent:0.12];
-      }].CGColor;
-  UIImageSymbolConfiguration* config =
-      [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
-  UIImage* image =
-      [[UIImage systemImageNamed:@"xmark.circle"] imageByApplyingSymbolConfiguration:config];
-  [button setImage:image forState:UIControlStateNormal];
-  button.tintColor = [XeniaTheme accent];
   [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
-  [NSLayoutConstraint activateConstraints:@[
-    [button.widthAnchor constraintEqualToConstant:48.0],
-    [button.heightAnchor constraintEqualToConstant:48.0],
-  ]];
   return button;
 }
 
-static UIImage* xe_scaled_settings_footer_image(UIImage* image) {
-  if (!image) {
-    return nil;
-  }
-  CGSize image_size = image.size;
-  if (image_size.width <= 0.0 || image_size.height <= 0.0) {
-    return image;
-  }
-  constexpr CGFloat kMaxIconSide = 24.0;
-  CGFloat scale = MIN(kMaxIconSide / image_size.width, kMaxIconSide / image_size.height);
-  if (scale >= 1.0) {
-    return image;
-  }
-
-  CGSize target_size =
-      CGSizeMake(ceil(image_size.width * scale), ceil(image_size.height * scale));
-  UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
-  format.opaque = NO;
-  UIGraphicsImageRenderer* renderer =
-      [[UIGraphicsImageRenderer alloc] initWithSize:target_size format:format];
-  UIImage* scaled = [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused ctx) {
-    [image drawInRect:CGRectMake(0.0, 0.0, target_size.width, target_size.height)];
-  }];
-  [renderer release];
-  return scaled;
-}
-
-UIImage* xe_settings_footer_image(NSString* asset_name, NSString* fallback_symbol_name,
-                                  BOOL tintable) {
-  UIImage* image = asset_name.length ? [UIImage imageNamed:asset_name] : nil;
-  BOOL used_fallback = NO;
-  if (!image) {
-    used_fallback = YES;
-    UIImageSymbolConfiguration* config =
-        [UIImageSymbolConfiguration configurationWithPointSize:18.0
-                                                        weight:UIImageSymbolWeightMedium];
-    image = [UIImage systemImageNamed:fallback_symbol_name withConfiguration:config];
-    if (!image) {
-      image = [UIImage systemImageNamed:@"questionmark.circle" withConfiguration:config];
-    }
-  }
-  image = xe_scaled_settings_footer_image(image);
-  return [image imageWithRenderingMode:(tintable || used_fallback)
-                                           ? UIImageRenderingModeAlwaysTemplate
-                                           : UIImageRenderingModeAlwaysOriginal];
-}
-
-UIButton* xe_make_settings_footer_button(NSString* asset_name, NSString* fallback_symbol_name,
-                                         NSString* accessibility_label, NSInteger tag,
-                                         BOOL tintable, id target, SEL action) {
-  UIImage* image = xe_settings_footer_image(asset_name, fallback_symbol_name, tintable);
-  UIButton* button = [UIButton buttonWithType:UIButtonTypeSystem];
-  button.translatesAutoresizingMaskIntoConstraints = NO;
-  button.tag = tag;
-  button.backgroundColor = [UIColor clearColor];
-  button.tintColor = [XeniaTheme textPrimary];
-  UIButtonConfiguration* configuration = [UIButtonConfiguration plainButtonConfiguration];
-  configuration.image = image;
-  configuration.title = nil;
-  configuration.imagePadding = 0.0;
-  configuration.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 8.0, 6.0, 8.0);
-  configuration.baseForegroundColor = [XeniaTheme textPrimary];
-  configuration.preferredSymbolConfigurationForImage =
-      [UIImageSymbolConfiguration configurationWithPointSize:20.0
-                                                      weight:UIImageSymbolWeightSemibold];
-  button.configuration = configuration;
-  button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
-  button.titleLabel.adjustsFontForContentSizeCategory = YES;
-  button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  button.adjustsImageWhenHighlighted = YES;
-  button.imageView.contentMode = UIViewContentModeScaleAspectFit;
-  button.accessibilityLabel = accessibility_label;
-  button.accessibilityHint =
-      NSLocalizedString(@"Opens in Safari.", @"VoiceOver hint of a link button");
-  button.accessibilityTraits |= UIAccessibilityTraitLink;
-  button.largeContentTitle = accessibility_label;
-  button.showsLargeContentViewer = YES;
-  [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
-  [button.widthAnchor constraintEqualToConstant:48.0].active = YES;
-  [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
-  return button;
-}
