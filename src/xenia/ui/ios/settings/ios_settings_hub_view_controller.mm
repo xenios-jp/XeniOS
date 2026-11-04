@@ -79,7 +79,7 @@ NSString* XeniaAppIconSubtitleForRow(NSInteger row) {
     return NSLocalizedString(@"Use the dark icon.",
                              @"settings hub view controller: user-visible text");
   }
-  return NSLocalizedString(@"Use the adaptive primary icon.",
+  return NSLocalizedString(@"Light or dark, following the system appearance.",
                            @"settings hub view controller: user-visible text");
 }
 
@@ -91,6 +91,38 @@ NSString* XeniaAppIconSymbolForRow(NSInteger row) {
     return @"moon.fill";
   }
   return @"app.fill";
+}
+
+// The icon itself, small and with the Home Screen's rounded corners. Automatic is the light
+// icon with its lower right half dark, since it follows the system appearance.
+UIImage* XeniaAppIconPreviewForRow(NSInteger row) {
+  UIImage* light = [UIImage imageNamed:@"AppIconPreviewLight"];
+  UIImage* dark = [UIImage imageNamed:@"AppIconPreviewDark"];
+  if (!light || !dark) {
+    return nil;
+  }
+  const CGFloat side = 44.0;
+  const CGRect bounds = CGRectMake(0.0, 0.0, side, side);
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:bounds.size] autorelease];
+  return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
+    UIBezierPath* shape = [UIBezierPath bezierPathWithRoundedRect:bounds
+                                                     cornerRadius:side * 0.2237];
+    [shape addClip];
+    [(row == 2 ? dark : light) drawInRect:bounds];
+    if (row == 0) {
+      UIBezierPath* half = [UIBezierPath bezierPath];
+      [half moveToPoint:CGPointMake(side, 0.0)];
+      [half addLineToPoint:CGPointMake(side, side)];
+      [half addLineToPoint:CGPointMake(0.0, side)];
+      [half closePath];
+      [half addClip];
+      [dark drawInRect:bounds];
+    }
+    [[UIColor colorWithWhite:0.5 alpha:0.3] setStroke];
+    shape.lineWidth = 1.0 / UIScreen.mainScreen.scale;
+    [shape stroke];
+  }];
 }
 
 BOOL XeniaAppIconNamesEqual(NSString* lhs, NSString* rhs) {
@@ -449,9 +481,10 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
   cell.selectionStyle =
       supported ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
 
-  cell.imageView.image = XESettingsBadgeImage(
-      XeniaAppIconSymbolForRow(row),
-      row == 2 ? [XeniaTheme sectionIconIndigo] : [XeniaTheme sectionIconOrange]);
+  cell.imageView.image = XeniaAppIconPreviewForRow(row)
+                             ?: XESettingsBadgeImage(XeniaAppIconSymbolForRow(row),
+                                                     row == 2 ? [XeniaTheme sectionIconIndigo]
+                                                              : [XeniaTheme sectionIconOrange]);
   XEApplyAccessibility(cell, cell.textLabel.text, cell.detailTextLabel.text,
                        supported ? NSLocalizedString(@"Selects this app icon.",
                                                      @"settings hub view controller: detail text")
@@ -1577,7 +1610,7 @@ titleForFooterInSection:(NSInteger)section {
                        itemWithKind:XeniaSettingsHubCategoryKindDiagnostics
                               title:NSLocalizedString(@"Diagnostics",
                                                       @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Log level and live log.",
+                           subtitle:NSLocalizedString(@"Log detail and the log.",
                                                       @"settings hub view controller: title")
                          symbolName:@"waveform.path.ecg"
                           tintColor:orange],
