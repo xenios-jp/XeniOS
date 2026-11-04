@@ -807,6 +807,9 @@ void A64Emitter::EmitEncodedIndirectionLookup() {
 
 void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   assert_not_null(function);
+  // The return address is usually still in x0 from its stores just before.
+  bool x0_holds_return = X0HoldsCallReturnAddress(instr) &&
+                         !FpuFpcrTransitionChangesMode();
   EnsureFpuFpcrModeForTransition();
   if (TryInlinePPCGprLrSaveRestore(instr, function)) {
     return;
@@ -824,7 +827,10 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     mov(x9, reinterpret_cast<uint64_t>(fn->machine_code()));
     if (!(instr->flags & hir::CALL_TAIL)) {
       // Pass the next call's guest return address in x0.
-      ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
+      if (!x0_holds_return) {
+        ldr(x0,
+            ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
+      }
       blr(x9);
       ReloadPhysicalRemapBound();
       synchronize_stack_on_next_instruction_ = true;
@@ -858,8 +864,10 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   } else if (code_cache_->has_indirection_table()) {
     mov(w16, function->address());
     EmitDynamicCallLookup((instr->flags & hir::CALL_TAIL) != 0, true);
+    x0_holds_return = false;
   } else {
     // No indirection table: resolve at runtime.
+    x0_holds_return = false;
     mov(x0, x20);  // context
     mov(x1, static_cast<uint64_t>(function->address()));
     mov(x9, reinterpret_cast<uint64_t>(&ResolveFunction));
@@ -879,7 +887,9 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     }
     br(x9);
   } else {
-    ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
+    if (!x0_holds_return) {
+      ldr(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
+    }
     blr(x9);
     ReloadPhysicalRemapBound();
     synchronize_stack_on_next_instruction_ = true;
@@ -1296,6 +1306,7 @@ void A64Emitter::MoveCallerSavedSlots(const PromotedLoop& loop, bool store) {
 }
 
 void A64Emitter::SetReturnAddress(uint64_t value) {
+  call_return_address_ = value;
   mov(x0, value);
   str(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_CALL_RET_ADDR)));
 }
@@ -1622,18 +1633,17 @@ void A64Emitter::PushStackpoint() {
                 "stackpoint indexing relies on a 16-byte element size");
   add(x8, x8, w9, UXTW, 4);
 
-  // Store host SP.
+  // Store host SP, then guest r1 and guest LR (32-bit) as a pair.
+  static_assert(offsetof(A64BackendStackpoint, guest_return_address_) ==
+                    offsetof(A64BackendStackpoint, guest_stack_) + 4,
+                "the guest stack and return address are stored as a pair");
   mov(x10, sp);
   str(x10, ptr(x8, static_cast<uint32_t>(
                        offsetof(A64BackendStackpoint, host_stack_))));
-  // Store guest r1 (32-bit).
   ldr(w10, ptr(x20, static_cast<int32_t>(offsetof(ppc::PPCContext, r[1]))));
-  str(w10, ptr(x8, static_cast<uint32_t>(
-                       offsetof(A64BackendStackpoint, guest_stack_))));
-  // Store guest LR (32-bit).
-  ldr(w10, ptr(x20, static_cast<int32_t>(offsetof(ppc::PPCContext, lr))));
-  str(w10, ptr(x8, static_cast<uint32_t>(
-                       offsetof(A64BackendStackpoint, guest_return_address_))));
+  ldr(w17, ptr(x20, static_cast<int32_t>(offsetof(ppc::PPCContext, lr))));
+  stp(w10, w17,
+      ptr(x8, static_cast<int32_t>(offsetof(A64BackendStackpoint, guest_stack_))));
 
   // Increment depth.
   add(w9, w9, 1);
@@ -1641,8 +1651,16 @@ void A64Emitter::PushStackpoint() {
                        offsetof(A64BackendContext, current_stackpoint_depth))));
 
   // Check for overflow.
-  mov(w10, static_cast<uint32_t>(cvars::a64_max_stackpoints));
-  cmp(w9, w10);
+  const uint32_t max_stackpoints =
+      static_cast<uint32_t>(cvars::a64_max_stackpoints);
+  if (max_stackpoints < 0x1000) {
+    cmp(w9, max_stackpoints);
+  } else if (!(max_stackpoints & 0xFFF) && max_stackpoints < (1u << 24)) {
+    cmp(w9, max_stackpoints >> 12, 12);
+  } else {
+    mov(w10, max_stackpoints);
+    cmp(w9, w10);
+  }
   auto& overflow_label = AddToTail([](A64Emitter& e, Label& lbl) {
     e.CallNativeSafe(
         reinterpret_cast<void*>(A64Emitter::HandleStackpointOverflowError));

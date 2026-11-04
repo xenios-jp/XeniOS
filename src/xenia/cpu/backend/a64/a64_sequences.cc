@@ -337,6 +337,8 @@ struct STORE_CONTEXT_I64
           e.mov(e.x0, value);
         }
         e.str(e.x0, ptr(e.GetContextReg(), offset));
+        // A call right after the link register store passes it in x0.
+        e.MarkX0HoldsConstant(i.instr->next, value);
       }
     } else {
       e.str(i.src2, ptr(e.GetContextReg(), offset));
