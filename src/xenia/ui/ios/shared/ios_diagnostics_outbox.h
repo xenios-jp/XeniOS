@@ -29,8 +29,7 @@
 // 503 says). Each session is sent with "weight": N, the N when it goes, and
 // queued sessions are dropped if the device leaves the share.
 //
-// They go out as schema 2 batches (POST, gzip; the Worker's wire format in
-// tools/ios/diagnostics/worker/lib.mjs):
+// They go out as schema 2 batches (POST, gzip):
 //   {"schema": 2, "build", "device", "records": [{"kind", "id", "body"}]},
 // one batch per kind and header, at most 50 sessions or 10 crashes and 64 KB
 // compressed (256 KB of JSON), several in turn if more are queued.
