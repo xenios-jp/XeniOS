@@ -151,6 +151,16 @@ NSString* AppVersionString() {
   return [NSString stringWithFormat:@"%@ (%@)", version ? version : @"?", build ? build : @"?"];
 }
 
+// Identifies this install: the bundle's path (a new container on every install)
+// and the executable's modification time. Installing or updating the app kills
+// the running copy, which must not read as a crash at the next launch.
+NSString* AppInstallString() {
+  NSBundle* bundle = [NSBundle mainBundle];
+  NSDate* modified = [[[NSFileManager defaultManager] attributesOfItemAtPath:bundle.executablePath
+                                                                       error:nil] fileModificationDate];
+  return [NSString stringWithFormat:@"%@|%.0f", bundle.bundlePath, modified.timeIntervalSince1970];
+}
+
 // ---- Redacted copies for sharing ----------------------------------------
 
 // Copies src to dst through strip_pii in line-aligned chunks, so a multi-MB
@@ -726,7 +736,10 @@ void xe_ios_begin_session_log(const std::filesystem::path& log_path) {
     NSString* previous_state = previous[@"state"];
     // Last seen in the foreground, or a recorded FatalError. A background or
     // normal end is not a crash: iOS kills suspended apps without telling us.
-    const BOOL died = [previous_state isEqualToString:kStateForeground] ||
+    // Neither is a foreground end followed by a different install: installing
+    // the app kills the copy that was running.
+    const BOOL same_install = [previous[@"install"] isEqualToString:AppInstallString()];
+    const BOOL died = ([previous_state isEqualToString:kStateForeground] && same_install) ||
                       [previous_state isEqualToString:kStateFatal];
     const BOOL was_pending = [previous[@"pending"] boolValue];
 
@@ -764,6 +777,7 @@ void xe_ios_begin_session_log(const std::filesystem::path& log_path) {
         [UIApplication sharedApplication].applicationState == UIApplicationStateBackground;
     state[@"state"] = in_background ? kStateBackground : kStateForeground;
     state[@"version"] = AppVersionString();
+    state[@"install"] = AppInstallString();
     state[@"game"] = @NO;
     {
       std::lock_guard<std::mutex> lock(StateMutex());
