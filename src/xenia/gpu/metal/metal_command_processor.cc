@@ -7992,12 +7992,24 @@ void MetalCommandProcessor::ApplyDepthStencilState(
       regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
   auto depth_control = normalized_depth_control;
 
+  bool has_depth_attachment = false;
   bool has_stencil_attachment = false;
   if (current_render_pass_descriptor_) {
+    if (auto* depth_attachment =
+            current_render_pass_descriptor_->depthAttachment()) {
+      has_depth_attachment = depth_attachment->texture() != nullptr;
+    }
     if (auto* stencil_attachment =
             current_render_pass_descriptor_->stencilAttachment()) {
       has_stencil_attachment = stencil_attachment->texture() != nullptr;
     }
+  }
+
+  // Without a depth attachment, the depth test passes and nothing is written
+  // either way, but Metal rejects a state that enables either.
+  if (!has_depth_attachment) {
+    depth_control.z_enable = 0;
+    depth_control.z_write_enable = 0;
   }
 
   if (!has_stencil_attachment && depth_control.stencil_enable) {
