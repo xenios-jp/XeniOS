@@ -1772,6 +1772,41 @@ bool RenderTargetCache::IsRenderTargetDataOnlyInRectangle(
   return true;
 }
 
+uint32_t RenderTargetCache::GetRenderTargetOwnedHeight(
+    RenderTargetKey key) const {
+  uint32_t height = 0;
+  Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithoutCutout];
+  auto add_range = [&](uint32_t start_tiles, uint32_t end_tiles) {
+    uint32_t rectangle_count = Transfer::GetRangeRectangles(
+        start_tiles, end_tiles, key, key.Is64bpp(), rectangles);
+    for (uint32_t i = 0; i < rectangle_count; ++i) {
+      height = std::max(height, rectangles[i].y_pixels +
+                                    rectangles[i].height_pixels);
+    }
+  };
+  for (const auto& range_pair : ownership_ranges_) {
+    const OwnershipRange& range = range_pair.second;
+    if (range.render_target != key && range.depth_bits_target != key &&
+        range.host_depth_render_target_unorm24 != key &&
+        range.host_depth_render_target_float24 != key) {
+      continue;
+    }
+    // The parts before and after the base, where the render target's EDRAM
+    // addressing wraps, separately, as GetRangeRectangles takes them.
+    uint32_t start_tiles = range_pair.first;
+    uint32_t end_tiles = range.end_tiles;
+    uint32_t split_tiles =
+        start_tiles < key.base_tiles && end_tiles > key.base_tiles
+            ? key.base_tiles
+            : end_tiles;
+    add_range(start_tiles, split_tiles);
+    if (split_tiles < end_tiles) {
+      add_range(split_tiles, end_tiles);
+    }
+  }
+  return height;
+}
+
 bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
     const draw_util::ResolveInfo& resolve_info,
     ResolveClearPlan& plan_out) const {

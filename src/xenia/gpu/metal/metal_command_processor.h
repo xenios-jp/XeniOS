@@ -330,6 +330,9 @@ class MetalCommandProcessor : public CommandProcessor {
                                const Shader* pixel_shader,
                                reg::RB_DEPTHCONTROL normalized_depth_control,
                                draw_util::ViewportInfo& viewport_info_out);
+  // The bottom of the current draw's scissor in pixels at the draw resolution
+  // scale, 0 for a draw that rasterizes nothing.
+  uint32_t GetDrawScissorBottom() const;
   void ApplyViewportAndScissor(const RegisterFile& regs,
                                const draw_util::ViewportInfo& viewport_info);
   // Splits the command buffer when the draw samples memory a pending resolve
@@ -615,6 +618,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // The dimensions of the encoded pass, refreshed when creating its encoder.
   uint32_t render_encoder_width_ = 1;
   uint32_t render_encoder_height_ = 1;
+  // Whether the open pass covers less than its attachments (SetRenderPassArea).
+  bool render_encoder_area_restricted_ = false;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;
   // Whether the descriptor the current encoder was created from carried the
   // visibility result buffer, so a ZPD segment may be opened on it.
