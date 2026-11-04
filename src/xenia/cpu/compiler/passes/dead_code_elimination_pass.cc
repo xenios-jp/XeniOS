@@ -23,6 +23,45 @@ using xe::cpu::hir::HIRBuilder;
 using xe::cpu::hir::Instr;
 using xe::cpu::hir::Value;
 
+namespace {
+
+bool HasNoCode(const Instr* i) {
+  for (; i; i = i->next) {
+    if (i->opcode != &OPCODE_NOP_info && !i->IsFake()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The block that starting at the head of this one reaches with no code run on
+// the way, past blocks that have none.
+const Block* ReachedWithoutCode(const Block* block) {
+  while (block && HasNoCode(block->instr_head)) {
+    block = block->next;
+  }
+  return block;
+}
+
+// Where the code after the instruction goes without running any: on through
+// the next blocks, or to the label of an unconditional branch. Null when
+// code runs first.
+const Block* ReachedAfter(const Instr* instr, const Block* block) {
+  const Instr* i = instr->next;
+  while (i && (i->opcode == &OPCODE_NOP_info || i->IsFake())) {
+    i = i->next;
+  }
+  if (!i) {
+    return block->next ? ReachedWithoutCode(block->next) : nullptr;
+  }
+  if (i->opcode == &OPCODE_BRANCH_info) {
+    return ReachedWithoutCode(i->src1.label->block);
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 DeadCodeEliminationPass::DeadCodeEliminationPass() : CompilerPass() {}
 
 DeadCodeEliminationPass::~DeadCodeEliminationPass() {}
@@ -83,6 +122,16 @@ bool DeadCodeEliminationPass::Run(HIRBuilder* builder) {
         // Assignment. These are useless, so just try to remove by completely
         // replacing the value.
         ReplaceAssignment(i);
+      } else if ((opcode == &OPCODE_BRANCH_TRUE_info ||
+                  opcode == &OPCODE_BRANCH_FALSE_info) &&
+                 ReachedAfter(i, block) &&
+                 ReachedAfter(i, block) ==
+                     ReachedWithoutCode(i->src2.label->block)) {
+        // Goes to the same place taken or not, as `bne cr6, .+8` over a
+        // dcbf does in guest code. The condition dies with it if nothing else
+        // reads it.
+        MakeNopRecursive(i);
+        any_instr_removed = true;
       }
 
       i = prev;
