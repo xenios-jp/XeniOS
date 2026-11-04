@@ -231,6 +231,15 @@ class CommandProcessor {
   // register write-back - by backends that must have submitted what the guest
   // may then touch (see command_processor_resolve_readwatch.inc).
   virtual void SubmitResolvesForGuestSync() {}
+  // Called before a conditional write reads guest memory, which may be GPU
+  // output, by backends whose GPU output reaches guest RAM only once its
+  // submission completes: the command processor can't be held back like the
+  // guest, so this waits.
+  virtual void AwaitGpuWritesBeforeGuestRead() {}
+  // The submission whose GPU output other than export output - which
+  // TakeMemexportSignalSubmission covers - fences and interrupts are held back
+  // behind, or 0 if it has completed.
+  virtual uint64_t GetHeldGpuWritesSubmission() { return 0; }
   // Shadowed by backends that publish shader-done writes on the GPU timeline.
   // False leaves publication to the existing CPU store below the packet hook.
   bool TryWriteShaderDoneFence(uint32_t address, uint32_t value) {
@@ -705,6 +714,8 @@ class CommandProcessor {
   std::deque<HeldGuestSignal> held_guest_signals_;
   // The latest submission a held-back signal waits for.
   uint64_t held_guest_signals_submission_ = 0;
+  // Performs the signal now if nothing is held and its submission has
+  // completed, otherwise holds it back behind the others.
   void HoldOrPerformGuestSignal(const HeldGuestSignal& signal);
   void PerformGuestSignal(const HeldGuestSignal& signal);
   // Performs the first await_count held-back signals, waiting for the GPU, and

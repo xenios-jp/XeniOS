@@ -832,24 +832,27 @@ void CommandProcessor::WriteGuestFence(uint8_t* destination,
   signal.destination = destination;
   signal.physical_address = physical_address;
   signal.value = value;
+  signal.submission =
+      std::max(TakeMemexportSignalSubmission(), GetHeldGpuWritesSubmission());
   HoldOrPerformGuestSignal(signal);
 }
 
 void CommandProcessor::DispatchGuestInterrupt(uint32_t cpu_mask) {
   HeldGuestSignal signal;
   signal.value = cpu_mask;
+  signal.submission =
+      std::max(TakeMemexportSignalSubmission(), GetHeldGpuWritesSubmission());
   HoldOrPerformGuestSignal(signal);
 }
 
 void CommandProcessor::HoldOrPerformGuestSignal(const HeldGuestSignal& signal) {
-  uint64_t submission = TakeMemexportSignalSubmission();
+  uint64_t submission = signal.submission;
   PerformCompletedHeldSignals();
   if (held_guest_signals_.empty() && submission <= GetCompletedSubmission()) {
     PerformGuestSignal(signal);
     return;
   }
   HeldGuestSignal& held = held_guest_signals_.emplace_back(signal);
-  held.submission = submission;
   held.held_since = std::chrono::steady_clock::now();
   held_guest_signals_submission_ =
       std::max(held_guest_signals_submission_, submission);

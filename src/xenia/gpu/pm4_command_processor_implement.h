@@ -1072,6 +1072,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
     auto endianness = static_cast<xenos::Endian>(poll_reg_addr & 0x3);
     poll_reg_addr &= ~0x3;
     COMMAND_PROCESSOR::AwaitHeldSignalsWriting(poll_reg_addr);
+    COMMAND_PROCESSOR::AwaitGpuWritesBeforeGuestRead();
     trace_writer_.WriteMemoryRead(CpuToGpu(poll_reg_addr), 4);
     value = xe::load<uint32_t>(memory_->TranslatePhysical(poll_reg_addr));
     value = GpuSwap(value, endianness);
