@@ -136,6 +136,12 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 // Typing in Search: B or A ends it.
 @property(nonatomic, readonly) BOOL controllerSearchEditing;
 - (void)endControllerSearch;
+// A game's page: Play, the round buttons, ⋯ and the compatibility capsule, in order, as shown.
+@property(nonatomic, readonly) NSUInteger controllerDetailButtonCount;
+// Rings the button at the index, or none for NSNotFound.
+- (void)setControllerDetailButtonFocus:(NSUInteger)index;
+// Presses it; a button with a menu returns the menu as an action sheet to present instead.
+- (UIAlertController*)activateControllerDetailButton:(NSUInteger)index;
 
 #pragma mark - Read-only accessors for root layout/state queries
 

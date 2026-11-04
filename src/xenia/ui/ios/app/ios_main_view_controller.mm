@@ -1236,6 +1236,21 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [self.launcherOverlayView endControllerSearch];
 }
 
+- (NSUInteger)controllerNavigationGameDetailButtonCount {
+  return self.launcherOverlayView.controllerDetailButtonCount;
+}
+
+- (void)controllerNavigationApplyGameDetailButtonFocus:(NSUInteger)index {
+  [self.launcherOverlayView setControllerDetailButtonFocus:index];
+}
+
+- (void)controllerNavigationActivateGameDetailButton:(NSUInteger)index {
+  UIAlertController* sheet = [self.launcherOverlayView activateControllerDetailButton:index];
+  if (sheet && !self.presentedViewController) {
+    [self presentViewController:sheet animated:YES completion:nil];
+  }
+}
+
 - (void)controllerNavigationActivateLauncherTarget:(XeniaIOSLauncherFocusTarget)target {
   UIAlertController* sheet = [self.launcherOverlayView activateControllerFocusTarget:target];
   if (sheet && !self.presentedViewController) {

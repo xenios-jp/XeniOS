@@ -2470,22 +2470,26 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       [self heroMoreTapped:_heroMoreButton];
       return nil;
     case XeniaIOSLauncherFocusTargetSort:
-      return [self controllerSortSheet];
+      return [self controllerSheetForMenu:_sortButton.menu
+                                    title:NSLocalizedString(@"Sort", @"launcher overlay view: "
+                                                                     @"sort sheet title")
+                                   source:_sortButton];
     default:
       return nil;
   }
 }
 
-// Sort's menu as an action sheet, its current choice in bold.
-- (UIAlertController*)controllerSortSheet {
+// A menu as an action sheet, for a controller, which can't open the menu itself. Its current
+// choice is in bold.
+- (UIAlertController*)controllerSheetForMenu:(UIMenu*)menu
+                                       title:(NSString*)title
+                                      source:(UIView*)source {
   UIAlertController* sheet =
-      [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Sort", @"launcher overlay "
-                                                                             @"view: sort sheet "
-                                                                             @"title")
+      [UIAlertController alertControllerWithTitle:title
                                           message:nil
                                    preferredStyle:UIAlertControllerStyleActionSheet];
   NSMutableArray<UIMenuElement*>* pending =
-      [NSMutableArray arrayWithArray:_sortButton.menu.children ?: @[]];
+      [NSMutableArray arrayWithArray:menu.children ?: @[]];
   while (pending.count) {
     UIMenuElement* element = [[pending.firstObject retain] autorelease];
     [pending removeObjectAtIndex:0];
@@ -2501,8 +2505,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       continue;
     }
     UIAction* action = (UIAction*)element;
-    UIAlertAction* choice = [UIAlertAction actionWithTitle:action.title
-                                                     style:UIAlertActionStyleDefault
+    UIAlertAction* choice = [UIAlertAction
+        actionWithTitle:action.title
+                  style:(action.attributes & UIMenuElementAttributesDestructive)
+                            ? UIAlertActionStyleDestructive
+                            : UIAlertActionStyleDefault
                                                    handler:^(UIAlertAction* __unused alert) {
                                                      [action performWithSender:nil target:nil];
                                                    }];
@@ -2514,9 +2521,53 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [sheet addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
-  sheet.popoverPresentationController.sourceView = _sortButton;
-  sheet.popoverPresentationController.sourceRect = _sortButton.bounds;
+  sheet.popoverPresentationController.sourceView = source;
+  sheet.popoverPresentationController.sourceRect = source.bounds;
   return sheet;
+}
+
+- (NSArray<UIButton*>*)controllerDetailButtons {
+  NSMutableArray<UIButton*>* buttons = [NSMutableArray array];
+  if (!_detailGame) {
+    return buttons;
+  }
+  for (UIButton* button in @[ _heroPlayButton, _heroTouchButton, _heroSettingsButton,
+                              _detailMoreButton, _heroCompatButton ]) {
+    if (button && !button.hidden && button.alpha > 0.01 && button.window) {
+      [buttons addObject:button];
+    }
+  }
+  return buttons;
+}
+
+- (NSUInteger)controllerDetailButtonCount {
+  return [self controllerDetailButtons].count;
+}
+
+- (void)setControllerDetailButtonFocus:(NSUInteger)index {
+  NSArray<UIButton*>* buttons = [self controllerDetailButtons];
+  for (UIButton* button in @[ _heroPlayButton, _heroTouchButton, _heroSettingsButton,
+                              _detailMoreButton, _heroCompatButton ]) {
+    if (button) {
+      [self clearButtonFocusChrome:button];
+    }
+  }
+  if (index < buttons.count) {
+    [self setButton:buttons[index] controllerFocused:YES];
+  }
+}
+
+- (UIAlertController*)activateControllerDetailButton:(NSUInteger)index {
+  NSArray<UIButton*>* buttons = [self controllerDetailButtons];
+  if (index >= buttons.count) {
+    return nil;
+  }
+  UIButton* button = buttons[index];
+  if (button.showsMenuAsPrimaryAction && button.menu) {
+    return [self controllerSheetForMenu:button.menu title:_detailGame.title source:button];
+  }
+  [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+  return nil;
 }
 
 #pragma mark - Data ingestion
