@@ -122,7 +122,7 @@ void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
   xe_fetch_compat_data_from_urls(
       @[
         @"https://xenios-compat-api.xenios.workers.dev/games",
-        // The static site export can lag behind freshly submitted self-built reports,
+        // The static site export can lag behind freshly submitted reports,
         // so use it only if the live API is unavailable.
         @"https://xenios.jp/compatibility/data.json",
       ],

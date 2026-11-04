@@ -62,12 +62,6 @@ UIView* XeniaCompatBuildMetadataPillRowForEntry(NSDictionary* entry) {
   stack.alignment = UIStackViewAlignmentLeading;
   stack.distribution = UIStackViewDistributionFillProportionally;
 
-  NSString* channel = xe_string_from_object(build_info[@"channel"]);
-  if (channel.length > 0) {
-    [stack addArrangedSubview:xe_make_tag_pill(xe_compat_channel_label(channel),
-                                               xe_compat_channel_color(channel))];
-  }
-
   NSString* build_label = xe_compat_build_label(build_info);
   if (build_label.length > 0) {
     [stack addArrangedSubview:xe_make_tag_pill(build_label, [XeniaTheme textSecondary])];
@@ -321,8 +315,6 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   cell.contentView.backgroundColor = [UIColor clearColor];
 
   NSDictionary* summary_source = xe_preferred_summary_from_compat_info(compat_info);
-  BOOL using_release_summary =
-      [xe_string_from_object(summary_source[@"channel"]) isEqualToString:@"release"];
   NSDictionary* details_source = summary_source ?: latest_report;
 
   NSString* status = xe_string_from_object(details_source[@"status"]);
@@ -364,19 +356,7 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   }
   NSString* footnote = NSLocalizedString(@"Based on available compatibility data.",
                                          @"game compatibility cells: user-visible text");
-  if (using_release_summary && [status isEqualToString:@"untested"]) {
-    footnote = NSLocalizedString(
-        @"No official release reports yet. Preview or self-built reports may still appear below.",
-        @"game compatibility cells: user-visible text");
-  } else if (using_release_summary && based_on_date.length > 0) {
-    footnote = [NSString
-        stringWithFormat:NSLocalizedString(@"Based on the latest official release summary from %@.",
-                                           @"game compatibility cells: user-visible text"),
-                         xe_format_iso_date(based_on_date)];
-  } else if (using_release_summary) {
-    footnote = NSLocalizedString(@"Based on the current official release summary.",
-                                 @"game compatibility cells: user-visible text");
-  } else if (based_on_date.length > 0) {
+  if (based_on_date.length > 0) {
     footnote = [NSString
         stringWithFormat:NSLocalizedString(@"Based on the latest report from %@.",
                                            @"game compatibility cells: user-visible text"),
@@ -395,13 +375,11 @@ UIView* XeniaCompatDiscussionPreviewCardForReport(NSDictionary* report, NSIntege
   UILabel* subheading = [[[UILabel alloc] init] autorelease];
   subheading.translatesAutoresizingMaskIntoConstraints = NO;
   subheading.text =
-      using_release_summary
-          ? NSLocalizedString(@"RELEASE SUMMARY", @"game compatibility cells: label text")
-          : (summary_source
-                 ? NSLocalizedString(@"CURRENT SUMMARY", @"game compatibility cells: label text")
-                 : NSLocalizedString(@"LATEST REPORT", @"game compatibility cells: label text"));
-  subheading.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-  subheading.textColor = [XeniaTheme textMuted];
+      summary_source
+          ? NSLocalizedString(@"Current Summary", @"game compatibility cells: label text")
+          : NSLocalizedString(@"Latest Report", @"game compatibility cells: label text");
+  xe_apply_label_font(subheading, UIFontTextStyleCaption1, 12.0, UIFontWeightSemibold);
+  subheading.textColor = [XeniaTheme textSecondary];
   [card addSubview:subheading];
 
   NSDictionary* build_entry = details_source;

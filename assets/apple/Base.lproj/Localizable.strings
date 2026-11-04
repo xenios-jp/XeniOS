@@ -13,9 +13,6 @@
 /* zar conversion coordinator: label text */
 "%1$@ of %2$@" = "%1$@ of %2$@";
 
-/* compat formatting: user-visible text */
-"%1$@ Preview %2$@" = "%1$@ Preview %2$@";
-
 /* config view controller: user-visible text */
 "%1$@ was not changed. %2$@" = "%1$@ was not changed. %2$@";
 
@@ -410,12 +407,6 @@
 
 /* game compatibility cells: user-visible text */
 "Based on available compatibility data." = "Based on available compatibility data.";
-
-/* game compatibility cells: user-visible text */
-"Based on the current official release summary." = "Based on the current official release summary.";
-
-/* game compatibility cells: user-visible text */
-"Based on the latest official release summary from %@." = "Based on the latest official release summary from %@.";
 
 /* game compatibility cells: user-visible text */
 "Based on the latest report from %@." = "Based on the latest report from %@.";
@@ -854,7 +845,7 @@
 "Current item" = "Current item";
 
 /* game compatibility cells: label text */
-"CURRENT SUMMARY" = "CURRENT SUMMARY";
+"Current Summary" = "Current Summary";
 
 /* Default name suggested when saving a layout copy */
 "Custom Layout" = "Custom Layout";
@@ -995,9 +986,6 @@
 
 /* game compatibility cells: label text */
 "Details" = "Details";
-
-/* compat formatting: user-visible text */
-"Dev build %@" = "Dev build %@";
 
 /* settings hub view controller: build name shown when no version is available
    Version text of a development build */
@@ -1732,7 +1720,7 @@
 "Later" = "Later";
 
 /* game compatibility cells: label text */
-"LATEST REPORT" = "LATEST REPORT";
+"Latest Report" = "Latest Report";
 
 /* Alert button: replace the running game */
 "Launch" = "Launch";
@@ -2032,9 +2020,6 @@
 
 /* zar conversion coordinator: user-visible text */
 "No non-.zar games were selected for conversion." = "No non-.zar games were selected for conversion.";
-
-/* game compatibility cells: user-visible text */
-"No official release reports yet. Preview or self-built reports may still appear below." = "No official release reports yet. Preview or self-built reports may still appear below.";
 
 /* game patches view controller: label text */
 "No patch entries" = "No patch entries";
@@ -2483,9 +2468,6 @@
 /* Row subtitle in the touch control edit panel */
 "Press & release" = "Press & release";
 
-/* compat formatting: user-visible text */
-"Preview %@" = "Preview %@";
-
 /* VoiceOver label; %@ is the button the control presses */
 "Primary binding %@" = "Primary binding %@";
 
@@ -2582,9 +2564,6 @@
 
 /* system software view controller: action */
 "Reinstall from Files" = "Reinstall from Files";
-
-/* game compatibility cells: label text */
-"RELEASE SUMMARY" = "RELEASE SUMMARY";
 
 /* system update page: button, reloads Microsoft's page */
 "Reload" = "Reload";

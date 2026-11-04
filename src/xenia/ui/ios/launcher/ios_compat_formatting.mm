@@ -32,9 +32,9 @@
 
 namespace {
 
-// Compatibility taxonomy: status / perf / channel / release-stage all share
-// the same "code → label / color / rank" lookup shape, so a single struct +
-// generic FindByCode() drive every accessor below. `hex_color == 0` means
+// Compatibility taxonomy: status and perf share the same "code → label /
+// color / rank" lookup shape, so a single struct + generic FindByCode() drive
+// every accessor below. `hex_color == 0` means
 // render with [XeniaTheme textMuted]; `rank` is only meaningful for
 // statuses (higher = "more playable").
 struct CompatTaxonomyEntry {
@@ -168,167 +168,31 @@ NSInteger xe_compat_status_rank(NSString* status) {
   return entry ? entry->rank : 0;
 }
 
-namespace {
-
-const CompatTaxonomyEntry kCompatChannels[] = {
-    {@"release", @"Release", 0x34d399, 0},
-    {@"preview", @"Preview", 0x60a5fa, 0},
-    {@"self-built", @"Self-Built", 0, 0},
-};
-
-const CompatTaxonomyEntry kReleaseStages[] = {
-    {@"alpha", @"Alpha", 0, 0},
-    {@"beta", @"Beta", 0, 0},
-    {@"rc", @"RC", 0, 0},
-};
-
-}  // namespace
-
-UIColor* xe_compat_channel_color(NSString* channel) {
-  const CompatTaxonomyEntry* entry =
-      FindByCode(kCompatChannels, std::size(kCompatChannels), channel);
-  if (entry && entry->hex_color) {
-    return ColorFromTaxonomy(*entry);
-  }
-  return [XeniaTheme textMuted];
-}
-
-NSString* xe_compat_channel_label(NSString* channel) {
-  const CompatTaxonomyEntry* entry =
-      FindByCode(kCompatChannels, std::size(kCompatChannels), channel);
-  return entry ? entry->label
-               : NSLocalizedString(@"Unknown", @"compat formatting: user-visible text");
-}
-
-static NSString* xe_release_stage_display_label(NSString* stage) {
-  const CompatTaxonomyEntry* entry = FindByCode(kReleaseStages, std::size(kReleaseStages), stage);
-  return entry ? entry->label : nil;
-}
-
+// A build as people name it: "2.2 (11357)".
 static NSString* xe_build_version_label(NSDictionary* build_info) {
   NSString* app_version = xe_string_from_object(build_info[@"appVersion"]);
   NSString* build_number = xe_string_from_object(build_info[@"buildNumber"]);
   if (app_version.length > 0 && build_number.length > 0) {
-    return [NSString stringWithFormat:@"%@-%@", app_version, build_number];
+    return [NSString stringWithFormat:@"%@ (%@)", app_version, build_number];
   }
   if (app_version.length > 0) {
     return app_version;
+  }
+  if (build_number.length > 0) {
+    return [NSString
+        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
+                         build_number];
   }
   return nil;
 }
 
 NSString* xe_compat_build_label(NSDictionary* build_info) {
-  NSString* channel = xe_string_from_object(build_info[@"channel"]);
-  NSString* commit_short = xe_string_from_object(build_info[@"commitShort"]);
-  if ([channel isEqualToString:@"self-built"] && commit_short.length > 0) {
-    return commit_short;
-  }
-
-  NSString* version_label = xe_build_version_label(build_info);
-  if (version_label.length > 0) {
-    return version_label;
-  }
-  NSString* build_number = xe_string_from_object(build_info[@"buildNumber"]);
-  if (build_number.length > 0) {
-    return [NSString
-        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
-                         build_number];
-  }
-  NSString* build_id = xe_string_from_object(build_info[@"buildId"]);
-  return build_id.length > 0 ? build_id : nil;
+  return xe_build_version_label(build_info);
 }
 
 NSString* xe_user_facing_build_label(NSDictionary* build_info) {
-  if (!build_info) {
-    return NSLocalizedString(@"Unknown Build", @"compat formatting: user-visible text");
-  }
-
-  NSString* channel = xe_string_from_object(build_info[@"channel"]);
-  NSString* stage_label =
-      xe_release_stage_display_label(xe_string_from_object(build_info[@"stage"]));
-  NSString* version_label = xe_build_version_label(build_info);
-  NSString* commit_short = xe_string_from_object(build_info[@"commitShort"]);
-
-  if ([channel isEqualToString:@"preview"] && version_label.length > 0) {
-    if (stage_label.length > 0) {
-      return [NSString stringWithFormat:NSLocalizedString(@"%1$@ Preview %2$@",
-                                                          @"compat formatting: user-visible text"),
-                                        stage_label, version_label];
-    }
-    return [NSString
-        stringWithFormat:NSLocalizedString(@"Preview %@", @"compat formatting: user-visible text"),
-                         version_label];
-  }
-  if ([channel isEqualToString:@"release"] && version_label.length > 0) {
-    if (stage_label.length > 0) {
-      return [NSString stringWithFormat:@"%@ %@", stage_label, version_label];
-    }
-    return version_label;
-  }
-  if (commit_short.length > 0) {
-    return [NSString stringWithFormat:NSLocalizedString(@"Dev build %@",
-                                                        @"compat formatting: user-visible text"),
-                                      commit_short];
-  }
-  if (version_label.length > 0) {
-    return [NSString
-        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
-                         version_label];
-  }
-
-  NSString* build_number = xe_string_from_object(build_info[@"buildNumber"]);
-  if (build_number.length > 0) {
-    return [NSString
-        stringWithFormat:NSLocalizedString(@"Build %@", @"compat formatting: user-visible text"),
-                         build_number];
-  }
-
-  NSString* build_id = xe_string_from_object(build_info[@"buildId"]);
-  return build_id.length > 0
-             ? [NSString stringWithFormat:NSLocalizedString(
-                                              @"Build %@", @"compat formatting: user-visible text"),
-                                          build_id]
-             : NSLocalizedString(@"Unknown Build", @"compat formatting: user-visible text");
-}
-
-static NSString* xe_sanitize_build_component(NSString* value) {
-  if (![value isKindOfClass:[NSString class]] || value.length == 0) {
-    return @"unknown";
-  }
-  NSMutableString* sanitized = [NSMutableString stringWithCapacity:value.length];
-  NSCharacterSet* alnum = [NSCharacterSet alphanumericCharacterSet];
-  BOOL last_was_dash = NO;
-  NSString* lower = [value lowercaseString];
-  for (NSUInteger i = 0; i < lower.length; ++i) {
-    unichar c = [lower characterAtIndex:i];
-    if ([alnum characterIsMember:c]) {
-      [sanitized appendFormat:@"%C", c];
-      last_was_dash = NO;
-    } else if (!last_was_dash) {
-      [sanitized appendString:@"-"];
-      last_was_dash = YES;
-    }
-  }
-  while ([sanitized hasPrefix:@"-"]) {
-    [sanitized deleteCharactersInRange:NSMakeRange(0, 1)];
-  }
-  while ([sanitized hasSuffix:@"-"]) {
-    [sanitized deleteCharactersInRange:NSMakeRange(sanitized.length - 1, 1)];
-  }
-  return sanitized.length > 0 ? sanitized : @"unknown";
-}
-
-static NSString* xe_make_build_id(NSString* platform, NSString* channel, NSString* app_version,
-                                  NSString* build_number, NSString* stage) {
-  NSString* base = [NSString stringWithFormat:@"%@-%@-%@-%@", xe_sanitize_build_component(platform),
-                                              xe_sanitize_build_component(channel),
-                                              xe_sanitize_build_component(app_version),
-                                              xe_sanitize_build_component(build_number)];
-  if ([stage isKindOfClass:[NSString class]] && stage.length > 0 &&
-      ![stage isEqualToString:@"stable"]) {
-    return [base stringByAppendingFormat:@"-%@", xe_sanitize_build_component(stage)];
-  }
-  return base;
+  return xe_compat_build_label(build_info)
+             ?: NSLocalizedString(@"Unknown Build", @"compat formatting: user-visible text");
 }
 
 NSDictionary* xe_compat_build_info_from_entry(NSDictionary* entry) {
@@ -336,33 +200,11 @@ NSDictionary* xe_compat_build_info_from_entry(NSDictionary* entry) {
     return nil;
   }
   NSDictionary* nested = xe_dictionary_from_object(entry[@"build"]);
-  NSString* build_id = xe_string_from_object(nested ? nested[@"buildId"] : entry[@"buildId"]);
-  NSString* channel = xe_string_from_object(nested ? nested[@"channel"] : entry[@"channel"]);
-  id official_value = nested ? nested[@"official"] : entry[@"official"];
-  NSNumber* official =
-      [official_value isKindOfClass:[NSNumber class]] ? (NSNumber*)official_value : nil;
-  NSString* app_version =
-      xe_string_from_object(nested ? nested[@"appVersion"] : entry[@"appVersion"]);
-  NSString* build_number =
-      xe_string_from_object(nested ? nested[@"buildNumber"] : entry[@"buildNumber"]);
-  NSString* commit_short =
-      xe_string_from_object(nested ? nested[@"commitShort"] : entry[@"commitShort"]);
-  NSString* stage = xe_string_from_object(nested ? nested[@"stage"] : entry[@"stage"]);
-  if (build_id.length == 0 && channel.length == 0 && app_version.length == 0 &&
-      build_number.length == 0 && commit_short.length == 0 && stage.length == 0 && !official) {
-    return nil;
-  }
+  NSString* app_version = xe_string_from_object(nested[@"appVersion"]);
+  NSString* build_number = xe_string_from_object(nested[@"buildNumber"]);
+  NSString* commit_short = xe_string_from_object(nested[@"commitShort"]);
 
   NSMutableDictionary* build = [NSMutableDictionary dictionary];
-  if (build_id.length > 0) {
-    build[@"buildId"] = build_id;
-  }
-  if (channel.length > 0) {
-    build[@"channel"] = channel;
-  }
-  if (official) {
-    build[@"official"] = official;
-  }
   if (app_version.length > 0) {
     build[@"appVersion"] = app_version;
   }
@@ -371,9 +213,6 @@ NSDictionary* xe_compat_build_info_from_entry(NSDictionary* entry) {
   }
   if (commit_short.length > 0) {
     build[@"commitShort"] = commit_short;
-  }
-  if (stage.length > 0) {
-    build[@"stage"] = stage;
   }
   return build.count > 0 ? build : nil;
 }
@@ -404,36 +243,12 @@ NSDictionary* xe_current_compat_report_build_info(void) {
       }
     }
 
-    NSString* attested_channel =
-        xe_string_from_object([bundle objectForInfoDictionaryKey:@"XeniOSBuildChannel"]);
-    NSString* build_stage =
-        xe_string_from_object([bundle objectForInfoDictionaryKey:@"XeniOSBuildStage"]);
-    NSString* attestation_payload =
-        xe_string_from_object([bundle objectForInfoDictionaryKey:@"XeniOSBuildAttestationPayload"]);
-    NSString* attestation_signature = xe_string_from_object(
-        [bundle objectForInfoDictionaryKey:@"XeniOSBuildAttestationSignature"]);
-    BOOL has_attested_channel = [attested_channel isEqualToString:@"release"] ||
-                                [attested_channel isEqualToString:@"preview"];
-    BOOL has_attestation = attestation_payload.length > 0 && attestation_signature.length > 0;
-    NSString* channel = has_attested_channel && has_attestation ? attested_channel : @"self-built";
-    BOOL official = has_attested_channel && has_attestation;
     NSString* commit_short = [NSString stringWithUTF8String:XE_BUILD_COMMIT_SHORT];
-    NSString* build_id = xe_make_build_id(@"ios", channel, app_version, build_number, build_stage);
-
-    NSMutableDictionary* mutable_build_info = [NSMutableDictionary
-        dictionaryWithObjectsAndKeys:build_id, @"buildId", channel, @"channel", @(official),
-                                     @"official", app_version, @"appVersion", build_number,
-                                     @"buildNumber", commit_short, @"commitShort", nil];
-    if (build_stage.length > 0) {
-      mutable_build_info[@"stage"] = build_stage;
-    }
-    if (has_attestation) {
-      mutable_build_info[@"attestation"] = @{
-        @"payload" : attestation_payload,
-        @"signature" : attestation_signature,
-      };
-    }
-    build_info = [mutable_build_info copy];
+    build_info = [@{
+      @"appVersion" : app_version,
+      @"buildNumber" : build_number,
+      @"commitShort" : commit_short,
+    } copy];
   });
   return build_info;
 }
