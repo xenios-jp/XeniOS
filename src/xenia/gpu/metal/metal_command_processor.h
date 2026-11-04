@@ -23,6 +23,7 @@
 #include <mutex>
 #include <queue>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -141,9 +142,52 @@ class MetalCommandProcessor : public CommandProcessor {
   void DiscardAccountedCommandBuffer(MTL::CommandBuffer* command_buffer,
                                      CommandBufferKind kind);
   void EndRenderEncoder();
+  // The guest's open render pass, for a resolve that encodes a tile dispatch
+  // into it: its descriptor, the area its tiles cover,
+  // and the shared memory hazard tracking of its encoder, null when the buffer
+  // is tracked by Metal. Null when no pass is open.
+  MTL::RenderCommandEncoder* GetOpenRenderPass(
+      MTL::RenderPassDescriptor*& descriptor_out, uint32_t& width_out,
+      uint32_t& height_out, MetalBufferHazards::Encoder*& hazards_out) {
+    if (!current_render_encoder_ || !current_render_pass_descriptor_) {
+      return nullptr;
+    }
+    descriptor_out = current_render_pass_descriptor_;
+    width_out = render_encoder_width_;
+    height_out = render_encoder_height_;
+    hazards_out = render_encoder_shared_memory_hazards_.is_active()
+                      ? &render_encoder_shared_memory_hazards_
+                      : nullptr;
+    return current_render_encoder_;
+  }
+  // Whether the open pass may stay open after a tile resolve, and the guest
+  // memory such resolves wrote while it is open, which no later command of the
+  // pass may read or write.
+  bool CanKeepRenderPassAfterTileResolve() const;
+  void NoteTileResolveWrite(uint32_t start, uint32_t length);
+  bool TileResolveWritesOverlap(uint32_t start, uint32_t length) const;
+  // The imageblock member type every tile dispatch of the open pass declares,
+  // which Metal requires to be the same: 0 before the first one.
+  uint32_t GetRenderEncoderTileMemberClass() const {
+    return render_encoder_tile_member_class_;
+  }
+  void SetRenderEncoderTileMemberClass(uint32_t member_class) {
+    render_encoder_tile_member_class_ = member_class;
+  }
+  // A tile dispatch replaced the render pipeline the guest's draws bound.
+  void InvalidateRenderEncoderPipeline() {
+    InvalidateRenderEncoderStateAfterDrawPassTransfers(
+        MetalRenderTargetCache::kDrawPassTransferEncoderMutationPipeline);
+  }
   void ResetRenderEncoderResourceUsage();
   void UseRenderEncoderResource(MTL::Resource* resource,
                                 MTL::ResourceUsage usage);
+  // Also remembers the texture, for RenderEncoderUsesAnyTexture.
+  void UseRenderEncoderResource(MTL::Texture* texture,
+                                MTL::ResourceUsage usage);
+  // Whether the open pass used a view of the same texture as any of these.
+  bool RenderEncoderUsesAnyTexture(
+      std::span<MTL::Texture* const> textures) const;
   void EnsureCommandBufferAutoreleasePool();
   void DrainCommandBufferAutoreleasePool();
   // Sub-allocates from a command-buffer scoped pool, recycled once the GPU is
@@ -656,6 +700,10 @@ class MetalCommandProcessor : public CommandProcessor {
       }
       return entry->usage;
     }
+    // Whether the resource is already declared on this encoder.
+    bool Contains(MTL::Resource* resource) {
+      return Find(resource)->epoch == epoch_;
+    }
     bool empty() const { return !size_; }
     void clear() {
       size_ = 0;
@@ -702,6 +750,8 @@ class MetalCommandProcessor : public CommandProcessor {
     uint32_t epoch_ = 1;
   };
   EncoderResourceUsage render_encoder_resource_usage_;
+  // The textures among them.
+  std::vector<MTL::Texture*> render_encoder_textures_;
 
   // Shared memory for Xbox 360 memory access
   std::unique_ptr<MetalSharedMemory> shared_memory_;
@@ -1277,6 +1327,13 @@ class MetalCommandProcessor : public CommandProcessor {
   void EndSubmissionForMemexport() {}
   // DXIL exports not yet separated from later GPU consumers by a pass boundary.
   std::vector<draw_util::MemExportRange> render_encoder_memexport_ranges_;
+  // Guest memory written by tile resolves kept in the open pass: another tile
+  // may run its dispatch after any later draw of the pass, so a draw reading or
+  // exporting there ends the pass first.
+  std::vector<draw_util::MemExportRange> render_encoder_tile_resolve_ranges_;
+  // Guest indices drawn in the open pass, for the tile resolve pass budget.
+  uint64_t render_encoder_index_count_ = 0;
+  uint32_t render_encoder_tile_member_class_ = 0;
   // Whether every draw in the current render encoder was a pure vertex
   // memexport draw, so a later one in the chain may use a barrier instead of
   // ending the pass.

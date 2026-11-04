@@ -19,10 +19,11 @@ namespace metal {
 
 namespace {
 // Every stage that may access the buffer, including the object and mesh
-// stages of the emulated tessellation.
+// stages of the emulated tessellation, and the tile stage of resolves
+// dispatched inside the guest's render pass.
 constexpr MTL::RenderStages kRenderStages =
     MTL::RenderStageVertex | MTL::RenderStageFragment | MTL::RenderStageObject |
-    MTL::RenderStageMesh;
+    MTL::RenderStageMesh | MTL::RenderStageTile;
 }  // namespace
 
 void MetalBufferHazards::Encoder::BeginCommon(
