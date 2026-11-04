@@ -6535,11 +6535,26 @@ void MetalCommandProcessor::WriteRegisterRangeFromMem(
                                      2;
       auto touches_live = [&](const uint64_t* constant_map,
                               uint32_t stage_first_constant) {
-        for (uint32_t i = std::max(first_constant, stage_first_constant);
-             i <= last_constant && i < stage_first_constant + 256; ++i) {
-          const uint32_t stage_index = i - stage_first_constant;
-          if (constant_map[stage_index >> 6] &
-              (uint64_t(1) << (stage_index & 63))) {
+        if (last_constant < stage_first_constant ||
+            first_constant >= stage_first_constant + 256) {
+          return false;
+        }
+        const uint32_t first_index =
+            std::max(first_constant, stage_first_constant) -
+            stage_first_constant;
+        const uint32_t last_index =
+            std::min(last_constant, stage_first_constant + 255) -
+            stage_first_constant;
+        for (uint32_t word = first_index >> 6; word <= last_index >> 6;
+             ++word) {
+          uint64_t mask = ~uint64_t(0);
+          if (word == first_index >> 6) {
+            mask &= ~uint64_t(0) << (first_index & 63);
+          }
+          if (word == last_index >> 6) {
+            mask &= ~uint64_t(0) >> (63 - (last_index & 63));
+          }
+          if (constant_map[word] & mask) {
             return true;
           }
         }
