@@ -54,9 +54,8 @@
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Close", @"game content view controller: title")
-              style:UIBarButtonItemStylePlain
-             target:self
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
              action:@selector(doneTapped:)] autorelease];
 }
 

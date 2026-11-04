@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "xenia/gpu/metal/metal_compile_activity.h"
+#import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
 
@@ -336,6 +337,8 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 
   UIButtonConfiguration* wait_config = [UIButtonConfiguration filledButtonConfiguration];
   wait_config.title = NSLocalizedString(@"Wait", @"Button that waits for shaders to finish building");
+  wait_config.baseBackgroundColor = [XeniaTheme textPrimary];
+  wait_config.baseForegroundColor = [XeniaTheme bgPrimary];
   wait_config.buttonSize = UIButtonConfigurationSizeLarge;
   wait_config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   wait_button_ = [[UIButton buttonWithConfiguration:wait_config primaryAction:nil] retain];

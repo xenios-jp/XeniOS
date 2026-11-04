@@ -106,6 +106,9 @@ struct IOSConfigItem {
   double step = 0.0;
   double min_value = 0.0;
   double max_value = 0.0;
+  // With both set, a stepped setting shows a slider between these words ("Slower", "Faster").
+  std::string min_label;
+  std::string max_label;
 };
 
 struct IOSConfigSection {

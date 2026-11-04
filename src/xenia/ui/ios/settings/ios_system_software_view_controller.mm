@@ -64,9 +64,8 @@ enum InstallRow : NSInteger {
   [super viewDidLoad];
   if (self.showsDoneButton) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Close", @"system software view controller: button")
-                style:UIBarButtonItemStylePlain
-               target:self
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                action:@selector(doneTapped:)] autorelease];
   }
   [self reloadInfo];

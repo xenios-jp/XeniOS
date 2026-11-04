@@ -262,8 +262,9 @@
 
   // Sheet title: centered, below handle.
   CGFloat title_y = CGRectGetMaxY(hero_handle_view_.frame) + 16.0;
-  CGSize close_size = [hero_close_button_ sizeThatFits:CGSizeMake(card_w / 3.0, 64.0)];
-  // Keep the centred title clear of the Close capsule on both sides.
+  // The round ✕ is 44 pt square, as on system sheets.
+  const CGSize close_size = CGSizeMake(44.0, 44.0);
+  // Keep the centred title clear of the ✕ on both sides.
   CGFloat title_max_w = MAX(0.0, card_w - 2.0 * (16.0 + close_size.width + 8.0));
   CGSize title_size = [hero_sheet_title_label_ sizeThatFits:CGSizeMake(title_max_w, CGFLOAT_MAX)];
   hero_sheet_title_label_.frame = CGRectMake(floor((card_w - title_size.width) / 2.0), title_y,

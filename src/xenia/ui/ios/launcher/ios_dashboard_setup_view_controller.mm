@@ -101,10 +101,11 @@ constexpr CGFloat kContentWidth = 440.0;
   footnote_label_ = [self newLabelWithStyle:UIFontTextStyleFootnote color:[XeniaTheme textMuted]];
 
   UIButtonConfiguration* primary = [UIButtonConfiguration filledButtonConfiguration];
-  primary.baseBackgroundColor = [XeniaTheme accent];
-  primary.baseForegroundColor = [XeniaTheme accentFg];
+  // The screen's one primary button: white on dark, as in the Games and TV apps.
+  primary.baseBackgroundColor = [XeniaTheme textPrimary];
+  primary.baseForegroundColor = [XeniaTheme bgPrimary];
   primary.buttonSize = UIButtonConfigurationSizeLarge;
-  primary.cornerStyle = UIButtonConfigurationCornerStyleLarge;
+  primary.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   primary.imagePadding = 8.0;
   primary_button_ = [[UIButton buttonWithConfiguration:primary primaryAction:nil] retain];
   [primary_button_ addTarget:self
@@ -162,9 +163,8 @@ constexpr CGFloat kContentWidth = 440.0;
   ]];
 
   self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Close", @"dashboard setup view controller: button")
-                                        style:UIBarButtonItemStylePlain
-                                       target:self
+      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                                        action:@selector(closeTapped:)] autorelease];
   [self showStage];
 }

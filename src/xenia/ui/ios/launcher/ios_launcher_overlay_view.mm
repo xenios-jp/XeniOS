@@ -1002,7 +1002,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                           @"launcher overlay view: empty library message");
   UIButtonConfiguration* importCfg = [UIButtonConfiguration filledButtonConfiguration];
   importCfg.title = NSLocalizedString(@"Import Games", @"launcher overlay view: button title");
-  importCfg.baseBackgroundColor = [XeniaTheme accent];
+  importCfg.baseBackgroundColor = [XeniaTheme textPrimary];
+  importCfg.baseForegroundColor = [XeniaTheme bgPrimary];
+  importCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   empty.button = importCfg;
   XeniaLauncherEmptyStateActionProxy* proxy = _emptyStateProxy;
   empty.buttonProperties.primaryAction =

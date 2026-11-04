@@ -41,9 +41,8 @@
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   if (shows_dismiss_button_) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Close", @"profile view controller: button")
-                style:UIBarButtonItemStylePlain
-               target:self
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                action:@selector(doneTapped:)] autorelease];
   }
 }

@@ -806,7 +806,7 @@ static NSArray* XeniaTouchLayoutActionItems(BOOL no_game_running) {
     symbol_name = item.symbolName;
     tint_color = item.tintColor;
   } else {
-    title = NSLocalizedString(@"Touch Behavior", @"settings hub view controller: title");
+    title = NSLocalizedString(@"Touch Controls", @"settings hub view controller: title");
     subtitle = NSLocalizedString(@"Haptics and how the controls look.",
                                  @"settings hub view controller: title");
     symbol_name = @"hand.tap.fill";
@@ -1578,9 +1578,8 @@ titleForFooterInSection:(NSInteger)section {
   self.definesPresentationContext = YES;
   if (shows_close_button_) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Close", @"settings hub view controller: title")
-                style:UIBarButtonItemStylePlain
-               target:self
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
                action:@selector(closeTapped:)] autorelease];
   }
 }
