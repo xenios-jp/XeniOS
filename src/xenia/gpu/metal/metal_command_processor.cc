@@ -344,7 +344,7 @@ const char* const kGpuWaitReasonNames[] = {
     "memexport",      "zpd_query",           "shader_done_fence",
     "trace_playback", "uniforms",            "resolve",
     "texture_upload", "scaled_resolve_copy", "snapshot",
-    "dump",
+    "dump",           "resolve_before_guest_read",
 };
 static_assert(std::size(kGpuWaitReasonNames) ==
                   size_t(MetalCommandProcessor::GpuWaitReason::kCount),
@@ -2657,6 +2657,30 @@ void MetalCommandProcessor::PrepareForWait() {
   EndCommandBuffer(CommandBufferKind::kSubmissionWait);
 
   CommandProcessor::PrepareForWait();
+}
+
+uint64_t MetalCommandProcessor::GetHeldGpuWritesSubmission() {
+  // Resolve output, with zero-copy. Command processor stores aren't held: a
+  // late held store could overwrite a newer guest write (a read-through
+  // variant hung BF4 on a spin at 0x1FC1B002).
+  return resolve_last_submission_ > GetCompletedSubmission()
+             ? resolve_last_submission_
+             : 0;
+}
+
+void MetalCommandProcessor::AwaitGpuWritesBeforeGuestRead() {
+  // Export output that isn't awaited is left unordered here, as in D3D12 and
+  // Vulkan.
+  if (resolve_last_submission_ <= GetCompletedSubmission()) {
+    return;
+  }
+  int64_t wait_start_ns = GetSteadyTimeNs();
+  if (resolve_last_submission_ >= submission_current_ &&
+      current_command_buffer_) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionWait);
+  }
+  AwaitSubmissionCompletion(resolve_last_submission_);
+  NoteGpuWait(GpuWaitReason::kResolveBeforeGuestRead, wait_start_ns);
 }
 
 void MetalCommandProcessor::PollCompletedSubmission() {
@@ -6592,6 +6616,11 @@ bool MetalCommandProcessor::IssueCopy() {
 
   // The resolve overwrote any export output here, so no fence need await it.
   ClearMemexportPages(written_address, written_length);
+  // With zero-copy the resolve writes guest RAM itself, which the guest may
+  // read once a fence or interrupt tells it the GPU got past the resolve.
+  if (shared_memory_->is_zero_copy()) {
+    resolve_last_submission_ = submission_current_;
+  }
 
   // Later work in the submission that reads the output (draws, texture loads
   // encoded into the same command buffer) is ordered after the resolve on the
