@@ -27,7 +27,10 @@
   XeniaIOSTouchLayoutUICoordinator* coordinator_;
   XeniaTouchControlsOverlayView* overlay_;
   BOOL saved_on_dismiss_;
+  BOOL opened_library_on_appear_;
 }
+
+@synthesize opensLayoutLibraryOnAppear = opens_layout_library_on_appear_;
 
 - (instancetype)initWithTitleID:(uint32_t)titleID title:(NSString*)title {
   self = [super initWithNibName:nil bundle:nil];
@@ -132,6 +135,10 @@
 - (void)viewDidAppear:(BOOL)animated {
   [super viewDidAppear:animated];
   xe_request_landscape_orientation(self);
+  if (opens_layout_library_on_appear_ && !opened_library_on_appear_) {
+    opened_library_on_appear_ = YES;
+    [coordinator_ presentLibrary];
+  }
 }
 
 - (BOOL)prefersStatusBarHidden {

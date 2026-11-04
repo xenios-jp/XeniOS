@@ -285,6 +285,12 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
 
 @implementation XESheetTableViewController
 
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  // Dragging the list puts the keyboard away, as in Settings.
+  self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+}
+
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
   return UIInterfaceOrientationMaskAll;
 }

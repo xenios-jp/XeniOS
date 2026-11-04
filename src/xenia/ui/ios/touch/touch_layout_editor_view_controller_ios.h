@@ -24,6 +24,10 @@
 
 - (instancetype)initWithTitleID:(uint32_t)titleID title:(NSString*)title;
 
+// Opens the layout library as soon as the editor appears. Settings uses this to show the
+// library when no game is running, since the in-game overlay that normally hosts it is absent.
+@property(nonatomic, assign) BOOL opensLayoutLibraryOnAppear;
+
 @end
 
 #endif  // __OBJC__
