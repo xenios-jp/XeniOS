@@ -176,6 +176,9 @@
 /* online view controller: players in a game's lobby */
 "1 playing" = "1 playing";
 
+/* system update page: instructions */
+"1. Open the highlighted “How to update”, then “Copy to a USB flash drive”.\n2. Tap the highlighted “XBOX 360 system update file”.\nXeniOS installs the update when the download finishes." = "1. Open the highlighted “How to update”, then “Copy to a USB flash drive”.\n2. Tap the highlighted “XBOX 360 system update file”.\nXeniOS installs the update when the download finishes.";
+
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
 
@@ -524,6 +527,9 @@
 /* system link status view controller: footer */
 "Changing rooms takes a few seconds. The players in this room lose their connection to you." = "Changing rooms takes a few seconds. The players in this room lose their connection to you.";
 
+/* settings hub view controller: search words for the Discord link */
+"Chat, Server, Help" = "Chat, Server, Help";
+
 /* settings hub view controller: label text */
 "Check for Updates" = "Check for Updates";
 
@@ -602,6 +608,9 @@
 
 /* game page: row state */
 "Collapsed" = "Collapsed";
+
+/* settings hub view controller: title */
+"Community" = "Community";
 
 /* game compatibility hero view: title
    game compatibility view controller: title
@@ -1507,6 +1516,9 @@
 /* Assignment summary; %@ is an analog output such as Look or Move */
 "Held Slide: %@" = "Held Slide: %@";
 
+/* settings hub view controller: title */
+"Help and news." = "Help and news.";
+
 /* game compatibility cells: label text */
 "Help the community by sharing how well this title runs on your device." = "Help the community by sharing how well this title runs on your device.";
 
@@ -1729,6 +1741,12 @@
 /* dashboard setup: message */
 "Keep XeniOS open until it finishes." = "Keep XeniOS open until it finishes.";
 
+/* settings hub view controller: title */
+"Ko-fi" = "Ko-fi";
+
+/* settings hub view controller: search words for the Support link */
+"Ko-fi, Kofi, Donate, Tip" = "Ko-fi, Kofi, Donate, Tip";
+
 /* Placeholder of the control label text field
    Row title in the touch control edit panel
    Submenu title in the touch control edit panel */
@@ -1861,9 +1879,6 @@
 
 /* document import coordinator: label text */
 "Linked external library: %@" = "Linked external library: %@";
-
-/* settings hub view controller: user-visible text */
-"Links" = "Links";
 
 /* In-game menu button
    log view controller: title */
@@ -2199,15 +2214,21 @@
    settings hub view controller: label text */
 "Online Features" = "Online Features";
 
+/* settings hub view controller: title */
+"Online features and diagnostics." = "Online features and diagnostics.";
+
 /* compat report submission: user-visible text
    settings hub view controller: user-visible text */
 "Online Features Are Off" = "Online Features Are Off";
 
 /* Message shown when a feature needs online features turned on */
-"Online features are turned off. Turn them on in Settings > About > Privacy." = "Online features are turned off. Turn them on in Settings > About > Privacy.";
+"Online features are turned off. Turn them on in Settings > Privacy." = "Online features are turned off. Turn them on in Settings > Privacy.";
 
 /* settings hub view controller: detail text */
 "Online features off" = "Online features off";
+
+/* settings hub view controller: search words for the Privacy page */
+"Online Features, Share Diagnostics, Pending Reports, Crash Reports, Internet" = "Online Features, Share Diagnostics, Pending Reports, Crash Reports, Internet";
 
 /* online view controller: summary title */
 "Online Is Off" = "Online Is Off";
@@ -2260,6 +2281,9 @@
 
 /* VoiceOver hint for the Graphics button */
 "Opens graphics compatibility settings." = "Opens graphics compatibility settings.";
+
+/* settings hub view controller: hint of a link row */
+"Opens in your browser." = "Opens in your browser.";
 
 /* system software view controller: accessibility hint */
 "Opens Microsoft's system update page." = "Opens Microsoft's system update page.";
@@ -2427,6 +2451,9 @@
 /* launcher overlay view: Continue Playing; %@ is like \"2 hours ago\" */
 "Played %@" = "Played %@";
 
+/* launcher overlay view: Continue Playing */
+"Played just now" = "Played just now";
+
 /* system link view controller: footer */
 "Players in each game's public lobby, updated every minute. Private rooms aren't counted." = "Players in each game's public lobby, updated every minute. Private rooms aren't counted.";
 
@@ -2503,7 +2530,7 @@
 /* VoiceOver label; %@ is the button the control presses */
 "Primary binding %@" = "Primary binding %@";
 
-/* settings hub view controller: user-visible text */
+/* settings hub view controller: title */
 "Privacy" = "Privacy";
 
 /* system link view controller: section header */
@@ -2813,6 +2840,9 @@
 /* compat report view controller: user-visible text */
 "Screenshots" = "Screenshots";
 
+/* launcher overlay view: search placeholder */
+"Search" = "Search";
+
 /* launcher overlay view: search placeholder; %lu is the game count */
 "Search %lu Games" = "Search %lu Games";
 
@@ -3029,6 +3059,12 @@
 /* zar conversion coordinator: user-visible text */
 "Source" = "Source";
 
+/* settings hub view controller: title */
+"Source code and issues." = "Source code and issues.";
+
+/* settings hub view controller: search words for the GitHub link */
+"Source, Code, Bug, Issue" = "Source, Code, Bug, Issue";
+
 /* zar conversion coordinator: detail text */
 "Source: %@" = "Source: %@";
 
@@ -3128,8 +3164,8 @@
 /* compat report view controller: user-visible text */
 "Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information." = "Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information.";
 
-/* settings hub view controller: title */
-"Support" = "Support";
+/* settings hub view controller: link to Ko-fi */
+"Support XeniOS" = "Support XeniOS";
 
 /* Slider label in the touch analog tuning screen */
 "Swipe Acceleration" = "Swipe Acceleration";
@@ -3202,7 +3238,8 @@
 /* In-game menu: System Link card */
 "System Link · Turned Away" = "System Link · Turned Away";
 
-/* launcher overlay view: menu action */
+/* launcher overlay view: menu action
+   system software view controller: title */
 "System Software" = "System Software";
 
 /* system software view controller: title */
@@ -3216,6 +3253,9 @@
 
 /* Feedback while picking a control to copy the size from */
 "Tap another button" = "Tap another button";
+
+/* system update page: label beside the part of Microsoft's page to tap next */
+"Tap here" = "Tap here";
 
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
@@ -3550,9 +3590,6 @@
 /* Display settings toggle */
 "Uncapped Emulated Display" = "Uncapped Emulated Display";
 
-/* system update page: instructions */
-"Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update once it has downloaded." = "Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update once it has downloaded.";
-
 /* VoiceOver label of the undo button */
 "Undo" = "Undo";
 
@@ -3679,7 +3716,7 @@
 "Version %@" = "Version %@";
 
 /* settings hub view controller: title */
-"Version, updates and privacy." = "Version, updates and privacy.";
+"Version, updates and licenses." = "Version, updates and licenses.";
 
 /* Slider label in the touch analog tuning screen */
 "Vertical Sensitivity" = "Vertical Sensitivity";
@@ -3752,8 +3789,7 @@
    main view controller: title */
 "Xbox 360 Dashboard" = "Xbox 360 Dashboard";
 
-/* settings hub view controller: title
-   system software view controller: title */
+/* settings hub view controller: title */
 "Xbox 360 System Software" = "Xbox 360 System Software";
 
 /* Title of an information message box */
@@ -3763,16 +3799,16 @@
 "XeniOS %1$@ is available. You're on %2$@." = "XeniOS %1$@ is available. You're on %2$@.";
 
 /* Alert message: one-time diagnostics notice */
-"XeniOS can now send anonymous crash reports and performance statistics, such as frame rate and device temperature, to help fix problems. They never include your files, your name or your Apple Account.\n\nYou can change this in Settings > About > Privacy." = "XeniOS can now send anonymous crash reports and performance statistics, such as frame rate and device temperature, to help fix problems. They never include your files, your name or your Apple Account.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS can now send anonymous crash reports and performance statistics, such as frame rate and device temperature, to help fix problems. They never include your files, your name or your Apple Account.\n\nYou can change this in Settings > Privacy." = "XeniOS can now send anonymous crash reports and performance statistics, such as frame rate and device temperature, to help fix problems. They never include your files, your name or your Apple Account.\n\nYou can change this in Settings > Privacy.";
 
 /* external folders view controller: message */
 "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it." = "XeniOS can't reach \"%@\". If the drive or share is connected, pick the folder again to re-link it.";
 
 /* Alert message: first-run online features notice */
-"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > Privacy.";
 
 /* Alert message: first-run online features notice */
-"XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > About > Privacy.";
+"XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > Privacy." = "XeniOS checks for updates, downloads compatibility information and cover art, and sends anonymous crash reports and performance statistics to help fix problems. It also links System Link games with other players over the internet, who can see your IP address and a profile ID. Compatibility reports you submit are public.\n\nYou can change this in Settings > Privacy.";
 
 /* zar conversion coordinator: user-visible text */
 "XeniOS could not access the linked external folder for in-place conversion." = "XeniOS could not access the linked external folder for in-place conversion.";
@@ -3822,7 +3858,7 @@
 "You can attach up to 5 screenshots." = "You can attach up to 5 screenshots.";
 
 /* system link view controller: alert message */
-"You can change this in Settings > About > Privacy." = "You can change this in Settings > About > Privacy.";
+"You can change this in Settings > Privacy." = "You can change this in Settings > Privacy.";
 
 /* JIT sheet: step 3; %@ is the game */
 "You come back here and %@ starts." = "You come back here and %@ starts.";
