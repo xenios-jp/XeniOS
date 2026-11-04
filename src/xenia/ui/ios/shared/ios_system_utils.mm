@@ -152,9 +152,8 @@ NSString* xe_jit_waiting_status_message(void) {
 }
 
 NSString* xe_jit_not_detected_guidance_message(void) {
-  return NSLocalizedString(@"JIT is not active. Enable it with StikDebug (assign universal.js or "
-                           @"Amethyst-MeloNX.js) or another JIT tool, such as an lldb broker. Keep "
-                           @"the tool attached until the game has started.",
+  return NSLocalizedString(@"Games need JIT to run. Open StikDebug to turn it on, then start "
+                           @"the game.",
                            @"Guidance when JIT is not active before launching a game");
 }
 
@@ -356,15 +355,16 @@ NSString* xe_device_display_name_for_machine(NSString* raw_machine) {
           }
         };
 
-    add_names(@[ @"iPhone13,1" ], @"iPhone 12 Mini");
+    // Apple's own product names, as in Settings › General › About.
+    add_names(@[ @"iPhone13,1" ], @"iPhone 12 mini");
     add_names(@[ @"iPhone13,2" ], @"iPhone 12");
     add_names(@[ @"iPhone13,3" ], @"iPhone 12 Pro");
     add_names(@[ @"iPhone13,4" ], @"iPhone 12 Pro Max");
     add_names(@[ @"iPhone14,2" ], @"iPhone 13 Pro");
     add_names(@[ @"iPhone14,3" ], @"iPhone 13 Pro Max");
-    add_names(@[ @"iPhone14,4" ], @"iPhone 13 Mini");
+    add_names(@[ @"iPhone14,4" ], @"iPhone 13 mini");
     add_names(@[ @"iPhone14,5" ], @"iPhone 13");
-    add_names(@[ @"iPhone14,6" ], @"iPhone SE 3rd Gen");
+    add_names(@[ @"iPhone14,6" ], @"iPhone SE (3rd generation)");
     add_names(@[ @"iPhone14,7" ], @"iPhone 14");
     add_names(@[ @"iPhone14,8" ], @"iPhone 14 Plus");
     add_names(@[ @"iPhone15,2" ], @"iPhone 14 Pro");
@@ -384,29 +384,30 @@ NSString* xe_device_display_name_for_machine(NSString* raw_machine) {
     add_names(@[ @"iPhone18,4" ], @"iPhone Air");
 
     // Collapse WiFi and cellular iPad SKUs to a single product label.
-    add_names(@[ @"iPad8,9", @"iPad8,10" ], @"iPad Pro 11 inch 4th Gen");
-    add_names(@[ @"iPad8,11", @"iPad8,12" ], @"iPad Pro 12.9 inch 4th Gen");
-    add_names(@[ @"iPad11,1", @"iPad11,2" ], @"iPad mini 5th Gen");
-    add_names(@[ @"iPad11,3", @"iPad11,4" ], @"iPad Air 3rd Gen");
-    add_names(@[ @"iPad11,6", @"iPad11,7" ], @"iPad 8th Gen");
-    add_names(@[ @"iPad12,1", @"iPad12,2" ], @"iPad 9th Gen");
-    add_names(@[ @"iPad13,1", @"iPad13,2" ], @"iPad Air 4th Gen");
-    add_names(@[ @"iPad13,4", @"iPad13,5", @"iPad13,6", @"iPad13,7" ], @"iPad Pro 11 inch 5th Gen");
+    add_names(@[ @"iPad8,9", @"iPad8,10" ], @"iPad Pro 11-inch (2nd generation)");
+    add_names(@[ @"iPad8,11", @"iPad8,12" ], @"iPad Pro 12.9-inch (4th generation)");
+    add_names(@[ @"iPad11,1", @"iPad11,2" ], @"iPad mini (5th generation)");
+    add_names(@[ @"iPad11,3", @"iPad11,4" ], @"iPad Air (3rd generation)");
+    add_names(@[ @"iPad11,6", @"iPad11,7" ], @"iPad (8th generation)");
+    add_names(@[ @"iPad12,1", @"iPad12,2" ], @"iPad (9th generation)");
+    add_names(@[ @"iPad13,1", @"iPad13,2" ], @"iPad Air (4th generation)");
+    add_names(@[ @"iPad13,4", @"iPad13,5", @"iPad13,6", @"iPad13,7" ],
+              @"iPad Pro 11-inch (3rd generation)");
     add_names(@[ @"iPad13,8", @"iPad13,9", @"iPad13,10", @"iPad13,11" ],
-              @"iPad Pro 12.9 inch 5th Gen");
-    add_names(@[ @"iPad13,16", @"iPad13,17" ], @"iPad Air 5th Gen");
-    add_names(@[ @"iPad13,18", @"iPad13,19" ], @"iPad 10th Gen");
-    add_names(@[ @"iPad14,1", @"iPad14,2" ], @"iPad mini 6th Gen");
-    add_names(@[ @"iPad14,3", @"iPad14,4" ], @"iPad Pro 11 inch 4th Gen");
-    add_names(@[ @"iPad14,5", @"iPad14,6" ], @"iPad Pro 12.9 inch 6th Gen");
-    add_names(@[ @"iPad14,8", @"iPad14,9" ], @"iPad Air 11 inch 6th Gen");
-    add_names(@[ @"iPad14,10", @"iPad14,11" ], @"iPad Air 13 inch 6th Gen");
-    add_names(@[ @"iPad15,3", @"iPad15,4" ], @"iPad Air 11-inch 7th Gen");
-    add_names(@[ @"iPad15,5", @"iPad15,6" ], @"iPad Air 13-inch 7th Gen");
-    add_names(@[ @"iPad15,7", @"iPad15,8" ], @"iPad 11th Gen");
-    add_names(@[ @"iPad16,1", @"iPad16,2" ], @"iPad mini 7th Gen");
-    add_names(@[ @"iPad16,3", @"iPad16,4" ], @"iPad Pro 11 inch 5th Gen");
-    add_names(@[ @"iPad16,5", @"iPad16,6" ], @"iPad Pro 12.9 inch 7th Gen");
+              @"iPad Pro 12.9-inch (5th generation)");
+    add_names(@[ @"iPad13,16", @"iPad13,17" ], @"iPad Air (5th generation)");
+    add_names(@[ @"iPad13,18", @"iPad13,19" ], @"iPad (10th generation)");
+    add_names(@[ @"iPad14,1", @"iPad14,2" ], @"iPad mini (6th generation)");
+    add_names(@[ @"iPad14,3", @"iPad14,4" ], @"iPad Pro 11-inch (4th generation)");
+    add_names(@[ @"iPad14,5", @"iPad14,6" ], @"iPad Pro 12.9-inch (6th generation)");
+    add_names(@[ @"iPad14,8", @"iPad14,9" ], @"iPad Air 11-inch (M2)");
+    add_names(@[ @"iPad14,10", @"iPad14,11" ], @"iPad Air 13-inch (M2)");
+    add_names(@[ @"iPad15,3", @"iPad15,4" ], @"iPad Air 11-inch (M3)");
+    add_names(@[ @"iPad15,5", @"iPad15,6" ], @"iPad Air 13-inch (M3)");
+    add_names(@[ @"iPad15,7", @"iPad15,8" ], @"iPad (A16)");
+    add_names(@[ @"iPad16,1", @"iPad16,2" ], @"iPad mini (A17 Pro)");
+    add_names(@[ @"iPad16,3", @"iPad16,4" ], @"iPad Pro 11-inch (M4)");
+    add_names(@[ @"iPad16,5", @"iPad16,6" ], @"iPad Pro 13-inch (M4)");
 
     overrides = [map copy];
   });

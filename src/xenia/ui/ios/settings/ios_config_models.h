@@ -99,8 +99,13 @@ struct IOSConfigItem {
   // The cvar's default (or the frontend default), as text; |has_default| is false when unknown.
   bool has_default = false;
   std::string default_value;
-  // Unit shown after a custom number, e.g. "FPS" ("40 FPS (custom)").
+  // Unit shown after a custom number, e.g. "FPS" ("40 FPS (custom)"), or after a stepped one.
   std::string value_unit;
+  // A decimal setting with |step| > 0 shows its value with |value_unit| and a stepper over
+  // [|min_value|, |max_value|] instead of a text field.
+  double step = 0.0;
+  double min_value = 0.0;
+  double max_value = 0.0;
 };
 
 struct IOSConfigSection {
