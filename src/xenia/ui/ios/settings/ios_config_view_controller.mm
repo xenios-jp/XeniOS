@@ -655,6 +655,8 @@ static bool IsSliderItem(const IOSConfigItem* item) {
         NSLocalizedString(@"Search Settings", @"config view controller: placeholder");
     self.navigationItem.searchController = search_controller_;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    // Under the title, not floating over the rows at the bottom of a phone in landscape.
+    self.navigationItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementStacked;
     self.definesPresentationContext = YES;
   }
 

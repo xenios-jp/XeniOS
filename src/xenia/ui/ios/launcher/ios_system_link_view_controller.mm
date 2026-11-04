@@ -513,7 +513,7 @@ enum class OnlineRow { kMine, kNoneMine, kOther };
 // Library icons in the Online sheet, in points.
 constexpr CGFloat kOnlineIconSize = 36.0;
 // Box covers in the Online sheet's game rows, in points.
-constexpr CGFloat kOnlineCoverWidth = 40.0;
+constexpr CGFloat kOnlineCoverWidth = 32.0;
 constexpr CGFloat kOnlineCoverHeight = kOnlineCoverWidth * 300.0 / 219.0;
 
 // "● 3 playing", the dot in the online green.
@@ -561,7 +561,9 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   UIView* header = [[[UIView alloc] init] autorelease];
   [header addSubview:row];
   [NSLayoutConstraint activateConstraints:@[
-    [row.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor],
+    // A little in from the group's edge, as drawn.
+    [row.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor
+                                      constant:-12.0],
     [row.trailingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.trailingAnchor],
     [row.topAnchor constraintEqualToAnchor:header.topAnchor constant:18.0],
     [row.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-8.0],
@@ -800,23 +802,7 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   ]];
 }
 
-- (void)viewDidLayoutSubviews {
-  [super viewDidLayoutSubviews];
-  // The table sizes its header view only from the frame, so fit it to the text.
-  const CGFloat width = self.tableView.bounds.size.width;
-  const CGFloat height =
-      [summary_ systemLayoutSizeFittingSize:CGSizeMake(width, 0.0)
-              withHorizontalFittingPriority:UILayoutPriorityRequired
-                    verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
-          .height;
-  if (self.tableView.tableHeaderView != summary_ || summary_.frame.size.height != height ||
-      summary_.frame.size.width != width) {
-    summary_.frame = CGRectMake(0.0, 0.0, width, height);
-    self.tableView.tableHeaderView = summary_;
-  }
-}
-
-- (void)createTapped:(UIButton*)sender {
+- (void)createTapped:(id)sender {
   if (!library_names_.count) {
     return;
   }
@@ -825,17 +811,19 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                       then:^(uint32_t title_id, UIView* source) {
                         NSString* code = xe_ios_new_system_link_room_code();
                         xe_ios_set_system_link_room(title_id, code);
-                        [self shareRoom:code titleID:title_id from:source ?: sender];
+                        [self shareRoom:code
+                                titleID:title_id
+                                   from:source ?: self.navigationController.navigationBar];
                       }];
 }
 
-- (void)joinTapped:(UIButton*)__unused sender {
+- (void)joinTapped:(id)__unused sender {
   if (library_names_.count) {
     [self presentJoinAlert];
   }
 }
 
-- (void)turnOnTapped:(UIButton*)__unused sender {
+- (void)turnOnTapped:(id)__unused sender {
   ConfirmTurnOnOnlineFeatures(self, ^{
     xe_ios_set_online_features_enabled(YES);
     [self reloadRows];
@@ -852,7 +840,29 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.sectionHeaderTopPadding = 0.0;
   cover_fetches_ = [[NSMutableSet alloc] init];
+  // The sheet bar holds the title, between ✕ and +.
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   [self buildSummary];
+  // + holds the room actions, as in the mockup's sheet bar.
+  __unsafe_unretained XeniaIOSOnlineViewController* unsafe_self = self;
+  UIMenu* rooms = [UIMenu menuWithChildren:@[
+    [UIAction actionWithTitle:NSLocalizedString(@"Create Room", @"online view controller: button")
+                        image:[UIImage systemImageNamed:@"plus.circle"]
+                   identifier:nil
+                      handler:^(__unused UIAction* action) {
+                        [unsafe_self createTapped:nil];
+                      }],
+    [UIAction actionWithTitle:NSLocalizedString(@"Join with Code",
+                                                @"online view controller: button")
+                        image:[UIImage systemImageNamed:@"keyboard"]
+                   identifier:nil
+                      handler:^(__unused UIAction* action) {
+                        [unsafe_self joinTapped:nil];
+                      }],
+  ]];
+  self.navigationItem.rightBarButtonItem =
+      [[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus"]
+                                         menu:rooms] autorelease];
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                target:self
@@ -890,8 +900,11 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
         others_.push_back(game);
       }
     }
-    sections_.push_back(mine_.empty() ? std::vector<OnlineRow>{OnlineRow::kNoneMine}
-                                      : std::vector<OnlineRow>(mine_.size(), OnlineRow::kMine));
+    // With nobody in a game the sheet is one centred message, not an empty group.
+    if (!mine_.empty() || !others_.empty()) {
+      sections_.push_back(mine_.empty() ? std::vector<OnlineRow>{OnlineRow::kNoneMine}
+                                        : std::vector<OnlineRow>(mine_.size(), OnlineRow::kMine));
+    }
     if (!others_.empty()) {
       sections_.push_back(std::vector<OnlineRow>(others_.size(), OnlineRow::kOther));
     }
@@ -1027,8 +1040,8 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   }
   summary_title_.text = title;
   summary_detail_.text = detail;
-  summary_detail_.hidden = detail.length == 0;
-  [self.view setNeedsLayout];
+  self.navigationItem.rightBarButtonItem.hidden = !relay || library_names_.count == 0;
+  [self setNeedsUpdateContentUnavailableConfiguration];
 }
 
 - (OnlineRow)rowAtIndexPath:(NSIndexPath*)indexPath {
@@ -1101,14 +1114,54 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
       count);
 }
 
+// Under the last group: who's online in all, then how the counts work.
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  const bool last = size_t(section) + 1 == sections_.size();
-  if (last && xe_ios_system_link_online_here() < 0) {
-    return NSLocalizedString(@"Players in each game's public lobby, updated every minute. "
-                             @"Private rooms aren't counted.",
-                             @"system link view controller: footer");
+  if (size_t(section) + 1 != sections_.size()) {
+    return nil;
   }
-  return nil;
+  NSMutableArray<NSString*>* lines = [NSMutableArray array];
+  if (summary_title_.text.length) {
+    [lines addObject:summary_detail_.text.length
+                         ? [NSString stringWithFormat:@"%@. %@", summary_title_.text,
+                                                      summary_detail_.text]
+                         : summary_title_.text];
+  }
+  if (xe_ios_system_link_online_here() < 0) {
+    [lines addObject:NSLocalizedString(@"Players in each game's public lobby, updated every "
+                                       @"minute. Private rooms aren't counted.",
+                                       @"system link view controller: footer")];
+  }
+  return [lines componentsJoinedByString:@"\n"];
+}
+
+// Nothing to list (Online off, not over the internet, or still asking): one centred message.
+- (void)updateContentUnavailableConfigurationUsingState:(UIContentUnavailableConfigurationState*)
+                                                            __unused state {
+  if (!sections_.empty()) {
+    self.contentUnavailableConfiguration = nil;
+    return;
+  }
+  UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration emptyConfiguration];
+  const BOOL on = xe_ios_online_features_enabled();
+  config.image = [UIImage systemImageNamed:on ? @"globe" : @"network.slash"];
+  config.text = summary_title_.text;
+  config.secondaryText = summary_detail_.text;
+  if (!on) {
+    UIButtonConfiguration* button = [UIButtonConfiguration filledButtonConfiguration];
+    button.title = NSLocalizedString(@"Turn On Online Features",
+                                     @"online view controller: button");
+    button.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    button.baseBackgroundColor = [UIColor whiteColor];
+    button.baseForegroundColor = [UIColor blackColor];
+    button.contentInsets = NSDirectionalEdgeInsetsMake(12.0, 22.0, 12.0, 22.0);
+    config.button = button;
+    __unsafe_unretained XeniaIOSOnlineViewController* unsafe_self = self;
+    config.buttonProperties.primaryAction =
+        [UIAction actionWithHandler:^(__unused UIAction* action) {
+          [unsafe_self turnOnTapped:nil];
+        }];
+  }
+  self.contentUnavailableConfiguration = config;
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -1126,10 +1179,10 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                                                       UIFontWeightSemibold);
   content.textProperties.color = [XeniaTheme textPrimary];
   content.secondaryTextProperties.font =
-      xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
-  content.textToSecondaryTextVerticalPadding = 2.0;
-  content.imageToTextPadding = 14.0;
-  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(10.0, 16.0, 10.0, 12.0);
+      xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
+  content.textToSecondaryTextVerticalPadding = 1.0;
+  content.imageToTextPadding = 13.0;
+  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(11.0, 16.0, 11.0, 12.0);
   cell.accessoryView = nil;
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   cell.accessibilityTraits = UIAccessibilityTraitStaticText;
@@ -1156,16 +1209,16 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   content.imageProperties.maximumSize =
       cover ? CGSizeMake(kOnlineCoverWidth, kOnlineCoverHeight)
             : CGSizeMake(kOnlineIconSize, kOnlineIconSize);
-  content.imageProperties.cornerRadius = cover ? 6.0 : 8.0;
+  content.imageProperties.cornerRadius = cover ? 5.0 : 8.0;
   cell.contentConfiguration = content;
   if (mine) {
     // Play opens the game's System Link sheet: its public lobby or a private room.
     UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
     config.title = NSLocalizedString(@"Play", @"online view controller: button on a game row");
     config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    config.baseBackgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    config.baseForegroundColor = [XeniaTheme accent];
-    config.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 16.0, 6.0, 16.0);
+    config.baseBackgroundColor = [UIColor colorWithWhite:1.0 alpha:0.14];
+    config.baseForegroundColor = [XeniaTheme textPrimary];
+    config.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 14.0, 6.0, 14.0);
     UIButton* play = [UIButton buttonWithConfiguration:config primaryAction:nil];
     xe_apply_button_title_font(play, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
     play.tag = NSInteger(title_id);

@@ -140,7 +140,9 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* __unused traits) {
         ],
         nullptr);
     CGContextDrawLinearGradient(cg, green, CGPointMake(size.width * 0.33, 0.0),
-                                CGPointMake(size.width * 0.67, size.height), 0);
+                                CGPointMake(size.width * 0.67, size.height),
+                                kCGGradientDrawsBeforeStartLocation |
+                                    kCGGradientDrawsAfterEndLocation);
     CGGradientRelease(green);
     // The highlight, an ellipse above the middle.
     CGGradientRef glow = CGGradientCreateWithColors(
@@ -996,11 +998,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       _heroTextLeading.constant = left;
       _heroTextBottom.constant = -MAX(safe.bottom, 24.0);
     }
+    // The grid runs up under the header, which blurs in behind it as it scrolls, so rows
+    // don't end at a hard edge.
     const CGFloat grid_left = hero ? hero_width : safe.left;
-    grid_frame = CGRectMake(grid_left, header_bottom + 6.0,
-                            bounds.size.width - grid_left - safe.right,
-                            bounds.size.height - header_bottom - 6.0);
-    top_inset = stack_block;
+    grid_frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left - safe.right,
+                            bounds.size.height);
+    top_inset = header_bottom + 6.0 + stack_block;
+    _headerBackdrop.frame = CGRectMake(grid_left, 0.0, bounds.size.width - grid_left,
+                                       header_bottom + 6.0);
   } else {
     // Art across the top, under the header, scrolling away with the grid.
     grid_frame = bounds;
@@ -1059,7 +1064,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     insets.bottom = bottom;
     _gamesCollectionView.contentInset = insets;
     _gamesCollectionView.verticalScrollIndicatorInsets =
-        UIEdgeInsetsMake(side ? 0.0 : header_bottom, 0, bottom, 0);
+        UIEdgeInsetsMake(header_bottom, 0, bottom, 0);
     if (at_top) {
       _gamesCollectionView.contentOffset = CGPointMake(0.0, -top_inset);
     }
@@ -1070,7 +1075,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 // The header gets a bar behind it once the art or the first row scrolls under it.
 - (void)updateHeaderBackdrop {
   CGFloat alpha = 0.0;
-  if (!_sideLayout) {
+  if (_sideLayout) {
+    const CGFloat scrolled =
+        _gamesCollectionView.contentOffset.y + _gamesCollectionView.contentInset.top;
+    alpha = MIN(MAX(scrolled / 24.0, 0.0), 1.0);
+  } else {
     const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame);
     const CGFloat content_top = -_gamesCollectionView.contentInset.top;
     const CGFloat under = _heroGame ? (CGRectGetHeight(_heroView.frame) - header_bottom) : 0.0;
@@ -1078,7 +1087,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     alpha = MIN(MAX(scrolled / 24.0, 0.0), 1.0);
   }
   _headerBackdrop.alpha = alpha;
-  _libraryLabel.layer.shadowOpacity = alpha > 0.5 ? 0.0f : 0.35f;
+  _libraryLabel.layer.shadowOpacity = (alpha > 0.5 && !_sideLayout) ? 0.0f : 0.35f;
 }
 
 - (void)scrollViewDidScroll:(UIScrollView*)scrollView {
@@ -1417,7 +1426,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSString* title =
       NSLocalizedString(@"Xbox 360 Dashboard", @"launcher overlay view: user-visible text");
   cell.representedTitleId = 0;
-  cell.titleLabel.text = title;
+  // The full name doesn't fit under a cover; the art already says Xbox.
+  cell.titleLabel.text =
+      NSLocalizedString(@"Dashboard", @"launcher overlay view: the Xbox 360 Dashboard tile");
   cell.iconView.image = xe_dashboard_tile_art(cell.traitCollection);
   cell.contentTypePill.text = @"";
   cell.contentTypePill.hidden = YES;

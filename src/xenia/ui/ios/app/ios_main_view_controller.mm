@@ -3441,6 +3441,12 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   actions_controller.actionHandler = ^(XeniaIOSGameAction action) {
+    // Play and Convert leave the game page; every other sheet opens over it, so closing that
+    // sheet comes back to the game.
+    if (action != XeniaIOSGameActionPlay && action != XeniaIOSGameActionConvertToZar) {
+      [unsafe_self performGameAction:action forIndex:game_index];
+      return;
+    }
     [unsafe_self dismissViewControllerAnimated:YES
                                     completion:^{
                                       [unsafe_self performGameAction:action forIndex:game_index];
@@ -3498,8 +3504,17 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       const IOSDiscoveredGame& game = discovered_games_[game_index];
       const std::filesystem::path game_path = game.path;
       NSString* display_name = ToNSString(game.title);
-      xe_ios_present_system_link_sheet(self, display_name, game.title_id, ^{
-        [self launchGameAtPath:game_path displayName:display_name];
+      xe_ios_present_system_link_sheet([self topPresentedControllerForModalPresentation],
+                                       display_name, game.title_id, ^{
+        // The game page may still be open under the sheet.
+        if (self.presentedViewController) {
+          [self dismissViewControllerAnimated:YES
+                                   completion:^{
+                                     [self launchGameAtPath:game_path displayName:display_name];
+                                   }];
+        } else {
+          [self launchGameAtPath:game_path displayName:display_name];
+        }
       });
     } break;
   }
@@ -3601,7 +3616,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:config_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(640.0, 760.0),
                                      NO);
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [config_controller release];
 }
@@ -3701,7 +3716,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   navigation_controller.landscapeOnly = YES;
   navigation_controller.modalPresentationStyle = UIModalPresentationFullScreen;
   navigation_controller.navigationBarHidden = YES;
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [editor_controller release];
 }
@@ -3755,7 +3770,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   navigation_controller.view.backgroundColor = [XeniaTheme bgPrimary];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(620.0, 720.0),
                                      NO);
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [compatibility_controller release];
 }
@@ -3789,7 +3804,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:content_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(600.0, 680.0),
                                      NO);
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [content_controller release];
 }
@@ -3831,7 +3846,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:disc_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(520.0, 560.0),
                                      NO);
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [disc_controller release];
 }
@@ -3867,7 +3882,7 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:patches_controller];
   XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(600.0, 680.0),
                                      NO);
-  [self presentViewController:navigation_controller animated:YES completion:nil];
+  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [patches_controller release];
 }
