@@ -143,7 +143,7 @@ add_custom_command(TARGET xenia-app POST_BUILD
 # crashes, and it reads xe_ios_crash_context from the crashed process. It goes in
 # Extensions/, where iOS 26 ignores it; packaging signs it apart from the app.
 option(XENIA_IOS_CRASH_REPORTER "Embed the iOS 27 crash reporter extension" ON)
-if(XENIA_IOS_CRASH_REPORTER)
+if(XENIA_IOS_CRASH_REPORTER AND NOT XE_IOS_SIMULATOR)
   execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path
     OUTPUT_VARIABLE _xe_ios_sdk OUTPUT_STRIP_TRAILING_WHITESPACE
     COMMAND_ERROR_IS_FATAL ANY)

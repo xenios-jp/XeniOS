@@ -5,7 +5,7 @@ add_custom_command(
   OUTPUT "${_xe_ios_assets}/Assets.car" "${_xe_ios_assets}/asset-info.plist"
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${_xe_ios_assets}"
   COMMAND xcrun actool "${_xe_ios_catalog}"
-    --compile "${_xe_ios_assets}" --platform iphoneos
+    --compile "${_xe_ios_assets}" --platform ${XE_IOS_SDK}
     --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
     --target-device iphone --target-device ipad
     --app-icon AppIcon --include-all-app-icons
