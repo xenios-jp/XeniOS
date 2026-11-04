@@ -117,7 +117,6 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindAdvancedDebug,
   XeniaSettingsHubCategoryKindAllCvars,
   XeniaSettingsHubCategoryKindAllSettings,
-  XeniaSettingsHubCategoryKindCacheCleanup,
   XeniaSettingsHubCategoryKindLibrary,
   XeniaSettingsHubCategoryKindSystemSoftware,
   XeniaSettingsHubCategoryKindAutomation,
@@ -568,27 +567,45 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
 - (instancetype)initWithTitle:(NSString*)title
                         items:(NSArray*)items
                 actionHandler:(XeniaSettingsHubActionHandler)action_handler;
+// Groups of items, each under its heading.
+- (instancetype)initWithTitle:(NSString*)title
+                     sections:(NSArray<NSArray*>*)sections
+                sectionTitles:(NSArray<NSString*>*)section_titles
+                actionHandler:(XeniaSettingsHubActionHandler)action_handler;
 @end
 
 @implementation XeniaSettingsActionListViewController {
-  NSArray* items_;
+  NSArray<NSArray*>* sections_;
+  NSArray<NSString*>* section_titles_;
   XeniaSettingsHubActionHandler action_handler_;
 }
 
 - (instancetype)initWithTitle:(NSString*)title
                         items:(NSArray*)items
                 actionHandler:(XeniaSettingsHubActionHandler)action_handler {
+  return [self initWithTitle:title
+                    sections:@[ items ]
+               sectionTitles:nil
+               actionHandler:action_handler];
+}
+
+- (instancetype)initWithTitle:(NSString*)title
+                     sections:(NSArray<NSArray*>*)sections
+                sectionTitles:(NSArray<NSString*>*)section_titles
+                actionHandler:(XeniaSettingsHubActionHandler)action_handler {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
     self.title = title;
-    items_ = [items retain];
+    sections_ = [sections retain];
+    section_titles_ = [section_titles retain];
     action_handler_ = [action_handler copy];
   }
   return self;
 }
 
 - (void)dealloc {
-  [items_ release];
+  [sections_ release];
+  [section_titles_ release];
   [action_handler_ release];
   [super dealloc];
 }
@@ -600,9 +617,18 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
   self.tableView.estimatedRowHeight = 72.0;
 }
 
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return static_cast<NSInteger>(sections_.count);
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView
+    titleForHeaderInSection:(NSInteger)section {
+  return static_cast<NSUInteger>(section) < section_titles_.count ? section_titles_[section] : nil;
+}
+
 - (NSInteger)tableView:(UITableView* __unused)tableView
- numberOfRowsInSection:(NSInteger)__unused section {
-  return static_cast<NSInteger>(items_.count);
+ numberOfRowsInSection:(NSInteger)section {
+  return static_cast<NSInteger>(sections_[section].count);
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -616,7 +642,7 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
     cell.detailTextLabel.numberOfLines = 3;
   }
 
-  XeniaSettingsActionListItem* item = [items_ objectAtIndex:indexPath.row];
+  XeniaSettingsActionListItem* item = sections_[indexPath.section][indexPath.row];
   cell.textLabel.text = item.title;
   cell.textLabel.textColor = item.selectable ? [XeniaTheme textPrimary]
                                              : [XeniaTheme textSecondary];
@@ -642,7 +668,7 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  XeniaSettingsActionListItem* item = [items_ objectAtIndex:indexPath.row];
+  XeniaSettingsActionListItem* item = sections_[indexPath.section][indexPath.row];
   if (item.selectable && item.action == XeniaSettingsHubActionManageExternalFolders) {
     XeniaIOSExternalFoldersViewController* folders =
         [[[XeniaIOSExternalFoldersViewController alloc] init] autorelease];
@@ -1454,16 +1480,6 @@ titleForFooterInSection:(NSInteger)section {
                                         @"settings hub view controller: title")
                          symbolName:@"square.stack.3d.up.fill"
                           tintColor:mint],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
-                              title:NSLocalizedString(@"Cache Cleanup",
-                                                      @"settings hub view controller: title")
-                           subtitle:
-                               NSLocalizedString(
-                                   @"Clear saved shaders.",
-                                   @"settings hub view controller: title")
-                         symbolName:@"trash"
-                          tintColor:gray],
                  ]];
 
   XeniaSettingsHubSection* app = [XeniaSettingsHubSection
@@ -1742,20 +1758,20 @@ titleForFooterInSection:(NSInteger)section {
           symbolName:@"arrow.clockwise"
            tintColor:[XeniaTheme sectionIconGray]],
     [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
+        itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Clear This Game's Shaders",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(@"Cache Cleanup · Removes the running game's saved shaders.",
+                NSLocalizedString(@"Storage · Removes the running game's saved shaders.",
                     @"settings hub view controller: title")
           symbolName:@"trash"
            tintColor:[XeniaTheme sectionIconOrange]],
     [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindCacheCleanup
+        itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Clear All Shaders",
                                        @"settings hub view controller: title")
             subtitle:
-                NSLocalizedString(@"Cache Cleanup · Removes saved shaders for every game.",
+                NSLocalizedString(@"Storage · Removes saved shaders for every game.",
                     @"settings hub view controller: title")
           symbolName:@"trash.fill"
            tintColor:[XeniaTheme sectionIconRed]],
@@ -1767,8 +1783,21 @@ titleForFooterInSection:(NSInteger)section {
                          @"settings hub view controller: title")
           symbolName:@"square.stack.3d.up.fill"
            tintColor:[XeniaTheme sectionIconGray]],
+    [XeniaSettingsHubItem
+        itemWithKind:XeniaSettingsHubCategoryKindLibrary
+               title:NSLocalizedString(@"Convert Library to ZAR",
+                                       @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Storage · Makes disc images smaller.",
+                                       @"settings hub view controller: title")
+          symbolName:@"archivebox.fill"
+           tintColor:[XeniaTheme sectionIconOrange]],
   ];
+  // Item 3, Clear This Game's Shaders, only shows while a game is running.
+  ((XeniaSettingsHubItem*)items[3]).needsRunningGame = YES;
   for (XeniaSettingsHubItem* item in items) {
+    if (no_game_running_ && item.needsRunningGame) {
+      continue;
+    }
     if (XeniaSettingsHubItemMatches(
             item,
             NSLocalizedString(@"Library & Storage",
@@ -2144,7 +2173,7 @@ titleForFooterInSection:(NSInteger)section {
     }
     case XeniaSettingsHubCategoryKindLibrary: {
       UIColor* gray = [XeniaTheme sectionIconGray];
-      NSArray* items = @[
+      NSArray* library = @[
         [XeniaSettingsActionListItem
             itemWithAction:XeniaSettingsHubActionImportGame
                      title:NSLocalizedString(@"Import Game", @"settings hub view controller: title")
@@ -2169,45 +2198,51 @@ titleForFooterInSection:(NSInteger)section {
                                              @"settings hub view controller: title")
                 symbolName:@"arrow.clockwise"
                  tintColor:gray],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionConvertLibraryToZar
-                     title:NSLocalizedString(@"Convert Library to ZAR",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Makes disc images smaller. Games play the same.",
-                                             @"settings hub view controller: title")
-                symbolName:@"archivebox.fill"
-                 tintColor:[XeniaTheme sectionIconOrange]],
       ];
+      NSMutableArray* storage = [NSMutableArray array];
+      [storage addObject:[XeniaSettingsActionListItem
+                             itemWithAction:XeniaSettingsHubActionConvertLibraryToZar
+                                      title:NSLocalizedString(
+                                                @"Convert Library to ZAR",
+                                                @"settings hub view controller: title")
+                                   subtitle:NSLocalizedString(
+                                                @"Makes disc images smaller. Games play the same.",
+                                                @"settings hub view controller: title")
+                                 symbolName:@"archivebox.fill"
+                                  tintColor:[XeniaTheme sectionIconOrange]]];
+      // Only a running game has shaders of its own to clear.
+      if (!no_game_running_) {
+        [storage addObject:[XeniaSettingsActionListItem
+                               itemWithAction:XeniaSettingsHubActionClearCurrentGameShaderCache
+                                        title:NSLocalizedString(
+                                                  @"Clear This Game's Shaders",
+                                                  @"settings hub view controller: title")
+                                     subtitle:NSLocalizedString(
+                                                  @"Removes the running game's saved shaders. "
+                                                  @"They rebuild as you play.",
+                                                  @"settings hub view controller: title")
+                                   symbolName:@"trash"
+                                    tintColor:[XeniaTheme sectionIconOrange]]];
+      }
+      [storage addObject:[XeniaSettingsActionListItem
+                             itemWithAction:XeniaSettingsHubActionClearAllShaderCaches
+                                      title:NSLocalizedString(
+                                                @"Clear All Shaders",
+                                                @"settings hub view controller: title")
+                                   subtitle:NSLocalizedString(
+                                                @"Removes saved shaders for every game. Games "
+                                                @"and saves stay.",
+                                                @"settings hub view controller: title")
+                                 symbolName:@"trash.fill"
+                                  tintColor:[XeniaTheme sectionIconRed]]];
       return [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:NSLocalizedString(@"Library & Storage",
                                           @"settings hub view controller: title")
-                  items:items
-          actionHandler:action_handler_] autorelease];
-    }
-    case XeniaSettingsHubCategoryKindCacheCleanup: {
-      NSArray* items = @[
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionClearCurrentGameShaderCache
-                     title:NSLocalizedString(@"Clear This Game's Shaders",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Removes the running game's saved shaders. They "
-                                             @"rebuild as you play.",
-                                             @"settings hub view controller: title")
-                symbolName:@"trash"
-                 tintColor:[XeniaTheme sectionIconOrange]],
-        [XeniaSettingsActionListItem
-            itemWithAction:XeniaSettingsHubActionClearAllShaderCaches
-                     title:NSLocalizedString(@"Clear All Shaders",
-                                             @"settings hub view controller: title")
-                  subtitle:NSLocalizedString(@"Removes saved shaders for every game. Games and "
-                                             @"saves stay.",
-                                             @"settings hub view controller: title")
-                symbolName:@"trash.fill"
-                 tintColor:[XeniaTheme sectionIconRed]],
-      ];
-      return [[[XeniaSettingsActionListViewController alloc]
-          initWithTitle:NSLocalizedString(@"Cache Cleanup", @"settings hub view controller: title")
-                  items:items
+               sections:@[ library, storage ]
+          sectionTitles:@[
+            NSLocalizedString(@"Library", @"settings hub view controller: section"),
+            NSLocalizedString(@"Storage", @"settings hub view controller: section"),
+          ]
           actionHandler:action_handler_] autorelease];
     }
     case XeniaSettingsHubCategoryKindSystemSoftware:
@@ -2359,7 +2394,17 @@ titleForFooterInSection:(NSInteger)section {
 }
 
 - (void)setNoGameRunning:(BOOL)noGameRunning {
+  if (hub_controller_.noGameRunning == noGameRunning) {
+    return;
+  }
   hub_controller_.noGameRunning = noGameRunning;
+  // The first detail page is made in init, before this is known, so make it again.
+  if (!self.isViewLoaded) {
+    UINavigationController* secondary = [[[UINavigationController alloc]
+        initWithRootViewController:[hub_controller_ makeInitialDetailController]] autorelease];
+    secondary.navigationBar.prefersLargeTitles = NO;
+    [self setViewController:secondary forColumn:UISplitViewControllerColumnSecondary];
+  }
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
