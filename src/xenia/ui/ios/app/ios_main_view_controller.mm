@@ -758,6 +758,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   XeniaLandscapeNavigationController* sheet =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:root] autorelease];
   XEConfigureTaskSheet(sheet, self.view, CGSizeMake(620.0, 760.0), NO);
+  // A whole page (Dashboard setup, System Software), not a half-height sheet that cuts it off.
+  sheet.sheetPresentationController.detents = @[ [UISheetPresentationControllerDetent largeDetent] ];
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:sheet animated:YES completion:nil];
 }
@@ -882,13 +884,13 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
                               @"statistics to help fix problems. It also links System Link games "
                               @"with other players over the internet, who can see your IP "
                               @"address and a profile ID. Compatibility reports you submit are "
-                              @"public.\n\nYou can change this in Settings > About > Privacy.",
+                              @"public.\n\nYou can change this in Settings > Privacy.",
                               @"Alert message: first-run online features notice")
           : NSLocalizedString(@"XeniOS checks for updates, downloads compatibility information "
                               @"and cover art, and links System Link games with other players "
                               @"over the internet, who can see your IP address and a profile "
                               @"ID. Compatibility reports you submit are public.\n\nYou can "
-                              @"change this in Settings > About > Privacy.",
+                              @"change this in Settings > Privacy.",
                               @"Alert message: first-run online features notice");
   UIAlertController* alert =
       first_launch
@@ -909,7 +911,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
                                              @"device temperature, to help fix problems. They "
                                              @"never include your files, your name or your Apple "
                                              @"Account.\n\nYou can change this in Settings > "
-                                             @"About > Privacy.",
+                                             @"Privacy.",
                                              @"Alert message: one-time diagnostics notice")
                           preferredStyle:UIAlertControllerStyleAlert];
   void (^answer)(BOOL, BOOL) = ^(BOOL online, BOOL share_diagnostics) {
@@ -2169,7 +2171,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
       [self resetToOfficialTouchLayoutPreset];
       break;
     case XeniaSettingsHubActionImportGame:
-      [self presentLibraryAddSheetFromView:nil];
+      // Straight to Files: External Folders is the next row on the same page.
+      [self.documentImportCoordinator presentGameImportPicker];
       break;
     case XeniaSettingsHubActionRefreshLibrary:
       [self refreshImportedGamesAsync];
