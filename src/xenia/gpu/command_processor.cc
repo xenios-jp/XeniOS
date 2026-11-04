@@ -553,6 +553,12 @@ void CommandProcessor::SetTitleStateSuffix(std::string suffix) {
 }
 
 void CommandProcessor::WorkerThreadMain() {
+  // A title waits on this thread for ring space, so leaving it on the
+  // efficiency cores while the guest's main thread spins on a performance one
+  // slows both.
+  if (xe::threading::PreferPerformanceCores()) {
+    XELOGI("CommandProcessor: worker prefers the performance cores");
+  }
   if (!SetupContext()) {
     xe::FatalError("Unable to setup command processor internal state");
     return;
