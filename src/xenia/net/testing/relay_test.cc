@@ -137,6 +137,8 @@ std::vector<Endpoint> PeerAddresses(std::span<const uint8_t> datagram) {
 struct Sent {
   Endpoint from;
   Datagram datagram;
+  // Already held back for the trip between players.
+  bool held = false;
 };
 
 // A TURN server for UDP with one realm, relaying between its allocations and
@@ -618,6 +620,11 @@ class Network {
   void Run(uint64_t ms) {
     for (const uint64_t end = now_ + ms; now_ < end;) {
       now_ += 25;
+      // Direct datagrams whose trip is over arrive with this step.
+      while (!delayed_.empty() && delayed_.front().first <= now_) {
+        queue_.push_back(std::move(delayed_.front().second));
+        delayed_.pop_front();
+      }
       for (auto& node : nodes_) {
         Step(*node);
       }
@@ -636,6 +643,8 @@ class Network {
   FakeLobby lobby;
   FakeTurn turn{V4(203, 0, 113, 1, 3478)};
   bool block_direct = false;
+  // How long a direct datagram takes from one player to another.
+  uint64_t direct_delay_ms = 0;
   // The lobby names each player's network, which is its public address.
   bool send_net = false;
   // Where datagrams were sent, but not to the TURN server.
@@ -758,6 +767,11 @@ class Network {
       } else if (sender && block_direct) {
         continue;
       }
+      if (sender && direct_delay_ms && !sent.held) {
+        sent.held = true;
+        delayed_.push_back({now_ + direct_delay_ms, std::move(sent)});
+        continue;
+      }
       if (sender) {
         direct_frames += IsFrame(sent.datagram.data);
       }
@@ -773,6 +787,8 @@ class Network {
   uint64_t now_ = 100000;
   std::vector<std::unique_ptr<Node>> nodes_;
   std::deque<Sent> queue_;
+  // Direct datagrams on their way, by when they arrive.
+  std::deque<std::pair<uint64_t, Sent>> delayed_;
   std::deque<Pending> events_;
 };
 
@@ -1325,6 +1341,31 @@ TEST_CASE("Relay players find each other and go direct", "[relay]") {
   // Frames for nobody in the room go nowhere.
   network.Send(a, MakeFrame(kMacA, kMacC, 60, 3));
   CHECK(network.direct_frames == 3);
+}
+
+TEST_CASE("Relay players time the trip to each other", "[relay]") {
+  Network network;
+  // 50 ms each way, so a keepalive comes back about 100 ms after it left.
+  network.direct_delay_ms = 50;
+  auto& a = network.Add(kMacA);
+  auto& b = network.Add(kMacB);
+  network.Run(3000);
+  REQUIRE(a.client.status().direct == 1);
+  network.Run(10000);
+  CHECK(a.client.status().ping_ms >= 95);
+  CHECK(a.client.status().ping_ms <= 130);
+  CHECK(a.client.status().ping_ms % 5 == 0);
+  CHECK(b.client.status().ping_ms >= 95);
+}
+
+TEST_CASE("Relay players reached only through the relay have no ping", "[relay]") {
+  Network network;
+  network.block_direct = true;
+  auto& a = network.Add(kMacA);
+  network.Add(kMacB);
+  network.Run(10000);
+  CHECK(a.client.status().relayed == 1);
+  CHECK(a.client.status().ping_ms == 0);
 }
 
 TEST_CASE("Relay carries what NATs won't let through", "[relay]") {

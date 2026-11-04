@@ -115,6 +115,9 @@
 /* document import coordinator: message */
 "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete." = "%lu item(s) in the folder (links or special files) were not copied. The game may be incomplete.";
 
+/* game page: Patches row; %lu is how many patches are on */
+"%lu On" = "%lu On";
+
 /* In-game menu: System Link card; %lu is a count */
 "%lu other players, all connected" = "%lu other players, all connected";
 
@@ -601,6 +604,9 @@
 
 /* VoiceOver label of the panel's expand/collapse button */
 "Collapse" = "Collapse";
+
+/* game page: Patches row state */
+"Collapsed" = "Collapsed";
 
 /* game compatibility hero view: title
    game compatibility view controller: title
@@ -1187,6 +1193,9 @@
 
 /* VoiceOver label of the panel's expand/collapse button */
 "Expand" = "Expand";
+
+/* game page: Patches row state */
+"Expanded" = "Expanded";
 
 /* Context menu item in the layout library
    Swipe action in the layout library */
@@ -2131,6 +2140,7 @@
 
 /* config catalog: toggle value
    config view controller: accessibility value
+   game page: Patches row; no patch is on
    Very short badge on a touch control: action is off
    Very short badge on a touch control: analog output is off */
 "Off" = "Off";
@@ -3122,6 +3132,9 @@
 
 /* System Link toast: online features were turned off while a game was playing System Link */
 "System Link stopped: Online Features is off." = "System Link stopped: Online Features is off.";
+
+/* In-game menu: System Link card; %u is the round trip to the other players */
+"System Link · %u ms" = "System Link · %u ms";
 
 /* In-game menu: System Link card */
 "System Link · Can't Reach the Server" = "System Link · Can't Reach the Server";

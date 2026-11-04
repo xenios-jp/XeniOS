@@ -238,6 +238,7 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void) {
     snapshot.direct = status.direct;
     snapshot.relayed = status.relayed;
     snapshot.other_version = status.version_mismatch;
+    snapshot.ping_ms = status.ping_ms;
   }
   return snapshot;
 }
@@ -254,6 +255,13 @@ NSString* CardTitle(const Snapshot& s) {
       return NSLocalizedString(@"System Link · Reconnecting…",
                                @"In-game menu: System Link card");
     case Snapshot::State::kOnline:
+      if (s.ping_ms) {
+        return [NSString
+            stringWithFormat:NSLocalizedString(@"System Link · %u ms",
+                                               @"In-game menu: System Link card; %u is the "
+                                               @"round trip to the other players"),
+                             s.ping_ms];
+      }
       return NSLocalizedString(@"System Link · Online", @"In-game menu: System Link card");
     case Snapshot::State::kOffline:
       return NSLocalizedString(@"System Link · Can't Reach the Server",

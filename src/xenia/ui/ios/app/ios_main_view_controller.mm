@@ -418,6 +418,8 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
 
 @implementation XeniaViewController {
   std::vector<IOSDiscoveredGame> discovered_games_;
+  // The game page's rows while the Library shows them in place of its grid.
+  XeniaIOSGameActionsViewController* in_place_actions_controller_;
   NSDictionary* compat_data_;
   // Icon bytes already wrapped for the launcher, by game path, and the last snapshot set pushed to
   // it. A refresh that finds nothing changed leaves the grid (and any scroll or menu) alone.
@@ -3438,6 +3440,15 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
     actions_controller.statusText = xe_compat_status_label(status);
     actions_controller.statusColor = xe_compat_status_color(status);
   }
+  actions_controller.appContext = self.appContext;
+
+  // A phone on its side: the Library turns into the game's page where it stands.
+  XeniaIOSLauncherOverlayView* library = self.launcherOverlayView;
+  if (!self.presentedViewController && library.canShowGameDetailInPlace) {
+    [self showGameActionsInPlace:actions_controller forIndex:game_index];
+    [actions_controller release];
+    return;
+  }
 
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   actions_controller.actionHandler = ^(XeniaIOSGameAction action) {
@@ -3460,6 +3471,47 @@ static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* 
   [self presentViewController:navigation_controller animated:YES completion:nil];
   [navigation_controller release];
   [actions_controller release];
+}
+
+- (void)showGameActionsInPlace:(XeniaIOSGameActionsViewController*)actions_controller
+                      forIndex:(size_t)game_index {
+  XeniaIOSLauncherOverlayView* library = self.launcherOverlayView;
+  [self releaseInPlaceGameActions];
+  actions_controller.showsRowsOnly = YES;
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  actions_controller.actionHandler = ^(XeniaIOSGameAction action) {
+    [unsafe_self performGameAction:action forIndex:game_index];
+    // Play and Convert leave the page; the rest open sheets over it. Closing it lets go of the
+    // controller that owns this block, so that waits until the block has returned.
+    if (action == XeniaIOSGameActionPlay || action == XeniaIOSGameActionConvertToZar) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [unsafe_self.launcherOverlayView hideGameDetailAnimated:NO];
+      });
+    }
+  };
+  in_place_actions_controller_ = [actions_controller retain];
+  [self addChildViewController:actions_controller];
+  library.gameDetailClosedHandler = ^{
+    [unsafe_self releaseInPlaceGameActions];
+  };
+  [library showGameDetailForGameIndex:game_index
+                             rowsView:actions_controller.view
+                             moreMenu:[actions_controller moreMenu]];
+  [actions_controller didMoveToParentViewController:self];
+}
+
+- (void)releaseInPlaceGameActions {
+  XeniaIOSGameActionsViewController* controller = in_place_actions_controller_;
+  if (!controller) {
+    return;
+  }
+  in_place_actions_controller_ = nil;
+  [controller willMoveToParentViewController:nil];
+  if (controller.view.superview && !self.launcherOverlayView.showsGameDetail) {
+    [controller.view removeFromSuperview];
+  }
+  [controller removeFromParentViewController];
+  [controller release];
 }
 
 - (void)performGameAction:(XeniaIOSGameAction)action forIndex:(size_t)game_index {
@@ -4720,6 +4772,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self.controllerNavigationCoordinator invalidate];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [compat_data_ release];
+  [in_place_actions_controller_ release];
   [launcher_icon_cache_ release];
   [launcher_snapshot_signature_ release];
   [_controllerNavigationCoordinator release];

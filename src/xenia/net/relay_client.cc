@@ -644,6 +644,15 @@ void RelayClient::OnProbe(const Probe& probe, const Endpoint& from,
       !Probed(peer, from)) {
     return;
   }
+  // A keepalive goes to the direct path alone, so its answer times the trip.
+  if (peer.direct == from && peer.keepalive_sent_ms &&
+      probe.nonce == peer.nonces[0]) {
+    // Under a millisecond on a LAN still counts as measured.
+    const uint64_t sample = std::max<uint64_t>(1, now_ms - peer.keepalive_sent_ms);
+    peer.rtt_ms = static_cast<uint32_t>(
+        peer.rtt_ms ? (3 * uint64_t(peer.rtt_ms) + sample + 2) / 4 : sample);
+    peer.keepalive_sent_ms = 0;
+  }
   if (peer.direct != from) {
     // A path that works is kept over another that answers, unless the other
     // stays on the LAN.
@@ -782,6 +791,7 @@ void RelayClient::TickPeers(uint64_t now_ms, Outbox& out) {
         if (now_ms >= peer.next_probe_ms) {
           NewProbeRound(peer);
           SendProbe(peer, *peer.direct, out);
+          peer.keepalive_sent_ms = now_ms;
           peer.next_probe_ms =
               now_ms + (active ? kActiveKeepaliveMs : kIdleKeepaliveMs);
         }
@@ -791,6 +801,8 @@ void RelayClient::TickPeers(uint64_t now_ms, Outbox& out) {
              MacText(mac));
       peer.direct.reset();
       peer.probes = 0;
+      peer.keepalive_sent_ms = 0;
+      peer.rtt_ms = 0;
       peer.next_probe_ms = now_ms;
     }
     if (now_ms < peer.next_probe_ms) {
@@ -848,6 +860,12 @@ void RelayClient::UpdateStatus(uint64_t now_ms) {
       status.version_mismatch |=
           peer.listed.title_id != config_.title_id ||
           peer.listed.title_version != config_.title_version;
+      if (peer.direct) {
+        status.ping_ms = std::max(status.ping_ms, peer.rtt_ms);
+      }
+    }
+    if (status.ping_ms > 10) {
+      status.ping_ms = (status.ping_ms + 2) / 5 * 5;
     }
   }
   status_ = status;
