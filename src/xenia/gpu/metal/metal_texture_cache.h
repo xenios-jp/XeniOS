@@ -335,6 +335,9 @@ class MetalTextureCache : public TextureCache {
     friend class MetalTextureCache;
     MetalTextureCache& texture_cache_;
     MTL::Texture* metal_texture_;
+    // Of metal_texture_, which never changes: asked for on every view lookup.
+    MTL::PixelFormat metal_pixel_format_ = MTL::PixelFormatInvalid;
+    MTL::TextureType metal_texture_type_ = MTL::TextureType2D;
     std::unique_ptr<MetalTexture> texture_3d_as_2d_;
     MTL::Texture* resolve_write_view_ = nullptr;
     std::unordered_map<uint64_t, MTL::Texture*> swizzled_view_cache_;
