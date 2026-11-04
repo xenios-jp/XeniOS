@@ -40,6 +40,9 @@
 #include "xenia/apu/nop/nop_audio_system.h"
 #if !XE_PLATFORM_ANDROID
 #include "xenia/apu/sdl/sdl_audio_system.h"
+#if XE_PLATFORM_MAC
+#include "xenia/apu/phase/phase_audio_system.h"
+#endif  // XE_PLATFORM_MAC
 #endif  // !XE_PLATFORM_ANDROID
 #if XE_PLATFORM_WIN32
 #include "xenia/apu/xaudio2/xaudio2_audio_system.h"
@@ -387,6 +390,9 @@ std::unique_ptr<apu::AudioSystem> EmulatorApp::CreateAudioSystem(
 #if XE_PLATFORM_WIN32
   factory.Add<apu::xaudio2::XAudio2AudioSystem>("xaudio2");
 #endif  // XE_PLATFORM_WIN32
+#if XE_PLATFORM_MAC
+  factory.Add<apu::phase::PHASEAudioSystem>("phase");
+#endif  // XE_PLATFORM_MAC
 #if !XE_PLATFORM_ANDROID
   factory.Add<apu::sdl::SDLAudioSystem>("sdl");
 #endif  // !XE_PLATFORM_ANDROID
