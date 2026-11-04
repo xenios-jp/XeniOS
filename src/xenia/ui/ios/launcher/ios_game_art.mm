@@ -22,6 +22,8 @@ namespace {
 constexpr CGFloat kMaxStoredArtPixels = 1024.0;
 // Covers not in the library and untouched for this long are pruned.
 constexpr NSTimeInterval kArtPruneAge = 30.0 * 24.0 * 3600.0;
+// How long a title the art repository has no image for waits before asking again.
+constexpr NSTimeInterval kArtMissingRetryAge = 7.0 * 24.0 * 3600.0;
 
 NSString* xe_art_cache_dir_named(NSString* name) {
   NSString* caches =
@@ -225,7 +227,16 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
     return;
   }
   NSDate* retry_after = xe_art_retry_after()[key];
-  if (retry_after && [retry_after timeIntervalSinceNow] > 0) {
+  NSString* path = xe_art_path(dir, title_id);
+  // The art repository has no image for some titles: a 404 is remembered on
+  // disk, so those aren't asked for again on every launch.
+  NSString* missing_path = [path.stringByDeletingPathExtension
+      stringByAppendingPathExtension:@"missing"];
+  NSDate* missing_since = [[NSFileManager defaultManager] attributesOfItemAtPath:missing_path
+                                                                           error:nil]
+                              .fileModificationDate;
+  if ((retry_after && [retry_after timeIntervalSinceNow] > 0) ||
+      (missing_since && -[missing_since timeIntervalSinceNow] < kArtMissingRetryAge)) {
     if (completion) {
       completion(nil);
     }
@@ -237,16 +248,19 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
   }
   waiters[key] = pending;
 
-  NSString* path = xe_art_path(dir, title_id);
   NSURLSessionDataTask* task = [[NSURLSession sharedSession]
         dataTaskWithURL:url
       completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
         UIImage* image = nil;
-        if (!error && data.length > 0) {
-          NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
-          if ([http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 200) {
-            image = xe_art_store_download(data, path);
+        NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
+        const bool is_http = !error && [http isKindOfClass:[NSHTTPURLResponse class]];
+        if (is_http && http.statusCode == 200 && data.length > 0) {
+          image = xe_art_store_download(data, path);
+          if (image) {
+            [[NSFileManager defaultManager] removeItemAtPath:missing_path error:nil];
           }
+        } else if (is_http && http.statusCode == 404) {
+          [[NSData data] writeToFile:missing_path atomically:YES];
         }
         [image retain];
         dispatch_async(dispatch_get_main_queue(), ^{
