@@ -10,6 +10,9 @@
 #include "xenia/cpu/backend/a64/a64_backend.h"
 
 #include <algorithm>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -30,6 +33,9 @@
 #endif
 #if XE_PLATFORM_MAC
 #include <pthread.h>
+#endif
+#if XE_PLATFORM_IOS
+#include <dispatch/dispatch.h>
 #endif
 #include "xenia/cpu/backend/a64/a64_assembler.h"
 #include "xenia/cpu/backend/a64/a64_code_cache.h"
@@ -1661,6 +1667,13 @@ A64Backend::A64Backend() {
 }
 
 A64Backend::~A64Backend() {
+#if XE_PLATFORM_IOS
+  if (code_map_signal_source_) {
+    auto source = static_cast<dispatch_source_t>(code_map_signal_source_);
+    dispatch_source_cancel(source);
+    dispatch_release(source);
+  }
+#endif
   ExceptionHandler::Uninstall(&ExceptionCallbackThunk, this);
   // gone if Memory was torn down first
   if (auto mmio_handler = MMIOHandler::global_handler()) {
@@ -1776,7 +1789,123 @@ bool A64Backend::Initialize(Processor* processor) {
         ForwardMMIOAccessForRecording, this);
   }
 
+#if XE_PLATFORM_IOS
+  // Ignore the signal itself, leaving the dispatch source as its only reader.
+  std::signal(SIGINFO, SIG_IGN);
+  auto source =
+      dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGINFO, 0,
+                             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+  dispatch_set_context(source, this);
+  dispatch_source_set_event_handler_f(source, [](void* context) {
+    const char* home = std::getenv("HOME");
+    if (!home) {
+      return;
+    }
+    auto path = std::filesystem::path(home) / "Documents" / "jit_map.txt";
+    if (static_cast<A64Backend*>(context)->DumpCodeMap(path)) {
+      XELOGI("A64Backend: wrote the code map to {}", path.string());
+    }
+  });
+  dispatch_resume(source);
+  code_map_signal_source_ = source;
+#endif
+
   return true;
+}
+
+bool A64Backend::DumpCodeMap(const std::filesystem::path& path) {
+  const std::pair<const void*, const char*> helpers[] = {
+      {reinterpret_cast<const void*>(resolve_function_thunk_),
+       "<resolve_function_thunk>"},
+      {reinterpret_cast<const void*>(host_to_guest_thunk_),
+       "<host_to_guest_thunk>"},
+      {reinterpret_cast<const void*>(guest_to_host_thunk_),
+       "<guest_to_host_thunk>"},
+      {reinterpret_cast<const void*>(guest_to_host_thunk_no_vec_),
+       "<guest_to_host_thunk_no_vec>"},
+      {synchronize_guest_and_host_stack_helper_,
+       "<synchronize_guest_and_host_stack_helper>"},
+      {return_to_host_helper_, "<return_to_host_helper>"},
+      {vrsqrtefp_scalar_helper_, "<vrsqrtefp_scalar_helper>"},
+      {vrsqrtefp_vector_helper_, "<vrsqrtefp_vector_helper>"},
+      {frsqrte_helper_, "<frsqrte_helper>"},
+      {reserved_store_32_helper_, "<reserved_store_32_helper>"},
+      {reserved_store_64_helper_, "<reserved_store_64_helper>"},
+      {reinterpret_cast<const void*>(reserved_store_32_thunk_),
+       "<reserved_store_32_thunk>"},
+      {reinterpret_cast<const void*>(reserved_store_64_thunk_),
+       "<reserved_store_64_thunk>"},
+  };
+  const uint64_t base = code_cache_->execute_base_address();
+  auto code_map = code_cache_->CopyCodeMap();
+  std::filesystem::path temp_path = path;
+  temp_path += ".tmp";
+  FILE* file = std::fopen(temp_path.string().c_str(), "w");
+  if (!file) {
+    XELOGE("A64Backend: could not open {} for the code map",
+           temp_path.string());
+    return false;
+  }
+  for (const auto& [range, function] : code_map) {
+    uint64_t start = base + (range >> 32);
+    uint64_t end = base + uint32_t(range);
+    if (function) {
+      fmt::print(file, "{:x} {:x} {:08x} {:08x} {}\n", start, end,
+                 function->address(), function->end_address(),
+                 function->name().empty()
+                     ? fmt::format("sub_{:08X}", function->address())
+                     : function->name());
+      continue;
+    }
+    const char* name = "<host code>";
+    for (const auto& [helper, helper_name] : helpers) {
+      if (reinterpret_cast<uint64_t>(helper) == start) {
+        name = helper_name;
+        break;
+      }
+    }
+    fmt::print(file, "{:x} {:x} 00000000 00000000 {}\n", start, end, name);
+  }
+  bool ok = std::fclose(file) == 0;
+  std::error_code error;
+  std::filesystem::rename(temp_path, path, error);
+  ok = ok && !error;
+  // The code itself, from the start of the cache, for disassembling hot spots.
+  if (!code_map.empty()) {
+    std::filesystem::path code_path = path;
+    code_path.replace_extension(".bin");
+    if (FILE* code_file = std::fopen(code_path.string().c_str(), "wb")) {
+      ok = std::fwrite(reinterpret_cast<const void*>(base), 1,
+                       uint32_t(code_map.back().first), code_file) ==
+               uint32_t(code_map.back().first) &&
+           ok;
+      ok = std::fclose(code_file) == 0 && ok;
+    } else {
+      ok = false;
+    }
+  }
+  // The guest code of each function, as {address, size} (host-endian u32s)
+  // then its bytes, for reading the PPC behind a hot spot.
+  std::filesystem::path guest_path = path;
+  guest_path.replace_extension(".ppc");
+  if (FILE* guest_file = std::fopen(guest_path.string().c_str(), "wb")) {
+    for (const auto& [range, function] : code_map) {
+      // end_address is the last instruction.
+      if (!function || function->end_address() < function->address()) {
+        continue;
+      }
+      uint32_t header[2] = {
+          function->address(),
+          function->end_address() - function->address() + 4};
+      std::fwrite(header, sizeof(header), 1, guest_file);
+      std::fwrite(processor()->memory()->TranslateVirtual(header[0]), 1,
+                  header[1], guest_file);
+    }
+    ok = std::fclose(guest_file) == 0 && ok;
+  } else {
+    ok = false;
+  }
+  return ok;
 }
 
 void A64Backend::CommitExecutableRange(uint32_t guest_low,

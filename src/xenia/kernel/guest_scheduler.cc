@@ -1586,6 +1586,9 @@ void GuestScheduler::RereadyBlocked(int cpu_index) {
 
 void GuestScheduler::RunLoop(int cpu_index) {
   t_current_cpu = cpu_index;
+  // Darwin names only the calling thread, so the name EnsureStarted set from
+  // its own thread never reaches profilers there.
+  xe::threading::set_name("Guest CPU " + std::to_string(cpu_index));
   Profiler::ThreadEnter(
       ("GuestScheduler CPU " + std::to_string(cpu_index)).c_str());
   Cpu& cpu = cpus_[cpu_index];

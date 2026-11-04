@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -309,6 +310,13 @@ class A64Backend : public Backend {
 
   void RecordMMIOExceptionForGuestInstruction(void* host_address);
 
+  // Writes every function in the code cache, one per line as
+  // "host_start host_end guest_start guest_end name", for symbolicating
+  // profiles of JIT code, with host code named by its helper. Next to it go
+  // the code itself from the start of the cache (.bin) and the guest code of
+  // every function (.ppc).
+  bool DumpCodeMap(const std::filesystem::path& path);
+
  private:
   static bool ExceptionCallbackThunk(Exception* ex, void* data);
   bool ExceptionCallback(Exception* ex);
@@ -341,6 +349,9 @@ class A64Backend : public Backend {
   BitMap guest_trampoline_address_bitmap_;
 #if XE_PLATFORM_IOS
   std::vector<void*> guest_trampoline_code_ios_;
+  // Writes Documents/jit_map.{txt,bin,ppc} on SIGINFO (`kill -INFO`), which is ignored
+  // otherwise: profiles of a live session map their JIT samples with it.
+  void* code_map_signal_source_ = nullptr;
 #endif
   uint8_t* guest_trampoline_memory_ = nullptr;
   bool guest_trampolines_sub4gb_ = false;
