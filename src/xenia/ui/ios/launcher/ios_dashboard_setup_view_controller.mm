@@ -162,9 +162,10 @@ constexpr CGFloat kContentWidth = 440.0;
   ]];
 
   self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                                     target:self
-                                                     action:@selector(closeTapped:)] autorelease];
+      [[[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Close", @"dashboard setup view controller: button")
+                                        style:UIBarButtonItemStylePlain
+                                       target:self
+                                       action:@selector(closeTapped:)] autorelease];
   [self showStage];
 }
 

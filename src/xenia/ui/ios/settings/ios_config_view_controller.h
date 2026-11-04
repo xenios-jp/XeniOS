@@ -27,6 +27,8 @@
 @property(nonatomic, readonly) uint32_t gameTitleID;
 @property(nonatomic, copy, readonly) NSString* gameTitle;
 @property(nonatomic, assign) BOOL liveOverride;
+// A game is running, so saved changes take effect only after a relaunch. Pushed pages inherit it.
+@property(nonatomic, assign) BOOL gameRunning;
 // Lets live overrides and resets run with the game paused (ApplyLiveSettings). Not retained.
 // Nil when no game can be running; pushed controllers inherit it.
 @property(nonatomic, assign) xe::ui::IOSWindowedAppContext* appContext;
