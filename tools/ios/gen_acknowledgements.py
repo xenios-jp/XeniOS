@@ -33,7 +33,69 @@ def stb_license(text):
                       text, re.S)
     if not match:
         raise SystemExit("stb: license block not found in stb_image.h")
-    return match.group(1).strip()
+    # It has no blank lines: rules part the two licenses, and a sentence ending at a line end
+    # ends a paragraph.
+    text = re.sub(r"^-{20,}$", "", match.group(1), flags=re.M)
+    text = re.sub(r"^(ALTERNATIVE .*|Copyright .*)$", r"\1\n", text, flags=re.M)
+    return re.sub(r"([.:])\n(?=[A-Z])", r"\1\n\n", text).strip()
+
+
+BULLET = re.compile(r"^(\s*)(?:[*\-\u2022]|\d+[.)]|\([a-zA-Z0-9]{1,4}\)|[a-z][.)])\s+")
+UNDERLINE = re.compile(r"^\s*([=\-~^*#])\1{2,}\s*$")
+
+
+def rst_markup(text):
+    """Mesa's notice is reStructuredText: drop the link markup and emphasis."""
+    text = re.sub(r"`([^`]+)`_", r"\1", text)
+    text = re.sub(r"(?<![\w*])\*(\S[^*\n]*?)\*(?![\w*])", r"\1", text)
+    # The link targets become a list under the paragraph that names them.
+    return re.sub(r"^\.\. _([^:]+):", r"- \1:", text, flags=re.M)
+
+
+def md_markup(text):
+    """FFmpeg's LICENSE.md: drop heading marks, code spans and link markup."""
+    text = re.sub(r"^#+\s*", "", text, flags=re.M)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    return text.replace("`", "")
+
+
+def reflow(text):
+    """Joins the hard-wrapped lines of a license file so the text wraps to the screen.
+
+    Paragraphs, list items and headings (a line over an underline, or a line set far in
+    like the GPL's centred titles) keep their own lines; a nested list item keeps a small
+    indent.
+    """
+    out = []
+    for paragraph in re.split(r"\n[ \t]*\n", text.strip("\n")):
+        lines = []
+        rows = paragraph.split("\n")
+        # A list item set in further than the paragraph's first one is nested.
+        indents = [len(m.group(1).expandtabs(4)) for m in map(BULLET.match, rows) if m]
+        base = min(indents) if indents else 0
+        for raw in rows:
+            if UNDERLINE.match(raw):
+                if lines:
+                    lines[-1] = (lines[-1][0], True)
+                continue
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            bullet = BULLET.match(raw)
+            indent = len(raw) - len(raw.lstrip())
+            if bullet:
+                level = 1 if len(bullet.group(1).expandtabs(4)) > base else 0
+                item = stripped[len(bullet.group(0)) - len(bullet.group(1)):]
+                marker = bullet.group(0).strip()
+                marker = "\u2022" if marker in ("*", "-", "\u2022") else marker
+                lines.append(("\u2003" * level + marker + " " + item, False))
+            elif indent >= 10 or not lines or lines[-1][1]:
+                lines.append((stripped, indent >= 10))
+            else:
+                lines[-1] = (lines[-1][0] + " " + stripped, False)
+        if lines:
+            out.append("\n".join(line for line, _ in lines))
+    return "\n\n".join(out)
 
 
 # (display name, what it is used for, project URL, [license sources], optional note)
@@ -41,7 +103,7 @@ def stb_license(text):
 LIBRARIES = [
     ("FFmpeg (libavcodec, libavformat, libavutil)", "XMA and audio decoding",
      "https://ffmpeg.org",
-     ["FFmpeg/COPYING.LGPLv2.1", "FFmpeg/LICENSE.md"],
+     ["FFmpeg/COPYING.LGPLv2.1", ("FFmpeg/LICENSE.md", md_markup)],
      "Linked statically under the LGPL v2.1 or later (the build configuration says so). "
      "The corresponding source is available from the XeniOS source repository, "
      "https://github.com/xenios-jp/XeniOS."),
@@ -52,7 +114,7 @@ LIBRARIES = [
     ("SDL", "Audio output and game controllers", "https://libsdl.org",
      ["SDL3/LICENSE.txt"], None),
     ("Mesa (NIR, SPIR-V to DXIL)", "Shader translation", "https://www.mesa3d.org",
-     ["mesa/docs/license.rst", ("mesa/licenses/MIT", spdx_body)], None),
+     [("mesa/docs/license.rst", rst_markup), ("mesa/licenses/MIT", spdx_body)], None),
     ("SPIRV-Cross", "Shader translation", "https://github.com/KhronosGroup/SPIRV-Cross",
      ["SPIRV-Cross/LICENSE"], None),
     ("glslang (SPIR-V)", "Shader translation", "https://github.com/KhronosGroup/glslang",
@@ -118,7 +180,7 @@ def read(spec):
     if not path.is_file():
         raise SystemExit(f"missing license file: {path}")
     text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
-    return (transform(text) if transform else text).strip()
+    return reflow(transform(text) if transform else text)
 
 
 def build():
@@ -126,7 +188,7 @@ def build():
         "name": "Xenia",
         "usage": "The emulator XeniOS is built on",
         "url": "https://github.com/xenia-project/xenia",
-        "text": (ROOT / "LICENSE").read_text(encoding="utf-8").strip(),
+        "text": reflow((ROOT / "LICENSE").read_text(encoding="utf-8")),
     }]
     for name, usage, url, sources, note in LIBRARIES:
         text = "\n\n".join(read(s) for s in sources)
