@@ -2001,7 +2001,13 @@ struct OR_V128 : Sequence<OR_V128, I<OPCODE_OR, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     int s1 = SrcVReg(e, i.src1, 0);
     int s2 = SrcVReg(e, i.src2, 1);
-    e.orr(VReg(i.dest.reg().getIdx()).b16, VReg(s1).b16, VReg(s2).b16);
+    const int d = i.dest.reg().getIdx();
+    // vor vD, vA, vA (and vnor's or half) is a copy, and none at all when the
+    // allocator kept the value in its register.
+    if (d == s1 && d == s2) {
+      return;
+    }
+    e.orr(VReg(d).b16, VReg(s1).b16, VReg(s2).b16);
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_OR, OR_I8, OR_I16, OR_I32, OR_I64, OR_V128);
@@ -2776,6 +2782,48 @@ inline void EmitCompareResult(A64Emitter& e, const hir::Instr* instr,
   e.cset(dest, cond);
 }
 
+// A guest cmp becomes three compares of the same operands (lt, gt, eq), each
+// stored to its CR bit. An I32/I64 compare emits the same cmp for every
+// condition, and cset and the CR byte stores leave NZCV alone, so when the
+// previous compare had the same operands its flags are still live and the
+// cmp can be skipped.
+inline bool CompareFlagsAlreadySet(const hir::Instr* instr) {
+  const hir::Instr* prev = instr->prev;
+  for (; prev; prev = prev->prev) {
+    if (A64Emitter::PassesHandoffs(prev)) {
+      continue;
+    }
+    if (prev->GetOpcodeNum() == hir::OPCODE_STORE_CONTEXT &&
+        prev->src2.value->type == hir::INT8_TYPE) {
+      continue;
+    }
+    break;
+  }
+  if (!prev) {
+    return false;
+  }
+  switch (prev->GetOpcodeNum()) {
+    case hir::OPCODE_COMPARE_EQ:
+    case hir::OPCODE_COMPARE_NE:
+    case hir::OPCODE_COMPARE_SLT:
+    case hir::OPCODE_COMPARE_SLE:
+    case hir::OPCODE_COMPARE_SGT:
+    case hir::OPCODE_COMPARE_SGE:
+    case hir::OPCODE_COMPARE_ULT:
+    case hir::OPCODE_COMPARE_ULE:
+    case hir::OPCODE_COMPARE_UGT:
+    case hir::OPCODE_COMPARE_UGE:
+      break;
+    default:
+      return false;
+  }
+  const hir::Value* a = instr->src1.value;
+  const hir::Value* b = instr->src2.value;
+  return (a->type == hir::INT32_TYPE || a->type == hir::INT64_TYPE) &&
+         prev->src1.value->type == a->type && prev->src1.value->IsEqual(a) &&
+         prev->src2.value->IsEqual(b);
+}
+
 // Compare helpers
 // ============================================================================
 // ARM64: cmp src1, src2; cset dest, <cond>
@@ -2825,6 +2873,10 @@ inline void EmitCompareResult(A64Emitter& e, const hir::Instr* instr,
   struct NAME##_I32                                                            \
       : Sequence<NAME##_I32, I<OPCODE_##NAME, I8Op, I32Op, I32Op>> {           \
     static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      if (CompareFlagsAlreadySet(i.instr)) {                                   \
+        EmitCompareResult(e, i.instr, i.dest, Xbyak_aarch64::COND);            \
+        return;                                                                \
+      }                                                                        \
       if (i.src1.is_constant) {                                                \
         e.mov(e.w0, static_cast<uint64_t>(                                     \
                         static_cast<uint32_t>(i.src1.constant())));            \
@@ -2846,6 +2898,10 @@ inline void EmitCompareResult(A64Emitter& e, const hir::Instr* instr,
   struct NAME##_I64                                                            \
       : Sequence<NAME##_I64, I<OPCODE_##NAME, I8Op, I64Op, I64Op>> {           \
     static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      if (CompareFlagsAlreadySet(i.instr)) {                                   \
+        EmitCompareResult(e, i.instr, i.dest, Xbyak_aarch64::COND);            \
+        return;                                                                \
+      }                                                                        \
       if (i.src1.is_constant) {                                                \
         e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));                 \
         if (i.src2.is_constant) {                                              \
@@ -2912,6 +2968,10 @@ DEFINE_COMPARE_XX(COMPARE_NE, NE);
   struct NAME##_I32                                                            \
       : Sequence<NAME##_I32, I<OPCODE_##NAME, I8Op, I32Op, I32Op>> {           \
     static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      if (CompareFlagsAlreadySet(i.instr)) {                                   \
+        EmitCompareResult(e, i.instr, i.dest, Xbyak_aarch64::COND);            \
+        return;                                                                \
+      }                                                                        \
       if (i.src1.is_constant) {                                                \
         e.mov(e.w0, static_cast<uint64_t>(                                     \
                         static_cast<uint32_t>(i.src1.constant())));            \
@@ -2933,6 +2993,10 @@ DEFINE_COMPARE_XX(COMPARE_NE, NE);
   struct NAME##_I64                                                            \
       : Sequence<NAME##_I64, I<OPCODE_##NAME, I8Op, I64Op, I64Op>> {           \
     static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      if (CompareFlagsAlreadySet(i.instr)) {                                   \
+        EmitCompareResult(e, i.instr, i.dest, Xbyak_aarch64::COND);            \
+        return;                                                                \
+      }                                                                        \
       if (i.src1.is_constant) {                                                \
         e.mov(e.x0, static_cast<uint64_t>(i.src1.constant()));                 \
         if (i.src2.is_constant) {                                              \
