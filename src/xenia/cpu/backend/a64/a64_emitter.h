@@ -83,10 +83,10 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Scratch: x0-x18 (caller-saved), v0-v3
   // Available GPRs for register allocator: x22-x28
   static constexpr int GPR_COUNT = 7;
-  // Loop promotion may also keep slots in x4-x6 and x12-x13, caller-saved
+  // Loop promotion may also keep slots in x4-x6 and x10-x15, caller-saved
   // registers that no sequence of an opcode a promoted loop can hold uses. A
   // call on such a loop's rare paths stores and reloads them (CallNativeSafe).
-  static constexpr int PROMOTION_GPR_COUNT = GPR_COUNT + 5;
+  static constexpr int PROMOTION_GPR_COUNT = GPR_COUNT + 9;
   // Available VEC regs: v4-v15, v16-v31
   static constexpr int VEC_COUNT = 28;
   static constexpr size_t kStashOffset = 32;
