@@ -351,6 +351,9 @@
 /* config view controller: accessibility hint */
 "Asks before putting every setting back to its default." = "Asks before putting every setting back to its default.";
 
+/* settings hub view controller: title */
+"Aspect ratio and frame rate." = "Aspect ratio and frame rate.";
+
 /* VoiceOver label; %@ is the extra assignment of the control */
 "Assigned %@" = "Assigned %@";
 
@@ -590,8 +593,7 @@
 /* game actions view controller: user-visible text
    game compatibility hero view: title
    game compatibility view controller: title
-   launcher overlay view: title
-   settings hub view controller: title */
+   launcher overlay view: title */
 "Compatibility" = "Compatibility";
 
 /* compat report view controller: user-visible text */
@@ -1188,7 +1190,7 @@
 "Estimating…" = "Estimating…";
 
 /* settings hub view controller: title */
-"Every option in one searchable list." = "Every option in one searchable list.";
+"Every emulator option. For troubleshooting only." = "Every emulator option. For troubleshooting only.";
 
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
@@ -1444,9 +1446,6 @@
 /* config view controller: title */
 "Game-Specific Settings" = "Game-Specific Settings";
 
-/* settings hub view controller: title */
-"Gameplay" = "Gameplay";
-
 /* Placeholder of the gamertag text field
    profile view controller: placeholder */
 "Gamertag" = "Gamertag";
@@ -1492,9 +1491,6 @@
    Pause menu row
    settings hub view controller: title */
 "Graphics" = "Graphics";
-
-/* settings hub view controller: title */
-"Graphics & Performance" = "Graphics & Performance";
 
 /* settings hub view controller: title */
 "Graphics & Performance · Delete persistent shader storage for every title." = "Graphics & Performance · Delete persistent shader storage for every title.";
@@ -2371,9 +2367,6 @@
 /* online view controller: summary row detail */
 "Others show up here when they open XeniOS with Online features on." = "Others show up here when they open XeniOS with Online features on.";
 
-/* settings hub view controller: title */
-"Output and decoder preferences." = "Output and decoder preferences.";
-
 /* Slider label in the touch analog tuning screen */
 "Output Cap" = "Output Cap";
 
@@ -2465,6 +2458,7 @@
 
 /* game actions view controller: user-visible text
    launcher overlay view: title
+   settings hub view controller: title
    system link view controller: button */
 "Play" = "Play";
 
@@ -3057,6 +3051,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "Space saved could not be estimated." = "Space saved could not be estimated.";
+
+/* settings hub view controller: title */
+"Spatial audio and mute." = "Spatial audio and mute.";
 
 /* Very short badge on a touch control: Start button */
 "St" = "St";
