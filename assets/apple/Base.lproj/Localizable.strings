@@ -116,7 +116,8 @@
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
 
-/* game page: Launch Disc row */
+/* game page: Launch Disc row
+   launcher overlay view: badge on a game's cover; %lu is the disc count */
 "%lu Discs" = "%lu Discs";
 
 /* document import coordinator: message */
@@ -133,9 +134,6 @@
 
 /* Picker row detail; %zu is the number of discs */
 "%zu discs" = "%zu discs";
-
-/* Game detail label; %zu is the number of discs */
-"%zu Discs" = "%zu Discs";
 
 /* zar conversion coordinator: user-visible text */
 "%zu items" = "%zu items";
@@ -175,9 +173,6 @@
 
 /* online view controller: players in a game's lobby */
 "1 playing" = "1 playing";
-
-/* system update page: instructions */
-"1. Open the highlighted “How to update”, then “Copy to a USB flash drive”.\n2. Tap the highlighted “XBOX 360 system update file”.\nXeniOS installs the update when the download finishes." = "1. Open the highlighted “How to update”, then “Copy to a USB flash drive”.\n2. Tap the highlighted “XBOX 360 system update file”.\nXeniOS installs the update when the download finishes.";
 
 /* Control tooltip line; the first %s is the trigger, the second the action */
 "\n2nd: %1$s, %2$s" = "\n2nd: %1$s, %2$s";
@@ -1838,6 +1833,9 @@
 /* settings hub view controller: user-visible text */
 "Light" = "Light";
 
+/* settings hub view controller: user-visible text */
+"Light or dark, following the system appearance." = "Light or dark, following the system appearance.";
+
 /* compat report view controller: title */
 "Limit Reached" = "Limit Reached";
 
@@ -1906,7 +1904,7 @@
 "Locked" = "Locked";
 
 /* settings hub view controller: title */
-"Log level and live log." = "Log level and live log.";
+"Log detail and the log." = "Log detail and the log.";
 
 /* Alert title: the log file to share does not exist */
 "Log Not Found" = "Log Not Found";
@@ -1966,6 +1964,9 @@
 
 /* system update page: error */
 "Microsoft's page couldn't be loaded. Check the connection, then reload." = "Microsoft's page couldn't be loaded. Check the connection, then reload.";
+
+/* system update page: instructions while the page loads */
+"Microsoft's page is loading. XeniOS shows you each tap." = "Microsoft's page is loading. XeniOS shows you each tap.";
 
 /* Menu item in the touch control layout menu */
 "Mirror" = "Mirror";
@@ -3102,6 +3103,15 @@
 /* game compatibility cells: detail text */
 "STATUS" = "STATUS";
 
+/* system update page: first step */
+"Step 1 of 3: Open “How to update”." = "Step 1 of 3: Open “How to update”.";
+
+/* system update page: second step */
+"Step 2 of 3: Open “Copy to a USB flash drive”." = "Step 2 of 3: Open “Copy to a USB flash drive”.";
+
+/* system update page: last step */
+"Step 3 of 3: Tap “XBOX 360 system update file”. XeniOS installs it when it has downloaded." = "Step 3 of 3: Tap “XBOX 360 system update file”. XeniOS installs it when it has downloaded.";
+
 /* Alert message: offers to enable JIT through StikDebug automatically */
 "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing." = "StikDebug enabled JIT successfully. XeniOS can use the same StikDebug handoff automatically next time JIT is missing.";
 
@@ -3590,6 +3600,9 @@
 /* Display settings toggle */
 "Uncapped Emulated Display" = "Uncapped Emulated Display";
 
+/* system update page: instructions */
+"Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update when it has downloaded." = "Under How to update, open “Copy to a USB flash drive” and tap its download link. XeniOS installs the update when it has downloaded.";
+
 /* VoiceOver label of the undo button */
 "Undo" = "Undo";
 
@@ -3692,9 +3705,6 @@
 
 /* Context menu item in the layout library */
 "Use for This Game" = "Use for This Game";
-
-/* settings hub view controller: user-visible text */
-"Use the adaptive primary icon." = "Use the adaptive primary icon.";
 
 /* settings hub view controller: user-visible text */
 "Use the dark icon." = "Use the dark icon.";

@@ -29,7 +29,12 @@
 - (BOOL)controllerNavigationGameRunning;
 - (BOOL)controllerNavigationInGameMenuVisible;
 - (BOOL)controllerNavigationInGameMenuActionEnabled:(XeniaIOSInGameMenuAction)action;
+// The topmost sheet or alert, or nil when nothing is presented.
 - (UIViewController*)controllerNavigationPresentedController;
+// The game's page shown in place of the Library grid, or nil.
+- (UIViewController*)controllerNavigationGameDetailController;
+- (void)controllerNavigationCloseGameDetail;
+- (void)controllerNavigationPlayGameDetail;
 - (BOOL)controllerNavigationHasConnectedController;
 - (BOOL)controllerNavigationReadEmulatorControllerState:(xe::hid::X_INPUT_STATE*)outState;
 
