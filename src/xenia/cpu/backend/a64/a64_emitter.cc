@@ -65,7 +65,7 @@ static constexpr size_t kMaxCodeSize = 1_MiB;
 // only loop promotion uses
 // (x19=backend context, x20=context, x21=membase are reserved)
 const uint32_t A64Emitter::gpr_reg_map_[PROMOTION_GPR_COUNT] = {
-    22, 23, 24, 25, 26, 27, 28, 4, 5, 6, 12, 13,
+    22, 23, 24, 25, 26, 27, 28, 4, 5, 6, 10, 11, 12, 13, 14, 15,
 };
 
 // VEC allocatable registers: v4-v15, v16-v31
