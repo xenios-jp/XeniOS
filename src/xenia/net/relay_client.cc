@@ -233,6 +233,7 @@ void RelayClient::LobbyOpened(uint64_t now_ms, Outbox& out) {
   join_sent_ms_ = now_ms;
   answered_ = false;
   next_lobby_ping_ms_ = now_ms + kLobbyPingMs;
+  next_lobby_text_ping_ms_ = now_ms + kLobbyTextPingMs;
   out.lobby.push_back(Presence(true));
   sent_candidates_ = Candidates();
   sent_relay_ = RelayAddress();
@@ -735,7 +736,12 @@ void RelayClient::Tick(uint64_t now_ms, Outbox& out) {
     down_since_ms_ = now_ms;
   }
   if (lobby_ == Lobby::kOpen && now_ms >= next_lobby_ping_ms_) {
-    out.lobby.push_back("ping");
+    if (now_ms + kLobbyPingMs / 2 >= next_lobby_text_ping_ms_) {
+      out.lobby.push_back("ping");
+      next_lobby_text_ping_ms_ = now_ms + kLobbyTextPingMs;
+    } else {
+      out.lobby_ping = true;
+    }
     next_lobby_ping_ms_ = now_ms + kLobbyPingMs;
   }
   if (turn_) {
