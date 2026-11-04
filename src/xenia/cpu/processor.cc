@@ -962,9 +962,10 @@ Function* Processor::LookupFunction(Module* module, uint32_t address) {
   Function* function = nullptr;
   auto symbol_status = module->DeclareFunction(address, &function);
   if (symbol_status == Symbol::Status::kNew) {
-    // Symbol is undeclared, so declare now.
-    assert_true(function->is_guest());
-    if (!frontend_->DeclareFunction(static_cast<GuestFunction*>(function))) {
+    // Symbol is undeclared, so declare now. Only DefineBuiltin declares a
+    // builtin; one a branch reaches by address alone has no handler.
+    if (!function->is_guest() ||
+        !frontend_->DeclareFunction(static_cast<GuestFunction*>(function))) {
       function->set_status(Symbol::Status::kFailed);
       return nullptr;
     }
