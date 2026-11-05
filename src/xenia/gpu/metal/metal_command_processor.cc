@@ -3279,6 +3279,8 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     // Everything may already be done, with no later finish to notice it.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_queued_all_ = true;
     if (storage_stats_pending_ && storage_stats_keys_.empty()) {
       RecordStorageRebuildStatsLocked();
