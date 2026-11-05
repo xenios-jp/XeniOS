@@ -726,6 +726,8 @@ void IOSJitMemory::SetExternalPrepareHook(ExternalPrepareHook hook) {
   external_prepare_hook.store(hook, std::memory_order_release);
 }
 
+bool IOSJitMemory::PacksCode() { return Impl::IOSUseTXMBrokerPath(); }
+
 IOSJitMemory::~IOSJitMemory() {
   if (impl_->persistent) {
     auto& state = Impl::IOSPersistentGeneratedCodeMappingState();
