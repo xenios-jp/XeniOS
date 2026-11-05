@@ -1724,6 +1724,12 @@
 /* launcher overlay view: JIT card title */
 "JIT Is Off" = "JIT Is Off";
 
+/* Alert title: the JIT tool detached before the game started */
+"JIT Was Turned Off" = "JIT Was Turned Off";
+
+/* Alert message: the JIT tool detached before the game started */
+"JIT was turned off before the game started. Open StikDebug, enable JIT for XeniOS again, and keep it connected until the game is running." = "JIT was turned off before the game started. Open StikDebug, enable JIT for XeniOS again, and keep it connected until the game is running.";
+
 /* system link view controller: button */
 "Join" = "Join";
 
@@ -2640,6 +2646,9 @@
 /* launcher overlay view: sort by last played */
 "Recently Played" = "Recently Played";
 
+/* Launcher status: the JIT tool detached after JIT was turned on */
+"Reconnect StikDebug." = "Reconnect StikDebug.";
+
 /* system link status view controller: state */
 "Reconnecting…" = "Reconnecting…";
 
@@ -2930,6 +2939,9 @@
 
 /* launcher overlay view: menu action */
 "Set Up Dashboard" = "Set Up Dashboard";
+
+/* Alert button: opens the JIT setup sheet */
+"Set Up JIT" = "Set Up JIT";
 
 /* dashboard setup: title
    launcher overlay view: button title */
