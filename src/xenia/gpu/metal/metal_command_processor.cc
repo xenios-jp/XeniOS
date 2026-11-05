@@ -6335,13 +6335,11 @@ bool MetalCommandProcessor::IssueDrawDxil(
                 normalized_depth_control, normalized_color_mask)
           : SpirvShaderTranslator::Modification(0);
 
-  // Memory exports are guest-visible writes. A pending generic pipeline,
-  // including after a profile guard miss, must never skip the export draw.
-  // Counted draws also require the guest's exact kills and alpha test.
+  // A counted draw needs the guest's own shaders. The placeholder has no pixel
+  // kills or alpha test and overcounts, and a skipped draw counts nothing.
   const bool exact_shaders_required =
-      memexport_used ||
-      (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
-       zpd_current_report_.handle != kInvalidReportHandle);
+      GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
+      zpd_current_report_.handle != kInvalidReportHandle;
 
   ShaderCompileStatus compile_status = ShaderCompileStatus::kReady;
   ShaderCompileStatus pixel_status = ShaderCompileStatus::kReady;
