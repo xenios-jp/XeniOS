@@ -294,6 +294,11 @@ class ExceptionHandler {
   typedef void (*UnhandledObserver)(int signal_number, uint64_t fault_address,
                                     const HostThreadContext* context);
   static void SetUnhandledObserver(UnhandledObserver observer);
+
+  // How many times a "brk #0xf00d" JIT request (iOS) reached the signal
+  // handler, which means no debugger answered it. The handler skips the
+  // instruction; the caller compares the count around its request.
+  static uint32_t UnansweredJitBreakpoints();
 #endif  // !XE_PLATFORM_WIN32
 };
 

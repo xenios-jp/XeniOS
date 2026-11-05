@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/exception_handler.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
@@ -611,10 +612,20 @@ struct IOSJitMemory::Impl {
     if (hook) {
       hook(true);
     }
+    const uint32_t unanswered_before =
+        ExceptionHandler::UnansweredJitBreakpoints();
     const uint64_t prepared =
         InvokeUniversalPrepareBreakpoint(aligned_start, aligned_length);
     if (hook) {
       hook(false);
+    }
+    if (ExceptionHandler::UnansweredJitBreakpoints() != unanswered_before) {
+      // The tool is attached (or was a moment ago) but didn't answer; without
+      // this the request would end in a SIGTRAP crash.
+      xe::FatalError(
+          "JIT is not available: the tool that enabled it (StikDebug or a JIT "
+          "broker) didn't answer, so games can't run. Enable JIT again and "
+          "keep the tool attached until the game has started.");
     }
     if (prepared != aligned_start) {
       XELOGE("iOS JIT: asked the debugger to prepare 0x{:X}, it prepared 0x{:X}",
