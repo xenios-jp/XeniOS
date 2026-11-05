@@ -7958,9 +7958,11 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     next_submission_kind_ = next_kind;
   }
   EndRenderEncoder();
-  ResetMslCrossEncoderReuseCaches();
 
   if (current_command_buffer_) {
+    // Only a command buffer fills these. Without one (the worker runs here on
+    // every empty ring) they are already clear.
+    ResetMslCrossEncoderReuseCaches();
     // Texture loads that need nothing from this command buffer run before it.
     if (texture_cache_) {
       texture_cache_->CommitLoadsAhead();
