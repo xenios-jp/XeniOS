@@ -9,8 +9,9 @@
 
 #import "xenia/ui/ios/launcher/ios_library_ambient_view.h"
 
+#import <IOSurface/IOSurfaceRef.h>
 #import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
 #include <simd/simd.h>
 
 #include <algorithm>
@@ -551,7 +552,14 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
 }
 
 @implementation XeniaLibraryAmbientView {
-  CAMetalLayer* _metal;
+  // The finished field, shown as a plain layer's contents rather than through a CAMetalLayer, so
+  // tools that hook Metal presentation (the Metal Performance HUD) only see the game.
+  CALayer* _surface;
+  // Two IOSurface-backed targets taken in turn: one on screen while the other is drawn.
+  id<MTLTexture> _outputs[2];
+  int _shown;       // Which of _outputs the layer shows; -1 for neither yet.
+  BOOL _inFlight;   // A frame is still on the GPU; the next waits for it.
+  BOOL _drawAfter;  // A frame was asked for meanwhile; drawn when that one lands.
   CAGradientLayer* _veil;
   id<MTLCommandQueue> _queue;
   id<MTLRenderPipelineState> _piecePipeline;
@@ -591,16 +599,12 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
   id<MTLDevice> device = Device();
   if (device) {
     _queue = [device newCommandQueue];
-    _metal = [[CAMetalLayer layer] retain];
-    _metal.device = device;
-    _metal.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    _metal.framebufferOnly = YES;
-    _metal.opaque = YES;
-    _metal.hidden = YES;  // Until its first frame.
-    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    _metal.colorspace = space;
-    CGColorSpaceRelease(space);
-    [self.layer addSublayer:_metal];
+    _surface = [[CALayer layer] retain];
+    _surface.opaque = YES;
+    _surface.contentsGravity = kCAGravityResize;
+    _surface.hidden = YES;  // Until its first frame.
+    _shown = -1;
+    [self.layer addSublayer:_surface];
     [self buildPipelines:device];
   }
   // A faint shade at the top and bottom keeps the header and grid readable.
@@ -638,7 +642,9 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
   [_link release];
   [_coverCheck invalidate];
   [_coverCheck release];
-  [_metal release];
+  [_surface release];
+  [_outputs[0] release];
+  [_outputs[1] release];
   [_veil release];
   [_queue release];
   [_piecePipeline release];
@@ -813,7 +819,7 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
   const CGRect bounds = self.bounds;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  _metal.frame = bounds;
+  _surface.frame = bounds;
   _veil.frame = bounds;
   [CATransaction commit];
   [self drawFrame];
@@ -845,21 +851,59 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
   return _scene && _blurred;
 }
 
+// The two targets the finished field is drawn into, |w| by |h| pixels.
+- (BOOL)prepareOutputs:(NSUInteger)w height:(NSUInteger)h {
+  if (_outputs[0] && _outputs[0].width == w && _outputs[0].height == h) {
+    return YES;
+  }
+  MTLTextureDescriptor* d =
+      [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                         width:w
+                                                        height:h
+                                                     mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget;
+  d.storageMode = MTLStorageModeShared;
+  NSDictionary* properties = @{
+    (id)kIOSurfaceWidth : @(w),
+    (id)kIOSurfaceHeight : @(h),
+    (id)kIOSurfaceBytesPerElement : @4,
+    (id)kIOSurfacePixelFormat : @(0x42475241u),  // 'BGRA'
+  };
+  for (int i = 0; i < 2; ++i) {
+    [_outputs[i] release];
+    _outputs[i] = nil;
+    IOSurfaceRef surface = IOSurfaceCreate((CFDictionaryRef)properties);
+    if (!surface) {
+      return NO;
+    }
+    _outputs[i] = [Device() newTextureWithDescriptor:d iosurface:surface plane:0];
+    CFRelease(surface);
+    if (!_outputs[i]) {
+      return NO;
+    }
+  }
+  // The layer may still show an old surface; it keeps it until the next frame replaces it.
+  _shown = -1;
+  return YES;
+}
+
 // One frame: the copies of the art, blurred across and down, then toned for the page.
 - (void)drawFrame {
   const CGSize size = self.bounds.size;
+  if (_inFlight) {
+    _drawAfter = YES;
+    return;
+  }
   if (!_finishPipeline || !_toArt || self.hidden || !self.window || ![self launcherShown] ||
       size.width < 1.0 || size.height < 1.0 ||
       UIApplication.sharedApplication.applicationState == UIApplicationStateBackground ||
-      ![self prepareTargets:size]) {
+      ![self prepareTargets:size] ||
+      ![self prepareOutputs:NSUInteger(std::max(8.0, std::round(size.width * kOutputScale)))
+                     height:NSUInteger(std::max(8.0, std::round(size.height * kOutputScale)))]) {
     return;
   }
-  _metal.drawableSize = CGSizeMake(std::max(8.0, std::round(size.width * kOutputScale)),
-                                   std::max(8.0, std::round(size.height * kOutputScale)));
-  id<CAMetalDrawable> drawable = [_metal nextDrawable];
-  if (!drawable) {
-    return;
-  }
+  const int next = _shown == 0 ? 1 : 0;
+  id<MTLTexture> output = _outputs[next];
   const bool dark = [self systemDark];
   const double eased = _fade * _fade * (3.0 - 2.0 * _fade);
   Field field = {};
@@ -930,18 +974,37 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
     [encoder endEncoding];
   }
 
-  encoder = pass(drawable.texture, MTLLoadActionDontCare);
+  encoder = pass(output, MTLLoadActionDontCare);
   [encoder setRenderPipelineState:_finishPipeline];
   [encoder setFragmentBytes:&field length:sizeof(field) atIndex:0];
   [encoder setFragmentTexture:_scene atIndex:0];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [encoder endEncoding];
-  [commands presentDrawable:drawable];
+  // Shown once the GPU is done with it, so the layer never shows a half-drawn surface.
+  _inFlight = YES;
+  [commands addCompletedHandler:^(id<MTLCommandBuffer> done) {
+    const BOOL drawn = done.status == MTLCommandBufferStatusCompleted;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self->_inFlight = NO;
+      // Dropped if the targets were remade while it was on the GPU.
+      if (drawn && self->_outputs[next] == output) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        self->_surface.contents = (id)output.iosurface;
+        self->_surface.hidden = NO;
+        [CATransaction commit];
+        self->_shown = next;
+      }
+      if (self->_drawAfter) {
+        self->_drawAfter = NO;
+        [self drawFrame];
+      }
+    });
+  }];
   [commands commit];
 
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
-  _metal.hidden = NO;
   UIColor* shade = UIColor.blackColor;
   _veil.colors = @[
     (id)[shade colorWithAlphaComponent:dark ? 0.28 : 0.18].CGColor,
