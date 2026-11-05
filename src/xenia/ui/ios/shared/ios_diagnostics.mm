@@ -18,8 +18,11 @@
 #include <thread>
 
 #include "xenia/base/backend_failure.h"
+#include "xenia/base/cvar.h"
+#include "xenia/base/guest_crash_info.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/system.h"
+#include "xenia/cpu/backend/jit_memory_ios.h"
 #include "xenia/ui/presenter.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
@@ -27,6 +30,7 @@
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_session_stats.h"
 #import "xenia/ui/ios/shared/ios_state_reporting.h"
+#import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -262,6 +266,14 @@ void QueuePreviousLaunch(NSDictionary* previous_marker, BOOL diagnostics_were_on
   if ([previous_marker[@"version"] isKindOfClass:[NSString class]]) {
     crash[@"appVersion"] = previous_marker[@"version"];
   }
+  // The running game's version, changed settings and JIT mode.
+  if ([previous_marker[@"details"] isKindOfClass:[NSDictionary class]]) {
+    for (NSString* key in @[ @"settings", @"gameVersion", @"jit" ]) {
+      if (id value = previous_marker[@"details"][key]) {
+        crash[key] = value;
+      }
+    }
+  }
   NSString* message = previous_marker[@"message"];
   if (fatal && [message isKindOfClass:[NSString class]] && message.length) {
     crash[@"message"] = message.length > kMaxMessageChars
@@ -312,6 +324,7 @@ void HandleBackendFailure(xe::BackendFailure failure, uint32_t guest_address, bo
   if (g_backend_failures_seen.fetch_or(bit, std::memory_order_relaxed) & bit) {
     return;
   }
+  xe_ios_fault_record_note_event(XeIOSEventJitFailure);
   const uint32_t title_id = g_title_id.load(std::memory_order_relaxed);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     @autoreleasepool {
@@ -398,8 +411,29 @@ void RunDebugTriggers() {
         return;
       }
       XELOGW("iOS: Debug trigger: jumping into a non-executable page noted as JIT code");
-      xe_ios_fault_record_note_jit_range(reinterpret_cast<uint64_t>(page), size);
-      reinterpret_cast<void (*)()>(page)();
+      // A stand-in game and guest context, as the A64 backend would give
+      // them: games can't run in the Simulator.
+      xe_ios_diagnostics_note_game_running(YES);
+      xe_ios_diagnostics_note_title(0x4D5307E6, reinterpret_cast<uint64_t>(page), size);
+      xe_ios_diagnostics_note_game_details(@"1.0.5.0");
+      xe_ios_fault_record_note_event(XeIOSEventMemoryWarning);
+      xe::SetGuestCrashInfoProvider([](const xe::HostThreadContext&, uint64_t,
+                                       xe::GuestCrashInfo* out) {
+        out->thread_id = 0x0F000010;
+        out->function = 0x82012300;
+        out->pc = 0x82012340;
+        out->lr = 0x8200A1F4;
+        out->frames[0] = 0x8200A1F4;
+        out->frames[1] = 0x82003C80;
+        out->frame_count = 2;
+        out->fault_in_guest = true;
+        out->fault_address = 0xC0001234;
+        return true;
+      });
+      std::thread([page] {
+        pthread_setname_np("GPU Commands");
+        reinterpret_cast<void (*)()>(page)();
+      }).detach();
     }
   });
 }
@@ -513,6 +547,7 @@ void xe_ios_diagnostics_note_game_running(BOOL running) {
   if (g_game_running.exchange(running, std::memory_order_relaxed) == running) {
     return;
   }
+  xe_ios_fault_record_note_event(running ? XeIOSEventGameStart : XeIOSEventGameStop);
   if (running) {
     g_backend_failures_seen.store(0, std::memory_order_relaxed);
     if (xe_ios_diagnostics_upload_allowed()) {
@@ -523,6 +558,7 @@ void xe_ios_diagnostics_note_game_running(BOOL running) {
   g_title_id.store(0, std::memory_order_relaxed);
   NoteLaunchLog();
   xe_ios_fault_record_note_title(0);
+  xe_ios_session_note_crash_details(nil);
   ReportTitleState(0);
   if (NSDictionary* session = xe_ios_session_stats_end()) {
     xe_ios_diagnostics_enqueue(@"session", session);
@@ -536,6 +572,66 @@ void xe_ios_diagnostics_note_title(uint32_t title_id, uint64_t jit_base, uint64_
   xe_ios_fault_record_note_title(title_id);
   xe_ios_fault_record_note_jit_range(jit_base, jit_size);
   ReportTitleState(title_id);
+}
+
+namespace {
+
+// Settings a crash record lists when they differ from their defaults: these
+// categories only (no paths, profiles, network names or debug output), values
+// that are a bool, a number or an enum-like word, at most kMaxSettings.
+constexpr NSUInteger kMaxSettings = 24;
+
+NSDictionary* ChangedSettings() {
+  static NSSet<NSString*>* const categories = [[NSSet alloc] initWithArray:@[
+    @"GPU", @"Metal", @"Display", @"Video", @"CPU", @"a64", @"APU", @"Memory", @"Kernel",
+    @"Console", @"HID", @"iOS"
+  ]];
+  static NSRegularExpression* const value_pattern = [[NSRegularExpression alloc]
+      initWithPattern:@"^(true|false|-?[0-9]{1,10}(\\.[0-9]{1,6})?|[a-z][a-z0-9_]{0,23})$"
+              options:0
+                error:nil];
+  NSMutableDictionary* settings = [NSMutableDictionary dictionary];
+  if (!cvar::ConfigVars) {
+    return settings;
+  }
+  for (const auto& [name, config_var] : *cvar::ConfigVars) {
+    if (settings.count >= kMaxSettings) {
+      break;
+    }
+    if (config_var->is_transient() || name.size() > 48 ||
+        ![categories containsObject:@(config_var->category().c_str())]) {
+      continue;
+    }
+    std::string value = config_var->config_value();
+    if (value == config_var->default_value()) {
+      continue;
+    }
+    // Strings come quoted, as TOML writes them.
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+      value = value.substr(1, value.size() - 2);
+    }
+    NSString* ns_value = @(value.c_str());
+    if (ns_value && [value_pattern numberOfMatchesInString:ns_value
+                                                   options:0
+                                                     range:NSMakeRange(0, ns_value.length)]) {
+      settings[@(name.c_str())] = ns_value;
+    }
+  }
+  return settings;
+}
+
+}  // namespace
+
+void xe_ios_diagnostics_note_game_details(NSString* game_version) {
+  NSMutableDictionary* details = [NSMutableDictionary dictionary];
+  details[@"settings"] = ChangedSettings();
+  if (game_version.length) {
+    details[@"gameVersion"] = game_version;
+  }
+  details[@"jit"] = xe::cpu::backend::IOSJitMemory::UsesTXMPreparation() ? @"txm"
+                    : xe_is_cs_debugged()                                 ? @"debugger"
+                                                                          : @"none";
+  xe_ios_session_note_crash_details(details);
 }
 
 void xe_ios_diagnostics_note_metrickit_crash(NSDictionary* body, NSDate* begin, NSDate* end) {

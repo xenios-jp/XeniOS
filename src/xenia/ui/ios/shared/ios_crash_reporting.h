@@ -43,6 +43,10 @@ void xe_ios_offer_previous_session_report_if_needed(UIViewController* presenter)
 // the report says so. Call before the report is first offered.
 void xe_ios_note_previous_crash_in_jit(void);
 
+// Kept with this launch's state for a crash record at the next launch:
+// {"settings", "gameVersion", "jit"} (xe_ios_diagnostics_note_game_details).
+void xe_ios_session_note_crash_details(NSDictionary* details);
+
 // Main thread. Shares the redacted current or previous session log (plus, for
 // the previous one, a session summary and any MetricKit diagnostics).
 // source_view anchors the iPad popover; nil anchors it to the presenter's view.

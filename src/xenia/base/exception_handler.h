@@ -291,8 +291,12 @@ class ExceptionHandler {
   // Called on the faulting thread for a fault no handler claimed, just before
   // the original disposition takes it (usually the end of the process). From a
   // signal handler: async-signal-safe work only. nullptr removes it.
-  typedef void (*UnhandledObserver)(int signal_number, uint64_t fault_address,
-                                    const HostThreadContext* context);
+  // |operation|: for an access violation, whether it read, wrote or fetched
+  // (kUnknown otherwise).
+  typedef void (*UnhandledObserver)(
+      int signal_number, uint64_t fault_address,
+      const HostThreadContext* context,
+      Exception::AccessViolationOperation operation);
   static void SetUnhandledObserver(UnhandledObserver observer);
 
 #if XE_PLATFORM_IOS

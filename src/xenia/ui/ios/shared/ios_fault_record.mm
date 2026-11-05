@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "xenia/base/exception_handler.h"
+#include "xenia/base/guest_crash_info.h"
 #include "xenia/ui/ios/shared/ios_crash_context.h"
 
 // Exported so the crash reporter extension can find it by name.
@@ -41,6 +42,19 @@ char g_image_uuid[40];
 uint64_t g_launch_ticks = 0;
 mach_timebase_info_data_t g_timebase = {1, 1};
 std::atomic<bool> g_fault_recorded{false};
+
+// The last kMaxEvents events, oldest overwritten: slot g_event_count % size.
+constexpr uint32_t kMaxEvents = 16;
+struct EventSlot {
+  std::atomic<uint32_t> event{0};
+  std::atomic<uint32_t> ms{0};
+};
+EventSlot g_events[kMaxEvents];
+std::atomic<uint32_t> g_event_count{0};
+
+uint64_t MillisecondsSinceLaunch() {
+  return (mach_absolute_time() - g_launch_ticks) * g_timebase.numer / g_timebase.denom / 1000000;
+}
 
 NSString* RecordPath() {
   return [NSHomeDirectory()
@@ -164,8 +178,20 @@ struct RecordWriter {
   }
 };
 
+char AccessLetter(xe::Exception::AccessViolationOperation operation) {
+  switch (operation) {
+    case xe::Exception::AccessViolationOperation::kRead:
+      return 'r';
+    case xe::Exception::AccessViolationOperation::kWrite:
+      return 'w';
+    default:
+      return 'u';
+  }
+}
+
 void OnUnhandledFault(int signal_number, uint64_t fault_address,
-                      const xe::HostThreadContext* context) {
+                      const xe::HostThreadContext* context,
+                      xe::Exception::AccessViolationOperation operation) {
   // The first one only: a second thread faulting meanwhile is a consequence.
   if (g_fault_recorded.exchange(true, std::memory_order_relaxed)) {
     return;
@@ -179,8 +205,7 @@ void OnUnhandledFault(int signal_number, uint64_t fault_address,
   c.fault_lr = StripPointerAuth(context->x[30]);
   c.fault_sp = context->sp;
   c.fault_fp = context->x[29];
-  c.fault_uptime_ms =
-      (mach_absolute_time() - g_launch_ticks) * g_timebase.numer / g_timebase.denom / 1000000;
+  c.fault_uptime_ms = MillisecondsSinceLaunch();
   c.fault_frame_count = WalkFrames(c.fault_fp, c.fault_frames, XE_IOS_CRASH_CONTEXT_MAX_FRAMES);
   // Last: a nonzero signal tells the extension the snapshot is complete.
   c.fault_signal = static_cast<uint32_t>(signal_number);
@@ -209,6 +234,46 @@ void OnUnhandledFault(int signal_number, uint64_t fault_address,
   for (uint32_t i = 0; i < c.fault_frame_count; ++i) {
     w.Hex("frame", c.fault_frames[i]);
   }
+  // A fetch from the fault address itself is an execute fault.
+  const char access[2] = {
+      fault_address == context->pc ? 'x' : AccessLetter(operation), '\0'};
+  w.Append("access ");
+  w.Append(access);
+  w.Append("\n");
+  // The name stays on the device: the next launch turns it into a role.
+  char thread_name[64] = {};
+  pthread_getname_np(pthread_self(), thread_name, sizeof(thread_name));
+  for (char& ch : thread_name) {
+    ch = ch == '\n' ? ' ' : ch;
+  }
+  w.Decimal("thread_main", pthread_main_np() == 1);
+  w.Append("thread_name ");
+  w.Append(thread_name);
+  w.Append("\n");
+  xe::GuestCrashInfo guest = {};
+  if (xe::GetGuestCrashInfo(*context, fault_address, &guest)) {
+    w.Hex("guest_thread", guest.thread_id);
+    w.Hex("guest_function", guest.function);
+    w.Hex("guest_pc", guest.pc);
+    w.Hex("guest_lr", guest.lr);
+    w.Decimal("guest_via_helper", guest.via_helper);
+    for (uint32_t i = 0; i < guest.frame_count; ++i) {
+      w.Hex("guest_frame", guest.frames[i]);
+    }
+    if (guest.fault_in_guest) {
+      w.Hex("guest_fault", guest.fault_address);
+    }
+  }
+  const uint32_t event_count = g_event_count.load(std::memory_order_acquire);
+  for (uint32_t i = event_count > kMaxEvents ? event_count - kMaxEvents : 0; i < event_count;
+       ++i) {
+    const EventSlot& slot = g_events[i % kMaxEvents];
+    w.Append("event ");
+    w.AppendNumber(slot.event.load(std::memory_order_relaxed), 10);
+    w.Append(" ");
+    w.AppendNumber(slot.ms.load(std::memory_order_relaxed), 10);
+    w.Append("\n");
+  }
   w.Append("end\n");
   (void)::write(g_record_fd, w.text, w.length);
   ::fsync(g_record_fd);
@@ -233,6 +298,73 @@ NSString* HexString(uint64_t value) {
   return [NSString stringWithFormat:@"0x%llx", static_cast<unsigned long long>(value)];
 }
 
+NSString* Hex8(uint64_t value) {
+  return [NSString stringWithFormat:@"%08llX", static_cast<unsigned long long>(value & 0xFFFFFFFF)];
+}
+
+NSString* EventName(uint64_t event) {
+  switch (event) {
+    case XeIOSEventGameStart:
+      return @"game-start";
+    case XeIOSEventFirstFrame:
+      return @"first-frame";
+    case XeIOSEventShaderBurst:
+      return @"shader-burst";
+    case XeIOSEventMemoryWarning:
+      return @"memory-warning";
+    case XeIOSEventBackground:
+      return @"background";
+    case XeIOSEventForeground:
+      return @"foreground";
+    case XeIOSEventThermalSerious:
+      return @"thermal-serious";
+    case XeIOSEventThermalCritical:
+      return @"thermal-critical";
+    case XeIOSEventJitFailure:
+      return @"jit-failure";
+    case XeIOSEventGameStop:
+      return @"game-stop";
+    default:
+      return nil;
+  }
+}
+
+// What a thread does, from the name Xenia gave it (xe::threading::Thread::
+// set_name). Guest threads may carry names the game chose; those only ever
+// read as "guest".
+NSString* ThreadRole(NSString* name, BOOL main_thread, BOOL guest_thread) {
+  if (main_thread) {
+    return @"main";
+  }
+  if (guest_thread || [name hasPrefix:@"XThread"] || [name hasPrefix:@"Main XThread"] ||
+      [name rangeOfString:@"^.* \\([0-9A-F]{8}\\)$" options:NSRegularExpressionSearch].location !=
+          NSNotFound) {
+    return @"guest";
+  }
+  static NSArray<NSArray*>* const roles = [@[
+    @[ @"gpu", @[ @"GPU Commands", @"GPU Frame limiter", @"Boot Animation" ] ],
+    @[ @"shader", @[ @"Shader Translation", @"Shader Analysis", @"Shader Storage Writer",
+                     @"Metal Shaders" ] ],
+    @[ @"audio", @[ @"XMA Decoder", @"Audio Worker", @"XAudio2", @"Audio Media Player",
+                    @"APU Pacing Driver" ] ],
+    @[ @"kernel", @[ @"Kernel Dispatch", @"DPC Processor", @"Guest Scheduler",
+                     @"xe::threading::TimerQueue" ] ],
+    @[ @"io", @[ @"Guest I/O", @"STFS", @"FATX" ] ],
+    @[ @"network", @[ @"Xenia Socket I/O", @"XNet" ] ],
+    @[ @"input", @[ @"Gamepad Poll", @"SDL Input" ] ],
+    @[ @"logging", @[ @"Logging Writer" ] ],
+    @[ @"emulator", @[ @"Emulator" ] ],
+  ] retain];
+  for (NSArray* role in roles) {
+    for (NSString* prefix in role[1]) {
+      if ([name hasPrefix:prefix]) {
+        return role[0];
+      }
+    }
+  }
+  return @"other";
+}
+
 }  // namespace
 
 NSDictionary* xe_ios_fault_record_take_previous(void) {
@@ -247,6 +379,8 @@ NSDictionary* xe_ios_fault_record_take_previous(void) {
   }
   NSMutableDictionary<NSString*, NSString*>* fields = [NSMutableDictionary dictionary];
   std::vector<uint64_t> addresses;
+  NSMutableArray* guest_frames = [NSMutableArray array];
+  NSMutableArray* events = [NSMutableArray array];
   for (NSString* line in [text componentsSeparatedByString:@"\n"]) {
     NSRange space = [line rangeOfString:@" "];
     if (space.location == NSNotFound) {
@@ -256,6 +390,15 @@ NSDictionary* xe_ios_fault_record_take_previous(void) {
     NSString* value = [line substringFromIndex:space.location + 1];
     if ([key isEqualToString:@"frame"]) {
       addresses.push_back(std::strtoull(value.UTF8String, nullptr, 16));
+    } else if ([key isEqualToString:@"guest_frame"]) {
+      [guest_frames addObject:Hex8(std::strtoull(value.UTF8String, nullptr, 16))];
+    } else if ([key isEqualToString:@"event"]) {
+      NSArray<NSString*>* parts = [value componentsSeparatedByString:@" "];
+      NSString* name = parts.count == 2 ? EventName(std::strtoull(parts[0].UTF8String, nullptr, 10))
+                                        : nil;
+      if (name) {
+        [events addObject:@{@"e" : name, @"ms" : @(std::strtoull(parts[1].UTF8String, nullptr, 10))}];
+      }
     } else {
       fields[key] = value;
     }
@@ -301,6 +444,39 @@ NSDictionary* xe_ios_fault_record_take_previous(void) {
   if (fields[@"image_uuid"].length) {
     record[@"binaryUUID"] = fields[@"image_uuid"];
   }
+  NSString* access = @{@"r" : @"read", @"w" : @"write", @"x" : @"execute"}[fields[@"access"] ?: @""];
+  if (fields[@"access"]) {
+    record[@"access"] = access ?: @"unknown";
+  }
+  const uint64_t guest_thread = number(@"guest_thread");
+  if (fields[@"thread_main"]) {
+    record[@"thread"] = ThreadRole(fields[@"thread_name"] ?: @"", number(@"thread_main") != 0,
+                                   guest_thread != 0);
+  }
+  if (fields[@"guest_fault"]) {
+    record[@"guestFaultAddress"] = Hex8(number(@"guest_fault"));
+  }
+  if (fields[@"guest_pc"]) {
+    NSMutableDictionary* guest = [NSMutableDictionary dictionary];
+    if (guest_thread) {
+      guest[@"threadId"] = Hex8(guest_thread);
+    }
+    for (NSString* key in @[ @"function", @"pc", @"lr" ]) {
+      if (const uint64_t value = number([@"guest_" stringByAppendingString:key])) {
+        guest[key] = Hex8(value);
+      }
+    }
+    if (guest_frames.count) {
+      guest[@"frames"] = guest_frames;
+    }
+    guest[@"viaHelper"] = @(number(@"guest_via_helper") != 0);
+    if (guest[@"pc"] || guest[@"lr"] || guest_frames.count) {
+      record[@"guest"] = guest;
+    }
+  }
+  if (events.count) {
+    record[@"events"] = events;
+  }
   return record;
 }
 
@@ -327,6 +503,16 @@ void xe_ios_fault_record_install(NSString* launch_id, NSString* endpoint,
                        0600);
     xe::ExceptionHandler::SetUnhandledObserver(OnUnhandledFault);
   });
+}
+
+void xe_ios_fault_record_note_event(XeIOSEvent event) {
+  if (!g_launch_ticks) {
+    return;
+  }
+  // A crash meanwhile may read this slot half written: one event off.
+  EventSlot& slot = g_events[g_event_count.fetch_add(1, std::memory_order_acq_rel) % kMaxEvents];
+  slot.ms.store(static_cast<uint32_t>(MillisecondsSinceLaunch()), std::memory_order_relaxed);
+  slot.event.store(event, std::memory_order_relaxed);
 }
 
 void xe_ios_fault_record_note_title(uint32_t title_id) {

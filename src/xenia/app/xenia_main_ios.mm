@@ -923,6 +923,11 @@ bool EmulatorAppIOS::OnInitialize() {
       }
     }
     xe_ios_diagnostics_note_title(title_id, jit_base, jit_size);
+    const std::string& version = emulator_->title_version();
+    xe_ios_diagnostics_note_game_details(
+        [[[NSString alloc] initWithBytes:version.data()
+                                  length:version.size()
+                                encoding:NSUTF8StringEncoding] autorelease]);
   });
 
   // Create the display window from the Metal view in the app context.
