@@ -277,12 +277,20 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
                                                @"the systemlink_transport setting"),
                              [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]];
       }
+      if (xe_ios_system_link_lobby_has_turn()) {
+        return NSLocalizedString(
+            @"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find "
+            @"each other automatically and connect directly where their networks allow, "
+            @"otherwise through a relay. The in-game menu shows how the room is connected. "
+            @"Players in your room can see your IP address and a profile ID.",
+            @"system link view controller: footer");
+      }
       return NSLocalizedString(
           @"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find "
-          @"each other automatically and connect directly where their networks allow, "
-          @"otherwise through a relay. The in-game menu shows how the room is connected. "
-          @"Players in your room can see your IP address and a profile ID.",
-          @"system link view controller: footer");
+          @"each other automatically and connect directly where their networks allow. The "
+          @"in-game menu shows how the room is connected. Players in your room can see your IP "
+          @"address and a profile ID.",
+          @"system link view controller: footer, when the server has no relay");
     case Row::kCreate:
       return NSLocalizedString(@"Share the code with the players you want. Everyone needs this "
                                @"game, and players on another version of it may not see you.",
@@ -533,7 +541,7 @@ void xe_ios_present_system_link_sheet(UIViewController* presenter, NSString* gam
 namespace {
 
 // Rows of the Online sheet: a game in the library, one that isn't, and the private-room actions.
-enum class OnlineRow { kMine, kOther, kCreate, kJoin };
+enum class OnlineRow { kMine, kOther, kCreate, kJoin, kNatType };
 
 // Library icons in the Online sheet, in points.
 constexpr CGFloat kOnlineIconSize = 36.0;
@@ -670,6 +678,8 @@ NSAttributedString* PlayingText(NSInteger players) {
   UIView* summary_;
   UILabel* summary_title_;
   UILabel* summary_detail_;
+  // A quiet line under them when this network keeps other players out.
+  UILabel* summary_note_;
 }
 
 - (instancetype)initWithLibrary:(const std::vector<XeniaIOSOnlineLibraryGame>&)library
@@ -705,6 +715,7 @@ NSAttributedString* PlayingText(NSInteger players) {
   [summary_ release];
   [summary_title_ release];
   [summary_detail_ release];
+  [summary_note_ release];
   [super dealloc];
 }
 
@@ -719,10 +730,17 @@ NSAttributedString* PlayingText(NSInteger players) {
   summary_detail_.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   summary_detail_.adjustsFontForContentSizeCategory = YES;
   summary_detail_.numberOfLines = 0;
+  summary_note_ = [[UILabel alloc] init];
+  summary_note_.textColor = [XeniaTheme textSecondary];
+  summary_note_.font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
+  summary_note_.adjustsFontForContentSizeCategory = YES;
+  summary_note_.numberOfLines = 0;
+  summary_note_.hidden = YES;
   UIStackView* text = [[[UIStackView alloc]
-      initWithArrangedSubviews:@[ summary_title_, summary_detail_ ]] autorelease];
+      initWithArrangedSubviews:@[ summary_title_, summary_detail_, summary_note_ ]] autorelease];
   text.axis = UILayoutConstraintAxisVertical;
   text.spacing = 2.0;
+  [text setCustomSpacing:8.0 afterView:summary_detail_];
   text.translatesAutoresizingMaskIntoConstraints = NO;
   summary_ = [[UIView alloc] init];
   summary_.preservesSuperviewLayoutMargins = YES;
@@ -783,10 +801,16 @@ NSAttributedString* PlayingText(NSInteger players) {
       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                target:self
              action:@selector(doneTapped:)] autorelease];
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(onlineChanged:)
-                                               name:XeniaIOSSystemLinkOnlineDidChangeNotification
-                                             object:nil];
+  // The status changes when a game's NAT check finishes.
+  for (NSString* name in @[
+         XeniaIOSSystemLinkOnlineDidChangeNotification,
+         XeniaIOSSystemLinkStatusDidChangeNotification
+       ]) {
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onlineChanged:)
+                                                 name:name
+                                               object:nil];
+  }
   [self reloadRows];
   xe_ios_system_link_refresh_online();
 }
@@ -848,6 +872,9 @@ NSAttributedString* PlayingText(NSInteger players) {
   }
   if (xe_ios_system_link_uses_relay() && library_names_.count) {
     sections_.push_back({OnlineRow::kCreate, OnlineRow::kJoin});
+  }
+  if (xe_ios_system_link_uses_relay() && xe_ios_system_link_nat() != XeniaIOSNatType::kUnknown) {
+    sections_.push_back({OnlineRow::kNatType});
   }
   [self.tableView reloadData];
 }
@@ -930,10 +957,27 @@ NSAttributedString* PlayingText(NSInteger players) {
                                     long(in_lobbies), long(titles.count)];
     }
   }
+  // Only where it explains why nobody connects: this network keeps players out.
+  NSString* note = nil;
+  if (xe_ios_online_features_enabled() && xe_ios_system_link_uses_relay() &&
+      xe_ios_nat_blocks_direct(xe_ios_system_link_nat())) {
+    note = NSLocalizedString(@"Your network may block online play. Try another Wi-Fi network or "
+                             @"mobile data.",
+                             @"online view controller: quiet line under the summary when the "
+                             @"network's NAT is strict or blocks System Link");
+  }
   summary_title_.text = title;
   summary_detail_.text = detail;
-  summary_.accessibilityLabel =
-      detail.length ? [NSString stringWithFormat:@"%@, %@", title, detail] : title;
+  summary_note_.text = note;
+  summary_note_.hidden = note == nil;
+  NSMutableArray<NSString*>* spoken = [NSMutableArray arrayWithObject:title ?: @""];
+  if (detail.length) {
+    [spoken addObject:detail];
+  }
+  if (note) {
+    [spoken addObject:note];
+  }
+  summary_.accessibilityLabel = [spoken componentsJoinedByString:@", "];
   [self sizeSummary];
   [self setNeedsUpdateContentUnavailableConfiguration];
 }
@@ -1001,6 +1045,15 @@ NSAttributedString* PlayingText(NSInteger players) {
     case OnlineRow::kCreate:
     case OnlineRow::kJoin:
       return NSLocalizedString(@"Private Room", @"online view controller: section header");
+    case OnlineRow::kNatType:
+      return NSLocalizedString(@"Your Network", @"online view controller: section header");
+  }
+  return nil;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  if (sections_[size_t(section)].front() == OnlineRow::kNatType) {
+    return xe_ios_nat_type_explanation(xe_ios_system_link_nat());
   }
   return nil;
 }
@@ -1051,6 +1104,16 @@ NSAttributedString* PlayingText(NSInteger players) {
   cell.accessoryType = UITableViewCellAccessoryNone;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityTraits = UIAccessibilityTraitButton;
+  if (row == OnlineRow::kNatType) {
+    UIListContentConfiguration* content = [UIListContentConfiguration valueCellConfiguration];
+    content.text = NSLocalizedString(@"NAT Type", @"online view controller: row, how the network "
+                                                  @"treats direct connections");
+    content.secondaryText = xe_ios_nat_type_name(xe_ios_system_link_nat());
+    cell.contentConfiguration = content;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessibilityTraits = UIAccessibilityTraitStaticText;
+    return cell;
+  }
   if (row == OnlineRow::kCreate || row == OnlineRow::kJoin) {
     // Plain tinted rows: there when wanted, quieter than the games.
     UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
@@ -1108,6 +1171,7 @@ NSAttributedString* PlayingText(NSInteger players) {
       [self finishWithTitleID:mine_[size_t(indexPath.row)].first];
       break;
     case OnlineRow::kOther:
+    case OnlineRow::kNatType:
       break;
     case OnlineRow::kCreate:
       [self createTapped:nil];
@@ -1360,7 +1424,8 @@ constexpr size_t kMaxStatusOtherGames = 10;
     if (snapshot_.direct) {
       players.push_back(StatusRow::kDirect);
     }
-    if (snapshot_.relayed) {
+    // No relay is mentioned while the lobby names no TURN server.
+    if (snapshot_.relayed && snapshot_.turn) {
       players.push_back(StatusRow::kRelayed);
     }
     if (waiting) {
@@ -1433,9 +1498,19 @@ constexpr size_t kMaxStatusOtherGames = 10;
     case StatusRow::kDirect:
     case StatusRow::kRelayed:
     case StatusRow::kNotConnected:
-    case StatusRow::kOtherVersion:
-      return NSLocalizedString(@"Players in your room can see your IP address and a profile ID.",
-                               @"system link status view controller: footer");
+    case StatusRow::kOtherVersion: {
+      NSString* privacy =
+          NSLocalizedString(@"Players in your room can see your IP address and a profile ID.",
+                            @"system link status view controller: footer");
+      if (snapshot_.unreachable) {
+        return [NSString
+            stringWithFormat:@"%@\n\n%@",
+                             xe_ios_system_link_unreachable_message(snapshot_.unreachable,
+                                                                    snapshot_.nat),
+                             privacy];
+      }
+      return privacy;
+    }
     case StatusRow::kThisGame:
     case StatusRow::kOtherGame:
     case StatusRow::kNobodyOnline: {

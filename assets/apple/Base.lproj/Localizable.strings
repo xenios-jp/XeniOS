@@ -447,6 +447,9 @@
 /* Menu item in the Add Control menu */
 "Blank Button" = "Blank Button";
 
+/* NAT type: the network lets no System Link traffic out */
+"Blocked" = "Blocked";
+
 /* compat report cells: label text */
 "Build" = "Build";
 
@@ -473,6 +476,18 @@
 
 /* settings hub view controller: search result note */
 "Can be overridden per game" = "Can be overridden per game";
+
+/* System Link: players no path reaches, most likely because of theirs; %lu is how many */
+"Can't connect to %lu players. Their networks may be blocking direct connections." = "Can't connect to %lu players. Their networks may be blocking direct connections.";
+
+/* System Link: players no path reaches, because of this network; %lu is how many */
+"Can't connect to %lu players. Your network blocks direct connections." = "Can't connect to %lu players. Your network blocks direct connections.";
+
+/* System Link: a player no path reaches, most likely because of theirs */
+"Can't connect to 1 player. Their network may be blocking direct connections." = "Can't connect to 1 player. Their network may be blocking direct connections.";
+
+/* System Link: a player no path reaches, because of this network */
+"Can't connect to 1 player. Your network blocks direct connections." = "Can't connect to 1 player. Your network blocks direct connections.";
 
 /* zar conversion coordinator: user-visible text */
 "Can't Delete" = "Can't Delete";
@@ -1981,6 +1996,9 @@
 /* compat report view controller: title */
 "Missing Status" = "Missing Status";
 
+/* NAT type: a router most players get through */
+"Moderate" = "Moderate";
+
 /* game page: more button
    launcher overlay view: Continue Playing actions button
    Section header in the pause menu */
@@ -1988,6 +2006,9 @@
 
 /* Short status line when the memory entitlement is missing */
 "Most games will crash. Turn on Get More RAM, then refresh XeniOS." = "Most games will crash. Turn on Get More RAM, then refresh XeniOS.";
+
+/* NAT type explanation: moderate */
+"Most players can connect to you directly." = "Most players can connect to you directly.";
 
 /* Menu item that assigns a hold-and-drag output */
 "Move" = "Move";
@@ -2001,6 +2022,9 @@
 /* launcher overlay view: sort by name
    settings hub view controller: title */
 "Name" = "Name";
+
+/* online view controller: row, how the network treats direct connections */
+"NAT Type" = "NAT Type";
 
 /* settings hub view controller: title */
 "Needed for the Xbox 360 Dashboard." = "Needed for the Xbox 360 Dashboard.";
@@ -2233,6 +2257,9 @@
 /* Row title in the touch control edit panel */
 "Opacity" = "Opacity";
 
+/* NAT type: no NAT in the way of other players */
+"Open" = "Open";
+
 /* document import coordinator: title */
 "Open \"%@\"" = "Open \"%@\"";
 
@@ -2314,6 +2341,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "Original Files" = "Original Files";
+
+/* NAT type explanation: open */
+"Other players can connect to you directly." = "Other players can connect to you directly.";
 
 /* JIT sheet: tertiary button */
 "Other Ways to Enable JIT" = "Other Ways to Enable JIT";
@@ -2429,6 +2459,9 @@
 
 /* system link view controller: footer */
 "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
+
+/* system link view controller: footer, when the server has no relay */
+"Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS, or Xenia-edge on a Mac. Players in a room find each other automatically and connect directly where their networks allow. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
 
 /* launcher overlay view: Continue Playing; %@ is like \"2 hours ago\" */
 "Played %@" = "Played %@";
@@ -3145,6 +3178,9 @@
 
 /* Display menu item */
 "Stretch (Fill, Ignore Aspect)" = "Stretch (Fill, Ignore Aspect)";
+
+/* NAT type: a router that keeps most players out */
+"Strict" = "Strict";
 
 /* compat report submission: user-visible text */
 "Submission Failed" = "Submission Failed";
@@ -3873,6 +3909,18 @@
 
 /* Shader preparation sheet while the device is hot */
 "Your device is warm. This will take longer." = "Your device is warm. This will take longer.";
+
+/* online view controller: section header */
+"Your Network" = "Your Network";
+
+/* NAT type explanation: strict */
+"Your network blocks most direct connections, so some players can't connect to you." = "Your network blocks most direct connections, so some players can't connect to you.";
+
+/* NAT type explanation: blocked */
+"Your network blocks System Link, so you can't play with anyone on it." = "Your network blocks System Link, so you can't play with anyone on it.";
+
+/* online view controller: quiet line under the summary when the network's NAT is strict or blocks System Link */
+"Your network may block online play. Try another Wi-Fi network or mobile data." = "Your network may block online play. Try another Wi-Fi network or mobile data.";
 
 /* zar conversion coordinator: title */
 "ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";
