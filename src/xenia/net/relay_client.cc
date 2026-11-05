@@ -864,6 +864,11 @@ void RelayClient::Leave(Outbox& out) {
   peers_.clear();
 }
 
+void RelayClient::SetNat(NatType nat) {
+  nat_ = nat;
+  status_.nat = nat;
+}
+
 void RelayClient::UpdateStatus(uint64_t now_ms) {
   RelayStatus status;
   if (joined_) {
@@ -879,9 +884,17 @@ void RelayClient::UpdateStatus(uint64_t now_ms) {
     const bool relaying = turn_ && turn_->relayed();
     status.players = peers_.size();
     status.app_counted = app_counted_;
-    for (const auto& [mac, peer] : peers_) {
+    for (auto& [mac, peer] : peers_) {
+      const bool relayed = !peer.direct && peer.listed.relay && relaying;
       status.direct += peer.direct.has_value();
-      status.relayed += !peer.direct && peer.listed.relay && relaying;
+      status.relayed += relayed;
+      if (peer.direct || relayed) {
+        peer.pathless_since_ms.reset();
+      } else if (!peer.pathless_since_ms) {
+        peer.pathless_since_ms = now_ms;
+      } else if (now_ms - *peer.pathless_since_ms >= kUnreachableMs) {
+        ++status.unreachable;
+      }
       status.version_mismatch |=
           peer.listed.title_id != config_.title_id ||
           peer.listed.title_version != config_.title_version;
@@ -893,6 +906,8 @@ void RelayClient::UpdateStatus(uint64_t now_ms) {
       status.ping_ms = (status.ping_ms + 2) / 5 * 5;
     }
   }
+  status.nat = nat_;
+  status.turn = ice_ && !ice_->turn.empty();
   status_ = status;
 }
 

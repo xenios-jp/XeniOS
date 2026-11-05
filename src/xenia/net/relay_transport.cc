@@ -19,6 +19,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/net/host_interfaces.h"
+#include "xenia/net/nat_check.h"
 #include "xenia/net/packet_transport.h"
 #include "xenia/net/relay_socket.h"
 
@@ -31,6 +32,7 @@ namespace {
 
 using relay::Datagram;
 using relay::Endpoint;
+using relay::NatType;
 using relay::RelayStatus;
 
 constexpr uint32_t kMtu = 1500;
@@ -177,7 +179,11 @@ class RelayTransport final : public PacketTransport {
         case relay::RelaySocket::Wait::kDatagram:
           break;
       }
-      if (!paused_) {
+      if (nat_check_ && nat_check_->Receive(data, from)) {
+        if (nat_check_->done()) {
+          FinishNatCheck();
+        }
+      } else if (!paused_) {
         auto whole = client_.Receive(data, from, Now(), out_);
         Flush();
         ReportChanges();
@@ -236,7 +242,96 @@ class RelayTransport final : public PacketTransport {
       LookUp(*server);
     }
     client_.Tick(now, out_);
+    CheckNat(now);
     Flush();
+    ReportChanges();
+  }
+
+  // Once per network, as soon as the lobby names its STUN servers: from this
+  // socket, as the other players see it, before there's anything to play.
+  void CheckNat(uint64_t now) {
+    if (nat_check_) {
+      nat_check_->Tick(now, out_.datagrams);
+      if (nat_check_->done()) {
+        FinishNatCheck();
+      }
+      return;
+    }
+    const auto& ice = client_.ice();
+    if (nat_asked_ || !ice) {
+      return;
+    }
+    nat_asked_ = true;
+    nat_network_ = relay::NetworkKey();
+    if (config_.nat_override) {
+      SetNat(*config_.nat_override);
+      return;
+    }
+    if (NatType known = relay::RememberedNat(nat_network_);
+        known != NatType::kUnknown) {
+      SetNat(known);
+      return;
+    }
+    std::vector<std::string> names(ice->stun.begin(), ice->stun.end());
+    if (names.empty()) {
+      names = ice->turn;
+    }
+    names.resize(std::min<size_t>(names.size(), 2));
+    nat_resolved_.assign(names.size(), {});
+    nat_lookups_ = names.size();
+    for (size_t i = 0; i < names.size(); ++i) {
+      std::string host;
+      uint16_t port = kStunPort;
+      if (!relay::ParseServer(names[i], kStunPort, host, port)) {
+        --nat_lookups_;
+        continue;
+      }
+      socket_.Resolve(
+          host, port,
+          [this, i](std::vector<Endpoint> endpoints, std::string /* error */) {
+            nat_resolved_[i] = std::move(endpoints);
+            if (--nat_lookups_ == 0) {
+              StartNatCheck();
+            }
+          });
+    }
+    if (nat_lookups_ == 0) {
+      StartNatCheck();
+    }
+  }
+
+  void StartNatCheck() {
+    if (nat_check_ || nat_resolved_.empty()) {
+      return;
+    }
+    std::vector<Endpoint> resolved;
+    for (const auto& endpoints : nat_resolved_) {
+      resolved.insert(resolved.end(), endpoints.begin(), endpoints.end());
+    }
+    nat_resolved_.clear();
+    auto servers = relay::PickNatServers(resolved);
+    if (servers.size() < 2) {
+      XELOGW("System Link: no STUN server to check the network with");
+      return;
+    }
+    nat_check_.emplace(std::move(servers), HostCandidates(socket_.port()));
+    nat_check_->Tick(Now(), out_.datagrams);
+    Flush();
+  }
+
+  void FinishNatCheck() {
+    const NatType nat = nat_check_->result();
+    nat_check_.reset();
+    relay::RememberNat(nat_network_, nat);
+    SetNat(nat);
+  }
+
+  void SetNat(NatType nat) {
+    if (nat != nat_) {
+      XELOGI("System Link: this network's NAT is {}", relay::ToString(nat));
+    }
+    nat_ = nat;
+    client_.SetNat(nat);
     ReportChanges();
   }
 
@@ -352,6 +447,7 @@ class RelayTransport final : public PacketTransport {
     } else {
       XELOGI("System Link: allowed online again");
       client_ = relay::RelayClient(mac_, config_);
+      client_.SetNat(nat_);
       gathered_ = false;
     }
     ReportChanges();
@@ -368,6 +464,7 @@ class RelayTransport final : public PacketTransport {
     }
     config_.room = room;
     client_ = relay::RelayClient(mac_, config_);
+    client_.SetNat(nat_);
     gathered_ = false;
     ReportChanges();
   }
@@ -403,6 +500,12 @@ class RelayTransport final : public PacketTransport {
   uint64_t asked_ms_ = 0;
   bool paused_ = false;
   std::optional<RelayStatus> reported_;
+  std::optional<relay::NatCheck> nat_check_;
+  bool nat_asked_ = false;
+  std::string nat_network_;
+  std::vector<std::vector<Endpoint>> nat_resolved_;
+  size_t nat_lookups_ = 0;
+  NatType nat_ = NatType::kUnknown;
   std::atomic<bool> healthy_{true};
   // Set by the first System Link activity, from any thread.
   std::atomic<bool> active_{false};

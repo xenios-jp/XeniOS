@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "xenia/net/nat_check.h"
 #include "xenia/net/relay_protocol.h"
 #include "xenia/net/turn_client.h"
 
@@ -46,6 +47,9 @@ struct RelayConfig {
   // Asked about once a second when set: a room other than |room| leaves it and
   // joins that one. Nothing keeps the transport where it is.
   std::function<std::optional<Room>()> current_room;
+  // Reported as this network's NAT type in place of checking it, for testing
+  // what the player is told.
+  std::optional<NatType> nat_override;
 };
 
 struct RelayStatus {
@@ -70,6 +74,12 @@ struct RelayStatus {
   size_t players = 0;
   size_t direct = 0;
   size_t relayed = 0;
+  // Players reached neither way for kUnreachableMs or longer.
+  size_t unreachable = 0;
+  // What this instance's network does to direct connections, once checked.
+  NatType nat = NatType::kUnknown;
+  // The lobby names a TURN server, so players may be reached through it.
+  bool turn = false;
   Reject reject = Reject::kFull;
   // Another player runs another title or another version of it.
   bool version_mismatch = false;
@@ -142,6 +152,13 @@ class RelayClient {
   void Leave(Outbox& out);
 
   const RelayStatus& status() const { return status_; }
+  // The STUN and TURN servers the lobby named, once it has.
+  const std::optional<IceServers>& ice() const { return ice_; }
+  // Reported in the status from now on.
+  void SetNat(NatType nat);
+
+  // How long a player goes without a path before it counts as unreachable.
+  static constexpr uint64_t kUnreachableMs = 10000;
 
   // A player as the lobby lists it.
   struct Listed {
@@ -204,6 +221,9 @@ class RelayClient {
     // What the latest probes carry, and the ones before, which a reply may
     // still answer.
     std::array<uint64_t, 2> nonces{};
+    // Since when neither a direct path nor the relay reaches it, if neither
+    // does.
+    std::optional<uint64_t> pathless_since_ms;
   };
 
   void OnWelcome(uint64_t room_secret, std::optional<IceServers> ice,
@@ -290,6 +310,7 @@ class RelayClient {
   uint16_t next_frame_id_ = 0;
   std::map<Mac, Peer> peers_;
   Reassembler reassembler_;
+  NatType nat_ = NatType::kUnknown;
   RelayStatus status_;
 };
 
