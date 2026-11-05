@@ -80,6 +80,10 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 // Backs the "Open StikDebug" button on the JIT card. The button is hidden
 // while this is nil.
 @property(nonatomic, copy) void (^openStikDebugHandler)(void);
+// Whether the header sits over the hero art (the status bar's text is light there), and a
+// handler called when that changes.
+@property(nonatomic, readonly) BOOL headerOverArt;
+@property(nonatomic, copy) void (^headerOverArtChangedHandler)(void);
 @property(nonatomic, copy) void (^gameLaunchedHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^copyLaunchURLHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^gameSettingsHandler)(NSUInteger gameIndex);

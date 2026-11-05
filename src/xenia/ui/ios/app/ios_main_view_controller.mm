@@ -1516,6 +1516,9 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
                                               requirePreference:NO
                                    promptForAutomationOnSuccess:NO];
   };
+  self.launcherOverlayView.headerOverArtChangedHandler = ^{
+    [unsafe_self setNeedsStatusBarAppearanceUpdate];
+  };
   self.launcherOverlayView.addMenu = [self libraryAddMenu];
   self.launcherOverlayView.zarSuggestionHandler = ^{
     [unsafe_self.zarConversionCoordinator
@@ -5078,7 +5081,10 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
-  return UIStatusBarStyleLightContent;
+  // Light over the hero art; over the library's own background it follows the appearance.
+  XeniaIOSLauncherOverlayView* launcher = self.launcherOverlayView;
+  return !launcher || launcher.hidden || launcher.headerOverArt ? UIStatusBarStyleLightContent
+                                                                : UIStatusBarStyleDefault;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
