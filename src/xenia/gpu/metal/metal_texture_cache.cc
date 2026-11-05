@@ -90,26 +90,6 @@
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_rgba16_snorm_float_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_rgba16_unorm_float_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_rgba16_unorm_float_scaled_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_8bpb_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_16bpb_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_32bpb_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_64bpb_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_128bpb_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r5g5b5a1_b5g5r5a1_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r5g6b5_b5g6r5_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r5g5b6_b5g6r5_swizzle_rbga_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r4g4b4a4_b4g4r4a4_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r4g4b4a4_a4r4g4b4_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r10g11b11_rgba16_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r10g11b11_rgba16_snorm_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r11g11b10_rgba16_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r11g11b10_rgba16_snorm_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r16_unorm_float_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_r16_snorm_float_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_rg16_unorm_float_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_rg16_snorm_float_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_rgba16_unorm_float_image_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/texture_load_rgba16_snorm_float_image_cs.h"
 #include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/texture_util.h"
 #include "xenia/gpu/xenos.h"
@@ -572,22 +552,6 @@ bool MetalTextureCache::IsResolveRefreshKey(const TextureKey& key) const {
   return FormatInfo::Get(key.format)->type == FormatType::kResolvable &&
          (load_shader == kLoadShaderIndex32bpb ||
           load_shader == kLoadShaderIndex64bpb);
-}
-
-bool MetalTextureCache::IsDirectImageLoadKey(const TextureKey& key) const {
-  if (!ShouldUploadViaBlit() ||
-      key.dimension != xenos::DataDimension::k2DOrStacked ||
-      key.scaled_resolve) {
-    return false;
-  }
-  const FormatInfo* format_info = FormatInfo::Get(key.format);
-  if (!format_info || format_info->block_width != 1 ||
-      format_info->block_height != 1) {
-    return false;
-  }
-  const LoadShaderIndex load_shader = GetLoadShaderIndexForKey(key);
-  return load_shader != kLoadShaderIndexUnknown &&
-         load_image_pipelines_[load_shader] != nullptr;
 }
 
 void MetalTextureCache::RefreshFireGlobalWatchCallbackThunk(
@@ -1413,19 +1377,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     uint32_t depth_slices;
     uint32_t width_texels;
     uint32_t height_texels;
-    // Written by the image loader into its level of the texture, not stored
-    // in the buffer.
-    bool direct_image;
   };
 
   uint32_t level_packed = guest_layout.packed_level;
-  // Levels outside the packed mip tail, which holds several levels in one
-  // stored image, can be loaded straight into the texture.
-  MTL::ComputePipelineState* image_pipeline =
-      !texture_resolution_scaled && !host_block_compressed &&
-              IsDirectImageLoadKey(key)
-          ? load_image_pipelines_[static_cast<size_t>(load_shader)]
-          : nullptr;
   uint32_t level_stored_first = std::min(level_first, level_packed);
   uint32_t level_stored_last = std::min(level_last, level_packed);
 
@@ -1490,15 +1444,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     host_layout.depth_slices = level_depth;
     host_layout.width_texels = level_width_unscaled;
     host_layout.height_texels = level_height_unscaled;
-    host_layout.direct_image =
-        image_pipeline && level < level_packed &&
-        metal_texture->GetOrCreateLevelWriteView(
-            level, load_shader_info.bytes_per_host_block);
     stored_levels.push_back(host_layout);
 
-    if (!host_layout.direct_image) {
-      dest_buffer_size += uint64_t(slice_size_bytes) * uint64_t(array_size);
-    }
+    dest_buffer_size += uint64_t(slice_size_bytes) * uint64_t(array_size);
   }
 
   if (stored_levels.empty()) {
@@ -1601,10 +1549,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       direct_raw_pipeline ? metal_texture->GetOrCreateResolveWriteView()
                           : nullptr;
   const bool use_direct_raw = direct_raw_view != nullptr;
-  MTL::Buffer* dest_buffer = use_direct_raw || !dest_buffer_size
-                                ? nullptr
-                                : acquire_buffer(size_t(dest_buffer_size));
-  if (!use_direct_raw && dest_buffer_size && !dest_buffer) {
+  MTL::Buffer* dest_buffer =
+      use_direct_raw ? nullptr : acquire_buffer(size_t(dest_buffer_size));
+  if (!use_direct_raw && !dest_buffer) {
     return false;
   }
 
@@ -1915,8 +1862,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       constants.size_blocks[1] = size_blocks_y;
       constants.size_blocks[2] = stored_level.depth_slices;
       constants.padding0 = 0;
-      // The image loader takes the array slice in place of the offset.
-      constants.host_offset = stored_level.direct_image ? slice : 0;
+      constants.host_offset = 0;
       constants.host_pitch = stored_level.row_pitch_bytes;
       constants.height_texels = stored_level.height_texels;
 
@@ -1926,30 +1872,15 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       std::memcpy(constants_ptr, &constants, sizeof(constants));
 
       LoadDispatch& dispatch = commands.dispatches.emplace_back();
+      dispatch.pipeline = use_direct_raw ? direct_raw_pipeline : pipeline;
       dispatch.constants = constants_buffer;
       dispatch.constants_offset = dispatch_index * constants_size;
-      if (use_direct_raw) {
-        dispatch.pipeline = direct_raw_pipeline;
-        dispatch.dest = nullptr;
-        dispatch.dest_offset = 0;
-        dispatch.dest_texture = direct_raw_view;
-      } else if (stored_level.direct_image) {
-        dispatch.pipeline = image_pipeline;
-        dispatch.dest = nullptr;
-        dispatch.dest_offset = 0;
-        dispatch.dest_texture = metal_texture->GetOrCreateLevelWriteView(
-            stored_level.level, load_shader_info.bytes_per_host_block);
-        if (!slice) {
-          dispatch.dest_texture->retain();
-          commands.textures.push_back(dispatch.dest_texture);
-        }
-      } else {
-        dispatch.pipeline = pipeline;
-        dispatch.dest = dest_buffer;
-        dispatch.dest_offset = stored_level.dest_offset_bytes +
+      dispatch.dest = use_direct_raw ? nullptr : dest_buffer;
+      dispatch.dest_offset =
+          use_direct_raw ? 0
+                         : stored_level.dest_offset_bytes +
                                slice * stored_level.slice_size_bytes;
-        dispatch.dest_texture = nullptr;
-      }
+      dispatch.dest_texture = use_direct_raw ? direct_raw_view : nullptr;
       dispatch.source = source_buffer;
       dispatch.source_offset = source_buffer_offset;
       dispatch.threadgroups = threadgroups;
@@ -2031,7 +1962,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           stored_level == 0 && (level_packed != 0 || level == 0);
       const StoredLevelHostLayout* stored_layout =
           find_stored_level(is_base_storage, stored_level);
-      if (!stored_layout || stored_layout->direct_image) {
+      if (!stored_layout) {
         continue;
       }
 
@@ -2675,72 +2606,6 @@ bool MetalTextureCache::InitializeLoadPipelines() {
                        texture_load_depth_float_scaled_cs_metallib,
                        sizeof(texture_load_depth_float_scaled_cs_metallib));
 
-  // A missing image loader only leaves its keys on the buffer and blit path.
-  auto init_pipeline_image = [&](TextureCache::LoadShaderIndex index,
-                                 const uint8_t* data, size_t size) -> void {
-    load_image_pipelines_[index] = create_pipeline_from_metallib(data, size);
-  };
-  init_pipeline_image(TextureCache::kLoadShaderIndex8bpb,
-                      texture_load_8bpb_image_cs_metallib,
-                      sizeof(texture_load_8bpb_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndex16bpb,
-                      texture_load_16bpb_image_cs_metallib,
-                      sizeof(texture_load_16bpb_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndex32bpb,
-                      texture_load_32bpb_image_cs_metallib,
-                      sizeof(texture_load_32bpb_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndex64bpb,
-                      texture_load_64bpb_image_cs_metallib,
-                      sizeof(texture_load_64bpb_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndex128bpb,
-                      texture_load_128bpb_image_cs_metallib,
-                      sizeof(texture_load_128bpb_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR5G5B5A1ToB5G5R5A1,
-                      texture_load_r5g5b5a1_b5g5r5a1_image_cs_metallib,
-                      sizeof(texture_load_r5g5b5a1_b5g5r5a1_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR5G6B5ToB5G6R5,
-                      texture_load_r5g6b5_b5g6r5_image_cs_metallib,
-                      sizeof(texture_load_r5g6b5_b5g6r5_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle,
-                      texture_load_r5g5b6_b5g6r5_swizzle_rbga_image_cs_metallib,
-                      sizeof(texture_load_r5g5b6_b5g6r5_swizzle_rbga_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRGBA4ToBGRA4,
-                      texture_load_r4g4b4a4_b4g4r4a4_image_cs_metallib,
-                      sizeof(texture_load_r4g4b4a4_b4g4r4a4_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRGBA4ToARGB4,
-                      texture_load_r4g4b4a4_a4r4g4b4_image_cs_metallib,
-                      sizeof(texture_load_r4g4b4a4_a4r4g4b4_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR10G11B11ToRGBA16,
-                      texture_load_r10g11b11_rgba16_image_cs_metallib,
-                      sizeof(texture_load_r10g11b11_rgba16_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR10G11B11ToRGBA16SNorm,
-                      texture_load_r10g11b11_rgba16_snorm_image_cs_metallib,
-                      sizeof(texture_load_r10g11b11_rgba16_snorm_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR11G11B10ToRGBA16,
-                      texture_load_r11g11b10_rgba16_image_cs_metallib,
-                      sizeof(texture_load_r11g11b10_rgba16_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR11G11B10ToRGBA16SNorm,
-                      texture_load_r11g11b10_rgba16_snorm_image_cs_metallib,
-                      sizeof(texture_load_r11g11b10_rgba16_snorm_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR16UNormToFloat,
-                      texture_load_r16_unorm_float_image_cs_metallib,
-                      sizeof(texture_load_r16_unorm_float_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexR16SNormToFloat,
-                      texture_load_r16_snorm_float_image_cs_metallib,
-                      sizeof(texture_load_r16_snorm_float_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRG16UNormToFloat,
-                      texture_load_rg16_unorm_float_image_cs_metallib,
-                      sizeof(texture_load_rg16_unorm_float_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRG16SNormToFloat,
-                      texture_load_rg16_snorm_float_image_cs_metallib,
-                      sizeof(texture_load_rg16_snorm_float_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRGBA16UNormToFloat,
-                      texture_load_rgba16_unorm_float_image_cs_metallib,
-                      sizeof(texture_load_rgba16_unorm_float_image_cs_metallib));
-  init_pipeline_image(TextureCache::kLoadShaderIndexRGBA16SNormToFloat,
-                      texture_load_rgba16_snorm_float_image_cs_metallib,
-                      sizeof(texture_load_rgba16_snorm_float_image_cs_metallib));
-
   // Require at least the common loaders.
   return load_pipelines_[TextureCache::kLoadShaderIndex32bpb] != nullptr &&
          load_pipelines_[TextureCache::kLoadShaderIndex16bpb] != nullptr &&
@@ -2783,10 +2648,6 @@ void MetalTextureCache::Shutdown() {
     if (load_pipelines_scaled_[i]) {
       load_pipelines_scaled_[i]->release();
       load_pipelines_scaled_[i] = nullptr;
-    }
-    if (load_image_pipelines_[i]) {
-      load_image_pipelines_[i]->release();
-      load_image_pipelines_[i] = nullptr;
     }
   }
   if (load_direct_raw32_pipeline_) {
@@ -4188,8 +4049,7 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
       break;
     }
     case xenos::DataDimension::k2DOrStacked: {
-      const bool shader_write =
-          IsResolveRefreshKey(key) || IsDirectImageLoadKey(key);
+      const bool shader_write = IsResolveRefreshKey(key);
       metal_texture = CreateTexture2D(
           width, height, key.GetDepthOrArraySize(), metal_format, metal_swizzle,
           key.mip_max_level + 1, shader_write,
@@ -4308,12 +4168,6 @@ MetalTextureCache::MetalTexture::~MetalTexture() {
     resolve_write_view_->release();
     resolve_write_view_ = nullptr;
   }
-  for (MTL::Texture*& view : level_write_views_) {
-    if (view) {
-      view->release();
-      view = nullptr;
-    }
-  }
   if (metal_texture_) {
     metal_texture_->release();
     metal_texture_ = nullptr;
@@ -4350,50 +4204,6 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateResolveWriteView() {
   }
   resolve_write_view_ = metal_texture_->newTextureView(view_format);
   return resolve_write_view_;
-}
-
-MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateLevelWriteView(
-    uint32_t level, uint32_t block_bytes) {
-  if (level >= level_write_views_.size()) {
-    return nullptr;
-  }
-  if (level_write_views_[level]) {
-    return level_write_views_[level];
-  }
-  if (!metal_texture_ || level >= metal_texture_->mipmapLevelCount()) {
-    return nullptr;
-  }
-  MTL::PixelFormat view_format;
-  switch (block_bytes) {
-    case 1:
-      view_format = MTL::PixelFormatR8Uint;
-      break;
-    case 2:
-      view_format = MTL::PixelFormatR16Uint;
-      break;
-    case 4:
-      view_format = MTL::PixelFormatR32Uint;
-      break;
-    case 8:
-      view_format = MTL::PixelFormatRG32Uint;
-      break;
-    case 16:
-      view_format = MTL::PixelFormatRGBA32Uint;
-      break;
-    default:
-      return nullptr;
-  }
-  if (metal_texture_->textureType() != MTL::TextureType2DArray ||
-      metal_texture_->sampleCount() != 1 ||
-      !(metal_texture_->usage() & MTL::TextureUsageShaderWrite) ||
-      (view_format != metal_texture_->pixelFormat() &&
-       !(metal_texture_->usage() & MTL::TextureUsagePixelFormatView))) {
-    return nullptr;
-  }
-  level_write_views_[level] = metal_texture_->newTextureView(
-      view_format, MTL::TextureType2DArray, NS::Range::Make(level, 1),
-      NS::Range::Make(0, metal_texture_->arrayLength()));
-  return level_write_views_[level];
 }
 
 MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
