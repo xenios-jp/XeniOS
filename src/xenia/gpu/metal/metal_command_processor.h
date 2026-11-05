@@ -560,6 +560,7 @@ class MetalCommandProcessor : public CommandProcessor {
   void FinishAsyncCompileTaskLocked();
   // Counts a request as finished for the progress and the rebuild record.
   void CountAsyncCompileTaskFinishedLocked();
+  void EndStorageLoadingIfDoneLocked();
   // Blocks until |done|, checked under async_compile_mutex_ after each finished
   // task, holds. The compile threads may use every core meanwhile.
   template <typename Done>

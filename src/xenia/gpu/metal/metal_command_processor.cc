@@ -3279,6 +3279,7 @@ void MetalCommandProcessor::InitializeShaderStorage(
   {
     // Everything may already be done, with no later finish to notice it.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    EndStorageLoadingIfDoneLocked();
     storage_stats_queued_all_ = true;
     if (storage_stats_pending_ && storage_stats_keys_.empty()) {
       RecordStorageRebuildStatsLocked();
@@ -3565,6 +3566,20 @@ void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
 
 void MetalCommandProcessor::CountAsyncCompileTaskFinishedLocked() {
   compile_activity.finished.fetch_add(1, std::memory_order_relaxed);
+  EndStorageLoadingIfDoneLocked();
+}
+
+void MetalCommandProcessor::EndStorageLoadingIfDoneLocked() {
+  // The stored pipelines' rebuild is over once the compile threads have
+  // finished as many tasks as were queued by its end (the test the shader
+  // indicator uses). Until then the pipeline archive isn't saved.
+  const uint64_t queued_end =
+      compile_activity.storage_queued_end.load(std::memory_order_relaxed);
+  if (queued_end &&
+      compile_activity.storage_loading.load(std::memory_order_relaxed) &&
+      compile_activity.finished.load(std::memory_order_relaxed) >= queued_end) {
+    compile_activity.storage_loading = false;
+  }
 }
 
 void MetalCommandProcessor::NoteStoredPipelineDoneLocked(
