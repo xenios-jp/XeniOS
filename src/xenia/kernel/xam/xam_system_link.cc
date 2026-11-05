@@ -99,6 +99,13 @@ DEFINE_string(systemlink_room, "",
               "see each other's IP addresses and profile IDs.",
               "Network");
 
+DEFINE_string(systemlink_debug_nat, "",
+              "For testing what the player is told: \"open\", \"moderate\", "
+              "\"strict\" or \"blocked\" reports that as this network's NAT "
+              "type instead of checking it with the lobby's STUN servers. "
+              "Empty checks.",
+              "Network");
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -229,6 +236,10 @@ std::unique_ptr<net::secure::PacketTransport> OpenTransport(
     config.room = *room;
     config.title_id = execution.title_id;
     config.title_version = execution.version_value;
+    config.nat_override = net::relay::ParseNatType(cvars::systemlink_debug_nat);
+    if (config.nat_override == net::relay::NatType::kUnknown) {
+      config.nat_override.reset();
+    }
     config.allowed = [] { return RelayAllowed(); };
     {
       std::lock_guard lock(relay_policy_mutex);

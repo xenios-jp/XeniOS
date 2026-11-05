@@ -1805,6 +1805,23 @@ TEST_CASE("Relay players without TURN only go direct", "[relay]") {
   CHECK(c.client.status().players == 1);
   CHECK(c.client.status().direct == 0);
   CHECK(c.client.status().relayed == 0);
+  CHECK(!c.client.status().turn);
+  // Unreachable only once it has gone without a path for a while.
+  CHECK(c.client.status().unreachable == 0);
+  blocked.Run(RelayClient::kUnreachableMs);
+  CHECK(c.client.status().unreachable == 1);
+  CHECK(a.client.status().unreachable == 0);
+}
+
+TEST_CASE("Relay players reached through TURN aren't unreachable", "[relay]") {
+  Network network;
+  network.block_direct = true;
+  auto& a = network.Add(kMacA);
+  network.Add(kMacB);
+  network.Run(3000 + RelayClient::kUnreachableMs);
+  CHECK(a.client.status().turn);
+  CHECK(a.client.status().relayed == 1);
+  CHECK(a.client.status().unreachable == 0);
 }
 
 TEST_CASE("Relay players fall back to STUN when TURN refuses", "[relay]") {
