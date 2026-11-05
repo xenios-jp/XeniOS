@@ -564,7 +564,10 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   if (ExceptionHandler::UnhandledObserver observer =
           unhandled_observer_.load(std::memory_order_acquire)) {
     observer(signal_number, reinterpret_cast<uint64_t>(signal_info->si_addr),
-             &thread_context);
+             &thread_context,
+             ex.code() == Exception::Code::kAccessViolation
+                 ? ex.access_violation_operation()
+                 : Exception::AccessViolationOperation::kUnknown);
   }
 
   if (signal_number == SIGTRAP) {

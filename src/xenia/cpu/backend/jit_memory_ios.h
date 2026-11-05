@@ -47,6 +47,9 @@ class IOSJitMemory {
   // whether it still is.
   static bool NeedsAttachedTool();
   static bool ToolAttached();
+  // Whether code is mapped through the JIT tool's TXM preparation (iOS 26 and
+  // later on devices with TXM) rather than toggled under a debugger.
+  static bool UsesTXMPreparation();
   size_t AlignOffset(size_t offset) const;
   bool BeginWrite(void* address, size_t size);
   bool EndWrite(void* address, size_t size);

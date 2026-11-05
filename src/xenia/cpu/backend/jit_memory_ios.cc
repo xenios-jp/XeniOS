@@ -740,6 +740,10 @@ struct IOSJitMemory::Impl {
 
 IOSJitMemory::IOSJitMemory() : impl_(std::make_unique<Impl>()) {}
 
+bool IOSJitMemory::UsesTXMPreparation() {
+  return Impl::IOSUseTXMBrokerPath();
+}
+
 void IOSJitMemory::SetExternalPrepareHook(ExternalPrepareHook hook) {
   external_prepare_hook.store(hook, std::memory_order_release);
 }

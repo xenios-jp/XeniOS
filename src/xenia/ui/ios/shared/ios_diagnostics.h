@@ -45,6 +45,10 @@ NSString* xe_ios_diagnostics_launch_id(void);
 void xe_ios_diagnostics_note_game_running(BOOL running);
 // The emulator launched a title: its title ID and the JIT's code range.
 void xe_ios_diagnostics_note_title(uint32_t title_id, uint64_t jit_base, uint64_t jit_size);
+// The running game's version (e.g. its title update), with the settings that
+// differ from their defaults and how JIT is provided, for a crash record of
+// this launch. After xe_ios_diagnostics_note_title.
+void xe_ios_diagnostics_note_game_details(NSString* game_version);
 
 // A MetricKit crash report as a crash record body (source metrickit), from a
 // payload covering |begin| to |end|. Queued with the launch and game running

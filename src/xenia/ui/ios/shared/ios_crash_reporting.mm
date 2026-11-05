@@ -22,6 +22,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/system_ios.h"
 #include "xenia/ui/ios/shared/ios_diagnostics.h"
+#include "xenia/ui/ios/shared/ios_fault_record.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 
 #if __has_include(<MetricKit/MetricKit.h>)
@@ -795,12 +796,14 @@ void xe_ios_begin_session_log(const std::filesystem::path& log_path) {
                          queue:main_queue
                     usingBlock:^(NSNotification* __unused note) {
                       SetSessionState(kStateBackground);
+                      xe_ios_fault_record_note_event(XeIOSEventBackground);
                     }];
     [center addObserverForName:UIApplicationWillEnterForegroundNotification
                         object:nil
                          queue:main_queue
                     usingBlock:^(NSNotification* __unused note) {
                       SetSessionState(kStateForeground);
+                      xe_ios_fault_record_note_event(XeIOSEventForeground);
                     }];
     [center addObserverForName:UIApplicationDidBecomeActiveNotification
                         object:nil
@@ -838,6 +841,15 @@ void xe_ios_session_note_game_running(BOOL running) {
     return;
   }
   g_state[@"game"] = @(running);
+  WriteStateLocked();
+}
+
+void xe_ios_session_note_crash_details(NSDictionary* details) {
+  std::lock_guard<std::mutex> lock(StateMutex());
+  if (!g_state || [g_state[@"state"] isEqualToString:kStateFatal]) {
+    return;
+  }
+  g_state[@"details"] = details;
   WriteStateLocked();
 }
 

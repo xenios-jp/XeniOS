@@ -23,6 +23,7 @@
 #include "xenia/base/byte_order.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/exception_handler.h"
+#include "xenia/base/guest_crash_info.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/platform.h"
@@ -37,6 +38,9 @@
 #endif
 #if XE_PLATFORM_IOS
 #include <dispatch/dispatch.h>
+#endif
+#if XE_PLATFORM_APPLE
+#include <mach/mach.h>
 #endif
 #include "xenia/cpu/backend/a64/a64_assembler.h"
 #include "xenia/cpu/backend/a64/a64_code_cache.h"
@@ -99,6 +103,118 @@ namespace xe {
 namespace cpu {
 namespace backend {
 namespace a64 {
+
+#if XE_PLATFORM_APPLE
+namespace {
+
+// The backend a host crash is mapped back to guest code with, while one is
+// initialized.
+std::atomic<A64Backend*> crash_info_backend_{nullptr};
+
+// From here to GetGuestCrashInfo's end: async-signal-safe. Memory is read with
+// vm_read_overwrite, which fails instead of faulting on a bad pointer.
+bool ReadCrashMemory(uint64_t address, void* out, size_t size) {
+  vm_size_t read = 0;
+  return vm_read_overwrite(mach_task_self(), static_cast<vm_address_t>(address),
+                           size, reinterpret_cast<vm_address_t>(out),
+                           &read) == KERN_SUCCESS &&
+         read == size;
+}
+
+bool ReadGuest32(const uint8_t* membase, uint32_t address, uint32_t* out) {
+  uint32_t value;
+  if (!ReadCrashMemory(reinterpret_cast<uint64_t>(membase) + address, &value,
+                       sizeof(value))) {
+    return false;
+  }
+  *out = xe::byte_swap(value);
+  return true;
+}
+
+// The title's and the system's code: 0x80000000-0x9FFFFFFF, word aligned.
+bool IsGuestCode(uint64_t address) {
+  return address >= 0x80000000u && address < 0xA0000000u && !(address & 3);
+}
+
+bool GetGuestCrashInfo(const HostThreadContext& context, uint64_t fault_address,
+                       GuestCrashInfo* out) {
+  A64Backend* backend = crash_info_backend_.load(std::memory_order_acquire);
+  if (!backend) {
+    return false;
+  }
+  const uint8_t* membase = backend->processor()->memory()->virtual_membase();
+  const uint64_t membase_address = reinterpret_cast<uint64_t>(membase);
+  bool found = false;
+  if (fault_address >= membase_address &&
+      fault_address - membase_address <= UINT32_MAX) {
+    out->fault_in_guest = true;
+    out->fault_address = static_cast<uint32_t>(fault_address - membase_address);
+    found = true;
+  }
+
+  // The JIT code, or a host helper it called just before (its link register):
+  // the guest function and instruction it was translated from.
+  A64CodeCache* code_cache = backend->code_cache();
+  uint64_t host_pc = context.pc;
+  GuestFunction* function = code_cache->LookupFunction(host_pc);
+  if (!function) {
+    host_pc = context.x[30];
+    function = code_cache->LookupFunction(host_pc);
+    out->via_helper = function != nullptr;
+  }
+  if (function) {
+    out->function = function->address();
+    out->pc = function->MapMachineCodeToGuestAddress(host_pc);
+    found = true;
+  }
+
+  // The guest context, in x20 while JIT code runs. A host helper may have
+  // reused x20, so it counts only if its memory base is this one.
+  const uint64_t ppc_context = context.x[20];
+  uint64_t context_membase = 0;
+  if (!ppc_context ||
+      !ReadCrashMemory(ppc_context + offsetof(ppc::PPCContext, virtual_membase),
+                       &context_membase, sizeof(context_membase)) ||
+      context_membase != membase_address) {
+    return found;
+  }
+  uint32_t thread_id = 0;
+  uint64_t lr = 0;
+  uint64_t sp = 0;
+  if (ReadCrashMemory(ppc_context + offsetof(ppc::PPCContext, thread_id),
+                      &thread_id, sizeof(thread_id))) {
+    out->thread_id = thread_id;
+  }
+  if (ReadCrashMemory(ppc_context + offsetof(ppc::PPCContext, lr), &lr,
+                      sizeof(lr)) &&
+      IsGuestCode(lr)) {
+    out->lr = static_cast<uint32_t>(lr);
+  }
+  // The guest stack's back chain: r1 points at the caller's stack pointer,
+  // and a function saves its link register 8 bytes below its caller's frame.
+  // Only values that point into guest code are kept, never other stack data.
+  if (ReadCrashMemory(ppc_context + offsetof(ppc::PPCContext, r) + 8, &sp,
+                      sizeof(sp))) {
+    uint32_t frame = static_cast<uint32_t>(sp);
+    while (out->frame_count < GuestCrashInfo::kMaxFrames && frame) {
+      uint32_t caller = 0;
+      uint32_t return_address = 0;
+      if (!ReadGuest32(membase, frame, &caller) || caller <= frame ||
+          caller - frame > (1u << 20) ||
+          !ReadGuest32(membase, caller - 8, &return_address)) {
+        break;
+      }
+      if (IsGuestCode(return_address)) {
+        out->frames[out->frame_count++] = return_address;
+      }
+      frame = caller;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+#endif  // XE_PLATFORM_APPLE
 
 // Resolve a guest function at runtime. Called by the resolve thunk when
 // a guest address has not yet been compiled.
@@ -1706,6 +1822,12 @@ A64Backend::~A64Backend() {
     dispatch_release(source);
   }
 #endif
+#if XE_PLATFORM_APPLE
+  A64Backend* self = this;
+  if (crash_info_backend_.compare_exchange_strong(self, nullptr)) {
+    SetGuestCrashInfoProvider(nullptr);
+  }
+#endif  // XE_PLATFORM_APPLE
   ExceptionHandler::Uninstall(&ExceptionCallbackThunk, this);
   // gone if Memory was torn down first
   if (auto mmio_handler = MMIOHandler::global_handler()) {
@@ -1844,6 +1966,10 @@ bool A64Backend::Initialize(Processor* processor) {
   dispatch_resume(source);
   code_map_signal_source_ = source;
 #endif
+#if XE_PLATFORM_APPLE
+  crash_info_backend_.store(this, std::memory_order_release);
+  SetGuestCrashInfoProvider(GetGuestCrashInfo);
+#endif  // XE_PLATFORM_APPLE
 
   return true;
 }

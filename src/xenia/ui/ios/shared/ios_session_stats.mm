@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/shared/ios_session_stats.h"
 
+#import "xenia/ui/ios/shared/ios_fault_record.h"
+
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <os/proc.h>
@@ -253,6 +255,12 @@ void CloseWindowLocked(uint64_t window_ticks, NSProcessInfoThermalState thermal)
   const uint64_t window_drawable_wait =
       drawable_wait_ticks - g_window_begin_drawable_wait_ticks;
   const uint64_t window_compiles = compiles_finished - g_window_begin_compiles_finished;
+  // A burst of shader compiles: one event when a window starts one.
+  static bool compiling = false;
+  if (window_compiles >= kWindowStutterCompiles && !compiling) {
+    xe_ios_fault_record_note_event(XeIOSEventShaderBurst);
+  }
+  compiling = window_compiles >= kWindowStutterCompiles;
   g_window_begin_frames = frames;
   g_window_begin_active_ticks = active_ticks;
   g_window_begin_gpu_busy_ns = gpu_busy_ns;
@@ -476,6 +484,14 @@ void SampleLocked(bool checkpoint) {
   if (thermal >= NSProcessInfoThermalStateNominal && thermal <= NSProcessInfoThermalStateCritical) {
     g_thermal_seconds[thermal] += seconds;
   }
+  // Events when it gets hotter: Serious, then Critical.
+  static NSProcessInfoThermalState last_thermal = NSProcessInfoThermalStateNominal;
+  if (thermal > last_thermal && thermal >= NSProcessInfoThermalStateSerious) {
+    xe_ios_fault_record_note_event(thermal == NSProcessInfoThermalStateCritical
+                                       ? XeIOSEventThermalCritical
+                                       : XeIOSEventThermalSerious);
+  }
+  last_thermal = thermal;
   CloseWindowLocked(now - previous_sample_ticks, thermal);
   if (info.lowPowerModeEnabled) {
     g_low_power_seconds += seconds;
@@ -583,6 +599,7 @@ void xe_ios_session_stats_begin(void) {
                                Queue());
     dispatch_source_set_event_handler(g_memory_source, ^{
       ++g_memory_warnings;
+      xe_ios_fault_record_note_event(XeIOSEventMemoryWarning);
     });
     dispatch_resume(g_memory_source);
 
@@ -650,6 +667,7 @@ void xe_ios_session_stats_note_guest_frame(void) {
   if (!previous) {
     // The game's first frame: how long it took to start.
     g_first_frame_ticks.store(now - g_begin_ticks, std::memory_order_relaxed);
+    xe_ios_fault_record_note_event(XeIOSEventFirstFrame);
     return;
   }
   const uint64_t interval = now - previous;

@@ -21,7 +21,10 @@
 
 // The previous launch's fault, if it recorded one, with code addresses as
 // image offsets: {"signal", "faultAddress", "inJit", "titleId", "uptimeS",
-// "binaryUUID", "frames": [{"image", "offset"}]}. Deletes the file. Call
+// "binaryUUID", "frames": [{"image", "offset"}], "thread" (the crashed
+// thread's role, not its name), "access", and when known "guest" ({"threadId",
+// "function", "pc", "lr", "frames", "viaHelper"}, guest code addresses only),
+// "guestFaultAddress" and "events" ([{"e", "ms"}])}. Deletes the file. Call
 // before xe_ios_fault_record_install().
 NSDictionary* xe_ios_fault_record_take_previous(void);
 
@@ -29,6 +32,24 @@ NSDictionary* xe_ios_fault_record_take_previous(void);
 // xe::ExceptionHandler. Once, at launch.
 void xe_ios_fault_record_install(NSString* launch_id, NSString* endpoint,
                                  NSData* envelope_json);
+
+// Moments a crash record lists, most recent last (at most 16), with the time
+// since launch: what happened just before a crash.
+typedef enum {
+  XeIOSEventGameStart = 1,
+  XeIOSEventFirstFrame,
+  XeIOSEventShaderBurst,
+  XeIOSEventMemoryWarning,
+  XeIOSEventBackground,
+  XeIOSEventForeground,
+  XeIOSEventThermalSerious,
+  XeIOSEventThermalCritical,
+  XeIOSEventJitFailure,
+  XeIOSEventGameStop,
+} XeIOSEvent;
+
+// Any thread; a few stores, no locks.
+void xe_ios_fault_record_note_event(XeIOSEvent event);
 
 // Kept current in the crash context. Thread-safe.
 void xe_ios_fault_record_note_title(uint32_t title_id);
