@@ -21,6 +21,7 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/gpu/metal/metal_compile_activity.h"
+#include "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 
 namespace xe {
 namespace ui {
@@ -216,6 +217,9 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   CFTimeInterval launch_since_;
   CFTimeInterval stage_since_;
   BOOL shaders_;
+  // The game is held while its stored shaders rebuild under this screen: its own audio would
+  // otherwise play over it, and the compile threads get the CPU.
+  BOOL holding_;
   // The stage last reported as drawn.
   LaunchStage reported_stage_;
   uint64_t reported_generation_;
@@ -321,10 +325,16 @@ NSString* ElapsedString(CFTimeInterval seconds) {
     [hint_label_.widthAnchor constraintLessThanOrEqualToAnchor:stack_.widthAnchor],
     [status_row.widthAnchor constraintLessThanOrEqualToAnchor:stack_.widthAnchor],
   ]];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(sheetPlayNow:)
+                                               name:XeniaShaderPlayNowNotification
+                                             object:nil];
   return self;
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [self setHolding:NO];
   [display_link_ invalidate];
   [display_link_ release];
   [stack_ release];
@@ -448,6 +458,9 @@ NSString* ElapsedString(CFTimeInterval seconds) {
                        (storage_loading || backlog >= kShaderBacklog);
 
   [self applyStage:snapshot.stage shaders:shaders progress:progress now:now];
+  // A stored-shader rebuild doesn't need the game running; a first launch's compiles come from
+  // its draws, so that one isn't held.
+  [self setHolding:shaders && storage_loading];
   if (!showing_) {
     [self showAnimated:YES];
   }
@@ -591,6 +604,7 @@ NSString* ElapsedString(CFTimeInterval seconds) {
 
 - (void)hideAnimated:(BOOL)animated {
   showing_ = NO;
+  [self setHolding:NO];
   reported_stage_ = LaunchStage::kNone;
   if (!animated) {
     [self.layer removeAllAnimations];
@@ -611,6 +625,28 @@ NSString* ElapsedString(CFTimeInterval seconds) {
           [spinner_ stopAnimating];
         }
       }];
+}
+
+- (void)setHolding:(BOOL)holding {
+  if (holding_ == holding) {
+    return;
+  }
+  holding_ = holding;
+  xe_ios_set_launch_shader_hold(holding);
+}
+
+// Lets the game run and show itself (Play now on the shader sheet); its shaders keep being
+// prepared, and the capsule shows them.
+- (void)playNow {
+  if (!showing_) {
+    return;
+  }
+  finished_ = YES;
+  [self hideAnimated:YES];
+}
+
+- (void)sheetPlayNow:(NSNotification*)__unused note {
+  [self playNow];
 }
 
 - (void)cancelTapped {
