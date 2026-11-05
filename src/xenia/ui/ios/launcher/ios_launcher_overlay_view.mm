@@ -472,13 +472,13 @@ NSAttributedString* xe_status_text(NSString* text, UIColor* color) {
 }
 
 UIButton* xe_new_notice_action(NSString* title) {
-  // A grey capsule with the action in the accent, so the row's one action reads as one.
-  UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
+  // The action as plain accent text, like a table row's action: a capsule inside the row's own
+  // grey made a second box at the row's edge and took the detail's room. The insets keep a
+  // 44-point target and end the text as far from the row's edge as the symbol starts.
+  UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
   config.baseForegroundColor = [XeniaTheme accent];
-  config.baseBackgroundColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.14];
-  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(5.0, 12.0, 5.0, 12.0);
+  config.contentInsets = NSDirectionalEdgeInsetsMake(12.0, 8.0, 12.0, 7.0);
   config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
       NSDictionary<NSAttributedStringKey, id>* attributes) {
     NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
