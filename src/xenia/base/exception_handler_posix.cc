@@ -77,6 +77,8 @@ static void RestoreOriginalSignalHandlers() {
   sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
 }
 
+static std::atomic<uint32_t> unanswered_jit_breakpoints{0};
+
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
   struct DepthScope {
@@ -140,6 +142,23 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
 #else
   mcontext_t& mcontext =
       reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
+#endif
+
+#if XE_PLATFORM_APPLE && XE_ARCH_ARM64
+  if (signal_number == SIGTRAP) {
+    // "brk #0xf00d" is how the iOS JIT asks its debugger tool for memory. With
+    // the tool attached the debugger consumes it and never gets here; if it
+    // detached or doesn't answer, skip the instruction so the caller can say
+    // so instead of the process dying on the trap.
+    constexpr uint32_t kJitRequestBrk = 0xD4200000u | (0xF00Du << 5);
+    const uint64_t pc = mcontext->__ss.__pc;
+    if (pc && (pc & 3) == 0 &&
+        *reinterpret_cast<const uint32_t*>(pc) == kJitRequestBrk) {
+      unanswered_jit_breakpoints.fetch_add(1, std::memory_order_relaxed);
+      mcontext->__ss.__pc = pc + 4;
+      return;
+    }
+  }
 #endif
 
   HostThreadContext thread_context;
@@ -560,6 +579,10 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
 
 void ExceptionHandler::SetUnhandledObserver(UnhandledObserver observer) {
   unhandled_observer_.store(observer, std::memory_order_release);
+}
+
+uint32_t ExceptionHandler::UnansweredJitBreakpoints() {
+  return unanswered_jit_breakpoints.load(std::memory_order_relaxed);
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {
