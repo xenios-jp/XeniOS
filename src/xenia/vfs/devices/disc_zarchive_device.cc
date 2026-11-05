@@ -36,7 +36,7 @@ bool DiscZarchiveDevice::Initialize() {
 
   constexpr std::string_view root_path = "/";
   const ZArchiveNodeHandle handle = reader_->LookUp(root_path);
-  XELOGI("DiscZarchiveDevice::Initialize: root LookUp('{}') -> handle={}",
+  XELOGD("DiscZarchiveDevice::Initialize: root LookUp('{}') -> handle={}",
          root_path, static_cast<uint32_t>(handle));
   auto root_entry = new DiscZarchiveEntry(this, nullptr, root_path);
   root_entry->attributes_ = kFileAttributeDirectory;
@@ -46,7 +46,7 @@ bool DiscZarchiveDevice::Initialize() {
   root_entry_ = std::unique_ptr<Entry>(root_entry);
 
   bool result = ReadAllEntries("", root_entry, nullptr);
-  XELOGI(
+  XELOGD(
       "DiscZarchiveDevice::Initialize: ReadAllEntries returned {}, "
       "root has {} children",
       result, root_entry->children().size());
@@ -63,7 +63,7 @@ Entry* DiscZarchiveDevice::ResolvePath(const std::string_view path) {
   // be in the form:
   // some\PATH.foo
   XELOGFS("DiscZarchiveDevice::ResolvePath({})", path);
-  XELOGI("DiscZarchiveDevice::ResolvePath: path='{}'", path);
+  XELOGD("DiscZarchiveDevice::ResolvePath: path='{}'", path);
 
   if (!reader_) {
     XELOGI("DiscZarchiveDevice::ResolvePath: reader_ is null");
@@ -71,7 +71,7 @@ Entry* DiscZarchiveDevice::ResolvePath(const std::string_view path) {
   }
 
   const ZArchiveNodeHandle handle = reader_->LookUp(path);
-  XELOGI(
+  XELOGD(
       "DiscZarchiveDevice::ResolvePath: LookUp('{}') -> handle={} (invalid={})",
       path, static_cast<uint32_t>(handle), handle == ZARCHIVE_INVALID_NODE);
   if (handle == ZARCHIVE_INVALID_NODE) {
@@ -79,7 +79,7 @@ Entry* DiscZarchiveDevice::ResolvePath(const std::string_view path) {
   }
 
   Entry* result = root_entry_->ResolvePath(path);
-  XELOGI("DiscZarchiveDevice::ResolvePath: entry tree walk -> {}",
+  XELOGD("DiscZarchiveDevice::ResolvePath: entry tree walk -> {}",
          result ? result->absolute_path() : "(null)");
   return result;
 }
@@ -114,7 +114,7 @@ bool DiscZarchiveDevice::ReadAllEntries(const std::string& path,
 
       const std::string full_path = path + std::string(dirEntry.name);
       const ZArchiveNodeHandle fileHandle = reader_->LookUp(full_path);
-      XELOGI(
+      XELOGD(
           "DiscZarchiveDevice::ReadAllEntries: entry='{}' type={} "
           "handle={} size={}",
           full_path,
