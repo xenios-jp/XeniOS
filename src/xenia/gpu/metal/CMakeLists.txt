@@ -12,12 +12,16 @@ add_library(xenia-gpu-metal STATIC
   metal_graphics_system.h
   metal_heap_pool.cc
   metal_heap_pool.h
+  metal_pipeline_archive.cc
+  metal_pipeline_archive.h
   metal_primitive_processor.cc
   metal_primitive_processor.h
   metal_render_target_cache.cc
   metal_render_target_cache.h
   metal_shader_converter.cc
   metal_shader_converter.h
+  metal_shader_library_cache.cc
+  metal_shader_library_cache.h
   metal_shared_memory.cc
   metal_shared_memory.h
   metal_tessellation_shaders.cc

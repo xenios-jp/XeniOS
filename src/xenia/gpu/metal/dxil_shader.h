@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/ui/metal/metal_api.h"
@@ -45,7 +46,13 @@ class DxilShader : public SpirvShader {
     // library with an available compiler, and looks up its
     // entry point.
     bool CompileToAir(MTL::Device* device,
-                      const MetalShaderConverter& converter);
+                      const MetalShaderConverter& converter,
+                      std::vector<uint8_t>* metallib_out = nullptr);
+
+    // Loads a Metal library this translation was compiled to earlier (see
+    // MetalShaderLibraryCache) instead of translating the guest shader.
+    bool LoadMetallib(MTL::Device* device, const std::vector<uint8_t>& metallib,
+                      const std::string& entry_point_name);
 
     MTL::Library* metal_library() const { return metal_library_; }
     MTL::Function* metal_function() const { return metal_function_; }

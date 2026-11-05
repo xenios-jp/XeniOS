@@ -929,17 +929,56 @@ MetalCommandProcessor::EnsureTranslationSpirv(
   return ShaderCompileStatus::kReady;
 }
 
-bool MetalCommandProcessor::CompileHostShader(Shader::Translation* translation,
-                                              bool is_ios) {
+bool MetalCommandProcessor::CompileHostShader(
+    Shader::Translation* translation, bool is_ios,
+    std::vector<uint8_t>* metallib_out) {
   if (!translation) {
     return false;
   }
   if (UseDxilPath()) {
     return static_cast<DxilShader::DxilTranslation*>(translation)
-        ->CompileToAir(device_, metal_shader_converter_);
+        ->CompileToAir(device_, metal_shader_converter_, metallib_out);
   }
   return static_cast<MslShader::MslTranslation*>(translation)
       ->CompileToMsl(device_, is_ios);
+}
+
+MetalCommandProcessor::ShaderCompileStatus
+MetalCommandProcessor::TranslateAndCompileHostShader(
+    Shader::Translation* translation, SpirvShaderTranslator& translator,
+    bool is_ios) {
+  if (!translation) {
+    return ShaderCompileStatus::kFailed;
+  }
+  // Shader dumps and bisection want the translation itself.
+  const bool cacheable = UseDxilPath() && cvars::dump_shaders.empty() &&
+                         shader_library_cache_.is_open();
+  MetalShaderLibraryCache::Key key;
+  if (cacheable) {
+    key = MetalShaderLibraryCache::MakeKey(*translation);
+    MetalShaderLibraryCache::Entry entry;
+    if (shader_library_cache_.Find(key, entry) &&
+        static_cast<DxilShader::DxilTranslation*>(translation)
+            ->LoadMetallib(device_, entry.metallib, entry.entry_point_name)) {
+      return ShaderCompileStatus::kReady;
+    }
+  }
+  ShaderCompileStatus status = EnsureTranslationSpirv(translation, translator);
+  if (status != ShaderCompileStatus::kReady) {
+    return status;
+  }
+  std::vector<uint8_t> metallib;
+  if (!CompileHostShader(translation, is_ios,
+                         cacheable ? &metallib : nullptr)) {
+    return ShaderCompileStatus::kFailed;
+  }
+  if (cacheable && !metallib.empty()) {
+    shader_library_cache_.Store(
+        key, metallib,
+        static_cast<DxilShader::DxilTranslation*>(translation)
+            ->entry_point_name());
+  }
+  return ShaderCompileStatus::kReady;
 }
 
 void MetalCommandProcessor::NoteShaderCompileFailed(
@@ -1061,11 +1100,8 @@ Shader::Translation* MetalCommandProcessor::GetOrCreateHostTranslation(
             shader.type() == xenos::ShaderType::kVertex ? 2 : 1)) {
       status = ShaderCompileStatus::kPending;
     } else {
-      status = EnsureTranslationSpirv(translation, *spirv_shader_translator_);
-      if (status == ShaderCompileStatus::kReady &&
-          !CompileHostShader(translation, kIsIos)) {
-        status = ShaderCompileStatus::kFailed;
-      }
+      status = TranslateAndCompileHostShader(translation,
+                                             *spirv_shader_translator_, kIsIos);
       if (status == ShaderCompileStatus::kFailed) {
         NoteShaderCompileFailed(translation);
       }
@@ -1214,10 +1250,17 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
                              NS::UTF8StringEncoding));
     }
   }
+  // Through the title's pipeline archive, which keeps the specialized function
+  // for the next launch.
+  MTL::FunctionDescriptor* function_desc =
+      MTL::FunctionDescriptor::alloc()->init();
+  function_desc->setName(
+      NS::String::string(function_name.c_str(), NS::UTF8StringEncoding));
+  function_desc->setConstantValues(values);
   NS::Error* error = nullptr;
-  MTL::Function* function = library->newFunction(
-      NS::String::string(function_name.c_str(), NS::UTF8StringEncoding), values,
-      &error);
+  MTL::Function* function =
+      pipeline_archive_.NewFunction(library, function_desc, &error);
+  function_desc->release();
   values->release();
   if (!function) {
     if (error_out) {
@@ -1504,7 +1547,7 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
 
   NS::Error* error = nullptr;
   MTL::RenderPipelineState* pipeline =
-      device_->newRenderPipelineState(desc, &error);
+      pipeline_archive_.NewRenderPipelineState(device_, desc, &error);
   desc->release();
 
   if (!pipeline && error_out && error) {
@@ -1867,12 +1910,11 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
     } else {
       ShaderCompileStatus translation_status =
           shader_request.translation
-              ? EnsureTranslationSpirv(shader_request.translation,
-                                       *worker_translator)
+              ? TranslateAndCompileHostShader(shader_request.translation,
+                                              *worker_translator,
+                                              shader_request.is_ios)
               : ShaderCompileStatus::kFailed;
-      bool compiled =
-          translation_status == ShaderCompileStatus::kReady &&
-          CompileHostShader(shader_request.translation, shader_request.is_ios);
+      bool compiled = translation_status == ShaderCompileStatus::kReady;
       // Nothing queues a translation twice and the draw thread only translates
       // one that is not queued, so losing the claim here shouldn't happen.
       // Leave it unqueued for a later draw to retry rather than fail it
@@ -2849,6 +2891,11 @@ void MetalCommandProcessor::ShutdownContext() {
 
   ShutdownAsyncCompilation();
   storage_writer_.ShutdownShaderStorage();
+  // Not saved here: a save takes seconds, and quitting the app may not wait for
+  // it. What was added since the last save is compiled again next time.
+  JoinPipelineArchiveSave();
+  pipeline_archive_.Close(false);
+  shader_library_cache_.Close();
   if (exact_float_depth_bias_library_) {
     exact_float_depth_bias_library_->release();
     exact_float_depth_bias_library_ = nullptr;
@@ -3131,6 +3178,34 @@ void MetalCommandProcessor::InitializeShaderStorage(
   // Sum so a bump of either version invalidates - both only ever move up.
   config.version = PipelineDescription::kVersion +
                    SpirvShaderTranslator::Modification::kVersion;
+
+  // What the stored shaders and pipelines were built into last time, so they
+  // load instead of being built again (see MetalShaderLibraryCache and
+  // MetalPipelineArchive).
+  JoinPipelineArchiveSave();
+  {
+    const std::filesystem::path title_local_root =
+        GetShaderStorageLocalRoot(cache_root) / "metal" /
+        fmt::format("{:08X}", title_id);
+    // Both are discarded when the build or the translation settings change:
+    // the libraries, and the pipelines' functions, are made by this build.
+    const std::string fingerprint = MetalShaderLibraryCache::MakeFingerprint(
+        fmt::format("{} device={} msaa2x={} scale={}x{}",
+                    UseDxilPath() ? "dxil" : "msl",
+                    device_->name() ? device_->name()->utf8String() : "",
+                    spirv_translator_native_2x_msaa_,
+                    spirv_translator_resolution_scale_x_,
+                    spirv_translator_resolution_scale_y_));
+    if (UseDxilPath()) {
+      shader_library_cache_.Open(title_local_root / "shader_libraries.bin",
+                                 fingerprint);
+    } else {
+      shader_library_cache_.Close();
+    }
+    pipeline_archive_.Open(device_, title_local_root / "pipelines",
+                           fingerprint);
+    archive_saved_ticks_ = xe::Clock::QueryHostTickCount();
+  }
 
   std::vector<PipelineStoredDescription> stored_descriptions;
   if (!storage_writer_.InitializeShaderStorage(
@@ -7947,6 +8022,41 @@ void MetalCommandProcessor::ScheduleSpirvArgumentBufferRelease(
   }
 }
 
+void MetalCommandProcessor::JoinPipelineArchiveSave() {
+  if (archive_save_thread_.joinable()) {
+    archive_save_thread_.join();
+  }
+  archive_save_running_ = false;
+}
+
+void MetalCommandProcessor::MaybeSavePipelineArchive() {
+  // Once the stored pipelines are rebuilt and nothing is compiling, so the
+  // compile threads don't wait for the save to add theirs.
+  if (archive_save_running_.load(std::memory_order_acquire) ||
+      !pipeline_archive_.unsaved_additions() ||
+      compile_activity.storage_loading.load(std::memory_order_relaxed)) {
+    return;
+  }
+  if (compile_activity.queued.load(std::memory_order_relaxed) !=
+      compile_activity.finished.load(std::memory_order_relaxed)) {
+    return;
+  }
+  const uint64_t now = xe::Clock::QueryHostTickCount();
+  if (now - archive_saved_ticks_ <
+      kPipelineArchiveSaveSeconds * xe::Clock::QueryHostTickFrequency()) {
+    return;
+  }
+  archive_saved_ticks_ = now;
+  if (archive_save_thread_.joinable()) {
+    archive_save_thread_.join();
+  }
+  archive_save_running_ = true;
+  archive_save_thread_ = std::thread([this]() {
+    pipeline_archive_.Save();
+    archive_save_running_.store(false, std::memory_order_release);
+  });
+}
+
 void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
   if (shader_storage_flush_needed_ || pipeline_storage_flush_needed_) {
     storage_writer_.RequestFlush(shader_storage_flush_needed_,
@@ -7954,6 +8064,7 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     shader_storage_flush_needed_ = false;
     pipeline_storage_flush_needed_ = false;
   }
+  MaybeSavePipelineArchive();
   if (current_command_buffer_) {
     next_submission_kind_ = next_kind;
   }
