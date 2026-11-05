@@ -1291,6 +1291,34 @@ TEST_CASE("Fiber cooperative switch", "[fiber]") {
   REQUIRE(order == std::vector<int>{0, 1, 2, 3, 4, 5, 6});
 }
 
+#if !XE_PLATFORM_WIN32
+TEST_CASE("Fiber stacks shrink or fail cleanly when memory is tight",
+          "[fiber]") {
+  auto main_fiber = Fiber::CreateFromThread();
+  REQUIRE(main_fiber != nullptr);
+
+  // 16 MiB does not fit, 4 MiB does: the fiber still gets a working stack.
+  Fiber::SetStackReservationLimitForTesting(4 << 20);
+  Fiber::CreationParameters params;
+  params.stack_size = 16 << 20;
+  int ran = 0;
+  auto shrunk = Fiber::Create(params, [&]() {
+    ran = 1;
+    main_fiber->SwitchTo();
+  });
+  REQUIRE(shrunk != nullptr);
+  shrunk->SwitchTo();
+  REQUIRE(ran == 1);
+
+  // Nothing at or above the 1 MiB floor fits: no fiber, and no fatal error.
+  Fiber::SetStackReservationLimitForTesting(512 << 10);
+  auto none = Fiber::Create(params, [] {});
+  REQUIRE(none == nullptr);
+
+  Fiber::SetStackReservationLimitForTesting(0);
+}
+#endif
+
 }  // namespace test
 }  // namespace base
 }  // namespace xe
