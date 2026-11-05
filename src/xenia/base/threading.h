@@ -551,6 +551,11 @@ class Fiber {
   // fiber.
   static std::unique_ptr<Fiber> CreateFromThread();
 
+  // Tests: make stack reservations larger than |bytes| fail as if the address
+  // space were exhausted (0 turns it off). Ignored on Windows, where stacks
+  // grow on demand.
+  static void SetStackReservationLimitForTesting(size_t bytes);
+
   // Returns the fiber currently executing on this host thread, or nullptr if
   // the thread has not been adopted via CreateFromThread()/a switch.
   static Fiber* GetCurrentFiber();
