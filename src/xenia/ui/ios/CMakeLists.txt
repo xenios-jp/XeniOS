@@ -21,6 +21,8 @@ target_sources(xenia-ui-ios PRIVATE
   app/ios_pause_workspace_view_controller.mm
   app/ios_display_settings_view_controller.h
   app/ios_display_settings_view_controller.mm
+  app/ios_external_display.h
+  app/ios_external_display.mm
   app/ios_window_layout.h
   app/ios_window_layout.mm
   app/ios_window_position_overlay.h
