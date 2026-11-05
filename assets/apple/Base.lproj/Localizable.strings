@@ -213,6 +213,9 @@
 /* Fallback version text in the update notice */
 "a new version" = "a new version";
 
+/* settings appearance: detail of Off */
+"A plain background." = "A plain background.";
+
 /* System Link toast: someone entered the room */
 "A player joined System Link." = "A player joined System Link.";
 
@@ -360,9 +363,6 @@
 /* settings hub view controller: user-visible text */
 "App Icon" = "App Icon";
 
-/* settings hub view controller: title */
-"App icon and theme." = "App icon and theme.";
-
 /* settings hub view controller: user-visible text */
 "App icon set to %@." = "App icon set to %@.";
 
@@ -418,6 +418,9 @@
 
 /* settings hub view controller: title */
 "Backend and anisotropic filtering." = "Backend and anisotropic filtering.";
+
+/* settings appearance: section of how the Library background moves */
+"Background Motion" = "Background Motion";
 
 /* game compatibility cells: user-visible text */
 "Based on available compatibility data." = "Based on available compatibility data.";
@@ -1409,6 +1412,9 @@
 /* system link view controller: a game with no name; %@ is its title ID */
 "Game %@" = "Game %@";
 
+/* settings appearance: Library background from the game's art */
+"Game Colours" = "Game Colours";
+
 /* Alert message: the game file is gone */
 "Game file is no longer available." = "Game file is no longer available.";
 
@@ -1697,6 +1703,9 @@
 /* Alert message after a crash in JIT code */
 "It crashed in the code XeniOS translated from the game (a JIT error). Start the game again; if it keeps crashing at the same place, share the log to help fix it." = "It crashed in the code XeniOS translated from the game (a JIT error). Start the game again; if it keeps crashing at the same place, share the log to help fix it.";
 
+/* settings appearance: footer under Background Motion */
+"It stays still when Reduce Motion or Low Power Mode is on." = "It stays still when Reduce Motion or Low Power Mode is on.";
+
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
 
@@ -1837,6 +1846,12 @@
    settings hub view controller: user-visible text */
 "Library & Storage" = "Library & Storage";
 
+/* settings appearance: section of the Library's background choices */
+"Library Background" = "Library Background";
+
+/* settings hub view controller: title */
+"Library background and app icon." = "Library background and app icon.";
+
 /* acknowledgements view controller: title */
 "License" = "License";
 
@@ -1959,6 +1974,9 @@
 
 /* Feedback while snapping; %@ is the name of the matched control */
 "Matched %@" = "Matched %@";
+
+/* settings appearance: detail of Game Colours */
+"Matches the game you played last." = "Matches the game you played last.";
 
 /* Alert title: the increased memory entitlement is missing */
 "Memory Entitlement Missing" = "Memory Entitlement Missing";
@@ -2186,6 +2204,7 @@
    config view controller: accessibility value
    game page: Patches row; no patch is on
    game page: System Link row; Online Features are off
+   settings appearance: no Library background
    Very short badge on a touch control: action is off
    Very short badge on a touch control: analog output is off */
 "Off" = "Off";
@@ -3134,6 +3153,9 @@
 /* Alert message: StikDebug is unavailable */
 "StikDebug is not installed or unavailable." = "StikDebug is not installed or unavailable.";
 
+/* settings appearance: the background doesn't move */
+"Still" = "Still";
+
 /* In-game menu: System Link card, the server doesn't answer */
 "Still trying." = "Still trying.";
 
@@ -3192,6 +3214,9 @@
 
 /* compat report view controller: user-visible text */
 "Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information." = "Submitting posts your notes, screenshots, device model and app build publicly on the XeniOS compatibility tracker. Don't include personal information.";
+
+/* settings appearance: the background moves slowly */
+"Subtle" = "Subtle";
 
 /* settings hub view controller: link to Ko-fi */
 "Support XeniOS" = "Support XeniOS";
@@ -3310,6 +3335,12 @@
 /* Alert message; %@ is the name of the requesting app */
 "The app \"%@\" is asking for the titles and icons of your game library." = "The app \"%@\" is asking for the titles and icons of your game library.";
 
+/* settings appearance: detail of Still motion */
+"The colours don't move." = "The colours don't move.";
+
+/* settings appearance: detail of Subtle motion */
+"The colours drift slowly." = "The colours drift slowly.";
+
 /* choice list view controller: footer for a value that is not in the list */
 "The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it." = "The current value is not one of the listed choices. It was probably set by editing the config file by hand. Choose another entry to replace it.";
 
@@ -3363,6 +3394,9 @@
 
 /* Launch prompt for an invite link to the game that is already running */
 "The running game restarts to join." = "The running game restarts to join.";
+
+/* settings appearance: detail of XeniOS Green */
+"The same greens for every game." = "The same greens for every game.";
 
 /* file transfer: user-visible text */
 "The selected file is no longer available." = "The selected file is no longer available.";
@@ -3863,6 +3897,9 @@
 
 /* Title of a fatal or error message box */
 "XeniOS Error" = "XeniOS Error";
+
+/* settings appearance: Library background in the app's greens */
+"XeniOS Green" = "XeniOS Green";
 
 /* acknowledgements view controller: label text */
 "XeniOS is based on Xenia and uses the open-source software listed above." = "XeniOS is based on Xenia and uses the open-source software listed above.";

@@ -14,6 +14,7 @@
 
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
+#import "xenia/ui/ios/launcher/ios_library_ambient_view.h"
 #import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_catalog.h"
 #import "xenia/ui/ios/settings/ios_config_storage.h"
@@ -429,6 +430,7 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [on_status_ release];
   [super dealloc];
 }
@@ -438,24 +440,121 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
   self.view.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 64.0;
+  // The Game Colours swatch follows the game the Library shows.
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(libraryBackgroundChanged:)
+                                               name:XeniaLibraryBackgroundDidChangeNotification
+                                             object:nil];
 }
+
+- (void)libraryBackgroundChanged:(NSNotification*)__unused notification {
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)]
+                withRowAnimation:UITableViewRowAnimationNone];
+}
+
+// Library Background, its motion, then the app icon.
+enum : NSInteger { kAppearanceBackground, kAppearanceMotion, kAppearanceIcon, kAppearanceCount };
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 1;
+  return kAppearanceCount;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView
-    numberOfRowsInSection:(NSInteger)__unused section {
-  return 3;
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  return section == kAppearanceMotion ? 2 : 3;
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView
-    titleForHeaderInSection:(NSInteger)__unused section {
-  return NSLocalizedString(@"App Icon", @"settings hub view controller: user-visible text");
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  switch (section) {
+    case kAppearanceBackground:
+      return NSLocalizedString(@"Library Background",
+                               @"settings appearance: section of the Library's background choices");
+    case kAppearanceMotion:
+      return NSLocalizedString(@"Background Motion",
+                               @"settings appearance: section of how the Library background moves");
+    default:
+      return NSLocalizedString(@"App Icon", @"settings hub view controller: user-visible text");
+  }
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  return section == kAppearanceMotion
+             ? NSLocalizedString(@"It stays still when Reduce Motion or Low Power Mode is on.",
+                                 @"settings appearance: footer under Background Motion")
+             : nil;
+}
+
+// A row of Library Background or Background Motion: a title, a line under it and a check.
+- (UITableViewCell*)backgroundCellForRowAtIndexPath:(NSIndexPath*)indexPath
+                                          tableView:(UITableView*)tableView {
+  static NSString* const kCellIdentifier = @"XeniaSettingsAppearanceBackgroundCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                   reuseIdentifier:kCellIdentifier] autorelease];
+    cell.textLabel.numberOfLines = 1;
+    cell.detailTextLabel.numberOfLines = 2;
+  }
+  const NSInteger row = indexPath.row;
+  NSString* title = nil;
+  NSString* detail = nil;
+  BOOL selected = NO;
+  if (indexPath.section == kAppearanceBackground) {
+    const XeniaLibraryBackground background = XeniaLibraryBackground(row);
+    selected = XeniaLibraryBackgroundSetting() == background;
+    switch (background) {
+      case XeniaLibraryBackgroundGameColours:
+        title = NSLocalizedString(@"Game Colours",
+                                  @"settings appearance: Library background from the game's art");
+        detail = NSLocalizedString(@"Matches the game you played last.",
+                                   @"settings appearance: detail of Game Colours");
+        break;
+      case XeniaLibraryBackgroundGreen:
+        title = NSLocalizedString(@"XeniOS Green",
+                                  @"settings appearance: Library background in the app's greens");
+        detail = NSLocalizedString(@"The same greens for every game.",
+                                   @"settings appearance: detail of XeniOS Green");
+        break;
+      case XeniaLibraryBackgroundOff:
+        title = NSLocalizedString(@"Off", @"settings appearance: no Library background");
+        detail = NSLocalizedString(@"A plain background.", @"settings appearance: detail of Off");
+        break;
+    }
+    cell.imageView.image = XeniaLibraryBackgroundSwatch(
+        background == XeniaLibraryBackgroundOff ? nil : XeniaLibraryBackgroundColours(background),
+        29.0);
+  } else {
+    const XeniaLibraryBackgroundMotion motion = XeniaLibraryBackgroundMotion(row);
+    selected = XeniaLibraryBackgroundMotionSetting() == motion;
+    if (motion == XeniaLibraryBackgroundMotionSubtle) {
+      title = NSLocalizedString(@"Subtle", @"settings appearance: the background moves slowly");
+      detail = NSLocalizedString(@"The colours drift slowly.",
+                                 @"settings appearance: detail of Subtle motion");
+    } else {
+      title = NSLocalizedString(@"Still", @"settings appearance: the background doesn't move");
+      detail = NSLocalizedString(@"The colours don't move.",
+                                 @"settings appearance: detail of Still motion");
+    }
+    cell.imageView.image = nil;
+  }
+  cell.textLabel.text = title;
+  cell.textLabel.textColor = [XeniaTheme textPrimary];
+  cell.detailTextLabel.text = detail;
+  cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  xe_apply_label_font(cell.textLabel, UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
+  xe_apply_label_font(cell.detailTextLabel, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  cell.accessoryType = selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  XEApplyAccessibility(cell, title, detail, nil,
+                       UIAccessibilityTraitButton |
+                           (selected ? UIAccessibilityTraitSelected : UIAccessibilityTraitNone));
+  return cell;
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section != kAppearanceIcon) {
+    return [self backgroundCellForRowAtIndexPath:indexPath tableView:tableView];
+  }
   static NSString* const kCellIdentifier = @"XeniaSettingsAppearanceIconCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
@@ -495,6 +594,14 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section == kAppearanceBackground) {
+    XeniaSetLibraryBackgroundSetting(XeniaLibraryBackground(indexPath.row));
+    return;
+  }
+  if (indexPath.section == kAppearanceMotion) {
+    XeniaSetLibraryBackgroundMotionSetting(XeniaLibraryBackgroundMotion(indexPath.row));
+    return;
+  }
   UIApplication* application = [UIApplication sharedApplication];
   if (!application.supportsAlternateIcons) {
     if (on_status_) {
@@ -527,9 +634,9 @@ static XeniaSettingsHubItem* XeniaSettingsResultItem(const IOSConfigSearchEntry&
                       // Only the checkmarks move, so reload the three rows, not the table.
                       [self.tableView
                           reloadRowsAtIndexPaths:@[
-                            [NSIndexPath indexPathForRow:0 inSection:0],
-                            [NSIndexPath indexPathForRow:1 inSection:0],
-                            [NSIndexPath indexPathForRow:2 inSection:0],
+                            [NSIndexPath indexPathForRow:0 inSection:kAppearanceIcon],
+                            [NSIndexPath indexPathForRow:1 inSection:kAppearanceIcon],
+                            [NSIndexPath indexPathForRow:2 inSection:kAppearanceIcon],
                           ]
                             withRowAnimation:UITableViewRowAnimationNone];
                       if (on_status_) {
@@ -1602,7 +1709,7 @@ titleForFooterInSection:(NSInteger)section {
                               title:NSLocalizedString(@"Appearance",
                                                       @"settings hub view controller: title")
                            subtitle:NSLocalizedString(
-                                        @"App icon and theme.",
+                                        @"Library background and app icon.",
                                         @"settings hub view controller: title")
                          symbolName:@"paintpalette.fill"
                           tintColor:purple],
