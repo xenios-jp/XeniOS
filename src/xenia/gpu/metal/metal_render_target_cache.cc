@@ -5729,7 +5729,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
               resolve_info.copy_dest_extent_length);
           last_resolve_kept_pass_ = true;
         } else {
-          XELOGI("tresolve: end {}", refresh_target ? "refresh"
+          XELOGD("tresolve: end {}", refresh_target ? "refresh"
                                      : clears       ? "clear"
                                                     : "budget");
           end_pass();
