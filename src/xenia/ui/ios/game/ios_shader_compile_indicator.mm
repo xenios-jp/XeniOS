@@ -61,6 +61,22 @@ constexpr CFTimeInterval kRateWindowSeconds = 10.0;
 constexpr CFTimeInterval kRateSmoothingSeconds = 3.0;
 
 void (^g_shader_wait_handler)(BOOL) = nil;
+// Two things can hold the game for its shaders: the sheet's Wait, and the launch screen while the
+// stored shaders rebuild. The game is held while either wants it, so one can't release the other.
+BOOL g_sheet_hold = NO;
+BOOL g_launch_hold = NO;
+BOOL g_hold_applied = NO;
+
+void ApplyShaderHold() {
+  const BOOL hold = g_sheet_hold || g_launch_hold;
+  if (hold == g_hold_applied) {
+    return;
+  }
+  g_hold_applied = hold;
+  if (g_shader_wait_handler) {
+    g_shader_wait_handler(hold);
+  }
+}
 
 NSString* DurationString(NSTimeInterval seconds, NSDateComponentsFormatterUnitsStyle style,
                          NSCalendarUnit unit) {
@@ -144,6 +160,13 @@ void xe_ios_set_shader_wait_handler(void (^handler)(BOOL waiting)) {
   g_shader_wait_handler = handler ? [handler copy] : nil;
   [old release];
 }
+
+void xe_ios_set_launch_shader_hold(BOOL hold) {
+  g_launch_hold = hold;
+  ApplyShaderHold();
+}
+
+NSNotificationName const XeniaShaderPlayNowNotification = @"XeniaShaderPlayNowNotification";
 
 BOOL xe_ios_shader_compile_status_enabled(void) {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
@@ -952,9 +975,8 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     return;
   }
   wait_state_ = WaitState::kWaiting;
-  if (g_shader_wait_handler) {
-    g_shader_wait_handler(YES);
-  }
+  g_sheet_hold = YES;
+  ApplyShaderHold();
   [self refreshSheetWithProgress:progress_];
 }
 
@@ -962,12 +984,16 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   // The sheet is gone already on a swipe; dismiss it otherwise. The queue keeps draining and the
   // capsule shows it.
   [self endShaderWaitAnimated:YES];
+  // The launch screen lets go of the game too.
+  [[NSNotificationCenter defaultCenter] postNotificationName:XeniaShaderPlayNowNotification
+                                                      object:nil];
 }
 
 // Releases the hold and takes the sheet down. Safe in any state.
 - (void)endShaderWaitAnimated:(BOOL)animated {
-  if (wait_state_ == WaitState::kWaiting && g_shader_wait_handler) {
-    g_shader_wait_handler(NO);
+  if (wait_state_ == WaitState::kWaiting) {
+    g_sheet_hold = NO;
+    ApplyShaderHold();
   }
   wait_state_ = WaitState::kIdle;
   if (sheet_) {

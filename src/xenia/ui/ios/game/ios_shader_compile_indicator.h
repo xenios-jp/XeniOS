@@ -131,6 +131,13 @@ inline ShaderEta ClassifyShaderEta(double seconds) {
 // for the app's lifetime; pass nil to remove it.
 void xe_ios_set_shader_wait_handler(void (^handler)(BOOL waiting));
 
+// The launch screen's hold, while the stored shaders rebuild before the first frame (main
+// thread). Combined with the Wait choice: the game is held while either asks.
+void xe_ios_set_launch_shader_hold(BOOL hold);
+
+// Posted on the main thread when the user picks Play now on the shader sheet.
+extern NSNotificationName const XeniaShaderPlayNowNotification;
+
 // Settings > Display > Shader Compile Status. On by default.
 BOOL xe_ios_shader_compile_status_enabled(void);
 void xe_ios_set_shader_compile_status_enabled(BOOL enabled);
