@@ -953,6 +953,12 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
   // Shader dumps and bisection want the translation itself.
   const bool cacheable = UseDxilPath() && cvars::dump_shaders.empty() &&
                          shader_library_cache_.is_open();
+  // Translated even when the library is on disk: translating sets the
+  // shader's texture and sampler bindings that draws bind from.
+  ShaderCompileStatus status = EnsureTranslationSpirv(translation, translator);
+  if (status != ShaderCompileStatus::kReady) {
+    return status;
+  }
   MetalShaderLibraryCache::Key key;
   if (cacheable) {
     key = MetalShaderLibraryCache::MakeKey(*translation);
@@ -962,10 +968,6 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
             ->LoadMetallib(device_, entry.metallib, entry.entry_point_name)) {
       return ShaderCompileStatus::kReady;
     }
-  }
-  ShaderCompileStatus status = EnsureTranslationSpirv(translation, translator);
-  if (status != ShaderCompileStatus::kReady) {
-    return status;
   }
   std::vector<uint8_t> metallib;
   if (!CompileHostShader(translation, is_ios,
