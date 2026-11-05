@@ -1,0 +1,105 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2026 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+
+#ifndef XENIA_GPU_METAL_METAL_SHADER_LIBRARY_CACHE_H_
+#define XENIA_GPU_METAL_METAL_SHADER_LIBRARY_CACHE_H_
+
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "xenia/gpu/shader.h"
+
+namespace xe {
+namespace gpu {
+namespace metal {
+
+// The Metal libraries a title's guest shaders were translated to, kept on disk
+// so a later launch loads them instead of translating the guest microcode again
+// (to SPIR-V, then to AIR). The shader storage only keeps the microcode and the
+// pipeline descriptions, which every backend shares.
+//
+// One file per title. A fingerprint of the build and of the translator's
+// settings heads it: a file made by another build, or with other settings, is
+// discarded. Records are appended as shaders are translated; a record cut short
+// (the app stopped while writing it) is dropped when the file is next opened.
+class MetalShaderLibraryCache {
+ public:
+  struct Key {
+    uint64_t low = 0;
+    uint64_t high = 0;
+    bool operator==(const Key& other) const {
+      return low == other.low && high == other.high;
+    }
+  };
+
+  struct Entry {
+    std::vector<uint8_t> metallib;
+    std::string entry_point_name;
+  };
+
+  ~MetalShaderLibraryCache() { Close(); }
+
+  // Reads the file at |path|, or starts it when it is missing or was made with
+  // another |fingerprint|. Closes any file open before.
+  void Open(const std::filesystem::path& path, const std::string& fingerprint);
+  void Close();
+  bool is_open() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return file_ != nullptr;
+  }
+
+  // Identifies the translation of |translation|'s shader: its microcode, the
+  // host modification and the memory export specialization.
+  static Key MakeKey(const Shader::Translation& translation);
+
+  // Thread-safe.
+  bool Find(const Key& key, Entry& entry_out);
+  void Store(const Key& key, const std::vector<uint8_t>& metallib,
+             const std::string& entry_point_name);
+
+  // A fingerprint of this build (its executable's Mach-O UUID, which every link
+  // changes) and of the settings the guest shader translation depends on: the
+  // GPU and Metal options, and the |translator| description the caller gives.
+  static std::string MakeFingerprint(const std::string& translator);
+
+  uint32_t hits() const;
+  uint32_t misses() const;
+
+ private:
+  struct KeyHash {
+    size_t operator()(const Key& key) const { return size_t(key.low); }
+  };
+  struct Location {
+    size_t entry_point_offset;
+    uint32_t entry_point_length;
+    size_t metallib_offset;
+    uint32_t metallib_length;
+  };
+
+  mutable std::mutex mutex_;
+  std::FILE* file_ = nullptr;
+  // The records read at Open. Records stored later aren't looked up: the
+  // translation they came from stays loaded for the rest of the run.
+  std::vector<uint8_t> data_;
+  std::unordered_map<Key, Location, KeyHash> locations_;
+  std::unordered_map<Key, bool, KeyHash> stored_;
+  uint32_t hits_ = 0;
+  uint32_t misses_ = 0;
+};
+
+}  // namespace metal
+}  // namespace gpu
+}  // namespace xe
+
+#endif  // XENIA_GPU_METAL_METAL_SHADER_LIBRARY_CACHE_H_

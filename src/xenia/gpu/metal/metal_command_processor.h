@@ -40,9 +40,11 @@
 #include "xenia/gpu/metal/dxil_shader.h"
 #include "xenia/gpu/metal/metal_buffer_hazards.h"
 #include "xenia/gpu/metal/metal_dxil_binder.h"
+#include "xenia/gpu/metal/metal_pipeline_archive.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
 #include "xenia/gpu/metal/metal_render_target_cache.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
+#include "xenia/gpu/metal/metal_shader_library_cache.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/metal/metal_zpd_visibility_pool.h"
@@ -531,7 +533,14 @@ class MetalCommandProcessor : public CommandProcessor {
                                              SpirvShaderTranslator& translator);
   // Builds the Metal function of one translation on whichever guest shader
   // path is active: SPIR-V -> MSL, or SPIR-V -> DXIL -> AIR.
-  bool CompileHostShader(Shader::Translation* translation, bool is_ios);
+  bool CompileHostShader(Shader::Translation* translation, bool is_ios,
+                         std::vector<uint8_t>* metallib_out = nullptr);
+  // EnsureTranslationSpirv then CompileHostShader, or neither when the title's
+  // shader library cache has what they would make. kPending as for
+  // EnsureTranslationSpirv.
+  ShaderCompileStatus TranslateAndCompileHostShader(
+      Shader::Translation* translation, SpirvShaderTranslator& translator,
+      bool is_ios);
   std::unique_ptr<SpirvShaderTranslator> CreateSpirvShaderTranslator() const;
   // The compiled function of a translation on the active path, null until
   // CompileHostShader has succeeded for it.
@@ -1084,6 +1093,19 @@ class MetalCommandProcessor : public CommandProcessor {
   // Guest ucode (.xsh, shared with the other backends) and this backend's
   // pipeline descriptions (.metal.xpso), replayed at startup.
   ShaderStorageWriter<PipelineStoredDescription> storage_writer_;
+  // The title's guest shaders as Metal libraries, so a later launch needn't
+  // translate them again (DXIL path).
+  MetalShaderLibraryCache shader_library_cache_;
+  // The title's compiled pipelines and specialized functions. Saved by
+  // archive_save_thread_ once the stored pipelines are rebuilt, then at most
+  // every kPipelineArchiveSaveSeconds while new ones are added.
+  MetalPipelineArchive pipeline_archive_;
+  std::thread archive_save_thread_;
+  std::atomic<bool> archive_save_running_{false};
+  uint64_t archive_saved_ticks_ = 0;
+  static constexpr uint64_t kPipelineArchiveSaveSeconds = 20;
+  void MaybeSavePipelineArchive();
+  void JoinPipelineArchiveSave();
   bool shader_storage_flush_needed_ = false;
   bool pipeline_storage_flush_needed_ = false;
   // Set while rebuilding from storage, so replay doesn't re-record what it
