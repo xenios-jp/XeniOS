@@ -42,6 +42,7 @@
 
 #import "xenia/hid/touch/touch_layout_ios.h"
 #import "xenia/ui/ios/app/ios_controller_navigation_coordinator.h"
+#import "xenia/ui/ios/app/ios_external_display.h"
 #import "xenia/ui/ios/app/ios_in_game_menu_overlay.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/app/ios_window_layout.h"
@@ -474,6 +475,11 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   std::string active_touch_layout_local_id_;
   UITapGestureRecognizer* in_game_menu_tap_recognizer_;  // owned by self.view
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* active_external_game_accesses_;
+  // Shown on the device, under the touch controls, while the game is on an
+  // external display. Owned by self.view.
+  UIView* external_display_status_view_;
+  UILabel* external_display_status_hint_;
+  NSObject* external_display_accessory_registration_;
   // A launch is gathering its folders off the main thread; another waits for it.
   BOOL launch_preparing_;
   // The last library launch and the folders it holds, so the title's start
@@ -579,6 +585,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
       UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   self.shaderCompileIndicator = compile_indicator;
   [self.view insertSubview:compile_indicator aboveSubview:self.metalView];
+  [self createExternalDisplayStatusView];
 
   // Create the iOS touch overlay above the Metal view. Hidden by default;
   // visibility is driven by -updateTouchControlsOverlayVisibilityAnimated:.
@@ -714,6 +721,17 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
                                            selector:@selector(handleControllerConnectionChanged:)
                                                name:GCControllerDidDisconnectNotification
                                              object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(handleExternalDisplayHostChanged:)
+                                               name:XeniaExternalDisplayHostDidChangeNotification
+                                             object:nil];
+  external_display_accessory_registration_ = XeniaExternalDisplayRegisterSceneAccessory(self);
+  // A display may have connected before this view loaded.
+  [self updateExternalDisplayPresentation];
+}
+
+- (void)handleExternalDisplayHostChanged:(NSNotification* __unused)note {
+  [self updateExternalDisplayPresentation];
 }
 
 - (void)onExternalLibraryDidChange:(NSNotification* __unused)note {
@@ -4345,7 +4363,9 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   if (!self.metalView) {
     return;
   }
-  const CGRect parent = self.view.bounds;
+  UIView* host = self.metalView.superview;
+  const BOOL on_external_display = host && host != self.view;
+  const CGRect parent = on_external_display ? host.bounds : self.view.bounds;
   if (CGRectIsEmpty(parent)) {
     return;
   }
@@ -4357,11 +4377,142 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   self.metalView.xeniaDrawableAspectRatio =
       mode == XeniaIOSWindowScalingModeStretch ? parent_aspect : guest_aspect;
-  CGRect frame = XeniaIOSMetalViewFrameForParent(parent, guest_aspect, mode,
-                                                 XeniaIOSCurrentPortraitWindowOffset());
+  // The portrait position offset is for the device screen only.
+  CGRect frame = XeniaIOSMetalViewFrameForParent(
+      parent, guest_aspect, mode,
+      on_external_display ? CGPointZero : XeniaIOSCurrentPortraitWindowOffset());
 
   if (!CGRectEqualToRect(self.metalView.frame, frame)) {
     self.metalView.frame = frame;
+  }
+  // On an external display, draw at the display's own resolution (capped at
+  // 2160 rows) rather than the 720-row default, so the TV doesn't upscale it.
+  CGFloat drawable_height = 0.0;
+  if (on_external_display) {
+    UIScreen* screen = host.window.windowScene.screen;
+    const CGFloat scale = screen ? screen.nativeScale : 1.0;
+    const CGFloat visible_height = MIN(frame.size.height, parent.size.height);
+    drawable_height = MIN(MAX(std::round(visible_height * scale), 720.0), 2160.0);
+  }
+  self.metalView.xeniaDrawableHeight = drawable_height;
+}
+
+#pragma mark - External display
+
+- (void)createExternalDisplayStatusView {
+  UIView* status = [[[UIView alloc] initWithFrame:self.view.bounds] autorelease];
+  status.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  status.backgroundColor = [UIColor systemGroupedBackgroundColor];
+  // Taps go through to the in-game menu recognizer on self.view.
+  status.userInteractionEnabled = NO;
+  status.hidden = YES;
+
+  UIImageSymbolConfiguration* symbol_config =
+      [UIImageSymbolConfiguration configurationWithPointSize:56.0
+                                                      weight:UIImageSymbolWeightRegular];
+  UIImageView* icon =
+      [[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"tv"
+                                                  withConfiguration:symbol_config]] autorelease];
+  icon.tintColor = [UIColor secondaryLabelColor];
+  icon.contentMode = UIViewContentModeScaleAspectFit;
+
+  UILabel* title = [[[UILabel alloc] initWithFrame:CGRectZero] autorelease];
+  title.text = NSLocalizedString(@"Playing on External Display",
+                                 @"Device screen while the game is shown on a TV or monitor");
+  title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+  title.adjustsFontForContentSizeCategory = YES;
+  title.textColor = [UIColor labelColor];
+  title.textAlignment = NSTextAlignmentCenter;
+  title.numberOfLines = 0;
+
+  UILabel* hint = [[[UILabel alloc] initWithFrame:CGRectZero] autorelease];
+  hint.text = NSLocalizedString(@"Tap anywhere to open the menu.",
+                                @"Device screen hint while the game is on an external display "
+                                @"and a controller is connected");
+  hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  hint.adjustsFontForContentSizeCategory = YES;
+  hint.textColor = [UIColor secondaryLabelColor];
+  hint.textAlignment = NSTextAlignmentCenter;
+  hint.numberOfLines = 0;
+
+  UIStackView* stack =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ icon, title, hint ]] autorelease];
+  stack.axis = UILayoutConstraintAxisVertical;
+  stack.alignment = UIStackViewAlignmentCenter;
+  stack.spacing = 12.0;
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  [status addSubview:stack];
+  [NSLayoutConstraint activateConstraints:@[
+    [stack.centerXAnchor constraintEqualToAnchor:status.centerXAnchor],
+    [stack.centerYAnchor constraintEqualToAnchor:status.centerYAnchor],
+    [stack.leadingAnchor
+        constraintGreaterThanOrEqualToAnchor:status.layoutMarginsGuide.leadingAnchor],
+    [stack.trailingAnchor
+        constraintLessThanOrEqualToAnchor:status.layoutMarginsGuide.trailingAnchor],
+  ]];
+
+  [self.view insertSubview:status belowSubview:self.shaderCompileIndicator];
+  external_display_status_view_ = status;
+  external_display_status_hint_ = hint;
+}
+
+- (void)updateExternalDisplayStatusView {
+  if (!external_display_status_view_ || external_display_status_view_.hidden) {
+    return;
+  }
+  // With a controller the touch controls are hidden and the device screen is
+  // only for the menu, so dim it.
+  const BOOL controller = [self hasConnectedGameplayController];
+  external_display_status_hint_.hidden = !controller;
+  external_display_status_view_.backgroundColor =
+      controller ? [UIColor blackColor] : [UIColor systemGroupedBackgroundColor];
+  for (UIView* subview in external_display_status_view_.subviews) {
+    subview.alpha = controller ? 0.45 : 1.0;
+  }
+  if (controller) {
+    external_display_status_view_.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+  } else {
+    external_display_status_view_.overrideUserInterfaceStyle = UIUserInterfaceStyleUnspecified;
+  }
+}
+
+// Puts the game on the external display while one is connected and a game is
+// running, and back on the device otherwise (including when the display goes
+// away mid-game). The Metal layer and its presenter stay connected throughout;
+// the next layout pass resizes the drawable and the display link follows the
+// view's screen.
+- (void)updateExternalDisplayPresentation {
+  if (!self.isViewLoaded || !self.metalView) {
+    return;
+  }
+  UIView* external_host = self.gameRunning ? XeniaExternalDisplayHostView() : nil;
+  // With Stage Manager the app's own window may already be on the external
+  // screen, with no separate external display scene; then nothing moves.
+  if (external_host &&
+      external_host.window.windowScene.screen == self.view.window.windowScene.screen) {
+    external_host = nil;
+  }
+  UIView* target = external_host ? external_host : self.view;
+  if (self.metalView.superview != target) {
+    if (external_host) {
+      [external_host addSubview:self.metalView];
+      XELOGI("iOS: showing the game on the external display");
+    } else {
+      // Back to its place under the status view, compile indicator and touch controls.
+      [self.view insertSubview:self.metalView belowSubview:external_display_status_view_];
+      XELOGI("iOS: showing the game on the device screen");
+    }
+    UIScreen* screen = target.window.windowScene.screen;
+    self.metalView.contentScaleFactor = screen ? screen.scale : 1.0;
+  }
+  XeniaExternalDisplaySetHostingGame(external_host != nil);
+  if (external_display_status_view_) {
+    external_display_status_view_.hidden = external_host == nil;
+    [self updateExternalDisplayStatusView];
+  }
+  [self applyMetalViewLayout];
+  if (self.appContext) {
+    self.appContext->NotifyLayoutChanged();
   }
 }
 
@@ -4972,6 +5123,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self setNeedsUpdateOfHomeIndicatorAutoHidden];
   [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
   [self setNeedsStatusBarAppearanceUpdate];
+  [self updateExternalDisplayPresentation];
 }
 
 #pragma mark - Public API
@@ -5080,6 +5232,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [_achievementNotificationPresenter release];
   [_statusToastPresenter release];
   [active_external_game_accesses_ release];
+  [external_display_accessory_registration_ release];
   [launched_accesses_ release];
   [pending_url_confirmation_ release];
   [_metalView release];
@@ -5182,6 +5335,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   // the overlay is hidden (e.g. hardware controller connected) or when the
   // in-game menu is up and a tap-outside should dismiss it.
   in_game_menu_tap_recognizer_.enabled = !overlay_visible;
+  [self updateExternalDisplayStatusView];
 }
 
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style {

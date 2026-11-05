@@ -552,6 +552,9 @@
 /* online game picker: title */
 "Choose a Game" = "Choose a Game";
 
+/* External display idle screen; the argument is iPhone or iPad */
+"Choose a game on your %@ to play it here." = "Choose a game on your %@ to play it here.";
+
 /* Alert message: choose a layout to delete */
 "Choose a local layout to delete." = "Choose a local layout to delete.";
 
@@ -2473,6 +2476,9 @@
 /* In-game menu: the game is running */
 "Playing" = "Playing";
 
+/* Device screen while the game is shown on a TV or monitor */
+"Playing on External Display" = "Playing on External Display";
+
 /* system link view controller: section header */
 "Playing Online Now" = "Playing Online Now";
 
@@ -3264,6 +3270,9 @@
 
 /* Feedback while picking a control to copy the size from */
 "Tap another button" = "Tap another button";
+
+/* Device screen hint while the game is on an external display and a controller is connected */
+"Tap anywhere to open the menu." = "Tap anywhere to open the menu.";
 
 /* system update page: label beside the part of Microsoft's page to tap next */
 "Tap here" = "Tap here";

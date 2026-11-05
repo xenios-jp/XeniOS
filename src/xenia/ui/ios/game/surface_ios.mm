@@ -56,16 +56,24 @@ bool GetUIViewFixedDrawableSize(UIView* view, uint32_t& width_out,
     return false;
   }
   const double aspect = GetUIViewDrawableAspect(view, bounds);
-  width_out =
-      std::max<uint32_t>(1, uint32_t(std::llround(kBaseDrawableHeight * aspect)));
-  height_out = kBaseDrawableHeight;
+  uint32_t drawable_height = kBaseDrawableHeight;
+  if ([view respondsToSelector:@selector(xeniaDrawableHeight)]) {
+    const double configured_height =
+        static_cast<double>([(XeniaMetalView*)view xeniaDrawableHeight]);
+    if (std::isfinite(configured_height) && configured_height >= 1.0) {
+      drawable_height = uint32_t(std::llround(configured_height));
+    }
+  }
+  width_out = std::max<uint32_t>(1, uint32_t(std::llround(drawable_height * aspect)));
+  height_out = drawable_height;
   return true;
 }
 }  // namespace
 
 bool iOSUIViewSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
-  // Keep presenter work at a stable 720p-class target. The UIView frame owns
-  // final screen placement and aspect changes from Fit / Stretch / Zoom.
+  // Keep presenter work at a stable 720p-class target (an external display's
+  // own resolution while the game is on one). The UIView frame owns final
+  // screen placement and aspect changes from Fit / Stretch / Zoom.
   return GetUIViewFixedDrawableSize(view_, width_out, height_out);
 }
 

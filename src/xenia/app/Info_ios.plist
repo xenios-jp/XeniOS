@@ -194,6 +194,15 @@
           <string>XeniaSceneDelegate</string>
         </dict>
       </array>
+      <key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>External Display</string>
+          <key>UISceneDelegateClassName</key>
+          <string>XeniaExternalDisplaySceneDelegate</string>
+        </dict>
+      </array>
     </dict>
   </dict>
   <key>UIFileSharingEnabled</key>

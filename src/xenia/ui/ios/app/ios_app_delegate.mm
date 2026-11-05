@@ -8,6 +8,7 @@
  */
 
 #import "xenia/ui/ios/app/ios_app_delegate.h"
+#import "xenia/ui/ios/app/ios_external_display.h"
 
 #include <memory>
 #include <string>
@@ -314,6 +315,14 @@ DECLARE_bool(log_to_stdout);
                                    options:(UISceneConnectionOptions*)options {
   (void)application;
   (void)options;
+  if ([connectingSceneSession.role
+          isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive]) {
+    UISceneConfiguration* configuration =
+        [[[UISceneConfiguration alloc] initWithName:@"External Display"
+                                        sessionRole:connectingSceneSession.role] autorelease];
+    configuration.delegateClass = [XeniaExternalDisplaySceneDelegate class];
+    return configuration;
+  }
   UISceneConfiguration* configuration =
       [[[UISceneConfiguration alloc] initWithName:@"Default Configuration"
                                       sessionRole:connectingSceneSession.role] autorelease];

@@ -60,9 +60,16 @@ bool GetUIViewFixedDrawableSize(UIView* view, uint32_t& width_out,
     return false;
   }
   const double aspect = GetUIViewDrawableAspect(view, bounds);
-  width_out =
-      std::max<uint32_t>(1, uint32_t(std::llround(kBaseDrawableHeight * aspect)));
-  height_out = kBaseDrawableHeight;
+  uint32_t drawable_height = kBaseDrawableHeight;
+  if ([view respondsToSelector:@selector(xeniaDrawableHeight)]) {
+    const double configured_height =
+        static_cast<double>([(XeniaMetalView*)view xeniaDrawableHeight]);
+    if (std::isfinite(configured_height) && configured_height >= 1.0) {
+      drawable_height = uint32_t(std::llround(configured_height));
+    }
+  }
+  width_out = std::max<uint32_t>(1, uint32_t(std::llround(drawable_height * aspect)));
+  height_out = drawable_height;
   return true;
 }
 }  // namespace
@@ -89,7 +96,46 @@ void iOSWindow::SetNativeView(UIView* view, UIViewController* view_controller) {
   view_controller_ = view_controller;
 }
 
+UIScreen* iOSWindow::GetViewScreen() const {
+  if (view_ && view_.window && view_.window.windowScene) {
+    return view_.window.windowScene.screen;
+  }
+  return nil;
+}
+
+void iOSWindow::FollowViewScreenFromUIThread() {
+  if (!display_link_) {
+    return;
+  }
+  UIScreen* screen = GetViewScreen();
+  if (!screen || screen == display_link_screen_ || display_link_screen_change_pending_) {
+    return;
+  }
+  // The game view moved to another screen (an external display, or an iPad
+  // window dragged across with Stage Manager). A display link stays on the
+  // screen it was made for, so make a new one for this screen's refresh. Do it
+  // outside the current call, which may come from the display link target.
+  display_link_screen_change_pending_ = true;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    display_link_screen_change_pending_ = false;
+    if (!display_link_) {
+      return;
+    }
+    UIScreen* new_screen = GetViewScreen();
+    if (!new_screen || new_screen == display_link_screen_) {
+      return;
+    }
+    TeardownDisplayLink();
+    SetupDisplayLink();
+    XELOGI("iOSWindow: display link moved to a {}x{} screen at up to {} Hz",
+           static_cast<uint32_t>(new_screen.nativeBounds.size.width),
+           static_cast<uint32_t>(new_screen.nativeBounds.size.height),
+           static_cast<int>(new_screen.maximumFramesPerSecond));
+  });
+}
+
 void iOSWindow::HandleSizeChange() {
+  FollowViewScreenFromUIThread();
   uint32_t width = 0;
   uint32_t height = 0;
   if (!GetUIViewFixedDrawableSize(view_, width, height)) {
@@ -225,7 +271,10 @@ void iOSWindow::ApplyDisplayLinkFrameRateRangeFromUIThread() {
   if (!display_link_) {
     return;
   }
-  UIScreen* screen = view_ && view_.window ? view_.window.screen : UIScreen.mainScreen;
+  UIScreen* screen = GetViewScreen();
+  if (!screen) {
+    screen = UIScreen.mainScreen;
+  }
   const float screen_max_fps =
       screen ? static_cast<float>(screen.maximumFramesPerSecond) : 60.0f;
   const float maximum_fps = std::max(30.0f, screen_max_fps);
@@ -352,8 +401,16 @@ void iOSWindow::SetupDisplayLink() {
   }
 
   g_display_link_target = [[XeniaDisplayLinkTarget alloc] initWithWindow:this];
-  display_link_ = [CADisplayLink displayLinkWithTarget:g_display_link_target
-                                              selector:@selector(displayLinkFired:)];
+  UIScreen* screen = GetViewScreen();
+  if (screen && screen != UIScreen.mainScreen) {
+    // An external display: pace to its refresh, not the device's.
+    display_link_ = [screen displayLinkWithTarget:g_display_link_target
+                                         selector:@selector(displayLinkFired:)];
+  } else {
+    display_link_ = [CADisplayLink displayLinkWithTarget:g_display_link_target
+                                                selector:@selector(displayLinkFired:)];
+  }
+  display_link_screen_ = screen;
   // The display link retains its target until it is invalidated, so drop the
   // creation reference. g_display_link_target stays valid until
   // TeardownDisplayLink invalidates the link.
@@ -378,6 +435,7 @@ void iOSWindow::TeardownDisplayLink() {
     [display_link_ invalidate];
     display_link_ = nil;
   }
+  display_link_screen_ = nullptr;
   display_link_driving_paint_.store(false, std::memory_order_release);
   paint_request_pending_.store(false, std::memory_order_release);
   g_display_link_target = nil;
