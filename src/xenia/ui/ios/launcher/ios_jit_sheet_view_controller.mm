@@ -14,6 +14,9 @@
 
 namespace {
 
+// Where Need Help? goes: the community's JIT setup help.
+NSString* const kJITHelpURL = @"https://discord.gg/QwcTtNKTGf";
+
 // A step's text with the app and button names in bold, as the mockup sets them.
 NSAttributedString* StepText(NSString* text, NSArray<NSString*>* bold_parts) {
   UIFont* body = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
@@ -94,6 +97,25 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   return stack;
 }
 
+// Centres a view in a scroll view's visible height, and lets it scroll once it no longer fits.
+NSArray<NSLayoutConstraint*>* CenteredInScroll(UIView* view, UIScrollView* scroll, CGFloat top,
+                                               CGFloat bottom) {
+  UILayoutGuide* content = scroll.contentLayoutGuide;
+  UILayoutGuide* frame = scroll.frameLayoutGuide;
+  NSLayoutConstraint* fill = [content.heightAnchor constraintEqualToAnchor:frame.heightAnchor];
+  fill.priority = UILayoutPriorityDefaultLow;
+  NSLayoutConstraint* centre = [view.centerYAnchor constraintEqualToAnchor:content.centerYAnchor
+                                                                  constant:(top - bottom) / 2.0];
+  return @[
+    [content.widthAnchor constraintEqualToAnchor:frame.widthAnchor],
+    [content.heightAnchor constraintGreaterThanOrEqualToAnchor:frame.heightAnchor],
+    fill,
+    [view.topAnchor constraintGreaterThanOrEqualToAnchor:content.topAnchor constant:top],
+    [view.bottomAnchor constraintLessThanOrEqualToAnchor:content.bottomAnchor constant:-bottom],
+    centre,
+  ];
+}
+
 }  // namespace
 
 @implementation XeniaIOSJITSheetViewController {
@@ -103,6 +125,14 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   UIButton* other_ways_button_;
   UIStackView* content_stack_;
   UIStackView* button_stack_;
+  // Bolt, title and summary. Above the steps, or beside them when the sheet is short.
+  UIStackView* header_stack_;
+  UIScrollView* header_scroll_;
+  UIScrollView* scroll_;
+  NSArray<NSLayoutConstraint*>* stacked_constraints_;
+  NSArray<NSLayoutConstraint*>* side_constraints_;
+  BOOL side_layout_;
+  BOOL layout_applied_;
 }
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
@@ -154,6 +184,11 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
 - (void)dealloc {
   [content_stack_ release];
   [button_stack_ release];
+  [header_stack_ release];
+  [header_scroll_ release];
+  [scroll_ release];
+  [stacked_constraints_ release];
+  [side_constraints_ release];
   [game_title_ release];
   [open_stikdebug_ release];
   [other_ways_group_ release];
@@ -167,6 +202,21 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
 
   UIButton* close = xe_make_ios_sheet_close_button(self, @selector(closeTapped:));
   [self.view addSubview:close];
+
+  // Need help: the same round glass button as close, across from it.
+  UIButtonConfiguration* help_config = [UIButtonConfiguration glassButtonConfiguration];
+  help_config.image =
+      [UIImage systemImageNamed:@"questionmark"
+              withConfiguration:[UIImageSymbolConfiguration
+                                    configurationWithTextStyle:UIFontTextStyleBody
+                                                         scale:UIImageSymbolScaleMedium]];
+  help_config.baseForegroundColor = [XeniaTheme textPrimary];
+  help_config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  UIButton* help = [UIButton buttonWithConfiguration:help_config primaryAction:nil];
+  help.translatesAutoresizingMaskIntoConstraints = NO;
+  help.accessibilityLabel = NSLocalizedString(@"Need Help?", @"JIT sheet: link to help on Discord");
+  [help addTarget:self action:@selector(helpTapped:) forControlEvents:UIControlEventTouchUpInside];
+  [self.view addSubview:help];
 
   UIImageView* bolt = [[[UIImageView alloc]
       initWithImage:[UIImage systemImageNamed:@"bolt.fill"
@@ -187,9 +237,8 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   xe_apply_label_font(title, UIFontTextStyleTitle1, 28.0, UIFontWeightBold);
 
   UILabel* summary = [[[UILabel alloc] init] autorelease];
-  summary.text = NSLocalizedString(
-      @"iOS only lets XeniOS run games fast when another app switches JIT on for it.",
-      @"JIT sheet: one-line explanation");
+  summary.text = NSLocalizedString(@"Games need JIT, and iOS only lets another app turn it on.",
+                                   @"JIT sheet: one-line explanation");
   summary.textColor = [XeniaTheme textSecondary];
   summary.textAlignment = NSTextAlignmentCenter;
   summary.numberOfLines = 0;
@@ -200,16 +249,15 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
       NSLocalizedString(@"Choose XeniOS and tap Enable JIT.", @"JIT sheet: step 2");
   NSString* back_text =
       game_title_.length
-          ? [NSString stringWithFormat:NSLocalizedString(@"You come back here and %@ starts.",
-                                                         @"JIT sheet: step 3; %@ is the game"),
-                                       // A short name never breaks across lines.
-                                       game_title_.length <= 24
-                                           ? [game_title_
-                                                 stringByReplacingOccurrencesOfString:@" "
-                                                                           withString:@"\u00A0"]
-                                           : game_title_]
-          : NSLocalizedString(@"You come back here and pick a game.",
-                              @"JIT sheet: step 3 without a game");
+          ? [NSString
+                stringWithFormat:NSLocalizedString(@"Come back, and %@ starts.",
+                                                   @"JIT sheet: step 3; %@ is the game"),
+                                 // A short name never breaks across lines.
+                                 game_title_.length <= 24
+                                     ? [game_title_ stringByReplacingOccurrencesOfString:@" "
+                                                                              withString:@"\u00A0"]
+                                     : game_title_]
+          : NSLocalizedString(@"Come back and pick a game.", @"JIT sheet: step 3 without a game");
   UIView* steps = NewGroup(@[
     NewStepRow(1, StepText(open_text, @[ @"StikDebug" ])),
     NewStepRow(2, StepText(enable_text, @[ @"Enable JIT" ])),
@@ -218,10 +266,9 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
 
   // Script names and other JIT tools, for players who don't use StikDebug's default setup.
   UILabel* other_ways = [[[UILabel alloc] init] autorelease];
-  other_ways.text = NSLocalizedString(
-      @"In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other "
-      @"JIT tool works too, such as an lldb broker. Keep it attached until the game starts.",
-      @"JIT sheet: other ways to enable JIT");
+  other_ways.text =
+      NSLocalizedString(@"Any JIT tool works, such as StikDebug with the universal.js script.",
+                        @"JIT sheet: other ways to enable JIT");
   other_ways.textColor = [XeniaTheme textSecondary];
   other_ways.numberOfLines = 0;
   xe_apply_label_font(other_ways, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
@@ -232,13 +279,21 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   other_ways_group_ = [NewGroup(@[ other_ways_row ]) retain];
   other_ways_group_.hidden = YES;
 
+  UIStackView* header =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ bolt, title, summary ]] autorelease];
+  header.axis = UILayoutConstraintAxisVertical;
+  header.alignment = UIStackViewAlignmentFill;
+  header.spacing = 8.0;
+  [header setCustomSpacing:14.0 afterView:bolt];
+  header.translatesAutoresizingMaskIntoConstraints = NO;
+  header_stack_ = [header retain];
+
   UIStackView* stack = [[[UIStackView alloc]
-      initWithArrangedSubviews:@[ bolt, title, summary, steps, other_ways_group_ ]] autorelease];
+      initWithArrangedSubviews:@[ header, steps, other_ways_group_ ]] autorelease];
   stack.axis = UILayoutConstraintAxisVertical;
   stack.alignment = UIStackViewAlignmentFill;
   stack.spacing = 8.0;
-  [stack setCustomSpacing:14.0 afterView:bolt];
-  [stack setCustomSpacing:26.0 afterView:summary];
+  [stack setCustomSpacing:26.0 afterView:header];
   [stack setCustomSpacing:16.0 afterView:steps];
   stack.translatesAutoresizingMaskIntoConstraints = NO;
   content_stack_ = [stack retain];
@@ -275,8 +330,7 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
                          action:@selector(otherWaysTapped:)
                forControlEvents:UIControlEventTouchUpInside];
 
-  // The buttons stay at the bottom while the steps scroll, so Open StikDebug is always in reach
-  // (in landscape the steps alone fill the sheet).
+  // The buttons stay at the bottom while the steps scroll, so Open StikDebug is always in reach.
   UIStackView* buttons = [[[UIStackView alloc]
       initWithArrangedSubviews:@[ primary, other_ways_button_ ]] autorelease];
   buttons.axis = UILayoutConstraintAxisVertical;
@@ -289,27 +343,90 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
   scroll.translatesAutoresizingMaskIntoConstraints = NO;
   scroll.alwaysBounceVertical = YES;
   [scroll addSubview:stack];
-  [self.view insertSubview:scroll belowSubview:close];
+  [self.view insertSubview:scroll atIndex:0];
   [self.view addSubview:buttons];
+  scroll_ = [scroll retain];
+
+  // In landscape on a phone the heading takes the left column on its own, centred, and scrolls
+  // only if large text needs it.
+  UIScrollView* header_scroll = [[[UIScrollView alloc] init] autorelease];
+  header_scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  header_scroll.hidden = YES;
+  [self.view insertSubview:header_scroll atIndex:0];
+  header_scroll_ = [header_scroll retain];
 
   UILayoutGuide* readable = self.view.readableContentGuide;
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
   [NSLayoutConstraint activateConstraints:@[
     [close.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12.0],
     [close.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16.0],
+    [help.topAnchor constraintEqualToAnchor:close.topAnchor],
+    [help.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16.0],
+    [help.widthAnchor constraintEqualToConstant:44.0],
+    [help.heightAnchor constraintEqualToConstant:44.0],
     [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
     [scroll.bottomAnchor constraintEqualToAnchor:buttons.topAnchor constant:-8.0],
+    [buttons.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-8.0],
+  ]];
+
+  stacked_constraints_ = [@[
     [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [buttons.leadingAnchor constraintEqualToAnchor:readable.leadingAnchor constant:8.0],
     [buttons.trailingAnchor constraintEqualToAnchor:readable.trailingAnchor constant:-8.0],
-    [buttons.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-8.0],
     [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:40.0],
     [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor
                                        constant:-20.0],
     [stack.leadingAnchor constraintEqualToAnchor:readable.leadingAnchor constant:8.0],
     [stack.trailingAnchor constraintEqualToAnchor:readable.trailingAnchor constant:-8.0],
+  ] retain];
+
+  NSMutableArray<NSLayoutConstraint*>* side = [NSMutableArray array];
+  [side addObjectsFromArray:@[
+    [header_scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
+    [header_scroll.bottomAnchor constraintEqualToAnchor:buttons.topAnchor constant:-8.0],
+    [header_scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16.0],
+    [header_scroll.widthAnchor constraintEqualToAnchor:safe.widthAnchor
+                                            multiplier:0.42
+                                              constant:-16.0],
+    [header.leadingAnchor constraintEqualToAnchor:header_scroll.frameLayoutGuide.leadingAnchor
+                                         constant:8.0],
+    [header.trailingAnchor constraintEqualToAnchor:header_scroll.frameLayoutGuide.trailingAnchor
+                                          constant:-8.0],
+    [scroll.leadingAnchor constraintEqualToAnchor:header_scroll.trailingAnchor constant:16.0],
+    [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16.0],
+    [stack.leadingAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.leadingAnchor],
+    [stack.trailingAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.trailingAnchor],
+    [buttons.leadingAnchor constraintEqualToAnchor:scroll.leadingAnchor],
+    [buttons.trailingAnchor constraintEqualToAnchor:scroll.trailingAnchor],
   ]];
+  // Both columns centre in the same band, under the corner buttons and over Open StikDebug, so
+  // the heading and the steps sit level.
+  [side addObjectsFromArray:CenteredInScroll(header, header_scroll, 64.0, 12.0)];
+  [side addObjectsFromArray:CenteredInScroll(stack, scroll, 64.0, 12.0)];
+  side_constraints_ = [side copy];
+}
+
+// Two columns when the sheet is short (a phone in landscape): the heading would otherwise push
+// the steps under the buttons.
+- (void)viewWillLayoutSubviews {
+  [super viewWillLayoutSubviews];
+  const BOOL side = self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact;
+  if (layout_applied_ && side == side_layout_) {
+    return;
+  }
+  layout_applied_ = YES;
+  side_layout_ = side;
+  [NSLayoutConstraint deactivateConstraints:stacked_constraints_];
+  [NSLayoutConstraint deactivateConstraints:side_constraints_];
+  if (side) {
+    [header_scroll_ addSubview:header_stack_];
+  } else {
+    [content_stack_ insertArrangedSubview:header_stack_ atIndex:0];
+    [content_stack_ setCustomSpacing:26.0 afterView:header_stack_];
+  }
+  header_scroll_.hidden = !side;
+  [NSLayoutConstraint activateConstraints:side ? side_constraints_ : stacked_constraints_];
 }
 
 - (void)openTapped:(id)sender {
@@ -321,6 +438,14 @@ UIView* NewGroup(NSArray<UIView*>* rows) {
                                open_stikdebug();
                              }
                            }];
+}
+
+- (void)helpTapped:(id)sender {
+  (void)sender;
+  NSURL* url = [NSURL URLWithString:kJITHelpURL];
+  if (url) {
+    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+  }
 }
 
 - (void)otherWaysTapped:(id)sender {
