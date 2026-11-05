@@ -9,7 +9,7 @@
 
 #include "texture_load.xesli"
 
-#if defined(XE_TEXTURE_LOAD_IMAGE_TYPE) && !defined(XE_TEXTURE_LOAD_IMAGE_BLOCK_BYTES)
+#ifdef XE_TEXTURE_LOAD_IMAGE_TYPE
   #define XE_TEXTURE_LOAD_32BPB_STORE(block_x_offset, blocks)                 \
     for (uint i = 0u; i < 4u; ++i) {                                         \
       xe_texture_load_dest_image[uint3_xe(block_index.x + block_x_offset + i, \
