@@ -991,7 +991,8 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
                                                             @"row; %ld is how many"),
                                                         long(total)];
       if (in_lobbies + in_private == 0) {
-        detail = NSLocalizedString(@"Nobody is in a game yet.",
+        detail = NSLocalizedString(@"Nobody is in a game yet. Start System Link in a game to "
+                                   @"join its public lobby, or tap + for a private room.",
                                    @"online view controller: summary row detail, after \"3 "
                                    @"Devices Online\"");
       } else if (in_private && in_lobbies == 0) {

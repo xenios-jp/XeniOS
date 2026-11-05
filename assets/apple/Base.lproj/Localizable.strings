@@ -2099,7 +2099,7 @@
 "No Updates or Add-ons" = "No Updates or Add-ons";
 
 /* online view controller: summary row detail, after \"3 Devices Online\" */
-"Nobody is in a game yet." = "Nobody is in a game yet.";
+"Nobody is in a game yet. Start System Link in a game to join its public lobby, or tap + for a private room." = "Nobody is in a game yet. Start System Link in a game to join its public lobby, or tap + for a private room.";
 
 /* system link view controller: row */
 "Nobody is in a public lobby right now." = "Nobody is in a public lobby right now.";
