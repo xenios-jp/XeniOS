@@ -109,8 +109,39 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
   return true;
 }
 
+bool DxilShader::DxilTranslation::LoadMetallib(
+    MTL::Device* device, const std::vector<uint8_t>& metallib,
+    const std::string& entry_point_name) {
+  if (metal_function_) {
+    return true;
+  }
+  if (!device || metallib.empty()) {
+    return false;
+  }
+  NS::Error* error = nullptr;
+  dispatch_data_t metallib_data =
+      dispatch_data_create(metallib.data(), metallib.size(), nullptr,
+                           DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  MTL::Library* library = device->newLibrary(metallib_data, &error);
+  dispatch_release(metallib_data);
+  if (!library) {
+    return false;
+  }
+  MTL::Function* function = library->newFunction(
+      NS::String::string(entry_point_name.c_str(), NS::UTF8StringEncoding));
+  if (!function) {
+    library->release();
+    return false;
+  }
+  metal_library_ = library;
+  metal_function_ = function;
+  entry_point_name_ = entry_point_name;
+  return true;
+}
+
 bool DxilShader::DxilTranslation::CompileToAir(
-    MTL::Device* device, const MetalShaderConverter& converter) {
+    MTL::Device* device, const MetalShaderConverter& converter,
+    std::vector<uint8_t>* metallib_out) {
   if (metal_function_) {
     return true;
   }
@@ -136,6 +167,7 @@ bool DxilShader::DxilTranslation::CompileToAir(
   }
   const char* compiler_name = native_compiled ? "spirv2air" : "msc";
 
+  const size_t metallib_size = conversion.metallib.size();
   NS::Error* error = nullptr;
   dispatch_data_t metallib_data = dispatch_data_create(
       conversion.metallib.data(), conversion.metallib.size(), nullptr,
@@ -161,10 +193,13 @@ bool DxilShader::DxilTranslation::CompileToAir(
     return false;
   }
   entry_point_name_ = std::move(conversion.entry_point_name);
+  if (metallib_out) {
+    *metallib_out = std::move(conversion.metallib);
+  }
 
   XELOGI("DxilShader: compiled {} shader {:016X} with {} ({}B SPIR-V, {}B AIR)",
          is_vertex ? "vertex" : "pixel", shader().ucode_data_hash(),
-         compiler_name, spirv.size(), conversion.metallib.size());
+         compiler_name, spirv.size(), metallib_size);
   return true;
 }
 
