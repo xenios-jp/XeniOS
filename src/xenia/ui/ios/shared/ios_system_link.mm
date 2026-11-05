@@ -1210,9 +1210,12 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 
 - (void)updateConfiguration {
   UIButtonConfiguration* configuration = self.configuration;
-  // Players, not apps: an open app with nobody in a lobby or room isn't someone to play with.
-  const NSInteger total = xe_ios_system_link_online_total() +
-                          std::max<NSInteger>(0, xe_ios_system_link_online_private());
+  // The Online sheet's headline: apps open (one device each), or the players in lobbies and
+  // rooms when the lobby doesn't say how many apps are open.
+  const NSInteger total =
+      std::max(xe_ios_system_link_online_here(),
+               xe_ios_system_link_online_total() +
+                   std::max<NSInteger>(0, xe_ios_system_link_online_private()));
   // A status dot, green while the lobby answers, so the library says whether the app is online.
   const BOOL connected = xe_ios_system_link_online_connected();
   UIColor* status = connected ? [XeniaTheme accent] : [XeniaTheme textMuted];
@@ -1229,19 +1232,21 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
       : total > 0
           ? [NSString localizedStringWithFormat:NSLocalizedString(
                                                     @"%ld Online",
-                                                    @"Game library: Online button, with how many "
-                                                    @"players are in public System Link lobbies"),
+                                                    @"online view controller: summary title; "
+                                                    @"%ld is how many devices have XeniOS open"),
                                                 long(total)]
           : NSLocalizedString(@"Online", @"Game library: Online button");
   self.configuration = configuration;
   self.accessibilityValue =
-      total == 1 ? NSLocalizedString(@"1 player online", @"Game library, VoiceOver: one player in "
-                                                         @"the game's public System Link lobby")
+      total == 1
+          ? NSLocalizedString(@"1 device online", @"Game library, VoiceOver: Online button value, "
+                                                  @"when only one device has XeniOS open")
       : total > 1
-          ? [NSString localizedStringWithFormat:NSLocalizedString(@"%ld players online",
-                                                                  @"Game library, VoiceOver: "
-                                                                  @"players in the game's public "
-                                                                  @"System Link lobby"),
+          ? [NSString localizedStringWithFormat:NSLocalizedString(
+                                                    @"%ld devices online",
+                                                    @"Game library, VoiceOver: Online button "
+                                                    @"value; %ld is how many devices have XeniOS "
+                                                    @"open"),
                                                 long(total)]
           : nil;
 }
@@ -1268,7 +1273,7 @@ UIButton* xe_ios_new_system_link_online_button(void) {
   button.translatesAutoresizingMaskIntoConstraints = NO;
   button.accessibilityLabel = NSLocalizedString(@"Online", @"Game library: Online button");
   button.accessibilityHint =
-      NSLocalizedString(@"Shows how many players are in each game's public System Link lobby.",
+      NSLocalizedString(@"Shows who has XeniOS open and the games they're playing.",
                         @"Game library, VoiceOver: Online button hint");
   [button setContentCompressionResistancePriority:UILayoutPriorityRequired
                                           forAxis:UILayoutConstraintAxisHorizontal];

@@ -83,6 +83,9 @@
 /* system software view controller: install progress */
 "%d%% done" = "%d%% done";
 
+/* Game library, VoiceOver: Online button value; %ld is how many devices have XeniOS open */
+"%ld devices online" = "%ld devices online";
+
 /* online view controller: summary row; %ld is how many */
 "%ld Devices Online" = "%ld Devices Online";
 
@@ -92,7 +95,7 @@
 /* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
 "%ld of them are in private rooms." = "%ld of them are in private rooms.";
 
-/* Game library: Online button, with how many players are in public System Link lobbies */
+/* online view controller: summary title; %ld is how many devices have XeniOS open */
 "%ld Online" = "%ld Online";
 
 /* Game library: players in the game's public System Link lobby; %ld is how many */
@@ -143,6 +146,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "...and %lu more" = "...and %lu more";
+
+/* Game library, VoiceOver: Online button value, when only one device has XeniOS open */
+"1 device online" = "1 device online";
 
 /* online view controller: summary row */
 "1 Device Online" = "1 Device Online";
@@ -3014,14 +3020,14 @@
 /* VoiceOver hint for the Achievements button */
 "Shows achievements for the current game." = "Shows achievements for the current game.";
 
-/* Game library, VoiceOver: Online button hint */
-"Shows how many players are in each game's public System Link lobby." = "Shows how many players are in each game's public System Link lobby.";
-
 /* acknowledgements view controller: accessibility hint */
 "Shows the license." = "Shows the license.";
 
 /* In-game menu, VoiceOver: System Link card hint */
 "Shows the System Link room, its players and who's online." = "Shows the System Link room, its players and who's online.";
+
+/* Game library, VoiceOver: Online button hint */
+"Shows who has XeniOS open and the games they're playing." = "Shows who has XeniOS open and the games they're playing.";
 
 /* settings hub view controller: account card */
 "Sign In" = "Sign In";
