@@ -51,7 +51,7 @@ constexpr CGFloat kRowSpacing = 4.0;
 constexpr CGFloat kMaxExpandedContentWidth = 420.0;
 constexpr CGFloat kMaxCornerRadius = 24.0;
 
-enum class Phase { kNone, kLoadingCache, kCompiling };
+using Phase = xe::ui::ios::ShaderActivityPhase;
 
 enum class WaitState { kIdle, kOffered, kWaiting };
 
@@ -729,41 +729,21 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 }
 
 - (void)poll:(CADisplayLink*)link {
-  const xe::gpu::metal::CompileActivity& activity = xe::gpu::metal::compile_activity;
   CFTimeInterval now = link.timestamp;
-  // finished first: a request finishing between the loads then reads as still
-  // pending for a tick, never the backlog as empty.
-  uint64_t finished = activity.finished.load(std::memory_order_relaxed);
-  uint64_t queued = activity.queued.load(std::memory_order_relaxed);
-  uint64_t backlog = queued > finished ? queued - finished : 0;
+  const xe::gpu::metal::CompileActivitySample sample = xe::gpu::metal::SampleCompileActivity();
+  const xe::ui::ios::ShaderActivity activity = xe::ui::ios::DescribeShaderActivity(sample);
+  uint64_t backlog = activity.backlog;
 
-  uint32_t generation = activity.storage_generation.load(std::memory_order_relaxed);
-  if (generation != storage_generation_) {
-    storage_generation_ = generation;
+  if (sample.storage_generation != storage_generation_) {
+    storage_generation_ = sample.storage_generation;
     explained_generation_ = NO;
     offered_generation_ = NO;
     [self resetForecast];
     [self endShaderWaitAnimated:YES];
   }
-  bool storage_empty = activity.storage_empty.load(std::memory_order_relaxed);
-  uint64_t storage_queued_end = activity.storage_queued_end.load(std::memory_order_relaxed);
-  bool loading_cache = activity.storage_loading.load(std::memory_order_relaxed) &&
-                       !storage_empty &&
-                       (storage_queued_end == 0 || finished < storage_queued_end);
-
-  Phase phase = Phase::kNone;
-  CGFloat progress = -1.0;
-  if (loading_cache) {
-    phase = Phase::kLoadingCache;
-    uint64_t queued_begin = activity.storage_queued_begin.load(std::memory_order_relaxed);
-    uint64_t finished_begin = activity.storage_finished_begin.load(std::memory_order_relaxed);
-    if (storage_queued_end > queued_begin) {
-      double done = double(finished > finished_begin ? finished - finished_begin : 0);
-      progress = CGFloat(std::min(1.0, done / double(storage_queued_end - queued_begin)));
-    }
-  } else if (backlog) {
-    phase = Phase::kCompiling;
-  }
+  bool storage_empty = sample.storage_empty;
+  Phase phase = activity.phase;
+  CGFloat progress = CGFloat(activity.progress);
 
   // Timers for showing: a phase has to last, or the backlog be deep.
   if (phase == Phase::kLoadingCache) {
@@ -780,7 +760,7 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     progress = -1.0;
   }
   [self updateShaderWaitNow:now
-                   finished:finished
+                     sample:sample
                 loadingCache:phase == Phase::kLoadingCache
                     progress:progress
                      thermal:thermal];
@@ -856,11 +836,10 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
 
 // The rebuild forecast and the Wait / Play now offer, once per poll.
 - (void)updateShaderWaitNow:(CFTimeInterval)now
-                   finished:(uint64_t)finished
+                     sample:(const xe::gpu::metal::CompileActivitySample&)sample
                loadingCache:(BOOL)loading_cache
                    progress:(CGFloat)progress
                     thermal:(NSProcessInfoThermalState)thermal {
-  const xe::gpu::metal::CompileActivity& activity = xe::gpu::metal::compile_activity;
   // A new storage generation is a new title (or a reload): forget the old answer.
   if (!loading_cache) {
     [self resetForecast];
@@ -870,12 +849,10 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
     }
     return;
   }
-  uint64_t queued_begin = activity.storage_queued_begin.load(std::memory_order_relaxed);
-  uint64_t finished_begin = activity.storage_finished_begin.load(std::memory_order_relaxed);
-  uint64_t queued_end = activity.storage_queued_end.load(std::memory_order_relaxed);
-
-  // The live rate: completions over a sliding window, smoothed.
-  rate_samples_.emplace_back(now, finished);
+  // The live rate: the rebuild's completions over a sliding window, smoothed. The
+  // game's own compiles, which go first, would make the rebuild look quicker.
+  uint64_t done = sample.storage_requests_done;
+  rate_samples_.emplace_back(now, done);
   while (rate_samples_.size() > 2 && now - rate_samples_.front().first > kRateWindowSeconds) {
     rate_samples_.pop_front();
   }
@@ -890,19 +867,16 @@ void xe_ios_set_shader_compile_status_enabled(BOOL enabled) {
   last_rate_time_ = now;
 
   xe::ui::ios::ShaderForecastInput input;
-  input.stored_total = activity.storage_total.load(std::memory_order_relaxed);
-  input.requests_total = queued_end > queued_begin ? queued_end - queued_begin : 0;
-  input.done = finished > finished_begin ? finished - finished_begin : 0;
+  input.stored_total = sample.storage_total;
+  input.requests_total = sample.storage_requests;
+  input.done = done;
   input.observed_seconds = cache_since_ ? now - cache_since_ : 0.0;
   input.live_ms_per_request = live_ms_per_request_;
-  input.seed_us_per_stored =
-      double(activity.storage_seed_us_per_stored.load(std::memory_order_relaxed));
+  input.seed_us_per_stored = double(sample.storage_seed_us_per_stored);
   // Low Power Mode makes the compile threads slower than the last launch's record.
   input.seed_slowdown = [NSProcessInfo processInfo].lowPowerModeEnabled ? 2.0 : 1.0;
   // A first run has nothing stored to rebuild: compiles are found as draws arrive.
-  forecast_seconds_ = activity.storage_empty.load(std::memory_order_relaxed)
-                          ? -1.0
-                          : xe::ui::ios::ForecastShaderSeconds(input);
+  forecast_seconds_ = sample.storage_empty ? -1.0 : xe::ui::ios::ForecastShaderSeconds(input);
 
   if (wait_state_ == WaitState::kIdle) {
     if (!offered_generation_ && forecast_seconds_ >= xe::ui::ios::kShaderWaitOfferSeconds &&

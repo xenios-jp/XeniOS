@@ -21,6 +21,7 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/gpu/metal/metal_compile_activity.h"
+#include "xenia/ui/ios/game/ios_shader_activity.h"
 #include "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 
 namespace xe {
@@ -467,25 +468,13 @@ NSString* ElapsedString(CFTimeInterval seconds) {
 
   // Shaders compiled before the first frame: the stored ones rebuilt, or a deep
   // backlog the game waits for.
-  const xe::gpu::metal::CompileActivity& activity = xe::gpu::metal::compile_activity;
-  const uint64_t finished = activity.finished.load(std::memory_order_relaxed);
-  const uint64_t queued = activity.queued.load(std::memory_order_relaxed);
-  const uint64_t backlog = queued > finished ? queued - finished : 0;
-  const bool storage_loading = activity.storage_loading.load(std::memory_order_relaxed);
-  double progress = -1.0;
-  if (storage_loading) {
-    const uint64_t queued_begin = activity.storage_queued_begin.load(std::memory_order_relaxed);
-    const uint64_t queued_end = activity.storage_queued_end.load(std::memory_order_relaxed);
-    const uint64_t finished_begin =
-        activity.storage_finished_begin.load(std::memory_order_relaxed);
-    if (queued_end > queued_begin) {
-      const uint64_t done = finished > finished_begin ? finished - finished_begin : 0;
-      progress = std::min(1.0, double(done) / double(queued_end - queued_begin));
-    }
-  }
+  const xe::ui::ios::ShaderActivity activity =
+      xe::ui::ios::DescribeShaderActivity(xe::gpu::metal::SampleCompileActivity());
+  const bool loading_cache = activity.phase == xe::ui::ios::ShaderActivityPhase::kLoadingCache;
+  const double progress = loading_cache ? activity.progress : -1.0;
   const bool shaders = snapshot.stage != LaunchStage::kJit &&
                        snapshot.stage != LaunchStage::kPreparing &&
-                       (storage_loading || backlog >= kShaderBacklog);
+                       (loading_cache || activity.backlog >= kShaderBacklog);
 
   [self applyStage:snapshot.stage shaders:shaders progress:progress now:now];
   // A stored-shader rebuild doesn't need the game running; a first launch's compiles come from

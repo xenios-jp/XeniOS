@@ -30,17 +30,23 @@ struct CompileActivity {
 
   // Bumped when a title's shader storage starts loading.
   std::atomic<uint32_t> storage_generation{0};
-  // While the stored shaders and pipelines are rebuilt: the counts when the load
-  // began, and the queued count once everything stored was queued (0 until then).
+  // From the start of the load until the last stored shader and pipeline has
+  // been rebuilt (or the load failed, or the compile threads were shut down).
   std::atomic<bool> storage_loading{false};
-  std::atomic<uint64_t> storage_queued_begin{0};
-  std::atomic<uint64_t> storage_finished_begin{0};
-  std::atomic<uint64_t> storage_queued_end{0};
+  // The rebuild's own requests, apart from what the game asks for meanwhile
+  // (which goes first and would make the rebuild look done early): the shaders
+  // the stored pipelines need, then the stored pipelines. storage_requests is
+  // the total: until every stored pipeline is queued it counts each stored
+  // description as one (some are later found unbuildable or already built), and
+  // 0 while nothing is known. storage_requests_done never passes it.
+  std::atomic<uint64_t> storage_requests{0};
+  std::atomic<uint64_t> storage_requests_done{0};
   // The title had no stored pipelines: everything it draws compiles for the first
   // time.
   std::atomic<bool> storage_empty{false};
-  // The number of stored pipeline descriptions, published before they are queued
-  // (which can take a while), so a forecast can start early. 0 until known.
+  // The number of stored pipeline descriptions, published before the shaders
+  // they need are compiled (which can take most of the load), so a forecast can
+  // start early. 0 until known.
   std::atomic<uint64_t> storage_total{0};
   // How long the title's last complete rebuild took per stored description, in
   // microseconds, from a sidecar next to the stored pipelines. 0: no usable
@@ -49,6 +55,42 @@ struct CompileActivity {
 };
 
 inline CompileActivity compile_activity;
+
+// One reading of compile_activity, for UI that polls it.
+struct CompileActivitySample {
+  uint64_t queued = 0;
+  uint64_t finished = 0;
+  uint32_t storage_generation = 0;
+  bool storage_loading = false;
+  bool storage_empty = false;
+  uint64_t storage_requests = 0;
+  uint64_t storage_requests_done = 0;
+  uint64_t storage_total = 0;
+  uint64_t storage_seed_us_per_stored = 0;
+};
+
+// Each finished count is read before what it is counted against, so a request
+// finishing between the loads reads as still pending, never as more done than
+// asked for.
+inline CompileActivitySample SampleCompileActivity(
+    const CompileActivity& activity = compile_activity) {
+  CompileActivitySample sample;
+  sample.finished = activity.finished.load(std::memory_order_relaxed);
+  sample.queued = activity.queued.load(std::memory_order_relaxed);
+  sample.storage_generation =
+      activity.storage_generation.load(std::memory_order_relaxed);
+  sample.storage_loading =
+      activity.storage_loading.load(std::memory_order_relaxed);
+  sample.storage_empty = activity.storage_empty.load(std::memory_order_relaxed);
+  sample.storage_requests_done =
+      activity.storage_requests_done.load(std::memory_order_relaxed);
+  sample.storage_requests =
+      activity.storage_requests.load(std::memory_order_relaxed);
+  sample.storage_total = activity.storage_total.load(std::memory_order_relaxed);
+  sample.storage_seed_us_per_stored =
+      activity.storage_seed_us_per_stored.load(std::memory_order_relaxed);
+  return sample;
+}
 
 // Guest frames handed to the presenter, for UI that waits for a title's first
 // picture. Bumped once per swap with an image.
