@@ -1515,6 +1515,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
   _headerBackdrop.alpha = alpha;
   _libraryLabel.layer.shadowOpacity = (alpha > 0.5 && !_sideLayout) ? 0.0f : 0.35f;
+  // Over the art the title is white, as the hero's own text is; on the bar it takes the theme's.
+  const BOOL over_art = !_heroView.hidden && alpha <= 0.5;
+  _libraryLabel.textColor = over_art ? UIColor.whiteColor : [XeniaTheme textPrimary];
 }
 
 - (void)scrollViewDidScroll:(UIScrollView*)scrollView {
