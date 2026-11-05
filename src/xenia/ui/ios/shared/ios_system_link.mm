@@ -786,7 +786,10 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
                 usingBlock:^(NSNotification* __unused note) {
                   xe::kernel::xam::SystemLinkAllowedChanged();
                 }];
-    xe::net::secure::SetRelayStatusListener([](const RelayStatus& status) {
+    xe::net::secure::SetRelayStatusListener([](const RelayStatus& relay_status) {
+      // A copy: a block captures a C++ reference as a reference, and the caller's status is gone
+      // by the time the main queue runs it (garbage counts like "17,170,505 players").
+      const RelayStatus status = relay_status;
       dispatch_async(dispatch_get_main_queue(), ^{
         OnStatus(status);
         [[NSNotificationCenter defaultCenter]
