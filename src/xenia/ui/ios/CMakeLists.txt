@@ -235,6 +235,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework Foundation"
   "-framework GameController"
   "-framework ImageIO"
+  "-framework IOSurface"
   "-framework Metal"
   "-framework MetalKit"
   "-framework PhotosUI"
