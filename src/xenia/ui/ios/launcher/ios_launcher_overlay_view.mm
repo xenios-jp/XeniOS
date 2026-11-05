@@ -115,6 +115,20 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id) {
   return [date isKindOfClass:[NSDate class]] ? date : nil;
 }
 
+// The header's row. On a game page only its ✕ and ⋯ show, and the page's rows can reach up beside
+// them (the first row sits level with ✕ on a phone on its side), so the rest of the row lets
+// touches through.
+@interface XeniaLauncherHeaderView : UIView
+@property(nonatomic, assign) BOOL passesTouchesThrough;
+@end
+
+@implementation XeniaLauncherHeaderView
+- (UIView*)hitTest:(CGPoint)point withEvent:(UIEvent*)event {
+  UIView* hit = [super hitTest:point withEvent:event];
+  return hit == self && _passesTouchesThrough ? nil : hit;
+}
+@end
+
 // Target for the empty-state button. The button's action lives inside the
 // collection view's configuration, so it must not retain the overlay; the
 // overlay clears `owner` in -dealloc.
@@ -521,7 +535,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 @implementation XeniaIOSLauncherOverlayView {
   // The header: the large "Library" title, then Online, the settings capsule and,
   // with the side layout, search and sort. It floats over the art and the grid.
-  UIView* _headerView;
+  XeniaLauncherHeaderView* _headerView;
   UIVisualEffectView* _headerBackdrop;
   UIStackView* _headerActions;
   UILabel* _libraryLabel;
@@ -826,7 +840,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _headerBackdrop.userInteractionEnabled = NO;
   [self addSubview:_headerBackdrop];
 
-  _headerView = [[UIView alloc] init];
+  _headerView = [[XeniaLauncherHeaderView alloc] init];
   [self addSubview:_headerView];
 
   _libraryLabel = [[UILabel alloc] init];
@@ -1776,6 +1790,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _headerActions.transform = detail ? CGAffineTransformMakeTranslation(-24.0, 0.0)
                                     : CGAffineTransformIdentity;
   _headerActions.userInteractionEnabled = !detail;
+  _headerView.passesTouchesThrough = detail;
   _detailCloseButton.alpha = detail ? 1.0 : 0.0;
   _detailCloseButton.transform =
       detail ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.8, 0.8);
