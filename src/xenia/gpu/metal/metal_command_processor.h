@@ -644,6 +644,13 @@ class MetalCommandProcessor : public CommandProcessor,
   // A pipeline task that ended (compiled, failed or taken by a draw), for the
   // rebuild timing record.
   void NoteStoredPipelineDoneLocked(uint64_t pipeline_key);
+  // The storage load's progress in compile_activity: publishes the requests it
+  // has queued (with each stored description not yet queued counted as one),
+  // counts one of them done, and ends the load once all are done. Under
+  // async_compile_mutex_.
+  void PublishStorageRequestsLocked();
+  void NoteStorageRequestDoneLocked();
+  void FinishStorageRebuildLocked();
   // Formats, write masks and blend state, shared by the render and mesh
   // pipeline descriptors.
   static void ApplyColorAttachmentState(
@@ -1009,6 +1016,8 @@ class MetalCommandProcessor : public CommandProcessor,
     uint64_t modification = 0;
     bool is_ios = false;
     uint8_t priority = 0;
+    // Queued by the shader storage load, so it counts toward its progress.
+    bool storage = false;
   };
   // What a queued pipeline request builds. Each kind reads a different subset
   // of the request, but all of them are captured on the draw thread.
@@ -1135,6 +1144,8 @@ class MetalCommandProcessor : public CommandProcessor,
         xenos::TessellationMode::kDiscrete;
     Shader::HostVertexShaderType host_vertex_shader_type =
         Shader::HostVertexShaderType::kVertex;
+    // Queued by the shader storage load, so it counts toward its progress.
+    bool storage = false;
   };
   struct ShaderCompileRequestCompare {
     bool operator()(const ShaderCompileRequest& a,
@@ -1265,6 +1276,14 @@ class MetalCommandProcessor : public CommandProcessor,
   // draw's pipelines, which go first, finish within it.
   std::unordered_set<uint64_t> storage_stats_keys_;
   bool storage_stats_queued_all_ = false;
+  // The storage load's own requests, queued and done, for compile_activity:
+  // the shaders the stored pipelines need, then the stored pipelines (each key
+  // that went into storage_stats_keys_). Until all are queued, the stored
+  // descriptions not yet queued count as storage_stats_expected_pipelines_.
+  uint64_t storage_shader_requests_ = 0;
+  uint64_t storage_pipeline_requests_ = 0;
+  uint64_t storage_requests_done_ = 0;
+  uint64_t storage_stats_expected_pipelines_ = 0;
   std::filesystem::path storage_stats_path_;
   // Guest ucode (.xsh, shared with the other backends) and this backend's
   // pipeline descriptions (.metal.xpso), replayed at startup.
@@ -1287,9 +1306,14 @@ class MetalCommandProcessor : public CommandProcessor,
   // Set while rebuilding from storage, so replay doesn't re-record what it
   // read.
   bool replaying_stored_pipelines_ = false;
+  // Set while the storage load queues the shaders and tessellation stages the
+  // stored pipelines need, so their requests count toward its progress. Draw
+  // thread only.
+  bool queueing_storage_requests_ = false;
   // Turns the stored (ucode hash, modification) pairs into compiled shaders.
   void TranslateShadersForStorage(
-      const std::set<std::pair<uint64_t, uint64_t>>& translations_needed);
+      const std::set<std::pair<uint64_t, uint64_t>>& translations_needed,
+      size_t stored_count);
   // Rebuilds the stored pipelines.
   void CreateStoredPipelines(
       const std::vector<PipelineStoredDescription>& stored_descriptions);

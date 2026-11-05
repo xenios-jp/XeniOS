@@ -1050,6 +1050,11 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_compile_awaiters_ = 0;
   storage_stats_pending_ = false;
   storage_stats_boosted_ = false;
+  storage_stats_keys_.clear();
+  storage_shader_requests_ = 0;
+  storage_pipeline_requests_ = 0;
+  storage_requests_done_ = 0;
+  storage_stats_expected_pipelines_ = 0;
   // The dropped requests count as finished, so the backlog reads empty.
   compile_activity.finished.store(
       compile_activity.queued.load(std::memory_order_relaxed),
@@ -1217,9 +1222,14 @@ bool MetalCommandProcessor::EnqueueShaderCompilation(
     request.modification = translation->modification();
     request.is_ios = is_ios;
     request.priority = priority;
+    request.storage = queueing_storage_requests_;
     async_shader_pending_.insert(translation);
     async_shader_queue_.push(request);
     compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
+    if (request.storage) {
+      ++storage_shader_requests_;
+      PublishStorageRequestsLocked();
+    }
   }
   async_compile_cv_.notify_one();
   return true;
@@ -2257,6 +2267,9 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
       } else {
         async_tess_shaders_failed_.insert(tess_shaders_request.key);
       }
+      if (tess_shaders_request.storage) {
+        NoteStorageRequestDoneLocked();
+      }
       FinishAsyncCompileTaskLocked();
     } else if (request_kind == RequestKind::kPipeline) {
       std::string pipeline_error;
@@ -2330,6 +2343,9 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
           if (!compiled && !contended) {
             async_shader_failed_.insert(shader_request.translation);
           }
+        }
+        if (shader_request.storage) {
+          NoteStorageRequestDoneLocked();
         }
         FinishAsyncCompileTaskLocked();
       }
@@ -3997,10 +4013,22 @@ void MetalCommandProcessor::ShutdownContext() {
 }
 
 void MetalCommandProcessor::TranslateShadersForStorage(
-    const std::set<std::pair<uint64_t, uint64_t>>& translations_needed) {
+    const std::set<std::pair<uint64_t, uint64_t>>& translations_needed,
+    size_t stored_count) {
+  // Known before the shaders are compiled, which can be most of the load, so
+  // the progress and the forecast start now. The stored pipelines will go to
+  // the compile threads too, if there are any.
+  compile_activity.storage_total = stored_count;
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    storage_stats_expected_pipelines_ =
+        async_compile_threads_.empty() ? 0 : stored_count;
+    PublishStorageRequestsLocked();
+  }
   // Queue every modification the stored pipelines reference. Falls back to this
   // thread when there is no pool.
   size_t queued = 0;
+  queueing_storage_requests_ = true;
   for (const auto& [ucode_hash, modification] : translations_needed) {
     auto it = guest_shader_cache_.find(ucode_hash);
     if (it == guest_shader_cache_.end()) {
@@ -4027,6 +4055,7 @@ void MetalCommandProcessor::TranslateShadersForStorage(
       ++queued;
     }
   }
+  queueing_storage_requests_ = false;
   if (queued) {
     // A pipeline can't be queued without its compiled functions, so the shader
     // half is finished here even when the caller asked for non-blocking init.
@@ -4041,6 +4070,7 @@ void MetalCommandProcessor::CreateStoredPipelines(
   // Ask for every tessellation stage set first, so the one drain below covers
   // them all rather than one per description.
   bool tessellation_queued = false;
+  queueing_storage_requests_ = true;
   for (const PipelineStoredDescription& stored : stored_descriptions) {
     const PipelineDescription& description = stored.description;
     if (!UseDxilPath() ||
@@ -4059,6 +4089,7 @@ void MetalCommandProcessor::CreateStoredPipelines(
                                /*allow_async=*/true, &status);
     tessellation_queued |= status == ShaderCompileStatus::kPending;
   }
+  queueing_storage_requests_ = false;
   if (tessellation_queued) {
     AwaitAsyncCompiles();
   }
@@ -4183,8 +4214,10 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
     // Still compiling: the rebuild record waits for it.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     if (storage_stats_pending_ &&
-        async_pipeline_pending_.count(request.pipeline_key)) {
-      storage_stats_keys_.insert(request.pipeline_key);
+        async_pipeline_pending_.count(request.pipeline_key) &&
+        storage_stats_keys_.insert(request.pipeline_key).second) {
+      ++storage_pipeline_requests_;
+      PublishStorageRequestsLocked();
     }
   }
   vertex_shader_out = vertex_it->second.get();
@@ -4205,23 +4238,6 @@ void MetalCommandProcessor::InitializeShaderStorage(
     }
     return;
   }
-
-  compile_activity.storage_queued_end = 0;
-  compile_activity.storage_queued_begin =
-      compile_activity.queued.load(std::memory_order_relaxed);
-  compile_activity.storage_finished_begin =
-      compile_activity.finished.load(std::memory_order_relaxed);
-  compile_activity.storage_empty = false;
-  compile_activity.storage_total = 0;
-  compile_activity.storage_seed_us_per_stored = 0;
-  compile_activity.storage_loading = true;
-  ++compile_activity.storage_generation;
-
-  // The SPIRV-Cross path's MSL text is a translation cache, not a record of
-  // what to rebuild.
-  SetMslShaderSourceCacheDirectory(GetShaderStorageLocalRoot(cache_root) /
-                                   "metal" / fmt::format("{:08X}", title_id) /
-                                   "msl_source");
 
   // One file for both guest shader paths: they share a SpirvShaderTranslator
   // config, so a description means the same thing to either, and only the
@@ -4271,6 +4287,60 @@ void MetalCommandProcessor::InitializeShaderStorage(
     archive_saved_ticks_ = xe::Clock::QueryHostTickCount();
   }
 
+  // How long the last complete rebuild took, to forecast this one before the
+  // compile threads have measured anything. A record from another pipeline
+  // version says little about this one. xrebuild2 times the whole load, the
+  // stored shaders included; xrebuild1 timed only the pipelines after them.
+  const std::filesystem::path stats_path =
+      GetShaderStorageLocalRoot(cache_root) / "metal" /
+      fmt::format("{:08X}", title_id) / "rebuild_stats.txt";
+  uint64_t seed_us_per_stored = 0;
+  {
+    std::ifstream stats_file(stats_path);
+    std::string tag;
+    uint64_t stats_version = 0, stats_stored = 0, stats_us = 0;
+    if (stats_file >> tag >> stats_version >> stats_stored >> stats_us &&
+        tag == "xrebuild2" && stats_version == config.version &&
+        stats_stored) {
+      seed_us_per_stored = stats_us / stats_stored;
+    }
+  }
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(stats_path.parent_path(), ec);
+  }
+
+  const uint64_t load_start_ticks = xe::Clock::QueryHostTickCount();
+  {
+    std::lock_guard<std::mutex> lock(async_compile_mutex_);
+    // Requests of an earlier load that are still queued are no longer its.
+    storage_stats_pending_ = false;
+    storage_stats_boosted_ = async_compile_hold_boost_;
+    storage_stats_keys_.clear();
+    storage_stats_queued_all_ = false;
+    storage_stats_start_ticks_ = load_start_ticks;
+    storage_stats_stored_ = 0;
+    storage_stats_version_ = config.version;
+    storage_stats_path_ = stats_path;
+    storage_shader_requests_ = 0;
+    storage_pipeline_requests_ = 0;
+    storage_requests_done_ = 0;
+    storage_stats_expected_pipelines_ = 0;
+    compile_activity.storage_requests = 0;
+    compile_activity.storage_requests_done = 0;
+    compile_activity.storage_empty = false;
+    compile_activity.storage_total = 0;
+    compile_activity.storage_seed_us_per_stored = seed_us_per_stored;
+    compile_activity.storage_loading = true;
+    ++compile_activity.storage_generation;
+  }
+
+  // The SPIRV-Cross path's MSL text is a translation cache, not a record of
+  // what to rebuild.
+  SetMslShaderSourceCacheDirectory(GetShaderStorageLocalRoot(cache_root) /
+                                   "metal" / fmt::format("{:08X}", title_id) /
+                                   "msl_source");
+
   std::vector<PipelineStoredDescription> stored_descriptions;
   if (!storage_writer_.InitializeShaderStorage(
           cache_root, title_id, config,
@@ -4279,9 +4349,12 @@ void MetalCommandProcessor::InitializeShaderStorage(
             return LoadShader(type, ucode_dwords, ucode_dword_count,
                               ucode_data_hash);
           },
-          [this](const std::set<std::pair<uint64_t, uint64_t>>
-                     & translations_needed) {
-            TranslateShadersForStorage(translations_needed);
+          // The descriptions are read by the time the shaders are asked for.
+          [this, &stored_descriptions](
+              const std::set<std::pair<uint64_t, uint64_t>>&
+                  translations_needed) {
+            TranslateShadersForStorage(translations_needed,
+                                       stored_descriptions.size());
           },
           stored_descriptions)) {
     XELOGW("Metal: persistent shader storage is disabled");
@@ -4292,62 +4365,27 @@ void MetalCommandProcessor::InitializeShaderStorage(
     return;
   }
 
-  // How long the last complete rebuild took, to forecast this one before the
-  // compile threads have measured anything. A record from another pipeline
-  // version says little about this one.
-  const std::filesystem::path stats_path =
-      GetShaderStorageLocalRoot(cache_root) / "metal" /
-      fmt::format("{:08X}", title_id) / "rebuild_stats.txt";
-  uint64_t seed_us_per_stored = 0;
-  {
-    std::ifstream stats_file(stats_path);
-    std::string tag;
-    uint64_t stats_version = 0, stats_stored = 0, stats_us = 0;
-    if (stats_file >> tag >> stats_version >> stats_stored >> stats_us &&
-        tag == "xrebuild1" && stats_version == config.version &&
-        stats_stored) {
-      seed_us_per_stored = stats_us / stats_stored;
-    }
-  }
-  {
-    std::error_code ec;
-    std::filesystem::create_directories(stats_path.parent_path(), ec);
-  }
-  compile_activity.storage_seed_us_per_stored = seed_us_per_stored;
   compile_activity.storage_total = stored_descriptions.size();
-
   uint64_t start_ticks = xe::Clock::QueryHostTickCount();
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_pending_ = !stored_descriptions.empty();
-    storage_stats_boosted_ =
-        async_compile_hold_boost_ || async_compile_awaiters_;
-    storage_stats_keys_.clear();
-    storage_stats_queued_all_ = false;
-    storage_stats_start_ticks_ = start_ticks;
+    storage_stats_boosted_ = storage_stats_boosted_ ||
+                             async_compile_hold_boost_ ||
+                             async_compile_awaiters_;
     storage_stats_stored_ = stored_descriptions.size();
-    storage_stats_version_ = config.version;
-    storage_stats_path_ = stats_path;
   }
   CreateStoredPipelines(stored_descriptions);
   compile_activity.storage_empty = stored_descriptions.empty();
-  uint64_t storage_queued_end =
-      compile_activity.queued.load(std::memory_order_relaxed);
-  compile_activity.storage_queued_end = storage_queued_end;
-  // Nothing went to the compile threads (no async compilation, or every
-  // stored entry was rejected): the load is over, and a queued_end of 0 must
-  // not read as "not known yet".
-  if (storage_queued_end == compile_activity.storage_queued_begin) {
-    compile_activity.storage_loading = false;
-  }
   {
-    // Everything may already be done, with no later finish to notice it.
-    std::lock_guard<std::mutex> lock(async_compile_mutex_);
-  {
+    // Every stored pipeline the compile threads will build is queued now. They
+    // may all be done already (or none went to them: no async compilation, or
+    // every stored entry was rejected), with no later finish to notice it.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_queued_all_ = true;
-    if (storage_stats_pending_ && storage_stats_keys_.empty()) {
-      RecordStorageRebuildStatsLocked();
+    PublishStorageRequestsLocked();
+    if (storage_stats_keys_.empty()) {
+      FinishStorageRebuildLocked();
     }
   }
   if (blocking) {
@@ -4654,7 +4692,7 @@ void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
                         1000000 / xe::Clock::QueryHostTickFrequency();
   std::ofstream stats_file(storage_stats_path_, std::ios::trunc);
   if (stats_file) {
-    stats_file << "xrebuild1 " << storage_stats_version_ << ' '
+    stats_file << "xrebuild2 " << storage_stats_version_ << ' '
                << storage_stats_stored_ << ' ' << elapsed_us << '\n';
   }
 }
@@ -4665,10 +4703,42 @@ void MetalCommandProcessor::CountAsyncCompileTaskFinishedLocked() {
 
 void MetalCommandProcessor::NoteStoredPipelineDoneLocked(
     uint64_t pipeline_key) {
-  if (storage_stats_pending_ && storage_stats_keys_.erase(pipeline_key) &&
-      storage_stats_queued_all_ && storage_stats_keys_.empty()) {
+  if (!storage_stats_pending_ || !storage_stats_keys_.erase(pipeline_key)) {
+    return;
+  }
+  NoteStorageRequestDoneLocked();
+  if (storage_stats_queued_all_ && storage_stats_keys_.empty()) {
+    FinishStorageRebuildLocked();
+  }
+}
+
+void MetalCommandProcessor::PublishStorageRequestsLocked() {
+  uint64_t pipelines =
+      storage_stats_queued_all_
+          ? storage_pipeline_requests_
+          : std::max(storage_pipeline_requests_,
+                     storage_stats_expected_pipelines_);
+  compile_activity.storage_requests.store(storage_shader_requests_ + pipelines,
+                                          std::memory_order_relaxed);
+}
+
+void MetalCommandProcessor::NoteStorageRequestDoneLocked() {
+  // Every request counted done was counted queued first, under this lock. One
+  // left over from an earlier load, which can't count, is all this can catch.
+  if (storage_requests_done_ >=
+      storage_shader_requests_ + storage_pipeline_requests_) {
+    return;
+  }
+  ++storage_requests_done_;
+  compile_activity.storage_requests_done.store(storage_requests_done_,
+                                               std::memory_order_relaxed);
+}
+
+void MetalCommandProcessor::FinishStorageRebuildLocked() {
+  if (storage_stats_pending_) {
     RecordStorageRebuildStatsLocked();
   }
+  compile_activity.storage_loading.store(false, std::memory_order_relaxed);
 }
 
 void MetalCommandProcessor::FinishAsyncCompileTaskLocked() {
@@ -4753,7 +4823,10 @@ void MetalCommandProcessor::SetCompileThreadBoost(bool boost) {
     return;
   }
   async_compile_hold_boost_ = boost;
-  if (boost && storage_stats_pending_) {
+  // Also while the stored shaders compile, before storage_stats_pending_.
+  if (boost && (storage_stats_pending_ ||
+                compile_activity.storage_loading.load(
+                    std::memory_order_relaxed))) {
     storage_stats_boosted_ = true;
   }
   // Without a pool yet, it applies when the pool starts.
@@ -6536,7 +6609,7 @@ bool MetalCommandProcessor::IssueDrawMsl(
   if (render_encoder_shared_memory_hazards_.is_active()) {
     // Tessellation may read control points without a host index buffer.
     // TODO(xenios-jp): on this legacy MSL path the result is dropped and
-    // exports are not
+    // exports are not ordered within a pass at all.
     render_encoder_shared_memory_hazards_.Access(0, SharedMemory::kBufferSize,
                                                  memexport_used);
   }
@@ -7630,9 +7703,14 @@ MetalCommandProcessor::GetDxilTessellationShaders(
       !async_compile_threads_.empty()) {
     {
       std::lock_guard<std::mutex> lock(async_compile_mutex_);
+      request.storage = queueing_storage_requests_;
       async_tess_shaders_pending_.insert(key);
       async_tess_shaders_queue_.push(request);
       compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
+      if (request.storage) {
+        ++storage_shader_requests_;
+        PublishStorageRequestsLocked();
+      }
     }
     async_compile_cv_.notify_one();
     *compile_status_out = ShaderCompileStatus::kPending;
