@@ -23,7 +23,7 @@ Options:
                        Configured macOS arm64 CMake build tree; builds and
                        packages xenios_macos_apple_silicon.dmg from it
   --skip-ios           Don't build the IPA
-  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.2.2)
+  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.2.3)
   --build-number NUM   Build number override (defaults to git commit count)
   --channel NAME       release|preview (default: release)
   --stage NAME         alpha|beta|rc|stable (default: stable)
@@ -101,7 +101,7 @@ trim_string() {
 }
 
 default_marketing_version() {
-  printf '%s' "2.2.2"
+  printf '%s' "2.2.3"
 }
 
 validate_marketing_version() {
