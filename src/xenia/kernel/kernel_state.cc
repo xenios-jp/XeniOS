@@ -36,6 +36,9 @@
 #include "xenia/kernel/xthread.h"
 #include "xenia/kernel/xtimer.h"
 #include "xenia/ui/imgui_host_notification.h"
+#if XE_PLATFORM_IOS
+#include "xenia/ui/ios/shared/ios_host_warning.h"
+#endif
 
 #include "third_party/mbedtls/include/mbedtls/sha1.h"
 
@@ -55,6 +58,20 @@ namespace xe {
 namespace kernel {
 
 constexpr std::chrono::milliseconds kDeferredOverlappedDelayMillis(25);
+
+// iOS has no ImGui drawer, so its warning is a toast instead.
+static void ShowTitleUpdateWarning(Emulator* emulator, const char* message) {
+  if (emulator->imgui_drawer()) {
+    emulator->display_window()->app_context().CallInUIThread([=]() {
+      new xe::ui::HostNotificationWindow(emulator->imgui_drawer(), "Warning!",
+                                         message, 0);
+    });
+    return;
+  }
+#if XE_PLATFORM_IOS
+  xe_ios_show_host_warning(message);
+#endif
+}
 
 // This is a global object initialized with the XboxkrnlModule.
 // It references the current kernel state object that all kernel methods should
@@ -876,12 +893,9 @@ X_RESULT KernelState::ApplyTitleUpdate(
           "Skipping incompatible title update for {} due to signature mismatch",
           title_module->name());
       if (!GetExecutableModule()) {
-        emulator_->display_window()->app_context().CallInUIThread([&]() {
-          new xe::ui::HostNotificationWindow(
-              emulator_->imgui_drawer(), "Warning!",
-              "Title Update signature doesn't match. Skipping its application!",
-              0);
-        });
+        ShowTitleUpdateWarning(
+            emulator_,
+            "Title Update signature doesn't match. Skipping its application!");
       }
       return X_STATUS_SUCCESS;
     }
@@ -894,13 +908,10 @@ X_RESULT KernelState::ApplyTitleUpdate(
     // First module that is loaded is always main executable. That way we can
     // prevent random message spam in case of loading/unloading.
     if (!GetExecutableModule()) {
-      emulator_->display_window()->app_context().CallInUIThread([&]() {
-        new xe::ui::HostNotificationWindow(
-            emulator_->imgui_drawer(), "Warning!",
-            "Title Update signature doesn't match. This can cause unexpected "
-            "issues or crashes!",
-            0);
-      });
+      ShowTitleUpdateWarning(
+          emulator_,
+          "Title Update signature doesn't match. This can cause unexpected "
+          "issues or crashes!");
     }
   }
 
