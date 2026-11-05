@@ -4897,7 +4897,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   encoder->dispatchThreadsPerTile(
       MTL::Size::Make(tile_width, tile_height, 1));
   command_processor_.SetRenderEncoderTileMemberClass(member_class);
-  XELOGI(
+  XELOGD(
       "tresolve: tile {}x{} to 0x{:08X} color{} kernel {} refresh {} pass "
       "{}x{} tile {}x{} imageblock {} of {}",
       constants.size[0], constants.size[1],
@@ -5558,7 +5558,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       return;
     }
     tile_pass_open = false;
-    XELOGI("tresolve: fallback {}", reason);
+    XELOGD("tresolve: fallback {}", reason);
     end_pass();
   };
   if (!tile_pass_open) {
@@ -5737,7 +5737,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
               resolve_info.copy_dest_extent_length);
           last_resolve_kept_pass_ = true;
         } else {
-          XELOGI("tresolve: end {}", refresh_target ? "refresh"
+          XELOGD("tresolve: end {}", refresh_target ? "refresh"
                                      : clears       ? "clear"
                                                     : "budget");
           end_pass();
