@@ -1593,6 +1593,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // Over the art the title is white, as the hero's own text is; on the bar it takes the theme's.
   const BOOL over_art = !_heroView.hidden && alpha <= 0.5;
   _libraryLabel.textColor = over_art ? UIColor.whiteColor : [XeniaTheme textPrimary];
+  if (over_art != _headerOverArt) {
+    _headerOverArt = over_art;
+    if (_headerOverArtChangedHandler) {
+      _headerOverArtChangedHandler();
+    }
+  }
 }
 
 - (void)scrollViewDidScroll:(UIScrollView*)scrollView {
@@ -2160,6 +2166,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_pendingArtLoads release];
   [_pendingIconDecodes release];
   [_openStikDebugHandler release];
+  [_headerOverArtChangedHandler release];
   [_games release];
   [_gamesCollectionView release];
   [_settingsHandler release];
