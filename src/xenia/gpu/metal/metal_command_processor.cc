@@ -4288,7 +4288,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       DrawOverlapsPendingWrites(render_encoder_tile_resolve_ranges_,
                                 *vertex_shader, pixel_shader, index_buffer_info,
                                 vertex_indices)) {
-    XELOGI("tresolve: end rsvread");
+    XELOGD("tresolve: end rsvread");
     EndRenderEncoder();
   }
   render_encoder_index_count_ += index_count;
@@ -6667,7 +6667,7 @@ bool MetalCommandProcessor::IssueCopy() {
   if (!render_target_cache_) {
     EndRenderEncoder();
   } else if (!current_render_encoder_) {
-    XELOGI("tresolve: fallback no_pass");
+    XELOGD("tresolve: fallback no_pass");
   }
   MTL::CommandBuffer* copy_command_buffer = EnsureCommandBuffer();
   if (!copy_command_buffer) {
