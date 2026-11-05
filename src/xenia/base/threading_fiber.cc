@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <atomic>
+#include <cerrno>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -158,6 +160,10 @@ LONG NTAPI FiberStackExceptionHandler(PEXCEPTION_POINTERS info) {
 std::once_flag veh_install_once_;
 #endif  // XE_PLATFORM_WIN32
 
+// Test seam: reservations larger than this fail as if the address space were
+// exhausted. Zero disables it.
+std::atomic<size_t> g_stack_reservation_limit{0};
+
 FiberStack AllocFiberStack(size_t size) {
   const size_t page = HostPageSize();
   size_t pages = (size + page - 1) / page;
@@ -192,10 +198,37 @@ FiberStack AllocFiberStack(size_t size) {
     record.guard = reinterpret_cast<uintptr_t>(guard);
   }
 #else
-  s.base = mmap(nullptr, s.total, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (s.base == MAP_FAILED) {
-    xe::FatalError("Failed to map fiber stack");
+  // Fixed-size stacks on POSIX. When the address space is tight (iOS caps it,
+  // and a game can create hundreds of threads) retry with halved stacks down
+  // to a floor instead of failing outright; pages are only committed when
+  // touched, so a smaller reservation costs nothing until a thread uses it.
+  constexpr size_t kMinFiberStackBytes = 1 << 20;
+  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_NORESERVE
+  flags |= MAP_NORESERVE;
+#endif
+  for (;;) {
+    s.total = (pages + 1) * page;
+    int err = ENOMEM;
+    const size_t limit = g_stack_reservation_limit.load(std::memory_order_relaxed);
+    if (limit && s.total > limit) {
+      s.base = MAP_FAILED;  // Simulated address-space exhaustion.
+    } else {
+      s.base = mmap(nullptr, s.total, PROT_READ | PROT_WRITE, flags, -1, 0);
+      if (s.base != MAP_FAILED) {
+        break;
+      }
+      err = errno;
+    }
+    const size_t smaller = ((pages / 2) * page);
+    if (err != ENOMEM || smaller < kMinFiberStackBytes) {
+      XELOGE("Failed to map a {} KiB fiber stack (errno {})", s.total >> 10,
+             err);
+      return FiberStack{};
+    }
+    XELOGW("Fiber stack of {} KiB did not fit (errno {}), retrying smaller",
+           s.total >> 10, err);
+    pages /= 2;
   }
   mprotect(s.base, page, PROT_NONE);
   record.guard = reinterpret_cast<uintptr_t>(s.base);
@@ -240,9 +273,15 @@ class FcontextFiber : public Fiber {
   FcontextFiber(size_t stack_size, std::function<void()> start_routine)
       : entry_(std::move(start_routine)) {
     stack_ = AllocFiberStack(stack_size);
+    if (!stack_.base) {
+      return;
+    }
     ResetContext();
     owns_stack_ = true;
   }
+
+  // False when the stack could not be mapped; the fiber is unusable.
+  bool valid() const { return stack_.base != nullptr; }
 
   // Adopted fiber: wraps the calling thread's existing stack. Its context is
   // captured the first time something switches away from it.
@@ -353,8 +392,16 @@ class FcontextFiber : public Fiber {
 
 std::unique_ptr<Fiber> Fiber::Create(CreationParameters params,
                                      std::function<void()> start_routine) {
-  return std::make_unique<FcontextFiber>(params.stack_size,
-                                         std::move(start_routine));
+  auto fiber = std::make_unique<FcontextFiber>(params.stack_size,
+                                               std::move(start_routine));
+  if (!fiber->valid()) {
+    return nullptr;
+  }
+  return fiber;
+}
+
+void Fiber::SetStackReservationLimitForTesting(size_t bytes) {
+  g_stack_reservation_limit.store(bytes, std::memory_order_relaxed);
 }
 
 std::unique_ptr<Fiber> Fiber::CreateFromThread() {
