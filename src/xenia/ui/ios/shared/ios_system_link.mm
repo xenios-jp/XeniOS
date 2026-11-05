@@ -13,11 +13,13 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "xenia/base/cvar.h"
 #include "xenia/kernel/xam/xam_system_link.h"
+#include "xenia/net/nat_check.h"
 #include "xenia/net/packet_transport.h"
 #include "xenia/net/relay_protocol.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
@@ -25,11 +27,13 @@
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
+DECLARE_string(systemlink_debug_nat);
 DECLARE_string(systemlink_lobby);
 DECLARE_string(systemlink_transport);
 
 namespace {
 
+using xe::net::relay::NatType;
 using xe::net::relay::RelayStatus;
 using State = RelayStatus::State;
 
@@ -37,6 +41,14 @@ using State = RelayStatus::State;
 NSString* const kRoomsKey = @"XeniaSystemLinkRooms";
 // The app's last check-in with the lobby: {"id": ID, "at": seconds since 1970}.
 NSString* const kHereKey = @"XeniaSystemLinkHere";
+// NAT checks by network: {key: {"nat": "strict", "at": seconds since 1970}}. Keys are hashes.
+NSString* const kNatKey = @"XeniaSystemLinkNAT";
+// Whether the lobby named a TURN server when a game last joined it.
+NSString* const kLobbyTurnKey = @"XeniaSystemLinkLobbyTURN";
+// Networks change their routers now and then, so a check is trusted for this long.
+constexpr NSTimeInterval kNatLifetime = 30 * 24 * 60 * 60.0;
+// Networks remembered, at most; the oldest go first.
+constexpr NSUInteger kMaxNatNetworks = 16;
 
 // With the online counts, below.
 NSString* HereID();
@@ -49,6 +61,7 @@ RelayStatus g_last;
 bool g_active = false;
 bool g_told_online = false;
 bool g_told_offline = false;
+bool g_told_unreachable = false;
 // The room the running game asked for, and the game.
 NSString* g_room_code = nil;
 uint32_t g_title_id = 0;
@@ -137,6 +150,77 @@ NSString* VersionMismatchMessage() {
                            @"System Link toast: title versions differ");
 }
 
+XeniaIOSNatType ToIOS(NatType nat) {
+  switch (nat) {
+    case NatType::kOpen:
+      return XeniaIOSNatType::kOpen;
+    case NatType::kModerate:
+      return XeniaIOSNatType::kModerate;
+    case NatType::kStrict:
+      return XeniaIOSNatType::kStrict;
+    case NatType::kBlocked:
+      return XeniaIOSNatType::kBlocked;
+    case NatType::kUnknown:
+      break;
+  }
+  return XeniaIOSNatType::kUnknown;
+}
+
+// What the debug setting fakes, or none.
+std::optional<NatType> NatOverride() {
+  auto nat = xe::net::relay::ParseNatType(cvars::systemlink_debug_nat);
+  return nat == NatType::kUnknown ? std::nullopt : nat;
+}
+
+// Keeps a check's result for the network it was made on, across launches.
+void SaveNat(NatType nat) {
+  if (nat == NatType::kUnknown || NatOverride()) {
+    return;
+  }
+  NSString* network = @(xe::net::relay::NetworkKey().c_str());
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSMutableDictionary* saved = [[[defaults dictionaryForKey:kNatKey] mutableCopy] autorelease]
+                                   ?: [NSMutableDictionary dictionary];
+  saved[network] = @{
+    @"nat" : @(std::string(xe::net::relay::ToString(nat)).c_str()),
+    @"at" : @([NSDate date].timeIntervalSince1970),
+  };
+  while (saved.count > kMaxNatNetworks) {
+    NSString* oldest = nil;
+    double oldest_at = 0.0;
+    for (NSString* key in saved) {
+      const double at = [saved[key][@"at"] doubleValue];
+      if (!oldest || at < oldest_at) {
+        oldest = key;
+        oldest_at = at;
+      }
+    }
+    [saved removeObjectForKey:oldest];
+  }
+  [defaults setObject:saved forKey:kNatKey];
+}
+
+// Hands the saved checks that are still fresh to System Link, which skips checking those
+// networks again.
+void LoadNat() {
+  NSDictionary* saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kNatKey];
+  const double now = [NSDate date].timeIntervalSince1970;
+  for (NSString* network in saved) {
+    NSDictionary* entry = saved[network];
+    if (![entry isKindOfClass:[NSDictionary class]] ||
+        now - [entry[@"at"] doubleValue] > kNatLifetime) {
+      continue;
+    }
+    NSString* name = entry[@"nat"];
+    if (![name isKindOfClass:[NSString class]]) {
+      continue;
+    }
+    if (auto nat = xe::net::relay::ParseNatType(name.UTF8String)) {
+      xe::net::relay::RememberNat(network.UTF8String, *nat);
+    }
+  }
+}
+
 // Told once per game, as soon as the room is online: players in a room see each other's IP
 // address, and a host waiting alone otherwise sees nothing.
 void OnStatus(const RelayStatus& status) {
@@ -164,6 +248,7 @@ void OnStatus(const RelayStatus& status) {
       g_last = {};
       g_told_online = false;
       g_told_offline = false;
+      g_told_unreachable = false;
       return;
     case State::kOffline:
       if (chose_room && !g_told_offline) {
@@ -206,6 +291,18 @@ void OnStatus(const RelayStatus& status) {
   if (status.version_mismatch && !last.version_mismatch) {
     Toast(VersionMismatchMessage(), XeniaIOSStatusToastStyleWarning);
   }
+  if (status.nat != last.nat) {
+    SaveNat(status.nat);
+  }
+  if (status.turn != last.turn) {
+    [[NSUserDefaults standardUserDefaults] setBool:status.turn forKey:kLobbyTurnKey];
+  }
+  // Once per game: the sheet keeps saying it while it lasts.
+  if (status.unreachable && !g_told_unreachable) {
+    g_told_unreachable = true;
+    Toast(xe_ios_system_link_unreachable_message(status.unreachable, ToIOS(status.nat)),
+          XeniaIOSStatusToastStyleWarning);
+  }
 }
 
 }  // namespace
@@ -243,10 +340,13 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void) {
   }
   snapshot.title_id = g_title_id;
   snapshot.room_code = g_room_code;
+  snapshot.nat = ToIOS(status.nat);
+  snapshot.turn = status.turn;
   if (status.state == State::kOnline) {
     snapshot.others = status.players;
     snapshot.direct = status.direct;
     snapshot.relayed = status.relayed;
+    snapshot.unreachable = status.unreachable;
     snapshot.other_version = status.version_mismatch;
     snapshot.ping_ms = status.ping_ms;
   }
@@ -571,10 +671,92 @@ void xe_ios_join_system_link_room(uint32_t title_id, NSString* code) {
 
 BOOL xe_ios_system_link_uses_relay(void) { return cvars::systemlink_transport == "relay"; }
 
+XeniaIOSNatType xe_ios_system_link_nat(void) {
+  if (auto nat = NatOverride()) {
+    return ToIOS(*nat);
+  }
+  return ToIOS(xe::net::relay::RememberedNat(xe::net::relay::NetworkKey()));
+}
+
+BOOL xe_ios_nat_blocks_direct(XeniaIOSNatType nat) {
+  return nat == XeniaIOSNatType::kStrict || nat == XeniaIOSNatType::kBlocked;
+}
+
+NSString* xe_ios_nat_type_name(XeniaIOSNatType nat) {
+  switch (nat) {
+    case XeniaIOSNatType::kOpen:
+      return NSLocalizedString(@"Open", @"NAT type: no NAT in the way of other players");
+    case XeniaIOSNatType::kModerate:
+      return NSLocalizedString(@"Moderate", @"NAT type: a router most players get through");
+    case XeniaIOSNatType::kStrict:
+      return NSLocalizedString(@"Strict", @"NAT type: a router that keeps most players out");
+    case XeniaIOSNatType::kBlocked:
+      return NSLocalizedString(@"Blocked", @"NAT type: the network lets no System Link traffic "
+                                           @"out");
+    case XeniaIOSNatType::kUnknown:
+      break;
+  }
+  return nil;
+}
+
+NSString* xe_ios_nat_type_explanation(XeniaIOSNatType nat) {
+  switch (nat) {
+    case XeniaIOSNatType::kOpen:
+      return NSLocalizedString(@"Other players can connect to you directly.",
+                               @"NAT type explanation: open");
+    case XeniaIOSNatType::kModerate:
+      return NSLocalizedString(@"Most players can connect to you directly.",
+                               @"NAT type explanation: moderate");
+    case XeniaIOSNatType::kStrict:
+      return NSLocalizedString(@"Your network blocks most direct connections, so some players "
+                               @"can't connect to you.",
+                               @"NAT type explanation: strict");
+    case XeniaIOSNatType::kBlocked:
+      return NSLocalizedString(@"Your network blocks System Link, so you can't play with anyone "
+                               @"on it.",
+                               @"NAT type explanation: blocked");
+    case XeniaIOSNatType::kUnknown:
+      break;
+  }
+  return nil;
+}
+
+BOOL xe_ios_system_link_lobby_has_turn(void) {
+  return [[NSUserDefaults standardUserDefaults] boolForKey:kLobbyTurnKey];
+}
+
+NSString* xe_ios_system_link_unreachable_message(size_t count, XeniaIOSNatType nat) {
+  const bool ours = xe_ios_nat_blocks_direct(nat);
+  if (count == 1) {
+    return ours ? NSLocalizedString(@"Can't connect to 1 player. Your network blocks direct "
+                                    @"connections.",
+                                    @"System Link: a player no path reaches, because of this "
+                                    @"network")
+                : NSLocalizedString(@"Can't connect to 1 player. Their network may be blocking "
+                                    @"direct connections.",
+                                    @"System Link: a player no path reaches, most likely because "
+                                    @"of theirs");
+  }
+  return [NSString
+      localizedStringWithFormat:ours ? NSLocalizedString(@"Can't connect to %lu players. Your "
+                                                         @"network blocks direct connections.",
+                                                         @"System Link: players no path reaches, "
+                                                         @"because of this network; %lu is how "
+                                                         @"many")
+                                     : NSLocalizedString(@"Can't connect to %lu players. Their "
+                                                         @"networks may be blocking direct "
+                                                         @"connections.",
+                                                         @"System Link: players no path reaches, "
+                                                         @"most likely because of theirs; %lu is "
+                                                         @"how many"),
+                                (unsigned long)count];
+}
+
 void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusToastStyle style)) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     g_toast = [toast copy];
+    LoadNat();
     xe::kernel::xam::SetSystemLinkRelayPolicy({
         [] { return bool(xe_ios_online_features_enabled()); },
         [](uint32_t title_id) {
