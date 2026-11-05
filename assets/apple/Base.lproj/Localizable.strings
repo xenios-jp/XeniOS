@@ -40,11 +40,11 @@
 /* Alert message; %1$@ is the guidance text, %2$@ the game title */
 "%1$@\n\nYou can still try launching %2$@, but it may crash." = "%1$@\n\nYou can still try launching %2$@, but it may crash.";
 
-/* online view controller: summary row detail, after \"3 Devices Online\"; %1$ld players, %2$ld games */
-"%1$ld of them are in %2$ld games." = "%1$ld of them are in %2$ld games.";
+/* online view controller: line under \"9 Online\"; %1$ld players, %2$ld games */
+"%1$ld are in %2$ld games." = "%1$ld are in %2$ld games.";
 
-/* online view controller: summary row detail, after \"3 Devices Online\"; %1$ld and %2$ld are how many */
-"%1$ld of them are in public lobbies, %2$ld in private rooms." = "%1$ld of them are in public lobbies, %2$ld in private rooms.";
+/* online view controller: line under \"9 Online\"; %1$ld and %2$ld are how many */
+"%1$ld are in games, %2$ld in private rooms." = "%1$ld are in games, %2$ld in private rooms.";
 
 /* In-game menu: System Link card; %1$lu and %2$lu are counts */
 "%1$lu other players, %2$lu not connected yet" = "%1$lu other players, %2$lu not connected yet";
@@ -83,17 +83,14 @@
 /* system software view controller: install progress */
 "%d%% done" = "%d%% done";
 
+/* online view controller: line under \"9 Online\"; %ld is how many */
+"%ld are in 1 game." = "%ld are in 1 game.";
+
+/* online view controller: line under \"9 Online\"; %ld is how many */
+"%ld are in private rooms." = "%ld are in private rooms.";
+
 /* Game library, VoiceOver: Online button value; %ld is how many devices have XeniOS open */
 "%ld devices online" = "%ld devices online";
-
-/* online view controller: summary row; %ld is how many */
-"%ld Devices Online" = "%ld Devices Online";
-
-/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
-"%ld of them are in 1 game." = "%ld of them are in 1 game.";
-
-/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
-"%ld of them are in private rooms." = "%ld of them are in private rooms.";
 
 /* online view controller: summary title; %ld is how many devices have XeniOS open */
 "%ld Online" = "%ld Online";
@@ -150,17 +147,14 @@
 /* Game library, VoiceOver: Online button value, when only one device has XeniOS open */
 "1 device online" = "1 device online";
 
-/* online view controller: summary row */
-"1 Device Online" = "1 Device Online";
+/* online view controller: line under \"9 Online\" */
+"1 is in a game." = "1 is in a game.";
+
+/* online view controller: line under \"9 Online\" */
+"1 is in a private room." = "1 is in a private room.";
 
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
-
-/* online view controller: summary row detail, after \"3 Devices Online\" */
-"1 of them is in a game." = "1 of them is in a game.";
-
-/* online view controller: summary row detail, after \"3 Devices Online\" */
-"1 of them is in a private room." = "1 of them is in a private room.";
 
 /* In-game menu: System Link card */
 "1 other player, connected directly" = "1 other player, connected directly";
@@ -546,10 +540,8 @@
 /* game content view controller: message */
 "Checking the package..." = "Checking the package...";
 
-/* online view controller: summary row */
-"Checking Who's Online…" = "Checking Who's Online…";
-
-/* system software view controller: status */
+/* online view controller: summary title while the lobby hasn't answered yet
+   system software view controller: status */
 "Checking…" = "Checking…";
 
 /* dashboard setup: button, picks the update in Files */
@@ -1607,12 +1599,6 @@
 /* document import coordinator: title */
 "Importing" = "Importing";
 
-/* online view controller: summary row detail, after \"3 Devices Online\"; %ld is how many */
-"In %ld games." = "In %ld games.";
-
-/* online view controller: summary row detail, after \"3 Devices Online\" */
-"In 1 game." = "In 1 game.";
-
 /* JIT sheet: other ways to enable JIT */
 "In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts." = "In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts.";
 
@@ -2107,20 +2093,14 @@
 /* game content view controller: empty title */
 "No Updates or Add-ons" = "No Updates or Add-ons";
 
-/* online view controller: summary row detail, after \"3 Devices Online\" */
-"Nobody is in a game yet. Start System Link in a game to join its public lobby, or tap + for a private room." = "Nobody is in a game yet. Start System Link in a game to join its public lobby, or tap + for a private room.";
-
 /* system link view controller: row */
 "Nobody is in a public lobby right now." = "Nobody is in a public lobby right now.";
 
 /* system link status view controller: row detail */
 "Nobody is in its public lobby." = "Nobody is in its public lobby.";
 
-/* online view controller: summary row */
-"Nobody Is Online Right Now" = "Nobody Is Online Right Now";
-
-/* online view controller: row */
-"Nobody is playing your games online right now." = "Nobody is playing your games online right now.";
+/* online view controller: summary title */
+"Nobody Is Online" = "Nobody Is Online";
 
 /* system link view controller: room row detail, after \"Everyone playing this game.\" */
 "Nobody is there now." = "Nobody is there now.";
@@ -2148,7 +2128,7 @@
    launcher overlay view: hides the ZAR suggestion */
 "Not Now" = "Not Now";
 
-/* online view controller: summary row */
+/* online view controller: summary title */
 "Not Playing over the Internet" = "Not Playing over the Internet";
 
 /* choice list view controller: accessibility value */
@@ -2247,8 +2227,8 @@
    system link view controller: room row detail */
 "Only players with the code." = "Only players with the code.";
 
-/* online view controller: summary row */
-"Only You Are Online" = "Only You Are Online";
+/* online view controller: summary title, when this app is the only one open */
+"Only You" = "Only You";
 
 /* Row title in the touch control edit panel */
 "Opacity" = "Opacity";
@@ -2335,14 +2315,8 @@
 /* zar conversion coordinator: user-visible text */
 "Original Files" = "Original Files";
 
-/* online view controller: section header */
-"Other Games" = "Other Games";
-
 /* JIT sheet: tertiary button */
 "Other Ways to Enable JIT" = "Other Ways to Enable JIT";
-
-/* online view controller: summary row detail */
-"Others show up here when they open XeniOS with Online features on." = "Others show up here when they open XeniOS with Online features on.";
 
 /* Slider label in the touch analog tuning screen */
 "Output Cap" = "Output Cap";
@@ -2434,7 +2408,6 @@
 /* game page: play button
    launcher overlay view: Continue Playing button
    launcher overlay view: title
-   online view controller: button on a game row
    settings hub view controller: title
    system link view controller: button */
 "Play" = "Play";
@@ -2442,8 +2415,7 @@
 /* System Link invite text; %1$@ is the game, %2$@ the room code */
 "Play %1$@ with me over System Link in XeniOS. Room code: %2$@" = "Play %1$@ with me over System Link in XeniOS. Room code: %2$@";
 
-/* launcher overlay view: accessibility label; %@ is the game
-   online view controller: VoiceOver label of a game row's Play button */
+/* launcher overlay view: accessibility label; %@ is the game */
 "Play %@" = "Play %@";
 
 /* settings hub view controller: title */
@@ -2473,14 +2445,11 @@
 /* system link status view controller: footer */
 "Players in your room can see your IP address and a profile ID." = "Players in your room can see your IP address and a profile ID.";
 
-/* online view controller: summary row detail */
-"Players show up here while they have XeniOS open with Online features on." = "Players show up here while they have XeniOS open with Online features on.";
-
-/* online view controller: summary row detail */
-"Players show up here while they're in a game's public lobby." = "Players show up here while they're in a game's public lobby.";
-
 /* In-game menu: the game is running */
 "Playing" = "Playing";
+
+/* online view controller: section header */
+"Playing Now" = "Playing Now";
 
 /* Device screen while the game is shown on a TV or monitor */
 "Playing on External Display" = "Playing on External Display";
@@ -2546,7 +2515,8 @@
 /* settings hub view controller: title */
 "Privacy" = "Privacy";
 
-/* system link view controller: section header */
+/* online view controller: section header
+   system link view controller: section header */
 "Private Room" = "Private Room";
 
 /* game page: under System Link; %@ is the room code
@@ -2872,9 +2842,6 @@
 /* Name shown for a hidden achievement */
 "Secret Achievement" = "Secret Achievement";
 
-/* online view controller: footer */
-"Seeing who's online, and System Link over the internet, need Online features." = "Seeing who's online, and System Link over the internet, need Online features.";
-
 /* Placeholder shown in the pause workspace before a choice is made */
 "Select an option" = "Select an option";
 
@@ -3101,6 +3068,9 @@
 /* dashboard setup: message */
 "Start it now, or later from its tile in the library." = "Start it now, or later from its tile in the library.";
 
+/* online view controller: line under the summary title, when nobody is in a game */
+"Start System Link in a game to play together." = "Start System Link in a game to play together.";
+
 /* launcher overlay view: button title */
 "Start the Xbox 360 Dashboard" = "Start the Xbox 360 Dashboard";
 
@@ -3222,11 +3192,11 @@
 /* System Link toast; %@ names the room */
 "System Link is online in %@. Waiting for players." = "System Link is online in %@. Waiting for players.";
 
-/* online view controller: footer; %@ is the systemlink_transport setting */
-"System Link is set to “%@” in Settings, so it doesn't play over the internet." = "System Link is set to “%@” in Settings, so it doesn't play over the internet.";
-
 /* system link view controller: footer; %@ is the systemlink_transport setting */
 "System Link is set to “%@” in Settings, so these rooms aren't used." = "System Link is set to “%@” in Settings, so these rooms aren't used.";
+
+/* online view controller: line under \"Not Playing over the Internet\"; %@ is the systemlink_transport setting */
+"System Link is set to “%@” in Settings." = "System Link is set to “%@” in Settings.";
 
 /* System Link toast: an invite arrived while online features are off */
 "System Link needs Online features." = "System Link needs Online features.";
@@ -3581,6 +3551,9 @@
    VoiceOver label of a touch control edit button */
 "Tune response" = "Tune response";
 
+/* online view controller: line under \"Online Is Off\" */
+"Turn it on to see who's playing and play over the internet." = "Turn it on to see who's playing and play over the internet.";
+
 /* Alert button: disables online features */
 "Turn Off" = "Turn Off";
 
@@ -3900,9 +3873,6 @@
 
 /* Shader preparation sheet while the device is hot */
 "Your device is warm. This will take longer." = "Your device is warm. This will take longer.";
-
-/* online view controller: section header */
-"Your Games" = "Your Games";
 
 /* zar conversion coordinator: title */
 "ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";
