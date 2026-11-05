@@ -978,6 +978,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
     COMMAND_PROCESSOR::AwaitHeldSignalsWriting(poll_reg_addr & ~uint32_t(0x3));
   }
   bool submitted_memory_producers = false;
+  uint32_t polls = 0;
 
   do {
     uint32_t value = value_ref;
@@ -1041,6 +1042,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
       if (!worker_running_) {
         // Short polls must also stop when the command processor shuts down.
         return false;
+      }
+      // A guest thread writes what this waits for. Spinning on keeps a
+      // performance core busy, the one the writer could run on, so a poll that
+      // doesn't sleep above sleeps between checks after a brief spin.
+      if (++polls > 64 &&
+          (wait < 0x100 || !cvars::guest_display_refresh_cap)) {
+        xe::threading::Sleep(std::chrono::microseconds(100));
       }
     }
   } while (!matched);
