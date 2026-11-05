@@ -647,7 +647,7 @@ bool XEZarAddConversionRequest(const std::filesystem::path& source_path,
     return false;
   }
   if (xe::ui::IsZarPath(source_path)) {
-    XELOGI("iOS ZAR: skipped existing ZAR source='{}'", xe::strip_pii(source_path.string()));
+    XELOGD("iOS ZAR: skipped existing ZAR source='{}'", xe::strip_pii(source_path.string()));
     return false;
   }
   if (XEZarRequestAlreadyIncludesSource(*requests, source_path)) {
