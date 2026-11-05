@@ -45,6 +45,25 @@ void xe_ios_join_system_link_room(uint32_t title_id, NSString* code);
 // Whether System Link is set to play through the relay.
 BOOL xe_ios_system_link_uses_relay(void);
 
+// How the network the device is on treats direct connections between players, as System Link's
+// last check on it found.
+enum class XeniaIOSNatType { kUnknown, kOpen, kModerate, kStrict, kBlocked };
+// The current network's, checked when a game last started System Link on it. Unknown until then.
+XeniaIOSNatType xe_ios_system_link_nat(void);
+// Whether it keeps most direct connections out: strict or blocked.
+BOOL xe_ios_nat_blocks_direct(XeniaIOSNatType nat);
+// "Open", "Moderate", "Strict" or "Blocked", or nil while unknown.
+NSString* xe_ios_nat_type_name(XeniaIOSNatType nat);
+// What that means for playing, in a sentence, or nil while unknown.
+NSString* xe_ios_nat_type_explanation(XeniaIOSNatType nat);
+// Whether the lobby named a TURN server the last time a game joined it, so players can be
+// reached through a relay. Off until then.
+BOOL xe_ios_system_link_lobby_has_turn(void);
+// "Can't connect to 1 player. Your network blocks direct connections." for |count| players that
+// no path reaches, blaming this network when |nat| blocks direct connections and theirs
+// otherwise.
+NSString* xe_ios_system_link_unreachable_message(size_t count, XeniaIOSNatType nat);
+
 // What System Link is doing in the running game.
 struct XeniaIOSSystemLinkSnapshot {
   // Off until the game starts System Link over the internet.
@@ -59,6 +78,11 @@ struct XeniaIOSSystemLinkSnapshot {
   size_t others = 0;
   size_t direct = 0;
   size_t relayed = 0;
+  // Players reached neither way for about 10 seconds.
+  size_t unreachable = 0;
+  // This network's NAT type, once checked, and whether the lobby names a TURN server.
+  XeniaIOSNatType nat = XeniaIOSNatType::kUnknown;
+  bool turn = false;
   // Another player runs another title or another version of it.
   bool other_version = false;
   // The round trip to the slowest player reached directly; 0 until measured.
