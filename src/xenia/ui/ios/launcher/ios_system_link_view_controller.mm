@@ -532,7 +532,8 @@ void xe_ios_present_system_link_sheet(UIViewController* presenter, NSString* gam
 
 namespace {
 
-enum class OnlineRow { kMine, kNoneMine, kOther };
+// Rows of the Online sheet: a game in the library, one that isn't, and the private-room actions.
+enum class OnlineRow { kMine, kOther, kCreate, kJoin };
 
 // Library icons in the Online sheet, in points.
 constexpr CGFloat kOnlineIconSize = 36.0;
@@ -559,40 +560,6 @@ NSAttributedString* PlayingText(NSInteger players) {
                                         NSForegroundColorAttributeName : [XeniaTheme textSecondary]
                                       }] autorelease]];
   return out;
-}
-
-// A section title as large as the sheet's other headings, with a count at the trailing edge.
-UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
-  UILabel* title_label = [[[UILabel alloc] init] autorelease];
-  title_label.text = title;
-  title_label.textColor = [XeniaTheme textPrimary];
-  title_label.font = xe_scaled_system_font(UIFontTextStyleTitle2, 22.0, UIFontWeightBold);
-  title_label.adjustsFontForContentSizeCategory = YES;
-  title_label.numberOfLines = 0;
-  title_label.accessibilityTraits = UIAccessibilityTraitHeader;
-  UILabel* count_label = [[[UILabel alloc] init] autorelease];
-  count_label.text = count;
-  count_label.textColor = [XeniaTheme textSecondary];
-  count_label.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
-  count_label.adjustsFontForContentSizeCategory = YES;
-  [count_label setContentHuggingPriority:UILayoutPriorityRequired
-                                 forAxis:UILayoutConstraintAxisHorizontal];
-  UIStackView* row =
-      [[[UIStackView alloc] initWithArrangedSubviews:@[ title_label, count_label ]] autorelease];
-  row.alignment = UIStackViewAlignmentFirstBaseline;
-  row.spacing = 8.0;
-  row.translatesAutoresizingMaskIntoConstraints = NO;
-  UIView* header = [[[UIView alloc] init] autorelease];
-  [header addSubview:row];
-  [NSLayoutConstraint activateConstraints:@[
-    // A little in from the group's edge, as drawn.
-    [row.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor
-                                      constant:-12.0],
-    [row.trailingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.trailingAnchor],
-    [row.topAnchor constraintEqualToAnchor:header.topAnchor constant:18.0],
-    [row.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-8.0],
-  ]];
-  return header;
 }
 
 }  // namespace
@@ -699,14 +666,10 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   NSDictionary<NSString*, NSString*>* names_;
   // Covers being fetched, so each is asked for once.
   NSMutableSet<NSNumber*>* cover_fetches_;
-  // The top of the sheet: who's online, and the room buttons.
+  // The top of the sheet: how many are online, and one line on what they're playing.
   UIView* summary_;
   UILabel* summary_title_;
   UILabel* summary_detail_;
-  UIStackView* summary_buttons_;
-  UIButton* create_button_;
-  UIButton* join_button_;
-  UIButton* turn_on_button_;
 }
 
 - (instancetype)initWithLibrary:(const std::vector<XeniaIOSOnlineLibraryGame>&)library
@@ -742,87 +705,36 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   [summary_ release];
   [summary_title_ release];
   [summary_detail_ release];
-  [summary_buttons_ release];
-  [create_button_ release];
-  [join_button_ release];
-  [turn_on_button_ release];
   [super dealloc];
-}
-
-// A capsule for the summary: white for the main action, grey for the other.
-- (UIButton*)newSummaryButtonWithTitle:(NSString*)title
-                                symbol:(NSString*)symbol
-                               primary:(BOOL)primary
-                                action:(SEL)action {
-  UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
-  config.title = title;
-  config.image = [UIImage systemImageNamed:symbol];
-  config.imagePadding = 6.0;
-  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.baseBackgroundColor = primary ? [UIColor whiteColor] : [UIColor colorWithWhite:1.0
-                                                                                  alpha:0.12];
-  config.baseForegroundColor = primary ? [UIColor blackColor] : [XeniaTheme textPrimary];
-  config.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 16.0, 0.0, 16.0);
-  config.preferredSymbolConfigurationForImage =
-      [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleSubheadline];
-  UIButton* button = [[UIButton buttonWithConfiguration:config primaryAction:nil] retain];
-  xe_apply_button_title_font(button, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-  button.titleLabel.adjustsFontSizeToFitWidth = YES;
-  button.titleLabel.minimumScaleFactor = 0.8;
-  [button.heightAnchor constraintGreaterThanOrEqualToConstant:44.0].active = YES;
-  [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-  return button;
 }
 
 - (void)buildSummary {
   summary_title_ = [[UILabel alloc] init];
   summary_title_.textColor = [XeniaTheme textPrimary];
-  summary_title_.font = xe_scaled_system_font(UIFontTextStyleTitle1, 28.0, UIFontWeightBold);
+  summary_title_.font = xe_scaled_system_font(UIFontTextStyleLargeTitle, 34.0, UIFontWeightBold);
   summary_title_.adjustsFontForContentSizeCategory = YES;
   summary_title_.numberOfLines = 0;
-  summary_title_.accessibilityTraits = UIAccessibilityTraitHeader;
   summary_detail_ = [[UILabel alloc] init];
   summary_detail_.textColor = [XeniaTheme textSecondary];
-  summary_detail_.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0,
-                                               UIFontWeightRegular);
+  summary_detail_.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   summary_detail_.adjustsFontForContentSizeCategory = YES;
   summary_detail_.numberOfLines = 0;
-  create_button_ = [self newSummaryButtonWithTitle:NSLocalizedString(
-                                                       @"Create Room",
-                                                       @"online view controller: button")
-                                            symbol:@"plus"
-                                           primary:YES
-                                            action:@selector(createTapped:)];
-  join_button_ = [self newSummaryButtonWithTitle:NSLocalizedString(@"Join with Code",
-                                                                   @"online view controller: "
-                                                                   @"button")
-                                          symbol:@"keyboard"
-                                         primary:NO
-                                          action:@selector(joinTapped:)];
-  turn_on_button_ = [self newSummaryButtonWithTitle:NSLocalizedString(
-                                                        @"Turn On Online Features",
-                                                        @"online view controller: button")
-                                             symbol:@"network"
-                                            primary:YES
-                                             action:@selector(turnOnTapped:)];
-  summary_buttons_ = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ create_button_, join_button_, turn_on_button_ ]];
-  summary_buttons_.spacing = 10.0;
-  summary_buttons_.distribution = UIStackViewDistributionFillEqually;
   UIStackView* text = [[[UIStackView alloc]
-      initWithArrangedSubviews:@[ summary_title_, summary_detail_, summary_buttons_ ]] autorelease];
+      initWithArrangedSubviews:@[ summary_title_, summary_detail_ ]] autorelease];
   text.axis = UILayoutConstraintAxisVertical;
-  text.spacing = 4.0;
-  [text setCustomSpacing:16.0 afterView:summary_detail_];
+  text.spacing = 2.0;
   text.translatesAutoresizingMaskIntoConstraints = NO;
   summary_ = [[UIView alloc] init];
   summary_.preservesSuperviewLayoutMargins = YES;
+  // One element for VoiceOver: "9 Online, 1 is in a game".
+  summary_.isAccessibilityElement = YES;
+  summary_.accessibilityTraits = UIAccessibilityTraitHeader;
   [summary_ addSubview:text];
   [NSLayoutConstraint activateConstraints:@[
     [text.leadingAnchor constraintEqualToAnchor:summary_.layoutMarginsGuide.leadingAnchor],
     [text.trailingAnchor constraintEqualToAnchor:summary_.layoutMarginsGuide.trailingAnchor],
-    [text.topAnchor constraintEqualToAnchor:summary_.topAnchor constant:8.0],
-    [text.bottomAnchor constraintEqualToAnchor:summary_.bottomAnchor constant:-4.0],
+    [text.topAnchor constraintEqualToAnchor:summary_.topAnchor constant:4.0],
+    [text.bottomAnchor constraintEqualToAnchor:summary_.bottomAnchor constant:-6.0],
   ]];
 }
 
@@ -855,10 +767,6 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   });
 }
 
-- (void)playTapped:(UIButton*)sender {
-  [self finishWithTitleID:uint32_t(sender.tag)];
-}
-
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
@@ -867,26 +775,10 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   // The sheet bar holds the title, between ✕ and +.
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   [self buildSummary];
-  // + holds the room actions, as in the mockup's sheet bar.
-  __unsafe_unretained XeniaIOSOnlineViewController* unsafe_self = self;
-  UIMenu* rooms = [UIMenu menuWithChildren:@[
-    [UIAction actionWithTitle:NSLocalizedString(@"Create Room", @"online view controller: button")
-                        image:[UIImage systemImageNamed:@"plus.circle"]
-                   identifier:nil
-                      handler:^(__unused UIAction* action) {
-                        [unsafe_self createTapped:nil];
-                      }],
-    [UIAction actionWithTitle:NSLocalizedString(@"Join with Code",
-                                                @"online view controller: button")
-                        image:[UIImage systemImageNamed:@"keyboard"]
-                   identifier:nil
-                      handler:^(__unused UIAction* action) {
-                        [unsafe_self joinTapped:nil];
-                      }],
-  ]];
-  self.navigationItem.rightBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus"]
-                                         menu:rooms] autorelease];
+  // The headline says it, so the bar holds only ✕; a pushed page's back button still says Online.
+  self.navigationItem.title = @"";
+  self.navigationItem.backButtonTitle = self.title;
+  self.tableView.tableHeaderView = summary_;
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                target:self
@@ -907,6 +799,29 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  [self sizeSummary];
+}
+
+// The header is as tall as its text at the table's width.
+- (void)sizeSummary {
+  const CGFloat width = self.tableView.bounds.size.width;
+  if (width <= 0.0 || self.tableView.tableHeaderView != summary_) {
+    return;
+  }
+  const CGFloat height =
+      [summary_ systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
+              withHorizontalFittingPriority:UILayoutPriorityRequired
+                    verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+          .height;
+  if (summary_.frame.size.width == width && summary_.frame.size.height == height) {
+    return;
+  }
+  summary_.frame = CGRectMake(0.0, 0.0, width, height);
+  self.tableView.tableHeaderView = summary_;
+}
+
 - (void)reloadRows {
   sections_.clear();
   mine_.clear();
@@ -924,149 +839,102 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
         others_.push_back(game);
       }
     }
-    // With nobody in a game the sheet is one centred message, not an empty group.
-    if (!mine_.empty() || !others_.empty()) {
-      sections_.push_back(mine_.empty() ? std::vector<OnlineRow>{OnlineRow::kNoneMine}
-                                        : std::vector<OnlineRow>(mine_.size(), OnlineRow::kMine));
+    // Busiest first, the player's games before the rest.
+    std::vector<OnlineRow> games(mine_.size(), OnlineRow::kMine);
+    games.insert(games.end(), others_.size(), OnlineRow::kOther);
+    if (!games.empty()) {
+      sections_.push_back(games);
     }
-    if (!others_.empty()) {
-      sections_.push_back(std::vector<OnlineRow>(others_.size(), OnlineRow::kOther));
-    }
+  }
+  if (xe_ios_system_link_uses_relay() && library_names_.count) {
+    sections_.push_back({OnlineRow::kCreate, OnlineRow::kJoin});
   }
   [self.tableView reloadData];
 }
 
-// Who's online, as the sheet's large title and the line under it.
+// Who's online, as the sheet's headline and one line under it.
 - (void)updateSummary {
-  const BOOL on = xe_ios_online_features_enabled();
-  const BOOL relay = on && xe_ios_system_link_uses_relay();
-  create_button_.hidden = !relay;
-  join_button_.hidden = !relay;
-  create_button_.enabled = library_names_.count != 0;
-  join_button_.enabled = library_names_.count != 0;
-  turn_on_button_.hidden = on;
-  summary_buttons_.hidden = relay ? NO : on;
   NSString* title = nil;
   NSString* detail = nil;
-  if (!on) {
+  NSDictionary<NSNumber*, NSNumber*>* titles = xe_ios_system_link_online_titles();
+  if (!xe_ios_online_features_enabled()) {
     title = NSLocalizedString(@"Online Is Off", @"online view controller: summary title");
-    detail = NSLocalizedString(@"Seeing who's online, and System Link over the internet, need "
-                               @"Online features.",
-                               @"online view controller: footer");
+    detail = NSLocalizedString(@"Turn it on to see who's playing and play over the internet.",
+                               @"online view controller: line under \"Online Is Off\"");
+  } else if (!xe_ios_system_link_uses_relay()) {
+    title = NSLocalizedString(@"Not Playing over the Internet",
+                              @"online view controller: summary title");
+    detail = [NSString
+        stringWithFormat:NSLocalizedString(@"System Link is set to “%@” in Settings.",
+                                           @"online view controller: line under \"Not Playing "
+                                           @"over the Internet\"; %@ is the systemlink_transport "
+                                           @"setting"),
+                         [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]];
+  } else if (!titles) {
+    title = NSLocalizedString(@"Checking…", @"online view controller: summary title while the "
+                                             @"lobby hasn't answered yet");
   } else {
-    NSDictionary<NSNumber*, NSNumber*>* titles = xe_ios_system_link_online_titles();
-    // Apps open, this one included, when the lobby says (one device each, so the row says
-    // devices, not players); players in public lobbies.
+    // Apps open, this one included (one device each), and players in public lobbies and
+    // private rooms. A lobby that doesn't say how many apps are open counts only players.
     const NSInteger here = xe_ios_system_link_online_here();
     const NSInteger in_lobbies = xe_ios_system_link_online_total();
     const NSInteger in_private = std::max<NSInteger>(0, xe_ios_system_link_online_private());
-    const NSInteger total = std::max(here, in_lobbies + in_private);
-    if (!xe_ios_system_link_uses_relay()) {
-      title = NSLocalizedString(@"Not Playing over the Internet",
-                                @"online view controller: summary row");
-    } else if (!titles) {
-      title =
-          NSLocalizedString(@"Checking Who's Online…", @"online view controller: summary row");
-    } else if (total <= 0) {
-      title = NSLocalizedString(@"Nobody Is Online Right Now",
-                                @"online view controller: summary row");
-      detail = here >= 0
-                   ? NSLocalizedString(@"Players show up here while they have XeniOS open with "
-                                       @"Online features on.",
-                                       @"online view controller: summary row detail")
-                   : NSLocalizedString(@"Players show up here while they're in a game's public "
-                                       @"lobby.",
-                                       @"online view controller: summary row detail");
-    } else if (here == 1 && in_lobbies + in_private == 0) {
-      title = NSLocalizedString(@"Only You Are Online", @"online view controller: summary row");
-      detail = NSLocalizedString(@"Others show up here when they open XeniOS with Online "
-                                 @"features on.",
-                                 @"online view controller: summary row detail");
-    } else if (here >= 0) {
-      title = total == 1
-                  ? NSLocalizedString(@"1 Device Online", @"online view controller: summary row")
-                  : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                            @"%ld Devices Online",
-                                                            @"online view controller: summary "
-                                                            @"row; %ld is how many"),
-                                                        long(total)];
-      if (in_lobbies + in_private == 0) {
-        detail = NSLocalizedString(@"Nobody is in a game yet. Start System Link in a game to "
-                                   @"join its public lobby, or tap + for a private room.",
-                                   @"online view controller: summary row detail, after \"3 "
-                                   @"Devices Online\"");
-      } else if (in_private && in_lobbies == 0) {
-        detail =
-            in_private == 1
-                ? NSLocalizedString(@"1 of them is in a private room.",
-                                    @"online view controller: summary row detail, after "
-                                    @"\"3 Devices Online\"")
-                : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                          @"%ld of them are in private rooms.",
-                                                          @"online view controller: summary row "
-                                                          @"detail, after \"3 Devices Online\"; "
-                                                          @"%ld is how many"),
-                                                      long(in_private)];
-      } else if (in_private) {
-        detail = [NSString
-            localizedStringWithFormat:NSLocalizedString(
-                                          @"%1$ld of them are in public lobbies, %2$ld in "
-                                          @"private rooms.",
-                                          @"online view controller: summary row detail, after "
-                                          @"\"3 Devices Online\"; %1$ld and %2$ld are how "
-                                          @"many"),
-                                      long(in_lobbies), long(in_private)];
-      } else if (titles.count == 1) {
-        detail =
-            in_lobbies == 1
-                ? NSLocalizedString(@"1 of them is in a game.",
-                                    @"online view controller: summary row detail, after "
-                                    @"\"3 Devices Online\"")
-                : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                          @"%ld of them are in 1 game.",
-                                                          @"online view controller: summary row "
-                                                          @"detail, after \"3 Devices Online\"; "
-                                                          @"%ld is how many"),
-                                                      long(in_lobbies)];
-      } else {
-        detail = [NSString
-            localizedStringWithFormat:NSLocalizedString(
-                                          @"%1$ld of them are in %2$ld games.",
-                                          @"online view controller: summary row detail, after "
-                                          @"\"3 Devices Online\"; %1$ld players, %2$ld games"),
-                                      long(in_lobbies), long(titles.count)];
-      }
+    const NSInteger playing = in_lobbies + in_private;
+    const NSInteger online = std::max(here, playing);
+    if (online <= 0) {
+      title = NSLocalizedString(@"Nobody Is Online", @"online view controller: summary title");
+    } else if (here >= 0 && online == 1 && playing == 0) {
+      title = NSLocalizedString(@"Only You", @"online view controller: summary title, when this "
+                                             @"app is the only one open");
     } else {
-      title = total == 1
-                  ? NSLocalizedString(@"1 Device Online", @"online view controller: summary row")
-                  : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                            @"%ld Devices Online",
-                                                            @"online view controller: summary "
-                                                            @"row; %ld is how many"),
-                                                        long(total)];
-      detail =
-          titles.count == 1
-              ? NSLocalizedString(@"In 1 game.", @"online view controller: summary row "
-                                                 @"detail, after \"3 Devices Online\"")
-              : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                        @"In %ld games.",
-                                                        @"online view controller: summary row "
-                                                        @"detail, after \"3 Devices Online\"; "
-                                                        @"%ld is how many"),
-                                                    long(titles.count)];
+      title = [NSString
+          localizedStringWithFormat:NSLocalizedString(@"%ld Online",
+                                                      @"online view controller: summary title; "
+                                                      @"%ld is how many devices have XeniOS open"),
+                                    long(online)];
     }
-    if (!xe_ios_system_link_uses_relay()) {
+    if (playing == 0) {
+      detail = NSLocalizedString(@"Start System Link in a game to play together.",
+                                 @"online view controller: line under the summary title, when "
+                                 @"nobody is in a game");
+    } else if (in_lobbies == 0) {
+      detail = in_private == 1
+                   ? NSLocalizedString(@"1 is in a private room.",
+                                       @"online view controller: line under \"9 Online\"")
+                   : [NSString localizedStringWithFormat:
+                                   NSLocalizedString(@"%ld are in private rooms.",
+                                                     @"online view controller: line under \"9 "
+                                                     @"Online\"; %ld is how many"),
+                                   long(in_private)];
+    } else if (in_private) {
       detail = [NSString
-          stringWithFormat:NSLocalizedString(@"System Link is set to “%@” in Settings, so it "
-                                             @"doesn't play over the internet.",
-                                             @"online view controller: footer; %@ is the "
-                                             @"systemlink_transport setting"),
-                           [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]];
+          localizedStringWithFormat:NSLocalizedString(@"%1$ld are in games, %2$ld in private "
+                                                      @"rooms.",
+                                                      @"online view controller: line under \"9 "
+                                                      @"Online\"; %1$ld and %2$ld are how many"),
+                                    long(in_lobbies), long(in_private)];
+    } else if (in_lobbies == 1) {
+      detail = NSLocalizedString(@"1 is in a game.",
+                                 @"online view controller: line under \"9 Online\"");
+    } else if (titles.count == 1) {
+      detail = [NSString
+          localizedStringWithFormat:NSLocalizedString(@"%ld are in 1 game.",
+                                                      @"online view controller: line under \"9 "
+                                                      @"Online\"; %ld is how many"),
+                                    long(in_lobbies)];
+    } else {
+      detail = [NSString
+          localizedStringWithFormat:NSLocalizedString(@"%1$ld are in %2$ld games.",
+                                                      @"online view controller: line under \"9 "
+                                                      @"Online\"; %1$ld players, %2$ld games"),
+                                    long(in_lobbies), long(titles.count)];
     }
   }
   summary_title_.text = title;
   summary_detail_.text = detail;
-  self.navigationItem.rightBarButtonItem.hidden = !relay || library_names_.count == 0;
+  summary_.accessibilityLabel =
+      detail.length ? [NSString stringWithFormat:@"%@, %@", title, detail] : title;
+  [self sizeSummary];
   [self setNeedsUpdateContentUnavailableConfiguration];
 }
 
@@ -1125,50 +993,29 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   return NSInteger(sections_[size_t(section)].size());
 }
 
-- (UIView*)tableView:(UITableView* __unused)tableView viewForHeaderInSection:(NSInteger)section {
-  const OnlineRow row = sections_[size_t(section)].front();
-  const auto& games = row == OnlineRow::kOther ? others_ : mine_;
-  NSInteger players = 0;
-  for (const auto& game : games) {
-    players += game.second;
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  switch (sections_[size_t(section)].front()) {
+    case OnlineRow::kMine:
+    case OnlineRow::kOther:
+      return NSLocalizedString(@"Playing Now", @"online view controller: section header");
+    case OnlineRow::kCreate:
+    case OnlineRow::kJoin:
+      return NSLocalizedString(@"Private Room", @"online view controller: section header");
   }
-  NSString* count = players > 0 ? [NSString localizedStringWithFormat:@"%ld", long(players)] : nil;
-  return NewOnlineSectionHeader(
-      row == OnlineRow::kOther
-          ? NSLocalizedString(@"Other Games", @"online view controller: section header")
-          : NSLocalizedString(@"Your Games", @"online view controller: section header"),
-      count);
+  return nil;
 }
 
-// Under the last group: who's online in all, then how the counts work.
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  if (size_t(section) + 1 != sections_.size()) {
-    return nil;
-  }
-  NSMutableArray<NSString*>* lines = [NSMutableArray array];
-  if (summary_title_.text.length) {
-    [lines addObject:summary_detail_.text.length
-                         ? [NSString stringWithFormat:@"%@. %@", summary_title_.text,
-                                                      summary_detail_.text]
-                         : summary_title_.text];
-  }
-  if (xe_ios_system_link_online_here() < 0) {
-    [lines addObject:NSLocalizedString(@"Players in each game's public lobby, updated every "
-                                       @"minute. Private rooms aren't counted.",
-                                       @"system link view controller: footer")];
-  }
-  return [lines componentsJoinedByString:@"\n"];
-}
-
-// Nothing to list (Online off, not over the internet, or still asking): one centred message.
+// Online off or not over the internet: the headline and its line, centred, with nothing to list.
 - (void)updateContentUnavailableConfigurationUsingState:(UIContentUnavailableConfigurationState*)
                                                             __unused state {
-  if (!sections_.empty()) {
+  const BOOL on = xe_ios_online_features_enabled();
+  if (on && xe_ios_system_link_uses_relay()) {
     self.contentUnavailableConfiguration = nil;
+    self.tableView.tableHeaderView = summary_;
     return;
   }
+  self.tableView.tableHeaderView = nil;
   UIContentUnavailableConfiguration* config = [UIContentUnavailableConfiguration emptyConfiguration];
-  const BOOL on = xe_ios_online_features_enabled();
   config.image = [UIImage systemImageNamed:on ? @"globe" : @"network.slash"];
   config.text = summary_title_.text;
   config.secondaryText = summary_detail_.text;
@@ -1200,30 +1047,36 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
     cell.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
   }
   const OnlineRow row = [self rowAtIndexPath:indexPath];
+  cell.accessoryView = nil;
+  cell.accessoryType = UITableViewCellAccessoryNone;
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  cell.accessibilityTraits = UIAccessibilityTraitButton;
+  if (row == OnlineRow::kCreate || row == OnlineRow::kJoin) {
+    // Plain tinted rows: there when wanted, quieter than the games.
+    UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
+    const bool create = row == OnlineRow::kCreate;
+    content.text = create ? NSLocalizedString(@"Create Room", @"online view controller: button")
+                          : NSLocalizedString(@"Join with Code", @"online view controller: button");
+    content.image = [UIImage systemImageNamed:create ? @"plus" : @"keyboard"];
+    content.imageProperties.tintColor = [XeniaTheme accent];
+    content.textProperties.color = [XeniaTheme accent];
+    content.textProperties.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
+                                                        UIFontWeightRegular);
+    cell.contentConfiguration = content;
+    return cell;
+  }
   UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
   content.textProperties.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
                                                       UIFontWeightSemibold);
   content.textProperties.color = [XeniaTheme textPrimary];
   content.secondaryTextProperties.font =
-      xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
-  content.textToSecondaryTextVerticalPadding = 1.0;
-  content.imageToTextPadding = 13.0;
-  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(11.0, 16.0, 11.0, 12.0);
-  cell.accessoryView = nil;
-  cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  cell.accessibilityTraits = UIAccessibilityTraitStaticText;
-  if (row == OnlineRow::kNoneMine) {
-    content.text = NSLocalizedString(@"Nobody is playing your games online right now.",
-                                     @"online view controller: row");
-    content.textProperties.font =
-        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
-    content.textProperties.color = [XeniaTheme textSecondary];
-    content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(14.0, 16.0, 14.0, 16.0);
-    cell.contentConfiguration = content;
-    return cell;
-  }
+      xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  content.textToSecondaryTextVerticalPadding = 2.0;
+  content.imageToTextPadding = 14.0;
+  content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(10.0, 16.0, 10.0, 12.0);
   const bool mine = row == OnlineRow::kMine;
-  const auto& [title_id, players] = (mine ? mine_ : others_)[size_t(indexPath.row)];
+  const auto& [title_id, players] =
+      mine ? mine_[size_t(indexPath.row)] : others_[size_t(indexPath.row) - mine_.size()];
   content.text = mine ? library_names_[@(title_id)] : [self otherNameForTitleID:title_id];
   content.secondaryAttributedText = PlayingText(players);
   // The box cover, as in the library; the icon or a plain tile until it arrives.
@@ -1238,33 +1091,30 @@ UIView* NewOnlineSectionHeader(NSString* title, NSString* count) {
   content.imageProperties.cornerRadius = cover ? 5.0 : 8.0;
   cell.contentConfiguration = content;
   if (mine) {
-    // Play opens the game's System Link sheet: its public lobby or a private room.
-    UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
-    config.title = NSLocalizedString(@"Play", @"online view controller: button on a game row");
-    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    config.baseBackgroundColor = [UIColor colorWithWhite:1.0 alpha:0.14];
-    config.baseForegroundColor = [XeniaTheme textPrimary];
-    config.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 14.0, 6.0, 14.0);
-    UIButton* play = [UIButton buttonWithConfiguration:config primaryAction:nil];
-    xe_apply_button_title_font(play, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-    play.tag = NSInteger(title_id);
-    play.accessibilityLabel = [NSString
-        stringWithFormat:NSLocalizedString(@"Play %@", @"online view controller: VoiceOver "
-                                                       @"label of a game row's Play button"),
-                         content.text];
-    [play addTarget:self action:@selector(playTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [play sizeToFit];
-    cell.accessoryView = play;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.accessibilityTraits = UIAccessibilityTraitButton;
+    // Opens the game's System Link sheet: its public lobby or a private room.
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  } else {
+    // Not in the library: nothing to open.
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessibilityTraits = UIAccessibilityTraitStaticText;
   }
   return cell;
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if ([self rowAtIndexPath:indexPath] == OnlineRow::kMine) {
-    [self finishWithTitleID:mine_[size_t(indexPath.row)].first];
+  switch ([self rowAtIndexPath:indexPath]) {
+    case OnlineRow::kMine:
+      [self finishWithTitleID:mine_[size_t(indexPath.row)].first];
+      break;
+    case OnlineRow::kOther:
+      break;
+    case OnlineRow::kCreate:
+      [self createTapped:nil];
+      break;
+    case OnlineRow::kJoin:
+      [self joinTapped:nil];
+      break;
   }
 }
 
