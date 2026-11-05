@@ -13,6 +13,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <unordered_set>
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -33,6 +34,10 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/xex2_util.h"
 #include "xenia/kernel/xmodule.h"
+
+#if XE_PLATFORM_IOS
+#include "xenia/cpu/backend/jit_memory_ios.h"
+#endif
 
 #include "third_party/mbedtls/include/mbedtls/aes.h"
 #include "third_party/mbedtls/include/mbedtls/sha1.h"
@@ -1570,8 +1575,29 @@ InfoCacheFlags* XexModule::GetInstructionAddressFlags(uint32_t guest_addr) {
 
   return info_cache_.LookupFlags(guest_addr);
 }
-void XexModule::PrecompileDiscoveredFunctions() {
+// Where JIT code can't be packed every function takes a page of its own, and
+// precompiling a whole executable outgrows the code cache, so functions compile
+// on first call there.
+static bool EarlyPrecompilationEnabled() {
   if (!cvars::enable_early_precompilation) {
+    return false;
+  }
+#if XE_PLATFORM_IOS
+  if (!backend::IOSJitMemory::PacksCode()) {
+    static std::once_flag logged;
+    std::call_once(logged, [] {
+      XELOGI(
+          "Early precompilation skipped: JIT code can't be packed on this "
+          "device, so functions compile on first call");
+    });
+    return false;
+  }
+#endif
+  return true;
+}
+
+void XexModule::PrecompileDiscoveredFunctions() {
+  if (!EarlyPrecompilationEnabled()) {
     return;
   }
   auto start_time = std::chrono::steady_clock::now();
@@ -1588,7 +1614,7 @@ void XexModule::PrecompileDiscoveredFunctions() {
          elapsed.count());
 }
 void XexModule::PrecompileKnownFunctions() {
-  if (!cvars::enable_early_precompilation) {
+  if (!EarlyPrecompilationEnabled()) {
     return;
   }
   uint32_t start = 0;
@@ -2322,7 +2348,7 @@ bool XexModule::FindSaveRest() {
       address += 2 * 4;
     }
   }
-  if (cvars::enable_early_precompilation) {
+  if (EarlyPrecompilationEnabled()) {
     for (auto&& to_ensure_precompiled : resolve_on_exit) {
       // we want to make sure an address for these functions is available before
       // any other functions are compiled for code generation purposes but we do
