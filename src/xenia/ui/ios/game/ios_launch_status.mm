@@ -150,6 +150,10 @@ constexpr CFTimeInterval kSlowStageSeconds = 15.0;
 // A launch the emulator hasn't started by now was likely refused (it was shutting down
 // or installing an update): Cancel appears.
 constexpr CFTimeInterval kUnstartedLaunchSeconds = 10.0;
+// Shaders prepared before the first frame for this long offer Play Now and Cancel. The sheet only
+// comes up for a long rebuild of stored shaders; a first launch, or a shorter rebuild, still
+// needs a way on or out.
+constexpr CFTimeInterval kShaderChoiceSeconds = 8.0;
 constexpr CFTimeInterval kFadeInSeconds = 0.2;
 constexpr CFTimeInterval kFadeOutSeconds = 0.35;
 constexpr CFTimeInterval kTextFadeSeconds = 0.2;
@@ -203,6 +207,8 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   UILabel* elapsed_label_;
   UILabel* hint_label_;
   UIButton* cancel_button_;
+  UIButton* play_button_;
+  UIStackView* button_row_;
 
   // The name from -beginLaunchWithTitle:, for the launch that starts next.
   NSString* pending_title_;
@@ -217,6 +223,8 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   CFTimeInterval launch_since_;
   CFTimeInterval stage_since_;
   BOOL shaders_;
+  // Play Now and Cancel are on offer for this launch's shader preparation.
+  BOOL shader_choice_;
   // The game is held while its stored shaders rebuild under this screen: its own audio would
   // otherwise play over it, and the compile threads get the CPU.
   BOOL holding_;
@@ -299,8 +307,26 @@ NSString* ElapsedString(CFTimeInterval seconds) {
                                         }]] retain];
   cancel_button_.hidden = YES;
 
+  UIButtonConfiguration* play_config = [UIButtonConfiguration filledButtonConfiguration];
+  play_config.title =
+      NSLocalizedString(@"Play Now", @"Launch screen button: start the game while shaders keep "
+                                     @"being prepared");
+  play_config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  play_config.buttonSize = UIButtonConfigurationSizeSmall;
+  play_button_ =
+      [[UIButton buttonWithConfiguration:play_config
+                           primaryAction:[UIAction actionWithHandler:^(__unused UIAction* action) {
+                             [block_self playNow];
+                           }]] retain];
+  play_button_.hidden = YES;
+
+  button_row_ = [[UIStackView alloc] initWithArrangedSubviews:@[ play_button_, cancel_button_ ]];
+  button_row_.axis = UILayoutConstraintAxisHorizontal;
+  button_row_.alignment = UIStackViewAlignmentCenter;
+  button_row_.spacing = 12.0;
+
   stack_ = [[UIStackView alloc] initWithArrangedSubviews:@[
-    title_label_, status_row, elapsed_label_, hint_label_, cancel_button_
+    title_label_, status_row, elapsed_label_, hint_label_, button_row_
   ]];
   stack_.axis = UILayoutConstraintAxisVertical;
   stack_.alignment = UIStackViewAlignmentCenter;
@@ -344,6 +370,8 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   [elapsed_label_ release];
   [hint_label_ release];
   [cancel_button_ release];
+  [play_button_ release];
+  [button_row_ release];
   [pending_title_ release];
   [_cancelHandler release];
   [super dealloc];
@@ -386,6 +414,7 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   generation_ = xe::ui::ios::ReadLaunchStatus().generation;
   awaiting_ = YES;
   finished_ = NO;
+  shader_choice_ = NO;
   CFTimeInterval now = CACurrentMediaTime();
   launch_since_ = now;
   stage_since_ = now;
@@ -414,6 +443,7 @@ NSString* ElapsedString(CFTimeInterval seconds) {
     generation_ = snapshot.generation;
     awaiting_ = NO;
     finished_ = NO;
+    shader_choice_ = NO;
     frames_at_launch_ = frames;
     stage_ = LaunchStage::kNone;
   }
@@ -544,13 +574,20 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   if (show_elapsed) {
     elapsed_label_.text = ElapsedString(elapsed);
   }
-  // A long step gets a note and a way out. Not while shaders compile: their
-  // progress shows, and the shader sheet offers its own choice.
+  // A long step gets a note and a way out. Shader preparation gets Play Now as well, and keeps
+  // the choice once offered: a backlog that dips for a moment shouldn't take it away.
   const BOOL unstarted = awaiting_ && elapsed >= kUnstartedLaunchSeconds;
-  const BOOL slow =
-      unstarted || (!awaiting_ && !shaders_ && now - stage_since_ >= kSlowStageSeconds);
+  if (!awaiting_ && shaders_ && now - stage_since_ >= kShaderChoiceSeconds) {
+    shader_choice_ = YES;
+  }
+  const BOOL slow = unstarted || shader_choice_ ||
+                    (!awaiting_ && !shaders_ && now - stage_since_ >= kSlowStageSeconds);
   NSString* hint = nil;
-  if (slow) {
+  if (shader_choice_) {
+    hint = NSLocalizedString(@"Shaders are prepared once for each game. You can play now while "
+                             @"the rest are prepared in the background.",
+                             @"Launch screen note: the game's shaders are being prepared");
+  } else if (slow) {
     hint = stage_ == LaunchStage::kStarting
                ? NSLocalizedString(@"Some games take a while to show their first screen.",
                                    @"Launch screen note: a game is slow to show its first frame")
@@ -560,7 +597,10 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   hint_label_.text = hint;
   [self setArranged:elapsed_label_ hidden:!show_elapsed];
   [self setArranged:hint_label_ hidden:!slow];
-  [self setArranged:cancel_button_ hidden:!slow || !self.cancelHandler];
+  const BOOL show_cancel = slow && self.cancelHandler;
+  [self setArranged:cancel_button_ hidden:!show_cancel];
+  [self setArranged:play_button_ hidden:!shader_choice_];
+  [self setArranged:button_row_ hidden:!show_cancel && !shader_choice_];
 }
 
 - (void)setArranged:(UIView*)view hidden:(BOOL)hidden {
@@ -635,8 +675,7 @@ NSString* ElapsedString(CFTimeInterval seconds) {
   xe_ios_set_launch_shader_hold(holding);
 }
 
-// Lets the game run and show itself (Play now on the shader sheet); its shaders keep being
-// prepared, and the capsule shows them.
+// Lets the game run and show itself; its shaders keep being prepared, and the capsule shows them.
 - (void)playNow {
   if (!showing_) {
     return;

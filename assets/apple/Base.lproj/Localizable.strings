@@ -2482,6 +2482,9 @@
 /* Button that starts the game while shaders keep building */
 "Play now" = "Play now";
 
+/* Launch screen button: start the game while shaders keep being prepared */
+"Play Now" = "Play Now";
+
 /* system link view controller: footer */
 "Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
 
@@ -2984,6 +2987,9 @@
 
 /* settings hub view controller: title */
 "Shader compiles and threads." = "Shader compiles and threads.";
+
+/* Launch screen note: the game's shaders are being prepared */
+"Shaders are prepared once for each game. You can play now while the rest are prepared in the background." = "Shaders are prepared once for each game. You can play now while the rest are prepared in the background.";
 
 /* Row title in the touch control edit panel */
 "Shape" = "Shape";
