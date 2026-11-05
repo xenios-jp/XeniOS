@@ -35,6 +35,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
 #include "xenia/config.h"
+#include "xenia/cpu/backend/jit_memory_ios.h"
 #include "xenia/gpu/shader_storage.h"
 #include "xenia/hid/input.h"
 #include "xenia/vfs/stfs_metadata.h"
@@ -317,6 +318,8 @@ struct LaunchPreparation {
 @property(nonatomic, assign) NSTimeInterval jitPollStartedAt;
 @property(nonatomic, assign) BOOL jitPollTimedOut;
 @property(nonatomic, assign) BOOL jitAcquired;
+// JIT was turned on, but its tool detached before a game could start (see XeJITUsable).
+@property(nonatomic, assign) BOOL jitTurnedOff;
 @property(nonatomic, assign) BOOL memoryEntitlementEnabled;
 - (BOOL)hasConnectedGameplayController;
 - (BOOL)shouldBlockGameplayInput;
@@ -329,6 +332,8 @@ struct LaunchPreparation {
 - (void)finishImportedGamesRefresh;
 - (void)presentJITRequiredAlertForLaunchPath:(const std::filesystem::path&)gamePath
                                  displayName:(NSString*)displayName;
+- (void)presentJITTurnedOffAlertForLaunchPath:(const std::filesystem::path&)gamePath
+                                  displayName:(NSString*)displayName;
 - (void)updateMemoryEntitlementStatusUI;
 - (void)presentMemoryEntitlementWarningForLaunchPath:(const std::filesystem::path&)gamePath
                                          displayName:(NSString*)displayName;
@@ -825,6 +830,9 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 
 - (void)handleAppDidBecomeActive:(NSNotification* __unused)note {
   [self updateMemoryEntitlementStatusUI];
+  if (!self.gameRunning) {
+    [self noteJITTurnedOff];
+  }
   if (!self.jitAcquired && !self.jitPollTimer) {
     [self startJITPoll];
   }
@@ -1334,9 +1342,37 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 // JIT polling -- starts responsive, then backs off to avoid burning battery
 // forever when StikDebug / JIT is unavailable.
 // ---------------------------------------------------------------------------
+// On the TXM path the JIT tool prepares the code region when the first game starts, so it must
+// still be attached then. CS_DEBUGGED stays set after it detaches, which
+// xe_check_jit_available can't tell apart.
+static bool XeJITUsable() {
+  using xe::cpu::backend::IOSJitMemory;
+  return xe_check_jit_available() &&
+         (!IOSJitMemory::NeedsAttachedTool() || IOSJitMemory::ToolAttached());
+}
+
+// Notices that JIT was turned on but its tool has detached before a game could start, and waits
+// for it again. Returns YES when it has.
+- (BOOL)noteJITTurnedOff {
+  if (!xe_check_jit_available() || XeJITUsable()) {
+    return NO;
+  }
+  if (!self.jitTurnedOff) {
+    XELOGW("iOS: the JIT tool detached before a game started");
+  }
+  self.jitAcquired = NO;
+  self.jitTurnedOff = YES;
+  [self updateJITStatusIndicator];
+  [self updateJITAvailabilityUI];
+  if (!self.jitPollTimer) {
+    [self startJITPoll];
+  }
+  return YES;
+}
+
 - (void)startJITPoll {
   // Check immediately first.
-  if (xe_check_jit_available()) {
+  if (XeJITUsable()) {
     [self onJITAcquired];
     return;
   }
@@ -1353,9 +1389,14 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
     return;
   }
   self.jitPollTimer = nil;
-  if (xe_check_jit_available()) {
+  if (XeJITUsable()) {
     [self onJITAcquired];
     return;
+  }
+  if (!self.jitTurnedOff && xe_check_jit_available()) {
+    // Turned on, but the tool detached again before it was noticed.
+    self.jitTurnedOff = YES;
+    [self updateJITStatusIndicator];
   }
 
   const NSTimeInterval elapsed = [NSDate timeIntervalSinceReferenceDate] - self.jitPollStartedAt;
@@ -1385,6 +1426,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   self.jitPollTimer = nil;
   self.jitPollTimedOut = NO;
   self.jitAcquired = YES;
+  self.jitTurnedOff = NO;
   XELOGI("iOS: JIT acquired!");
   [self updateJITStatusIndicator];
   [self updateJITAvailabilityUI];
@@ -2678,6 +2720,11 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   if (self.jitAcquired) {
     [self.launcherOverlayView
         setJITStatusText:NSLocalizedString(@"JIT Enabled", @"Launcher status: JIT is enabled")];
+  } else if (self.jitTurnedOff) {
+    [self.launcherOverlayView
+        setJITStatusText:NSLocalizedString(
+                             @"Reconnect StikDebug.",
+                             @"Launcher status: the JIT tool detached after JIT was turned on")];
   } else if (self.jitPollTimedOut) {
     [self.launcherOverlayView
         setJITStatusText:NSLocalizedString(
@@ -2811,6 +2858,42 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [sheet release];
 }
 
+- (void)presentJITTurnedOffAlertForLaunchPath:(const std::filesystem::path&)gamePath
+                                  displayName:(NSString*)displayName {
+  // Once JIT is back, however the user turns it on, offer to open StikDebug automatically.
+  SetUserDefaultBool(kXeniaPendingStikDebugAutomationPromptPreferenceKey, true);
+  NSString* launch_path_string = gamePath.empty() ? nil : ToNSString(gamePath.string());
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(
+                                   @"JIT Was Turned Off",
+                                   @"Alert title: the JIT tool detached before the game started")
+                       message:NSLocalizedString(
+                                   @"JIT was turned off before the game started. Open StikDebug, "
+                                   @"enable JIT for XeniOS again, and keep it connected until "
+                                   @"the game is running.",
+                                   @"Alert message: the JIT tool detached before the game started")
+                preferredStyle:UIAlertControllerStyleAlert];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Set Up JIT",
+                                                         @"Alert button: opens the JIT setup sheet")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 std::filesystem::path launch_path;
+                                 if (launch_path_string.length > 0) {
+                                   launch_path =
+                                       std::filesystem::path(launch_path_string.UTF8String);
+                                 }
+                                 [unsafe_self presentJITRequiredAlertForLaunchPath:launch_path
+                                                                       displayName:displayName];
+                               }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button: dismiss")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)presentMemoryEntitlementWarningForLaunchPath:(const std::filesystem::path&)gamePath
                                          displayName:(NSString*)displayName {
   NSString* launch_path_string = gamePath.empty() ? nil : ToNSString(gamePath.string());
@@ -2912,7 +2995,9 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
     XELOGI("iOS: Automatic StikDebug handoff deferred (touch layout install pending)");
     return NO;
   }
-  if (self.jitAcquired || xe_check_jit_available()) {
+  // A tool that detached leaves JIT acquired but unusable; hand off again.
+  [self noteJITTurnedOff];
+  if (self.jitAcquired || XeJITUsable()) {
     if (!self.jitAcquired) {
       [self onJITAcquired];
     }
@@ -3518,6 +3603,14 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
     return;
   }
 
+  if ([self noteJITTurnedOff]) {
+    if ([self requestAutomaticStikDebugJITHandoffForPendingLaunchPath:&launch_path]) {
+      pending_external_launch_path_ = launch_path;
+    } else {
+      [self presentJITTurnedOffAlertForLaunchPath:launch_path displayName:display_name];
+    }
+    return;
+  }
   if (!self.jitAcquired) {
     [self presentJITRequiredAlertForLaunchPath:launch_path displayName:display_name];
     return;
@@ -5174,6 +5267,11 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 }
 
 - (void)presentGameLaunchFailureAlertWithMessage:(NSString*)message {
+  if ([self noteJITTurnedOff]) {
+    // The setup failed because the JIT tool detached; say how to fix that instead.
+    [self presentJITTurnedOffAlertForLaunchPath:std::filesystem::path() displayName:nil];
+    return;
+  }
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:NSLocalizedString(@"Couldn't Start Game",
                                                  @"Alert title: the game failed to start")

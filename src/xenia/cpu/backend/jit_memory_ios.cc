@@ -72,6 +72,11 @@ uint8_t* execute_region_reservation =
 
 std::atomic<IOSJitMemory::ExternalPrepareHook> external_prepare_hook{nullptr};
 
+// Shown when the JIT tool is gone or doesn't answer; the launcher says the same.
+constexpr char kJitTurnedOffMessage[] =
+    "JIT was turned off before the game started. Open StikDebug, enable JIT "
+    "for XeniOS again, and keep it connected until the game is running.";
+
 }  // namespace
 
 // Device detection and the external JIT preparation protocol originate in
@@ -151,6 +156,14 @@ struct IOSJitMemory::Impl {
       execute_base = state.execute_base;
       write_base = state.write_base;
       return true;
+    }
+    if (!IsDebuggerAttached()) {
+      // The prepare request would trap with no one to answer it. Fail the
+      // setup instead, so the launcher can say how to turn JIT back on.
+      XELOGE(
+          "iOS JIT: the JIT tool detached before the code region was "
+          "prepared");
+      return false;
     }
 
     auto* execute = MapExecuteRegionLow(size);
@@ -602,10 +615,7 @@ struct IOSJitMemory::Impl {
           "Xenia and try again.");
     }
     if (!IsDebuggerAttached()) {
-      xe::FatalError(
-          "JIT is not available: the tool that enabled it (StikDebug or a JIT "
-          "broker) is no longer attached, so games can't run. Enable JIT again "
-          "and keep the tool attached until the game has started.");
+      xe::FatalError(kJitTurnedOffMessage);
     }
     const IOSJitMemory::ExternalPrepareHook hook =
         external_prepare_hook.load(std::memory_order_acquire);
@@ -622,10 +632,7 @@ struct IOSJitMemory::Impl {
     if (ExceptionHandler::UnansweredJitBreakpoints() != unanswered_before) {
       // The tool is attached (or was a moment ago) but didn't answer; without
       // this the request would end in a SIGTRAP crash.
-      xe::FatalError(
-          "JIT is not available: the tool that enabled it (StikDebug or a JIT "
-          "broker) didn't answer, so games can't run. Enable JIT again and "
-          "keep the tool attached until the game has started.");
+      xe::FatalError(kJitTurnedOffMessage);
     }
     if (prepared != aligned_start) {
       XELOGE("iOS JIT: asked the debugger to prepare 0x{:X}, it prepared 0x{:X}",
@@ -738,6 +745,17 @@ void IOSJitMemory::SetExternalPrepareHook(ExternalPrepareHook hook) {
 }
 
 bool IOSJitMemory::PacksCode() { return Impl::IOSUseTXMBrokerPath(); }
+
+bool IOSJitMemory::NeedsAttachedTool() {
+  if (!Impl::IOSUseTXMBrokerPath()) {
+    return false;
+  }
+  auto& state = Impl::IOSPersistentGeneratedCodeMappingState();
+  std::lock_guard<std::mutex> lock(state.mutex);
+  return !state.initialized;
+}
+
+bool IOSJitMemory::ToolAttached() { return Impl::IsDebuggerAttached(); }
 
 IOSJitMemory::~IOSJitMemory() {
   if (impl_->persistent) {
