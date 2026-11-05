@@ -20,10 +20,12 @@
 @class UIView;
 @class UIViewController;
 @class CADisplayLink;
+@class UIScreen;
 #else
 typedef struct objc_object UIView;
 typedef struct objc_object UIViewController;
 typedef struct objc_object CADisplayLink;
+typedef struct objc_object UIScreen;
 #endif
 
 namespace xe {
@@ -69,10 +71,16 @@ class iOSWindow : public Window {
   void SetupDisplayLink();
   void TeardownDisplayLink();
   void ApplyDisplayLinkFrameRateRangeFromUIThread();
+  UIScreen* GetViewScreen() const;
+  void FollowViewScreenFromUIThread();
 
   UIView* view_ = nullptr;
   UIViewController* view_controller_ = nullptr;
   CADisplayLink* display_link_ = nullptr;
+  // The screen display_link_ is synchronized with, compared by identity only
+  // (not retained). The view moves to an external display and back.
+  UIScreen* display_link_screen_ = nullptr;
+  bool display_link_screen_change_pending_ = false;
   std::atomic<bool> paint_request_pending_{false};
   std::atomic<bool> display_link_driving_paint_{false};
   bool guest_display_refresh_capped_ = true;

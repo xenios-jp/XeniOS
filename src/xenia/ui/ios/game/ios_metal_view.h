@@ -16,6 +16,9 @@
 // surface and is owned by the root XeniaViewController.
 @interface XeniaMetalView : UIView
 @property(nonatomic, assign) CGFloat xeniaDrawableAspectRatio;
+// Drawable height in pixels, or 0 for the default 720. Set while the view is
+// on an external display, so the presenter scales to the screen's resolution.
+@property(nonatomic, assign) CGFloat xeniaDrawableHeight;
 @end
 
 #endif  // XENIA_UI_IOS_METAL_VIEW_H_
