@@ -9,6 +9,8 @@
 
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 
+#import "xenia/ui/ios/shared/ios_host_warning.h"
+
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -215,3 +217,34 @@ NSString* SymbolForStyle(XeniaIOSStatusToastStyle style) {
 }
 
 @end
+
+void xe_ios_show_host_warning(const std::string& message) {
+  NSString* text = [NSString stringWithUTF8String:message.c_str()];
+  if (!text.length) {
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIWindow* window = nil;
+    for (UIScene* scene in [UIApplication sharedApplication].connectedScenes) {
+      if (![scene isKindOfClass:[UIWindowScene class]]) {
+        continue;
+      }
+      for (UIWindow* candidate in static_cast<UIWindowScene*>(scene).windows) {
+        if (candidate.isKeyWindow) {
+          window = candidate;
+          break;
+        }
+      }
+      if (window) {
+        break;
+      }
+    }
+    if (!window) {
+      return;
+    }
+    static XeniaIOSStatusToastPresenter* presenter = [[XeniaIOSStatusToastPresenter alloc] init];
+    [presenter presentMessage:text
+                        style:XeniaIOSStatusToastStyleWarning
+                       inView:window.rootViewController.view ?: window];
+  });
+}
