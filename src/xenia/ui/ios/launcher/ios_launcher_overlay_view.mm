@@ -1183,6 +1183,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [super setHidden:hidden];
   // Hidden while a game runs; the background stops until the Library is back.
   [_ambientField visibilityMayHaveChanged];
+  if (!hidden) {
+    // Covers may have been dropped under memory pressure while the game ran.
+    [self refreshVisibleCoversSoon];
+  }
 }
 
 // One notice at a time, the one that stops games first: JIT, then the memory limit, and only
@@ -1343,6 +1347,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     [self placeDetailMoreButton];
     [self updateHeaderFonts];
     [_gamesCollectionView.collectionViewLayout invalidateLayout];
+    // Rotating brings other tiles on screen while covers may be landing.
+    [self refreshVisibleCoversSoon];
   }
   const BOOL hero = _heroGame != nil || _detailGame != nil || _detailClosing;
   _heroView.hidden = !hero;
@@ -3262,7 +3268,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   xe_load_game_art_thumbnail(titleId, pixels, ^(UIImage* image) {
     if (image) {
       [_pendingArtLoads removeObject:key];
-      [self reconfigureVisibleGamesWithTitleId:titleId];
+      [self refreshVisibleCoversLoading:NO];
       return;
     }
     // Nothing on disk yet: download, then decode what arrived.
@@ -3274,10 +3280,54 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       xe_load_game_art_thumbnail(titleId, pixels, ^(UIImage* decoded) {
         [_pendingArtLoads removeObject:key];
         if (decoded) {
-          [self reconfigureVisibleGamesWithTitleId:titleId];
+          [self refreshVisibleCoversLoading:NO];
         }
       });
     });
+  });
+}
+
+// Puts the cached cover on every visible tile that isn't showing it, and with |load| starts loading
+// the ones that aren't cached. Tiles are matched by the title they show, not by index path: a cover
+// that lands while the grid is mid-update or mid-rotation would otherwise miss its tile, which then
+// kept its placeholder with the cover sitting in the cache.
+- (void)refreshVisibleCoversLoading:(BOOL)load {
+  for (UICollectionViewCell* visible in _gamesCollectionView.visibleCells) {
+    if (![visible isKindOfClass:[XeniaGameTileCell class]]) {
+      continue;
+    }
+    XeniaGameTileCell* cell = (XeniaGameTileCell*)visible;
+    const uint32_t titleId = cell.representedTitleId;
+    if (!titleId) {
+      continue;
+    }
+    UIImage* cover = xe_cached_game_art_thumbnail(titleId);
+    if (cover) {
+      if (cell.iconView.image != cover) {
+        cell.iconView.image = cover;
+      }
+      continue;
+    }
+    if (!load) {
+      continue;
+    }
+    for (XeniaIOSLauncherGameSnapshot* game in _shownGames) {
+      if (game.titleId == titleId) {
+        if (game.supportsRemoteArt) {
+          [self loadCoverForTitleId:titleId collectionView:_gamesCollectionView];
+        }
+        break;
+      }
+    }
+  }
+}
+
+// After the grid has laid out its new tiles.
+- (void)refreshVisibleCoversSoon {
+  [self retain];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self refreshVisibleCoversLoading:YES];
+    [self release];
   });
 }
 
