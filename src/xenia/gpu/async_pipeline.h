@@ -140,7 +140,7 @@ bool AwaitDrawPipeline(const RenderTargetCache& render_target_cache,
             double(xe::Clock::QueryHostTickFrequency()));
   }
   if (!has_pipeline()) {
-    XELOGI("Draw skipped, pipeline not ready yet: VS {:016X}, PS {:016X}",
+    XELOGD("Draw skipped, pipeline not ready yet: VS {:016X}, PS {:016X}",
            vertex_shader.ucode_data_hash(),
            pixel_shader ? pixel_shader->ucode_data_hash() : 0);
     return false;

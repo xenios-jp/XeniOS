@@ -6666,8 +6666,7 @@ bool MetalCommandProcessor::IssueCopy() {
   // reads them from the open pass with a tile dispatch.
   if (!render_target_cache_) {
     EndRenderEncoder();
-  } else if (!current_render_encoder_) {
-    XELOGI("tresolve: fallback no_pass");
+  }
   }
   MTL::CommandBuffer* copy_command_buffer = EnsureCommandBuffer();
   if (!copy_command_buffer) {
