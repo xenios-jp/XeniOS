@@ -354,6 +354,9 @@
 /* system link status view controller: row detail */
 "Another player runs a different version of this game. Games usually only see players on the same version." = "Another player runs a different version of this game. Games usually only see players on the same version.";
 
+/* JIT sheet: other ways to enable JIT */
+"Any JIT tool works, such as StikDebug with the universal.js script." = "Any JIT tool works, such as StikDebug with the universal.js script.";
+
 /* settings hub view controller: title */
 "App" = "App";
 
@@ -622,6 +625,12 @@
 
 /* game page: row state */
 "Collapsed" = "Collapsed";
+
+/* JIT sheet: step 3 without a game */
+"Come back and pick a game." = "Come back and pick a game.";
+
+/* JIT sheet: step 3; %@ is the game */
+"Come back, and %@ starts." = "Come back, and %@ starts.";
 
 /* settings hub view controller: title */
 "Community" = "Community";
@@ -1471,6 +1480,9 @@
 /* Guidance when JIT is not active before launching a game */
 "Games need JIT to run. Open StikDebug to turn it on, then start the game." = "Games need JIT to run. Open StikDebug to turn it on, then start the game.";
 
+/* JIT sheet: one-line explanation */
+"Games need JIT, and iOS only lets another app turn it on." = "Games need JIT, and iOS only lets another app turn it on.";
+
 /* settings hub view controller: account card */
 "Games save progress and achievements to it." = "Games save progress and achievements to it.";
 
@@ -1620,9 +1632,6 @@
 /* document import coordinator: title */
 "Importing" = "Importing";
 
-/* JIT sheet: other ways to enable JIT */
-"In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts." = "In StikDebug, assign the universal.js or Amethyst-MeloNX.js script to XeniOS. Any other JIT tool works too, such as an lldb broker. Keep it attached until the game starts.";
-
 /* zar conversion coordinator: user-visible text */
 "Incomplete ZAR Conversion Removed" = "Incomplete ZAR Conversion Removed";
 
@@ -1693,9 +1702,6 @@
 
 /* Switch label in the touch analog tuning screen */
 "Invert Vertical" = "Invert Vertical";
-
-/* JIT sheet: one-line explanation */
-"iOS only lets XeniOS run games fast when another app switches JIT on for it." = "iOS only lets XeniOS run games fast when another app switches JIT on for it.";
 
 /* compat report cells: label text */
 "iOS Version" = "iOS Version";
@@ -2049,6 +2055,9 @@
 
 /* online view controller: row, how the network treats direct connections */
 "NAT Type" = "NAT Type";
+
+/* JIT sheet: link to help on Discord */
+"Need Help?" = "Need Help?";
 
 /* settings hub view controller: title */
 "Needed for the Xbox 360 Dashboard." = "Needed for the Xbox 360 Dashboard.";
@@ -3949,12 +3958,6 @@
 
 /* system link view controller: alert message */
 "You can change this in Settings > Privacy." = "You can change this in Settings > Privacy.";
-
-/* JIT sheet: step 3; %@ is the game */
-"You come back here and %@ starts." = "You come back here and %@ starts.";
-
-/* JIT sheet: step 3 without a game */
-"You come back here and pick a game." = "You come back here and pick a game.";
 
 /* compat report view controller: message */
 "Your compatibility report has been submitted." = "Your compatibility report has been submitted.";
