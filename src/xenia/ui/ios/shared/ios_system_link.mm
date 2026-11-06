@@ -55,6 +55,7 @@ NSString* HereID();
 void AskOnline();
 
 void (^g_toast)(NSString*, XeniaIOSStatusToastStyle) = nil;
+void (^g_link_off)(uint32_t) = nil;
 // What the player was last told, so each change is told once.
 RelayStatus g_last;
 // Whether a game plays System Link through the relay now.
@@ -95,25 +96,16 @@ void Toast(NSString* message, XeniaIOSStatusToastStyle style) {
   }
 }
 
-// Some games stop with an error when they find no network, so the first time each game looks for
-// one while System Link is off, the player is told how to turn it on.
+// The first time each game looks for a network while System Link is off.
 void NoteLinkOff(uint32_t title_id) {
   NSString* const key = @"xenios.systemlink.offNoted";
   NSString* title = TitleKey(title_id);
   NSArray* noted = [[NSUserDefaults standardUserDefaults] stringArrayForKey:key] ?: @[];
-  if ([noted containsObject:title]) {
+  if (!g_link_off || [noted containsObject:title]) {
     return;
   }
   [[NSUserDefaults standardUserDefaults] setObject:[noted arrayByAddingObject:title] forKey:key];
-  Toast(
-      xe_ios_online_features_enabled()
-          ? NSLocalizedString(@"This game looks for a network. If it stops with an error, set "
-                              @"System Link to play over the internet in Settings.",
-                              @"toast: a game checked for a network while System Link is off")
-          : NSLocalizedString(@"This game looks for a network. If it stops with an error, turn "
-                              @"on Online features to use System Link.",
-                              @"toast: a game checked for a network while Online features is off"),
-      XeniaIOSStatusToastStyleWarning);
+  g_link_off(title_id);
 }
 
 NSString* RoomDescription() {
@@ -773,10 +765,12 @@ NSString* xe_ios_system_link_unreachable_message(size_t count, XeniaIOSNatType n
                                 (unsigned long)count];
 }
 
-void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusToastStyle style)) {
+void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusToastStyle style),
+                                void (^link_off)(uint32_t title_id)) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     g_toast = [toast copy];
+    g_link_off = [link_off copy];
     LoadNat();
     xe::kernel::xam::SetSystemLinkRelayPolicy({
         [] { return bool(xe_ios_online_features_enabled()); },

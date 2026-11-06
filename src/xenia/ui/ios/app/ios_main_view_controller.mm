@@ -105,6 +105,7 @@
 DECLARE_bool(ios_touch_overlay);
 DECLARE_bool(present_letterbox);
 DECLARE_path(cache_root);
+DECLARE_string(systemlink_transport);
 
 using xe::ui::ApplyIOSCompatibilityDataToDiscoveredGames;
 using xe::ui::BuildDiscoveredGameFromPath;
@@ -356,6 +357,7 @@ struct LaunchPreparation {
 - (void)dismissStatusToast;
 - (void)showStatusToastForMessage:(NSString*)message;
 - (void)presentLaunchProblemAlertWithMessage:(NSString*)message;
+- (void)presentSystemLinkOffPromptForTitleId:(uint32_t)title_id;
 - (void)presentLinkCouldNotBeOpenedAlert;
 - (void)presentGameActionsSheetForIndex:(size_t)game_index;
 - (void)presentTouchLayoutGamePicker;
@@ -543,9 +545,13 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
         [resource_pressure_owner showStatusToast:message style:XeniaIOSStatusToastStyleWarning];
       });
   __unsafe_unretained XeniaViewController* system_link_owner = self;
-  xe_ios_system_link_install(^(NSString* message, XeniaIOSStatusToastStyle style) {
-    [system_link_owner showStatusToast:message style:style];
-  });
+  xe_ios_system_link_install(
+      ^(NSString* message, XeniaIOSStatusToastStyle style) {
+        [system_link_owner showStatusToast:message style:style];
+      },
+      ^(uint32_t title_id) {
+        [system_link_owner presentSystemLinkOffPromptForTitleId:title_id];
+      });
   xe_ios_system_link_watch_online(
       ^BOOL {
         return !system_link_owner.gameRunning && system_link_owner.launcherOverlayView &&
@@ -5471,6 +5477,70 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 
 // Errors and states with a next step are never toasts: a toast vanishes in a few seconds and has
 // nothing to tap, so a failed launch or link gets an alert with a button instead.
+// Some games, such as Black Ops 2, stop with an error when they find no network. Games read the
+// network as they start, so turning System Link on takes a restart.
+- (void)presentSystemLinkOffPromptForTitleId:(uint32_t)title_id {
+  if (!self.gameRunning || active_game_title_id_ != title_id) {
+    return;
+  }
+  std::filesystem::path game_path;
+  NSString* display_name = nil;
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (game.title_id == title_id) {
+      game_path = game.path;
+      display_name = ToNSString(game.title);
+      break;
+    }
+  }
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  if (xe_ios_online_features_enabled()) {
+    // Online features are on, so only the systemlink_transport setting has it off.
+    XEPresentOKAlert(
+        presenter,
+        NSLocalizedString(@"System Link Is Off",
+                          @"Alert title: a game looked for a network while System Link is off"),
+        [NSString
+            stringWithFormat:NSLocalizedString(
+                                 @"This game looks for a network, and some games stop with an "
+                                 @"error without one. System Link is set to “%@” in Settings. Set "
+                                 @"it to play over the internet, then restart the game.",
+                                 @"Alert message; %@ is the systemlink_transport setting"),
+                             [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]]);
+    return;
+  }
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(
+                                   @"Turn On System Link?",
+                                   @"Alert title: a game looked for a network while it is off")
+                       message:NSLocalizedString(
+                                   @"This game looks for a network, and some games stop with an "
+                                   @"error without one. Turning on System Link restarts the game, "
+                                   @"and unsaved progress will be lost.",
+                                   @"Alert message: a game looked for a network while System Link "
+                                   @"is off")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Not Now", @"Alert button: dismiss")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Turn On and Restart",
+                                                         @"Alert button: turn on System Link and "
+                                                         @"restart the game")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction* action) {
+                                 xe_ios_confirm_turn_on_online_features(
+                                     [self topPresentedControllerForModalPresentation] ?: self, ^{
+                                       xe_ios_set_online_features_enabled(YES);
+                                       if (!game_path.empty() && self.gameRunning &&
+                                           active_game_title_id_ == title_id) {
+                                         [self launchGameAtPath:game_path displayName:display_name];
+                                       }
+                                     });
+                               }]];
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)presentLaunchProblemAlertWithMessage:(NSString*)message {
   XEPresentOKAlert(
       self, NSLocalizedString(@"Something Went Wrong", @"Alert title: a game or link failed"),
