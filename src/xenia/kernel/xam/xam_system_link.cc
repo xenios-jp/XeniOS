@@ -29,6 +29,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_crypt.h"
@@ -357,6 +358,24 @@ void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy) {
 void SystemLinkAllowedChanged() { RefreshRelayAllowed(); }
 
 void SystemLinkRoomChanged() { ++relay_room_changes; }
+
+void SystemLinkOffQueried(KernelState* kernel_state) {
+  // Games ask on every frame, so only a title's first ask goes further.
+  static std::atomic<uint32_t> noted_title{0};
+  const uint32_t title_id = kernel_state->title_id();
+  if (!title_id || title_id == kDashboardID ||
+      noted_title.exchange(title_id) == title_id) {
+    return;
+  }
+  std::function<void(uint32_t)> link_off;
+  {
+    std::lock_guard lock(relay_policy_mutex);
+    link_off = relay_policy.link_off;
+  }
+  if (link_off) {
+    link_off(title_id);
+  }
+}
 
 bool CrossPlatformTitle(KernelState* kernel_state) {
   auto module = kernel_state->GetExecutableModule();

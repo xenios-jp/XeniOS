@@ -42,6 +42,9 @@ struct SystemLinkRelayPolicy {
   // The app's ID for counting open apps, which the room counts while the
   // title plays in it (see relay::RelayConfig::app_id). Optional.
   std::function<std::string()> app_id;
+  // A title asked whether the console has a network link while System Link
+  // is off, the first time in this run for each title. Optional.
+  std::function<void(uint32_t title_id)> link_off;
 };
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy);
 // What the policy's |allowed| says may have changed.
@@ -49,6 +52,8 @@ void SystemLinkAllowedChanged();
 // The policy's room for a title may have changed. A running title moves to it
 // within about a second, leaving the players in its old room.
 void SystemLinkRoomChanged();
+// The running title asked for the network link while System Link is off.
+void SystemLinkOffQueried(KernelState* kernel_state);
 
 // Whether the running title has cross-platform System Link.
 bool CrossPlatformTitle(KernelState* kernel_state);

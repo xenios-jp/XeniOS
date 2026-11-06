@@ -95,6 +95,27 @@ void Toast(NSString* message, XeniaIOSStatusToastStyle style) {
   }
 }
 
+// Some games stop with an error when they find no network, so the first time each game looks for
+// one while System Link is off, the player is told how to turn it on.
+void NoteLinkOff(uint32_t title_id) {
+  NSString* const key = @"xenios.systemlink.offNoted";
+  NSString* title = TitleKey(title_id);
+  NSArray* noted = [[NSUserDefaults standardUserDefaults] stringArrayForKey:key] ?: @[];
+  if ([noted containsObject:title]) {
+    return;
+  }
+  [[NSUserDefaults standardUserDefaults] setObject:[noted arrayByAddingObject:title] forKey:key];
+  Toast(
+      xe_ios_online_features_enabled()
+          ? NSLocalizedString(@"This game looks for a network. If it stops with an error, set "
+                              @"System Link to play over the internet in Settings.",
+                              @"toast: a game checked for a network while System Link is off")
+          : NSLocalizedString(@"This game looks for a network. If it stops with an error, turn "
+                              @"on Online features to use System Link.",
+                              @"toast: a game checked for a network while Online features is off"),
+      XeniaIOSStatusToastStyleWarning);
+}
+
 NSString* RoomDescription() {
   if (g_room_code.length) {
     return [NSString
@@ -775,6 +796,11 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
           @autoreleasepool {
             return std::string(HereID().UTF8String);
           }
+        },
+        [](uint32_t title_id) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            NoteLinkOff(title_id);
+          });
         },
     });
     // Games ask whether System Link is allowed on every frame, so the answer is kept and read
