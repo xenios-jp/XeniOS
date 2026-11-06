@@ -4,7 +4,7 @@
   make_symbol_asset.py --exe EXE --dwarf DWARF_OR_EXE [--lines] --uuid UUID \
       --textvmaddr 0x100000000 --root REPO_ROOT --out symbols-UUID.bin
 
-Called by tools/ios/make_symbol_map.sh. Format (README "Crash symbols"):
+Called by tools/ios/make_symbol_map.sh. Format:
 
   16 bytes   "xsym2 " + the header's length, 10 digits, zero padded
   header     JSON {v: 2, uuid, textvmaddr, chunks: [[startOffset, byteOffset, byteLength], ...]}
