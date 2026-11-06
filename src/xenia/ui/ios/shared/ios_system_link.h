@@ -44,6 +44,8 @@ void xe_ios_join_system_link_room(uint32_t title_id, NSString* code);
 
 // Whether System Link is set to play through the relay.
 BOOL xe_ios_system_link_uses_relay(void);
+// Sets System Link to play through the relay, as it does by default, and tells the running game.
+void xe_ios_system_link_use_relay(void);
 
 // How the network the device is on treats direct connections between players, as System Link's
 // last check on it found.

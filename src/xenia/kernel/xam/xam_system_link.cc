@@ -198,6 +198,9 @@ std::atomic<bool> relay_allowed{true};
 
 bool RelayAllowed() { return relay_allowed.load(std::memory_order_relaxed); }
 
+// Whether System Link was on when SystemLinkAllowedChanged last looked.
+std::atomic<bool> link_enabled_seen{false};
+
 void RefreshRelayAllowed() {
   std::lock_guard lock(relay_policy_mutex);
   relay_allowed = !relay_policy.allowed || relay_policy.allowed();
@@ -354,14 +357,14 @@ void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy) {
     relay_policy = std::move(policy);
   }
   RefreshRelayAllowed();
+  link_enabled_seen = SystemLinkEnabled();
 }
 
 void SystemLinkAllowedChanged() {
-  const bool was_enabled = SystemLinkEnabled();
   RefreshRelayAllowed();
   const bool enabled = SystemLinkEnabled();
   // Games hear of it as of a network cable plugged in or pulled out.
-  if (enabled != was_enabled) {
+  if (link_enabled_seen.exchange(enabled) != enabled) {
     if (KernelState* state = kernel_state()) {
       state->BroadcastNotification(kXNotificationLiveLinkStateChanged, enabled);
     }

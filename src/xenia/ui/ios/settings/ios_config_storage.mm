@@ -539,6 +539,14 @@ static bool SetConfigVarStringLikeValue(const std::string& key, const std::strin
   return false;
 }
 
+bool IOSConfigSetAndSaveString(const std::string& key, const std::string& value) {
+  if (!SetConfigVarStringLikeValue(key, value)) {
+    return false;
+  }
+  config::SaveConfigValues({key});
+  return true;
+}
+
 bool ApplyIOSConfigSections(const std::vector<IOSConfigSection>& sections,
                             const std::set<std::string>* dirty_keys) {
   bool ok = true;

@@ -23,6 +23,7 @@
 #include "xenia/net/packet_transport.h"
 #include "xenia/net/relay_protocol.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
+#import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -683,6 +684,11 @@ void xe_ios_join_system_link_room(uint32_t title_id, NSString* code) {
 }
 
 BOOL xe_ios_system_link_uses_relay(void) { return cvars::systemlink_transport == "relay"; }
+
+void xe_ios_system_link_use_relay(void) {
+  IOSConfigSetAndSaveString("systemlink_transport", "relay");
+  xe::kernel::xam::SystemLinkAllowedChanged();
+}
 
 XeniaIOSNatType xe_ios_system_link_nat(void) {
   if (auto nat = NatOverride()) {
