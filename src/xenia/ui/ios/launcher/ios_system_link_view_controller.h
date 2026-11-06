@@ -33,6 +33,9 @@
 // The pieces of the sheet the game page shows in place.
 // Asks before turning on Online Features, which System Link needs; |turn_on| turns them on.
 void xe_ios_confirm_turn_on_online_features(UIViewController* presenter, void (^turn_on)(void));
+// The same, titled for System Link, with |reason| first.
+void xe_ios_confirm_turn_on_system_link(UIViewController* presenter, NSString* reason,
+                                        void (^turn_on)(void));
 // "Nobody is there now." and so on for a game's public lobby, or nil while that isn't known.
 NSString* xe_ios_system_link_lobby_players_text(uint32_t title_id);
 // Asks for a room code and sets the game's room to it.

@@ -31,6 +31,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
+#include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_crypt.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_sha.h"
@@ -355,7 +356,17 @@ void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy) {
   RefreshRelayAllowed();
 }
 
-void SystemLinkAllowedChanged() { RefreshRelayAllowed(); }
+void SystemLinkAllowedChanged() {
+  const bool was_enabled = SystemLinkEnabled();
+  RefreshRelayAllowed();
+  const bool enabled = SystemLinkEnabled();
+  // Games hear of it as of a network cable plugged in or pulled out.
+  if (enabled != was_enabled) {
+    if (KernelState* state = kernel_state()) {
+      state->BroadcastNotification(kXNotificationLiveLinkStateChanged, enabled);
+    }
+  }
+}
 
 void SystemLinkRoomChanged() { ++relay_room_changes; }
 
