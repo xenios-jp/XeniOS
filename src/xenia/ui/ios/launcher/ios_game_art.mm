@@ -334,6 +334,10 @@ void xe_load_game_art_thumbnail(uint32_t title_id, CGFloat max_pixels,
     }
     if (image) {
       [xe_art_thumbnail_cache() setObject:image forKey:@(title_id)];
+      // Pruning goes by when a cover was last shown, not when it was downloaded.
+      [[NSFileManager defaultManager] setAttributes:@{NSFileModificationDate : [NSDate date]}
+                                       ofItemAtPath:path
+                                              error:nil];
     }
     [image retain];
     dispatch_async(dispatch_get_main_queue(), ^{
