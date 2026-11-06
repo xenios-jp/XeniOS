@@ -426,11 +426,11 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
                          "Spatial plays surround sound over headphones. Applies after "
                          "relaunch.",
                          "phase", {{"Stereo", "sdl"}, {"Spatial", "phase"}});
-  AddBoolSetting(audio.items, "apu_phase_head_tracking", "Head Tracking",
-                 head_pose_entitlement
-                     ? "Spatial sound stays with the screen as you turn your head."
-                     : "Not available in this install.",
-                 false);
+  // Without the entitlement the switch can't work, so it isn't shown; the footer says why.
+  if (head_pose_entitlement) {
+    AddBoolSetting(audio.items, "apu_phase_head_tracking", "Head Tracking",
+                   "Spatial sound stays with the screen as you turn your head.", false);
+  }
   PushIfNotEmpty(sections, std::move(audio));
   return sections;
 }
