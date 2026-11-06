@@ -49,6 +49,8 @@ class MetalPipelineArchive {
   // Writes what was compiled since the last save as a new part. Slow (each
   // addition is compiled again for the archive): not on the draw thread.
   void Save();
+  // Makes a save in progress stop at its next pipeline.
+  void CancelSave() { cancel_save_.store(true, std::memory_order_relaxed); }
   void Close(bool save);
 
   // Thread-safe. Both look the pipeline or function up in the parts first; on
@@ -102,6 +104,7 @@ class MetalPipelineArchive {
   std::vector<MTL::RenderPipelineDescriptor*> pending_pipelines_;
   std::vector<PendingFunction> pending_functions_;
   std::atomic<uint32_t> added_{0};
+  std::atomic<bool> cancel_save_{false};
   uint32_t hits_ = 0;
   uint32_t misses_ = 0;
   // Only touched by Save.

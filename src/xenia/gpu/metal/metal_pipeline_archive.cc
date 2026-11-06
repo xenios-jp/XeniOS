@@ -184,6 +184,7 @@ void MetalPipelineArchive::Open(MTL::Device* device,
   std::filesystem::create_directories(dir, ec);
   device_ = device;
   dir_ = dir;
+  cancel_save_ = false;
 
   const std::string full_fingerprint = fingerprint + " os=" + OsBuild();
   const std::filesystem::path id_path = dir / "archive.id";
@@ -259,6 +260,9 @@ size_t MetalPipelineArchive::WriteParts(
   if (begin >= end) {
     return 0;
   }
+  if (cancel_save_.load(std::memory_order_relaxed)) {
+    return end - begin;
+  }
   NS::Error* error = nullptr;
   MTL::BinaryArchive* archive = NewArchive({}, &error);
   if (!archive) {
@@ -267,6 +271,10 @@ size_t MetalPipelineArchive::WriteParts(
   }
   size_t added = 0;
   for (size_t i = begin; i < end; ++i) {
+    if (cancel_save_.load(std::memory_order_relaxed)) {
+      archive->release();
+      return end - begin;
+    }
     added += additions[i](archive) ? 1 : 0;
   }
   const std::filesystem::path path =

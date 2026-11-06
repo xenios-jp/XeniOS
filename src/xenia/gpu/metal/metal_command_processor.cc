@@ -2791,8 +2791,11 @@ void MetalCommandProcessor::ShutdownContext() {
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
     current_command_buffer_->commit();
     if (wait_shared_event_) {
-      wait_shared_event_->waitUntilSignaledValue(
-          wait_value, std::numeric_limits<uint64_t>::max());
+      // Bounded so a GPU that has stopped (in the background) can't hold up
+      // quitting. The command buffer keeps what it uses alive.
+      if (!wait_shared_event_->waitUntilSignaledValue(wait_value, 2000)) {
+        XELOGW("Metal: the last command buffer didn't finish in 2 s at shutdown");
+      }
     } else {
       current_command_buffer_->waitUntilCompleted();
     }
@@ -2895,6 +2898,7 @@ void MetalCommandProcessor::ShutdownContext() {
   storage_writer_.ShutdownShaderStorage();
   // Not saved here: a save takes seconds, and quitting the app may not wait for
   // it. What was added since the last save is compiled again next time.
+  pipeline_archive_.CancelSave();
   JoinPipelineArchiveSave();
   pipeline_archive_.Close(false);
   shader_library_cache_.Close();
