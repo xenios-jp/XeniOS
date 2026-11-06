@@ -5475,22 +5475,11 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   [self.statusToastPresenter dismiss];
 }
 
-// Errors and states with a next step are never toasts: a toast vanishes in a few seconds and has
-// nothing to tap, so a failed launch or link gets an alert with a button instead.
-// Some games, such as Black Ops 2, stop with an error when they find no network. Games read the
-// network as they start, so turning System Link on takes a restart.
+// Some games, such as Black Ops 2, stop with an error when they find no network. Turning System
+// Link on tells the running game, as a console does when its network cable is plugged in.
 - (void)presentSystemLinkOffPromptForTitleId:(uint32_t)title_id {
   if (!self.gameRunning || active_game_title_id_ != title_id) {
     return;
-  }
-  std::filesystem::path game_path;
-  NSString* display_name = nil;
-  for (const IOSDiscoveredGame& game : discovered_games_) {
-    if (game.title_id == title_id) {
-      game_path = game.path;
-      display_name = ToNSString(game.title);
-      break;
-    }
   }
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   if (xe_ios_online_features_enabled()) {
@@ -5508,39 +5497,23 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
                              [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]]);
     return;
   }
-  UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(
-                                   @"Turn On System Link?",
-                                   @"Alert title: a game looked for a network while it is off")
-                       message:NSLocalizedString(
-                                   @"This game looks for a network, and some games stop with an "
-                                   @"error without one. Turning on System Link restarts the game, "
-                                   @"and unsaved progress will be lost.",
-                                   @"Alert message: a game looked for a network while System Link "
-                                   @"is off")
-                preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Not Now", @"Alert button: dismiss")
-                                 style:UIAlertActionStyleCancel
-                               handler:nil]];
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Turn On and Restart",
-                                                         @"Alert button: turn on System Link and "
-                                                         @"restart the game")
-                                 style:UIAlertActionStyleDefault
-                               handler:^(__unused UIAlertAction* action) {
-                                 xe_ios_confirm_turn_on_online_features(
-                                     [self topPresentedControllerForModalPresentation] ?: self, ^{
-                                       xe_ios_set_online_features_enabled(YES);
-                                       if (!game_path.empty() && self.gameRunning &&
-                                           active_game_title_id_ == title_id) {
-                                         [self launchGameAtPath:game_path displayName:display_name];
-                                       }
-                                     });
-                               }]];
-  [presenter presentViewController:alert animated:YES completion:nil];
+  // One tap: the reason and the Online features consent share one alert.
+  xe_ios_confirm_turn_on_system_link(
+      presenter,
+      NSLocalizedString(@"This game looks for a network, and some games stop with an error "
+                        @"without one. System Link gives it one.",
+                        @"Alert message: a game looked for a network while System Link is off"),
+      ^{
+        xe_ios_set_online_features_enabled(YES);
+        [self showStatusToast:NSLocalizedString(@"System Link is on. If the game showed an error, "
+                                                @"try again.",
+                                                @"Toast: System Link was turned on mid-game")
+                        style:XeniaIOSStatusToastStyleSuccess];
+      });
 }
 
+// Errors and states with a next step are never toasts: a toast vanishes in a few seconds and has
+// nothing to tap, so a failed launch or link gets an alert with a button instead.
 - (void)presentLaunchProblemAlertWithMessage:(NSString*)message {
   XEPresentOKAlert(
       self, NSLocalizedString(@"Something Went Wrong", @"Alert title: a game or link failed"),
