@@ -17,12 +17,28 @@
 #include <unistd.h>
 
 #include <initializer_list>
+#include <new>
 
 // UIKit owns the entry point; SDL must not replace main with SDL_main.
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
 
 #import "xenia/ui/ios/app/ios_app_delegate.h"
+
+#include "xenia/base/logging.h"
+
+namespace {
+
+// Allocations fail when the address space runs out, usually where the install lacks the extended
+// virtual addressing entitlement. Say so instead of crashing without a reason.
+void OnOutOfMemory() {
+  std::set_new_handler(nullptr);
+  xe::FatalError(
+      "XeniOS ran out of memory. This install may be missing the extended virtual addressing "
+      "entitlement.");
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
   // Launched from a debugger or JIT tool, stdout and stderr are a pipe that tool drains. If it
@@ -35,6 +51,7 @@ int main(int argc, char* argv[]) {
       fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
   }
+  std::set_new_handler(OnOutOfMemory);
   // Mark the real UIKit thread as SDL's main thread before worker-side init.
   SDL_SetMainReady();
   @autoreleasepool {
