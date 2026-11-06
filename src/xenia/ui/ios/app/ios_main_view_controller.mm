@@ -2512,7 +2512,7 @@ static bool XeJITUsable() {
                             finish(NO);
                             return;
                           }
-                          BOOL signed_in = app_context->SignInProfile(xuid);
+                          BOOL signed_in = app_context->SignInProfile(xuid, user_index);
                           if (signed_in) {
                             [self showStatusToast:
                                       [NSString stringWithFormat:NSLocalizedString(
@@ -2579,7 +2579,7 @@ static bool XeJITUsable() {
                                                 finish(NO);
                                                 return;
                                               }
-                                              BOOL signed_in = self.appContext->SignInProfile(xuid);
+                                              BOOL signed_in = self.appContext->SignInProfile(xuid, user_index);
                                               finish(signed_in);
                                             }]];
   }

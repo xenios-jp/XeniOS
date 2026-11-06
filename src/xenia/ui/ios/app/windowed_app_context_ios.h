@@ -128,7 +128,9 @@ class IOSWindowedAppContext final : public WindowedAppContext {
 
   using ProfilesListCallback = std::function<std::vector<IOSProfileSummary>()>;
   using ProfileCreateCallback = std::function<uint64_t(const std::string&)>;
-  using ProfileSignInCallback = std::function<bool(uint64_t)>;
+  // |user_index| is the player a game's sign-in prompt asked for, or kSignInFromMenu.
+  using ProfileSignInCallback = std::function<bool(uint64_t xuid, uint32_t user_index)>;
+  static constexpr uint32_t kSignInFromMenu = UINT32_MAX;
   using GameTerminateCallback = std::function<bool()>;
   using TitleUpdateInstallCallback = std::function<bool(const std::string&, std::string*, bool*)>;
   using GameExitedCallback = std::function<void()>;
@@ -184,11 +186,11 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   void set_profile_sign_in_callback(ProfileSignInCallback callback) {
     profile_sign_in_callback_ = std::move(callback);
   }
-  bool SignInProfile(uint64_t xuid) const {
+  bool SignInProfile(uint64_t xuid, uint32_t user_index = kSignInFromMenu) const {
     if (!profile_sign_in_callback_) {
       return false;
     }
-    return profile_sign_in_callback_(xuid);
+    return profile_sign_in_callback_(xuid, user_index);
   }
 
   void set_profile_services_ready_callback(ProfileServicesReadyCallback callback) {
