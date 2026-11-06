@@ -7,7 +7,7 @@
 #
 # Output: OUT_DIR/symbols-<UUID>.bin: for any address in the executable the
 # frames innermost first, inlined ones included, with repo-relative file:line
-# (tools/ios/diagnostics/make_symbol_asset.py has the format). Names are
+# (tools/ios/make_symbol_asset.py has the format). Names are
 # demangled as atos prints them. The line tables come from a dSYM that
 # dsymutil writes into a temporary directory (the object files must still be
 # where the linker left them; with ThinLTO that needs -object_path_lto, see
@@ -44,6 +44,6 @@ else
 fi
 [ ${#lines[@]} -gt 0 ] || echo "no line tables in the dSYM; the asset names functions only" >&2
 
-python3 -I "$here/diagnostics/make_symbol_asset.py" --exe "$exe" --dwarf "$dwarf" ${lines[@]+"${lines[@]}"} \
+python3 -I "$here/make_symbol_asset.py" --exe "$exe" --dwarf "$dwarf" ${lines[@]+"${lines[@]}"} \
   --uuid "$uuid" --textvmaddr "$textvmaddr" --root "$root" --out "$out_dir/symbols-$uuid.bin"
 echo "$out_dir/symbols-$uuid.bin"
