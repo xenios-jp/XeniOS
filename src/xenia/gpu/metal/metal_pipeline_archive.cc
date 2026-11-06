@@ -10,6 +10,7 @@
 #include "xenia/gpu/metal/metal_pipeline_archive.h"
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
 
@@ -26,6 +27,10 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
+
+#if XE_PLATFORM_IOS
+#include <os/proc.h>
+#endif  // XE_PLATFORM_IOS
 
 #include "third_party/fmt/include/fmt/format.h"
 
@@ -93,6 +98,27 @@ std::string OsBuild() {
     return "unknown";
   }
   return build;
+}
+
+// Metal allocates about a part's size to open it and ends the app if it can't.
+bool HasRoomToOpen(const std::filesystem::path& path) {
+  std::error_code ec;
+  const uintmax_t size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return true;
+  }
+  const size_t needed = size_t(size) * 2 + (size_t(64) << 20);
+#if XE_PLATFORM_IOS
+  if (os_proc_available_memory() < needed) {
+    return false;
+  }
+#endif  // XE_PLATFORM_IOS
+  void* probe = mmap(nullptr, needed, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (probe == MAP_FAILED) {
+    return false;
+  }
+  munmap(probe, needed);
+  return true;
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
@@ -195,6 +221,12 @@ void MetalPipelineArchive::Open(MTL::Device* device,
   }
   std::sort(files.begin(), files.end());
   for (const auto& [index, path] : files) {
+    next_part_ = std::max(next_part_, index + 1);
+    if (!HasRoomToOpen(path)) {
+      XELOGW("Metal pipeline archive: not enough memory to open {} of {} parts",
+             files.size() - parts_.size(), files.size());
+      break;
+    }
     NS::Error* error = nullptr;
     MTL::BinaryArchive* part = NewArchive(path, &error);
     if (!part) {
@@ -204,7 +236,6 @@ void MetalPipelineArchive::Open(MTL::Device* device,
       continue;
     }
     parts_.push_back(part);
-    next_part_ = std::max(next_part_, index + 1);
   }
   UpdateArchivesArray();
 
@@ -250,6 +281,11 @@ size_t MetalPipelineArchive::WriteParts(
   // The collecting archive holds what it compiled in memory; the part reopened
   // from its file is mapped instead.
   archive->release();
+  if (written && !HasRoomToOpen(path)) {
+    // Saved for the next launch.
+    ++next_part_;
+    return (end - begin) - added;
+  }
   if (written) {
     MTL::BinaryArchive* part = NewArchive(path, &error);
     if (part) {
