@@ -48,6 +48,11 @@ NSString* PlayersText(NSInteger players) {
 }  // namespace
 
 void xe_ios_confirm_turn_on_online_features(UIViewController* presenter, void (^turn_on)(void)) {
+  xe_ios_confirm_turn_on_system_link(presenter, nil, turn_on);
+}
+
+void xe_ios_confirm_turn_on_system_link(UIViewController* presenter, NSString* reason,
+                                        void (^turn_on)(void)) {
   NSString* message =
       NSLocalizedString(@"This turns on all Online Features, not only System Link: update checks, "
                         @"compatibility data, cover art, compatibility discussions and reports, "
@@ -67,9 +72,15 @@ void xe_ios_confirm_turn_on_online_features(UIViewController* presenter, void (^
                                                             @"Privacy.",
                                                             @"system link view controller: alert "
                                                             @"message")];
+  if (reason.length) {
+    message = [NSString stringWithFormat:@"%@\n\n%@", reason, message];
+  }
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Turn On Online Features?",
-                                                 @"system link view controller: alert title")
+      alertControllerWithTitle:reason.length
+                                   ? NSLocalizedString(@"Turn On System Link?",
+                                                       @"system link view controller: alert title")
+                                   : NSLocalizedString(@"Turn On Online Features?",
+                                                       @"system link view controller: alert title")
                        message:message
                 preferredStyle:UIAlertControllerStyleAlert];
   [alert addAction:[UIAlertAction

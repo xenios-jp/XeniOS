@@ -47,7 +47,8 @@ struct SystemLinkRelayPolicy {
   std::function<void(uint32_t title_id)> link_off;
 };
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy);
-// What the policy's |allowed| says may have changed.
+// What the policy's |allowed| says may have changed. When that turns System
+// Link on or off, running games are told the network link changed.
 void SystemLinkAllowedChanged();
 // The policy's room for a title may have changed. A running title moves to it
 // within about a second, leaving the players in its old room.
