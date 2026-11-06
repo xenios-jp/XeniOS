@@ -135,8 +135,10 @@ UIButton* xe_ios_new_system_link_online_button(void);
 void xe_ios_system_link_set_online_menu(void (^open)(void));
 
 // Lets games play over the internet while Online features are on, each in its room, and
-// tells the player what System Link does through |toast| on the main thread.
-// Call once.
-void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusToastStyle style));
+// tells the player what System Link does through |toast| on the main thread. |link_off| is
+// called on the main thread the first time each game looks for a network while System Link is
+// off. Call once.
+void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusToastStyle style),
+                                void (^link_off)(uint32_t title_id));
 
 #endif  // XENIA_UI_IOS_SHARED_IOS_SYSTEM_LINK_H_
