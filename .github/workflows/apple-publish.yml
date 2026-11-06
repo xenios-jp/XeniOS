@@ -423,7 +423,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # ThinLTO's object files carry the line tables the crash symbols are made
+          # from (the Release build already has -g); ld64 deletes them after the
+          # link unless told where to keep them, and dsymutil finds none then.
+          mkdir -p build-ios/lto-objects
           cmake -S . -B build-ios -G "Ninja Multi-Config" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,-object_path_lto,${GITHUB_WORKSPACE}/build-ios/lto-objects" \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -474,12 +479,13 @@ jobs:
             --issued-at "${ISSUED_AT}"
 
           test -f scratch/artifacts/xenios_ios_iphone_ipad.ipa
-          maps=(scratch/artifacts/symbols/*.map.gz)
-          test -f "${maps[0]}"
-
+          # The crash symbols (tools/ios/make_symbol_map.sh) go on the GitHub release
+          # with the IPA; the diagnostics Worker pulls what it needs from there.
+          symbols=(scratch/artifacts/symbols/symbols-*.bin)
+          test "${#symbols[@]}" -eq 1 && test -f "${symbols[0]}"
           {
-            echo "### Crash symbol map"
-            echo "\`$(basename "${maps[0]}")\` is in the xenios_ios_symbols artifact."
+            echo "### Crash symbols"
+            echo "\`$(basename "${symbols[0]}")\`: $(wc -c < "${symbols[0]}" | tr -d ' ') bytes, attached to the release when it is published."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the IPA
@@ -489,11 +495,11 @@ jobs:
           path: "scratch/artifacts/xenios_ios_iphone_ipad.ipa"
           if-no-files-found: error
 
-      - name: Upload the crash symbol map
+      - name: Upload the crash symbols
         uses: actions/upload-artifact@v4
         with:
           name: "xenios_ios_symbols"
-          path: "scratch/artifacts/symbols/*.map.gz"
+          path: "scratch/artifacts/symbols/symbols-*.bin"
           if-no-files-found: error
           retention-days: 90
 
@@ -671,6 +677,12 @@ jobs:
           name: "xenios_macos_apple_silicon"
           path: "artifacts/macos-arm64"
 
+      - name: Download the crash symbols
+        uses: actions/download-artifact@v4
+        with:
+          name: "xenios_ios_symbols"
+          path: "artifacts/symbols"
+
       - name: Create or update GitHub release
         id: github_release
         shell: bash
@@ -783,8 +795,41 @@ jobs:
             fi
           done
 
+          # 2b. The crash symbols, the same way. The diagnostics Worker finds them at
+          #     releases/download/<tag>/symbols-<UUID>.bin once the release is public,
+          #     and a build with no such asset (a development build) is never
+          #     symbolicated.
+          symbols=(artifacts/symbols/symbols-*.bin)
+          [ "${#symbols[@]}" -eq 1 ] && [ -f "${symbols[0]}" ] || {
+            echo "::error::Expected one symbols-<UUID>.bin in the symbols artifact"
+            exit 1
+          }
+          symbols_name="$(basename "${symbols[0]}")"
+          symbols_size="$(wc -c < "${symbols[0]}" | tr -d ' ')"
+          release_json="$(gh api "${repo_api}/releases/${release_id}")"
+          asset_id="$(jq -r --arg name "${symbols_name}" --argjson size "${symbols_size}" \
+            '.assets[] | select(.name == $name and .state == "uploaded" and .size == $size) | .id' \
+            <<<"${release_json}")"
+          if [ -z "${asset_id}" ]; then
+            jq -r --arg name "${symbols_name}" '.assets[] | select(.name == $name) | .id' <<<"${release_json}" \
+              | while read -r stale_id; do
+                  gh api "${repo_api}/releases/assets/${stale_id}" --method DELETE
+                done
+            gh api "https://uploads.github.com/${repo_api}/releases/${release_id}/assets?name=${symbols_name}" \
+              --method POST \
+              -H "Content-Type: application/octet-stream" \
+              --input "${symbols[0]}" \
+              >/dev/null
+          fi
+          uploaded="$(gh api "${repo_api}/releases/${release_id}" \
+            --jq ".assets[] | select(.name == \"${symbols_name}\" and .state == \"uploaded\" and .size == ${symbols_size}) | .id")"
+          if [ -z "${uploaded}" ]; then
+            echo "::error::${symbols_name} is not attached to ${RELEASE_TAG} as an uploaded asset of ${symbols_size} bytes"
+            exit 1
+          fi
+
           # 3. Publish. Only now does the release become public (and Latest), with
-          #    the IPA and DMG already on it.
+          #    the IPA, the DMG and the symbols already on it.
           if [ "${PRERELEASE}" = "true" ]; then
             publish_payload='{"draft": false, "prerelease": true}'
           else
