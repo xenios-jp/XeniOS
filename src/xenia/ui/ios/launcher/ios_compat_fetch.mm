@@ -13,6 +13,15 @@
 #import "xenia/ui/ios/launcher/ios_compat_cache.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 
+static NSString* const kXeCompatETagKey = @"xenios.compat.etag";
+static NSString* const kXeCompatCheckTimeKey = @"xenios.compat.lastCheck";
+static const NSTimeInterval kXeCompatMinCheckInterval = 6 * 60 * 60;
+
+static void xe_compat_stamp_check_time(void) {
+  [[NSUserDefaults standardUserDefaults] setDouble:[[NSDate date] timeIntervalSince1970]
+                                            forKey:kXeCompatCheckTimeKey];
+}
+
 static NSURLSession* xe_compat_url_session(void) {
   static NSURLSession* session = nil;
   static dispatch_once_t once_token;
@@ -38,9 +47,26 @@ static void xe_fetch_compat_data_from_urls(NSArray<NSString*>* url_strings, NSUI
     return;
   }
 
+  // Only the live API (index 0) takes part in ETag revalidation.
+  NSMutableURLRequest* request =
+      [NSMutableURLRequest requestWithURL:url
+                              cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                          timeoutInterval:20.0];
+  NSString* etag = index == 0 ? [[NSUserDefaults standardUserDefaults] stringForKey:kXeCompatETagKey]
+                              : nil;
+  if (etag.length > 0) {
+    [request setValue:etag forHTTPHeaderField:@"If-None-Match"];
+  }
+
   NSURLSessionDataTask* task = [xe_compat_url_session()
-        dataTaskWithURL:url
-      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+      dataTaskWithRequest:request
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        NSHTTPURLResponse* http_304 = (NSHTTPURLResponse*)response;
+        if (!error && etag.length > 0 && [http_304 isKindOfClass:[NSHTTPURLResponse class]] &&
+            http_304.statusCode == 304) {
+          xe_compat_stamp_check_time();
+          return;
+        }
         if (error || data.length == 0) {
           xe_fetch_compat_data_from_urls(url_strings, index + 1, cached, completion);
           return;
@@ -89,6 +115,17 @@ static void xe_fetch_compat_data_from_urls(NSArray<NSString*>* url_strings, NSUI
           return;
         }
 
+        if (index == 0) {
+          NSString* new_etag = [http valueForHTTPHeaderField:@"ETag"];
+          NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+          if (new_etag.length > 0) {
+            [defaults setObject:new_etag forKey:kXeCompatETagKey];
+          } else {
+            [defaults removeObjectForKey:kXeCompatETagKey];
+          }
+          xe_compat_stamp_check_time();
+        }
+
         if (cached.length == 0 || ![cached isEqualToData:data_to_store]) {
           [data_to_store writeToFile:xe_compat_cache_path() atomically:YES];
           dispatch_async(dispatch_get_main_queue(), ^{
@@ -103,8 +140,12 @@ static void xe_fetch_compat_data_from_urls(NSArray<NSString*>* url_strings, NSUI
 
 void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
   NSData* cached = [NSData dataWithContentsOfFile:xe_compat_cache_path()];
+  NSDictionary* cached_result = cached.length > 0 ? xe_parse_compat_json(cached) : nil;
+  // No usable cache: drop the ETag so the next request is a full 200.
+  if (!cached_result) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kXeCompatETagKey];
+  }
   if (cached.length > 0) {
-    NSDictionary* cached_result = xe_parse_compat_json(cached);
     if (cached_result) {
       dispatch_async(dispatch_get_main_queue(), ^{
         if (completion) {
@@ -116,6 +157,14 @@ void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
 
   // Online features off: the cached list above is all there is.
   if (!xe_ios_online_features_enabled()) {
+    return;
+  }
+
+  // Checked within the last 6 hours: skip the network.
+  NSTimeInterval last_check =
+      [[NSUserDefaults standardUserDefaults] doubleForKey:kXeCompatCheckTimeKey];
+  NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - last_check;
+  if (cached_result && age >= 0 && age < kXeCompatMinCheckInterval) {
     return;
   }
 
