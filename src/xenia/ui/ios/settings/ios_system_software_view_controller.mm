@@ -179,6 +179,8 @@ enum InstallRow : NSInteger {
                          : destructive ? [XeniaTheme sectionIconRed]
                                        : [XeniaTheme sectionIconBlue];
   cell.textLabel.text = title;
+  // Wrap long titles instead of cutting them off.
+  cell.textLabel.numberOfLines = 0;
   cell.textLabel.textColor = !enabled      ? [XeniaTheme textMuted]
                              : destructive ? [XeniaTheme statusError]
                                            : [XeniaTheme textPrimary];
