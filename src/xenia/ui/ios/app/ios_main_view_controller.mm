@@ -105,7 +105,6 @@
 DECLARE_bool(ios_touch_overlay);
 DECLARE_bool(present_letterbox);
 DECLARE_path(cache_root);
-DECLARE_string(systemlink_transport);
 
 using xe::ui::ApplyIOSCompatibilityDataToDiscoveredGames;
 using xe::ui::BuildDiscoveredGameFromPath;
@@ -5482,34 +5481,48 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     return;
   }
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  NSString* reason =
+      NSLocalizedString(@"This game looks for a network, and some games stop with an error "
+                        @"without one. System Link gives it one.",
+                        @"Alert message: a game looked for a network while System Link is off");
+  void (^turned_on)(void) = ^{
+    [self showStatusToast:NSLocalizedString(@"System Link is on. If the game showed an error, "
+                                            @"try again.",
+                                            @"Toast: System Link was turned on mid-game")
+                    style:XeniaIOSStatusToastStyleSuccess];
+  };
   if (xe_ios_online_features_enabled()) {
-    // Online features are on, so only the systemlink_transport setting has it off.
-    XEPresentOKAlert(
-        presenter,
-        NSLocalizedString(@"System Link Is Off",
-                          @"Alert title: a game looked for a network while System Link is off"),
-        [NSString
-            stringWithFormat:NSLocalizedString(
-                                 @"This game looks for a network, and some games stop with an "
-                                 @"error without one. System Link is set to “%@” in Settings. Set "
-                                 @"it to play over the internet, then restart the game.",
-                                 @"Alert message; %@ is the systemlink_transport setting"),
-                             [NSString stringWithUTF8String:cvars::systemlink_transport.c_str()]]);
+    // Online features are on, so the config file has System Link off. Turn On sets it back to
+    // playing over the internet, as it is by default.
+    UIAlertController* alert = [UIAlertController
+        alertControllerWithTitle:NSLocalizedString(@"Turn On System Link?",
+                                                   @"Alert title: a game looked for a "
+                                                   @"network while System Link is off")
+                         message:reason
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Not Now", @"Alert button: dismiss")
+                                   style:UIAlertActionStyleCancel
+                                 handler:nil]];
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Turn On",
+                                                           @"Alert button: turn on System Link")
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction* action) {
+                                   xe_ios_system_link_use_relay();
+                                   turned_on();
+                                 }]];
+    [presenter presentViewController:alert animated:YES completion:nil];
     return;
   }
   // One tap: the reason and the Online features consent share one alert.
-  xe_ios_confirm_turn_on_system_link(
-      presenter,
-      NSLocalizedString(@"This game looks for a network, and some games stop with an error "
-                        @"without one. System Link gives it one.",
-                        @"Alert message: a game looked for a network while System Link is off"),
-      ^{
-        xe_ios_set_online_features_enabled(YES);
-        [self showStatusToast:NSLocalizedString(@"System Link is on. If the game showed an error, "
-                                                @"try again.",
-                                                @"Toast: System Link was turned on mid-game")
-                        style:XeniaIOSStatusToastStyleSuccess];
-      });
+  xe_ios_confirm_turn_on_system_link(presenter, reason, ^{
+    if (!xe_ios_system_link_uses_relay()) {
+      xe_ios_system_link_use_relay();
+    }
+    xe_ios_set_online_features_enabled(YES);
+    turned_on();
+  });
 }
 
 // Errors and states with a next step are never toasts: a toast vanishes in a few seconds and has
