@@ -616,7 +616,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   NSMutableSet<NSNumber*>* _pendingArtLoads;
   NSMutableSet<NSNumber*>* _pendingIconDecodes;
   BOOL _gamesLoaded;
-  BOOL _prunedArtCache;
   NSInteger _focusedGameIndex;
   BOOL _actionsEnabled;
   BOOL _controllerNavigationEnabled;
@@ -2827,15 +2826,6 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     _focusedGameIndex = 0;
   }
   [self applyActionsEnabledState];
-
-  if (!_prunedArtCache && _games.count > 0) {
-    _prunedArtCache = YES;
-    NSMutableSet<NSNumber*>* keep = [NSMutableSet set];
-    for (XeniaIOSLauncherGameSnapshot* game in _games) {
-      [keep addObject:@(game.titleId)];
-    }
-    xe_prune_game_art_cache(keep);
-  }
 
   if (deletes.count == 0 && inserts.count == 0 && changed.count == 0) {
     // Nothing the grid shows has changed: leave the cells alone.

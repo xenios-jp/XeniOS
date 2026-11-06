@@ -460,6 +460,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   NSArray<NSString*>* launcher_snapshot_signature_;
   CGSize last_collection_layout_size_;
   uint64_t library_refresh_generation_;
+  BOOL pruned_game_art_;
   BOOL compat_fetch_started_;
   BOOL update_check_started_;
   BOOL online_features_notice_presented_;
@@ -2798,6 +2799,16 @@ static bool XeJITUsable() {
       if (refresh_generation == unsafe_self->library_refresh_generation_) {
         unsafe_self->discovered_games_ = std::move(*scanned_games_owner);
         [unsafe_self finishImportedGamesRefresh];
+        // Prune covers against a finished scan only. The saved list shown at launch can be
+        // missing games, and their covers would be deleted.
+        if (!unsafe_self->pruned_game_art_) {
+          unsafe_self->pruned_game_art_ = YES;
+          NSMutableSet<NSNumber*>* keep = [NSMutableSet set];
+          for (const IOSDiscoveredGame& game : unsafe_self->discovered_games_) {
+            [keep addObject:@(game.title_id)];
+          }
+          xe_prune_game_art_cache(keep);
+        }
         if (completion_copy) {
           completion_copy(unsafe_self->discovered_games_);
         }
