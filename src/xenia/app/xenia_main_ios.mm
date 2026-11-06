@@ -1268,7 +1268,7 @@ bool EmulatorAppIOS::OnInitialize() {
     return uint64_t(0);
   });
 
-  ios_context.set_profile_sign_in_callback([this](uint64_t xuid) {
+  ios_context.set_profile_sign_in_callback([this](uint64_t xuid, uint32_t user_index) {
     if (!EnsureProfileServicesReady() || !emulator_ || !emulator_->kernel_state() ||
         !emulator_->kernel_state()->xam_state()) {
       return false;
@@ -1278,12 +1278,21 @@ bool EmulatorAppIOS::OnInitialize() {
       return false;
     }
 
-    for (uint8_t slot = 0; slot < XUserMaxUserCount; ++slot) {
-      if (profile_manager->GetProfile(slot)) {
-        profile_manager->Logout(slot, false);
+    if (user_index == ui::IOSWindowedAppContext::kSignInFromMenu) {
+      for (uint8_t slot = 0; slot < XUserMaxUserCount; ++slot) {
+        if (profile_manager->GetProfile(slot)) {
+          profile_manager->Logout(slot, false);
+        }
       }
+      profile_manager->Login(xuid, 0, true);
+    } else {
+      // Into the asking player's slot, leaving the others signed in.
+      uint32_t slot = user_index;
+      if (slot >= XUserMaxUserCount && emulator_->input_system()) {
+        slot = emulator_->input_system()->GetLastUsedSlot();
+      }
+      profile_manager->Login(xuid, uint8_t(slot < XUserMaxUserCount ? slot : 0), true);
     }
-    profile_manager->Login(xuid, 0, true);
     return profile_manager->GetProfile(xuid) != nullptr;
   });
 
