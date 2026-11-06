@@ -61,8 +61,13 @@ Notes:
 - If no matching tag is available, the marketing version falls back to 2.2.2.
 - Public release stage defaults to stable.
 - Official build numbers default to git rev-list --count HEAD.
-- The crash symbol map for the diagnostics Worker is written to
-  OUT/symbols/<UUID>.map.gz; upload it with the release.
+- The crash symbols for the diagnostics Worker are written to
+  OUT/symbols/symbols-<UUID>.bin (function names, inlined frames and file:line;
+  tools/ios/make_symbol_map.sh, about two minutes). Attach it to the release
+  with the IPA: the Worker pulls what it needs from there. Line tables need the
+  object files the linker used: with ThinLTO configure the build with
+  -DCMAKE_EXE_LINKER_FLAGS=-Wl,-object_path_lto,<dir> (the publish workflow
+  does); XENIOS_SKIP_SYMBOLS=1 skips this step.
 USAGE
 }
 
@@ -865,7 +870,9 @@ if [ "$build_ios" -eq 1 ]; then
     plist_set_string "$(bundle_plist_path "$app_bundle")" "XeniOSDiagnosticsURL" "$diagnostics_url"
   fi
   # The map the diagnostics Worker symbolicates this build's crash frames with.
-  "$root/tools/ios/make_symbol_map.sh" "$app_bundle" "$out_dir/symbols"
+  if [ -z "${XENIOS_SKIP_SYMBOLS:-}" ]; then
+    "$root/tools/ios/make_symbol_map.sh" "$app_bundle" "$out_dir/symbols" "$root"
+  fi
   # Not compile_bundle_icon_assets: in this tree the CMake build already compiled the whole
   # asset catalog (alternate icons, launch color, settings images) into the bundle, and
   # recompiling only the app icon would drop the rest.
