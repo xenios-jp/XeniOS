@@ -68,6 +68,7 @@
 #include "xenia/apu/nop/nop_audio_system.h"
 #include "xenia/apu/phase/phase_audio_system.h"
 #include "xenia/apu/sdl/sdl_audio_system.h"
+#include "xenia/apu/voice/apple/apple_voice_device.h"
 
 // Input drivers.
 #include "xenia/hid/input_system.h"
@@ -2267,6 +2268,7 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 }
 
 std::unique_ptr<apu::AudioSystem> EmulatorAppIOS::CreateAudioSystem(cpu::Processor* processor) {
+  apu::voice::SetVoiceDeviceFactory(apu::voice::CreateAppleVoiceDevice);
   const std::string apu_name = cvars::apu;
   if (apu_name == "phase") {
     XELOGI("Audio backend: PHASE (spatial) selected via --apu/apu cvar");

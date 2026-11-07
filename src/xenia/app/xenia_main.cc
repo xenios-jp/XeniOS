@@ -42,6 +42,7 @@
 #include "xenia/apu/sdl/sdl_audio_system.h"
 #if XE_PLATFORM_MAC
 #include "xenia/apu/phase/phase_audio_system.h"
+#include "xenia/apu/voice/apple/apple_voice_device.h"
 #endif  // XE_PLATFORM_MAC
 #endif  // !XE_PLATFORM_ANDROID
 #if XE_PLATFORM_WIN32
@@ -392,6 +393,7 @@ std::unique_ptr<apu::AudioSystem> EmulatorApp::CreateAudioSystem(
 #endif  // XE_PLATFORM_WIN32
 #if XE_PLATFORM_MAC
   factory.Add<apu::phase::PHASEAudioSystem>("phase");
+  apu::voice::SetVoiceDeviceFactory(apu::voice::CreateAppleVoiceDevice);
 #endif  // XE_PLATFORM_MAC
 #if !XE_PLATFORM_ANDROID
   factory.Add<apu::sdl::SDLAudioSystem>("sdl");
