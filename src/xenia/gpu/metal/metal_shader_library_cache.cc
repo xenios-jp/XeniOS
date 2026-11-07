@@ -29,18 +29,30 @@ namespace metal {
 
 namespace {
 
-constexpr char kMagic[8] = {'X', 'E', 'M', 'T', 'L', 'L', 'B', '1'};
+// 3: records hold the used buffer mask and the shader's texture and sampler
+// bindings.
+constexpr char kMagic[8] = {'X', 'E', 'M', 'T', 'L', 'L', 'B', '3'};
 // Records larger than this are taken for a damaged file.
 constexpr uint32_t kMaxRecordBytes = 64u << 20;
 
+// Followed by the entry point name, the bindings and the metallib.
 struct RecordHeader {
   uint64_t key_low;
   uint64_t key_high;
   uint32_t entry_point_length;
   uint32_t metallib_length;
   uint32_t used_buffer_mask;
+  uint16_t texture_binding_count;
+  uint16_t sampler_binding_count;
 };
 static_assert(sizeof(RecordHeader) == 32);
+
+// Bindings are stored a field per byte: texture fetch constant, dimension,
+// signedness; sampler fetch constant, mag, min, mip and aniso filters.
+constexpr size_t kTextureBindingBytes = 3;
+constexpr size_t kSamplerBindingBytes = 5;
+// A shader has at most 32 fetch constants, each used with a few dimensions.
+constexpr uint32_t kMaxBindings = 256;
 
 // The LC_UUID of the first loaded image whose path contains |name|: every link
 // of it makes a new one.
@@ -161,17 +173,27 @@ void MetalShaderLibraryCache::Open(const std::filesystem::path& path,
       RecordHeader record;
       std::memcpy(&record, data.data() + offset, sizeof(record));
       if (record.entry_point_length > 256 ||
-          record.metallib_length > kMaxRecordBytes) {
+          record.metallib_length > kMaxRecordBytes ||
+          record.texture_binding_count > kMaxBindings ||
+          record.sampler_binding_count > kMaxBindings) {
         break;
       }
       const size_t entry_point_offset = offset + sizeof(record);
-      const size_t metallib_offset =
+      const size_t bindings_offset =
           entry_point_offset + record.entry_point_length;
+      const size_t metallib_offset =
+          bindings_offset +
+          kTextureBindingBytes * record.texture_binding_count +
+          kSamplerBindingBytes * record.sampler_binding_count;
       const size_t end = metallib_offset + record.metallib_length;
       if (end > data.size()) {
         break;
       }
       locations_[Key{record.key_low, record.key_high}] = Location{
+          entry_point_offset,           record.entry_point_length,
+          bindings_offset,              record.texture_binding_count,
+          record.sampler_binding_count, metallib_offset,
+          record.metallib_length,       record.used_buffer_mask};
       offset = end;
       valid_end = end;
     }
@@ -239,6 +261,26 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
   entry_out.entry_point_name.assign(
       reinterpret_cast<const char*>(data_.data() + location.entry_point_offset),
       location.entry_point_length);
+  const uint8_t* bindings = data_.data() + location.bindings_offset;
+  entry_out.texture_bindings.resize(location.texture_binding_count);
+  for (SpirvShader::TextureBinding& binding : entry_out.texture_bindings) {
+    // For a stable hash, as the translator writes them.
+    std::memset(&binding, 0, sizeof(binding));
+    binding.fetch_constant = bindings[0];
+    binding.dimension = xenos::FetchOpDimension(bindings[1]);
+    binding.is_signed = bindings[2];
+    bindings += kTextureBindingBytes;
+  }
+  entry_out.sampler_bindings.resize(location.sampler_binding_count);
+  for (SpirvShader::SamplerBinding& binding : entry_out.sampler_bindings) {
+    std::memset(&binding, 0, sizeof(binding));
+    binding.fetch_constant = bindings[0];
+    binding.mag_filter = xenos::TextureFilter(bindings[1]);
+    binding.min_filter = xenos::TextureFilter(bindings[2]);
+    binding.mip_filter = xenos::TextureFilter(bindings[3]);
+    binding.aniso_filter = xenos::AnisoFilter(bindings[4]);
+    bindings += kSamplerBindingBytes;
+  }
   entry_out.metallib.assign(
       data_.data() + location.metallib_offset,
       data_.data() + location.metallib_offset + location.metallib_length);
@@ -250,8 +292,16 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
 void MetalShaderLibraryCache::Store(const Key& key,
                                     const std::vector<uint8_t>& metallib,
                                     const std::string& entry_point_name,
+                                    uint32_t used_buffer_mask,
+                                    const SpirvShader& shader) {
+  const std::vector<SpirvShader::TextureBinding>& texture_bindings =
+      shader.GetTextureBindingsAfterTranslation();
+  const std::vector<SpirvShader::SamplerBinding>& sampler_bindings =
+      shader.GetSamplerBindingsAfterTranslation();
   if (metallib.empty() || metallib.size() > kMaxRecordBytes ||
-      entry_point_name.size() > 256) {
+      entry_point_name.size() > 256 || !shader.bindings_ready() ||
+      texture_bindings.size() > kMaxBindings ||
+      sampler_bindings.size() > kMaxBindings) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -263,14 +313,30 @@ void MetalShaderLibraryCache::Store(const Key& key,
                       uint32_t(entry_point_name.size()),
                       uint32_t(metallib.size()),
                       used_buffer_mask,
+                      uint16_t(texture_bindings.size()),
+                      uint16_t(sampler_bindings.size())};
   // One write per record, so a stop between records leaves whole ones.
-  std::vector<uint8_t> bytes(sizeof(record) + entry_point_name.size() +
-                             metallib.size());
-  std::memcpy(bytes.data(), &record, sizeof(record));
-  std::memcpy(bytes.data() + sizeof(record), entry_point_name.data(),
-              entry_point_name.size());
-  std::memcpy(bytes.data() + sizeof(record) + entry_point_name.size(),
-              metallib.data(), metallib.size());
+  std::vector<uint8_t> bytes;
+  bytes.reserve(sizeof(record) + entry_point_name.size() +
+                kTextureBindingBytes * texture_bindings.size() +
+                kSamplerBindingBytes * sampler_bindings.size() +
+                metallib.size());
+  bytes.insert(bytes.end(), reinterpret_cast<const uint8_t*>(&record),
+               reinterpret_cast<const uint8_t*>(&record) + sizeof(record));
+  bytes.insert(bytes.end(), entry_point_name.begin(), entry_point_name.end());
+  for (const SpirvShader::TextureBinding& binding : texture_bindings) {
+    bytes.push_back(uint8_t(binding.fetch_constant));
+    bytes.push_back(uint8_t(binding.dimension));
+    bytes.push_back(uint8_t(binding.is_signed));
+  }
+  for (const SpirvShader::SamplerBinding& binding : sampler_bindings) {
+    bytes.push_back(uint8_t(binding.fetch_constant));
+    bytes.push_back(uint8_t(binding.mag_filter));
+    bytes.push_back(uint8_t(binding.min_filter));
+    bytes.push_back(uint8_t(binding.mip_filter));
+    bytes.push_back(uint8_t(binding.aniso_filter));
+  }
+  bytes.insert(bytes.end(), metallib.begin(), metallib.end());
   std::fwrite(bytes.data(), 1, bytes.size(), file_);
   std::fflush(file_);
 }

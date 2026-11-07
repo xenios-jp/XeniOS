@@ -72,6 +72,14 @@ class SpirvShader : public Shader {
     return bindings_ready_.load(std::memory_order_acquire);
   }
 
+  // Sets the resource bindings above unless a translation (or another call)
+  // already did: the first caller writes them, a later one waits until they
+  // are ready. They are the same for every modification, so a backend that
+  // loads a stored translation instead of translating publishes the stored
+  // ones.
+  void PublishBindings(const std::vector<TextureBinding>& texture_bindings,
+                       const std::vector<SamplerBinding>& sampler_bindings);
+
  protected:
   Translation* CreateTranslationInstance(uint64_t modification) override;
 

@@ -1081,6 +1081,12 @@ MetalCommandProcessor::EnsureTranslationSpirv(
     // Another thread is translating it.
     return ShaderCompileStatus::kPending;
   }
+  return TranslateClaimedSpirv(translation, translator);
+}
+
+MetalCommandProcessor::ShaderCompileStatus
+MetalCommandProcessor::TranslateClaimedSpirv(
+    Shader::Translation* translation, SpirvShaderTranslator& translator) {
   const int64_t translate_start_ns = GetSteadyTimeNs();
   const bool translated = translator.TranslateAnalyzedShader(*translation);
   AddCompileStageTime(kCompileStageTranslate, translate_start_ns);
@@ -1117,22 +1123,38 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
   // Shader dumps and bisection want the translation itself.
   const bool cacheable = UseDxilPath() && cvars::dump_shaders.empty() &&
                          shader_library_cache_.is_open();
-  // Translated even when the library is on disk: translating sets the
-  // shader's texture and sampler bindings that draws bind from.
-  ShaderCompileStatus status = EnsureTranslationSpirv(translation, translator);
-  if (status != ShaderCompileStatus::kReady) {
-    return status;
-  }
+  auto& spirv_shader = static_cast<SpirvShader&>(translation->shader());
   MetalShaderLibraryCache::Key key;
-  if (cacheable) {
+  ShaderCompileStatus status;
+  if (cacheable && !translation->is_translated()) {
+    // A stored library and the shader's stored bindings stand in for the
+    // translation, so a hit doesn't translate. The claim keeps one thread on
+    // this translation, as EnsureTranslationSpirv's does.
+    if (!translation->TryClaimTranslation()) {
+      return ShaderCompileStatus::kPending;
+    }
     key = MetalShaderLibraryCache::MakeKey(*translation);
     MetalShaderLibraryCache::Entry entry;
-    if (shader_library_cache_.Find(key, entry) &&
-        static_cast<DxilShader::DxilTranslation*>(translation)
-            ->LoadMetallib(device_, entry.metallib, entry.entry_point_name)) {
-      return ShaderCompileStatus::kReady;
     const int64_t cached_start_ns = GetSteadyTimeNs();
+    if (shader_library_cache_.Find(key, entry)) {
+      spirv_shader.PublishBindings(entry.texture_bindings,
+                                   entry.sampler_bindings);
+      if (static_cast<DxilShader::DxilTranslation*>(translation)
+              ->LoadMetallib(device_, entry.metallib, entry.entry_point_name,
+                             entry.used_buffer_mask)) {
+        AddCompileStageTime(kCompileStageLibraryCached, cached_start_ns);
+        return ShaderCompileStatus::kReady;
+      }
     }
+    status = TranslateClaimedSpirv(translation, translator);
+  } else {
+    if (cacheable) {
+      key = MetalShaderLibraryCache::MakeKey(*translation);
+    }
+    status = EnsureTranslationSpirv(translation, translator);
+  }
+  if (status != ShaderCompileStatus::kReady) {
+    return status;
   }
   std::vector<uint8_t> metallib;
   const int64_t air_start_ns = GetSteadyTimeNs();
@@ -1147,6 +1169,8 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
         static_cast<DxilShader::DxilTranslation*>(translation);
     shader_library_cache_.Store(key, metallib,
                                 dxil_translation->entry_point_name(),
+                                dxil_translation->used_buffer_mask(),
+                                spirv_shader);
   }
   return ShaderCompileStatus::kReady;
 }
