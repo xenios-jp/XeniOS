@@ -288,10 +288,35 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
 
 @implementation XESheetTableViewController
 
+@synthesize glassStyle;
+
 - (void)viewDidLoad {
   [super viewDidLoad];
   // Dragging the list puts the keyboard away, as in Settings.
   self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+  if (self.glassStyle) {
+    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.tableView.backgroundColor = [UIColor clearColor];
+    self.tableView.separatorColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+  }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  if (self.glassStyle) {
+    self.navigationController.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    // One neutral charcoal, as in the Online sheet, under every glass page, so a sheet never turns light or flat grey.
+    self.navigationController.view.backgroundColor =
+        [UIColor colorWithWhite:0.12 alpha:1.0];
+  }
+}
+
+- (void)tableView:(UITableView* __unused)tableView
+  willDisplayCell:(UITableViewCell*)cell
+forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
+  if (self.glassStyle) {
+    cell.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.09];
+  }
 }
 
 // Group titles as drawn: 13 pt semibold in the secondary colour, in sentence case.

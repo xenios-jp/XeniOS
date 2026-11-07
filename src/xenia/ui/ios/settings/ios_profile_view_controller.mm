@@ -11,6 +11,8 @@
 
 #include <vector>
 
+#import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
+#import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -27,6 +29,7 @@
 
 - (instancetype)initWithCreate:(void (^)(NSString* gamertag))create {
   if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+    self.glassStyle = YES;
     create_ = [create copy];
     self.title = NSLocalizedString(@"New Profile", @"new profile sheet: title");
   }
@@ -41,7 +44,7 @@
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+  self.tableView.backgroundColor = [UIColor clearColor];
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
@@ -155,6 +158,7 @@
                           onStatus:(IOSProfileStatusHandler)on_status {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
+    self.glassStyle = YES;
     app_context_ = app_context;
     on_status_ = [on_status copy];
     shows_dismiss_button_ = YES;
@@ -165,7 +169,7 @@
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+  self.tableView.backgroundColor = [UIColor clearColor];
   if (shows_dismiss_button_) {
     self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemClose
@@ -254,15 +258,33 @@
   self.contentUnavailableConfiguration = config;
 }
 
+// The signed-in profile's name, or nil.
+- (NSString*)activeGamertag {
+  for (const auto& profile : profiles_) {
+    if (profile.signed_in) {
+      return ToNSString(profile.gamertag);
+    }
+  }
+  return nil;
+}
+
+// A second section with Online Account, for the signed-in profile.
+- (BOOL)showsAccountSection {
+  return xe_ios_live_account_ui_enabled() && ![self showsEmptyState] && [self activeGamertag] != nil;
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 1;
+  return [self showsAccountSection] ? 2 : 1;
 }
 
 // The profiles, then a last row that adds one.
 - (NSInteger)tableView:(UITableView* __unused)tableView
-    numberOfRowsInSection:(NSInteger __unused)section {
+    numberOfRowsInSection:(NSInteger)section {
   if ([self showsEmptyState]) {
     return 0;
+  }
+  if (section == 1) {
+    return 1;
   }
   return static_cast<NSInteger>(profiles_.size()) + 1;
 }
@@ -272,8 +294,8 @@
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
-    titleForFooterInSection:(NSInteger __unused)section {
-  if ([self showsEmptyState]) {
+    titleForFooterInSection:(NSInteger)section {
+  if ([self showsEmptyState] || section == 1) {
     return nil;
   }
   if (profiles_.empty() && app_context_ && !app_context_->ProfileServicesReady()) {
@@ -286,6 +308,24 @@
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section == 1) {
+    UITableViewCell* account = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                                       reuseIdentifier:nil] autorelease];
+    XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
+    account.textLabel.text = NSLocalizedString(@"Online Account", @"profile view controller: row");
+    account.textLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
+    account.textLabel.textColor = [XeniaTheme textPrimary];
+    account.detailTextLabel.text =
+        summary.online ? summary.gamertag
+                       : NSLocalizedString(@"Play online with friends", @"profile view controller: row detail");
+    account.detailTextLabel.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
+    account.detailTextLabel.textColor = [XeniaTheme textSecondary];
+    account.imageView.image = XESettingsBadgeImage(@"globe", [UIColor systemBlueColor]);
+    account.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    XEApplyAccessibility(account, account.textLabel.text, account.detailTextLabel.text, nil,
+                         UIAccessibilityTraitButton);
+    return account;
+  }
   static NSString* const kCellIdentifier = @"XeniaProfileCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellIdentifier];
   if (!cell) {
@@ -393,6 +433,16 @@
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   if (!app_context_) {
+    return;
+  }
+
+  if (indexPath.section == 1) {
+    NSString* gamertag = [self activeGamertag];
+    if (gamertag) {
+      [self.navigationController
+          pushViewController:xe_ios_new_account_view_controller(gamertag)
+                    animated:YES];
+    }
     return;
   }
 

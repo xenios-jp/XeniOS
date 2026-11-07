@@ -73,6 +73,9 @@
 /* Profile picker row; %@ is the gamertag */
 "%@ (Signed In)" = "%@ (Signed In)";
 
+/* Devices screen: row; %@ is the device name */
+"%@ (this device)" = "%@ (this device)";
+
 /* zar conversion coordinator: detail text */
 "%@ - estimated savings unavailable" = "%@ - estimated savings unavailable";
 
@@ -88,11 +91,17 @@
 /* zar conversion coordinator: user-visible text */
 "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed." = "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed.";
 
+/* Gamertag field: message; %@ is the name */
+"%@ is taken" = "%@ is taken";
+
 /* acknowledgements view controller: accessibility label */
 "%@ license" = "%@ license";
 
 /* game page: Convert to ZAR; %@ is the game's size */
 "%@ now. Estimating its size as a ZAR archive…" = "%@ now. Estimating its size as a ZAR archive…";
+
+/* Gamertag sheet: after a lost race; %@ is the name */
+"%@ was just taken. Pick another." = "%@ was just taken. Pick another.";
 
 /* Online panel: party size, then who leads
    Party summary; first %@ is the player count, second the leader */
@@ -285,6 +294,9 @@
 /* Fallback version text in the update notice */
 "a new version" = "a new version";
 
+/* Share saves: footer under Copy */
+"A one-time copy. If both profiles have a save, the newer one is kept." = "A one-time copy. If both profiles have a save, the newer one is kept.";
+
 /* Friends footer under Create Party */
 "A party keeps up to 8 friends together from game to game." = "A party keeps up to 8 friends together from game to game.";
 
@@ -330,7 +342,8 @@
 /* Friends footer under game and party invites */
 "Accepting a game invite starts the game and joins your friend. Invites expire after 10 minutes." = "Accepting a game invite starts the game and joins your friend. Invites expire after 10 minutes.";
 
-/* In-game menu button
+/* Export sheet: row
+   In-game menu button
    Pause menu row
    Title of the achievements screen
    Title of the grouped achievement toast */
@@ -345,6 +358,9 @@
 
 /* Layout library row detail: the layout in use */
 "Active" = "Active";
+
+/* Devices screen: row detail */
+"Active now" = "Active now";
 
 /* Online panel: add a friend by code */
 "Add" = "Add";
@@ -448,6 +464,9 @@
 /* settings hub view controller: title */
 "All your touch layouts." = "All your touch layouts.";
 
+/* Scanner: camera denied */
+"Allow camera access for XeniOS in Settings to scan the code." = "Allow camera access for XeniOS in Settings to scan the code.";
+
 /* zar conversion coordinator: user-visible text */
 "Already ZAR" = "Already ZAR";
 
@@ -462,6 +481,9 @@
 
 /* Touch control type */
 "Analog Stick" = "Analog Stick";
+
+/* Gamertag sheet: text above the field; %@ is the player's current gamertag */
+"Another player had “%@” first, and gamertags are unique now. You keep it until you pick a new one, with no wait." = "Another player had “%@” first, and gamertags are unique now. You keep it until you pick a new one, with no wait.";
 
 /* System Link toast: title versions differ */
 "Another player in the room runs a different version of this game. Games usually only see players on the same version." = "Another player in the room runs a different version of this game. Games usually only see players on the same version.";
@@ -497,6 +519,28 @@
 /* Subtitle of the touch layout library */
 "Apply a layout or manage saved copies" = "Apply a layout or manage saved copies";
 
+/* Approval sheet title
+   Existing account row */
+"Approve on Another Device" = "Approve on Another Device";
+
+/* Face ID prompt reason */
+"Approve signing in to your XeniOS account on another device." = "Approve signing in to your XeniOS account on another device.";
+
+/* Approval: button */
+"Approve with Face ID" = "Approve with Face ID";
+
+/* Approval: button */
+"Approve with Optic ID" = "Approve with Optic ID";
+
+/* Approval: button */
+"Approve with Passcode" = "Approve with Passcode";
+
+/* Approval: button */
+"Approve with Touch ID" = "Approve with Touch ID";
+
+/* Incoming approval: while waiting */
+"Approving…" = "Approving…";
+
 /* zar conversion coordinator: user-visible text */
 "Archive is %1$@ larger (%2$@ → %3$@)." = "Archive is %1$@ larger (%2$@ → %3$@).";
 
@@ -526,6 +570,9 @@
 
 /* settings hub view controller: title */
 "Automation" = "Automation";
+
+/* Gamertag field: message */
+"Available" = "Available";
 
 /* zar conversion coordinator: detail text */
 "Available once the estimate finishes." = "Available once the estimate finishes.";
@@ -570,6 +617,12 @@
 
 /* NAT type: the network lets no System Link traffic out */
 "Blocked" = "Blocked";
+
+/* Link code sheet: note under the code */
+"Both devices will share your gamertag, friends and blocks. Saves stay on each device." = "Both devices will share your gamertag, friends and blocks. Saves stay on each device.";
+
+/* Existing account sheet: text above the list */
+"Bring your gamertag, friends and blocks to this device. Saves stay on each device." = "Bring your gamertag, friends and blocks to this device. Saves stay on each device.";
 
 /* compat report cells: label text */
 "Build" = "Build";
@@ -631,10 +684,13 @@
 /* Public Games: empty state */
 "Can't reach XeniOS online" = "Can't reach XeniOS online";
 
-/* Action sheet button: cancel
+/* Account screen: alert button
+   Action sheet button: cancel
    Alert button
    Alert button: cancel
+   Approval sheet: row
    config view controller: title
+   Devices screen: alert button
    document import coordinator: title
    external folders view controller: title
    file transfer: title
@@ -642,6 +698,8 @@
    game content view controller: title
    Launch screen button: stop a slow launch
    Online panel: leave search
+   Profile file: alert button
+   Share saves: alert button
    system link view controller: button
    zar conversion coordinator: title */
 "Cancel" = "Cancel";
@@ -660,6 +718,40 @@
 
 /* zar conversion coordinator: label text */
 "Cancelling after the current file" = "Cancelling after the current file";
+
+/* Gamertag field: message */
+"Can’t check right now. You can still claim it; the name is checked then." = "Can’t check right now. You can still claim it; the name is checked then.";
+
+/* Gamertag field: message under the field */
+"Can’t end with a space" = "Can’t end with a space";
+
+/* Profile file: alert title */
+"Can’t Import Yet" = "Can’t Import Yet";
+
+/* Devices screen: footer */
+"Can’t load devices right now." = "Can’t load devices right now.";
+
+/* QR sheet: error */
+"Can’t reach XeniOS" = "Can’t reach XeniOS";
+
+/* Gamertag sheet: message */
+"Can’t reach XeniOS. Check your connection and try again." = "Can’t reach XeniOS. Check your connection and try again.";
+
+/* Account: code entry error
+   Scanner: error */
+"Can’t reach XeniOS. Check your connection." = "Can’t reach XeniOS. Check your connection.";
+
+/* Link code sheet: error */
+"Can’t reach XeniOS. Try again." = "Can’t reach XeniOS. Try again.";
+
+/* Gamertag field: message under the field */
+"Can’t start with a number" = "Can’t start with a number";
+
+/* Account screen: row detail; %@ is a date */
+"Change again after %@" = "Change again after %@";
+
+/* Gamertag sheet title */
+"Change Gamertag" = "Change Gamertag";
 
 /* config view controller: title */
 "Changes apply immediately and are saved for this game" = "Changes apply immediately and are saved for this game";
@@ -685,7 +777,8 @@
 /* config view controller: message */
 "Check xenia.log for details." = "Check xenia.log for details.";
 
-/* Public Games: empty state hint */
+/* Account screen: alert message
+   Public Games: empty state hint */
 "Check your connection and try again." = "Check your connection and try again.";
 
 /* settings hub view controller: label text */
@@ -694,7 +787,11 @@
 /* game content view controller: message */
 "Checking the package..." = "Checking the package...";
 
-/* online view controller: summary title while the lobby hasn't answered yet
+/* Gamertag field: message */
+"Checking too fast. One moment…" = "Checking too fast. One moment…";
+
+/* Gamertag field: message
+   online view controller: summary title while the lobby hasn't answered yet
    system software view controller: status */
 "Checking…" = "Checking…";
 
@@ -718,6 +815,9 @@
 
 /* JIT sheet: step 2 */
 "Choose XeniOS and tap Enable JIT." = "Choose XeniOS and tap Enable JIT.";
+
+/* Gamertag sheet title */
+"Choose Your Gamertag" = "Choose Your Gamertag";
 
 /* Name of a touch control shape */
 "Circle" = "Circle";
@@ -749,7 +849,6 @@
 /* Gamer card button
    Message box button
    Online sheet: close button
-   Public Games: close button
    sheet close button */
 "Close" = "Close";
 
@@ -920,8 +1019,12 @@
 /* Shader compile indicator title while the device is too hot to keep building at full speed */
 "Cooling down" = "Cooling down";
 
-/* Online panel: after copying */
+/* Online panel: after copying
+   Recovery code sheet: row after copying */
 "Copied" = "Copied";
+
+/* Share saves: result; counts and a gamertag */
+"Copied %lu saves to %@. %lu newer saves there were kept." = "Copied %lu saves to %@. %lu newer saves there were kept.";
 
 /* Toast; %@ is the game title */
 "Copied launch URL for %@." = "Copied launch URL for %@.";
@@ -933,11 +1036,15 @@
 "Copies the game into XeniOS." = "Copies the game into XeniOS.";
 
 /* log view controller: title
-   Online panel: copy your friend code */
+   Online panel: copy your friend code
+   Recovery code sheet: row */
 "Copy" = "Copy";
 
 /* settings hub view controller: title */
 "Copy a game or add-on from Files." = "Copy a game or add-on from Files.";
+
+/* Share saves: row; %@ is a gamertag */
+"Copy All Saves to %@…" = "Copy All Saves to %@…";
 
 /* Add Friend row */
 "Copy Code" = "Copy Code";
@@ -945,6 +1052,9 @@
 /* game page: more menu
    launcher overlay view: title */
 "Copy Launch URL" = "Copy Launch URL";
+
+/* Export sheet: footer */
+"Copy saves to another profile here, or keep them shared." = "Copy saves to another profile here, or keep them shared.";
 
 /* Error shown when saving a touch layout; %s is the system error */
 "Could not close layout file: %s" = "Could not close layout file: %s";
@@ -1003,14 +1113,36 @@
 /* Friends toast */
 "Couldn't turn on online play for this profile." = "Couldn't turn on online play for this profile.";
 
+/* Share saves: alert title */
+"Couldn’t Change Sharing" = "Couldn’t Change Sharing";
+
+/* Share saves: alert title */
+"Couldn’t Copy" = "Couldn’t Copy";
+
+/* Account screen: alert title */
+"Couldn’t Create a Code" = "Couldn’t Create a Code";
+
+/* Export sheet: alert title */
+"Couldn’t Export" = "Couldn’t Export";
+
+/* Import: alert title */
+"Couldn’t Import" = "Couldn’t Import";
+
+/* Devices screen: alert title */
+"Couldn’t Remove" = "Couldn’t Remove";
+
 /* Alert title: one-time notice that diagnostics are now sent, for installs that saw the older notice */
 "Crash Reports and Performance" = "Crash Reports and Performance";
 
-/* Alert button: create the profile */
+/* Account screen: alert button
+   Alert button: create the profile */
 "Create" = "Create";
 
 /* zar conversion coordinator: title */
 "Create .zar archives in XeniOS, then decide how to handle the originals." = "Create .zar archives in XeniOS, then decide how to handle the originals.";
+
+/* Account screen: alert title */
+"Create a New Recovery Code?" = "Create a New Recovery Code?";
 
 /* Party action */
 "Create Party" = "Create Party";
@@ -1196,6 +1328,9 @@
 /* config view controller: user-visible text */
 "Deletes saved game-specific overrides." = "Deletes saved game-specific overrides.";
 
+/* Incoming approval: button */
+"Deny" = "Deny";
+
 /* compat report view controller: placeholder */
 "Describe your experience (e.g. crashes, graphical glitches, audio issues, performance drops)..." = "Describe your experience (e.g. crashes, graphical glitches, audio issues, performance drops)...";
 
@@ -1214,6 +1349,10 @@
 
 /* In-game menu notice while thermally limited */
 "Device is warm. The game may run slower." = "Device is warm. The game may run slower.";
+
+/* Account screen: row
+   Devices screen title */
+"Devices" = "Devices";
 
 /* Pause menu row
    settings hub view controller: title */
@@ -1348,6 +1487,9 @@
 /* game patches view controller: accessibility value */
 "Enabled" = "Enabled";
 
+/* QR sheet: row */
+"Enter a code instead" = "Enter a code instead";
+
 /* Alert message: gamertag rules */
 "Enter a gamertag (1-15 characters)." = "Enter a gamertag (1-15 characters).";
 
@@ -1357,8 +1499,23 @@
 /* Prompt text: rename a layout */
 "Enter a new name for the saved local layout." = "Enter a new name for the saved local layout.";
 
+/* Existing account row */
+"Enter Link Code" = "Enter Link Code";
+
+/* Existing account row */
+"Enter Recovery Code" = "Enter Recovery Code";
+
 /* system link view controller: alert message */
 "Enter the 6-character code you were sent." = "Enter the 6-character code you were sent.";
+
+/* Code sheet: text above the field */
+"Enter the code from your other device. Open Link Another Device there." = "Enter the code from your other device. Open Link Another Device there.";
+
+/* Code sheet: text above the field */
+"Enter the recovery code you saved. Your gamertag, friends and blocks come back to this device." = "Enter the recovery code you saved. Your gamertag, friends and blocks come back to this device.";
+
+/* Approval sheet: text above the field */
+"Enter your gamertag. We’ll ask your other devices to approve this one." = "Enter your gamertag. We’ll ask your other devices to approve this one.";
 
 /* compat report view controller: user-visible text */
 "Environment" = "Environment";
@@ -1388,12 +1545,22 @@
 /* settings hub view controller: title */
 "Every option, for troubleshooting." = "Every option, for troubleshooting.";
 
+/* Share saves: footer */
+"Every profile on this device uses one set of saves. They’re merged, keeping the newest, and the originals are backed up first." = "Every profile on this device uses one set of saves. They’re merged, keeping the newest, and the originals are backed up first.";
+
+/* Share saves: footer */
+"Every profile on this device uses one set of saves. Turn it off to give each its own copy again." = "Every profile on this device uses one set of saves. Turn it off to give each its own copy again.";
+
 /* config view controller: message */
 "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards." = "Every XeniOS setting goes back to its default, including the display scaling mode. Games, saves, profiles and their sign-ins, touch layouts, per-game overrides, the shader compile indicator, Online Features and Share Diagnostics are kept. Relaunch XeniOS afterwards.";
 
 /* game page: under System Link
    system link view controller: room row detail */
 "Everyone playing this game." = "Everyone playing this game.";
+
+/* Code sheet title
+   Existing account sheet title */
+"Existing Account" = "Existing Account";
 
 /* Keyboard shortcut name shown in the shortcut overlay */
 "Exit edit mode" = "Exit edit mode";
@@ -1408,12 +1575,21 @@
    VoiceOver */
 "Expanded" = "Expanded";
 
+/* Link code sheet: countdown, then a note; minutes, seconds, note */
+"Expires in %1$ld:%2$02ld.\n%3$@" = "Expires in %1$ld:%2$02ld.\n%3$@";
+
+/* Incoming approval: countdown; %@ is m:ss */
+"Expires in %@" = "Expires in %@";
+
 /* Context menu item in the layout library
    Swipe action in the layout library */
 "Export" = "Export";
 
 /* settings hub view controller: title */
 "Export Running Layout" = "Export Running Layout";
+
+/* Export sheet: row */
+"Export via AirDrop or Files…" = "Export via AirDrop or Files…";
 
 /* Game source label: file is external */
 "External" = "External";
@@ -1626,6 +1802,12 @@
 /* Friends status: System Link isn't on the relay */
 "Friends need System Link over the internet. Turn it on in Settings." = "Friends need System Link over the internet. Turn it on in Settings.";
 
+/* Gamertag sheet: text above the field */
+"Friends see the new name at once. You can change it once every 30 days." = "Friends see the new name at once. You can change it once every 30 days.";
+
+/* Account screen: footer under Go Online */
+"Friends, parties and public games. Your saves and achievements stay. Offline play works the same, with no account." = "Friends, parties and public games. Your saves and achievements stay. Offline play works the same, with no account.";
+
 /* compat report view controller: user-visible text
    game disc view controller: title
    Section header in the pause menu
@@ -1656,6 +1838,9 @@
 /* Alert title: no game running */
 "Game Required" = "Game Required";
 
+/* Export sheet: row */
+"Game Saves" = "Game Saves";
+
 /* game page: button
    launcher overlay view: title */
 "Game Settings" = "Game Settings";
@@ -1674,7 +1859,8 @@
 /* config view controller: title */
 "Game-Specific Settings" = "Game-Specific Settings";
 
-/* Placeholder of the gamertag text field
+/* Gamertag sheet: field placeholder
+   Placeholder of the gamertag text field
    profile view controller: placeholder */
 "Gamertag" = "Gamertag";
 
@@ -1726,6 +1912,9 @@
 /* settings hub view controller: title */
 "Games · Play games from Files, USB drives or network shares without copying them." = "Games · Play games from Files, USB drives or network shares without copying them.";
 
+/* Link code sheet: row */
+"Get a New Code" = "Get a New Code";
+
 /* dashboard setup: button
    system software view controller: action */
 "Get the Update from Microsoft" = "Get the Update from Microsoft";
@@ -1733,8 +1922,14 @@
 /* system software view controller: footer */
 "Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to." = "Get the USB system update on Microsoft's page, here in XeniOS, and it installs once it has downloaded. Or install one you have in Files: the zip, or the folder Files expands it to.";
 
+/* Link code sheet: while waiting */
+"Getting a code…" = "Getting a code…";
+
 /* settings hub view controller: title */
 "Go back to the standard layout." = "Go back to the standard layout.";
+
+/* Account screen: row */
+"Go Online…" = "Go Online…";
 
 /* game compatibility cells: detail text */
 "GPU" = "GPU";
@@ -1794,11 +1989,15 @@
 /* Slider label in the touch analog tuning screen */
 "Horizontal Sensitivity" = "Horizontal Sensitivity";
 
+/* Recovery code sheet: switch */
+"I saved it somewhere safe" = "I saved it somewhere safe";
+
 /* Subtitle of the Stretch screen mode */
 "Ignore aspect ratio" = "Ignore aspect ratio";
 
 /* document import coordinator: title
-   Layout library button that imports a layout file */
+   Layout library button that imports a layout file
+   Profile file: alert button */
 "Import" = "Import";
 
 /* Alert message: no games for the touch layout picker */
@@ -1820,6 +2019,9 @@
 /* document import coordinator: message */
 "Import failed." = "Import failed.";
 
+/* Export sheet: row */
+"Import from File…" = "Import from File…";
+
 /* settings hub view controller: title */
 "Import Game" = "Import Game";
 
@@ -1840,6 +2042,12 @@
 
 /* settings hub view controller: title */
 "Import Layout" = "Import Layout";
+
+/* Account screen: row */
+"Import Profile" = "Import Profile";
+
+/* Profile file: alert title; %@ is the file name */
+"Import “%@”?" = "Import “%@”?";
 
 /* document import coordinator: label text
    Toast; %@ is the layout name */
@@ -1989,6 +2197,9 @@
 /* settings appearance: footer under Background Motion */
 "It stays still when Reduce Motion or Low Power Mode is on." = "It stays still when Reduce Motion or Low Power Mode is on.";
 
+/* Devices screen: alert message */
+"It will be signed out and can’t come back without a new code." = "It will be signed out and can’t come back without a new code.";
+
 /* zar conversion coordinator: user-visible text */
 "Item" = "Item";
 
@@ -1997,6 +2208,9 @@
 
 /* zar conversion coordinator: user-visible text */
 "Items" = "Items";
+
+/* Profile file: alert message */
+"Its saves, achievements and settings are added to this device." = "Its saves, achievements and settings are added to this device.";
 
 /* Launcher status: JIT is enabled */
 "JIT Enabled" = "JIT Enabled";
@@ -2067,6 +2281,9 @@
 /* zar conversion coordinator: title */
 "Keep Original" = "Keep Original";
 
+/* Share saves: header */
+"Keep shared" = "Keep shared";
+
 /* Alert button: keep waiting for the game to stop */
 "Keep Waiting" = "Keep Waiting";
 
@@ -2089,6 +2306,9 @@
    Row title in the touch control edit panel
    Submenu title in the touch control edit panel */
 "Label" = "Label";
+
+/* Devices screen: row detail; %@ is a time */
+"Last seen %@" = "Last seen %@";
 
 /* Alert button: dismisses the update notice */
 "Later" = "Later";
@@ -2171,8 +2391,10 @@
    Display settings toggle */
 "Letterbox" = "Letterbox";
 
+/* Gamertag field: message under the field */
+"Letters, digits and single spaces only" = "Letters, digits and single spaces only";
+
 /* launcher overlay view: label text
-   Public Games: back button
    settings hub view controller: section */
 "Library" = "Library";
 
@@ -2197,6 +2419,13 @@
 
 /* compat report view controller: title */
 "Limit Reached" = "Limit Reached";
+
+/* Account screen: row
+   Link code sheet title */
+"Link Another Device" = "Link Another Device";
+
+/* QR sheet title */
+"Link Device" = "Link Device";
 
 /* document import coordinator: title
    external folders view controller: user-visible text
@@ -2283,6 +2512,9 @@
    Touch control type */
 "Look Zone" = "Look Zone";
 
+/* Code sheet: note under the field */
+"Lost the code too? Nothing can recover the account." = "Lost the code too? Nothing can recover the account.";
+
 /* Shader preparation sheet in Low Power Mode */
 "Low Power Mode makes this slower." = "Low Power Mode makes this slower.";
 
@@ -2367,8 +2599,15 @@
 /* Menu item that assigns a hold-and-drag output */
 "Move" = "Move";
 
+/* Account screen: row
+   Export sheet title */
+"Move Profile" = "Move Profile";
+
 /* Menu item in the Add Control menu */
 "Move Stick" = "Move Stick";
+
+/* Gamertag field: message under the field */
+"Must start with a letter" = "Must start with a letter";
 
 /* Very short badge on a touch control: Move */
 "Mv" = "Mv";
@@ -2388,6 +2627,9 @@
 
 /* new profile sheet: title */
 "New Profile" = "New Profile";
+
+/* Account screen: row */
+"New Recovery Code" = "New Recovery Code";
 
 /* Alert message; %s is the log file name */
 "No %s file exists yet." = "No %s file exists yet.";
@@ -2425,6 +2667,9 @@
 
 /* Alert title: no games for the touch layout picker */
 "No Games Available" = "No Games Available";
+
+/* Share saves: empty */
+"No games have saves yet." = "No games have saves yet.";
 
 /* zar conversion coordinator: user-visible text */
 "No Games to Convert" = "No Games to Convert";
@@ -2601,7 +2846,8 @@
    Online panel: a friend who is offline */
 "Offline" = "Offline";
 
-/* Alert button: confirm
+/* Account: alert button
+   Alert button: confirm
    Alert button: dismiss
    compat formatting: user-visible text
    compat report view controller: title
@@ -2611,6 +2857,15 @@
 /* config catalog: toggle value
    config view controller: accessibility value */
 "On" = "On";
+
+/* QR sheet: how to scan */
+"On it, open Online Account, then Link Another Device, then Scan QR Code." = "On it, open Online Account, then Link Another Device, then Scan QR Code.";
+
+/* Link code sheet: text above the code */
+"On the new device, choose “Use an Existing Account”, then “Enter Link Code”." = "On the new device, choose “Use an Existing Account”, then “Enter Link Code”.";
+
+/* Export sheet: header */
+"On this device" = "On this device";
 
 /* Friends toast: a friend list is full */
 "One of you already has 100 friends." = "One of you already has 100 friends.";
@@ -2626,6 +2881,10 @@
    online view controller: title
    system link status view controller: state */
 "Online" = "Online";
+
+/* Account screen title
+   profile view controller: row */
+"Online Account" = "Online Account";
 
 /* Alert title: first-run online features notice
    settings hub view controller: label text */
@@ -2652,6 +2911,9 @@
 
 /* Friends status title */
 "Online Play Is Off" = "Online Play Is Off";
+
+/* Incoming approval: text above the device */
+"Only approve if you’re signing in yourself." = "Only approve if you’re signing in yourself.";
 
 /* game page: under System Link
    system link view controller: room row detail */
@@ -2680,6 +2942,9 @@
 
 /* JIT sheet: step 1 */
 "Open StikDebug." = "Open StikDebug.";
+
+/* Approval sheet: text above the number */
+"Open XeniOS on your iPhone, iPad or Mac and approve this number." = "Open XeniOS on your iPhone, iPad or Mac and approve this number.";
 
 /* Toast: opening StikDebug */
 "Opening StikDebug for JIT..." = "Opening StikDebug for JIT...";
@@ -2741,6 +3006,9 @@
 
 /* Section header in display settings */
 "Options" = "Options";
+
+/* Share saves: header */
+"Or one profile" = "Or one profile";
 
 /* zar conversion coordinator: message */
 "Original cleanup finished." = "Original cleanup finished.";
@@ -2848,6 +3116,15 @@
 /* settings hub view controller: title */
 "Pick a game and arrange its touch controls." = "Pick a game and arrange its touch controls.";
 
+/* Gamertag sheet title */
+"Pick a New Gamertag" = "Pick a New Gamertag";
+
+/* Account screen: row detail */
+"Pick a new gamertag" = "Pick a new gamertag";
+
+/* Incoming approval: header over the numbers; %@ is the new device’s name */
+"Pick the number on %@" = "Pick the number on %@";
+
 /* game compatibility cells: detail text */
 "PLATFORM" = "PLATFORM";
 
@@ -2875,6 +3152,9 @@
 
 /* Launch screen button: start the game while shaders keep being prepared */
 "Play Now" = "Play Now";
+
+/* profile view controller: row detail */
+"Play online with friends" = "Play online with friends";
 
 /* Online panel: under Start a Party */
 "Play together" = "Play together";
@@ -2934,6 +3214,9 @@
 
 /* compat report view controller: message */
 "Please select a performance tier." = "Please select a performance tier.";
+
+/* Scanner: hint */
+"Point the camera at the code on your new device." = "Point the camera at the code on your new device.";
 
 /* compat formatting: user-visible text */
 "Poor" = "Poor";
@@ -2998,6 +3281,12 @@
    Toast: profile creation failed */
 "Profile could not be created. Please try again." = "Profile could not be created. Please try again.";
 
+/* Profile file: alert message */
+"Profile files aren’t supported in this build." = "Profile files aren’t supported in this build.";
+
+/* Import: alert title */
+"Profile Imported" = "Profile Imported";
+
 /* Alert title: profile creation failed */
 "Profile Not Created" = "Profile Not Created";
 
@@ -3022,6 +3311,9 @@
 
 /* VoiceOver hint for a disc in the disc tray */
 "Puts this disc in the drive." = "Puts this disc in the drive.";
+
+/* Link device: accessibility label */
+"QR code" = "QR code";
 
 /* Section header in the pause menu */
 "Quick Settings" = "Quick Settings";
@@ -3071,6 +3363,12 @@
 /* system link status view controller: state */
 "Reconnecting…" = "Reconnecting…";
 
+/* Code sheet title */
+"Recover Account" = "Recover Account";
+
+/* Recovery code sheet title */
+"Recovery Code" = "Recovery Code";
+
 /* VoiceOver label of the redo button */
 "Redo" = "Redo";
 
@@ -3087,6 +3385,9 @@
 /* Title of the Refresh submenu */
 "Refresh: Uncapped" = "Refresh: Uncapped";
 
+/* QR sheet: countdown; %@ is m:ss */
+"Refreshes in %@" = "Refreshes in %@";
+
 /* system software view controller: action */
 "Reinstall from Files" = "Reinstall from Files";
 
@@ -3094,12 +3395,18 @@
 "Reload" = "Reload";
 
 /* Alert button: remove a friend
+   Devices screen: alert button
+   Devices screen: button
    Friends: remove a friend
    system software view controller: action */
 "Remove" = "Remove";
 
-/* Alert title; %@ is the gamertag */
+/* Alert title; %@ is the gamertag
+   Devices screen: alert title; %@ is the device name */
 "Remove %@?" = "Remove %@?";
+
+/* Devices screen: footer */
+"Remove a device you’ve lost. It’s signed out and can’t come back without a new code." = "Remove a device you’ve lost. It’s signed out and can’t come back without a new code.";
 
 /* Friends menu item */
 "Remove Friend" = "Remove Friend";
@@ -3275,6 +3582,12 @@
 /* Prompt title: save a copy of the layout */
 "Save Layout Copy" = "Save Layout Copy";
 
+/* Recovery code sheet: text above the code */
+"Save this code. It’s the only way back into your account if you lose every device. We show it once." = "Save this code. It’s the only way back into your account if you lose every device. We show it once.";
+
+/* Recovery code sheet: row */
+"Save to Files…" = "Save to Files…";
+
 /* Layout library filter: layouts the user saved */
 "Saved" = "Saved";
 
@@ -3286,6 +3599,21 @@
 
 /* Layout library row detail: layout the user saved */
 "Saved local copy" = "Saved local copy";
+
+/* Account screen: footer */
+"Saves and achievements don’t sync between devices. Move them as a file." = "Saves and achievements don’t sync between devices. Move them as a file.";
+
+/* Share saves: alert title */
+"Saves Copied" = "Saves Copied";
+
+/* Share saves: alert message */
+"Saves from every profile are merged, keeping the newest of each. The originals are backed up first. Don’t play while this is running." = "Saves from every profile are merged, keeping the newest of each. The originals are backed up first. Don’t play while this is running.";
+
+/* Import: alert message */
+"Saves, achievements and settings are in place." = "Saves, achievements and settings are in place.";
+
+/* Export sheet: text above the list */
+"Saves, achievements and settings as one file. Saves don’t sync between devices." = "Saves, achievements and settings as one file. Saves don’t sync between devices.";
 
 /* game disc view controller: user-visible text */
 "Saves, updates and add-ons are shared by every disc." = "Saves, updates and add-ons are shared by every disc.";
@@ -3301,6 +3629,17 @@
 
 /* Title of the Scaling submenu with Stretch active */
 "Scaling: Stretch" = "Scaling: Stretch";
+
+/* Account screen: row
+   Existing account row
+   Scanner title */
+"Scan QR Code" = "Scan QR Code";
+
+/* Devices screen: row */
+"Scan QR Code…" = "Scan QR Code…";
+
+/* QR sheet: heading */
+"Scan with your other device" = "Scan with your other device";
 
 /* zar conversion coordinator: detail text */
 "Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)" = "Scanned %1$lu of %2$lu item%3$@ (%4$.0f%%)";
@@ -3385,6 +3724,9 @@
 /* Friends section header */
 "Sent Requests" = "Sent Requests";
 
+/* Incoming approval: no passcode */
+"Set a passcode on this device to approve sign-ins." = "Set a passcode on this device to approve sign-ins.";
+
 /* launcher overlay view: menu action */
 "Set Up Dashboard" = "Set Up Dashboard";
 
@@ -3401,7 +3743,8 @@
 /* Launch screen status: the emulator is being set up */
 "Setting up…" = "Setting up…";
 
-/* In-game menu button
+/* Export sheet: row
+   In-game menu button
    launcher overlay view: user-visible text
    settings hub view controller: title */
 "Settings" = "Settings";
@@ -3440,8 +3783,12 @@
 "Shape" = "Shape";
 
 /* Alert button: share the game library
-   log view controller: title */
+   log view controller: title
+   Share saves: alert button */
 "Share" = "Share";
+
+/* Share saves: switch */
+"Share Across All Profiles" = "Share Across All Profiles";
 
 /* Add Friend row */
 "Share Code…" = "Share Code…";
@@ -3465,6 +3812,15 @@
 /* Alert button: shares the log file */
 "Share Log" = "Share Log";
 
+/* Share saves title */
+"Share Saves" = "Share Saves";
+
+/* Share saves: alert title */
+"Share Saves Across All Profiles?" = "Share Saves Across All Profiles?";
+
+/* Export sheet: row */
+"Share Saves with Profiles" = "Share Saves with Profiles";
+
 /* system link view controller: footer */
 "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you." = "Share the code with the players you want. Everyone needs this game, and players on another version of it may not see you.";
 
@@ -3474,8 +3830,14 @@
 /* settings hub view controller: title */
 "Share the running game's layout." = "Share the running game's layout.";
 
+/* Share saves: footer; %@ is a gamertag */
+"Shared games use one set of saves for both profiles. %@’s old saves for them are kept as a backup." = "Shared games use one set of saves for both profiles. %@’s old saves for them are kept as a backup.";
+
 /* Submenu title in the Add Control menu */
 "Shoulders / Triggers" = "Shoulders / Triggers";
+
+/* Existing account row detail */
+"Show a code for your other device" = "Show a code for your other device";
 
 /* quick settings view controller: title */
 "Show Advanced Debug" = "Show Advanced Debug";
@@ -3495,6 +3857,9 @@
 
 /* game compatibility cells: title */
 "Show less" = "Show less";
+
+/* Devices screen: row */
+"Show Link Code…" = "Show Link Code…";
 
 /* game compatibility cells: title */
 "Show more" = "Show more";
@@ -3530,11 +3895,17 @@
 /* settings hub view controller: account card */
 "Sign In" = "Sign In";
 
+/* Incoming approval title; %@ is iPhone, iPad or Mac */
+"Sign in on a new %@?" = "Sign in on a new %@?";
+
 /* Friends status: no profile is signed in */
 "Sign in to a profile to see your friends." = "Sign in to a profile to see your friends.";
 
 /* profile view controller: detail text */
 "Signed In" = "Signed In";
+
+/* Sign-in approval: result */
+"Signed in" = "Signed in";
 
 /* profile view controller: user-visible text
    Toast; %@ is the gamertag */
@@ -3545,6 +3916,9 @@
 
 /* Launcher label; %@ is the signed-in gamertag */
 "Signed in: %@" = "Signed in: %@";
+
+/* Approval sheet: under the number; gamertag, then m:ss */
+"Signing in as %1$@\n%2$@ left" = "Signing in as %1$@\n%2$@ left";
 
 /* system software view controller: label */
 "Size" = "Size";
@@ -3814,6 +4188,9 @@
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
 
+/* Account screen: row detail */
+"Tap to change" = "Tap to change";
+
 /* Online panel: confirm leaving the party */
 "Tap to Leave" = "Tap to Leave";
 
@@ -3826,8 +4203,20 @@
 /* game compatibility cells: label text */
 "Tested this game?" = "Tested this game?";
 
+/* Account: code entry error */
+"That code has expired. Make a new one on your other device." = "That code has expired. Make a new one on your other device.";
+
 /* Online panel: add-friend field, bad code */
 "That code isn't right" = "That code isn't right";
+
+/* Account: code entry error */
+"That code isn’t right. Check it and try again." = "That code isn’t right. Check it and try again.";
+
+/* Approval sheet: neutral failure */
+"That didn’t go through. Check the gamertag and try again." = "That didn’t go through. Check the gamertag and try again.";
+
+/* Sign-in approval: neutral failure */
+"That didn’t go through. Try again." = "That didn’t go through. Try again.";
 
 /* Friends toast: answering an invite that's gone */
 "That invite has expired." = "That invite has expired.";
@@ -3835,14 +4224,23 @@
 /* system update page: error */
 "That isn't the system update. Tap the download link under “Copy to a USB flash drive”." = "That isn't the system update. Tap the download link under “Copy to a USB flash drive”.";
 
+/* Scanner: wrong code */
+"That isn’t a XeniOS code. Try again." = "That isn’t a XeniOS code. Try again.";
+
 /* Alert message: an incoming link was not usable */
 "That link could not be opened." = "That link could not be opened.";
+
+/* Gamertag field: message */
+"That name can’t be used" = "That name can’t be used";
 
 /* Gamer card for yourself */
 "That's you." = "That's you.";
 
 /* Add Friend toast */
 "That's your own friend code." = "That's your own friend code.";
+
+/* Gamertag field: message */
+"That’s your current gamertag" = "That’s your current gamertag";
 
 /* Alert message; %@ is the name of the requesting app */
 "The app \"%@\" is asking for the titles and icons of your game library." = "The app \"%@\" is asking for the titles and icons of your game library.";
@@ -3970,6 +4368,9 @@
 /* Row title in the touch control edit panel */
 "Then drag" = "Then drag";
 
+/* Share saves: empty */
+"There are no other profiles on this device." = "There are no other profiles on this device.";
+
 /* config view controller: label text */
 "These apply only to %1$@ (%2$@) and take effect the next time it starts." = "These apply only to %1$@ (%2$@) and take effect the next time it starts.";
 
@@ -3978,6 +4379,9 @@
 
 /* system link status view controller: row detail */
 "They show up here when they start this game in the same room." = "They show up here when they start this game in the same room.";
+
+/* Gamertag field: message */
+"This account can’t change its gamertag." = "This account can’t change its gamertag.";
 
 /* system software view controller: message */
 "This also deletes the \"unrestored\" copy of the previous system software that a failed install left. The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay." = "This also deletes the \"unrestored\" copy of the previous system software that a failed install left. The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay.";
@@ -3988,8 +4392,14 @@
 /* settings hub view controller: user-visible text */
 "This build does not include alternate app icons." = "This build does not include alternate app icons.";
 
+/* Link code sheet: expired */
+"This code has expired." = "This code has expired.";
+
 /* content management: error message */
 "This content package is missing its required .data sidecar folder." = "This content package is missing its required .data sidecar folder.";
+
+/* Scanner: no camera */
+"This device has no camera." = "This device has no camera.";
 
 /* external folders view controller: user-visible text */
 "this folder" = "this folder";
@@ -4012,8 +4422,14 @@
 /* document import coordinator: message */
 "This is add-on content (DLC or a marketplace package), not a game. Install it from the game's Manage Content screen." = "This is add-on content (DLC or a marketplace package), not a game. Install it from the game's Manage Content screen.";
 
+/* Gamertag sheet: text above the field */
+"This is how friends find you online. Your saves and achievements are kept." = "This is how friends find you online. Your saves and achievements are kept.";
+
 /* Launch screen note: a launch step is slow */
 "This is taking longer than usual." = "This is taking longer than usual.";
+
+/* Recovery code sheet: text above the code */
+"This is your new code. The old one no longer works. We show it once." = "This is your new code. The old one no longer works. We show it once.";
 
 /* system software view controller: install error */
 "This isn't a USB system update. Pick the system update zip from Microsoft, or the folder Files expands it to." = "This isn't a USB system update. Pick the system update zip from Microsoft, or the folder Files expands it to.";
@@ -4112,8 +4528,17 @@
 /* game patches view controller: accessibility hint */
 "Toggles this patch for the next launch." = "Toggles this patch for the next launch.";
 
+/* Gamertag field: message under the field */
+"Too long: 15 characters at most" = "Too long: 15 characters at most";
+
 /* compat report submission: message */
 "Too many reports were sent recently. Please try again later." = "Too many reports were sent recently. Please try again later.";
+
+/* Account: code entry error */
+"Too many tries. Wait a minute and try again." = "Too many tries. Wait a minute and try again.";
+
+/* Gamertag sheet: message */
+"Too many tries. Wait a moment and try again." = "Too many tries. Wait a moment and try again.";
 
 /* VoiceOver label of the on-screen controller area */
 "Touch controller" = "Touch controller";
@@ -4143,6 +4568,12 @@
 
 /* VoiceOver hint of the on-screen controller area */
 "Touch the screen to use the on-screen controls." = "Touch the screen to use the on-screen controls.";
+
+/* Gamertag sheet: header over the suggestions */
+"Try" = "Try";
+
+/* Approval sheet: row */
+"Try Again" = "Try Again";
 
 /* Launcher status: JIT is unavailable */
 "Try again in StikDebug." = "Try again in StikDebug.";
@@ -4296,6 +4727,9 @@
    game page: row */
 "Updates & Add-ons" = "Updates & Add-ons";
 
+/* Account screen: row */
+"Use an Existing Account" = "Use an Existing Account";
+
 /* Menu item in the touch control label menu */
 "Use Default Label" = "Use Default Label";
 
@@ -4311,8 +4745,14 @@
 /* settings hub view controller: user-visible text */
 "Use the light icon." = "Use the light icon.";
 
+/* Existing account row detail */
+"Use your iPhone, iPad or Mac" = "Use your iPhone, iPad or Mac";
+
 /* zar conversion coordinator: user-visible text */
 "Uses about %@ more" = "Uses about %@ more";
+
+/* Gamertag sheet: row hint */
+"Uses this gamertag." = "Uses this gamertag.";
 
 /* config view controller: user-visible text */
 "Value Not Accepted" = "Value Not Accepted";
@@ -4474,6 +4914,9 @@
 /* Alert title: shown after the app crashed in the previous session */
 "XeniOS Quit Unexpectedly" = "XeniOS Quit Unexpectedly";
 
+/* Recovery code file text; %@ is the code */
+"XeniOS recovery code: %@\nKeep it private. Anyone with it can take over your account.\n" = "XeniOS recovery code: %@\nKeep it private. Anyone with it can take over your account.\n";
+
 /* zar conversion coordinator: user-visible text */
 "XeniOS removed the partial .zar output from the interrupted conversion." = "XeniOS removed the partial .zar output from the interrupted conversion.";
 
@@ -4494,6 +4937,9 @@
 
 /* system link view controller: alert message */
 "You can change this in Settings > Privacy." = "You can change this in Settings > Privacy.";
+
+/* Gamertag field: message; %@ is a date */
+"You can change your gamertag again on %@. Changing only capitals is always free." = "You can change your gamertag again on %@. Changing only capitals is always free.";
 
 /* Friends toast: inviting someone who isn't a friend */
 "You can only invite friends." = "You can only invite friends.";
@@ -4540,6 +4986,9 @@
 
 /* online view controller: quiet line under the summary when the network's NAT is strict or blocks System Link */
 "Your network may block online play. Try another Wi-Fi network or mobile data." = "Your network may block online play. Try another Wi-Fi network or mobile data.";
+
+/* Account screen: alert message */
+"Your old code stops working. We show the new one once." = "Your old code stops working. We show the new one once.";
 
 /* zar conversion coordinator: title */
 "ZAR Conversion Cancelled" = "ZAR Conversion Cancelled";
