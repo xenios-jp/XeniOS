@@ -11,6 +11,7 @@
 
 #include <vector>
 
+#import "xenia/ui/ios/settings/ios_gamer_picture_view_controller.h"
 #import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_live_account.h"
@@ -485,22 +486,8 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
         stringWithFormat:NSLocalizedString(@"%@ details", @"profile view controller: ⓘ button; %@ is a gamertag"),
                          gamertag];
     [info addTarget:self action:@selector(infoTapped:) forControlEvents:UIControlEventTouchUpInside];
-    if (profile.signed_in) {
-      UIImageView* check = [[[UIImageView alloc]
-          initWithImage:[UIImage systemImageNamed:@"checkmark"
-                                withConfiguration:[UIImageSymbolConfiguration
-                                                      configurationWithTextStyle:UIFontTextStyleBody
-                                                                           scale:UIImageSymbolScaleMedium]]]
-          autorelease];
-      check.tintColor = [XeniaTheme accent];
-      UIStackView* both = [[[UIStackView alloc] initWithArrangedSubviews:@[ check, info ]] autorelease];
-      both.alignment = UIStackViewAlignmentCenter;
-      both.spacing = 14;
-      both.frame = CGRectMake(0, 0, 58, 30);
-      cell.accessoryView = both;
-    } else {
-      cell.accessoryView = info;
-    }
+    // The subtitle already says Signed In, so the row needs no check mark beside ⓘ.
+    cell.accessoryView = info;
   }
   cell.imageView.image = xe_profile_avatar_image(gamertag, profile.signed_in, 36.0);
   cell.textLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
@@ -580,9 +567,58 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   BOOL (^switch_to)(void) = ^BOOL {
     return [unsafe_self signInXuid:xuid gamertag:gamertag];
   };
-  [self.navigationController pushViewController:xe_ios_new_profile_page(gamertag, profile.signed_in,
-                                                                        switch_to)
-                                       animated:YES];
+  void (^change_picture)(UIViewController*) = ^(UIViewController* page) {
+    [unsafe_self pushPictureChooserForXuid:xuid from:page];
+  };
+  [self.navigationController
+      pushViewController:xe_ios_new_profile_page(gamertag, profile.signed_in, switch_to,
+                                                 change_picture)
+                animated:YES];
+}
+
+- (void)pushPictureChooserForXuid:(uint64_t)xuid from:(UIViewController*)page {
+  if (!app_context_) {
+    return;
+  }
+  // The profile's picture as stored, to mark which built-in one it is.
+  std::vector<uint8_t> current;
+  for (const auto& profile : app_context_->ListProfiles()) {
+    if (profile.xuid == xuid) {
+      current = profile.picture;
+    }
+  }
+  NSMutableArray<XeniaGamerPicture*>* pictures = [NSMutableArray array];
+  NSString* current_key = nil;
+  for (const auto& built_in : app_context_->ListGamerPictures()) {
+    NSData* png = [NSData dataWithBytes:built_in.png.data() length:built_in.png.size()];
+    UIImage* image = [UIImage imageWithData:png];
+    if (!image) {
+      continue;
+    }
+    XeniaGamerPicture* picture = [[[XeniaGamerPicture alloc] init] autorelease];
+    picture.key = ToNSString(built_in.key);
+    picture.image = image;
+    [pictures addObject:picture];
+    if (built_in.png == current) {
+      current_key = picture.key;
+    }
+  }
+  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  BOOL (^choose)(NSString*) = ^BOOL(NSString* key) {
+    if (!unsafe_self->app_context_ ||
+        !unsafe_self->app_context_->SetGamerPicture(xuid, std::string(key.UTF8String))) {
+      return NO;
+    }
+    // Lists the profiles again, which hands every avatar the new picture.
+    [unsafe_self reloadProfiles];
+    return YES;
+  };
+  [page.navigationController
+      pushViewController:[[[XeniaGamerPictureViewController alloc] initWithPictures:pictures
+                                                                         currentKey:current_key
+                                                                             choose:choose]
+                             autorelease]
+                animated:YES];
 }
 
 - (BOOL)signInXuid:(uint64_t)xuid gamertag:(NSString*)gamertag {

@@ -16,6 +16,7 @@
 #include "xenia/base/png_utils.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/gamer_pictures.h"
 #include "xenia/kernel/xam/user_data.h"
 #include "xenia/kernel/xam/user_property.h"
 #include "xenia/kernel/xam/user_settings.h"
@@ -848,6 +849,25 @@ bool UserTracker::UpdateUserIcon(uint64_t xuid,
                                  : XTileType::kPersonalGamerTile,
                            other);
   }
+  return true;
+}
+
+bool UserTracker::SetGamerPicture(uint64_t xuid, const GamerPicture& picture) {
+  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  if (!user || picture.key.size() != 24 || picture.large.empty() ||
+      picture.small.empty()) {
+    return false;
+  }
+  user->WriteProfileIcon(XTileType::kGamerTile, picture.large);
+  user->WriteProfileIcon(XTileType::kGamerTileSmall, picture.small);
+  user->ClearProfileIcon(XTileType::kPersonalGamerTile);
+  user->ClearProfileIcon(XTileType::kPersonalGamerTileSmall);
+  // Stored like the default key (user_settings.h): UTF-16 in guest order.
+  const std::u16string key(picture.key.begin(), picture.key.end());
+  const UserSetting setting(
+      UserSettingId::XPROFILE_GAMERCARD_PICTURE_KEY,
+      xe::string_util::read_u16string_and_swap(key.c_str()));
+  UpsertSetting(xuid, kDashboardID, &setting);
   return true;
 }
 

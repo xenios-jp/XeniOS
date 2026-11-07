@@ -1800,6 +1800,8 @@ UIView* AttentionAccessory() {
 @property(nonatomic, readonly) UILabel* name;
 @property(nonatomic, readonly) UILabel* status;
 @property(nonatomic, readonly) UILabel* caption;
+// "Edit" under the avatar, hidden until given a target.
+@property(nonatomic, readonly) UIButton* editPicture;
 - (void)setButton:(nullable UIButton*)button;
 @end
 
@@ -1808,10 +1810,12 @@ UIView* AttentionAccessory() {
   UILabel* _name;
   UILabel* _status;
   UILabel* _caption;
+  UIButton* _editPicture;
   UIStackView* _stack;
   UIButton* _button;
 }
 - (UIImageView*)avatar { return _avatar; }
+- (UIButton*)editPicture { return _editPicture; }
 - (UILabel*)name { return _name; }
 - (UILabel*)status { return _status; }
 - (UILabel*)caption { return _caption; }
@@ -1838,11 +1842,22 @@ UIView* AttentionAccessory() {
     _caption.textColor = [XeniaTheme textSecondary];
     _caption.textAlignment = NSTextAlignmentCenter;
     _caption.numberOfLines = 0;
-    _stack = [[UIStackView alloc] initWithArrangedSubviews:@[ _avatar, _name, _status, _caption ]];
+    // As Contacts: a small "Edit" under the photo.
+    UIButtonConfiguration* edit = [UIButtonConfiguration plainButtonConfiguration];
+    edit.title = NSLocalizedString(@"Edit", @"Profile page: button under the gamer picture");
+    edit.buttonSize = UIButtonConfigurationSizeSmall;
+    edit.contentInsets = NSDirectionalEdgeInsetsMake(2, 8, 2, 8);
+    _editPicture = [[UIButton buttonWithConfiguration:edit primaryAction:nil] retain];
+    _editPicture.accessibilityLabel =
+        NSLocalizedString(@"Edit Gamer Picture", @"Profile page: VoiceOver label");
+    _editPicture.hidden = YES;
+    _stack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[ _avatar, _editPicture, _name, _status, _caption ]];
     _stack.axis = UILayoutConstraintAxisVertical;
     _stack.alignment = UIStackViewAlignmentFill;
     _stack.spacing = 4;
     [_stack setCustomSpacing:10 afterView:_avatar];
+    [_stack setCustomSpacing:2 afterView:_editPicture];
     _stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:_stack];
     [NSLayoutConstraint activateConstraints:@[
@@ -1861,6 +1876,7 @@ UIView* AttentionAccessory() {
   [_name release];
   [_status release];
   [_caption release];
+  [_editPicture release];
   [_stack release];
   [_button release];
   [super dealloc];
@@ -1875,7 +1891,8 @@ UIView* AttentionAccessory() {
   _button = [button retain];
   if (button) {
     // Under the status line, above its caption.
-    [_stack insertArrangedSubview:button atIndex:3];
+    [_stack insertArrangedSubview:button
+                          atIndex:[_stack.arrangedSubviews indexOfObject:_status] + 1];
     [_stack setCustomSpacing:18 afterView:_status];
     [_stack setCustomSpacing:10 afterView:button];
   } else {
@@ -2252,7 +2269,8 @@ UIView* AttentionAccessory() {
 }
 
 - (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return [self needsNewCode] ? 2 : 1;
+  // Get a New Code when the code is gone; Also Copy Profile where profile data can move.
+  return ([self needsNewCode] ? 1 : 0) + (xe_ios_live_account_supports_profile_data() ? 1 : 0);
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger __unused)section {
@@ -2667,7 +2685,8 @@ UIView* AttentionAccessory() {
 }
 
 - (NSUInteger)limit {
-  return _recovering ? 12 : 8;
+  // NormalizeRecoveryCode and NormalizeLinkCode.
+  return _recovering ? 20 : 8;
 }
 
 - (void)applyMode {
@@ -2679,7 +2698,7 @@ UIView* AttentionAccessory() {
                                               @"device.",
                                               @"Sign in sheet: text above the field")];
   _field.attributedPlaceholder = [[[NSAttributedString alloc]
-      initWithString:_recovering ? @"XXXX-XXXX-XXXX" : @"XXXX-XXXX"
+      initWithString:_recovering ? @"XXXX-XXXX-XXXX-XXXX-XXXX" : @"XXXX-XXXX"
           attributes:@{NSForegroundColorAttributeName : [XeniaTheme textMuted]}] autorelease];
   _field.text = @"";
   _field.accessibilityLabel = _recovering
@@ -2773,8 +2792,9 @@ UIView* AttentionAccessory() {
     unsafe_self->_busy = NO;
     XESetFormCommitBusy(unsafe_self, NO);
     if (status == XeniaLiveLinkStatusLinked) {
-      // A second device, or a recovered one: the account has a way back in already.
-      SetRecoverySaved(YES);
+      // A second device has a way back in already. Recovering killed the old code, and the new
+      // one isn't shown here: the profile page asks to set one up again.
+      SetRecoverySaved(!unsafe_self->_recovering);
       [unsafe_self dismissViewControllerAnimated:YES completion:nil];
       return;
     }
@@ -2806,13 +2826,15 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 @interface XEProfilePageViewController : XESheetTableViewController
 - (instancetype)initWithGamertag:(NSString*)gamertag
                           active:(BOOL)active
-                        switchTo:(nullable BOOL (^)(void))switch_to;
+                        switchTo:(nullable BOOL (^)(void))switch_to
+                   changePicture:(nullable void (^)(UIViewController* page))change_picture;
 @end
 
 @implementation XEProfilePageViewController {
   NSString* _gamertag;
   BOOL _active;
   BOOL (^_switchTo)(void);
+  void (^_changePicture)(UIViewController*);
   XEProfileHeader* _header;
   NSArray<NSArray<NSNumber*>*>* _sections;
   NSArray<NSString*>* _sectionTitles;
@@ -2822,12 +2844,14 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
 - (instancetype)initWithGamertag:(NSString*)gamertag
                           active:(BOOL)active
-                        switchTo:(BOOL (^)(void))switch_to {
+                        switchTo:(BOOL (^)(void))switch_to
+                   changePicture:(void (^)(UIViewController*))change_picture {
   if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
     self.glassStyle = YES;
     _gamertag = [gamertag copy];
     _active = active;
     _switchTo = [switch_to copy];
+    _changePicture = [change_picture copy];
   }
   return self;
 }
@@ -2836,6 +2860,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_gamertag release];
   [_switchTo release];
+  [_changePicture release];
   [_header release];
   [_sections release];
   [_sectionTitles release];
@@ -2853,6 +2878,9 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   self.tableView.backgroundColor = [UIColor clearColor];
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   _header = [[XEProfileHeader alloc] init];
+  [_header.editPicture addTarget:self
+                          action:@selector(editPictureTapped)
+                forControlEvents:UIControlEventTouchUpInside];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(accountChanged)
                                                name:XeniaLiveAccountDidChangeNotification
@@ -2870,6 +2898,12 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 - (void)viewDidLayoutSubviews {
   FitTableHeader(_header, self.tableView);
   [super viewDidLayoutSubviews];
+}
+
+- (void)editPictureTapped {
+  if (_changePicture) {
+    _changePicture(self);
+  }
 }
 
 - (void)accountChanged {
@@ -2960,7 +2994,11 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   // The name is the page's headline, under the avatar; the bar keeps only ‹ and ✕ (as Contacts).
   self.title = name;
   self.navigationItem.title = @"";
-  _header.avatar.image = xe_profile_avatar_image(name, _active, 72.0);
+  // The picture belongs to the local profile, whatever the online name.
+  _header.avatar.image =
+      xe_profile_avatar_image(xe_profile_has_picture(_gamertag) ? _gamertag : name, _active, 72.0);
+  // Only a signed-in profile's picture can be changed.
+  _header.editPicture.hidden = !(_active && _changePicture);
   _header.name.text = name;
   _header.status.textColor = [XeniaTheme textSecondary];
   _header.caption.text = nil;
@@ -3013,8 +3051,10 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
       [sections addObject:devices];
       [titles addObject:NSLocalizedString(@"Devices", @"Profile page: header")];
     }
-    [sections addObject:@[ @(XEPageRowSharedSaves), @(XEPageRowCopyProfile) ]];
-    [titles addObject:NSLocalizedString(@"Profile Data", @"Profile page: header")];
+    if (xe_ios_live_account_supports_profile_data()) {
+      [sections addObject:@[ @(XEPageRowSharedSaves), @(XEPageRowCopyProfile) ]];
+      [titles addObject:NSLocalizedString(@"Profile Data", @"Profile page: header")];
+    }
     if (online) {
       [sections addObject:@[ @(XEPageRowRecovery), @(XEPageRowGamertag) ]];
       [titles addObject:@""];
@@ -3307,11 +3347,13 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
 // ---- Entry points ----------------------------------------------------------------------------
 
-UIViewController* xe_ios_new_profile_page(NSString* gamertag, BOOL active,
-                                          BOOL (^_Nullable switch_to)(void)) {
+UIViewController* xe_ios_new_profile_page(
+    NSString* gamertag, BOOL active, BOOL (^_Nullable switch_to)(void),
+    void (^_Nullable change_picture)(UIViewController* page)) {
   return [[[XEProfilePageViewController alloc] initWithGamertag:gamertag
                                                           active:active
-                                                        switchTo:switch_to] autorelease];
+                                                        switchTo:switch_to
+                                                   changePicture:change_picture] autorelease];
 }
 
 void xe_ios_present_sign_in(UIViewController* presenter, NSString* _Nullable code) {

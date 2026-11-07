@@ -2360,5 +2360,211 @@ bool XexModule::FindSaveRest() {
   return true;
 }
 
+std::span<const uint8_t> XexHostImage::Resource(std::string_view name) const {
+  for (const auto& resource : resources) {
+    const std::string_view resource_name(
+        resource.name, strnlen(resource.name, sizeof(resource.name)));
+    if (resource_name != name) {
+      continue;
+    }
+    const uint32_t offset = resource.address - base_address;
+    if (resource.address < base_address || offset > data.size() ||
+        resource.size > data.size() - offset) {
+      return {};
+    }
+    return {data.data() + offset, resource.size};
+  }
+  return {};
+}
+
+namespace {
+
+// Decodes the image with one key. False if it doesn't come out as one.
+bool DecodeXexHostImage(std::span<const uint8_t> xex, const xex2_header* header,
+                        const xex2_security_info* security,
+                        const xex2_opt_file_format_info* format,
+                        const uint8_t* key, std::vector<uint8_t>* image) {
+  uint8_t session_key[16];
+  aes_decrypt_buffer(key, reinterpret_cast<const uint8_t*>(security->aes_key),
+                     16, session_key, 16);
+  const bool encrypted = format->encryption_type == XEX_ENCRYPTION_NORMAL;
+  const std::span<const uint8_t> payload = xex.subspan(header->header_size);
+  std::fill(image->begin(), image->end(), uint8_t(0));
+
+  switch (format->compression_type) {
+    case XEX_COMPRESSION_NONE: {
+      const size_t length = std::min(payload.size(), image->size());
+      if (encrypted) {
+        aes_decrypt_buffer(session_key, payload.data(), length, image->data(),
+                           length);
+      } else {
+        std::memcpy(image->data(), payload.data(), length);
+      }
+      break;
+    }
+    case XEX_COMPRESSION_BASIC: {
+      const uint32_t block_count = (format->info_size - 8) / 8;
+      mbedtls_aes_context context;
+      mbedtls_aes_init(&context);
+      mbedtls_aes_setkey_dec(&context, session_key, 128);
+      uint8_t ivec[16] = {0};
+      size_t source = 0, dest = 0;
+      bool ok = true;
+      for (uint32_t n = 0; n < block_count && ok; ++n) {
+        const auto& block = format->compression_info.basic.blocks[n];
+        const uint32_t data_size = block.data_size;
+        if (data_size > payload.size() - source ||
+            dest > image->size() || data_size > image->size() - dest) {
+          ok = false;
+          break;
+        }
+        if (encrypted) {
+          mbedtls_aes_crypt_cbc(&context, MBEDTLS_AES_DECRYPT,
+                                data_size & ~15u, ivec,
+                                payload.data() + source,
+                                image->data() + dest);
+        } else {
+          std::memcpy(image->data() + dest, payload.data() + source,
+                      data_size);
+        }
+        source += data_size;
+        dest += size_t(data_size) + block.zero_size;
+      }
+      mbedtls_aes_free(&context);
+      if (!ok) {
+        return false;
+      }
+      break;
+    }
+    case XEX_COMPRESSION_NORMAL: {
+      std::vector<uint8_t> input(payload.begin(), payload.end());
+      if (encrypted) {
+        aes_decrypt_buffer(session_key, payload.data(), payload.size(),
+                           input.data(), input.size());
+      }
+      // Each block starts with the next one's size and hash, then chunks of
+      // LZX data, each after its 16-bit length, up to an empty one.
+      std::vector<uint8_t> compressed;
+      compressed.reserve(input.size());
+      const xex2_compressed_block_info* block =
+          &format->compression_info.normal.first_block;
+      xex2_compressed_block_info next_block;
+      size_t p = 0;
+      while (block->block_size) {
+        const size_t block_size = block->block_size;
+        if (block_size < 24 || block_size > input.size() - p) {
+          return false;
+        }
+        uint8_t digest[0x14];
+        mbedtls_sha1(input.data() + p, block_size, digest);
+        if (std::memcmp(digest, block->block_hash, 0x14)) {
+          return false;  // The wrong key.
+        }
+        std::memcpy(&next_block, input.data() + p, sizeof(next_block));
+        const size_t block_end = p + block_size;
+        size_t q = p + 24;
+        while (q + 2 <= block_end) {
+          const size_t chunk = (size_t(input[q]) << 8) | input[q + 1];
+          q += 2;
+          if (!chunk) {
+            break;
+          }
+          if (chunk > block_end - q) {
+            return false;
+          }
+          compressed.insert(compressed.end(), input.begin() + q,
+                            input.begin() + q + chunk);
+          q += chunk;
+        }
+        p = block_end;
+        block = &next_block;
+      }
+      if (lzx_decompress(compressed.data(), compressed.size(), image->data(),
+                         image->size(),
+                         format->compression_info.normal.window_size, nullptr,
+                         0)) {
+        return false;
+      }
+      break;
+    }
+    default:
+      return false;
+  }
+  // Every image starts with its PE header.
+  return image->size() >= 2 && (*image)[0] == 'M' && (*image)[1] == 'Z';
+}
+
+}  // namespace
+
+std::optional<XexHostImage> ReadXexHostImage(std::span<const uint8_t> xex) {
+  if (xex.size() < sizeof(xex2_header)) {
+    return std::nullopt;
+  }
+  const auto* header = reinterpret_cast<const xex2_header*>(xex.data());
+  if (header->magic != kXEX2Signature || header->header_size < 0x18 ||
+      header->header_size > xex.size() ||
+      header->header_count > (header->header_size - 0x18) / 8 ||
+      header->security_offset > header->header_size ||
+      sizeof(xex2_security_info) >
+          header->header_size - header->security_offset) {
+    return std::nullopt;
+  }
+  // Optional headers point inside the header.
+  auto opt = [&](xex2_header_keys key, size_t min_size) -> const void* {
+    for (uint32_t i = 0; i < header->header_count; ++i) {
+      const auto& h = header->headers[i];
+      if (h.key != key) {
+        continue;
+      }
+      if ((key & 0xFF) <= 0x01 || h.offset > header->header_size ||
+          min_size > header->header_size - h.offset) {
+        return nullptr;
+      }
+      return xex.data() + h.offset;
+    }
+    return nullptr;
+  };
+  const auto* security = reinterpret_cast<const xex2_security_info*>(
+      xex.data() + header->security_offset);
+  const auto* format = static_cast<const xex2_opt_file_format_info*>(
+      opt(XEX_HEADER_FILE_FORMAT_INFO, 8 + sizeof(xex2_compressed_block_info) +
+                                           4));
+  if (!format || format->info_size < 8 ||
+      format->info_size >
+          header->header_size - (reinterpret_cast<const uint8_t*>(format) -
+                                 xex.data())) {
+    return std::nullopt;
+  }
+  // xam's image is about 6 MB; nothing a module of ours reads is near this.
+  constexpr uint32_t kMaxImageSize = 64 * 1024 * 1024;
+  if (!security->image_size || security->image_size > kMaxImageSize) {
+    return std::nullopt;
+  }
+
+  XexHostImage result;
+  result.base_address = security->load_address;
+  for (uint32_t i = 0; i < header->header_count; ++i) {
+    if (header->headers[i].key == XEX_HEADER_IMAGE_BASE_ADDRESS) {
+      result.base_address = header->headers[i].value;
+    }
+  }
+  if (const auto* info = static_cast<const xex2_opt_resource_info*>(
+          opt(XEX_HEADER_RESOURCE_INFO, 4))) {
+    const uint32_t count = info->size >= 4 ? (info->size - 4) / 16 : 0;
+    const size_t at = reinterpret_cast<const uint8_t*>(info) - xex.data();
+    if (4 + size_t(count) * 16 <= header->header_size - at) {
+      result.resources.assign(info->resources, info->resources + count);
+    }
+  }
+
+  result.data.resize(security->image_size);
+  for (const uint8_t* key : {xe_xex2_retail_key, xe_xex2_devkit_key}) {
+    if (DecodeXexHostImage(xex, header, security, format, key, &result.data)) {
+      return result;
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace cpu
 }  // namespace xe

@@ -16,9 +16,10 @@
 // with a gamertag, renaming, linking devices, recovery, and moving a profile's data.
 //
 // The screens only talk to XeniaLiveAccountService. Every call is asynchronous and its
-// completion runs on the main queue. xe_ios_live_account_service() is a fake
-// (XeniaLiveAccountStub) until the app installs the real one, built on
-// xe::net::live::AccountClient, with xe_ios_live_account_set_service().
+// completion runs on the main queue. The app installs the real service
+// (ios_live_account_real, on xe::net::live::AccountClient) at startup with
+// xe_ios_live_account_set_service(). Simulator builds also have a fake one
+// (ios_live_account_preview) for working on the screens without a lobby.
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -232,6 +233,12 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 
 // ---- Saves between profiles on this device ----------------------------------------------
 
+@optional
+// Whether the export, import and save-sharing calls below do anything (missing: YES). The real
+// service doesn't move profile data yet, and the screens hide those rows.
+@property(nonatomic, readonly) BOOL supportsProfileData;
+@required
+
 // The profiles on this device, the signed-in one first.
 - (void)localProfilesWithCompletion:(void (^)(NSArray<XeniaLiveLocalProfile*>* profiles))completion;
 // Every profile uses one set of saves. Turning it on merges them (the newest of each save is
@@ -257,11 +264,17 @@ extern NSNotificationName const XeniaLiveAccountDidChangeNotification;
 extern NSNotificationName const XeniaLiveIncomingApprovalNotification;
 
 // The service the screens use. The app installs the real one at startup; until then this
-// is XeniaLiveAccountStub, which fakes everything in memory.
+// is nil on a device, and the preview service in the Simulator.
 id<XeniaLiveAccountService> xe_ios_live_account_service(void);
+#if TARGET_OS_SIMULATOR
+// A new preview service, which fakes the lobby in memory.
+id<XeniaLiveAccountService> xe_ios_live_account_preview_service(void);
+#endif
 void xe_ios_live_account_set_service(id<XeniaLiveAccountService> _Nullable service);
-// YES for the stub (and nothing installed).
+// YES for the preview service (Simulator, nothing installed).
 BOOL xe_ios_live_account_service_is_stub(void);
+// The service's supportsProfileData.
+BOOL xe_ios_live_account_supports_profile_data(void);
 
 // Whether Profile shows Online Account. On when a real service is installed, or in a
 // preview build of the screens (defaults write ... XeniaLiveAccountPreview -bool YES, or

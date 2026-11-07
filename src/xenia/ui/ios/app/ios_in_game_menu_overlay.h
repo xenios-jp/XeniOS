@@ -41,8 +41,6 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, copy) void (^exitHandler)(void);
 @property(nonatomic, copy) void (^graphicsHandler)(void);
 @property(nonatomic, copy) void (^pauseEmulatorHandler)(void);
-// Friends, to invite them to the game (ios_friends_view_controller, Invite mode).
-@property(nonatomic, copy) void (^friendsHandler)(void);
 // Game invites and friend requests waiting; shown beside "Friends".
 @property(nonatomic) NSInteger friendsAttentionCount;
 // The Online panel's Join on a game invite, and Join Game on a friend's card.

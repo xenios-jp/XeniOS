@@ -21,6 +21,7 @@
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/net/live_account_hub.h"
+#import "xenia/ui/ios/shared/ios_live_account_real.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 
@@ -90,12 +91,15 @@ NSString* ProblemText(const std::string& problem) {
                            @"Friends status: the connection is down and retrying");
 }
 
-// Preview only: -XeniaLiveSocialPreviewFriends N (or the same defaults key) adds N made-up
-// friends to the real list, so a long list can be looked at in the Simulator. Never set in a
-// normal launch.
+// Simulator only: -XeniaLiveSocialPreviewFriends N (or the same defaults key) adds N made-up
+// friends to the real list, so a long list can be looked at. Device builds have none.
 NSInteger PreviewFriendCount() {
+#if TARGET_OS_SIMULATOR
   return MAX((NSInteger)0, MIN((NSInteger)200, [[NSUserDefaults standardUserDefaults]
                                                    integerForKey:@"XeniaLiveSocialPreviewFriends"]));
+#else
+  return 0;
+#endif
 }
 
 void AddPreviewFriends(NSMutableArray* result);
@@ -168,6 +172,7 @@ void AddPreviewFriends(NSMutableArray* result);
 namespace {
 
 void AddPreviewFriends(NSMutableArray* result) {
+#if TARGET_OS_SIMULATOR
   static const char* const kNames[] = {
       "Bo",          "Aria Vance",   "NightOwl 42", "Kenji",       "Marisol",     "TurboTaco",
       "Quiet Storm", "Lumen",        "Hollis",      "xXSniperXx",  "Priya",       "Cobalt Fox",
@@ -198,6 +203,9 @@ void AddPreviewFriends(NSMutableArray* result) {
     }
     [result addObject:[[[XeniaLiveFriend alloc] initWithFriend:f presence:presence] autorelease]];
   }
+#else
+  (void)result;
+#endif
 }
 
 }  // namespace
@@ -291,6 +299,11 @@ void AddPreviewFriends(NSMutableArray* result) {
 @end
 
 #pragma mark - Bridge
+
+@interface XeniaLiveSocial ()
+- (void)refresh;
+- (std::shared_ptr<live::AccountShare>)currentShare;
+@end
 
 @implementation XeniaLiveSocial {
   std::shared_ptr<live::AccountShare> share_;
@@ -541,6 +554,10 @@ void AddPreviewFriends(NSMutableArray* result) {
     });
   };
   events.request_failed = [](const std::string& request, const std::string& reason) {
+    // The account screens say these themselves.
+    if (xe_ios_live_account_real_handles(request)) {
+      return;
+    }
     NSString* text = RequestFailedText(request, reason);
     dispatch_async(dispatch_get_main_queue(), ^{
       [[NSNotificationCenter defaultCenter]
@@ -549,6 +566,7 @@ void AddPreviewFriends(NSMutableArray* result) {
                       userInfo:@{XeniaLiveSocialMessageKey : text}];
     });
   };
+  xe_ios_live_account_real_add_events(events);
   share_ = live::ShareAccount(lobby, g_host->storage_root / "live" / "device_key",
                               profile.online_xuid, profile.gamertag, std::move(events));
   if (share_) {
@@ -593,6 +611,10 @@ void AddPreviewFriends(NSMutableArray* result) {
 }
 
 #pragma mark Reading
+
+- (std::shared_ptr<live::AccountShare>)currentShare {
+  return share_;
+}
 
 - (NSString*)friendCode {
   if (!share_) {
@@ -977,9 +999,21 @@ void AddPreviewFriends(NSMutableArray* result) {
 
 @end
 
+std::shared_ptr<live::AccountShare> xe_ios_live_social_current_share() {
+  return [[XeniaLiveSocial shared] currentShare];
+}
+
+void xe_ios_live_social_refresh_now() { [[XeniaLiveSocial shared] refresh]; }
+void xe_ios_live_social_reconnect() {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  [social releaseShare];
+  [social refresh];
+}
+
 void xe_ios_live_social_install(XeniaIOSLiveSocialHost host) {
   delete g_host;
   g_host = new XeniaIOSLiveSocialHost(std::move(host));
+  xe_ios_live_account_real_install(g_host);
   dispatch_async(dispatch_get_main_queue(), ^{
     [[XeniaLiveSocial shared] performSelector:@selector(start)];
   });
