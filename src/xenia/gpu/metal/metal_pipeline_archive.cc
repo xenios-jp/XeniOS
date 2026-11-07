@@ -434,7 +434,10 @@ void MetalPipelineArchive::Close(bool save) {
 
 MTL::RenderPipelineState* MetalPipelineArchive::NewRenderPipelineState(
     MTL::Device* device, MTL::RenderPipelineDescriptor* desc,
-    NS::Error** error) {
+    NS::Error** error, bool* hit_out) {
+  if (hit_out) {
+    *hit_out = false;
+  }
   if (NS::Array* archives = GetArchives()) {
     desc->setBinaryArchives(archives);
     // A hit isn't saved again.
@@ -446,6 +449,9 @@ MTL::RenderPipelineState* MetalPipelineArchive::NewRenderPipelineState(
     if (pipeline) {
       std::lock_guard<std::mutex> lock(mutex_);
       ++hits_;
+      if (hit_out) {
+        *hit_out = true;
+      }
       return pipeline;
     }
   }

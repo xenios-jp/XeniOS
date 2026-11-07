@@ -486,6 +486,10 @@ class CommandProcessor {
     XenosZPDReport speculative_value;
     XenosZPDReport speculative_delta;
     bool speculative = false;
+    // Fast modes: a draw it counts was skipped or drawn through a placeholder
+    // while its shaders compiled, so the measured delta is wrong either way.
+    // It retires with the guess written at event time.
+    bool inexact = false;
     // For strict, when a report holds the D3D sentinel.
     // Only these are worth blocking a wait for.
     bool awaited = false;
@@ -525,6 +529,9 @@ class CommandProcessor {
     uint64_t speculative_corrections = 0;
     // Reports force-retired on the backstop deadline with segments unresolved.
     uint64_t retires_abandoned = 0;
+    // Reports that kept their guess because a draw they count didn't draw
+    // with its own shaders.
+    uint64_t inexact_reports = 0;
     uint64_t last_log_frame = 0;
 
     void Reset(uint64_t current_frame) {
@@ -577,6 +584,15 @@ class CommandProcessor {
   // draws, and when the VIZ ID or survey state changes. Also opens a pending
   // segment, once per draw.
   void UpdateQuerySegment(uint32_t scale_area, bool count_total, bool survey);
+  // Called by backends when a draw is skipped or drawn through a placeholder
+  // while its shaders compile. Strict mode compiles such draws in place
+  // instead, so only fast modes get here with a report to mark.
+  void NoteZPDDrawInexact() {
+    if ((zpd_mode_ == ZPDMode::kFast || zpd_mode_ == ZPDMode::kFastAlt) &&
+        zpd_current_report_.handle != kInvalidReportHandle) {
+      zpd_current_report_.inexact = true;
+    }
+  }
 
   // Called by backends when a host query resolve completes.
   // Accumulates the normalized sample counts into the report.

@@ -1795,8 +1795,15 @@ void CommandProcessor::PumpPendingRetire() {
     }
     zpd_pending_retire_start_ms_ = 0;
 
+    if (front.inexact && front.speculative) {
+      // A draw it counts didn't draw with its own shaders, so the measured
+      // delta is too low (skipped) or too high (placeholder). The guess the
+      // guest already has is the better answer.
+      front.delta = front.speculative_delta;
+      zpd_stats_.inexact_reports++;
+    }
     zpd_sample_counter_ += front.delta;
-    if (front.speculative) {
+    if (front.speculative && !front.inexact) {
       if (fast_zpd_report_cached_deltas_.size() >= kFastZPDCacheMaxEntries &&
           !fast_zpd_report_cached_deltas_.count(front.address)) {
         fast_zpd_report_cached_deltas_.clear();

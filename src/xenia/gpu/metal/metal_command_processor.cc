@@ -12,6 +12,8 @@
 #include "xenia/gpu/metal/msl_bindings.h"
 
 #include <dispatch/dispatch.h>
+#include <objc/runtime.h>
+#include <pthread/qos.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -115,6 +117,13 @@ DEFINE_int32(
     "logical CPU cores), a positive number to specify the number of threads "
     "explicitly (up to the number of logical CPU cores), 0 to disable "
     "multithreaded compilation.",
+    "Metal");
+DEFINE_string(
+    metal_compile_thread_qos, "default",
+    "Quality of service of the shader and pipeline compile threads: default, "
+    "user-initiated (ahead of the game's own threads, which run at default) or "
+    "utility (behind them). The compile threads start at default, like any "
+    "thread created without one.",
     "Metal");
 DEFINE_bool(
     metal_finite_multiply_general_fallback, true,
@@ -966,10 +975,20 @@ void MetalCommandProcessor::InitializeAsyncCompilation() {
     UpdateCompileThreadLimitLocked();
   }
 
+  // How many compiles Metal's compiler service runs at once for this app
+  // (iOS 26, macOS 13.3). Threads past it wait in Metal, though they still do
+  // our own translation first.
+  uint64_t metal_compile_tasks = 0;
+  if (class_respondsToSelector(
+          object_getClass(reinterpret_cast<id>(device_)),
+          sel_registerName("maximumConcurrentCompilationTaskCount"))) {
+    metal_compile_tasks = device_->maximumConcurrentCompilationTaskCount();
+  }
   XELOGI(
       "Metal: async {} shader/pipeline compilation enabled with {} worker "
-      "thread(s)",
-      UseDxilPath() ? "DXIL" : "SPIRV-Cross", thread_count);
+      "thread(s), qos {}, Metal compiles at once: {}",
+      UseDxilPath() ? "DXIL" : "SPIRV-Cross", thread_count,
+      cvars::metal_compile_thread_qos, metal_compile_tasks);
 }
 
 void MetalCommandProcessor::ShutdownAsyncCompilation() {
@@ -1062,7 +1081,10 @@ MetalCommandProcessor::EnsureTranslationSpirv(
     // Another thread is translating it.
     return ShaderCompileStatus::kPending;
   }
-  if (!translator.TranslateAnalyzedShader(*translation)) {
+  const int64_t translate_start_ns = GetSteadyTimeNs();
+  const bool translated = translator.TranslateAnalyzedShader(*translation);
+  AddCompileStageTime(kCompileStageTranslate, translate_start_ns);
+  if (!translated) {
     XELOGE("Metal: failed to translate shader {:016X} mod {:016X} to SPIR-V",
            translation->shader().ucode_data_hash(),
            translation->modification());
@@ -1109,11 +1131,15 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
         static_cast<DxilShader::DxilTranslation*>(translation)
             ->LoadMetallib(device_, entry.metallib, entry.entry_point_name)) {
       return ShaderCompileStatus::kReady;
+    const int64_t cached_start_ns = GetSteadyTimeNs();
     }
   }
   std::vector<uint8_t> metallib;
-  if (!CompileHostShader(translation, is_ios,
-                         cacheable ? &metallib : nullptr)) {
+  const int64_t air_start_ns = GetSteadyTimeNs();
+  const bool compiled =
+      CompileHostShader(translation, is_ios, cacheable ? &metallib : nullptr);
+  AddCompileStageTime(kCompileStageAir, air_start_ns);
+  if (!compiled) {
     return ShaderCompileStatus::kFailed;
   }
   if (cacheable && !metallib.empty()) {
@@ -1266,6 +1292,8 @@ Shader::Translation* MetalCommandProcessor::GetOrCreateHostTranslation(
 
 void MetalCommandProcessor::LogShaderCompilePending(
     const Shader::Translation* translation, const char* stage_tag) {
+  // Every skipped or placeholder draw comes through here.
+  NoteZPDDrawInexact();
   if (!ShouldLogRateLimited(async_shader_pending_last_log_ns_,
                             kAsyncCompileLogIntervalNs)) {
     return;
@@ -1280,6 +1308,8 @@ void MetalCommandProcessor::LogShaderCompilePending(
 void MetalCommandProcessor::LogPipelineCompilePending(
     const Shader::Translation* vertex_translation,
     const Shader::Translation* pixel_translation) {
+  // Every skipped or placeholder draw comes through here.
+  NoteZPDDrawInexact();
   if (!ShouldLogRateLimited(async_pipeline_pending_last_log_ns_,
                             kAsyncCompileLogIntervalNs)) {
     return;
@@ -1296,6 +1326,8 @@ void MetalCommandProcessor::LogPipelineCompilePending(
 void MetalCommandProcessor::LogPlaceholderDraw(
     const Shader::Translation* vertex_translation,
     const Shader::Translation* pixel_translation) {
+  // Every skipped or placeholder draw comes through here.
+  NoteZPDDrawInexact();
   if (!ShouldLogRateLimited(async_placeholder_last_log_ns_,
                             kAsyncCompileLogIntervalNs)) {
     return;
@@ -1307,6 +1339,48 @@ void MetalCommandProcessor::LogPlaceholderDraw(
       vertex_translation->modification(),
       pixel_translation ? pixel_translation->shader().ucode_data_hash() : 0,
       pixel_translation ? pixel_translation->modification() : 0);
+}
+
+void MetalCommandProcessor::AddCompileStageTime(CompileStage stage,
+                                                int64_t start_ns) {
+  const uint64_t ns = uint64_t(std::max<int64_t>(GetSteadyTimeNs() - start_ns, 0));
+  CompileStageTotal& total = compile_stage_totals_[stage];
+  total.count.fetch_add(1, std::memory_order_relaxed);
+  total.ns.fetch_add(ns, std::memory_order_relaxed);
+  uint64_t max_ns = total.max_ns.load(std::memory_order_relaxed);
+  while (ns > max_ns && !total.max_ns.compare_exchange_weak(
+                            max_ns, ns, std::memory_order_relaxed)) {
+  }
+}
+
+void MetalCommandProcessor::LogCompileStages() {
+  constexpr int64_t kIntervalNs = int64_t(5) * 1000 * 1000 * 1000;
+  if (!ShouldLogRateLimited(compile_stage_last_log_ns_, kIntervalNs)) {
+    return;
+  }
+  static constexpr const char* kNames[kCompileStageCount] = {
+      "translate", "cached library", "AIR", "specialize",
+      "archive pipeline", "compiled pipeline", "tess pipeline", "draw wait"};
+  std::string line;
+  for (size_t i = 0; i < kCompileStageCount; ++i) {
+    CompileStageTotal& total = compile_stage_totals_[i];
+    const uint64_t count = total.count.load(std::memory_order_relaxed);
+    const uint64_t ns = total.ns.load(std::memory_order_relaxed);
+    const uint64_t new_count = count - compile_stage_logged_count_[i];
+    const uint64_t new_ns = ns - compile_stage_logged_ns_[i];
+    compile_stage_logged_count_[i] = count;
+    compile_stage_logged_ns_[i] = ns;
+    const uint64_t max_ns = total.max_ns.exchange(0, std::memory_order_relaxed);
+    if (!new_count) {
+      continue;
+    }
+    line += fmt::format("{}{} {} in {:.1f} ms (max {:.1f})",
+                        line.empty() ? "" : ", ", kNames[i], new_count,
+                        double(new_ns) / 1e6, double(max_ns) / 1e6);
+  }
+  if (!line.empty()) {
+    XELOGI("Metal compile stages, last 5 s: {}", line);
+  }
 }
 
 void MetalCommandProcessor::ApplyColorAttachmentState(
@@ -1407,7 +1481,9 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
       NS::String::string(function_name.c_str(), NS::UTF8StringEncoding));
   function_desc->setConstantValues(values);
   NS::Error* error = nullptr;
+  const int64_t specialize_start_ns = GetSteadyTimeNs();
   MTL::Function* function = library->newFunction(function_desc, &error);
+  AddCompileStageTime(kCompileStageSpecialize, specialize_start_ns);
   function_desc->release();
   values->release();
   if (!function) {
@@ -1836,8 +1912,13 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
   desc->setAlphaToCoverageEnabled(false);
 
   NS::Error* error = nullptr;
-  MTL::RenderPipelineState* pipeline =
-      pipeline_archive_.NewRenderPipelineState(device_, desc, &error);
+  const int64_t pipeline_start_ns = GetSteadyTimeNs();
+  bool archive_hit = false;
+  MTL::RenderPipelineState* pipeline = pipeline_archive_.NewRenderPipelineState(
+      device_, desc, &error, &archive_hit);
+  AddCompileStageTime(archive_hit ? kCompileStagePipelineHit
+                                  : kCompileStagePipelineMiss,
+                      pipeline_start_ns);
   desc->release();
 
   if (!pipeline && error_out && error) {
@@ -2050,8 +2131,10 @@ MetalCommandProcessor::CreateDxilTessellationPipelineState(
     desc->setMeshLinkedFunctions(mesh_linked_functions);
     mesh_linked_functions->release();
     error = nullptr;
+    const int64_t pipeline_start_ns = GetSteadyTimeNs();
     pipeline = device_->newRenderPipelineState(desc, MTL::PipelineOptionNone,
                                                nullptr, &error);
+    AddCompileStageTime(kCompileStageTessPipeline, pipeline_start_ns);
   } else if (error_out && !error) {
     *error_out = "missing tessellation stage function";
   }
@@ -2074,6 +2157,11 @@ MetalCommandProcessor::CreateDxilTessellationPipelineState(
 
 void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
   xe::threading::set_name(fmt::format("Metal Shaders {}", thread_index));
+  if (cvars::metal_compile_thread_qos == "user-initiated") {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+  } else if (cvars::metal_compile_thread_qos == "utility") {
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+  }
   std::unique_ptr<SpirvShaderTranslator> worker_translator =
       CreateSpirvShaderTranslator();
   while (true) {
@@ -4129,8 +4217,6 @@ void MetalCommandProcessor::InitializeShaderStorage(
     const std::filesystem::path title_local_root =
         GetShaderStorageLocalRoot(cache_root) / "metal" /
         fmt::format("{:08X}", title_id);
-    // Both are discarded when the build or the translation settings change:
-    // the libraries, and the pipelines' functions, are made by this build.
     const std::string fingerprint = MetalShaderLibraryCache::MakeFingerprint(
         fmt::format("{} device={} msaa2x={} scale={}x{}",
                     UseDxilPath() ? "dxil" : "msl",
@@ -4144,8 +4230,16 @@ void MetalCommandProcessor::InitializeShaderStorage(
     } else {
       shader_library_cache_.Close();
     }
-    pipeline_archive_.Open(device_, title_local_root / "pipelines",
-                           fingerprint);
+    // The archive outlives builds and settings: Metal finds a pipeline in it
+    // only for the same descriptor and functions, the functions by the hash of
+    // their bitcode (spirv2air writes it), so a changed translation misses and
+    // compiles, which Apple documents as safe. Lookups also need the same GPU
+    // and OS build, which Open adds. Discarding it on every app update made
+    // the first session after each one rebuild every pipeline.
+    pipeline_archive_.Open(
+        device_, title_local_root / "pipelines",
+        fmt::format("archive1 {} device={}", UseDxilPath() ? "dxil" : "msl",
+                    device_->name() ? device_->name()->utf8String() : ""));
     archive_saved_ticks_ = xe::Clock::QueryHostTickCount();
   }
 
@@ -4252,6 +4346,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   EndZPDFrame();
   ProcessCompletedSubmissions();
   LogFrameGpuWaits();
+  LogCompileStages();
 
   // Completion handlers land a frame or two behind, which a window this wide
   // absorbs.
@@ -4667,7 +4762,9 @@ void MetalCommandProcessor::AwaitAsyncCompilesUntil(const Done& done) {
       storage_stats_boosted_ = true;
     }
     UpdateCompileThreadLimitLocked();
+    const int64_t wait_start_ns = GetSteadyTimeNs();
     async_compile_idle_cv_.wait(lock, done);
+    AddCompileStageTime(kCompileStageDrawWait, wait_start_ns);
     --async_compile_awaiters_;
     UpdateCompileThreadLimitLocked();
   }
@@ -8741,8 +8838,8 @@ void MetalCommandProcessor::EndSharedComputeEncoder() {
 }
 
 bool MetalCommandProcessor::ExactShadersRequired(bool memexport_used) const {
-  return memexport_used ||
-         (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
+  return memexport_used || draw_stand_in_wait_reason_ ||
+         (GetZPDMode() == ZPDMode::kStrict && !zpd_force_fake_fallback_ &&
           zpd_current_report_.handle != kInvalidReportHandle);
 }
 
