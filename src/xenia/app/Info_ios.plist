@@ -173,6 +173,8 @@
   <string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>System Link uses your local network to play with other devices running XeniOS or Xenia, and with an XLink Kai engine on your network.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Voice chat in games uses your microphone, like a headset on the first controller.</string>
   <key>NSMotionUsageDescription</key>
   <string>Head tracking adjusts spatial audio to your head movement when using the PHASE audio backend with supported headphones.</string>
   <key>LSSupportsGameMode</key>

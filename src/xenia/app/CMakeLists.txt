@@ -126,6 +126,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 elseif(APPLE)
   target_link_libraries(xenia-app PRIVATE
     xenia-apu-phase
+    xenia-apu-voice-apple
     xenia-gpu-metal
     xenia-hid-keyboard
     xenia-ui-metal

@@ -432,6 +432,13 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
                    "Spatial sound stays with the screen as you turn your head.", false);
   }
   PushIfNotEmpty(sections, std::move(audio));
+
+  IOSConfigSection voice;
+  voice.title = "Voice Chat";
+  voice.footer = "Games that support voice hear your microphone, as if a headset were "
+                 "plugged into the first controller. Applies when a game starts.";
+  AddBoolSetting(voice.items, "voice_chat", "Voice Chat", "", false);
+  PushIfNotEmpty(sections, std::move(voice));
   return sections;
 }
 

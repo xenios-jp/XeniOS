@@ -28,10 +28,32 @@ namespace {
 // (xenia/apu/phase/phase_audio_driver.mm) restarts its engine on it.
 NSString* const kAudioSessionRestoredNotification = @"XeniaAudioSessionRestored";
 
+// Posted by the headset (xenia/apu/voice/apple/apple_voice_device.mm) when a
+// title opens or closes it, with userInfo @{@"active": @(BOOL)}.
+NSString* const kVoiceChatChangedNotification = @"XeniaVoiceChatChanged";
+
+// True while a headset needs the microphone.
+std::atomic<bool> g_voice_chat{false};
+
 // The one place the category is chosen. Playback ignores the silent switch, as
 // decided for XeniOS, and stops other apps' audio; AVAudioSessionCategorySoloAmbient
-// would follow the silent switch.
-NSString* AudioSessionCategory() { return AVAudioSessionCategoryPlayback; }
+// would follow the silent switch. Voice chat needs the microphone, so it plays and
+// records, which also ignores the silent switch.
+NSString* AudioSessionCategory() {
+  return g_voice_chat.load(std::memory_order_acquire) ? AVAudioSessionCategoryPlayAndRecord
+                                                      : AVAudioSessionCategoryPlayback;
+}
+
+// Voice chat: the loudspeaker rather than the earpiece, and Bluetooth headsets with
+// their microphones.
+AVAudioSessionCategoryOptions AudioSessionOptions() {
+  if (!g_voice_chat.load(std::memory_order_acquire)) {
+    return 0;
+  }
+  return AVAudioSessionCategoryOptionDefaultToSpeaker |
+         AVAudioSessionCategoryOptionAllowBluetoothHFP |
+         AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+}
 
 constexpr int kRestoreMaxAttempts = 10;
 constexpr int64_t kRestoreRetryDelayNs = 1 * NSEC_PER_SEC;
@@ -59,7 +81,7 @@ bool ConfigureAndActivate(bool log_state) {
 
     if (![session setCategory:AudioSessionCategory()
                          mode:AVAudioSessionModeDefault
-                      options:0
+                      options:AudioSessionOptions()
                         error:&error]) {
       XELOGW("iOS audio session: setCategory failed: {}", ErrorText(error));
       error = nil;
@@ -186,6 +208,16 @@ void IOSAudioSessionStart() {
                          queue:queue
                     usingBlock:^(NSNotification* n) {
                       HandleRouteChange(n);
+                    }];
+    [center addObserverForName:kVoiceChatChangedNotification
+                        object:nil
+                         queue:queue
+                    usingBlock:^(NSNotification* n) {
+                      const bool active = [n.userInfo[@"active"] boolValue];
+                      // Always reconfigure: the headset starts its engine once the
+                      // session is restored.
+                      g_voice_chat.store(active, std::memory_order_release);
+                      IOSAudioSessionRestore(active ? "voice chat started" : "voice chat ended");
                     }];
     [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification
                         object:session

@@ -26,6 +26,7 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_live_invites.h"
 #include "xenia/kernel/xam/xam_live_social.h"
+#include "xenia/kernel/xam/xam_voice.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -118,6 +119,8 @@ KernelState::KernelState(Emulator* emulator)
 KernelState::~KernelState() {
   // The online accounts' events use the kernel: stop them first.
   xam::LiveSocialShutdown();
+  // The headset thread writes guest memory.
+  xam::VoiceShutdown();
 
   // Before anything a timer callback touches goes away.
   XTimer::CancelAll();
