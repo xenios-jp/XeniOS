@@ -231,6 +231,12 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 
 // ---- Saves between profiles on this device ----------------------------------------------
 
+@optional
+// Whether the export, import and save-sharing calls below do anything (missing: YES). The real
+// service doesn't move profile data yet, and the screens hide those rows.
+@property(nonatomic, readonly) BOOL supportsProfileData;
+@required
+
 // The profiles on this device, the signed-in one first.
 - (void)localProfilesWithCompletion:(void (^)(NSArray<XeniaLiveLocalProfile*>* profiles))completion;
 // Every profile uses one set of saves. Turning it on merges them (the newest of each save is
@@ -259,8 +265,10 @@ extern NSNotificationName const XeniaLiveIncomingApprovalNotification;
 // is nil.
 id<XeniaLiveAccountService> xe_ios_live_account_service(void);
 void xe_ios_live_account_set_service(id<XeniaLiveAccountService> _Nullable service);
-// YES for the stub (and nothing installed).
+// YES for the preview service (Simulator, nothing installed).
 BOOL xe_ios_live_account_service_is_stub(void);
+// The service's supportsProfileData.
+BOOL xe_ios_live_account_supports_profile_data(void);
 
 // Whether Profile shows Online Account: on when a service is installed.
 BOOL xe_ios_live_account_ui_enabled(void);

@@ -69,7 +69,6 @@
 #import "xenia/ui/ios/launcher/ios_game_content_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_disc_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_library.h"
-#import "xenia/ui/ios/launcher/ios_friends_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
 #import "xenia/ui/ios/shared/ios_live_invite_banner.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
@@ -572,7 +571,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
       });
   // The library's Online button: friends, invites, the party, and the games online.
   xe_ios_system_link_set_online_menu(^{
-    [system_link_owner presentFriendsWithMode:XeniaIOSFriendsModeBrowse];
+    [system_link_owner presentOnlineSheet];
   });
   // The globe: everyone on XeniOS, as a full page.
   xe_ios_system_link_set_globe_action(^{
@@ -1813,10 +1812,6 @@ static bool XeJITUsable() {
   };
   self.inGameMenuOverlay.pauseEmulatorHandler = ^{
     [unsafe_self setEmulationPausedByUser:!unsafe_self.inGameMenuOverlay.emulatorPaused];
-  };
-  self.inGameMenuOverlay.friendsHandler = ^{
-    [unsafe_self hideInGameMenuOverlay];
-    [unsafe_self presentFriendsWithMode:XeniaIOSFriendsModeInvite];
   };
   self.inGameMenuOverlay.friendsAttentionCount = [XeniaLiveSocial shared].attentionCount;
   self.inGameMenuOverlay.onlineAcceptInviteHandler = ^(XeniaLiveInvite* invite) {
@@ -3529,28 +3524,6 @@ static bool XeJITUsable() {
                                }];
 }
 
-// The System Link page of the Online screen: each game's public lobby, the library's games
-// first; choosing one opens its System Link sheet.
-- (UIViewController*)gamesOnlineController {
-  __unsafe_unretained XeniaViewController* unsafe_self = self;
-  std::vector<XeniaIOSOnlineLibraryGame> library;
-  for (const IOSDiscoveredGame& game : discovered_games_) {
-    library.push_back({game.title_id, ToNSString(game.title),
-                       game.icon_data.empty() ? nil
-                                              : [NSData dataWithBytes:game.icon_data.data()
-                                                               length:game.icon_data.size()]});
-  }
-  return xe_ios_new_online_view_controller(library, ^(uint32_t title_id) {
-    const std::vector<IOSDiscoveredGame>& games = unsafe_self->discovered_games_;
-    for (size_t i = 0; i < games.size(); ++i) {
-      if (games[i].title_id == title_id) {
-        [unsafe_self performGameAction:XeniaIOSGameActionSystemLink forIndex:i];
-        return;
-      }
-    }
-  });
-}
-
 // Public Games, from the library's globe: the games with players in them, live, as a glass card.
 - (void)presentPublicGames {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
@@ -3570,7 +3543,7 @@ static bool XeJITUsable() {
                     }
                   }] autorelease];
   page.openFriendsHandler = ^{
-    [unsafe_self presentFriendsWithMode:XeniaIOSFriendsModeBrowse];
+    [unsafe_self presentOnlineSheet];
   };
   UINavigationController* navigation =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:page] autorelease];
@@ -3580,62 +3553,33 @@ static bool XeJITUsable() {
   [presenter presentViewController:navigation animated:YES completion:nil];
 }
 
-- (void)presentFriendsWithMode:(XeniaIOSFriendsMode)mode {
+// The library's Online button: the same Online panel as the in-game menu, as a glass card over
+// the library. Signed out, it says why and how to go online.
+- (void)presentOnlineSheet {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
-  NSString* game = mode == XeniaIOSFriendsModeInvite ? [self runningGameDisplayName] : nil;
-  XeniaIOSFriendsViewController* friends =
-      [[[XeniaIOSFriendsViewController alloc] initWithMode:mode gameTitle:game] autorelease];
-  friends.acceptInviteHandler = ^(XeniaLiveInvite* invite) {
+  XeniaIOSOnlineSheetViewController* sheet =
+      [[[XeniaIOSOnlineSheetViewController alloc] init] autorelease];
+  sheet.acceptInviteHandler = ^(XeniaLiveInvite* invite) {
     [unsafe_self acceptLiveInvite:invite];
   };
-  friends.joinFriendHandler = ^(XeniaLiveFriend* peer) {
+  sheet.joinFriendHandler = ^(XeniaLiveFriend* peer) {
     [unsafe_self joinLiveFriend:peer];
   };
-  if (mode == XeniaIOSFriendsModeBrowse) {
-    friends.gamesOnlineProvider = ^UIViewController* {
-      return [unsafe_self gamesOnlineController];
-    };
-  }
-  if (mode == XeniaIOSFriendsModeBrowse && !self.gameRunning &&
-      [XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline) {
-    // Signed in: the same Online pages as in the game menu. Not signed in: the older list
-    // below still holds the sign-in steps.
-    XeniaIOSOnlineSheetViewController* sheet =
-        [[[XeniaIOSOnlineSheetViewController alloc] init] autorelease];
-    sheet.acceptInviteHandler = friends.acceptInviteHandler;
-    sheet.joinFriendHandler = friends.joinFriendHandler;
-    sheet.sourceRect = xe_ios_system_link_online_button_rect();
-    UINavigationController* sheet_navigation =
-        [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:sheet] autorelease];
-    sheet_navigation.navigationBarHidden = YES;
-    // Over the library, which stays visible and dimmed: the panel floats as a glass card.
-    sheet_navigation.view.backgroundColor = [UIColor clearColor];
-    sheet_navigation.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    sheet_navigation.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
-    sheet_navigation.presentationController.delegate = self;
-    UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
-    // The card grows out of the button itself, so there is no cross-fade under it.
-    [presenter presentViewController:sheet_navigation
-                            animated:CGRectIsEmpty(sheet.sourceRect) ||
-                                     UIAccessibilityIsReduceMotionEnabled()
-                          completion:nil];
-    return;
-  }
-  if (self.gameRunning) {
-    [self presentPauseSheetWithRootController:friends
-                                preferredSize:CGSizeMake(520.0, 680.0)
-                  preventInteractiveDismissal:NO
-                                   completion:nil];
-    return;
-  }
-  XeniaLandscapeNavigationController* navigation_controller =
-      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:friends]
-          autorelease];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(520.0, 680.0),
-                                     NO);
-  navigation_controller.presentationController.delegate = self;
+  sheet.sourceRect = xe_ios_system_link_online_button_rect();
+  UINavigationController* sheet_navigation =
+      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:sheet] autorelease];
+  sheet_navigation.navigationBarHidden = YES;
+  // Over the library, which stays visible and dimmed: the panel floats as a glass card.
+  sheet_navigation.view.backgroundColor = [UIColor clearColor];
+  sheet_navigation.modalPresentationStyle = UIModalPresentationOverFullScreen;
+  sheet_navigation.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+  sheet_navigation.presentationController.delegate = self;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
-  [presenter presentViewController:navigation_controller animated:YES completion:nil];
+  // The card grows out of the button itself, so there is no cross-fade under it.
+  [presenter presentViewController:sheet_navigation
+                          animated:CGRectIsEmpty(sheet.sourceRect) ||
+                                   UIAccessibilityIsReduceMotionEnabled()
+                        completion:nil];
 }
 
 // Accept from the banner or Friends: in the running game when it's the invite's, else start the

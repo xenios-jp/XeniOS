@@ -17,6 +17,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 // Friends, presence and game invites for the app's own screens: the active
 // profile's account on the online service (the System Link lobby, protocol
@@ -38,6 +39,15 @@ struct XeniaIOSLiveSocialHost {
   std::function<bool(uint64_t xuid)> enable_online;
   // The service moved the account to another online XUID: keep it.
   std::function<void(uint64_t xuid, uint64_t online_xuid)> set_online_xuid;
+  // Every profile on this device.
+  std::function<std::vector<XeniaIOSLiveProfile>()> profiles;
+  // Turns online play off again (going online failed before an account was made).
+  std::function<bool(uint64_t xuid)> disable_online;
+  // Renames the profile in place; its saves and achievements stay.
+  std::function<bool(uint64_t xuid, const std::string& gamertag)> rename_profile;
+  // This device joined the account |online_xuid| (a link or recovery code): the profile that has
+  // it, or a new one named |gamertag|, online, signed in to the first slot. Its XUID, or 0.
+  std::function<uint64_t(uint64_t online_xuid, const std::string& gamertag)> adopt_account;
   // Where the device key lives: <storage_root>/live/device_key.
   std::filesystem::path storage_root;
 };

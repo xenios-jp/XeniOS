@@ -21,6 +21,7 @@
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/net/live_account_hub.h"
+#import "xenia/ui/ios/shared/ios_live_account_real.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 
@@ -244,6 +245,11 @@ NSString* ProblemText(const std::string& problem) {
 @end
 
 #pragma mark - Bridge
+
+@interface XeniaLiveSocial ()
+- (void)refresh;
+- (std::shared_ptr<live::AccountShare>)currentShare;
+@end
 
 @implementation XeniaLiveSocial {
   std::shared_ptr<live::AccountShare> share_;
@@ -494,6 +500,10 @@ NSString* ProblemText(const std::string& problem) {
     });
   };
   events.request_failed = [](const std::string& request, const std::string& reason) {
+    // The account screens say these themselves.
+    if (xe_ios_live_account_real_handles(request)) {
+      return;
+    }
     NSString* text = RequestFailedText(request, reason);
     dispatch_async(dispatch_get_main_queue(), ^{
       [[NSNotificationCenter defaultCenter]
@@ -502,6 +512,7 @@ NSString* ProblemText(const std::string& problem) {
                       userInfo:@{XeniaLiveSocialMessageKey : text}];
     });
   };
+  xe_ios_live_account_real_add_events(events);
   share_ = live::ShareAccount(lobby, g_host->storage_root / "live" / "device_key",
                               profile.online_xuid, profile.gamertag, std::move(events));
   if (share_) {
@@ -546,6 +557,10 @@ NSString* ProblemText(const std::string& problem) {
 }
 
 #pragma mark Reading
+
+- (std::shared_ptr<live::AccountShare>)currentShare {
+  return share_;
+}
 
 - (NSString*)friendCode {
   if (!share_) {
@@ -920,9 +935,21 @@ NSString* ProblemText(const std::string& problem) {
 
 @end
 
+std::shared_ptr<live::AccountShare> xe_ios_live_social_current_share() {
+  return [[XeniaLiveSocial shared] currentShare];
+}
+
+void xe_ios_live_social_refresh_now() { [[XeniaLiveSocial shared] refresh]; }
+void xe_ios_live_social_reconnect() {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  [social releaseShare];
+  [social refresh];
+}
+
 void xe_ios_live_social_install(XeniaIOSLiveSocialHost host) {
   delete g_host;
   g_host = new XeniaIOSLiveSocialHost(std::move(host));
+  xe_ios_live_account_real_install(g_host);
   dispatch_async(dispatch_get_main_queue(), ^{
     [[XeniaLiveSocial shared] performSelector:@selector(start)];
   });

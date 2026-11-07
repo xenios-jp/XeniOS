@@ -47,6 +47,13 @@ struct IOSProfileSummary {
   std::string gamertag;
   bool signed_in = false;
   uint8_t signed_in_slot = 0xFF;
+  std::vector<uint8_t> picture;  // PNG, empty for none
+};
+
+// A gamer picture the system software comes with.
+struct IOSGamerPicture {
+  std::string key;
+  std::vector<uint8_t> png;  // 64x64
 };
 
 struct IOSAchievementEntry {
@@ -130,6 +137,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   using ProfileCreateCallback = std::function<uint64_t(const std::string&)>;
   // |user_index| is the player a game's sign-in prompt asked for, or kSignInFromMenu.
   using ProfileSignInCallback = std::function<bool(uint64_t xuid, uint32_t user_index)>;
+  using GamerPicturesListCallback = std::function<std::vector<IOSGamerPicture>()>;
+  using GamerPictureSetCallback = std::function<bool(uint64_t xuid, const std::string& key)>;
   static constexpr uint32_t kSignInFromMenu = UINT32_MAX;
   using GameTerminateCallback = std::function<bool()>;
   using TitleUpdateInstallCallback = std::function<bool(const std::string&, std::string*, bool*)>;
@@ -194,6 +203,22 @@ class IOSWindowedAppContext final : public WindowedAppContext {
       return false;
     }
     return profile_sign_in_callback_(xuid, user_index);
+  }
+
+  // Empty when the system software isn't installed.
+  void set_gamer_pictures_list_callback(GamerPicturesListCallback callback) {
+    gamer_pictures_list_callback_ = std::move(callback);
+  }
+  std::vector<IOSGamerPicture> ListGamerPictures() const {
+    return gamer_pictures_list_callback_ ? gamer_pictures_list_callback_()
+                                         : std::vector<IOSGamerPicture>();
+  }
+  // The profile has to be signed in.
+  void set_gamer_picture_set_callback(GamerPictureSetCallback callback) {
+    gamer_picture_set_callback_ = std::move(callback);
+  }
+  bool SetGamerPicture(uint64_t xuid, const std::string& key) const {
+    return gamer_picture_set_callback_ && gamer_picture_set_callback_(xuid, key);
   }
 
   void set_profile_services_ready_callback(ProfileServicesReadyCallback callback) {
@@ -535,6 +560,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   ProfilesListCallback profiles_list_callback_;
   ProfileCreateCallback profile_create_callback_;
   ProfileSignInCallback profile_sign_in_callback_;
+  GamerPicturesListCallback gamer_pictures_list_callback_;
+  GamerPictureSetCallback gamer_picture_set_callback_;
   GameTerminateCallback game_terminate_callback_;
   TitleUpdateInstallCallback title_update_install_callback_;
   GameExitedCallback game_exited_callback_;
