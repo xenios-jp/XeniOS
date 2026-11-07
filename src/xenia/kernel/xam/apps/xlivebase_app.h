@@ -27,6 +27,9 @@ class XLiveBaseApp : public App {
 
  private:
   X_HRESULT XFriendsCreateEnumerator(uint32_t args_ptr);
+  X_HRESULT DispatchAsyncTask(uint32_t message, uint32_t buffer_ptr,
+                              uint32_t task_ptr);
+  X_HRESULT XStringVerify(uint32_t buffer_ptr);
 };
 
 }  // namespace apps

@@ -154,6 +154,9 @@ class XSocket : public XObject {
   X_STATUS IOControl(uint32_t cmd, uint8_t* arg_ptr);
 
   X_STATUS Connect(N_XSOCKADDR* name, int name_len);
+  // Moves a stream socket that hasn't bound or connected off System Link to a
+  // host TCP socket, for a server on the internet.
+  X_STATUS UseHostStream();
   X_STATUS Bind(N_XSOCKADDR_IN* name, int name_len);
   X_STATUS Listen(int backlog);
   X_STATUS GetSockName(N_XSOCKADDR_IN* name);
@@ -183,6 +186,8 @@ class XSocket : public XObject {
   bool system_link() const {
     return system_link_port_ != nullptr || system_link_stream_ != nullptr;
   }
+  // Switched off System Link by UseHostStream to reach an internet server.
+  bool host_stream() const { return left_system_link_stream_ != nullptr; }
   bool SystemLinkReadable() const;
   bool SystemLinkWritable() const;
   // A connect failed.
@@ -290,6 +295,9 @@ class XSocket : public XObject {
   bool on_system_link_ = false;
   std::unique_ptr<net::SystemLinkPort> system_link_port_;
   std::unique_ptr<net::SystemLinkStream> system_link_stream_;
+  // The stream a socket left for a host socket. Kept until destruction like
+  // system_link_stream_, since a call on another thread may be in it.
+  std::unique_ptr<net::SystemLinkStream> left_system_link_stream_;
   // SO_LINGER with a zero timeout so closing resets the connection.
   bool linger_abort_ = false;
   // Set by shutdown(SD_RECEIVE or SD_BOTH). Receives fail with WSAESHUTDOWN.

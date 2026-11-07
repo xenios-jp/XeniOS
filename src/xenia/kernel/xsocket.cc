@@ -767,6 +767,28 @@ void XSocket::RunCooperatively(asio::error_code& ec, RetryMode mode,
   }
 }
 
+X_STATUS XSocket::UseHostStream() {
+  if (!system_link_stream_) {
+    return X_STATUS_SUCCESS;
+  }
+  if (bound_) {
+    last_error_ = 10022;  // WSAEINVAL
+    return X_STATUS_UNSUCCESSFUL;
+  }
+  asio::error_code ec;
+  acceptor_.emplace(GetIoContext());
+  acceptor_->open(asio::ip::tcp::v4(), ec);
+  if (ec) {
+    acceptor_.reset();
+    last_error_ = AsioErrorToWSAError(ec);
+    return X_STATUS_UNSUCCESSFUL;
+  }
+  system_link_stream_->Close(true);
+  left_system_link_stream_ = std::move(system_link_stream_);
+  on_system_link_ = false;
+  return X_STATUS_SUCCESS;
+}
+
 X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
   auto* addr_in = reinterpret_cast<N_XSOCKADDR_IN*>(name);
   if (system_link_stream_) {
@@ -802,6 +824,11 @@ X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
       last_error_ = AsioErrorToWSAError(ec);
       return X_STATUS_UNSUCCESSFUL;
     }
+    // FIONBIO may have been set on the acceptor (or on a System Link stream
+    // that UseHostStream replaced).
+    if (guest_non_blocking_) {
+      tcp_socket_->non_blocking(true, ec);
+    }
 
     asio::ip::tcp::endpoint endpoint(addr, port);
     RunCooperatively(ec, RetryMode::kConnect,
@@ -816,7 +843,9 @@ X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
   }
 
   if (ec) {
-    last_error_ = AsioErrorToWSAError(ec);
+    // Winsock reports a non-blocking connect under way as WSAEWOULDBLOCK.
+    last_error_ = ec == asio::error::in_progress ? 10035  // WSAEWOULDBLOCK
+                                                 : AsioErrorToWSAError(ec);
     return X_STATUS_UNSUCCESSFUL;
   }
 

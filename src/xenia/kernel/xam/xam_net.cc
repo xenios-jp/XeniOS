@@ -26,6 +26,7 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_title_server.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
@@ -927,7 +928,19 @@ dword_result_t NetDll_XNetQosServiceLookup_entry(dword_t caller, dword_t flags,
   if (pqos) {
     auto qos_guest = kernel_memory()->SystemHeapAlloc(sizeof(XNQOS));
     auto qos = kernel_memory()->TranslateVirtual<XNQOS*>(qos_guest);
-    qos->count = qos->count_pending = 0;
+    std::memset(qos, 0, sizeof(XNQOS));
+    // The probe of the Live datacenter. Titles refuse Live play when it
+    // reaches nothing, so a Live user gets a completed fast probe.
+    // TODO(live): measured values (a probe of the relay) once titles use them
+    // to pick hosts or regions.
+    if (AnyUserSignedInToLive()) {
+      qos->count = 1;
+      auto& info = qos->info[0];
+      info.flags = XNET_XNQOSINFO_COMPLETE | XNET_XNQOSINFO_TARGET_CONTACTED;
+      info.probes_xmit = info.probes_recv = 8;
+      info.rtt_min_in_msecs = info.rtt_med_in_msecs = 20;
+      info.up_bits_per_sec = info.down_bits_per_sec = 5 * 1024 * 1024;
+    }
     *pqos = qos_guest;
   }
   if (event_handle) {
@@ -939,6 +952,25 @@ dword_result_t NetDll_XNetQosServiceLookup_entry(dword_t caller, dword_t flags,
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetQosServiceLookup, kNetworking, kStub);
+
+// Counts of the QoS probes a listener answered. Hosts poll it while they
+// wait for players (Halo 3). Nothing is counted, so every count is 0.
+dword_result_t NetDll_XNetQosGetListenStats_entry(dword_t caller,
+                                                  lpvoid_t session_id,
+                                                  lpdword_t stats_ptr) {
+  if (!session_id || !stats_ptr) {
+    return uint32_t(X_WSAError::X_WSAEINVAL);
+  }
+  constexpr uint32_t kStatsSize = 0x1C;  // XNQOSLISTENSTATS
+  if (stats_ptr[0] != kStatsSize) {
+    return uint32_t(X_WSAError::X_WSAEINVAL);
+  }
+  for (uint32_t i = 1; i < kStatsSize / 4; ++i) {
+    stats_ptr[i] = 0;
+  }
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetQosGetListenStats, kNetworking, kStub);
 
 dword_result_t NetDll_XNetQosLookup_entry(
     dword_t caller, dword_t xnaddr_count, lpdword_t xnaddrs, lpdword_t xnkids,
@@ -1325,6 +1357,26 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
   }
 
   N_XSOCKADDR native_name(name);
+  // A title server set in live_title_servers is on the internet, not on the
+  // System Link network, and serves every connection on one port.
+  auto* native_in = reinterpret_cast<N_XSOCKADDR_IN*>(&native_name);
+  if (const auto server = GetTitleServer();
+      server && native_in->sin_addr == server->address) {
+    if (XFAILED(socket->UseHostStream())) {
+      XThread::SetLastError(socket->GetLastWSAError());
+      return -1;
+    }
+    native_in->sin_port = server->port;
+    X_STATUS status = socket->Connect(&native_name, namelen);
+    XELOGI("NetDll_connect: title server {:08X}:{} status {:08X} error {}",
+           server->address, server->port, status,
+           XFAILED(status) ? socket->GetLastWSAError() : 0);
+    if (XFAILED(status)) {
+      XThread::SetLastError(socket->GetLastWSAError());
+      return -1;
+    }
+    return 0;
+  }
   X_STATUS status = socket->Connect(&native_name, namelen);
   if (XFAILED(status)) {
     XThread::SetLastError(socket->GetLastWSAError());
@@ -1616,6 +1668,26 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
 }
 DECLARE_XAM_EXPORT1(NetDll_select, kNetworking, kImplemented);
 
+// Debug log of traffic with a title server: the length and a printable
+// prefix, to follow a title's requests (Halo 3's HTTP to Sunrise).
+static void LogTitleServerTraffic(const char* what, uint32_t handle,
+                                  const uint8_t* data, int ret,
+                                  uint32_t error) {
+  if (!xe::logging::ShouldLog(xe::LogLevel::Debug)) {
+    return;
+  }
+  std::string text;
+  for (int i = 0; i < std::min(ret, 256); ++i) {
+    const uint8_t c = data[i];
+    text += c == '\r'   ? std::string("\\r")
+            : c == '\n' ? std::string("\\n")
+            : (c >= 0x20 && c < 0x7F) ? std::string(1, char(c))
+                                      : fmt::format("\\x{:02X}", c);
+  }
+  XELOGD("TitleServer {} socket {:08X}: ret {} error {} \"{}\"", what, handle,
+         ret, error, text);
+}
+
 dword_result_t NetDll_recv_entry(dword_t caller, dword_t socket_handle,
                                  lpvoid_t buf_ptr, dword_t buf_len,
                                  dword_t flags) {
@@ -1629,6 +1701,10 @@ dword_result_t NetDll_recv_entry(dword_t caller, dword_t socket_handle,
   const int ret = socket->Recv(buf_ptr, buf_len, flags);
   if (ret == -1) {
     XThread::SetLastError(socket->GetLastWSAError());
+  }
+  if (socket->host_stream()) {
+    LogTitleServerTraffic("recv", socket_handle, buf_ptr.as<uint8_t*>(), ret,
+                          ret == -1 ? socket->GetLastWSAError() : 0);
   }
   return ret;
 }
@@ -1689,6 +1765,10 @@ dword_result_t NetDll_send_entry(dword_t caller, dword_t socket_handle,
   const int ret = socket->Send(buf_ptr, buf_len, flags);
   if (ret == -1) {
     XThread::SetLastError(socket->GetLastWSAError());
+  }
+  if (socket->host_stream()) {
+    LogTitleServerTraffic("send", socket_handle, buf_ptr.as<uint8_t*>(), ret,
+                          ret == -1 ? socket->GetLastWSAError() : 0);
   }
   return ret;
 }
@@ -1873,8 +1953,25 @@ dword_result_t NetDll_XNetGetConnectStatus_entry(dword_t caller,
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetGetConnectStatus, kNetworking, kImplemented);
 
+// XNetServerToInAddr: Live gave titles a secure address for a server of
+// theirs. Xenia's Live servers are plain internet hosts, used as they are.
+dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller, dword_t in_addr,
+                                               dword_t service_id,
+                                               lpdword_t out_in_addr) {
+  if (!in_addr || !out_in_addr) {
+    return 10022;  // WSAEINVAL
+  }
+  *out_in_addr = in_addr.value();
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetServerToInAddr, kNetworking, kImplemented);
+
 dword_result_t NetDll_XNetUnregisterInAddr_entry(dword_t caller,
                                                  dword_t in_addr) {
+  if (const auto server = GetTitleServer();
+      server && in_addr == server->address) {
+    return 0;
+  }
   auto link = GetSystemLink(kernel_state());
   return link ? link->Unmap(in_addr) : net::kWsaNetworkDown;
 }
