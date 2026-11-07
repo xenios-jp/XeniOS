@@ -950,8 +950,20 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListLibraryContent()
   }
   const auto indie_games_path = IndieGamesPath();
   for (const auto& title : *titles) {
-    // A release without a name, like a loose executable, isn't listed.
-    if (title.name.empty()) {
+    // A release without a name, like a loose executable, isn't listed, and
+    // neither is a system title like the dashboard itself.
+    if (title.name.empty() || (title.title_id >> 16) == 0xFFFE) {
+      continue;
+    }
+    // My Games has one entry a game, as on the console. Of the releases the
+    // library has of a game (two regions, a disc and a download), the newest
+    // stands for it.
+    if (std::ranges::any_of(*titles, [&](const auto& other) {
+          return &other != &title && other.title_id == title.title_id &&
+                 !other.name.empty() &&
+                 (other.version > title.version ||
+                  (other.version == title.version && &other < &title));
+        })) {
       continue;
     }
     XCONTENT_AGGREGATE_DATA data{};

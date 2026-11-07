@@ -41,6 +41,7 @@
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xthread.h"
+#include "xenia/net/live_account.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
@@ -65,6 +66,14 @@ DEFINE_int32(avpack, 8,
 DEFINE_bool(staging_mode, 0,
             "Enables preview mode in dashboards to render debug information.",
             "Kernel");
+
+DEFINE_string(live_dashboard_home, "",
+              "Where the dashboard gets its home page while signed in to Live: "
+              "an http:// or https:// address, or empty for the System Link "
+              "lobby's.",
+              "Live");
+
+DECLARE_string(systemlink_lobby);
 
 DEFINE_bool(in_process_title_relaunch, true,
             "Handle title-to-title launches in-process via full "
@@ -124,6 +133,10 @@ dword_result_t XamQueryLiveHiveA_entry(
   X_RESULT extended_error = 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
   if (!feature_name || !value_ptr || !value_buffer_size) {
     extended_error = X_E_INVALIDARG;
+  } else if (AnyUserSignedInToLive()) {
+    // Xenia's Live has no settings of its own, so each one is unset.
+    static_cast<char*>(value_ptr)[0] = 0;
+    extended_error = X_E_SUCCESS;
   }
 
   if (overlapped_ptr) {
@@ -199,6 +212,22 @@ dword_result_t XamQueryLiveHiveW_entry(
     string_util::copy_and_swap_truncating(static_cast<char16_t*>(value_ptr),
                                           kTitleImageUriRoot,
                                           value_buffer_size);
+    extended_error = X_E_SUCCESS;
+  } else if (AnyUserSignedInToLive()) {
+    // Xenia's Live has no settings of its own, so each one is unset, except
+    // where the dashboard gets its home page from.
+    std::u16string value;
+    if (feature_name.value() == u"EpixXManUriRoot") {
+      value = xe::to_utf16(
+          !cvars::live_dashboard_home.empty()
+              ? cvars::live_dashboard_home
+              : net::live::LobbyWebRoot(cvars::systemlink_lobby) + "/v2/dash");
+    } else if (feature_name.value() == u"EpixXManManifestUriPath") {
+      // The dashboard adds the file name, dashhome.xml.
+      value = u"/$locale/";
+    }
+    string_util::copy_and_swap_truncating(static_cast<char16_t*>(value_ptr),
+                                          value, value_buffer_size);
     extended_error = X_E_SUCCESS;
   }
 
@@ -497,6 +526,7 @@ static void SetLaunchData(const void* data, uint32_t size) {
   auto& loader_data = xam->loader_data();
   const uint32_t copy_size = std::min(size, MAX_LAUNCH_DATA_SIZE);
   loader_data.launch_data_present = size ? true : false;
+  loader_data.launch_data_set = loader_data.launch_data_present;
   loader_data.launch_data.resize(copy_size);
   std::memcpy(loader_data.launch_data.data(), data, copy_size);
   XELOGI("XamLoaderSetLaunchData: size={} data={}", size,
@@ -621,6 +651,8 @@ static void StartTitle(XamModule::LoaderData& loader_data,
       "XamLoaderLaunchTitle: normalized host_path={}, package_path={}, "
       "launch_path={}",
       xe::strip_pii(xe::path_to_utf8(host_path)), package_path, launch_path);
+  // The launch data now belongs to the title being started.
+  loader_data.launch_data_set = false;
 
   // Handle title launch in-process via full Shutdown/Setup cycle. Disabled
   // on macOS — pthread_cancel there doesn't run C++ destructors, so
@@ -775,6 +807,21 @@ void LaunchTitle(std::string path, std::string_view d_drive_path,
                std::move(package_path));
   }
 
+  // Launch data with no title to launch restarts the dashboard with that data.
+  // The dashboard restarts itself that way, as when its offline Friends tile
+  // asks to connect to Live. Without the dashboard, the data has no reader and
+  // the exit goes home.
+  if (loader_data.launch_data_set) {
+    const std::filesystem::path dashboard_path =
+        kernel_state()->emulator()->system_files_path() / "flash" / "dash.xex";
+    std::error_code ec;
+    if (std::filesystem::exists(dashboard_path, ec)) {
+      XELOGI("XamLoaderLaunchTitle: starting the dashboard with launch data");
+      loader_data.launch_data_present = true;
+      StartTitle(loader_data, dashboard_path, {}, {});
+    }
+  }
+
   XELOGI("XamLoaderLaunchTitle: game requested exit to dashboard");
   kernel_state()->ExitToDashboard();
 }
@@ -832,6 +879,45 @@ X_HRESULT_result_t XdfLaunchNewImageFromCache_entry(lpstring_t name_ptr,
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XdfLaunchNewImageFromCache, kNone, kImplemented);
+
+// Loads one of the dashboard's extension modules (a .lex) by name from the
+// system files, as the dashboard does for the scenes in them. The dashboard
+// waits on the overlapped. The modules LIVE kept in the console's cache
+// (Dash.MP.*, Dash.Social.lex) aren't in the system update, so those fail.
+X_HRESULT_result_t XdfLoadXex_entry(lpstring_t name_ptr,
+                                    pointer_t<XAM_OVERLAPPED> overlapped_ptr,
+                                    dword_t unknown, dword_t flags,
+                                    dword_t min_version,
+                                    lpdword_t hmodule_ptr) {
+  X_RESULT result = X_ERROR_SUCCESS;
+  if (!name_ptr || !hmodule_ptr) {
+    result = X_ERROR_INVALID_PARAMETER;
+  } else {
+    *hmodule_ptr = 0;
+    const std::string name = name_ptr.value();
+    const std::string path =
+        name.find(':') == std::string::npos ? FindSystemExtFile(name) : name;
+    const uint32_t hmodule = path.empty() || !kernel_state()->file_system()->ResolvePath(path)
+                                 ? 0
+                                 : xboxkrnl::xeXexLoadImage(path);
+    if (!hmodule) {
+      XELOGW("XdfLoadXex: {} isn't in the system files", name);
+      result = X_ERROR_FILE_NOT_FOUND;
+    } else {
+      *hmodule_ptr = hmodule;
+    }
+  }
+  const X_HRESULT extended = result == X_ERROR_SUCCESS
+                                 ? X_E_SUCCESS
+                                 : X_HRESULT_FROM_WIN32(result);
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediateEx(overlapped_ptr, result,
+                                                  extended, 0);
+    return X_HRESULT_FROM_WIN32(X_ERROR_IO_PENDING);
+  }
+  return extended;
+}
+DECLARE_XAM_EXPORT1(XdfLoadXex, kNone, kSketchy);
 
 void XamLoaderTerminateTitle_entry() { kernel_state()->ExitToDashboard(); }
 DECLARE_XAM_EXPORT1(XamLoaderTerminateTitle, kNone, kSketchy);
@@ -951,6 +1037,8 @@ constexpr std::string_view kUriBaseSchemes[] = {"title", "app", "game", "sap"};
 
 // Rewrites |uri| as the console's xam does before opening it, at most ten
 // times. |privileged| becomes set once an alias is used.
+constexpr std::string_view kContentExplorer = "Dash.MP.ContentExplorer.lex";
+
 static X_HRESULT ResolveUri(std::string& uri, bool& privileged, bool live) {
   for (int i = 0; i < 10; i++) {
     const size_t colon = uri.find(':');
@@ -985,8 +1073,15 @@ static X_HRESULT ResolveUri(std::string& uri, bool& privileged, bool live) {
         return X_E_ACCESS_DENIED;
       }
       privileged = true;
+      // LIVE's templates open Dash.MP.ContentExplorer.lex, which LIVE kept in
+      // the console's cache and the system files don't have. Without it the
+      // offline template's built-in scenes (My Games, My Apps, details) stand
+      // in, as they do on a console that isn't signed in.
       std::string_view format = alias->template_offline;
-      if (live && !alias->template_live.empty()) {
+      if (live && !alias->template_live.empty() &&
+          (format.empty() ||
+           alias->template_live.find(kContentExplorer) == std::string::npos ||
+           !FindSystemExtFile(kContentExplorer).empty())) {
         format = alias->template_live;
       }
       if (format.empty()) {
@@ -1016,6 +1111,16 @@ static X_HRESULT LaunchUri(uint32_t user_index, const std::string& uri_in,
   const X_RESULT logon =
       kernel_state()->app_manager()->DispatchMessageSync(0xFC, 0x58003, 0, 0);
   const bool live = int32_t(logon) >= 0 && logon != 0x001510F1;
+  // Xenia's own: the lobby's dashboard manifest opens the guide's Friends and
+  // Party pages (the app's Online panel) with these, since the dashboard's own
+  // pages were in a module LIVE delivered.
+  if (xe::utf8::equal_case(uri_in, "friends:") ||
+      xe::utf8::equal_case(uri_in, "party:")) {
+    const X_RESULT result = ShowFriendsAndParty(user_index);
+    XELOGI("XamLaunchURI: {} opens the Online panel: {:08X}", uri_in, result);
+    return result == X_ERROR_SUCCESS ? X_E_SUCCESS
+                                     : X_HRESULT_FROM_WIN32(result);
+  }
   std::string uri = uri_in;
   bool privileged = flags & 0x80000000;
   if (const X_HRESULT result = ResolveUri(uri, privileged, live);
