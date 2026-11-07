@@ -34,6 +34,7 @@
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xui_package.h"
 #include "xenia/kernel/xmodule.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/ui/file_picker.h"
@@ -1541,76 +1542,6 @@ dword_result_t XuiUninit_entry() {
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XuiUninit, kUI, kSketchy);
-
-static std::optional<std::u16string> ReadXuiString(
-    std::span<const uint8_t> data, size_t* offset, size_t length) {
-  if (*offset + length * 2 > data.size()) {
-    return std::nullopt;
-  }
-  std::u16string string(length, u'\0');
-  for (size_t i = 0; i < length; ++i) {
-    string[i] =
-        char16_t(xe::load_and_swap<uint16_t>(data.data() + *offset + i * 2));
-  }
-  *offset += length * 2;
-  return string;
-}
-
-// A file in an XUIZ package, the archive XUI resources keep their files in.
-// Version 1 names the files in UTF-16 and version 3 in UTF-8, with the same
-// entries otherwise.
-static std::optional<std::span<const uint8_t>> FindXuiPackageFile(
-    std::span<const uint8_t> package, const std::string_view name) {
-  constexpr uint32_t kXuiPackageMagic = 0x5855495A;  // XUIZ
-  if (package.size() < 0x16 ||
-      xe::load_and_swap<uint32_t>(package.data()) != kXuiPackageMagic) {
-    return std::nullopt;
-  }
-  const uint32_t version = xe::load_and_swap<uint32_t>(package.data() + 4);
-  if (version != 1 && version != 3) {
-    return std::nullopt;
-  }
-  const size_t data_start =
-      0x16 + size_t(xe::load_and_swap<uint32_t>(package.data() + 0x10));
-  const uint16_t file_count =
-      xe::load_and_swap<uint16_t>(package.data() + 0x14);
-  size_t offset = 0x16;
-  for (uint16_t i = 0; i < file_count; ++i) {
-    if (offset + 9 > package.size()) {
-      return std::nullopt;
-    }
-    const uint32_t size = xe::load_and_swap<uint32_t>(package.data() + offset);
-    const uint32_t file_offset =
-        xe::load_and_swap<uint32_t>(package.data() + offset + 4);
-    const size_t name_length = package[offset + 8];
-    offset += 9;
-    std::string file_name;
-    if (version == 3) {
-      if (offset + name_length > package.size()) {
-        return std::nullopt;
-      }
-      file_name.assign(reinterpret_cast<const char*>(package.data() + offset),
-                       name_length);
-      if (!::utf8::is_valid(file_name)) {
-        return std::nullopt;
-      }
-      offset += name_length;
-    } else {
-      auto wide_name = ReadXuiString(package, &offset, name_length);
-      if (!wide_name) {
-        return std::nullopt;
-      }
-      file_name = xe::to_utf8(*wide_name);
-    }
-    if (xe::utf8::equal_case(file_name, name)) {
-      if (data_start + file_offset + size > package.size()) {
-        return std::nullopt;
-      }
-      return package.subspan(data_start + file_offset, size);
-    }
-  }
-  return std::nullopt;
-}
 
 // An XUIS string table, empty strings stand for missing ones. Version 1 has
 // UTF-16 strings after their length and version 2 NUL-terminated UTF-8 ones.

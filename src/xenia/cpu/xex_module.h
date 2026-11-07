@@ -12,7 +12,10 @@
 
 #include <atomic>
 #include <cstring>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "xenia/base/mapped_memory.h"
 #include "xenia/cpu/module.h"
@@ -323,6 +326,21 @@ class XexModule : public xe::cpu::Module {
 
 // Decrypts a retail XEX2 image key, which only the hypervisor can on a console.
 void DecryptXex2ImageKey(const uint8_t* encrypted_key, uint8_t* key);
+
+// An XEX2's image read into host memory, decrypted and decompressed, for
+// reading a module's resources without loading it (the iOS app takes the
+// built-in gamer pictures from the installed xam this way).
+struct XexHostImage {
+  uint32_t base_address = 0;
+  std::vector<uint8_t> data;
+  std::vector<xex2_resource> resources;
+
+  // A resource's bytes by name, or empty if there's none in the image.
+  std::span<const uint8_t> Resource(std::string_view name) const;
+};
+// Retail or devkit keys; none, basic or normal (LZX) compression. Nothing if
+// the file isn't such an XEX2 or doesn't decrypt.
+std::optional<XexHostImage> ReadXexHostImage(std::span<const uint8_t> xex);
 
 }  // namespace cpu
 }  // namespace xe

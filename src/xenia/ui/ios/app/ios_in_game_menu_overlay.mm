@@ -327,7 +327,6 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   [_graphicsButton release];
   [_liveLogButton release];
   [_friendsButton release];
-  [_friendsHandler release];
   [_onlineAcceptInviteHandler release];
   [_onlineJoinFriendHandler release];
   [_panelCenterXConstraint release];
@@ -977,11 +976,6 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
         unsafe_self->_onlineJoinFriendHandler(peer);
       }
     };
-    _onlinePanel.allFriendsHandler = ^{
-      if (unsafe_self->_friendsHandler) {
-        unsafe_self->_friendsHandler();
-      }
-    };
     [self addSubview:_onlinePanel];
   }
   [_onlinePanel showList];
@@ -1081,14 +1075,8 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
 }
 
 - (void)friendsPressed:(UIButton*)__unused sender {
-  // Signed in to the account: the same Online panel as the pill. Otherwise the sheet explains.
-  if ([XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline) {
-    [self toggleOnlinePanel];
-    return;
-  }
-  if (_friendsHandler) {
-    _friendsHandler();
-  }
+  // The same Online panel as the pill; signed out, it says why and how to go online.
+  [self toggleOnlinePanel];
 }
 
 - (void)pauseEmulatorPressed:(UIButton*)__unused sender {

@@ -123,7 +123,50 @@ UIButton* xe_make_ios_sheet_close_button(id target, SEL action) {
   return button;
 }
 
+static NSMutableDictionary<NSString*, UIImage*>* ProfilePictures() {
+  static NSMutableDictionary<NSString*, UIImage*>* pictures = [[NSMutableDictionary alloc] init];
+  return pictures;
+}
+
+void xe_set_profile_picture(NSString* gamertag, NSData* png) {
+  if (!gamertag.length) {
+    return;
+  }
+  UIImage* image = png.length ? [UIImage imageWithData:png] : nil;
+  NSMutableDictionary<NSString*, UIImage*>* pictures = ProfilePictures();
+  @synchronized(pictures) {
+    if (image) {
+      pictures[gamertag.lowercaseString] = image;
+    } else {
+      [pictures removeObjectForKey:gamertag.lowercaseString];
+    }
+  }
+}
+
+static UIImage* ProfilePicture(NSString* gamertag) {
+  if (!gamertag.length) {
+    return nil;
+  }
+  NSMutableDictionary<NSString*, UIImage*>* pictures = ProfilePictures();
+  @synchronized(pictures) {
+    return [[pictures[gamertag.lowercaseString] retain] autorelease];
+  }
+}
+
+BOOL xe_profile_has_picture(NSString* gamertag) { return ProfilePicture(gamertag) != nil; }
+
 UIImage* xe_profile_avatar_image(NSString* gamertag, BOOL signed_in, CGFloat diameter) {
+  const CGSize size = CGSizeMake(diameter, diameter);
+  if (UIImage* picture = ProfilePicture(gamertag)) {
+    // Gamer pictures are square tiles; round the corners as the dashboard does.
+    UIGraphicsImageRenderer* renderer =
+        [[[UIGraphicsImageRenderer alloc] initWithSize:size] autorelease];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
+      const CGRect rect = CGRectMake(0, 0, size.width, size.height);
+      [[UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:diameter * 0.2] addClip];
+      [picture drawInRect:rect blendMode:kCGBlendModeNormal alpha:signed_in ? 1.0 : 0.6];
+    }];
+  }
   NSMutableString* initials = [NSMutableString string];
   for (NSString* word in [gamertag componentsSeparatedByCharactersInSet:
                                        [NSCharacterSet whitespaceCharacterSet]]) {
@@ -131,7 +174,6 @@ UIImage* xe_profile_avatar_image(NSString* gamertag, BOOL signed_in, CGFloat dia
       [initials appendString:[[word substringToIndex:1] uppercaseString]];
     }
   }
-  const CGSize size = CGSizeMake(diameter, diameter);
   UIGraphicsImageRenderer* renderer =
       [[[UIGraphicsImageRenderer alloc] initWithSize:size] autorelease];
   return [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {

@@ -55,6 +55,7 @@
 #include "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #include "xenia/ui/ios/shared/ios_session_stats.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
+#include "xenia/ui/ios/shared/ios_theme_controls.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app.h"
@@ -77,6 +78,8 @@
 #include "xenia/hid/sdl/sdl_hid.h"
 #include "xenia/hid/touch/touch_hid_ios.h"
 #include "xenia/kernel/guest_scheduler.h"
+#include "xenia/kernel/xam/gamer_pictures.h"
+#include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam.h"
@@ -570,6 +573,8 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
                       const LaunchExtras& extras);
   void ApplyGuestDisplayRefreshCapToWindowFromUIThread(bool capped);
   bool EnsureProfileServicesReady();
+  // The system software's gamer pictures, read from its xam.xex on first use (main thread).
+  const std::vector<kernel::xam::GamerPicture>& BuiltInGamerPictures();
 
   // Emulation pause. Reasons are set from the main thread; the pause itself runs
   // on pause_queue_, so the main thread never waits for the GPU or audio
@@ -597,6 +602,7 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   static std::vector<std::unique_ptr<hid::InputDriver>> CreateInputDrivers(ui::Window* window);
 
   std::unique_ptr<Emulator> emulator_;
+  std::optional<std::vector<kernel::xam::GamerPicture>> gamer_pictures_;
   std::filesystem::path storage_root_;
   std::unique_ptr<ui::Window> window_;
   std::thread emulator_thread_;
@@ -644,6 +650,24 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   std::shared_ptr<StopWatchdog> stop_watchdog_ = std::make_shared<StopWatchdog>();
   std::atomic<uint64_t> stop_epoch_{0};
 };
+
+const std::vector<kernel::xam::GamerPicture>& EmulatorAppIOS::BuiltInGamerPictures() {
+  if (!gamer_pictures_) {
+    std::vector<uint8_t> xam;
+    std::ifstream file(ui::IOSSystemFilesPath() / "flash" / "xam.xex", std::ios::binary);
+    if (file) {
+      xam.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+    gamer_pictures_ = kernel::xam::ReadBuiltInGamerPictures(xam);
+    // Not cached while missing: the system software may be installed later.
+    if (gamer_pictures_->empty()) {
+      static const std::vector<kernel::xam::GamerPicture> kNone;
+      gamer_pictures_.reset();
+      return kNone;
+    }
+  }
+  return *gamer_pictures_;
+}
 
 bool EmulatorAppIOS::EnsureProfileServicesReady() {
   auto& ios_context = static_cast<ui::IOSWindowedAppContext&>(app_context());
@@ -1237,6 +1261,13 @@ bool EmulatorAppIOS::OnInitialize() {
       uint8_t slot = profile_manager->GetUserIndexAssignedToProfile(xuid);
       summary.signed_in = slot < XUserMaxUserCount;
       summary.signed_in_slot = slot;
+      summary.picture = profile_manager->GetAccountIcon(xuid);
+      // Every avatar of this profile shows its picture.
+      xe_set_profile_picture(
+          [NSString stringWithUTF8String:summary.gamertag.c_str()],
+          summary.picture.empty()
+              ? nil
+              : [NSData dataWithBytes:summary.picture.data() length:summary.picture.size()]);
       profiles.push_back(std::move(summary));
     }
     std::sort(profiles.begin(), profiles.end(),
@@ -1273,6 +1304,27 @@ bool EmulatorAppIOS::OnInitialize() {
       }
     }
     return uint64_t(0);
+  });
+
+  ios_context.set_gamer_pictures_list_callback([this]() {
+    std::vector<ui::IOSGamerPicture> list;
+    for (const auto& picture : BuiltInGamerPictures()) {
+      list.push_back({picture.key, picture.large});
+    }
+    return list;
+  });
+
+  ios_context.set_gamer_picture_set_callback([this](uint64_t xuid, const std::string& key) {
+    if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+      return false;
+    }
+    for (const auto& picture : BuiltInGamerPictures()) {
+      if (picture.key == key) {
+        return emulator_->kernel_state()->xam_state()->user_tracker()->SetGamerPicture(xuid,
+                                                                                       picture);
+      }
+    }
+    return false;
   });
 
   ios_context.set_profile_sign_in_callback([this](uint64_t xuid, uint32_t user_index) {
@@ -1349,6 +1401,105 @@ bool EmulatorAppIOS::OnInitialize() {
         updated.xuid_online = online_xuid;
         profiles->UpdateAccount(xuid, &updated);
       }
+    };
+    live_host.profiles = [this]() {
+      std::vector<XeniaIOSLiveProfile> result;
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return result;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      if (!profiles) {
+        return result;
+      }
+      for (const auto& [xuid, account] : *profiles->GetAccounts()) {
+        XeniaIOSLiveProfile entry;
+        entry.xuid = xuid;
+        entry.online_xuid = account.GetOnlineXUID();
+        entry.gamertag = account.GetGamertagString();
+        entry.live_enabled = account.IsLiveEnabled();
+        result.push_back(std::move(entry));
+      }
+      return result;
+    };
+    live_host.disable_online = [this](uint64_t xuid) {
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return false;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      const auto* account = profiles ? profiles->GetAccount(xuid) : nullptr;
+      if (!account) {
+        return false;
+      }
+      xe::kernel::xam::X_XAMACCOUNTINFO updated = *account;
+      updated.ToggleLiveFlag(false);
+      return profiles->UpdateAccount(xuid, &updated);
+    };
+    live_host.rename_profile = [this](uint64_t xuid, const std::string& gamertag) {
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state() ||
+          !xe::kernel::xam::ProfileManager::IsGamertagValid(gamertag)) {
+        return false;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      const auto* account = profiles ? profiles->GetAccount(xuid) : nullptr;
+      if (!account) {
+        return false;
+      }
+      if (account->GetGamertagString() == gamertag) {
+        return true;
+      }
+      xe::kernel::xam::X_XAMACCOUNTINFO updated = *account;
+      std::memset(updated.gamertag, 0, sizeof(updated.gamertag));
+      xe::string_util::copy_and_swap_truncating(updated.gamertag, xe::to_utf16(gamertag),
+                                                xe::countof(updated.gamertag));
+      return profiles->UpdateAccount(xuid, &updated);
+    };
+    live_host.adopt_account = [this](uint64_t online_xuid,
+                                     const std::string& gamertag) -> uint64_t {
+      if (!online_xuid || !EnsureProfileServicesReady() || !emulator_ ||
+          !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return 0;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      if (!profiles) {
+        return 0;
+      }
+      uint64_t xuid = 0;
+      for (const auto& [id, account] : *profiles->GetAccounts()) {
+        if (account.GetOnlineXUID() == online_xuid) {
+          xuid = id;
+          break;
+        }
+      }
+      if (xuid) {
+        const auto* account = profiles->GetAccount(xuid);
+        if (!account->IsLiveEnabled()) {
+          xe::kernel::xam::X_XAMACCOUNTINFO updated = *account;
+          updated.ToggleLiveFlag(true);
+          profiles->UpdateAccount(xuid, &updated);
+        }
+      } else {
+        // The account's gamertag comes with the first sign-in; until then, a placeholder.
+        const std::string name =
+            xe::kernel::xam::ProfileManager::IsGamertagValid(gamertag) ? gamertag : "Player";
+        xe::kernel::xam::X_XAMACCOUNTINFO account = {};
+        xe::string_util::copy_and_swap_truncating(account.gamertag, xe::to_utf16(name),
+                                                  xe::countof(account.gamertag));
+        account.ToggleLiveFlag(true);
+        account.xuid_online = online_xuid;
+        xuid = xe::kernel::xam::GenerateXuid();
+        if (!profiles->CreateProfile(&account, xuid) || !profiles->UpdateAccount(xuid, &account)) {
+          XELOGE("Live account: couldn't make a profile for the linked account");
+          return 0;
+        }
+        profiles->DismountProfile(xuid);
+      }
+      for (uint8_t slot = 0; slot < XUserMaxUserCount; ++slot) {
+        if (profiles->GetProfile(slot)) {
+          profiles->Logout(slot, false);
+        }
+      }
+      profiles->Login(xuid, 0, true);
+      return profiles->GetProfile(xuid) ? xuid : 0;
     };
     xe_ios_live_social_install(std::move(live_host));
   }

@@ -848,7 +848,6 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   BOOL _leaveArmed;
   void (^_acceptInviteHandler)(XeniaLiveInvite*);
   void (^_joinFriendHandler)(XeniaLiveFriend*);
-  void (^_allFriendsHandler)(void);
   void (^_closeHandler)(void);
   BOOL _embedded;
   BOOL _fitsContent;
@@ -950,7 +949,6 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   [_addStatus release];
   [_acceptInviteHandler release];
   [_joinFriendHandler release];
-  [_allFriendsHandler release];
   [_closeHandler release];
   [super dealloc];
 }
@@ -970,8 +968,6 @@ XE_COPY_BLOCK_PROPERTY(void (^)(XeniaLiveInvite*), acceptInviteHandler, setAccep
                        _acceptInviteHandler)
 XE_COPY_BLOCK_PROPERTY(void (^)(XeniaLiveFriend*), joinFriendHandler, setJoinFriendHandler,
                        _joinFriendHandler)
-XE_COPY_BLOCK_PROPERTY(void (^)(void), allFriendsHandler, setAllFriendsHandler,
-                       _allFriendsHandler)
 XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHandler)
 
 #undef XE_COPY_BLOCK_PROPERTY
@@ -1250,7 +1246,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     [_header addArrangedSubview:[self titleHeader:NSLocalizedString(@"Friends",
                                                                     @"Online panel title")
                                             icons:@[]]];
-    [_stack addArrangedSubview:EmptyState(nil, social.statusText, nil)];
+    [_stack addArrangedSubview:[self offlineState:social]];
     return;
   }
   switch (_page) {
@@ -1270,6 +1266,66 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       [self buildList];
       break;
   }
+}
+
+- (void)showProblem:(NSString*)message {
+  UIResponder* responder = self;
+  while (responder && ![responder isKindOfClass:[UIViewController class]]) {
+    responder = responder.nextResponder;
+  }
+  UIViewController* presenter = (UIViewController*)responder;
+  while (presenter.presentedViewController) {
+    presenter = presenter.presentedViewController;
+  }
+  UIAlertController* alert =
+      [UIAlertController alertControllerWithTitle:message
+                                          message:nil
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"alert button")
+                                            style:UIAlertActionStyleDefault
+                                          handler:nil]];
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+// Not online: why, and the one thing to do about it when there is one.
+- (UIView*)offlineState:(XeniaLiveSocial*)social {
+  NSString* symbol = @"person.2";
+  NSString* title = nil;
+  switch (social.state) {
+    case XeniaLiveSocialStateConnecting:
+      title = NSLocalizedString(@"Connecting…", @"Friends status title");
+      break;
+    case XeniaLiveSocialStateProblem:
+      title = NSLocalizedString(@"Can't Connect", @"Friends status title");
+      symbol = @"exclamationmark.triangle";
+      break;
+    case XeniaLiveSocialStateProfileOffline:
+      title = NSLocalizedString(@"Online Play Is Off", @"Friends status title");
+      break;
+    case XeniaLiveSocialStateNoProfile:
+      title = NSLocalizedString(@"No Profile", @"Friends status title");
+      symbol = @"person.crop.circle.badge.questionmark";
+      break;
+    case XeniaLiveSocialStateOff:
+    case XeniaLiveSocialStateOnline:
+      title = NSLocalizedString(@"Friends Are Off", @"Friends status title");
+      symbol = @"wifi.slash";
+      break;
+  }
+  if (social.state != XeniaLiveSocialStateProfileOffline) {
+    return EmptyState(symbol, title, social.statusText);
+  }
+  __unsafe_unretained XeniaIOSOnlinePanel* unsafe_self = self;
+  return EmptyStateWithButton(
+      symbol, title, social.statusText,
+      NSLocalizedString(@"Turn On Online Play", @"Friends action row"), ^{
+        if (![[XeniaLiveSocial shared] turnOnOnlineForProfile]) {
+          [unsafe_self showProblem:NSLocalizedString(@"Couldn't turn on online play for this "
+                                                     @"profile.",
+                                                     @"Friends toast")];
+        }
+        [unsafe_self reload];
+      });
 }
 
 - (void (^)(void))cardOpener:(uint64_t)xuid gamertag:(NSString*)gamertag {

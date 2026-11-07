@@ -23,6 +23,8 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
+struct GamerPicture;
+
 struct TitleInfo {
   std::u16string title_name;
   uint32_t id;
@@ -101,6 +103,10 @@ class UserTracker {
 
   // Images
   bool UpdateUserIcon(uint64_t xuid, std::span<const uint8_t> icon_data);
+  // Makes picture the signed-in profile's gamer picture, as the dashboard
+  // does: its gamer tiles and XPROFILE_GAMERCARD_PICTURE_KEY. A personal
+  // picture is dropped, since it would show instead.
+  bool SetGamerPicture(uint64_t xuid, const GamerPicture& picture);
 
   std::span<const uint8_t> GetIcon(uint64_t xuid, uint32_t title_id,
                                    XTileType tile_type, uint64_t tile_id) const;

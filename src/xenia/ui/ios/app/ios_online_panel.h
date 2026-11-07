@@ -33,8 +33,6 @@
 @interface XeniaIOSOnlinePanel : UIView
 @property(nonatomic, copy) void (^acceptInviteHandler)(XeniaLiveInvite* invite);
 @property(nonatomic, copy) void (^joinFriendHandler)(XeniaLiveFriend* peer);
-// The full Friends sheet.
-@property(nonatomic, copy) void (^allFriendsHandler)(void);
 // Set when the panel fills a sheet of its own instead of floating over a game: no window chrome,
 // a close button in the header.
 @property(nonatomic) BOOL embedded;
