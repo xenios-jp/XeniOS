@@ -198,8 +198,12 @@ class MetalCommandProcessor : public CommandProcessor,
   // them standalone if they don't belong to it.
   bool EncodeHeldDrawPassTransfers();
   // Memory exports are guest-visible writes, which a skipped draw or the
-  // placeholder loses, and counted draws need the guest's exact kills and
-  // alpha test: such draws wait for their own shaders and pipeline.
+  // placeholder loses, a draw with a stand-in wait reason would be changed for
+  // good by one, and a counted draw in strict mode needs the guest's exact
+  // kills and alpha test: such draws wait for their own shaders and pipeline.
+  // The fast query modes already answer with a guess and correct it later, so
+  // their counted draws don't wait; a report a stand-in counted keeps its
+  // guess (NoteZPDDrawInexact).
   bool ExactShadersRequired(bool memexport_used) const;
   // For the render target cache's depth clear retarget: the open pass's
   // encoder and descriptor if these are its depth and stencil attachments,
@@ -1220,6 +1224,30 @@ class MetalCommandProcessor : public CommandProcessor,
   std::atomic<int64_t> finite_multiply_general_last_log_ns_{0};
   uint64_t finite_multiply_general_draws_ = 0;
   std::atomic<int64_t> async_compile_drain_last_log_ns_{0};
+  // Where compile time goes: totals per stage, logged every few seconds while
+  // anything compiles (LogCompileStages).
+  enum CompileStage : size_t {
+    kCompileStageTranslate,       // Guest ucode to SPIR-V.
+    kCompileStageLibraryCached,   // A metallib from shader_libraries.bin.
+    kCompileStageAir,             // SPIR-V to AIR, and its MTLLibrary.
+    kCompileStageSpecialize,      // newFunction with constant values.
+    kCompileStagePipelineHit,     // A render pipeline found in the archive.
+    kCompileStagePipelineMiss,    // A render pipeline Metal compiled.
+    kCompileStageTessPipeline,    // A tessellation (mesh) pipeline.
+    kCompileStageDrawWait,        // The draw thread waiting for a compile.
+    kCompileStageCount,
+  };
+  struct CompileStageTotal {
+    std::atomic<uint64_t> count{0};
+    std::atomic<uint64_t> ns{0};
+    std::atomic<uint64_t> max_ns{0};
+  };
+  void AddCompileStageTime(CompileStage stage, int64_t start_ns);
+  void LogCompileStages();
+  std::array<CompileStageTotal, kCompileStageCount> compile_stage_totals_;
+  std::array<uint64_t, kCompileStageCount> compile_stage_logged_count_{};
+  std::array<uint64_t, kCompileStageCount> compile_stage_logged_ns_{};
+  std::atomic<int64_t> compile_stage_last_log_ns_{0};
   // The stored-pipeline rebuild timing record (see InitializeShaderStorage and
   // RecordStorageRebuildStatsLocked). Guarded by async_compile_mutex_.
   bool storage_stats_pending_ = false;

@@ -63,10 +63,11 @@ class MetalPipelineArchive {
   void Close(bool save);
 
   // Thread-safe. Looks the pipeline up in the parts first; on a miss, compiles
-  // it and keeps it for the next save. Never waits for a save.
+  // it and keeps it for the next save. Never waits for a save. hit_out says
+  // which it was.
   MTL::RenderPipelineState* NewRenderPipelineState(
       MTL::Device* device, MTL::RenderPipelineDescriptor* desc,
-      NS::Error** error);
+      NS::Error** error, bool* hit_out = nullptr);
 
   uint32_t unsaved_additions() const {
     return added_.load(std::memory_order_relaxed);
