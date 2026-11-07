@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -56,6 +57,16 @@ void LaunchFileExplorer(const std::filesystem::path& path) {
 }
 
 void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+  // A dialog needs someone at the screen. Command-line tools (the trace
+  // dumper) and app runs started by scripts print instead: a script that
+  // passes a bad option would otherwise open one dialog per run.
+  CFBundleRef bundle = CFBundleGetMainBundle();
+  if (!bundle || !CFBundleGetIdentifier(bundle) ||
+      std::getenv("XE_NO_DIALOGS")) {
+    fprintf(stderr, "%.*s\n", static_cast<int>(message.size()),
+            message.data());
+    return;
+  }
   const char* icon;
   switch (type) {
     case SimpleMessageBoxType::Help:

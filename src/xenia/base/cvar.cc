@@ -114,7 +114,8 @@ void ParseLaunchArguments(int& argc, char**& argv,
       PrintHelpAndExit();
     } else {
       std::string m =
-          "Invalid launch options were given.\n" + options.help({""});
+          "Invalid launch options were given: " + std::string(e.what()) +
+          "\n" + options.help({""});
       xe::ShowSimpleMessageBox(xe::SimpleMessageBoxType::Error, m);
       exit(0);
     }
