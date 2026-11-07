@@ -125,6 +125,9 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
 // Xenia sheet shares: rotates freely (no upside-down) and starts in
 // whatever orientation the host launcher is currently using.
 @interface XESheetTableViewController : UITableViewController
+// Dark glass, like the Friends and Public Games sheets: always dark, the list clear over the
+// sheet's own material, rows a faint white wash. Set before the view loads. Off by default.
+@property(nonatomic) BOOL glassStyle;
 @end
 
 // UIViewController base class with the same orientation overrides as

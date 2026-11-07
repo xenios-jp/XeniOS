@@ -137,6 +137,8 @@ target_sources(xenia-ui-ios PRIVATE
   settings/ios_quick_settings_view_controller.mm
   settings/ios_log_view_controller.h
   settings/ios_log_view_controller.mm
+  settings/ios_live_account_view_controllers.h
+  settings/ios_live_account_view_controllers.mm
   settings/ios_profile_view_controller.h
   settings/ios_profile_view_controller.mm
   settings/ios_settings_hub_view_controller.h
@@ -157,6 +159,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_status_toast.mm
   shared/ios_live_invite_banner.h
   shared/ios_live_invite_banner.mm
+  shared/ios_live_account.h
+  shared/ios_live_account.mm
   shared/ios_live_social_bridge.h
   shared/ios_live_social_bridge.mm
   shared/ios_system_link.h
@@ -242,6 +246,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework GameController"
   "-framework ImageIO"
   "-framework IOSurface"
+  "-framework LocalAuthentication"
   "-framework Metal"
   "-framework MetalKit"
   "-framework PhotosUI"
