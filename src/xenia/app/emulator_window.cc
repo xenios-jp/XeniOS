@@ -135,6 +135,7 @@
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/hid/keyboard/keyboard_input_driver.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/content_manager.h"
@@ -186,6 +187,7 @@ DECLARE_bool(in_process_title_relaunch);
 DECLARE_bool(discord);
 
 DECLARE_string(hid);
+DECLARE_path(input_script);
 DECLARE_string(gpu);
 DECLARE_string(apu);
 
@@ -347,7 +349,8 @@ bool IsLaunchOnlyArg(std::string_view arg) {
   for (const std::string_view name :
        {"--target=", "--launch_module=", "--launch_flags=", "--launch_data=",
         "--launch_xbox_disc=", "--launch_package=",
-        "--slot_bindings_passthrough=", "--boot_animation="}) {
+        "--slot_bindings_passthrough=", "--boot_animation=",
+        "--input_script_offset="}) {
     if (xe::utf8::starts_with(arg, name)) {
       return true;
     }
@@ -1926,6 +1929,8 @@ void EmulatorWindow::ExportScreenshot(const xe::ui::RawImage& image) {
 
   std::string filename = fmt::format("{} - {}.png", title_id, datetime);
   SaveImage(screenshot_path / filename, image);
+  XELOGI("Screenshot saved: {}",
+         xe::strip_pii(xe::path_to_utf8(screenshot_path / filename)));
 
   const std::string notification_text =
       fmt::format("Screenshot saved: {}", filename);
@@ -3704,6 +3709,10 @@ void EmulatorWindow::PollGamepads() {
         }
       }  // Lock is released here when input_lock goes out of scope
 
+      if (hid::keyboard::TakeScriptScreenshotRequest()) {
+        app_context_.CallInUIThread([this]() { TakeScreenshot(); });
+      }
+
       // Process input without holding the lock
       for (uint32_t user_index = 0; user_index < XUserMaxUserCount;
            ++user_index) {
@@ -3815,6 +3824,11 @@ bool EmulatorWindow::SpawnEmulatorProcess(const std::vector<std::string>& args,
   }
 #endif
   child_args.push_back("--log_append=true");
+  // A scripted run goes on where this process stopped reading its script.
+  if (!cvars::input_script.empty()) {
+    child_args.push_back(fmt::format("--input_script_offset={}",
+                                     hid::keyboard::ScriptReadOffset()));
+  }
   child_args.insert(child_args.end(), args.begin(), args.end());
   if (auto* input_system = emulator_ ? emulator_->input_system() : nullptr) {
     auto lock = input_system->lock();

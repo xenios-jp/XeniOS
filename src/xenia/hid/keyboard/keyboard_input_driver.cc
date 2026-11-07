@@ -9,7 +9,14 @@
 
 #include "xenia/hid/keyboard/keyboard_input_driver.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <deque>
+#include <fstream>
+#include <mutex>
+#include <string>
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -25,6 +32,26 @@
                 "HID.Key")
 #include "keyboard_binding_table.inc"
 #undef XE_HID_KEYBOARD_BINDING
+
+DEFINE_path(input_script, "",
+            "File of controller commands, one per line, read as lines are "
+            "added: A B X Y START BACK UP DOWN LEFT RIGHT LB RB, WAIT MS, or "
+            "SCREENSHOT (saves the guest output as with F12). "
+            "Each button is pressed for 150 ms, whether or not the window "
+            "has focus. For driving several instances in tests.",
+            "HID");
+
+DEFINE_int64(input_script_offset, 0,
+             "Where in input_script to start reading, in bytes. A title "
+             "that relaunches passes how far it had read, so the new "
+             "process doesn't replay the presses.",
+             "HID");
+
+DEFINE_bool(input_script_keystrokes, false,
+            "Also send each input_script press as a keystroke (key down, then "
+            "key up), for titles that read buttons that way, such as the "
+            "Dashboard.",
+            "HID");
 
 DEFINE_bool(keyboard_passthrough, false,
             "When true, the keyboard surfaces raw keystrokes to the running "
@@ -254,6 +281,131 @@ X_RESULT KeyboardInputDriver::GetCapabilities(uint32_t user_index,
   return X_ERROR_SUCCESS;
 }
 
+namespace {
+
+// Keystrokes for the input_script presses, for titles that read buttons as
+// keystrokes (the Dashboard does): a key down and a key up per press.
+std::mutex scripted_keys_mutex;
+std::deque<std::pair<ui::VirtualKey, bool>> scripted_keys;
+
+bool PopScriptedKeystroke(X_INPUT_KEYSTROKE* out_keystroke) {
+  std::lock_guard lock(scripted_keys_mutex);
+  if (scripted_keys.empty()) {
+    return false;
+  }
+  const auto [key, down] = scripted_keys.front();
+  scripted_keys.pop_front();
+  out_keystroke->virtual_key = uint16_t(key);
+  out_keystroke->unicode = 0;
+  out_keystroke->flags = down ? 0x0001 : 0x0002;  // KEYDOWN, KEYUP
+  out_keystroke->user_index = 0;
+  out_keystroke->hid_code = 0;
+  return true;
+}
+
+std::atomic<bool> script_screenshot_requested{false};
+
+// How far ScriptedButtons has read input_script.
+std::atomic<int64_t> script_read{-1};
+
+// Buttons the input_script file holds down right now.
+uint16_t ScriptedButtons() {
+  if (cvars::input_script.empty()) {
+    return 0;
+  }
+  using Clock = std::chrono::steady_clock;
+  static std::mutex mutex;
+  static std::deque<std::string> queue;
+  static uint16_t held = 0;
+  static Clock::time_point until{};
+  std::lock_guard lock(mutex);
+  const auto now = Clock::now();
+  if (now < until) {
+    return held;
+  }
+  if (held) {
+    held = 0;
+    until = now + std::chrono::milliseconds(150);
+    return 0;
+  }
+  std::ifstream file(cvars::input_script);
+  std::streamoff read = script_read.load();
+  if (read < 0) {
+    read = std::max<int64_t>(cvars::input_script_offset, 0);
+    script_read = read;
+  }
+  if (file) {
+    file.seekg(read);
+    std::string line;
+    while (std::getline(file, line)) {
+      if (file.eof()) {
+        break;  // A line still being written.
+      }
+      read = file.tellg();
+      script_read = read;
+      if (!line.empty()) {
+        queue.push_back(line);
+      }
+    }
+  }
+  if (queue.empty()) {
+    return 0;
+  }
+  const std::string command = queue.front();
+  queue.pop_front();
+  using VK = ui::VirtualKey;
+  static const struct {
+    const char* name;
+    uint16_t button;
+    VK key;
+  } kButtons[] = {
+      {"A", X_INPUT_GAMEPAD_A, VK::kXInputPadA},
+      {"B", X_INPUT_GAMEPAD_B, VK::kXInputPadB},
+      {"X", X_INPUT_GAMEPAD_X, VK::kXInputPadX},
+      {"Y", X_INPUT_GAMEPAD_Y, VK::kXInputPadY},
+      {"START", X_INPUT_GAMEPAD_START, VK::kXInputPadStart},
+      {"BACK", X_INPUT_GAMEPAD_BACK, VK::kXInputPadBack},
+      {"UP", X_INPUT_GAMEPAD_DPAD_UP, VK::kXInputPadDpadUp},
+      {"DOWN", X_INPUT_GAMEPAD_DPAD_DOWN, VK::kXInputPadDpadDown},
+      {"LEFT", X_INPUT_GAMEPAD_DPAD_LEFT, VK::kXInputPadDpadLeft},
+      {"RIGHT", X_INPUT_GAMEPAD_DPAD_RIGHT, VK::kXInputPadDpadRight},
+      {"LB", X_INPUT_GAMEPAD_LEFT_SHOULDER, VK::kXInputPadLShoulder},
+      {"RB", X_INPUT_GAMEPAD_RIGHT_SHOULDER, VK::kXInputPadRShoulder},
+  };
+  if (command == "SCREENSHOT") {
+    script_screenshot_requested = true;
+    XELOGI("input_script: SCREENSHOT");
+    return 0;
+  }
+  if (command.rfind("WAIT ", 0) == 0) {
+    until = now + std::chrono::milliseconds(std::atoi(command.c_str() + 5));
+    return 0;
+  }
+  for (const auto& [name, button, key] : kButtons) {
+    if (command == name) {
+      held = button;
+      if (cvars::input_script_keystrokes) {
+        std::lock_guard keys_lock(scripted_keys_mutex);
+        scripted_keys.emplace_back(key, true);
+        scripted_keys.emplace_back(key, false);
+      }
+      until = now + std::chrono::milliseconds(150);
+      XELOGI("input_script: {}", command);
+      return held;
+    }
+  }
+  XELOGW("input_script: unknown command '{}'", command);
+  return 0;
+}
+
+}  // namespace
+
+int64_t ScriptReadOffset() { return std::max<int64_t>(script_read.load(), 0); }
+
+bool TakeScriptScreenshotRequest() {
+  return script_screenshot_requested.exchange(false);
+}
+
 X_RESULT KeyboardInputDriver::GetState(uint32_t user_index,
                                        X_INPUT_STATE* out_state) {
   if (IsPassthroughEnabled()) {
@@ -354,6 +506,10 @@ X_RESULT KeyboardInputDriver::GetState(uint32_t user_index,
     }
   }
 
+  if (user_index == 0) {
+    buttons |= ScriptedButtons();
+  }
+
   out_state->gamepad.buttons = buttons;
   out_state->gamepad.left_trigger = left_trigger;
   out_state->gamepad.right_trigger = right_trigger;
@@ -386,6 +542,10 @@ X_RESULT KeyboardInputDriver::SetState(uint32_t user_index,
 X_RESULT KeyboardInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
                                            X_INPUT_KEYSTROKE* out_keystroke) {
   X_RESULT result = X_ERROR_EMPTY;
+
+  if (user_index == 0 && PopScriptedKeystroke(out_keystroke)) {
+    return X_ERROR_SUCCESS;
+  }
 
   ui::VirtualKey xinput_virtual_key = ui::VirtualKey::kNone;
   uint16_t unicode = 0;
