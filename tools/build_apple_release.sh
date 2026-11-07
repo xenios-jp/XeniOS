@@ -23,7 +23,7 @@ Options:
                        Configured macOS arm64 CMake build tree; builds and
                        packages xenios_macos_apple_silicon.dmg from it
   --skip-ios           Don't build the IPA
-  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.2.4)
+  --version VERSION    Marketing version override (defaults to latest vX.Y.Z tag, then 2.3.0)
   --build-number NUM   Build number override (defaults to git commit count)
   --channel NAME       release|preview (default: release)
   --stage NAME         alpha|beta|rc|stable (default: stable)
@@ -58,7 +58,7 @@ Notes:
 - The Mac app ships as XeniOS.app (com.xenios), ad-hoc signed. The CMake build
   keeps its Xenia-edge name; the package is renamed.
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
-- If no matching tag is available, the marketing version falls back to 2.2.4.
+- If no matching tag is available, the marketing version falls back to 2.3.0.
 - Public release stage defaults to stable.
 - Official build numbers default to git rev-list --count HEAD.
 - The crash symbols for the diagnostics Worker are written to
@@ -106,7 +106,7 @@ trim_string() {
 }
 
 default_marketing_version() {
-  printf '%s' "2.2.4"
+  printf '%s' "2.3.0"
 }
 
 validate_marketing_version() {
