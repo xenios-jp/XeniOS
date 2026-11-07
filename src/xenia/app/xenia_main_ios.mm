@@ -753,15 +753,8 @@ bool EmulatorAppIOS::OnInitialize() {
   std::filesystem::path cache_root = cvars::cache_root;
   if (cache_root.empty()) {
 #if XE_PLATFORM_IOS
-    @autoreleasepool {
-      NSArray* cache_paths =
-          NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-      if (cache_paths.count > 0) {
-        cache_root = std::filesystem::path([cache_paths[0] UTF8String]) / "xenia";
-      } else {
-        cache_root = storage_root / "cache_host";
-      }
-    }
+    xe_prepare_ios_default_cache_root();
+    cache_root = xe_get_ios_default_cache_root();
 #else
     cache_root = storage_root / "cache_host";
 #endif

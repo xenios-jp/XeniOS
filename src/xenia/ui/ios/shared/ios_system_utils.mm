@@ -200,6 +200,47 @@ std::filesystem::path xe_get_ios_documents_path(void) {
   }
 }
 
+std::filesystem::path xe_get_ios_default_cache_root(void) {
+  @autoreleasepool {
+    NSArray* paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,
+                                                         NSUserDomainMask, YES);
+    if (paths.count > 0) {
+      return std::filesystem::path([paths[0] UTF8String]) / "xenia" / "cache";
+    }
+    return xe_get_ios_documents_path() / "cache_host";
+  }
+}
+
+void xe_prepare_ios_default_cache_root(void) {
+  @autoreleasepool {
+    const std::filesystem::path root = xe_get_ios_default_cache_root();
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+      std::filesystem::create_directories(root.parent_path(), ec);
+      // Builds before this one kept the cache in Library/Caches/xenia. Moving it
+      // keeps the stored shaders; both are in the app's container, so this is a
+      // rename.
+      NSArray* caches =
+          NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+      if (caches.count > 0) {
+        const std::filesystem::path old_root =
+            std::filesystem::path([caches[0] UTF8String]) / "xenia";
+        if (std::filesystem::is_directory(old_root, ec)) {
+          std::filesystem::rename(old_root, root, ec);
+        }
+      }
+      ec.clear();
+      std::filesystem::create_directories(root, ec);
+    }
+    // Rebuildable data, so not for iCloud or device backups. The flag is set on
+    // every launch: Apple documents it as a hint that some file operations
+    // reset.
+    NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:root.c_str()]
+                            isDirectory:YES];
+    [url setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+  }
+}
+
 void xe_request_orientation(UIViewController* view_controller, UIInterfaceOrientationMask mask,
                             UIInterfaceOrientation orientation) {
   if (!view_controller) {

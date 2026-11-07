@@ -168,15 +168,7 @@ static bool xe_game_supports_zar_conversion(const IOSDiscoveredGame& game) {
 static std::filesystem::path xe_ios_settings_cache_root() {
   std::filesystem::path root = cvars::cache_root;
   if (root.empty()) {
-    @autoreleasepool {
-      NSArray* cache_paths =
-          NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-      if (cache_paths.count > 0) {
-        root = std::filesystem::path([cache_paths[0] UTF8String]) / "xenia";
-      } else {
-        root = xe_get_ios_documents_path() / "cache_host";
-      }
-    }
+    root = xe_get_ios_default_cache_root();
   } else if (!root.is_absolute()) {
     root = xe_get_ios_documents_path() / root;
   }

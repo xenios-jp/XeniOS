@@ -40,6 +40,14 @@ NSString* xe_memory_entitlement_not_detected_guidance_message(void);
 
 // File system locations.
 std::filesystem::path xe_get_ios_documents_path(void);
+// The default host cache root (stored shaders, pipelines, title images):
+// Library/Application Support/xenia/cache. Not Library/Caches: iOS may empty
+// that while the app isn't running, and keeps it across updates only by
+// chance, and every stored shader lost is a compile hitch the next session.
+std::filesystem::path xe_get_ios_default_cache_root(void);
+// Creates the default cache root, moves an older Library/Caches/xenia into it
+// once, and excludes it from backup. Call before anything opens files there.
+void xe_prepare_ios_default_cache_root(void);
 
 // Orientation helpers.
 void xe_request_orientation(UIViewController* view_controller, UIInterfaceOrientationMask mask,
