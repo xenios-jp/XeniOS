@@ -26,6 +26,9 @@ namespace xam {
 // True while a profile signed in to Live is in any slot: Xenia's Live counts
 // that user as logged on to the service.
 bool AnyUserSignedInToLive();
+// The guide's Friends and Party pages: the app's Online panel where there is
+// one. Returns a Win32 error once it's closed.
+X_RESULT ShowFriendsAndParty(uint32_t user_index);
 
 xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 

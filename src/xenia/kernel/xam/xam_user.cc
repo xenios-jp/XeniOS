@@ -1656,6 +1656,101 @@ void XamFreeToken_entry(dword_t token_ptr) {
 }
 DECLARE_XAM_EXPORT1(XamFreeToken, kUserProfiles, kImplemented);
 
+// A web service token, as the dashboard reads it: the token text's length at
+// +4 and a pointer to it at +8. The text follows in the same allocation, so
+// XamFreeToken frees both.
+struct X_WEB_SERVICE_TOKEN {
+  xe::be<uint32_t> type;
+  xe::be<uint32_t> length;
+  xe::be<uint32_t> data_ptr;
+};
+static_assert_size(X_WEB_SERVICE_TOKEN, 12);
+
+// The dashboard asks for a user's token (type 2) for the web services it calls
+// with "Authorization: XBL2.0 x=<token>", and for the console's (type 10, user
+// 0xFF) when the user has none. Xenia's web services don't check the token, so
+// it only says whose it is. Returns a Win32 error.
+dword_result_t XamRequestToken_entry(dword_t type, dword_t user_index,
+                                     lpvoid_t applies_to_ptr,
+                                     dword_t applies_to_length,
+                                     lpdword_t token_ptr,
+                                     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!token_ptr || applies_to_length > kXamTokenMaxAppliesToLength ||
+      (applies_to_length && !applies_to_ptr)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  *token_ptr = 0;
+  X_RESULT result = X_ERROR_SUCCESS;
+  uint64_t xuid = 0;
+  if (user_index == XUserIndexAny) {
+    if (!AnyUserSignedInToLive()) {
+      result = X_ERROR_NOT_LOGGED_ON;
+    }
+  } else if (user_index >= XUserMaxUserCount) {
+    result = X_ERROR_INVALID_PARAMETER;
+  } else if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+    result = X_ERROR_NO_SUCH_USER;
+  } else {
+    const auto& profile =
+        kernel_state()->xam_state()->GetUserProfile(user_index);
+    if (profile->signin_state() != 2) {
+      result = X_ERROR_NO_SUCH_USER;
+    } else {
+      xuid = profile->GetOnlineXUID();
+    }
+  }
+  if (result == X_ERROR_SUCCESS) {
+    const std::string text = fmt::format("xenia.{:016X}", xuid);
+    auto* memory = kernel_state()->memory();
+    const uint32_t size =
+        uint32_t(sizeof(X_WEB_SERVICE_TOKEN) + text.size() + 1);
+    const uint32_t guest_token = memory->SystemHeapAlloc(size);
+    if (!guest_token) {
+      result = X_ERROR_NOT_ENOUGH_MEMORY;
+    } else {
+      auto* token = memory->TranslateVirtual<X_WEB_SERVICE_TOKEN*>(guest_token);
+      token->type = type.value();
+      token->length = uint32_t(text.size());
+      token->data_ptr = guest_token + uint32_t(sizeof(X_WEB_SERVICE_TOKEN));
+      std::memcpy(token + 1, text.c_str(), text.size() + 1);
+      *token_ptr = guest_token;
+    }
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamRequestToken, kUserProfiles, kSketchy);
+
+// The text the dashboard shows in its "Xbox Live" box when a web service
+// request fails. The buffer's size is in characters. Returns an HRESULT, with
+// the result in the overlapped when there's one (the dashboard always passes
+// one).
+dword_result_t XamGetErrorStringFromWebService_entry(
+    lpvoid_t buffer_ptr, dword_t buffer_size, dword_t status_code,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  X_HRESULT result = X_E_SUCCESS;
+  if (!buffer_ptr || !buffer_size) {
+    result = X_E_INVALIDARG;
+  } else {
+    const std::u16string text = xe::to_utf16(fmt::format(
+        "This Xbox Live service isn't available. (Status code: {:08X})",
+        uint32_t(status_code)));
+    xe::string_util::copy_and_swap_truncating(buffer_ptr.as<char16_t*>(), text,
+                                              buffer_size);
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediateEx(
+        overlapped_ptr,
+        XFAILED(result) ? X_ERROR_FUNCTION_FAILED : X_ERROR_SUCCESS, result, 0);
+    return X_HRESULT_FROM_WIN32(X_ERROR_IO_PENDING);
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamGetErrorStringFromWebService, kUserProfiles, kSketchy);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

@@ -762,8 +762,22 @@ dword_result_t XamShowNuiDirtyDiscErrorUI_entry(dword_t tracking_id) {
 }
 DECLARE_XAM_EXPORT1(XamShowNuiDirtyDiscErrorUI, kUI, kStub);
 
-dword_result_t XamShowPartyUI_entry(dword_t user_index) {
+// The guide's Friends and Party pages, where the host has them; none here.
+X_RESULT ShowFriendsAndParty(uint32_t user_index) {
+  if (user_index >= XUserMaxUserCount ||
+      !kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+    return X_ERROR_NO_SUCH_USER;
+  }
   return X_ERROR_FUNCTION_FAILED;
+}
+
+dword_result_t XamShowFriendsUI_entry(dword_t user_index) {
+  return ShowFriendsAndParty(user_index);
+}
+DECLARE_XAM_EXPORT1(XamShowFriendsUI, kUI, kStub);
+
+dword_result_t XamShowPartyUI_entry(dword_t user_index) {
+  return ShowFriendsAndParty(user_index);
 }
 DECLARE_XAM_EXPORT1(XamShowPartyUI, kUI, kStub);
 
