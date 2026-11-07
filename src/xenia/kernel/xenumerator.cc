@@ -9,6 +9,10 @@
 
 #include "xenia/kernel/xenumerator.h"
 
+#include <cstring>
+
+#include "xenia/base/assert.h"
+
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
 
@@ -185,6 +189,22 @@ uint32_t XTitleEnumerator::WriteItems(uint8_t* buffer_data,
   return X_ERROR_SUCCESS;
 }
 
+void XUserStatsEnumerator::WriteEmptyResults(
+    uint8_t* buffer, uint32_t buffer_size, uint32_t buffer_guest,
+    const std::vector<uint32_t>& view_ids) {
+  assert_true(buffer_size >= EmptyResultsSize(view_ids.size()));
+  std::memset(buffer, 0, buffer_size);
+  auto results = reinterpret_cast<XUSER_STATS_READ_RESULTS*>(buffer);
+  results->num_views = static_cast<uint32_t>(view_ids.size());
+  results->views_ptr = buffer_guest + sizeof(XUSER_STATS_READ_RESULTS);
+  const uint32_t rows_ptr = buffer_guest + EmptyResultsSize(view_ids.size());
+  auto views = reinterpret_cast<XUSER_STATS_VIEW*>(results + 1);
+  for (size_t i = 0; i < view_ids.size(); ++i) {
+    views[i].view_id = view_ids[i];
+    views[i].rows_ptr = rows_ptr;
+  }
+}
+
 uint32_t XUserStatsEnumerator::WriteItems(uint8_t* buffer_data,
                                           uint32_t buffer_size,
                                           uint32_t* written_count) {
@@ -196,24 +216,9 @@ uint32_t XUserStatsEnumerator::WriteItems(uint8_t* buffer_data,
     return X_ERROR_INSUFFICIENT_BUFFER;
   }
 
-  // There is no stats server so every view reads back with no rows. 4D5307EA
-  // walks the views and copies a view's first row and that row's columns
-  // without checking the result or num_rows. Zeroing the buffer keeps those
-  // empty.
-  std::memset(buffer_data, 0, buffer_size);
-  auto results = reinterpret_cast<XUSER_STATS_READ_RESULTS*>(buffer_data);
-  results->num_views = static_cast<uint32_t>(view_ids_.size());
-  results->views_ptr = memory()->HostToGuestVirtual(buffer_data) +
-                       sizeof(XUSER_STATS_READ_RESULTS);
-  // 584111FA and 5841089F dereference rows_ptr even with no rows.
-  const uint32_t rows_ptr =
-      results->views_ptr +
-      static_cast<uint32_t>(view_ids_.size() * sizeof(XUSER_STATS_VIEW));
-  auto views = reinterpret_cast<XUSER_STATS_VIEW*>(results + 1);
-  for (size_t i = 0; i < view_ids_.size(); ++i) {
-    views[i].view_id = view_ids_[i];
-    views[i].rows_ptr = rows_ptr;
-  }
+  // There is no stats server so every view reads back with no rows.
+  WriteEmptyResults(buffer_data, buffer_size,
+                    memory()->HostToGuestVirtual(buffer_data), view_ids_);
   written_ = true;
 
   if (written_count) {

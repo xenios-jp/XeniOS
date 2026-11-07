@@ -13,6 +13,7 @@
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xconfig.h"
+#include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xsession.h"
 
 #include "xenia/base/logging.h"
@@ -455,8 +456,6 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return session->GetDetails(size_ptr, details_ptr);
     }
     case 0x000B0021: {
-      XELOGD("XUserReadStats");
-
       struct XUserReadStats {
         xe::be<uint32_t> titleId;
         xe::be<uint32_t> xuids_count;
@@ -466,8 +465,43 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         xe::be<uint32_t> results_size;
         xe::be<uint32_t> results_guest_address;
       }* data = reinterpret_cast<XUserReadStats*>(buffer);
+      XELOGD("XUserReadStats({:08X}, {} users, {} views, {:08X}, {:08X})",
+             uint32_t(data->titleId), uint32_t(data->xuids_count),
+             uint32_t(data->specs_count), uint32_t(data->results_size),
+             uint32_t(data->results_guest_address));
 
-      return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      // Stats are for users signed in to Live.
+      bool live = false;
+      for (uint32_t i = 0; i < XUserMaxUserCount && !live; ++i) {
+        const UserProfile* user = kernel_state_->xam_state()->GetUserProfile(i);
+        live = user && user->signin_state() ==
+                           static_cast<uint32_t>(SignInState::SignedInToLive);
+      }
+      if (!live) {
+        return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      }
+      if (!data->specs_count || !data->specs_guest_address) {
+        return X_E_INVALIDARG;
+      }
+
+      // No stats service keeps rows, so every requested view reads back with
+      // none: everyone is unrated.
+      using Enumerator = XUserStatsEnumerator;
+      const auto* specs = memory_->TranslateVirtual<Enumerator::XUSER_STATS_SPEC*>(
+          data->specs_guest_address);
+      std::vector<uint32_t> view_ids;
+      for (uint32_t i = 0; i < data->specs_count; ++i) {
+        view_ids.push_back(specs[i].ViewId);
+      }
+      // The title passes the size of its results buffer by value.
+      const uint32_t needed = Enumerator::EmptyResultsSize(view_ids.size());
+      if (!data->results_guest_address || data->results_size < needed) {
+        return X_E_INSUFFICIENT_BUFFER;
+      }
+      Enumerator::WriteEmptyResults(
+          memory_->TranslateVirtual(data->results_guest_address),
+          data->results_size, data->results_guest_address, view_ids);
+      return X_E_SUCCESS;
     }
     case 0x000B0036: {
       // Called after opening xbox live arcade and clicking on xbox live v5759

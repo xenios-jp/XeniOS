@@ -304,6 +304,7 @@ class KernelState {
   std::vector<uint32_t> GetAllThreadIDs();
 
   void RegisterNotifyListener(XNotifyListener* listener);
+  uint32_t SignedInUserMask();
   void UnregisterNotifyListener(XNotifyListener* listener);
   void BroadcastNotification(XNotificationID id, uint32_t data);
 
@@ -442,6 +443,7 @@ class KernelState {
   bool has_notified_startup_ = false;
   bool has_notified_live_startup_ = false;
   bool has_notified_xmp_startup_ = false;
+  bool has_notified_party_startup_ = false;
 
   object_ref<UserModule> executable_module_;
   std::vector<object_ref<KernelModule>> kernel_modules_;

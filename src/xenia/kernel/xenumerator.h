@@ -232,6 +232,22 @@ class XUserStatsEnumerator : public XEnumerator {
   };
   static_assert_size(XUSER_STATS_VIEW, 0x10);
 
+  // The bytes a read results header and |view_count| views take.
+  static constexpr uint32_t EmptyResultsSize(size_t view_count) {
+    return static_cast<uint32_t>(sizeof(XUSER_STATS_READ_RESULTS) +
+                                 view_count * sizeof(XUSER_STATS_VIEW));
+  }
+
+  // Writes read results in which every view in |view_ids| has no rows.
+  // Zeroes all |buffer_size| bytes of |buffer|, which the guest sees at
+  // |buffer_guest| and which must hold EmptyResultsSize(view_ids.size())
+  // bytes. Every view's rows_ptr is valid even with no rows: 584111FA and
+  // 5841089F dereference it, and 4D5307EA copies the first row and its columns
+  // without checking num_rows, so whatever follows the views reads as zero.
+  static void WriteEmptyResults(uint8_t* buffer, uint32_t buffer_size,
+                                uint32_t buffer_guest,
+                                const std::vector<uint32_t>& view_ids);
+
   XUserStatsEnumerator(KernelState* kernel_state, size_t items_per_enumerate,
                        std::vector<uint32_t> view_ids, uint32_t buffer_size)
       : XEnumerator(kernel_state, items_per_enumerate, 0),
