@@ -1,6 +1,8 @@
 # The headset on macOS and iOS (the voice processing I/O unit). Sources
 # are listed because xe_platform_sources does not glob .mm files.
 add_library(xenia-apu-voice-apple STATIC
+  apple_voice_codec.h
+  apple_voice_codec.mm
   apple_voice_device.h
   apple_voice_device.mm
 )

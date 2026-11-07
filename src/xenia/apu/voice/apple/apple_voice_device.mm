@@ -367,12 +367,14 @@ class AppleVoiceDevice final : public VoiceDevice {
                         AURenderCallbackStruct{&OnMicrophone, this}));
     }
     if (voice_processing) {
-      // Keep the game's own audio at full volume while the mic is open.
+      // Keep the game's own audio at full volume while the mic is open. In
+      // party chat, advanced ducking dips it only while someone talks.
       check("ducking",
             SetProperty(unit, kAUVoiceIOProperty_OtherAudioDuckingConfiguration,
                         kAudioUnitScope_Global, 0,
                         AUVoiceIOOtherAudioDuckingConfiguration{
-                            false, kAUVoiceIOOtherAudioDuckingLevelMin}));
+                            advanced_ducking(),
+                            kAUVoiceIOOtherAudioDuckingLevelMin}));
     }
     // The microphone callback reads it, so it is set before the unit runs.
     microphone_unit_ = with_microphone ? unit : nullptr;

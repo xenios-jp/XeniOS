@@ -118,7 +118,7 @@ class RelayTransport final : public PacketTransport {
     client_.Leave(out_);
     Flush();
     // Nothing was reported while it was dormant, so there is nothing to end.
-    if (active_) {
+    if (active_ && config_.report_status) {
       RelayStatus stopped;
       stopped.state = RelayStatus::State::kStopped;
       Report(stopped);
@@ -504,7 +504,9 @@ class RelayTransport final : public PacketTransport {
     }
     if (status != reported_) {
       reported_ = status;
-      Report(status);
+      if (config_.report_status) {
+        Report(status);
+      }
     }
   }
 

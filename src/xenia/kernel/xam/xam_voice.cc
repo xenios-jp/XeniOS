@@ -159,9 +159,12 @@ class Headsets {
   }
 
   // Whether the headset's host microphone and speaker should run now. The
-  // app may switch voice_chat while a game runs; checked every tick.
+  // app may switch voice_chat while a game runs, and party chat takes the
+  // host from game chat; checked every tick.
+  // A test device yields to party chat too: one voice goes to one chat.
   static bool host_audio_wanted() {
-    return apu::voice::TestDeviceRequested() || cvars::voice_chat;
+    return (apu::voice::TestDeviceRequested() || cvars::voice_chat) &&
+           !apu::voice::PartyHoldsHost();
   }
 
   X_RESULT Create(uint32_t user_index, uint32_t* out_handle) {
@@ -205,9 +208,14 @@ class Headsets {
     Finish(std::move(thread), std::move(device));
   }
 
+  // With the microphone switched off the headset is unplugged, as pulling it
+  // out of the controller is on the console: titles poll this and drop the
+  // player's voice icon. It plugs back in when the app switches voice on.
+  // Party chat holding the host leaves it plugged in, as on the console.
   bool Present(uint32_t handle) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return headset_ && headset_->handle == handle;
+    return headset_ && headset_->handle == handle &&
+           (apu::voice::TestDeviceRequested() || cvars::voice_chat);
   }
 
   X_RESULT Submit(uint32_t handle, uint32_t direction, uint32_t packet_ptr) {
@@ -341,6 +349,7 @@ class Headsets {
     }
     if (device) {
       device->Stop();
+      apu::voice::SetTitleHoldsHost(false);
     }
   }
 
@@ -396,14 +405,19 @@ class Headsets {
         lock.unlock();
         device->Stop();
         device.reset();
+        apu::voice::SetTitleHoldsHost(false);
         lock.lock();
-        XELOGI("Voice: host audio off (voice switched off)");
+        XELOGI("Voice: host audio off ({})",
+               apu::voice::PartyHoldsHost() ? "party chat has it"
+                                            : "voice switched off");
       }
       return;
     }
     if (device_ || device_failed_) {
       return;
     }
+    // Before it starts, so party voice doesn't start a second device meanwhile.
+    apu::voice::SetTitleHoldsHost(true);
     lock.unlock();
     std::unique_ptr<apu::voice::VoiceDevice> device =
         apu::voice::CreateVoiceDevice();
@@ -418,11 +432,14 @@ class Headsets {
       lock.unlock();
       // Stopped by its destructor if it started at all.
       device.reset();
+      apu::voice::SetTitleHoldsHost(false);
       lock.lock();
       return;
     }
     device->capture().Discard();
     device_ = std::move(device);
+    // A new device counts from 0.
+    headset_->reported_dry = 0;
     XELOGI("Voice: host audio on for user {}", headset_->user_index);
   }
 

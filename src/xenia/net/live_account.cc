@@ -2204,6 +2204,13 @@ void AccountClient::OnMessage(std::string text) {
       }
       case Kind::kInvite:
         RememberNameLocked(m->invite.from, m->invite.gamertag);
+        if (m->invite.party && party_ && party_->room == m->invite.room) {
+          // Into the party it's already in: nothing to offer.
+          XELOGI("Live account: a party invite from {} into party {}, which "
+                 "it's in; dropped",
+                 m->invite.gamertag, m->invite.room);
+          break;
+        }
         if (!m->invite.party) {
           // The latest from each friend replaces an earlier one, on the lobby
           // too.

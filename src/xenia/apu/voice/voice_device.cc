@@ -323,6 +323,24 @@ bool HostVoiceSwitchable() {
   return host_voice_switchable.load(std::memory_order_acquire);
 }
 
+namespace {
+std::atomic<bool> party_holds_host{false};
+std::atomic<bool> title_holds_host{false};
+}  // namespace
+
+void SetPartyHoldsHost(bool holds) {
+  party_holds_host.store(holds, std::memory_order_release);
+}
+bool PartyHoldsHost() {
+  return party_holds_host.load(std::memory_order_acquire);
+}
+void SetTitleHoldsHost(bool holds) {
+  title_holds_host.store(holds, std::memory_order_release);
+}
+bool TitleHoldsHost() {
+  return title_holds_host.load(std::memory_order_acquire);
+}
+
 }  // namespace voice
 }  // namespace apu
 }  // namespace xe

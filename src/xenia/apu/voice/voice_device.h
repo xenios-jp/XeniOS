@@ -84,11 +84,17 @@ class VoiceDevice {
     return playback_dry_.load(std::memory_order_relaxed);
   }
 
+  // Party chat: duck other audio (the game's) only while someone talks,
+  // instead of the light, constant ducking game chat uses. Set before Start().
+  void set_advanced_ducking(bool advanced) { advanced_ducking_ = advanced; }
+  bool advanced_ducking() const { return advanced_ducking_; }
+
  private:
   SampleRing capture_;
   SampleRing playback_;
   // The speaker thread's.
   bool playback_primed_ = false;
+  bool advanced_ducking_ = false;
   std::atomic<uint32_t> playback_dry_{0};
 };
 
@@ -116,6 +122,17 @@ std::unique_ptr<VoiceDevice> CreateVoiceDevice();
 // headset.
 void SetHostVoiceSwitchable(bool switchable);
 bool HostVoiceSwitchable();
+
+// One voice processing device runs at a time, owned by either the running
+// title's headset (game chat) or party voice (party chat), as on the 360,
+// where a member in party chat isn't heard in game chat. Party voice holds the
+// host while it is on; the title's headset then keeps its host audio off (it
+// hears and plays silence). The headset says while its host audio runs, so
+// party voice starts its device only once the title's has stopped.
+void SetPartyHoldsHost(bool holds);
+bool PartyHoldsHost();
+void SetTitleHoldsHost(bool holds);
+bool TitleHoldsHost();
 
 }  // namespace voice
 }  // namespace apu
