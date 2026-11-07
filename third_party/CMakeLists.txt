@@ -466,11 +466,16 @@ target_include_directories(imgui PUBLIC imgui PRIVATE stb)
 # ==============================================================================
 add_library(mbedtls STATIC
   mbedtls/library/aes.c
+  mbedtls/library/asn1parse.c
+  mbedtls/library/asn1write.c
   mbedtls/library/bignum.c
   mbedtls/library/bignum_core.c
   mbedtls/library/constant_time.c
   mbedtls/library/des.c
   mbedtls/library/dhm.c
+  mbedtls/library/ecdsa.c
+  mbedtls/library/ecp.c
+  mbedtls/library/ecp_curves.c
   mbedtls/library/md.c
   mbedtls/library/md5.c
   mbedtls/library/platform_util.c

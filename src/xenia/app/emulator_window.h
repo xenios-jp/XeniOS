@@ -40,6 +40,9 @@
 class wxTimer;
 
 namespace xe {
+namespace kernel::xam {
+struct AcceptedInvite;
+}  // namespace kernel::xam
 namespace app {
 
 class GameListPanel;
@@ -100,6 +103,12 @@ class EmulatorWindow {
                                bool boot_animation = false);
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file,
                         bool boot_animation = false);
+  // Starts the invite's game from the library for the profile at
+  // |user_index|, asking first when it replaces a running one; or says the
+  // game isn't in the library.
+  void StartTitleForLiveInvite(uint32_t user_index, const std::string& from,
+                               const kernel::xam::AcceptedInvite& invite,
+                               const std::string& room);
   void UpdateTitle();
 
   void SetFullscreen(bool fullscreen);

@@ -928,6 +928,14 @@ TEST_CASE("Relay addresses read and write", "[relay]") {
   CHECK(!ParseEndpoint("[2001:db8::1:4000"));
   CHECK(!ParseEndpoint("[1::2::3]:4"));
   CHECK(!ParseEndpoint("host:4000"));
+  // An IPv4 address written as IPv6 is the IPv4 address, so every check on
+  // where a probe may go sees it.
+  CHECK(ParseEndpoint("[::ffff:7f00:1]:8080") == V4(127, 0, 0, 1, 8080));
+  CHECK(ParseEndpoint("[::ffff:c0a8:101]:53") == V4(192, 168, 1, 1, 53));
+  CHECK(ParseEndpoint("[0:0:0:0:0:ffff:a9fe:a9fe]:80") ==
+        V4(169, 254, 169, 254, 80));
+  // The dotted form isn't read at all.
+  CHECK(!ParseEndpoint("[::ffff:127.0.0.1]:8080"));
 
   std::string host;
   uint16_t port = 0;
@@ -1656,8 +1664,9 @@ TEST_CASE("Relay players never probe addresses a peer made up", "[relay]") {
   // Everyone lists the others' public addresses and local ones of its own
   // choosing, as a hostile player could.
   const std::vector<std::string> forged = {
-      "198.51.100.101:9", "198.51.100.102:9", "192.168.77.5:4000",
-      "127.0.0.1:4000",   "169.254.9.9:4000", "[fe80::9]:4000"};
+      "198.51.100.101:9",     "198.51.100.102:9",      "192.168.77.5:4000",
+      "127.0.0.1:4000",       "169.254.9.9:4000",      "[fe80::9]:4000",
+      "[::ffff:7f00:1]:4000", "[::ffff:a9fe:909]:4000"};
   const Endpoint lan = V4(192, 168, 77, 5, 4000);
   const Endpoint loopback = V4(127, 0, 0, 1, 4000);
   const Endpoint link_local = V4(169, 254, 9, 9, 4000);
@@ -2176,6 +2185,70 @@ class IceServer {
 };
 
 }  // namespace
+
+TEST_CASE("Relay players shrug off a hostile lobby", "[relay]") {
+  RelayClient client(kMacA, Config());
+  Outbox out;
+  uint64_t now = 100000;
+  client.LobbyConnecting(now);
+  client.LobbyOpened(now, out);
+  // Nesting deep enough to overflow a recursive parser, and a message far
+  // bigger than any the lobby sends: both ignored.
+  client.LobbyMessage(std::string(1 << 20, '['), now, out);
+  std::string nested;
+  for (int i = 0; i < 100000; ++i) {
+    nested += R"({"a":)";
+  }
+  client.LobbyMessage(nested, now, out);
+  client.LobbyMessage(R"({"t":"welcome","secret":[[[[[[[[[[[[1]]]]]]]]]]]]})",
+                      now, out);
+  const uint64_t secret = 0x0123456789ABCDEF;
+  client.LobbyMessage(
+      fmt::format(R"({{"t":"welcome","v":1,"secret":"{:016x}","ice":{{}}}})",
+                  secret),
+      now, out);
+  // 200 players, each at its own public address: no more than a room holds
+  // are probed.
+  std::string peers;
+  for (int i = 0; i < 200; ++i) {
+    Mac mac = kMacB;
+    mac[4] = uint8_t(i >> 8);
+    mac[5] = uint8_t(i);
+    peers +=
+        fmt::format(R"({}{{"mac":"{}","title":"{:08X}","version":1,)"
+                    R"("candidates":["198.51.{}.{}:5000"]}})",
+                    i ? "," : "", Hex(mac), kTitle, 100 + i / 200, 1 + i % 200);
+  }
+  client.LobbyMessage(fmt::format(R"({{"t":"peers","peers":[{}]}})", peers),
+                      now, out);
+  std::set<Endpoint> probed;
+  for (int i = 0; i < 40; ++i, now += 25) {
+    client.Tick(now, out);
+    for (const Datagram& datagram : std::exchange(out.datagrams, {})) {
+      auto decoded = Decode(datagram.data);
+      if (decoded && std::holds_alternative<Probe>(*decoded)) {
+        probed.insert(datagram.to);
+      }
+    }
+  }
+  CHECK(!probed.empty());
+  CHECK(probed.size() <= 64);
+}
+
+TEST_CASE("Relay players only use public STUN and TURN servers", "[relay]") {
+  CHECK(IsPublicServer(V4(162, 159, 207, 0, 3478)));
+  CHECK(IsPublicServer(*ParseEndpoint("[2606:4700::6810:1]:3478")));
+  CHECK(!IsPublicServer(V4(127, 0, 0, 1, 3478)));
+  CHECK(!IsPublicServer(V4(192, 168, 1, 1, 3478)));
+  CHECK(!IsPublicServer(V4(10, 0, 0, 1, 3478)));
+  CHECK(!IsPublicServer(V4(169, 254, 169, 254, 80)));
+  CHECK(!IsPublicServer(V4(100, 64, 0, 1, 3478)));
+  CHECK(!IsPublicServer(*ParseEndpoint("[::ffff:7f00:1]:3478")));
+  CHECK(!IsPublicServer(*ParseEndpoint("[::1]:3478")));
+  CHECK(!IsPublicServer(*ParseEndpoint("[fe80::1]:3478")));
+  CHECK(!IsPublicServer(*ParseEndpoint("[fd00::1]:3478")));
+  CHECK(!IsPublicServer(V4(162, 159, 207, 0, 0)));
+}
 
 TEST_CASE("Relay transports meet on loopback", "[relay]") {
   for (const bool direct : {true, false}) {

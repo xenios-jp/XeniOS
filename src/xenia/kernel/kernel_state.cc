@@ -24,6 +24,8 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_live_invites.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -114,6 +116,9 @@ KernelState::KernelState(Emulator* emulator)
 }
 
 KernelState::~KernelState() {
+  // The online accounts' events use the kernel: stop them first.
+  xam::LiveSocialShutdown();
+
   // Before anything a timer callback touches goes away.
   XTimer::CancelAll();
 
@@ -1215,8 +1220,14 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
                                     0);
     }
   }
-  if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
-    has_notified_live_startup_ = true;
+  // Every Live listener hears the connection state, not only the first: the
+  // Dashboard makes new listeners for its social pages long after start, and
+  // shows "not connected to Xbox Live" on those that never hear it.
+  if (listener->mask() & kXNotifyLive) {
+    if (!has_notified_live_startup_) {
+      has_notified_live_startup_ = true;
+      xam::LiveSocialSignInChanged(this, /*start_only=*/true);
+    }
     // X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED for Xenia's Live (a profile
     // signed in to Live), X_ONLINE_S_LOGON_DISCONNECTED otherwise.
     listener->EnqueueNotification(
@@ -1224,6 +1235,11 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
         xam::AnyUserSignedInToLive() ? 0x001510F0L : 0x001510F1L);
     listener->EnqueueNotification(kXNotificationLiveLinkStateChanged,
                                   xam::SystemLinkEnabled());
+    // Started from an invite (or to join a friend) the app accepted.
+    for (const uint32_t user : xam::UsersWithAcceptedInvite(title_id())) {
+      XELOGI("Live invite: telling the title user {} accepted one", user);
+      listener->EnqueueNotification(kXNotificationLiveInviteAccepted, user);
+    }
   }
 
   // A listener for both system and Live messages gets the signed-in users
@@ -1262,6 +1278,9 @@ void KernelState::UnregisterNotifyListener(XNotifyListener* listener) {
 }
 
 void KernelState::BroadcastNotification(XNotificationID id, uint32_t data) {
+  if (id == kXNotificationSystemSignInChanged) {
+    xam::LiveSocialSignInChanged(this);
+  }
   auto global_lock = global_critical_region_.Acquire();
   for (const auto& notify_listener : notify_listeners_) {
     notify_listener->EnqueueNotification(id, data);

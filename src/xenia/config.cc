@@ -291,8 +291,12 @@ void ReadConfig(const std::filesystem::path& file_path,
         XELOGI("Command line overrides:");
         has_overrides = true;
       }
+      // An accepted invite carries its session's key and maybe a private
+      // System Link room's code: neither goes in the log.
       XELOGI("  {} = {}", config_var->name(),
-             xe::strip_pii(config_var->commandline_value()));
+             config_var->name() == "live_accepted_invite"
+                 ? std::string("(an invite)")
+                 : xe::strip_pii(config_var->commandline_value()));
     }
   }
 
