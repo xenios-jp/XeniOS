@@ -536,7 +536,7 @@ void xe_ios_share_system_link_invite(UIViewController* presenter, uint32_t title
                                          @"room code"),
                        game_title.length ? game_title : @"", code];
   UIActivityViewController* share = [[[UIActivityViewController alloc]
-      initWithActivityItems:@[ text, xe_ios_system_link_invite_url(title_id, code) ]
+      initWithActivityItems:@[ text, xe_ios_system_link_share_url(title_id, code) ]
       applicationActivities:nil] autorelease];
   share.popoverPresentationController.sourceView = source ?: presenter.view;
   share.popoverPresentationController.sourceRect = (source ?: presenter.view).bounds;
@@ -1126,7 +1126,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
                                          @"room code"),
                        [self nameForTitleID:snapshot_.title_id], code];
   UIActivityViewController* share = [[[UIActivityViewController alloc]
-      initWithActivityItems:@[ text, xe_ios_system_link_invite_url(snapshot_.title_id, code) ]
+      initWithActivityItems:@[ text, xe_ios_system_link_share_url(snapshot_.title_id, code) ]
       applicationActivities:nil] autorelease];
   share.popoverPresentationController.sourceView = source;
   share.popoverPresentationController.sourceRect = source.bounds;

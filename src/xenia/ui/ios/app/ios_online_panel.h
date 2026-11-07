@@ -17,6 +17,9 @@
 @class XeniaLiveFriend;
 @class XeniaLiveInvite;
 
+// The Online panel's width beside the in-game menu, and the most it gets when it drops down.
+constexpr CGFloat kXeniaOnlinePanelWidth = 300.0;
+
 // One player's card: who they are, what they play, and what you can do with them (join, invite,
 // add as a friend). Lives inside the Online panel, or on its own over the game when the game asks
 // for a gamer card.
@@ -24,6 +27,11 @@
 - (instancetype)initWithXuid:(uint64_t)xuid gamertag:(NSString*)gamertag;
 @property(nonatomic, readonly) uint64_t xuid;
 @property(nonatomic, copy) void (^joinFriendHandler)(XeniaLiveFriend* peer);
+// The buttons in a column beside the avatar and name instead of under them, for a screen too
+// short for one tall column (iPhone landscape).
+@property(nonatomic) BOOL actionsBeside;
+// Added after the card's own buttons, in their column (the overlay's Close).
+@property(nonatomic, retain) UIView* trailingAction;
 - (void)reload;
 @end
 

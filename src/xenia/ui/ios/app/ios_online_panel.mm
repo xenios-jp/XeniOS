@@ -478,6 +478,21 @@ NSString* GamertagFor(uint64_t xuid) {
   return nil;
 }
 
+// The controller to present from for |view|: its own, or whatever that one has up. A view added
+// straight to the window (the gamer card over a game) has none, so the window's root stands in.
+UIViewController* PresenterFor(UIView* view) {
+  UIResponder* responder = view;
+  while (responder && ![responder isKindOfClass:[UIViewController class]]) {
+    responder = responder.nextResponder;
+  }
+  UIViewController* presenter =
+      responder ? (UIViewController*)responder : view.window.rootViewController;
+  while (presenter.presentedViewController && !presenter.presentedViewController.isBeingDismissed) {
+    presenter = presenter.presentedViewController;
+  }
+  return presenter;
+}
+
 }  // namespace
 
 #pragma mark - Gamer card
@@ -485,22 +500,40 @@ NSString* GamertagFor(uint64_t xuid) {
 @implementation XeniaIOSGamerCardView {
   uint64_t _xuid;
   NSString* _gamertag;
+  // Who they are (_identity) above or beside what you can do (_actions).
   UIStackView* _stack;
+  UIStackView* _identity;
+  UIStackView* _actions;
+  // ⋯ in the corner: Report and Block, kept out of the way of the card's own buttons.
+  UIButton* _more;
+  // ⋯ at the card's corner when the buttons are underneath, at the identity column's beside them.
+  NSArray<NSLayoutConstraint*>* _moreUnder;
+  NSArray<NSLayoutConstraint*>* _moreBeside;
   void (^_joinFriendHandler)(XeniaLiveFriend*);
+  BOOL _actionsBeside;
+  UIView* _trailingAction;
 }
 
 @synthesize xuid = _xuid;
+@synthesize trailingAction = _trailingAction;
 
 - (instancetype)initWithXuid:(uint64_t)xuid gamertag:(NSString*)gamertag {
   if ((self = [super initWithFrame:CGRectZero])) {
     _xuid = xuid;
     _gamertag = [gamertag copy];
     self.translatesAutoresizingMaskIntoConstraints = NO;
-    _stack = [[UIStackView alloc] init];
+    _identity = [[UIStackView alloc] init];
+    _identity.translatesAutoresizingMaskIntoConstraints = NO;
+    _identity.axis = UILayoutConstraintAxisVertical;
+    _identity.alignment = UIStackViewAlignmentCenter;
+    _identity.spacing = 8.0;
+    _actions = [[UIStackView alloc] init];
+    _actions.translatesAutoresizingMaskIntoConstraints = NO;
+    _actions.axis = UILayoutConstraintAxisVertical;
+    _actions.alignment = UIStackViewAlignmentFill;
+    _actions.spacing = 8.0;
+    _stack = [[UIStackView alloc] initWithArrangedSubviews:@[ _identity, _actions ]];
     _stack.translatesAutoresizingMaskIntoConstraints = NO;
-    _stack.axis = UILayoutConstraintAxisVertical;
-    _stack.alignment = UIStackViewAlignmentCenter;
-    _stack.spacing = 8.0;
     [self addSubview:_stack];
     [NSLayoutConstraint activateConstraints:@[
       [_stack.topAnchor constraintEqualToAnchor:self.topAnchor],
@@ -508,6 +541,31 @@ NSString* GamertagFor(uint64_t xuid) {
       [_stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
       [_stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
     ]];
+    _more = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
+    _more.translatesAutoresizingMaskIntoConstraints = NO;
+    [_more setImage:[UIImage systemImageNamed:@"ellipsis.circle"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleTitle3]]
+           forState:UIControlStateNormal];
+    _more.tintColor = [XeniaTheme textSecondary];
+    _more.showsMenuAsPrimaryAction = YES;
+    _more.accessibilityLabel = NSLocalizedString(@"More", @"Gamer card: VoiceOver for the ⋯ menu "
+                                                          @"with Report and Block");
+    [self addSubview:_more];
+    [NSLayoutConstraint activateConstraints:@[
+      [_more.topAnchor constraintEqualToAnchor:self.topAnchor constant:-6],
+      [_more.widthAnchor constraintEqualToConstant:44.0],
+      [_more.heightAnchor constraintEqualToConstant:44.0],
+    ]];
+    _moreUnder = [@[ [_more.trailingAnchor constraintEqualToAnchor:self.trailingAnchor
+                                                           constant:6] ] retain];
+    _moreBeside = [@[ [_more.trailingAnchor constraintEqualToAnchor:_identity.trailingAnchor
+                                                            constant:6] ] retain];
+    [self applyAxis];
+    // Wide enough that ⋯ clears the avatar when the panel is only as wide as its content (a
+    // blocked player's card, with one short button). Required, since the panel fits its content
+    // at a lower priority than anything else would win against.
+    [self.widthAnchor constraintGreaterThanOrEqualToConstant:240.0].active = YES;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(socialChanged:)
                                                  name:XeniaLiveSocialDidChangeNotification
@@ -521,8 +579,54 @@ NSString* GamertagFor(uint64_t xuid) {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_gamertag release];
   [_stack release];
+  [_identity release];
+  [_actions release];
+  [_more release];
+  [_moreUnder release];
+  [_moreBeside release];
   [_joinFriendHandler release];
+  [_trailingAction release];
   [super dealloc];
+}
+
+- (BOOL)actionsBeside {
+  return _actionsBeside;
+}
+
+- (void)setActionsBeside:(BOOL)beside {
+  if (beside != _actionsBeside) {
+    _actionsBeside = beside;
+    [self applyAxis];
+    [self reload];
+  }
+}
+
+- (void)applyAxis {
+  if (_actionsBeside) {
+    // Two equal columns, the identity centred against the buttons.
+    _stack.axis = UILayoutConstraintAxisHorizontal;
+    _stack.alignment = UIStackViewAlignmentCenter;
+    _stack.distribution = UIStackViewDistributionFillEqually;
+    _stack.spacing = 20.0;
+    [NSLayoutConstraint deactivateConstraints:_moreUnder];
+    [NSLayoutConstraint activateConstraints:_moreBeside];
+  } else {
+    _stack.axis = UILayoutConstraintAxisVertical;
+    _stack.alignment = UIStackViewAlignmentFill;
+    _stack.distribution = UIStackViewDistributionFill;
+    _stack.spacing = 14.0;
+    [NSLayoutConstraint deactivateConstraints:_moreBeside];
+    [NSLayoutConstraint activateConstraints:_moreUnder];
+  }
+}
+
+- (void)setTrailingAction:(UIView*)view {
+  if (view != _trailingAction) {
+    [_trailingAction removeFromSuperview];
+    [_trailingAction release];
+    _trailingAction = [view retain];
+    [self reload];
+  }
 }
 
 - (void (^)(XeniaLiveFriend*))joinFriendHandler {
@@ -551,15 +655,40 @@ NSString* GamertagFor(uint64_t xuid) {
 }
 
 - (void)reload {
-  for (UIView* view in [[_stack.arrangedSubviews copy] autorelease]) {
-    [view removeFromSuperview];
+  for (UIStackView* stack in @[ _identity, _actions ]) {
+    for (UIView* view in [[stack.arrangedSubviews copy] autorelease]) {
+      [view removeFromSuperview];
+    }
   }
+  [self addIdentityAndActions];
+  if (_trailingAction) {
+    [_actions addArrangedSubview:_trailingAction];
+  }
+  // The buttons fill their column: Capsule()'s required hugging would hold the whole card to the
+  // widest title.
+  for (UIView* view in _actions.arrangedSubviews) {
+    [view setContentHuggingPriority:UILayoutPriorityDefaultLow
+                            forAxis:UILayoutConstraintAxisHorizontal];
+  }
+  _actions.hidden = _actions.arrangedSubviews.count == 0;
+}
+
+- (void)addIdentityAndActions {
   XeniaLiveSocial* social = [XeniaLiveSocial shared];
   const BOOL me = _xuid == 0;
-  NSString* name = GamertagFor(_xuid) ?: _gamertag;
+  NSString* known_name = GamertagFor(_xuid) ?: _gamertag;
+  // Kept for the blocked list and the report form, which can't look a stranger's name up.
+  if (known_name.length && ![known_name isEqualToString:_gamertag]) {
+    [_gamertag release];
+    _gamertag = [known_name copy];
+  }
+  NSString* name = known_name;
   if (!name.length) {
     name = NSLocalizedString(@"Player", @"Gamer card: a player whose gamertag isn't known");
   }
+  const BOOL blocked = !me && [social isBlocked:_xuid];
+  _more.hidden = me || ![social canActOnPlayer:_xuid];
+  _more.menu = _more.hidden ? nil : [self moreMenuBlocked:blocked];
   XeniaLiveFriend* peer = me ? nil : [social friendWithXuid:_xuid];
   XeniaLiveFriend* incoming = nil;
   XeniaLiveFriend* outgoing = nil;
@@ -574,12 +703,15 @@ NSString* GamertagFor(uint64_t xuid) {
     }
   }
 
-  [_stack addArrangedSubview:Avatar(name, 64.0, me)];
+  // Smaller where the screen is short, so the card fits beside its buttons.
+  [_identity addArrangedSubview:Avatar(name, _actionsBeside ? 52.0 : 64.0, me)];
   UILabel* name_label =
       NewLabel(name, UIFontTextStyleTitle3, 20.0, UIFontWeightBold, [XeniaTheme textPrimary]);
   name_label.accessibilityTraits = UIAccessibilityTraitHeader;
-  [_stack addArrangedSubview:name_label];
-  [_stack setCustomSpacing:2.0 afterView:name_label];
+  name_label.numberOfLines = 2;
+  name_label.textAlignment = NSTextAlignmentCenter;
+  [_identity addArrangedSubview:name_label];
+  [_identity setCustomSpacing:2.0 afterView:name_label];
 
   NSString* detail = nil;
   if (me) {
@@ -589,6 +721,8 @@ NSString* GamertagFor(uint64_t xuid) {
                                                                 @"is the code"),
                                               xe_ios_format_friend_code(social.friendCode)]
                  : NSLocalizedString(@"That's you.", @"Gamer card for yourself");
+  } else if (blocked) {
+    detail = NSLocalizedString(@"Blocked", @"Gamer card: a player the user blocked");
   } else if (peer) {
     detail = [social presenceTextForFriend:peer];
   } else if (incoming) {
@@ -597,6 +731,9 @@ NSString* GamertagFor(uint64_t xuid) {
     detail = NSLocalizedString(@"Friend request sent", @"Gamer card: you asked them");
   } else if ([self inMyParty]) {
     detail = NSLocalizedString(@"In your party", @"Gamer card");
+  } else if ([social playerTakesRequestsByCodeOnly:_xuid]) {
+    detail = NSLocalizedString(@"Takes friend requests by friend code only",
+                               @"Gamer card: a player whose privacy setting refused your request");
   }
   if (detail) {
     UILabel* detail_label =
@@ -604,15 +741,24 @@ NSString* GamertagFor(uint64_t xuid) {
                  [XeniaTheme textSecondary]);
     detail_label.numberOfLines = 2;
     detail_label.textAlignment = NSTextAlignmentCenter;
-    [_stack addArrangedSubview:detail_label];
+    [_identity addArrangedSubview:detail_label];
   }
-  [_stack setCustomSpacing:14.0 afterView:_stack.arrangedSubviews.lastObject];
 
   if (me || social.state != XeniaLiveSocialStateOnline) {
     return;
   }
   NSMutableArray<UIButton*>* buttons = [NSMutableArray array];
   const uint64_t xuid = _xuid;
+  if (blocked) {
+    // A blocked player can't be added or invited: the one thing to do is undo it.
+    UIButton* unblock = Capsule(NSLocalizedString(@"Unblock", @"Gamer card button"),
+                                @"hand.raised.slash", NO, YES, ^(UIButton* sender) {
+                                  [[XeniaLiveSocial shared] unblockPlayer:xuid];
+                                  sender.enabled = NO;
+                                });
+    [_actions addArrangedSubview:unblock];
+    return;
+  }
   void (^join)(XeniaLiveFriend*) = _joinFriendHandler;
   if (peer && peer.online && peer.joinable && join) {
     XeniaLiveFriend* held = [[peer retain] autorelease];
@@ -656,18 +802,89 @@ NSString* GamertagFor(uint64_t xuid) {
                                  @"person.badge.plus", YES, YES, ^(UIButton* __unused b) {
                                    [[XeniaLiveSocial shared] acceptFriendRequest:xuid];
                                  })];
-    } else if (!outgoing) {
+    } else if (!outgoing && [social canActOnPlayer:xuid] &&
+               ![social playerTakesRequestsByCodeOnly:xuid]) {
       [buttons addObject:Capsule(NSLocalizedString(@"Add Friend", @"Gamer card button"),
                                  @"person.badge.plus", NO, YES, ^(UIButton* sender) {
-                                   [[XeniaLiveSocial shared] acceptFriendRequest:xuid];
+                                   [[XeniaLiveSocial shared] sendFriendRequestTo:xuid];
                                    sender.enabled = NO;
                                  })];
     }
   }
   for (UIButton* button in buttons) {
-    [_stack addArrangedSubview:button];
-    [button.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
+    [_actions addArrangedSubview:button];
   }
+}
+
+- (UIMenu*)moreMenuBlocked:(BOOL)blocked {
+  __unsafe_unretained XeniaIOSGamerCardView* unsafe_self = self;
+  const uint64_t xuid = _xuid;
+  UIAction* report = [UIAction
+      actionWithTitle:NSLocalizedString(@"Report…", @"Gamer card menu: report this player")
+                image:[UIImage systemImageNamed:@"exclamationmark.bubble"]
+           identifier:nil
+              handler:^(__kindof UIAction* __unused action) {
+                UIViewController* presenter = PresenterFor(unsafe_self);
+                if (presenter) {
+                  xe_ios_present_report_player(presenter, xuid, unsafe_self->_gamertag);
+                }
+              }];
+  UIAction* block;
+  if (blocked) {
+    block = [UIAction actionWithTitle:NSLocalizedString(@"Unblock", @"Gamer card menu")
+                                image:[UIImage systemImageNamed:@"hand.raised.slash"]
+                           identifier:nil
+                              handler:^(__kindof UIAction* __unused action) {
+                                [[XeniaLiveSocial shared] unblockPlayer:xuid];
+                              }];
+  } else {
+    block = [UIAction actionWithTitle:NSLocalizedString(@"Block", @"Gamer card menu")
+                                image:[UIImage systemImageNamed:@"hand.raised"]
+                           identifier:nil
+                              handler:^(__kindof UIAction* __unused action) {
+                                [unsafe_self confirmBlock];
+                              }];
+    block.attributes = UIMenuElementAttributesDestructive;
+  }
+  return [UIMenu menuWithChildren:@[ report, block ]];
+}
+
+// Blocking ends a friendship and hides them everywhere, so it asks first.
+- (void)confirmBlock {
+  UIViewController* presenter = PresenterFor(self);
+  if (!presenter) {
+    return;
+  }
+  NSString* name = _gamertag.length
+                       ? _gamertag
+                       : NSLocalizedString(@"this player", @"Block alert: a player whose "
+                                                           @"gamertag isn't known");
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:[NSString
+                                   stringWithFormat:NSLocalizedString(@"Block %@?",
+                                                                      @"Block alert title; %@ is a "
+                                                                      @"gamertag"),
+                                                    name]
+                       message:
+                           NSLocalizedString(
+                               @"They can’t send you friend requests or "
+                               @"invites, and you won’t see them in your friends or player lists. "
+                               @"If you’re friends, that ends too. You can "
+                               @"unblock them in your online account.",
+                               @"Block alert message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Block alert button")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  const uint64_t xuid = _xuid;
+  NSString* gamertag = [[_gamertag copy] autorelease];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Block", @"Block alert button")
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [[XeniaLiveSocial shared] blockPlayer:xuid
+                                                                         gamertag:gamertag];
+                                          }]];
+  [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 @end
@@ -767,7 +984,9 @@ static BOOL XeniaShareKeepsItemsApart(UIActivityType type) {
 - (instancetype)initWithCode:(NSString*)code {
   if ((self = [super init])) {
     _code = [code copy];
-    _url = [[NSURL URLWithString:xe_ios_friend_link(code)] retain];
+    // The lobby's page when it has one: chats show it as a card, and its button opens XeniOS.
+    NSURL* page = [XeniaLiveSocial shared].friendShareURL;
+    _url = [(page ?: [NSURL URLWithString:xe_ios_friend_link(code)]) retain];
   }
   return self;
 }
@@ -824,8 +1043,100 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   XeniaOnlinePageInvite,
   XeniaOnlinePageAdd,
   XeniaOnlinePageSearch,
+  XeniaOnlinePageRecent,
   XeniaOnlinePageCard,
 };
+
+namespace {
+
+// "Just now", "5m ago", "2h ago", "3d ago", "2w ago": when a recent player was last seen.
+NSString* SeenAgoText(NSDate* seen) {
+  const NSTimeInterval ago = MAX(0.0, -seen.timeIntervalSinceNow);
+  if (ago < 60.0) {
+    return NSLocalizedString(@"Just now", @"Recent Players: seen less than a minute ago");
+  }
+  static NSDateComponentsFormatter* formatter = [] {
+    NSDateComponentsFormatter* f = [[NSDateComponentsFormatter alloc] init];
+    f.unitsStyle = NSDateComponentsFormatterUnitsStyleAbbreviated;
+    f.allowedUnits = NSCalendarUnitMinute | NSCalendarUnitHour | NSCalendarUnitDay |
+                     NSCalendarUnitWeekOfMonth;
+    f.maximumUnitCount = 1;
+    return f;
+  }();
+  NSString* span = [formatter stringFromTimeInterval:ago] ?: @"";
+  return [NSString stringWithFormat:NSLocalizedString(@"%@ ago", @"Recent Players: when a player "
+                                                                 @"was last seen; %@ is a short "
+                                                                 @"span such as 2h"),
+                                    span];
+}
+
+// Where a player stands with this profile, for a row's detail line; nil for a stranger who can be
+// asked.
+NSString* RelationText(XeniaLiveGamePlayer* player) {
+  switch (player.relation) {
+    case XeniaLiveGamePlayerRelationFriend:
+      return NSLocalizedString(@"Friend", @"Online panel: a player in your game who is a friend");
+    case XeniaLiveGamePlayerRelationRequestSent:
+      return NSLocalizedString(@"Friend request sent", @"Online panel: a player in your game "
+                                                       @"you asked to be friends");
+    case XeniaLiveGamePlayerRelationRequestReceived:
+      return NSLocalizedString(@"Wants to be friends", @"Online panel: a friend request");
+    case XeniaLiveGamePlayerRelationNone:
+      return player.takesRequestsByCodeOnly
+                 ? NSLocalizedString(@"Takes requests by friend code",
+                                     @"Online panel: a player who refused a friend request "
+                                     @"because they take them only by friend code")
+                 : nil;
+  }
+  return nil;
+}
+
+// The same in a word or two, beside a recent player's row where its detail line says when and
+// where; nil for a stranger who can be asked, or a request to answer.
+NSString* RelationStatus(XeniaLiveGamePlayer* player) {
+  switch (player.relation) {
+    case XeniaLiveGamePlayerRelationFriend:
+      return NSLocalizedString(@"Friend", @"Recent Players: status of a player who is a friend");
+    case XeniaLiveGamePlayerRelationRequestSent:
+      return NSLocalizedString(@"Request Sent", @"Recent Players: status of a player you asked "
+                                                @"to be friends");
+    case XeniaLiveGamePlayerRelationRequestReceived:
+      return nil;
+    case XeniaLiveGamePlayerRelationNone:
+      return player.takesRequestsByCodeOnly
+                 ? NSLocalizedString(@"Code Only", @"Recent Players: status of a player who "
+                                                   @"takes friend requests only by friend code")
+                 : nil;
+  }
+  return nil;
+}
+
+// Accept for a player's request, Add for a stranger who takes requests; nil otherwise.
+UIButton* FriendActionFor(XeniaLiveGamePlayer* player) {
+  const uint64_t xuid = player.xuid;
+  if (player.relation == XeniaLiveGamePlayerRelationRequestReceived) {
+    return Capsule(NSLocalizedString(@"Accept", @"Online panel: accept request"), nil, YES, NO,
+                   ^(UIButton* __unused b) {
+                     [[XeniaLiveSocial shared] acceptFriendRequest:xuid];
+                   });
+  }
+  if (player.relation == XeniaLiveGamePlayerRelationNone && !player.takesRequestsByCodeOnly) {
+    return Capsule(NSLocalizedString(@"Add", @"Online panel: add a player in your game as a "
+                                             @"friend"),
+                   @"person.badge.plus", NO, NO, ^(UIButton* sender) {
+                     sender.enabled = NO;
+                     [[XeniaLiveSocial shared] sendFriendRequestTo:xuid];
+                   });
+  }
+  return nil;
+}
+
+NSString* PlayerName(XeniaLiveGamePlayer* player) {
+  return player.gamertag ?: NSLocalizedString(@"Player", @"Online panel: a player in your game "
+                                                         @"whose gamertag isn't known");
+}
+
+}  // namespace
 
 @implementation XeniaIOSOnlinePanel {
   UIStackView* _header;
@@ -892,10 +1203,11 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
     _stack.spacing = 8.0;
     [_scroll addSubview:_stack];
 
-    // As tall as its content, unless the space it's given is shorter: then it scrolls.
+    // As tall as its content, unless the space it's given is shorter: then it scrolls. Below the
+    // labels' resistance to compression (750), so a short space never squeezes rows instead.
     _fitHeight = [[_scroll.heightAnchor constraintEqualToAnchor:_stack.heightAnchor
                                                        constant:12.0] retain];
-    _fitHeight.priority = UILayoutPriorityDefaultHigh;
+    _fitHeight.priority = UILayoutPriorityDefaultHigh - 10;
     _headerTop = [[_header.topAnchor constraintEqualToAnchor:self.topAnchor] retain];
     _headerLeading = [[_header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor] retain];
     _headerTrailing = [[_header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor] retain];
@@ -929,7 +1241,7 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
                                                object:nil];
     // Pages size some parts to the height they have (Add Friend's QR code).
     [self registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
-                       withAction:@selector(reload)];
+                       withAction:@selector(sizeClassChanged)];
     [self reload];
   }
   return self;
@@ -1030,6 +1342,16 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   [self reload];
 }
 
+// Turning the phone lays the page out again (Add Friend is compact in landscape); a field being
+// typed in keeps the keyboard.
+- (void)sizeClassChanged {
+  UITextField* typing = _codeField.isFirstResponder     ? _codeField
+                        : _searchField.isFirstResponder ? _searchField
+                                                        : nil;
+  [self reload];
+  [typing becomeFirstResponder];
+}
+
 - (void)requestFailed:(NSNotification*)note {
   NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
   if (_page != XeniaOnlinePageAdd || !_addStatus || !message.length) {
@@ -1114,6 +1436,10 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   [_searchField becomeFirstResponder];
 }
 
+- (void)showRecent {
+  [self goTo:XeniaOnlinePageRecent];
+}
+
 - (void)showCardForXuid:(uint64_t)xuid gamertag:(NSString*)gamertag {
   if (_page != XeniaOnlinePageCard) {
     _cardReturn = _page;
@@ -1144,6 +1470,8 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       return NSLocalizedString(@"Add Friend", @"Online panel: back to the add-friend page");
     case XeniaOnlinePageSearch:
       return NSLocalizedString(@"Search", @"Online panel: back to the search page");
+    case XeniaOnlinePageRecent:
+      return NSLocalizedString(@"Recent Players", @"Online panel: back to Recent Players");
     default:
       return NSLocalizedString(@"Friends", @"Online panel: back to the list");
   }
@@ -1265,6 +1593,9 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     case XeniaOnlinePageSearch:
       [self buildSearch];
       break;
+    case XeniaOnlinePageRecent:
+      [self buildRecent];
+      break;
     default:
       [self buildList];
       break;
@@ -1303,7 +1634,10 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       symbol = @"exclamationmark.triangle";
       break;
     case XeniaLiveSocialStateProfileOffline:
-      title = NSLocalizedString(@"Online Play Is Off", @"Friends status title");
+      title = social.signedInElsewhere
+                  ? NSLocalizedString(@"Signed In on Another Device",
+                                      @"Friends status title: the account signed in elsewhere")
+                  : NSLocalizedString(@"Online Play Is Off", @"Friends status title");
       break;
     case XeniaLiveSocialStateNoProfile:
       title = NSLocalizedString(@"No Profile", @"Friends status title");
@@ -1321,7 +1655,11 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   __unsafe_unretained XeniaIOSOnlinePanel* unsafe_self = self;
   return EmptyStateWithButton(
       symbol, title, social.statusText,
-      NSLocalizedString(@"Turn On Online Play", @"Friends action row"), ^{
+      social.signedInElsewhere
+          ? NSLocalizedString(@"Sign In Here", @"Friends action: take the account back from the "
+                                               @"other device")
+          : NSLocalizedString(@"Turn On Online Play", @"Friends action row"),
+      ^{
         if (![[XeniaLiveSocial shared] turnOnOnlineForProfile]) {
           [unsafe_self showProblem:NSLocalizedString(@"Couldn't turn on online play for this "
                                                      @"profile.",
@@ -1464,39 +1802,10 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     NSMutableArray<UIView*>* rows = [NSMutableArray array];
     for (XeniaLiveGamePlayer* player in players) {
       [in_this_game addObject:@(player.xuid)];
-      const uint64_t xuid = player.xuid;
-      NSString* name =
-          player.gamertag ?: NSLocalizedString(@"Player", @"Online panel: a player in your "
-                                                          @"game whose gamertag isn't known");
-      NSString* detail = nil;
-      NSArray<UIView*>* accessories = @[];
-      switch (player.relation) {
-        case XeniaLiveGamePlayerRelationFriend:
-          detail = NSLocalizedString(@"Friend", @"Online panel: a player in your game who is "
-                                                @"a friend");
-          break;
-        case XeniaLiveGamePlayerRelationRequestSent:
-          detail = NSLocalizedString(@"Friend request sent", @"Online panel: a player in your "
-                                                             @"game you asked to be friends");
-          break;
-        case XeniaLiveGamePlayerRelationRequestReceived:
-          detail = NSLocalizedString(@"Wants to be friends", @"Online panel: a friend request");
-          accessories = @[ Capsule(NSLocalizedString(@"Accept", @"Online panel: accept request"),
-                                   nil, YES, NO, ^(UIButton* __unused b) {
-                                     [[XeniaLiveSocial shared] acceptFriendRequest:xuid];
-                                   }) ];
-          break;
-        case XeniaLiveGamePlayerRelationNone:
-          accessories = @[ Capsule(NSLocalizedString(@"Add", @"Online panel: add a player in "
-                                                            @"your game as a friend"),
-                                   @"person.badge.plus", NO, NO, ^(UIButton* sender) {
-                                     sender.enabled = NO;
-                                     [[XeniaLiveSocial shared] sendFriendRequestTo:xuid];
-                                   }) ];
-          break;
-      }
-      [rows addObject:PlayerRow(name, detail, NO, NO, YES, accessories,
-                                [self cardOpener:xuid gamertag:player.gamertag])];
+      UIButton* action = FriendActionFor(player);
+      [rows addObject:PlayerRow(PlayerName(player), RelationText(player), NO, NO, YES,
+                                action ? @[ action ] : @[],
+                                [self cardOpener:player.xuid gamertag:player.gamertag])];
     }
     [_stack addArrangedSubview:SectionLabel([NSString
                                    stringWithFormat:NSLocalizedString(@"In this game · %ld",
@@ -1565,10 +1874,87 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                   [unsafe_self showParty];
                 });
     }
+    // Who this profile played with lately, to add them after the game.
+    const NSUInteger recent_count = social.recentPlayers.count;
+    NSMutableArray<UIView*>* recent_accessories = [NSMutableArray array];
+    if (recent_count) {
+      UILabel* count = NewLabel([NSString localizedStringWithFormat:@"%lu",
+                                                                   (unsigned long)recent_count],
+                                UIFontTextStyleBody, 16.0, UIFontWeightRegular,
+                                [XeniaTheme textSecondary]);
+      [count setContentHuggingPriority:UILayoutPriorityRequired
+                               forAxis:UILayoutConstraintAxisHorizontal];
+      count.isAccessibilityElement = NO;
+      [recent_accessories addObject:count];
+    }
+    [recent_accessories addObject:Chevron()];
+    UIView* recent = Row(RowSymbol(@"clock"),
+                         NSLocalizedString(@"Recent Players", @"Online panel row: players from "
+                                                              @"your recent online games"),
+                         nil, NO, recent_accessories, ^{ [unsafe_self showRecent]; });
+    NSMutableArray<UIView*>* play_rows = [NSMutableArray arrayWithObjects:row, recent, nil];
+    // The game's System Link room as a link anyone can open, from a chat or Discord.
+    NSURL* join_url = social.joinShareURL;
+    if (join_url) {
+      NSURL* held = [[join_url retain] autorelease];
+      __block UIView* join_row = nil;
+      join_row = Row(RowSymbol(@"link"),
+                     NSLocalizedString(@"Share Join Link", @"Online panel row: shares a link that "
+                                                           @"joins your game's System Link room"),
+                     nil, NO, @[], ^{
+                       [unsafe_self shareJoinURL:held from:join_row];
+                     });
+      [play_rows addObject:join_row];
+    }
     [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Play together",
                                                               @"Online panel section"))];
-    [_stack addArrangedSubview:Group(@[ row ], nil)];
+    [_stack addArrangedSubview:Group(play_rows, nil)];
   }
+}
+
+// Players from this profile's recent online games, newest first: when and in what, and what can
+// be done (Add, Accept) or where they stand.
+- (void)buildRecent {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  [_header addArrangedSubview:[self navHeaderBack:NSLocalizedString(@"Friends", @"Online panel: "
+                                                                                 @"back to the list")
+                                           action:@selector(backToList:)
+                                            title:NSLocalizedString(@"Recent Players",
+                                                                    @"Online panel: Recent Players "
+                                                                    @"page")]];
+  NSArray<XeniaLiveRecentPlayer*>* players = social.recentPlayers;
+  if (!players.count) {
+    [_stack addArrangedSubview:EmptyState(@"clock",
+                                          NSLocalizedString(@"No Recent Players",
+                                                            @"Recent Players: empty state"),
+                                          NSLocalizedString(@"Players from your online games "
+                                                            @"show up here.",
+                                                            @"Recent Players: empty state hint"))];
+    return;
+  }
+  NSMutableArray<UIView*>* rows = [NSMutableArray array];
+  for (XeniaLiveRecentPlayer* player in players) {
+    NSString* detail = [NSString
+        stringWithFormat:NSLocalizedString(@"%1$@ · %2$@", @"Recent Players row: %1$@ is when "
+                                                           @"(2h ago), %2$@ the game"),
+                         SeenAgoText(player.lastSeen), [social nameForTitle:player.titleId]];
+    NSMutableArray<UIView*>* accessories = [NSMutableArray array];
+    if (UIButton* action = FriendActionFor(player)) {
+      [accessories addObject:action];
+    } else if (NSString* status = RelationStatus(player)) {
+      UILabel* label = NewLabel(status, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular,
+                                [XeniaTheme textSecondary]);
+      [label setContentHuggingPriority:UILayoutPriorityRequired
+                               forAxis:UILayoutConstraintAxisHorizontal];
+      [label setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                             forAxis:UILayoutConstraintAxisHorizontal];
+      label.accessibilityLabel = RelationText(player);
+      [accessories addObject:label];
+    }
+    [rows addObject:PlayerRow(PlayerName(player), detail, NO, NO, NO, accessories,
+                              [self cardOpener:player.xuid gamertag:player.gamertag])];
+  }
+  [_stack addArrangedSubview:Group(rows, nil)];
 }
 
 - (void)buildParty {
@@ -1833,8 +2219,12 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                              });
     // Share and Copy split the card's width, each name on one line. At large text sizes a name
     // that wouldn't fit beside its icon goes without the icon.
-    // The panel's 300 pt, less the page's, the group's and the card's insets and the gap.
-    const CGFloat capsule_width = (300.0 - 2 * 16.0 - 2 * 16.0 - 2 * 12.0 - 8.0) / 2.0;
+    // The panel's width (narrower when it drops down over a small menu), less the page's, the
+    // group's and the card's insets and the gap.
+    const CGFloat panel_width = self.bounds.size.width > 0.0
+                                    ? MIN(self.bounds.size.width, kXeniaOnlinePanelWidth)
+                                    : kXeniaOnlinePanelWidth;
+    const CGFloat capsule_width = (panel_width - 2 * 16.0 - 2 * 16.0 - 2 * 12.0 - 8.0) / 2.0;
     UIFont* capsule_font =
         xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightSemibold);
     for (UIButton* button in @[ share, copy ]) {
@@ -1849,6 +2239,9 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
         config.image = nil;
       }
       button.configuration = config;
+      // Equal halves, not their own widths: they give way to the row and truncate.
+      [button setContentHuggingPriority:UILayoutPriorityDefaultLow
+                                forAxis:UILayoutConstraintAxisHorizontal];
       [button setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh
                                               forAxis:UILayoutConstraintAxisHorizontal];
     }
@@ -2129,6 +2522,29 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   [owner presentViewController:share animated:YES completion:nil];
 }
 
+- (void)shareJoinURL:(NSURL*)url from:(UIView*)source {
+  UIViewController* owner = [self owningController];
+  if (!owner) {
+    return;
+  }
+  NSString* text =
+      [NSString stringWithFormat:NSLocalizedString(@"Join me in %@ on XeniOS",
+                                                   @"Shared text with a join link; %@ is the game"),
+                                 [[XeniaLiveSocial shared] nameForTitle:[self runningTitle]]];
+  UIActivityViewController* share =
+      [[[UIActivityViewController alloc] initWithActivityItems:@[
+        [[[XeniaShareTextItem alloc] initWithText:text url:url] autorelease],
+        [[[XeniaShareURLItem alloc] initWithURL:url] autorelease]
+      ]
+                                         applicationActivities:nil] autorelease];
+  share.popoverPresentationController.sourceView = source ?: self;
+  share.popoverPresentationController.sourceRect = (source ?: self).bounds;
+  while (owner.presentedViewController && !owner.presentedViewController.isBeingDismissed) {
+    owner = owner.presentedViewController;
+  }
+  [owner presentViewController:share animated:YES completion:nil];
+}
+
 - (void)scanFriendCode {
   UIViewController* owner = [self owningController];
   if (!owner) {
@@ -2141,7 +2557,8 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       NSLocalizedString(@"Point at the code in their Add Friend", @"Scan page: camera hint"),
       xe_ios_friend_link(@"K7Q2M9XD"), ^BOOL(NSString* text) {
         NSString* scanned = xe_ios_friend_code_from_text(text);
-        if (!scanned || ![text.lowercaseString hasPrefix:@"xenios://friend"]) {
+        // A friend link or page, not any QR code that happens to read as a code.
+        if (!scanned || ![text containsString:@"://"]) {
           return NO;
         }
         unsafe_self->_codeField.text = scanned;
@@ -2161,6 +2578,9 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
 
 @interface XeniaIOSGamerCardOverlay : UIView
 @property(nonatomic, copy) void (^done)(void);
+@property(nonatomic, assign) XeniaIOSGamerCardView* content;
+@property(nonatomic, assign) NSLayoutConstraint* cardWidth;
+- (void)updateLayout;
 @end
 
 @implementation XeniaIOSGamerCardOverlay
@@ -2168,6 +2588,14 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
 - (void)dealloc {
   [_done release];
   [super dealloc];
+}
+
+// One column where there's height for it; on a short screen (iPhone landscape) the buttons go
+// beside the avatar and name on a wider card, so all of them show without scrolling.
+- (void)updateLayout {
+  const BOOL beside = self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact;
+  _content.actionsBeside = beside;
+  _cardWidth.constant = beside ? 560.0 : 300.0;
 }
 
 - (void)close {
@@ -2474,6 +2902,14 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
     }
   }
   [overlay addSubview:card];
+  // Scrolls only when even the short layout can't fit (the largest text sizes).
+  UIScrollView* scroll = [[[UIScrollView alloc] init] autorelease];
+  scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.backgroundColor = [UIColor clearColor];
+  scroll.alwaysBounceVertical = NO;
+  scroll.layer.cornerRadius = kPanelRadius;
+  scroll.layer.cornerCurve = kCACornerCurveContinuous;
+  [card addSubview:scroll];
 
   __unsafe_unretained XeniaIOSGamerCardOverlay* unsafe_overlay = overlay;
   XeniaIOSGamerCardView* content = [[[XeniaIOSGamerCardView alloc] initWithXuid:xuid
@@ -2489,23 +2925,44 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
                             ^(UIButton* __unused b) {
                               [unsafe_overlay close];
                             });
-  UIStackView* stack =
-      [[[UIStackView alloc] initWithArrangedSubviews:@[ content, close ]] autorelease];
-  stack.translatesAutoresizingMaskIntoConstraints = NO;
-  stack.axis = UILayoutConstraintAxisVertical;
-  stack.spacing = 8.0;
-  [card addSubview:stack];
+  // Close ends the card's own button column, so it lines up with them in either layout.
+  content.trailingAction = close;
+  [scroll addSubview:content];
+  UILayoutGuide* safe = overlay.safeAreaLayoutGuide;
+  UILayoutGuide* scrolled = scroll.contentLayoutGuide;
+  // Over the buttons' hugging, under the screen's edges.
+  NSLayoutConstraint* width = [card.widthAnchor constraintEqualToConstant:300.0];
+  width.priority = UILayoutPriorityRequired - 1;
+  // As tall as the card's content, until that's taller than the screen. Under the content's
+  // compression resistance, so it scrolls rather than squeezing the last button out.
+  NSLayoutConstraint* fit = [scroll.heightAnchor constraintEqualToAnchor:scrolled.heightAnchor];
+  fit.priority = UILayoutPriorityDefaultHigh - 10;
   [NSLayoutConstraint activateConstraints:@[
-    [card.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
-    [card.centerYAnchor constraintEqualToAnchor:overlay.safeAreaLayoutGuide.centerYAnchor],
-    [card.widthAnchor constraintEqualToConstant:300.0],
-    [card.topAnchor constraintGreaterThanOrEqualToAnchor:overlay.safeAreaLayoutGuide.topAnchor
-                                                constant:12.0],
-    [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:22.0],
-    [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0],
-    [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
-    [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+    [card.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+    [card.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor],
+    width,
+    [card.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:12.0],
+    [card.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-12.0],
+    [card.topAnchor constraintGreaterThanOrEqualToAnchor:safe.topAnchor constant:12.0],
+    [card.bottomAnchor constraintLessThanOrEqualToAnchor:safe.bottomAnchor constant:-12.0],
+    [scroll.topAnchor constraintEqualToAnchor:card.topAnchor],
+    [scroll.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+    [scroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+    [scroll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+    fit,
+    [content.topAnchor constraintEqualToAnchor:scrolled.topAnchor constant:22.0],
+    [content.bottomAnchor constraintEqualToAnchor:scrolled.bottomAnchor constant:-18.0],
+    [content.leadingAnchor constraintEqualToAnchor:scrolled.leadingAnchor constant:18.0],
+    [content.trailingAnchor constraintEqualToAnchor:scrolled.trailingAnchor constant:-18.0],
+    [content.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor
+                                        constant:-36.0],
   ]];
+  overlay.content = content;
+  overlay.cardWidth = width;
+  [overlay updateLayout];
+  [overlay registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
+                        withTarget:overlay
+                            action:@selector(updateLayout)];
   // A tap beside the card closes it, like B on a controller would.
   UIButton* outside = [UIButton buttonWithType:UIButtonTypeCustom];
   outside.frame = overlay.bounds;

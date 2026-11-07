@@ -144,18 +144,17 @@ void xe_ios_live_account_set_service(id<XeniaLiveAccountService> service) {
                                                       object:nil];
 }
 
-BOOL xe_ios_live_account_service_is_stub(void) {
-#if TARGET_OS_SIMULATOR
-  return g_service == nil;
-#else
-  return NO;
-#endif
-}
-
 BOOL xe_ios_live_account_supports_profile_data(void) {
   id<XeniaLiveAccountService> service = xe_ios_live_account_service();
   return ![service respondsToSelector:@selector(supportsProfileData)] ||
          service.supportsProfileData;
+}
+
+BOOL xe_ios_live_account_supports_shared_saves(void) {
+  id<XeniaLiveAccountService> service = xe_ios_live_account_service();
+  return xe_ios_live_account_supports_profile_data() &&
+         (![service respondsToSelector:@selector(supportsSharedSaves)] ||
+          service.supportsSharedSaves);
 }
 
 BOOL xe_ios_live_account_ui_enabled(void) {

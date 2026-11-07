@@ -12,6 +12,8 @@
 
 #import <UIKit/UIKit.h>
 
+#include <cstdint>
+
 // The Live account screens (Profile > Online Account), on XeniaLiveAccountService in
 // shared/ios_live_account.h.
 
@@ -23,6 +25,11 @@
 UIViewController* xe_ios_new_profile_page(
     NSString* gamertag, BOOL active, BOOL (^_Nullable switch_to)(void),
     void (^_Nullable change_picture)(UIViewController* page));
+
+// Report a player: the reason, an optional note and "Also block", then Send. The answer comes
+// as XeniaLiveSocial's notice or failure, after the form closed.
+void xe_ios_present_report_player(UIViewController* presenter, uint64_t xuid,
+                                  NSString* _Nullable gamertag);
 
 // I Have a Gamertag: sign this device in with a code from Add a Device (scanned or typed) or a
 // recovery code. A non-nil |code| is tried at once.
@@ -61,9 +68,5 @@ void xe_ios_present_incoming_approval_if_any(UIViewController* presenter);
 // Shows that sheet whenever an approval arrives. |presenter| returns the controller to present
 // from (nil: not now). Call once at startup.
 void xe_ios_observe_incoming_approvals(UIViewController* (^presenter)(void));
-
-// A .xeniosprofile file opened from AirDrop or Files: asks, then imports it through the account
-// service. Returns NO (and does nothing) for any other file.
-BOOL xe_ios_handle_opened_profile_file(NSURL* url, UIViewController* presenter);
 
 #endif  // XENIA_UI_IOS_SETTINGS_IOS_LIVE_ACCOUNT_VIEW_CONTROLLERS_H_

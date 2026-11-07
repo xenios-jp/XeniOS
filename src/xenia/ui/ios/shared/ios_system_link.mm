@@ -809,19 +809,46 @@ NSURL* xe_ios_system_link_invite_url(uint32_t title_id, NSString* code) {
   return components.URL;
 }
 
-NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out) {
-  if (![url.scheme.lowercaseString isEqualToString:@"xenios"] ||
-      ![url.host.lowercaseString isEqualToString:@"link"]) {
-    return nil;
+NSURL* xe_ios_system_link_share_url(uint32_t title_id, NSString* code) {
+  NSURL* root = [XeniaLiveSocial shared].shareWebRoot;
+  NSString* normalized = xe_ios_normalize_system_link_room_code(code ?: @"");
+  if (!root || !normalized) {
+    return xe_ios_system_link_invite_url(title_id, code);
   }
+  return
+      [root URLByAppendingPathComponent:[NSString stringWithFormat:@"j/%@/%@", TitleKey(title_id),
+                                                                   normalized]];
+}
+
+NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out) {
+  NSString* scheme = url.scheme.lowercaseString;
+  NSString* host = url.host.lowercaseString;
   NSURLComponents* components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
   NSString* title = nil;
-  for (NSURLQueryItem* item in components.queryItems) {
-    if ([item.name.lowercaseString isEqualToString:@"title"]) {
-      title = item.value;
+  NSString* room = nil;
+  if ([scheme isEqualToString:@"xenios"] && [host isEqualToString:@"link"]) {
+    room = url.lastPathComponent;
+    for (NSURLQueryItem* item in components.queryItems) {
+      if ([item.name.lowercaseString isEqualToString:@"title"]) {
+        title = item.value;
+      }
+    }
+  } else if ([scheme isEqualToString:@"xenios"] && [host isEqualToString:@"join"]) {
+    for (NSURLQueryItem* item in components.queryItems) {
+      if ([item.name isEqualToString:@"t"]) {
+        title = item.value;
+      } else if ([item.name isEqualToString:@"r"]) {
+        room = item.value;
+      }
+    }
+  } else if ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) {
+    NSArray<NSString*>* parts = url.pathComponents;  // "/", "j", TITLE, CODE
+    if (parts.count == 4 && [parts[1] isEqualToString:@"j"]) {
+      title = parts[2];
+      room = parts[3];
     }
   }
-  NSString* code = xe_ios_normalize_system_link_room_code(url.lastPathComponent);
+  NSString* code = room ? xe_ios_normalize_system_link_room_code(room) : nil;
   NSScanner* scanner = title.length == 8 ? [NSScanner scannerWithString:title] : nil;
   unsigned int title_id = 0;
   if (!code || ![scanner scanHexInt:&title_id] || !scanner.atEnd || !title_id) {
@@ -985,6 +1012,12 @@ void xe_ios_system_link_install(void (^toast)(NSString* message, XeniaIOSStatusT
           dispatch_async(dispatch_get_main_queue(), ^{
             NoteLinkOff(title_id);
           });
+        },
+        // A friend's System Link game: their room for this launch, as an invite link's is,
+        // leaving the saved room alone.
+        [](uint32_t title_id, const std::string& code) {
+          std::lock_guard lock(g_invite_mutex);
+          g_invites[title_id] = {code, [NSProcessInfo processInfo].systemUptime};
         },
     });
     // Games ask whether System Link is allowed on every frame, so the answer is kept and read

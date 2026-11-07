@@ -4959,6 +4959,30 @@
 /* Friends toast: inviting someone who isn't a friend */
 "You can only invite friends." = "You can only invite friends.";
 
+/* Join toast: the host of the game didn't answer */
+"Couldn't connect to the host's game. Their network may be blocking connections." = "Couldn't connect to the host's game. Their network may be blocking connections.";
+
+/* Join toast: the game's host left it */
+"The host left that game before you could join." = "The host left that game before you could join.";
+
+/* Join toast: the host (a gamertag) didn't answer */
+"Couldn't connect to %@'s game. Their network may be blocking connections." = "Couldn't connect to %@'s game. Their network may be blocking connections.";
+
+/* Join toast: the host (a gamertag) left the game */
+"%@ left that game before you could join." = "%@ left that game before you could join.";
+
+/* Friends: %@ is the game; a friend in a System Link game (no Live session), joined from the game's System Link screen */
+"In a System Link game of %@" = "In a System Link game of %@";
+
+/* System Link join toast: a friend whose gamertag isn't known */
+"Your friend" = "Your friend";
+
+/* System Link join toast: %1$@ is the friend, %2$@ the game */
+"%1$@ is in a System Link game: open System Link (or LAN) in %2$@ to join." = "%1$@ is in a System Link game: open System Link (or LAN) in %2$@ to join.";
+
+/* Friends toast: a party invite without a party */
+"Start a party first, then invite friends to it." = "Start a party first, then invite friends to it.";
+
 /* Online panel: no friends */
 "You don't have friends yet. Add one with a code." = "You don't have friends yet. Add one with a code.";
 
