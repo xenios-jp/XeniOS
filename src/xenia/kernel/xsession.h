@@ -66,6 +66,7 @@ class XSession : public XObject {
   static const Type kObjectType = Type::Session;
 
   explicit XSession(KernelState* kernel_state);
+  ~XSession() override;
 
   X_STATUS Initialize();
 
@@ -88,6 +89,9 @@ class XSession : public XObject {
   void End();
   X_RESULT Modify(uint32_t flags, uint32_t max_public_slots,
                   uint32_t max_private_slots);
+  // XSessionArbitrationRegister: the machines and players of a ranked session,
+  // the same list on every machine in it.
+  X_RESULT RegisterArbitration(uint32_t results_size, uint32_t results_ptr);
   // Fills XSESSION_LOCAL_DETAILS and as many members as fit in the buffer.
   X_RESULT GetDetails(uint32_t size_ptr, uint32_t details_ptr);
 
@@ -110,6 +114,9 @@ class XSession : public XObject {
   uint32_t CreatorContext(uint32_t id) const;
   // Public and private slots the members take, with mutex_ held.
   std::pair<uint32_t, uint32_t> UsedSlots() const;
+  // Announces a hosted matchmaking session to the title's other players, or
+  // withdraws it once nobody can join, with mutex_ held.
+  void PublishLocked();
 
   std::weak_ptr<net::SystemLink> system_link_;
   std::optional<net::KeyId> registered_key_;
@@ -125,6 +132,9 @@ class XSession : public XObject {
   State state_ = kLobby;
   uint64_t nonce_ = 0;
   XSESSION_INFO info_{};
+  bool has_info_ = false;
+  net::KeyId arbitration_id_{};
+  bool published_ = false;
   std::vector<Member> members_;
 };
 

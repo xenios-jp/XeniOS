@@ -95,6 +95,7 @@ using LobbySocketFactory = std::function<std::unique_ptr<LobbySocket>(
 // How relay transports reach the lobby. Without one they can't. Apple
 // platforms start with one over NSURLSession.
 void SetLobbySocketFactory(LobbySocketFactory factory);
+LobbySocketFactory GetLobbySocketFactory();
 
 // Exchanges frames with the other instances in a room the lobby names,
 // directly with those whose NATs let a probe through and through a TURN relay
