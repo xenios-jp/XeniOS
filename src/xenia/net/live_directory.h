@@ -77,6 +77,76 @@ std::string EncodeSearch(
     bool in_progress, uint32_t seq);
 std::string EncodeLookup(const std::vector<std::string>& ids, uint32_t seq);
 
+// Stats: what a flush changes in the player's own
+// rows, as column updates the title's SPA describes, and what reads return.
+enum class StatsOp : uint8_t { kSum, kMax, kMin, kLast };
+
+// One XUSER_DATA value of a stats column. |type| is the X_USER_DATA_TYPE: 0
+// context, 1 int32, 2 int64, 3 double, 5 float, 7 datetime. Integers are in
+// |i|, floating point in |d|.
+struct StatsValue {
+  uint8_t type = 0;
+  int64_t i = 0;
+  double d = 0;
+  bool operator==(const StatsValue&) const = default;
+};
+
+constexpr uint16_t kStatsAttrRank = 0xFFFF;
+constexpr uint16_t kStatsAttrRating = 0xFFFE;
+constexpr uint16_t kStatsAttrGamertag = 0xFFFD;
+constexpr size_t kStatsMaxWriteViews = 16;
+constexpr size_t kStatsMaxColumns = 64;
+constexpr size_t kStatsMaxReadViews = 8;
+constexpr size_t kStatsMaxReadXuids = 101;
+constexpr uint32_t kStatsMaxEnumRows = 100;
+
+struct StatsColumnUpdate {
+  uint16_t attr = 0;
+  StatsOp op = StatsOp::kLast;
+  StatsValue value;
+};
+
+// A view a flush changes. A TrueSkill view (0xFFFE.... or 0xFFFF....) has no
+// columns: it counts a game.
+struct StatsViewWrite {
+  uint32_t view_id = 0;
+  std::vector<StatsColumnUpdate> columns;
+};
+
+struct StatsSpec {
+  uint32_t view_id = 0;
+  std::vector<uint16_t> columns;
+};
+
+struct StatsCell {
+  uint16_t attr = 0;
+  StatsValue value;
+};
+
+struct StatsRowData {
+  uint64_t xuid = 0;
+  std::string gamertag;
+  uint32_t rank = 0;
+  int64_t rating = 0;
+  std::vector<StatsCell> cells;
+};
+
+struct StatsViewData {
+  uint32_t view_id = 0;
+  uint32_t total = 0;
+  std::vector<StatsRowData> rows;
+};
+
+enum class StatsEnumBy { kRank, kXuid, kRating };
+
+std::string EncodeStatsWrite(const std::vector<StatsViewWrite>& views,
+                             uint32_t seq);
+std::string EncodeStatsRead(const std::vector<uint64_t>& xuids,
+                            const std::vector<StatsSpec>& specs, uint32_t seq);
+// |pivot| is the first rank, the player's XUID, or the rating (as int64).
+std::string EncodeStatsEnum(StatsEnumBy by, uint64_t pivot, uint32_t rows,
+                            const std::vector<StatsSpec>& specs, uint32_t seq);
+
 struct DirectoryReply {
   enum class Kind {
     kAuthed,
@@ -84,6 +154,8 @@ struct DirectoryReply {
     kAdvertised,
     kRefreshed,
     kUpdated,
+    kStats,
+    kStatsWritten,
     kError,
     kOther
   };
@@ -100,6 +172,8 @@ struct DirectoryReply {
   std::string appeal;  // kError, "banned": where to appeal.
   uint64_t xuid = 0;  // kAuthed.
   std::string gamertag;  // kAuthed.
+  uint32_t stats = 0;  // kAuthed: the lobby's stats version, 0 for none.
+  std::vector<StatsViewData> stats_views;  // kStats.
 };
 // Nothing for text that isn't a JSON object with a "t". Sessions with a bad
 // field are left out of results. "reject" (a message the lobby refused) is a
@@ -146,6 +220,21 @@ class SessionDirectory {
   std::vector<DirectoryAdvert> Lookup(const std::vector<std::string>& ids,
                                       uint32_t timeout_ms);
 
+  // Queues the signed-in account's stats from a flush; they go once the
+  // socket is signed in to a lobby that keeps stats. Returns at once.
+  void WriteStats(std::vector<StatsViewWrite> views);
+  // XUserReadStats and the stats enumerators. Nothing when the lobby has no
+  // stats, the account isn't signed in, or no answer came in time. The same
+  // read within 30 s is answered from memory, until this app writes stats.
+  std::optional<std::vector<StatsViewData>> ReadStats(
+      const std::vector<uint64_t>& xuids, const std::vector<StatsSpec>& specs,
+      uint32_t timeout_ms);
+  std::optional<std::vector<StatsViewData>> EnumerateStats(
+      StatsEnumBy by, uint64_t pivot, uint32_t rows,
+      const std::vector<StatsSpec>& specs, uint32_t timeout_ms);
+  // Writes queued or sent and not yet answered (for tests).
+  size_t PendingStatsWrites();
+
  private:
   static constexpr uint32_t kTtl = 300;
 
@@ -154,6 +243,10 @@ class SessionDirectory {
   std::vector<DirectoryAdvert> Ask(
       const std::function<std::string(uint32_t seq)>& encode,
       uint32_t timeout_ms);
+  std::optional<std::vector<StatsViewData>> AskStats(
+      const std::function<std::string(uint32_t seq)>& encode,
+      uint32_t timeout_ms);
+  void SendStatsWritesLocked();
   void EnsureOpenLocked();
   void OnOpened();
   // Signs in if the socket is open and waits for that, asking the account for
@@ -192,6 +285,22 @@ class SessionDirectory {
   std::set<uint32_t> waiting_;
   std::map<uint32_t, std::vector<DirectoryAdvert>> answers_;
   std::map<std::string, DirectoryAdvert> adverts_;
+  // The lobby's stats version from its last authed, 0 for none.
+  uint32_t stats_version_ = 0;
+  // Answers to stats reads by seq; nothing for one the lobby refused.
+  std::map<uint32_t, std::optional<std::vector<StatsViewData>>> stats_answers_;
+  // Flushes not yet answered, oldest first, with the seq they went with (0:
+  // not sent on this socket).
+  struct PendingWrite {
+    std::vector<StatsViewWrite> views;
+    uint32_t seq = 0;
+  };
+  std::vector<PendingWrite> stats_writes_;
+  struct CachedRead {
+    std::chrono::steady_clock::time_point at;
+    std::vector<StatsViewData> views;
+  };
+  std::map<std::string, CachedRead> stats_cache_;
   std::thread thread_;
 };
 

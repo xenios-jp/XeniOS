@@ -1392,23 +1392,35 @@ dword_result_t XamUserCreateStatsEnumerator_entry(
     pointer_t<XUserStatsEnumerator::XUSER_STATS_SPEC> specs_ptr,
     lpdword_t buffer_size_ptr, lpdword_t handle_ptr) {
   if (!num_specs || !specs_ptr || !num_rows || num_rows > 100 ||
-      !buffer_size_ptr || !handle_ptr) {
+      !buffer_size_ptr || !handle_ptr || type > 3) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
   // The buffer has room for every requested row: 0x30 bytes per row and 0x1C
-  // per column.
+  // per column (0x18 used; the rest leaves room for gamertag text).
   const XUserStatsEnumerator::XUSER_STATS_SPEC* specs = specs_ptr;
-  std::vector<uint32_t> view_ids;
+  std::vector<net::live::StatsSpec> wanted;
   uint32_t buffer_size = sizeof(XUserStatsEnumerator::XUSER_STATS_READ_RESULTS);
   for (uint32_t i = 0; i < num_specs; ++i) {
-    view_ids.push_back(specs[i].ViewId);
+    net::live::StatsSpec spec;
+    spec.view_id = specs[i].ViewId;
+    const uint32_t columns = std::min<uint32_t>(specs[i].NumColumnIds, 0x40);
+    for (uint32_t c = 0; c < columns; ++c) {
+      spec.columns.push_back(specs[i].rgwColumnIds[c]);
+    }
     buffer_size += sizeof(XUserStatsEnumerator::XUSER_STATS_VIEW) +
-                   num_rows * (0x30 + specs[i].NumColumnIds * 0x1C);
+                   num_rows * (0x30 + columns * 0x1C);
+    wanted.push_back(std::move(spec));
   }
+  XELOGI("XamUserCreateStatsEnumerator({:08X}, type {}, pivot {:016X}, {} "
+         "row(s), {} view(s))",
+         uint32_t(title_id), uint32_t(type), uint64_t(pivot),
+         uint32_t(num_rows), uint32_t(num_specs));
 
   auto e = object_ref<XUserStatsEnumerator>(new XUserStatsEnumerator(
-      kernel_state(), num_rows, std::move(view_ids), buffer_size));
+      kernel_state(), title_id, static_cast<XUserStatsEnumerator::Type>(
+                                    uint32_t(type)),
+      pivot, num_rows, StatsLayout(kernel_state(), wanted), buffer_size));
   const X_STATUS result =
       e->Initialize(XUserIndexNone, 0xFB, 0xB0023, 0xB0024, 0);
   if (XFAILED(result)) {

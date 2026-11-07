@@ -9,9 +9,11 @@
 
 #include "xenia/kernel/xenumerator.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
 
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
@@ -208,23 +210,63 @@ void XUserStatsEnumerator::WriteEmptyResults(
 uint32_t XUserStatsEnumerator::WriteItems(uint8_t* buffer_data,
                                           uint32_t buffer_size,
                                           uint32_t* written_count) {
-  if (written_) {
+  if (done_) {
     return X_ERROR_NO_MORE_FILES;
   }
-
   if (buffer_size < buffer_size_) {
     return X_ERROR_INSUFFICIENT_BUFFER;
   }
-
-  // There is no stats server so every view reads back with no rows.
-  WriteEmptyResults(buffer_data, buffer_size,
-                    memory()->HostToGuestVirtual(buffer_data), view_ids_);
-  written_ = true;
-
+  std::vector<net::live::StatsSpec> specs;
+  std::vector<uint32_t> view_ids;
+  for (const auto& view : layout_) {
+    specs.push_back({view.view_id, view.columns});
+    view_ids.push_back(view.view_id);
+  }
+  net::live::StatsEnumBy by = net::live::StatsEnumBy::kRank;
+  uint64_t pivot = next_rank_;
+  if (first_) {
+    if (type_ == Type::kXuid) {
+      by = net::live::StatsEnumBy::kXuid;
+      pivot = pivot_;
+    } else if (type_ == Type::kRating) {
+      by = net::live::StatsEnumBy::kRating;
+      pivot = pivot_;
+    } else {
+      pivot = std::max<uint64_t>(1, pivot_ & 0xFFFFFFFF);
+    }
+  }
+  const uint32_t guest = memory()->HostToGuestVirtual(buffer_data);
+  auto rows = xam::EnumerateLiveStats(kernel_state(), title_id_, by, pivot,
+                                      rows_, specs);
+  const bool first = first_;
+  first_ = false;
+  uint32_t last_rank = 0;
+  size_t count = 0;
+  if (rows) {
+    for (const auto& view : *rows) {
+      count += view.rows.size();
+      for (const auto& row : view.rows) {
+        last_rank = std::max(last_rank, row.rank);
+      }
+    }
+  }
+  if (!rows || !count) {
+    done_ = true;
+    if (!first) {
+      return X_ERROR_NO_MORE_FILES;
+    }
+    // No store, or nobody on the board: one page with no rows.
+    WriteEmptyResults(buffer_data, buffer_size, guest, view_ids);
+  } else {
+    xam::WriteStatsResults(buffer_data, buffer_size, guest, layout_, *rows,
+                           nullptr);
+    next_rank_ = last_rank + 1;
+    XELOGI("Live stats: an enumerator page of {} row(s), to rank {}", count,
+           last_rank);
+  }
   if (written_count) {
     *written_count = 1;
   }
-
   return X_ERROR_SUCCESS;
 }
 
