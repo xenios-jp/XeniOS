@@ -13,6 +13,7 @@
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/base/string.h"
 #include "xenia/kernel/util/xfiletime.h"
+#include "xenia/kernel/xam/apps/xlivebase_social.h"
 #include "xenia/kernel/xam/xam_live_invites.h"
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -363,7 +364,11 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
       // count with one every few seconds.
       XELOGD("XLiveBaseServiceRequest({:08X}, {:08X})", buffer_ptr,
              buffer_length);
-      return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      if (!AnyUserSignedInToLive()) {
+        return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      }
+      // The request is XMessageEnumerate, its arguments at buffer_length.
+      return XMessageEnumerate(memory_, buffer_length);
     }
     case 0x00058037: {
       XELOGD("XPresenceInitialize({:08X}, {:08X})", buffer_ptr, buffer_length);

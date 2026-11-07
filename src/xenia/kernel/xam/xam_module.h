@@ -43,6 +43,9 @@ class XamModule : public KernelModule {
 
     uint32_t launch_flags = 0;
     std::vector<uint8_t> launch_data;
+    // Set by the running title with XamLoaderSetLaunchData, so the data is
+    // for the title it launches next, not the data it started with.
+    bool launch_data_set = false;
   };
 
   void SetLaunchCallback(uint32_t callback) { callback_ = callback; }
