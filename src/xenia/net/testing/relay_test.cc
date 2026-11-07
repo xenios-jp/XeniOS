@@ -362,6 +362,9 @@ class FakeLobby {
   std::string forged_relay;
   // Joins are neither welcomed nor rejected.
   bool silent = false;
+  // Welcomes carry a resume token, and a join showing a joined player's token
+  // replaces that player from wherever it joins.
+  bool resume = false;
 
   // The connection's id, or none while the lobby is down.
   // |net| is the network the lobby saw the player on, if it says.
@@ -424,11 +427,17 @@ class FakeLobby {
         return Reject(id, "bad_request");
       }
       size_t players = 0;
+      std::optional<int> replaced;
       for (const auto& [other_id, other] : connections_) {
         if (other_id == id || !other.joined || other.path != connection.path) {
           continue;
         }
         if (other.mac == connection.mac) {
+          if (resume && !other.resume.empty() &&
+              String(message, "resume") == other.resume) {
+            replaced = other_id;
+            continue;
+          }
           return Reject(id, "duplicate_mac");
         }
         ++players;
@@ -436,16 +445,26 @@ class FakeLobby {
       if (players >= capacity) {
         return Reject(id, "full");
       }
+      if (replaced) {
+        Drop(*replaced, "replaced");
+      }
       std::string& secret = secrets_[connection.path];
       if (!players) {
         secret = fmt::format("{:016x}", RandomId());
       }
       connection.joined = true;
+      if (resume) {
+        connection.resume =
+            fmt::format("{:016x}{:016x}", RandomId(), RandomId());
+      }
       connection.socket.message(fmt::format(
-          R"({{"t":"welcome","v":1,"secret":"{}",{}"ice":{}}})", secret,
+          R"({{"t":"welcome","v":1,"secret":"{}",{}{}"ice":{}}})", secret,
           connection.net.empty()
               ? std::string()
               : fmt::format(R"("net":"{}",)", connection.net),
+          connection.resume.empty()
+              ? std::string()
+              : fmt::format(R"("resume":"{}",)", connection.resume),
           ice()));
       Broadcast(connection.path);
     } else if (type == "update" && connection.joined) {
@@ -459,10 +478,20 @@ class FakeLobby {
     }
   }
 
+  // The player's network went away under the connection, which the lobby
+  // keeps until it's replaced or times out.
+  void Orphan(int id) {
+    auto found = connections_.find(id);
+    if (found != connections_.end()) {
+      found->second.orphaned = true;
+      found->second.socket = {[](std::string) {}, [](std::string) {}};
+    }
+  }
+
   // The client closed the connection.
   void Close(int id) {
     auto found = connections_.find(id);
-    if (found == connections_.end()) {
+    if (found == connections_.end() || found->second.orphaned) {
       return;
     }
     const std::string path = found->second.path;
@@ -498,6 +527,10 @@ class FakeLobby {
     std::vector<std::string> candidates;
     std::string relay;
     std::string net;
+    std::string resume;
+    // Its network went away: nothing reaches the player, and its close never
+    // arrives.
+    bool orphaned = false;
   };
 
   static void Place(Connection& connection, const rapidjson::Value& message) {
@@ -519,6 +552,13 @@ class FakeLobby {
         fmt::format(R"({{"t":"reject","reason":"{}"}})", reason));
     connection.socket.closed(fmt::format("4000 {}", reason));
     Broadcast(connection.path);
+  }
+
+  void Drop(int id, const char* reason) {
+    auto found = connections_.find(id);
+    Socket socket = std::move(found->second.socket);
+    connections_.erase(found);
+    socket.closed(reason);
   }
 
   void Broadcast(const std::string& path) {
@@ -605,9 +645,24 @@ class Network {
              {}}));
     Node& node = *nodes_.back();
     Outbox out;
-    node.client.SetHostCandidates({node.lan}, out);
+    node.client.SetHostCandidates({node.lan}, now_, out);
     Run(25);
     return node;
+  }
+
+  // |node| moves to |network| (Wi-Fi to cellular): a new public and local
+  // address, and its lobby connection is cut off without the lobby knowing.
+  void Move(Node& node, uint8_t network) {
+    if (node.lobby) {
+      lobby.Orphan(*node.lobby);
+    }
+    const uint8_t n = node.lan.address[3];
+    node.at = V4(198, 51, 100, network, node.at.port);
+    node.lan = V4(192, 168, network, n, node.lan.port);
+    Outbox out;
+    node.client.SetHostCandidates({node.lan}, now_, out);
+    Queue(node, out);
+    Pump();
   }
 
   void Send(Node& node, std::span<const uint8_t> frame) {
@@ -1439,6 +1494,70 @@ TEST_CASE("Relay players on one network meet on it", "[relay]") {
   CHECK(network.turn.relayed_frames == 0);
 }
 
+TEST_CASE("Relay players carry on after changing networks", "[relay]") {
+  Network network;
+  network.lobby.ice = [] {
+    return std::string(R"({"stun":["203.0.113.1:3478"]})");
+  };
+  network.lobby.resume = true;
+  auto& a = network.Add(kMacA);
+  auto& b = network.Add(kMacB);
+  network.Run(3000);
+  REQUIRE(a.client.status().direct == 1);
+  REQUIRE(b.client.status().direct == 1);
+
+  // Wi-Fi to cellular. Halo 3 drops a player after about 7 s without it.
+  network.Move(b, 9);
+  const auto to_b = MakeFrame(kMacA, kMacB, 60, 1);
+  network.Stream(a, to_b, 3000);
+  CHECK(b.client.status().state == State::kOnline);
+  CHECK(a.client.status().direct == 1);
+  CHECK(b.client.status().direct == 1);
+  b.received.clear();
+  network.Send(a, to_b);
+  CHECK(b.received.size() == 1);
+  a.received.clear();
+  network.Send(b, MakeFrame(kMacB, kMacA, 60, 2));
+  CHECK(a.received.size() == 1);
+  CHECK(network.lobby.connects == 3);
+}
+
+TEST_CASE("Relay players rejoin from another network with their token",
+          "[relay]") {
+  Network network;
+  network.lobby.resume = true;
+  auto& a = network.Add(kMacA);
+  network.Add(kMacB);
+  network.Run(3000);
+  const auto joins = [&] {
+    std::vector<std::string> found;
+    for (const std::string& text : network.lobby.received) {
+      if (text.find(R"("t":"join")") != std::string::npos) {
+        found.push_back(text);
+      }
+    }
+    return found;
+  };
+  REQUIRE(joins().size() == 2);
+  // The first join has no token to show.
+  CHECK(joins()[0].find("resume") == std::string::npos);
+
+  network.Move(a, 9);
+  network.Run(1000);
+  REQUIRE(joins().size() == 3);
+  CHECK(joins()[2].find(R"("resume":")") != std::string::npos);
+  CHECK(a.client.status().state == State::kOnline);
+
+  // Without the token, the lobby holds the old connection's MAC.
+  Network old;
+  auto& c = old.Add(kMacA);
+  old.Add(kMacB);
+  old.Run(3000);
+  old.Move(c, 9);
+  old.Run(1000);
+  CHECK(c.client.status().state != State::kOnline);
+}
+
 TEST_CASE("Relay players keep playing while the lobby is away", "[relay]") {
   Network network;
   auto& a = network.Add(kMacA);
@@ -1811,6 +1930,33 @@ TEST_CASE("Relay players without TURN only go direct", "[relay]") {
   blocked.Run(RelayClient::kUnreachableMs);
   CHECK(c.client.status().unreachable == 1);
   CHECK(a.client.status().unreachable == 0);
+}
+
+TEST_CASE("Relay players without TURN keep using a path that went quiet",
+          "[relay]") {
+  Network network;
+  network.lobby.ice = [] {
+    return std::string(R"({"stun":["203.0.113.1:3478"]})");
+  };
+  auto& a = network.Add(kMacA);
+  auto& b = network.Add(kMacB);
+  network.Run(3000);
+  REQUIRE(a.client.status().direct == 1);
+
+  // A few lost answers on a long path: A gives up on it.
+  network.block_direct = true;
+  const auto frame = MakeFrame(kMacA, kMacB, 60, 1);
+  network.Stream(a, frame, 10000);
+  REQUIRE(a.client.status().direct == 0);
+
+  // The path works again before a probe has found it: frames still get there
+  // rather than going nowhere.
+  network.block_direct = false;
+  b.received.clear();
+  network.Send(a, frame);
+  CHECK(b.received.size() == 1);
+  network.Stream(a, frame, 5000);
+  CHECK(a.client.status().direct == 1);
 }
 
 TEST_CASE("Relay players reached through TURN aren't unreachable", "[relay]") {
