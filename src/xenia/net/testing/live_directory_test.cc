@@ -379,5 +379,181 @@ TEST_CASE("Live directory searches end when the socket closes", "[live]") {
   lobby_thread.join();
 }
 
+constexpr char kAuthedStats[] =
+    R"({"t":"authed","xuid":"0009f00012345678","gamertag":"T","stats":1})";
+
+std::vector<StatsViewWrite> SampleStatsWrite() {
+  StatsViewWrite view;
+  view.view_id = 1;
+  view.columns.push_back({kStatsAttrRating, StatsOp::kSum, {2, 120, 0}});
+  view.columns.push_back({1, StatsOp::kSum, {1, -3, 0}});
+  view.columns.push_back({2, StatsOp::kMax, {3, 0, 1.5}});
+  view.columns.push_back({3, StatsOp::kLast, {0, 7, 0}});
+  view.columns.push_back({4, StatsOp::kMin, {7, 132000000000000000ll, 0}});
+  // Left out: the rank and gamertag, a rating that isn't int64, a string,
+  // and an attribute twice.
+  view.columns.push_back({kStatsAttrRank, StatsOp::kLast, {1, 1, 0}});
+  view.columns.push_back({kStatsAttrGamertag, StatsOp::kLast, {2, 1, 0}});
+  view.columns.push_back({1, StatsOp::kSum, {1, 99, 0}});
+  view.columns.push_back({5, StatsOp::kSum, {4, 1, 0}});
+  StatsViewWrite skill;
+  skill.view_id = 0xFFFF0000;
+  skill.columns.push_back({1, StatsOp::kSum, {1, 1, 0}});
+  return {view, skill};
+}
+
+TEST_CASE("Live stats messages", "[live]") {
+  CHECK(EncodeStatsWrite(SampleStatsWrite(), 4) ==
+        R"({"t":"stats_write","seq":4,"views":[{"id":1,"cols":[[65534,2,"sum","120"],[1,1,"sum",-3],[2,3,"max",1.5],[3,0,"last",7],[4,7,"min","132000000000000000"]]},{"id":4294901760}]})");
+  CHECK(EncodeStatsRead({0x0009F00012345678ull}, {{1, {65533, 1}}}, 5) ==
+        R"({"t":"stats_read","seq":5,"xuids":["0009f00012345678"],"views":[{"id":1,"cols":[65533,1]}]})");
+  CHECK(EncodeStatsEnum(StatsEnumBy::kRank, 0, 500, {{1, {}}}, 6) ==
+        R"({"t":"stats_enum","seq":6,"by":"rank","pivot":"1","rows":100,"views":[{"id":1,"cols":[]}]})");
+  CHECK(EncodeStatsEnum(StatsEnumBy::kXuid, 0x0009F00012345678ull, 10, {{2, {1}}}, 7) ==
+        R"({"t":"stats_enum","seq":7,"by":"xuid","pivot":"0009f00012345678","rows":10,"views":[{"id":2,"cols":[1]}]})");
+  CHECK(EncodeStatsEnum(StatsEnumBy::kRating, uint64_t(-5), 10, {{2, {}}}, 8)
+            .find(R"("pivot":"-5")") != std::string::npos);
+
+  auto authed = ParseDirectoryReply(kAuthedStats);
+  REQUIRE(authed);
+  CHECK(authed->stats == 1);
+  CHECK(ParseDirectoryReply(kAuthed)->stats == 0);
+
+  auto reply = ParseDirectoryReply(
+      R"({"t":"stats","seq":9,"views":[{"id":1,"total":321,"rows":[)"
+      R"({"xuid":"0009f00012345678","gamertag":"Chief","rank":12,"rating":"-120",)"
+      R"("cols":[[1,1,3],[2,2,"9223372036854775807"],[3,3,2.5],[4,0,7],[5,7,"5"],)"
+      R"([6,4,"str"],[7,1,"x"],[70000,1,1],[8,9,1]]},{"gamertag":"no xuid"}]},)"
+      R"({"id":2,"total":0,"rows":[]}]})");
+  REQUIRE(reply);
+  CHECK(reply->kind == DirectoryReply::Kind::kStats);
+  CHECK(reply->seq == 9);
+  REQUIRE(reply->stats_views.size() == 2);
+  const auto& v = reply->stats_views[0];
+  CHECK(v.view_id == 1);
+  CHECK(v.total == 321);
+  REQUIRE(v.rows.size() == 1);
+  const auto& row = v.rows[0];
+  CHECK(row.xuid == 0x0009F00012345678ull);
+  CHECK(row.gamertag == "Chief");
+  CHECK(row.rank == 12);
+  CHECK(row.rating == -120);
+  REQUIRE(row.cells.size() == 5);  // the bad ones are left out
+  CHECK(row.cells[0].attr == 1);
+  CHECK(row.cells[0].value == StatsValue{1, 3, 0});
+  CHECK(row.cells[1].value == StatsValue{2, INT64_MAX, 0});
+  CHECK(row.cells[2].value == StatsValue{3, 0, 2.5});
+  CHECK(row.cells[3].value == StatsValue{0, 7, 0});
+  CHECK(row.cells[4].value == StatsValue{7, 5, 0});
+  CHECK(reply->stats_views[1].view_id == 2);
+
+  auto written = ParseDirectoryReply(R"({"t":"stats_written","seq":4,"views":2})");
+  REQUIRE(written);
+  CHECK(written->kind == DirectoryReply::Kind::kStatsWritten);
+  CHECK(written->seq == 4);
+}
+
+TEST_CASE("Live stats flushes wait for a lobby that keeps stats", "[live]") {
+  testing::FakeLobby lobby;
+  FakeAccount account;
+  SessionDirectory directory("ws://lobby.test", 0x4D5307E6, account.Auth());
+  directory.WriteStats(SampleStatsWrite());
+  auto socket = lobby.WaitForSocket();
+  socket.opened();
+  REQUIRE(lobby.Sent().size() == 1);  // the sign-in only
+  socket.message(kAuthedStats);
+  auto sent = lobby.Sent();
+  REQUIRE(sent.size() == 2);
+  CHECK(sent[1].find(R"("t":"stats_write","seq":1)") != std::string::npos);
+  CHECK(directory.PendingStatsWrites() == 1);
+  socket.message(R"({"t":"stats_written","seq":1,"views":2})");
+  CHECK(directory.PendingStatsWrites() == 0);
+  // A refused one isn't kept either.
+  directory.WriteStats(SampleStatsWrite());
+  CHECK(lobby.Sent().size() == 3);
+  socket.message(R"({"t":"error","for":"stats_write","seq":2,"reason":"limit"})");
+  CHECK(directory.PendingStatsWrites() == 0);
+  // One the lobby didn't answer goes again on the next socket.
+  directory.WriteStats(SampleStatsWrite());
+  CHECK(directory.PendingStatsWrites() == 1);
+  socket.closed("gone");
+  auto again = lobby.WaitForSocket(2);
+  again.opened();
+  again.message(kAuthedStats);
+  sent = lobby.Sent();
+  CHECK(sent.back().find(R"("t":"stats_write")") != std::string::npos);
+  CHECK(directory.PendingStatsWrites() == 1);
+}
+
+TEST_CASE("Live stats go nowhere on a lobby without them", "[live]") {
+  testing::FakeLobby lobby;
+  FakeAccount account;
+  SessionDirectory directory("ws://lobby.test", 0x4D5307E6, account.Auth());
+  directory.WriteStats(SampleStatsWrite());
+  auto socket = lobby.WaitForSocket();
+  socket.opened();
+  socket.message(kAuthed);
+  // An older lobby closes a socket on an unknown message: none is sent.
+  for (const auto& m : lobby.Sent()) {
+    CHECK(m.find("stats_") == std::string::npos);
+  }
+  CHECK(directory.PendingStatsWrites() == 0);
+  CHECK_FALSE(directory.ReadStats({0x0009F00012345678ull}, {{1, {1}}}, 200));
+}
+
+TEST_CASE("Live stats reads are answered, and repeated ones from memory", "[live]") {
+  using namespace std::chrono_literals;
+  testing::FakeLobby lobby;
+  FakeAccount account;
+  SessionDirectory directory("ws://lobby.test", 0x4D5307E6, account.Auth());
+  std::thread lobby_thread([&] {
+    auto socket = lobby.WaitForSocket();
+    socket.opened();
+    socket.message(kAuthedStats);
+    while (lobby.Sent().size() < 2) {
+      std::this_thread::sleep_for(1ms);
+    }
+    CHECK(lobby.Sent()[1].find(R"("t":"stats_read")") != std::string::npos);
+    socket.message(
+        R"({"t":"stats","seq":1,"views":[{"id":1,"total":1,"rows":[)"
+        R"({"xuid":"0009f00012345678","gamertag":"T","rank":1,"rating":"5","cols":[[1,1,3]]}]}]})");
+  });
+  const std::vector<StatsSpec> specs = {{1, {1}}};
+  auto views = directory.ReadStats({0x0009F00012345678ull}, specs, 5000);
+  lobby_thread.join();
+  REQUIRE(views);
+  REQUIRE(views->size() == 1);
+  CHECK((*views)[0].rows.at(0).rating == 5);
+  // The same read again: no message.
+  const size_t before = lobby.Sent().size();
+  auto again = directory.ReadStats({0x0009F00012345678ull}, specs, 5000);
+  REQUIRE(again);
+  CHECK((*again)[0].rows.at(0).cells.at(0).value.i == 3);
+  CHECK(lobby.Sent().size() == before);
+  // A write of ours clears the memory; a refused read is nothing.
+  directory.WriteStats(SampleStatsWrite());
+  std::thread refuse([&] {
+    while (lobby.Sent().size() < before + 2) {
+      std::this_thread::sleep_for(1ms);
+    }
+    CHECK(lobby.Sent().back().find(R"("t":"stats_read","seq":3)") !=
+          std::string::npos);
+    lobby.WaitForSocket().message(
+        R"({"t":"error","for":"stats_read","seq":3,"reason":"limit"})");
+  });
+  CHECK_FALSE(directory.ReadStats({0x0009F00012345678ull}, specs, 5000));
+  refuse.join();
+}
+
+TEST_CASE("Live stats reads give up at once without an account", "[live]") {
+  testing::FakeLobby lobby;
+  DirectoryAuth auth;
+  auth.xuid = [] { return uint64_t(0); };
+  SessionDirectory directory("ws://lobby.test", 0x4D5307E6, auth);
+  const auto start = std::chrono::steady_clock::now();
+  CHECK_FALSE(directory.EnumerateStats(StatsEnumBy::kRank, 1, 10, {{1, {}}}, 5000));
+  CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+}
+
 }  // namespace
 }  // namespace xe::net::live

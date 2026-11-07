@@ -20,7 +20,11 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_tracker.h"
+#include "xenia/emulator.h"
+#include "xenia/kernel/util/game_info_database.h"
+#include "xenia/kernel/xam/user_property.h"
 #include "xenia/kernel/xam/xam_live_sessions.h"
+#include "xenia/kernel/xam/xam_live_stats.h"
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_system_link.h"
@@ -289,6 +293,8 @@ XSession::~XSession() {
 }
 
 X_RESULT XSession::DeleteSession() {
+  // Stats a title wrote and didn't flush or end go now.
+  FlushStats();
   {
     std::lock_guard lock(mutex_);
     state_ = kDeleted;
@@ -382,11 +388,103 @@ void XSession::Start() {
 }
 
 void XSession::End() {
-  std::lock_guard lock(mutex_);
-  if (state_ == kInGame) {
-    state_ = kLobby;
+  {
+    std::lock_guard lock(mutex_);
+    if (state_ == kInGame) {
+      state_ = kLobby;
+    }
+    PublishLocked();
   }
-  PublishLocked();
+  // XSessionEnd sends the stats the game wrote, as Live did.
+  FlushStats();
+}
+
+X_RESULT XSession::WriteStats(uint64_t xuid, uint32_t num_views,
+                              uint32_t views_ptr) {
+  std::lock_guard lock(mutex_);
+  if (!(flags_ & SessionFlags::STATS)) {
+    XELOGW("XSessionWriteStats: the session has no stats (flags {:08X})",
+           flags_);
+    return X_ERROR_FUNCTION_FAILED;
+  }
+  if (state_ != kInGame) {
+    XELOGW("XSessionWriteStats: outside a game (state {})",
+           static_cast<uint32_t>(state_));
+    return X_ERROR_FUNCTION_FAILED;
+  }
+  if (!num_views) {
+    return X_ERROR_SUCCESS;
+  }
+  if (!xuid || !views_ptr) {
+    // XUID 0 overrides the TrueSkill system's parameters; nothing keeps them.
+    XELOGI("XSessionWriteStats: no XUID, ignored");
+    return X_ERROR_SUCCESS;
+  }
+  const bool arbitrated = flags_ & SessionFlags::ARBITRATION;
+  auto* db = kernel_state_->emulator()
+                 ? kernel_state_->emulator()->game_info_database()
+                 : nullptr;
+  constexpr uint32_t kMaxViews = 64;
+  constexpr uint32_t kMaxProperties = 64;
+  struct ViewProperties {
+    xe::be<uint32_t> view_id;
+    xe::be<uint32_t> properties_count;
+    xe::be<uint32_t> properties_ptr;
+  };
+  static_assert_size(ViewProperties, 0xC);
+  const auto* views = memory()->TranslateVirtual<const ViewProperties*>(
+      views_ptr);
+  // Every view is checked before any is kept.
+  for (uint32_t i = 0; i < std::min(num_views, kMaxViews); ++i) {
+    const uint32_t view_id = views[i].view_id;
+    if (xam::IsTrueSkillView(view_id)) {
+      // Live assumed these arbitrated.
+      if (!arbitrated && !(db && db->GetStatsView(view_id))) {
+        return 0x80155205;  // X_ONLINE_E_SESSION_REQUIRES_ARBITRATION
+      }
+      continue;
+    }
+    const auto spa = db ? db->GetStatsView(view_id) : std::nullopt;
+    if (!spa) {
+      XELOGW("XSessionWriteStats: view {:08X} isn't in the title's SPA",
+             view_id);
+      return 0x80159002;  // X_ONLINE_E_STAT_INVALID_TITLE_OR_LEADERBOARD
+    }
+    if (spa->view.arbitrated && !arbitrated) {
+      return 0x80155205;  // X_ONLINE_E_SESSION_REQUIRES_ARBITRATION
+    }
+  }
+  uint32_t kept = 0;
+  for (uint32_t i = 0; i < std::min(num_views, kMaxViews); ++i) {
+    auto& view = stats_[xuid][views[i].view_id];
+    const uint32_t count =
+        std::min<uint32_t>(views[i].properties_count, kMaxProperties);
+    if (!count || !views[i].properties_ptr) {
+      continue;
+    }
+    const auto* properties =
+        memory()->TranslateVirtual<const xam::XUSER_PROPERTY*>(
+            views[i].properties_ptr);
+    for (uint32_t p = 0; p < count; ++p) {
+      if (auto value = xam::StatsValueFromGuest(properties[p].data)) {
+        view[properties[p].property_id] = *value;
+        ++kept;
+      }
+    }
+  }
+  XELOGI("XSessionWriteStats({:016X}, {} view(s)): {} value(s) kept", xuid,
+         num_views, kept);
+  return X_ERROR_SUCCESS;
+}
+
+X_RESULT XSession::FlushStats() {
+  xam::StatsCache stats;
+  {
+    std::lock_guard lock(mutex_);
+    stats.swap(stats_);
+  }
+  xam::FlushLiveStats(kernel_state_, stats);
+  return X_ERROR_SUCCESS;
 }
 
 X_RESULT XSession::Modify(uint32_t flags, uint32_t max_public_slots,

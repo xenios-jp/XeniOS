@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "xenia/kernel/xobject.h"
+#include "xenia/net/live_directory.h"
 #include "xenia/net/xnet_secure.h"
 
 namespace xe {
@@ -96,6 +98,13 @@ class XSession : public XObject {
   X_RESULT RegisterArbitration(uint32_t results_size, uint32_t results_ptr);
   // Fills XSESSION_LOCAL_DETAILS and as many members as fit in the buffer.
   X_RESULT GetDetails(uint32_t size_ptr, uint32_t details_ptr);
+  // XSessionWriteStats: keeps |num_views| XSESSION_VIEW_PROPERTIES for
+  // |xuid| until the session flushes. A later write of a property replaces
+  // the earlier one.
+  X_RESULT WriteStats(uint64_t xuid, uint32_t num_views, uint32_t views_ptr);
+  // XSessionFlushStats (and XSessionEnd): sends what the writes kept to the
+  // lobby's stats store.
+  X_RESULT FlushStats();
 
  private:
   enum State : uint32_t {
@@ -152,6 +161,10 @@ class XSession : public XObject {
   // Its key counts toward SystemLinkKeysRegistered.
   bool key_counted_ = false;
   std::vector<Member> members_;
+  // Stats written and not flushed yet: XUID -> view -> property -> value.
+  std::map<uint64_t, std::map<uint32_t, std::map<uint32_t,
+                                                 net::live::StatsValue>>>
+      stats_;
 };
 
 // How many sessions with Live presence the running title has open. A title
