@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/shared/ios_glass_card.h"
 
+#include <algorithm>
 #include <cmath>
 
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -97,9 +98,16 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
   UINavigationController* navigation = [self navigation];
   const CGFloat content = navigation.topViewController.preferredContentSize.height;
   if (content > 0.0) {
-    const CGFloat bar = navigation.navigationBarHidden
-                            ? 0.0
-                            : [navigation.navigationBar sizeThatFits:bounds.size].height;
+    CGFloat bar = navigation.navigationBarHidden
+                      ? 0.0
+                      : [navigation.navigationBar sizeThatFits:bounds.size].height;
+    // Once laid out, the page starts where its safe area does: under the bar as it really is.
+    // On a phone in landscape that is taller than the compact bar sizeThatFits: reports (the
+    // leading title and the 44 pt ✕), which left the card short and its last row against the edge.
+    UIViewController* top_page = navigation.topViewController;
+    if (top_page.isViewLoaded && top_page.view.window) {
+      bar = MAX(bar, top_page.view.safeAreaInsets.top);
+    }
     height = MIN(max_height, std::ceil(bar + content + kCardBottomPadding));
   }
   const CGFloat x = safe.left + inset + (available_width - width) / 2.0;
@@ -341,9 +349,23 @@ void XEFitGlassCardToTable(UITableViewController* page) {
   if (@available(iOS 26.0, *)) {
     table.topEdgeEffect.hidden = YES;
   }
+  CGFloat content_height = table.contentSize.height - kFirstHeaderTuck;
+  // An empty page shows its empty state over the table, which has nothing to measure: the card
+  // fits the message (image, text and button) instead of cutting it off under the bar.
+  if ([page.contentUnavailableConfiguration
+          isKindOfClass:[UIContentUnavailableConfiguration class]]) {
+    UIContentUnavailableView* message = [[[UIContentUnavailableView alloc]
+        initWithConfiguration:(UIContentUnavailableConfiguration*)
+                                  page.contentUnavailableConfiguration] autorelease];
+    const CGSize fitted =
+        [message systemLayoutSizeFittingSize:CGSizeMake(page.view.bounds.size.width,
+                                                        UILayoutFittingCompressedSize.height)
+               withHorizontalFittingPriority:UILayoutPriorityRequired
+                     verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    content_height = std::max(content_height, fitted.height);
+  }
   // A form's commit button sits under the rows, in the bottom safe-area inset it adds.
-  XEFitGlassCardToHeight(page, table.contentSize.height - kFirstHeaderTuck +
-                                   page.additionalSafeAreaInsets.bottom);
+  XEFitGlassCardToHeight(page, content_height + page.additionalSafeAreaInsets.bottom);
 }
 
 void XEFitGlassCardToHeight(UIViewController* page, CGFloat content_height) {

@@ -9,17 +9,23 @@
 
 #import "xenia/ui/ios/shared/ios_live_account_real.h"
 
+#include <atomic>
+#include <filesystem>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/kernel/xam/profile_package.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
+#import "xenia/ui/ios/shared/ios_profile_data.h"
 
 namespace live = xe::net::live;
+using xe::kernel::xam::ProfilePackageError;
 
 namespace {
 
@@ -84,7 +90,8 @@ NSError* RefusedError(const std::string& request, const std::string& reason) {
                                          @"Online account: rate limited"));
   }
   if (reason == "last_device") {
-    return Error(NSLocalizedString(@"This is the account’s only device.",
+    return Error(NSLocalizedString(@"This is the account’s only device. Add another device "
+                                   @"before removing it.",
                                    @"Online account: removing the last device"));
   }
   return Error(NSLocalizedString(@"XeniOS couldn’t do that. Try again in a moment.",
@@ -125,6 +132,25 @@ std::shared_ptr<live::AccountShare> SignedInShare() {
   return share;
 }
 
+// Posts XeniaProfileDataProgressNotification on the main queue, once per percent.
+xe::kernel::xam::ProfilePackageProgress ProfileDataProgress() {
+  auto last = std::make_shared<std::atomic<int>>(-1);
+  return [last](uint64_t done, uint64_t total) {
+    const int percent = total ? int(done * 100 / total) : 100;
+    if (last->exchange(percent) == percent) {
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [[NSNotificationCenter defaultCenter]
+          postNotificationName:XeniaProfileDataProgressNotification
+                        object:nil
+                      userInfo:@{
+                        XeniaProfileDataProgressFractionKey : @(percent / 100.0)
+                      }];
+    });
+  };
+}
+
 XeniaLiveDevice* DeviceFrom(const live::Device& device) {
   XeniaLiveDevice* result = [[[XeniaLiveDevice alloc] init] autorelease];
   result.deviceId = ToNS(device.key);
@@ -156,6 +182,44 @@ XeniaLiveDevice* DeviceFrom(const live::Device& device) {
   result.thisDevice = device.current;
   result.lastSeen = device.current ? nil : DateFromMs(device.seen_ms);
   return result;
+}
+
+// What the signed-in device is asked about |request|: the new device and, unless it was scanned,
+// the number to pick from three.
+XeniaLiveIncomingApproval* IncomingFrom(const live::JoinRequest& request) {
+  XeniaLiveIncomingApproval* result = [[[XeniaLiveIncomingApproval alloc] init] autorelease];
+  result.requestId = ToNS(request.id);
+  NSString* name = ToNS(request.device.name);
+  const std::string& platform = request.device.platform;
+  if (platform == "ios") {
+    result.platform = [name rangeOfString:@"iPad"].location != NSNotFound ? @"ipad" : @"iphone";
+    result.platformText = [result.platform isEqualToString:@"ipad"] ? @"iPad" : @"iPhone";
+  } else {
+    result.platform = @"mac";
+    result.platformText = platform == "windows" ? @"Windows PC"
+                          : platform == "linux" ? @"Linux PC"
+                                                : @"Mac";
+  }
+  result.deviceName = name.length ? name : result.platformText;
+  result.expires = [NSDate dateWithTimeIntervalSinceNow:request.ttl_s];
+  NSMutableArray* choices = [NSMutableArray array];
+  if (!request.number.empty()) {
+    [choices addObject:ToNS(request.number)];
+    while (choices.count < 3) {
+      NSString* other = [NSString stringWithFormat:@"%02u", 10 + arc4random_uniform(90)];
+      if (![choices containsObject:other]) {
+        [choices insertObject:other atIndex:arc4random_uniform((uint32_t)choices.count + 1)];
+      }
+    }
+  }
+  result.choices = choices;
+  return result;
+}
+
+void AddWaiterForKey(NSMutableDictionary* list, NSString* key, id block) {
+  id copy = [block copy];
+  list[key] = copy;
+  [copy release];
 }
 
 void AddWaiter(NSMutableArray* list, id block) {
@@ -201,6 +265,28 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   void (^_joinDone)(XeniaLiveLinkStatus);
   uint64_t _joinMoved;
   NSUInteger _joinGeneration;
+  // Why the join failed, as the lobby said it ("declined", "expired"), or "cancelled".
+  std::string _joinFailure;
+  // The recovery code a recovery brought, shown once by the next createRecoveryCode.
+  NSString* _joinRecovery;
+  NSString* _recoveredCode;
+
+  // This device asking the account's others to let it in.
+  void (^_approvalStarted)(XeniaLiveApprovalRequest*, XeniaLiveApprovalStatus);
+  void (^_approvalWait)(XeniaLiveApprovalStatus);
+  XeniaLiveApprovalRequest* _approvalRequest;
+  NSNumber* _approvalOutcome;  // It ended before waitForApproval: was called.
+
+  // Another device asking this one: the sheet's request, the number each request showed ("" when
+  // scanned), the scan waiting for its request, and approvals waiting for join_closed.
+  XeniaLiveIncomingApproval* _incoming;
+  NSMutableDictionary<NSString*, NSString*>* _incomingNumbers;
+  void (^_peekDone)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus);
+  NSString* _peekId;
+  NSMutableDictionary<NSString*, void (^)(XeniaLiveApprovalStatus)>* _approving;
+
+  // The profile whose device was removed from its account; offline until it joins one again.
+  uint64_t _removedProfile;
 
   // What the screens last saw, to post a change only when there is one.
   NSString* _lastSignature;
@@ -218,6 +304,8 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     _devices = [[NSMutableArray alloc] init];
     _recoveryCodes = [[NSMutableArray alloc] init];
     _removals = [[NSMutableArray alloc] init];
+    _incomingNumbers = [[NSMutableDictionary alloc] init];
+    _approving = [[NSMutableDictionary alloc] init];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(socialChanged)
                                                  name:XeniaLiveSocialDidChangeNotification
@@ -241,6 +329,17 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   [_rename release];
   [_renameName release];
   [_joinDone release];
+  [_joinRecovery release];
+  [_recoveredCode release];
+  [_approvalStarted release];
+  [_approvalWait release];
+  [_approvalRequest release];
+  [_approvalOutcome release];
+  [_incoming release];
+  [_incomingNumbers release];
+  [_peekDone release];
+  [_peekId release];
+  [_approving release];
   [_lastSignature release];
   [super dealloc];
 }
@@ -393,6 +492,39 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 - (void)registerRefused:(const std::string&)reason {
   if (_goOnline) {
     [self finishGoOnline:NameStatus(reason)];
+    return;
+  }
+  // Signing in with the profile's name was refused, and no one will answer what was asked
+  // meanwhile (it is queued behind the sign-in): say so now instead of at the timeouts.
+  XELOGW("Live account (app): the service refused the profile's gamertag ({})", reason);
+  [self failWaitingRequests];
+}
+
+- (void)failWaitingRequests {
+  if (_rename) {
+    [self finishRename:NameResult(XeniaLiveNameStatusUnreachable)];
+  }
+  NSDictionary* checks = [[_checks copy] autorelease];
+  [_checks removeAllObjects];
+  for (NSMutableArray* waiters in checks.allValues) {
+    for (void (^waiter)(XeniaLiveNameResult*) in waiters) {
+      waiter(NameResult(XeniaLiveNameStatusUnreachable));
+    }
+  }
+  NSError* error = UnreachableError();
+  for (void (^waiter)(NSString*, NSDate*, NSError*) in TakeWaiters(_linkCodes)) {
+    waiter(nil, nil, error);
+  }
+  for (void (^waiter)(NSString*, NSError*) in TakeWaiters(_recoveryCodes)) {
+    waiter(nil, error);
+  }
+  for (void (^waiter)(NSArray*, NSError*) in TakeWaiters(_devices)) {
+    waiter(nil, error);
+  }
+  NSArray* removals = [[_removals copy] autorelease];
+  [_removals removeAllObjects];
+  for (NSArray* removal in removals) {
+    ((void (^)(NSError*))removal[1])(error);
   }
 }
 
@@ -428,6 +560,22 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     for (void (^waiter)(NSArray*, NSError*) in TakeWaiters(_devices)) {
       waiter(nil, error);
     }
+  } else if (request == "join_approve") {
+    // The lobby doesn't say which one: every approval waiting fails.
+    NSArray* waiters = [[_approving allValues] copy];
+    [_approving removeAllObjects];
+    for (void (^waiter)(XeniaLiveApprovalStatus) in waiters) {
+      waiter(reason == "not_found" ? XeniaLiveApprovalStatusTimedOut
+             : reason == "full"    ? XeniaLiveApprovalStatusDenied
+                                   : XeniaLiveApprovalStatusUnreachable);
+    }
+    [waiters release];
+  } else if (request == "join_peek" && _peekDone) {
+    void (^done)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus) = [_peekDone autorelease];
+    _peekDone = nil;
+    done(nil, reason == "not_found" ? XeniaLiveLinkStatusBadCode
+              : reason == "limit"   ? XeniaLiveLinkStatusLimit
+                                    : XeniaLiveLinkStatusUnreachable);
   } else if (request == "remove_device") {
     NSError* error = RefusedError(request, reason);
     NSArray* removals = [[_removals copy] autorelease];
@@ -447,8 +595,68 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     // (and its saves) again instead of making another.
     g_real_host->disable_online(profile->xuid);
   }
+  // Whatever the profile's flags say, it is signed out until a link or recovery code brings it
+  // back (summary reads this).
+  if (profile) {
+    _removedProfile = profile->xuid;
+  }
   xe_ios_live_social_refresh_now();
   [self postChange];
+  if (!profile) {
+    return;
+  }
+  // Said, with the way back: never a profile that just goes offline.
+  NSString* message = [NSString
+      stringWithFormat:NSLocalizedString(@"This %1$@ was removed from %2$@’s account. To sign in "
+                                         @"again, use a code from one of its other devices.",
+                                         @"Removed from the account; %1$@ is this device's kind "
+                                         @"(iPhone, iPad), %2$@ the gamertag"),
+                       [UIDevice currentDevice].model, ToNS(profile->gamertag)];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:XeniaLiveSocialSignedOutNotification
+                    object:[XeniaLiveSocial shared]
+                  userInfo:@{
+                    XeniaLiveSocialMessageKey : message,
+                    XeniaLiveSocialSignedOutReasonKey : @"removed",
+                  }];
+}
+
+// The account signed in on another device, which ended its session here: one device at a time,
+// as on the console. The profile goes offline, so starting the app again doesn't take the account
+// back; Turn On Online Play does, with no code (this device stays on the account).
+- (void)signedInElsewhere:(NSString*)device {
+  auto profile = ActiveProfile();
+  if (!profile) {
+    return;
+  }
+  XELOGW("Live account (app): {} signed in on another device", profile->gamertag);
+  if (g_real_host->disable_online) {
+    g_real_host->disable_online(profile->xuid);
+  }
+  xe_ios_live_social_refresh_now();
+  [self postChange];
+  // Where it went, and that this device is offline now: "Reality signed in on Reality's iPhone.
+  // You're offline on this iPad."
+  NSString* gamertag = ToNS(profile->gamertag);
+  NSString* where =
+      device.length ? device
+                    : NSLocalizedString(@"another device",
+                                        @"Signed in elsewhere: the device, when it gave no name");
+  NSString* message = [NSString
+      stringWithFormat:NSLocalizedString(@"%1$@ signed in on %2$@. You’re offline on this %3$@.",
+                                         @"Signed in elsewhere; %1$@ is the gamertag, %2$@ the "
+                                         @"other device's name (or \"another device\"), %3$@ "
+                                         @"this device's kind (iPhone, iPad)"),
+                       gamertag, where, [UIDevice currentDevice].model];
+  // Friends says it too, with Sign In Here, until the profile is online again.
+  [[XeniaLiveSocial shared] noteSignedInElsewhere:message profile:profile->xuid];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:XeniaLiveSocialSignedOutNotification
+                    object:[XeniaLiveSocial shared]
+                  userInfo:@{
+                    XeniaLiveSocialMessageKey : message,
+                    XeniaLiveSocialSignedOutReasonKey : @"elsewhere",
+                  }];
 }
 
 #pragma mark XeniaLiveAccountService: the account
@@ -456,7 +664,8 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 - (XeniaLiveAccountSummary*)summary {
   XeniaLiveAccountSummary* summary = [[[XeniaLiveAccountSummary alloc] init] autorelease];
   auto profile = ActiveProfile();
-  summary.online = profile && profile->live_enabled && profile->online_xuid;
+  summary.online =
+      profile && profile->live_enabled && profile->online_xuid && profile->xuid != _removedProfile;
   summary.gamertag = profile ? ToNS(profile->gamertag) : @"";
   if (summary.online) {
     if (auto share = SignedInShare()) {
@@ -565,13 +774,16 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     });
     return;
   }
-  if (profile->live_enabled && profile->online_xuid) {
+  if (profile->live_enabled && profile->online_xuid && profile->xuid != _removedProfile) {
     dispatch_async(dispatch_get_main_queue(), ^{
       done(NameResult(XeniaLiveNameStatusAvailable));
     });
     return;
   }
   const uint64_t profile_xuid = profile->xuid;
+  if (profile_xuid == _removedProfile) {
+    _removedProfile = 0;
+  }
   NSString* old_name = ToNS(profile->gamertag);
   // Nothing changes on this device until the name is free.
   [self checkOverHTTP:gamertag
@@ -745,6 +957,17 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 }
 
 - (void)createRecoveryCodeWithCompletion:(void (^)(NSString*, NSError*))completion {
+  if (_recoveredCode.length) {
+    // A recovery just made this account's new code; it is shown once, here, instead of making
+    // another and killing it.
+    void (^done)(NSString*, NSError*) = [[completion copy] autorelease];
+    NSString* code = [_recoveredCode autorelease];
+    _recoveredCode = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(code, nil);
+    });
+    return;
+  }
   auto share = SignedInShare();
   if (!share) {
     void (^done)(NSString*, NSError*) = [[completion copy] autorelease];
@@ -783,6 +1006,22 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     });
     return;
   }
+  if (![self startJoin:live::AccountJoin{recover ? live::AccountJoin::Mode::kRecover
+                                                 : live::AccountJoin::Mode::kLink,
+                                         code}
+               timeout:kConnectTimeout
+                  done:done]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(XeniaLiveLinkStatusUnreachable);
+    });
+  }
+}
+
+// Opens a client that joins an account as |join| says and calls |done| once with the outcome
+// (finishJoin). A |timeout| of 0 leaves the waiting to the caller. NO when it can't be tried.
+- (BOOL)startJoin:(live::AccountJoin)join
+          timeout:(NSTimeInterval)timeout
+             done:(void (^)(XeniaLiveLinkStatus))done {
   const std::string lobby = xe::kernel::xam::LiveSessionLobby();
   std::optional<live::DeviceKey> key;
   if (!lobby.empty() && xe_ios_online_features_enabled() && g_real_host &&
@@ -790,12 +1029,12 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     key = live::DeviceKey::LoadOrCreate(g_real_host->storage_root / "live" / "device_key");
   }
   if (!key) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      done(XeniaLiveLinkStatusUnreachable);
-    });
-    return;
+    return NO;
   }
   [self finishJoin:XeniaLiveLinkStatusUnreachable gamertag:std::string()];
+  _joinFailure.clear();
+  [_joinRecovery release];
+  _joinRecovery = nil;
 
   const NSUInteger generation = ++_joinGeneration;
   live::AccountClient::Events events;
@@ -823,27 +1062,51 @@ NSArray* TakeWaiters(NSMutableArray* list) {
       XeniaLiveAccountReal* service = [XeniaLiveAccountReal shared];
       if (service->_joinGeneration == generation) {
         XELOGW("Live account (app): joining the account failed: {}", copy);
+        service->_joinFailure = copy;
         [service finishJoin:JoinStatus(copy) gamertag:std::string()];
       }
     });
   };
+  // A recovery brings the account's new recovery code, with the move.
+  events.recovery_code = [generation](const std::string& code) {
+    const std::string copy = code;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      XeniaLiveAccountReal* service = [XeniaLiveAccountReal shared];
+      if (service->_joinGeneration == generation) {
+        [service->_joinRecovery release];
+        service->_joinRecovery = [ToNS(copy) copy];
+      }
+    });
+  };
+  events.join_pending = [generation](const std::string& id, const std::string& number,
+                                     uint32_t ttl_s) {
+    const std::string request = id, match = number;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      XeniaLiveAccountReal* service = [XeniaLiveAccountReal shared];
+      if (service->_joinGeneration == generation) {
+        [service approvalPending:request number:match ttl:ttl_s];
+      }
+    });
+  };
   live::AccountOptions options;
-  options.join = live::AccountJoin{
-      recover ? live::AccountJoin::Mode::kRecover : live::AccountJoin::Mode::kLink, code};
+  options.join = std::move(join);
   _joinDone = [done copy];
   _joinMoved = 0;
   _join = std::make_shared<live::AccountClient>(lobby, std::move(*key), 0, std::string(),
                                                 std::move(events), std::move(options));
-  XELOGI("Live account (app): joining an account with a {} code", recover ? "recovery" : "link");
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kConnectTimeout * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-                   if (_joinGeneration == generation && _joinDone) {
-                     // Moved but never signed in: the device is on the account all the same.
-                     [self finishJoin:_joinMoved ? XeniaLiveLinkStatusLinked
-                                                 : XeniaLiveLinkStatusUnreachable
-                             gamertag:std::string()];
-                   }
-                 });
+  XELOGI("Live account (app): joining an account");
+  if (timeout > 0) {
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          if (_joinGeneration == generation && _joinDone) {
+            // Moved but never signed in: the device is on the account all the same.
+            [self finishJoin:_joinMoved ? XeniaLiveLinkStatusLinked : XeniaLiveLinkStatusUnreachable
+                    gamertag:std::string()];
+          }
+        });
+  }
+  return YES;
 }
 
 - (void)finishJoin:(XeniaLiveLinkStatus)status gamertag:(std::string)gamertag {
@@ -861,12 +1124,19 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   void (^done)(XeniaLiveLinkStatus) = [_joinDone autorelease];
   _joinDone = nil;
   ++_joinGeneration;
+  NSString* recovery = [_joinRecovery autorelease];
+  _joinRecovery = nil;
   if (status == XeniaLiveLinkStatusLinked) {
     const uint64_t online_xuid = _joinMoved;
     if (!online_xuid || !g_real_host->adopt_account(online_xuid, gamertag)) {
       status = XeniaLiveLinkStatusUnreachable;
     } else {
       XELOGI("Live account (app): this device joined {:016X} ({})", online_xuid, gamertag);
+      _removedProfile = 0;
+      if (recovery.length) {
+        [_recoveredCode release];
+        _recoveredCode = [recovery copy];
+      }
       // A connection opened for this account before the join was refused (this key wasn't on it
       // yet), and may have been moved to another XUID: sign in again on a new one.
       live::ForgetAccount(xe::kernel::xam::LiveSessionLobby(), online_xuid);
@@ -878,31 +1148,147 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   done(status);
 }
 
-#pragma mark Moving a profile's data: not built yet
+#pragma mark Moving a profile's data
+
+// Whether the app said where its profiles are (xe_ios_profile_data_install).
+// Saves stay each profile's own: moving them between profiles isn't built yet.
+- (BOOL)supportsSharedSaves {
+  return NO;
+}
 
 - (BOOL)supportsProfileData {
-  return NO;
+  return xe_ios_profile_data_host() != nullptr;
 }
 
 - (void)exportSizesWithCompletion:(void (^)(uint64_t, uint64_t, uint64_t))completion {
   void (^done)(uint64_t, uint64_t, uint64_t) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(0, 0, 0);
+  const XeniaIOSProfileDataHost* host = xe_ios_profile_data_host();
+  auto active = ActiveProfile();
+  if (!host || !host->content_root || !active) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(0, 0, 0);
+    });
+    return;
+  }
+  const std::filesystem::path content_root = host->content_root();
+  const uint64_t xuid = active->xuid;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const xe::kernel::xam::ProfileDataSizes sizes =
+        xe::kernel::xam::MeasureProfileData(content_root, xuid);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(sizes.saves, sizes.achievements, sizes.settings);
+    });
   });
 }
 
 - (void)exportProfileWithOptions:(XeniaLiveExportOptions*)options
                       completion:(void (^)(NSURL*, NSError*))completion {
   void (^done)(NSURL*, NSError*) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(nil, NotYetError());
+  const XeniaIOSProfileDataHost* host = xe_ios_profile_data_host();
+  auto active = ActiveProfile();
+  if (!host || !host->content_root || !active) {
+    NSError* error =
+        host ? xe_ios_profile_package_error(ProfilePackageError::kNoProfile, YES) : NotYetError();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(nil, error);
+    });
+    return;
+  }
+  xe::kernel::xam::ProfileExportOptions export_options;
+  export_options.saves = options.saves;
+  export_options.achievements = options.achievements;
+  export_options.settings = options.settings;
+  // Per-game settings (options.gameSettings) are host config, tuned for each device, and
+  // don't go in the file.
+  NSDictionary* info = NSBundle.mainBundle.infoDictionary;
+  export_options.app = ToStd([NSString stringWithFormat:@"XeniOS %@ (%@)",
+                                                        info[@"CFBundleShortVersionString"] ?: @"",
+                                                        info[@"CFBundleVersion"] ?: @""]);
+  export_options.platform =
+      UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "ipad" : "iphone";
+  NSURL* url = [NSURL
+      fileURLWithPath:[NSTemporaryDirectory()
+                          stringByAppendingPathComponent:
+                              ToNS(xe::kernel::xam::ProfilePackageFileName(active->gamertag))]];
+  const std::filesystem::path out_path(url.fileSystemRepresentation);
+  const std::filesystem::path content_root = host->content_root();
+  const uint64_t xuid = active->xuid;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const ProfilePackageError error = xe::kernel::xam::ExportProfilePackage(
+        content_root, xuid, export_options, out_path, ProfileDataProgress());
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (error != ProfilePackageError::kNone) {
+        XELOGW("Profile export failed: {}", xe::kernel::xam::ProfilePackageErrorName(error));
+        done(nil, xe_ios_profile_package_error(error, YES));
+        return;
+      }
+      done(url, nil);
+    });
   });
 }
 
+// Into the profile with the file's XUID, or the one here with its online account, or a new one.
+// The file is checked, then the profile (it can't be in a game), then written off the main
+// thread.
 - (void)importProfileFromURL:(NSURL*)url completion:(void (^)(NSError*))completion {
   void (^done)(NSError*) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(NotYetError());
+  const XeniaIOSProfileDataHost* host = xe_ios_profile_data_host();
+  if (!host || !host->content_root || !url.isFileURL) {
+    NSError* error =
+        host ? xe_ios_profile_package_error(ProfilePackageError::kOpenFailed, NO) : NotYetError();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(error);
+    });
+    return;
+  }
+  const std::filesystem::path content_root = host->content_root();
+  const std::filesystem::path package(url.fileSystemRepresentation);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    xe::kernel::xam::ProfilePackageManifest manifest;
+    const ProfilePackageError inspected =
+        xe::kernel::xam::InspectProfilePackage(package, &manifest);
+    const uint64_t target = inspected == ProfilePackageError::kNone
+                                ? xe::kernel::xam::FindProfileForPackage(content_root, manifest)
+                                : 0;
+    const uint64_t into = target ? target : manifest.xuid;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (inspected != ProfilePackageError::kNone) {
+        done(xe_ios_profile_package_error(inspected, NO));
+        return;
+      }
+      const XeniaIOSProfileDataHost* now = xe_ios_profile_data_host();
+      if (now && now->profile_in_game && now->profile_in_game(into)) {
+        done(xe_ios_profile_package_error(ProfilePackageError::kProfileInUse, NO));
+        return;
+      }
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        xe::kernel::xam::ProfileImportOptions import_options;
+        import_options.target_xuid = target;
+        // Asked again just before anything here changes: a game may have started meanwhile.
+        import_options.profile_in_use = [](uint64_t xuid) {
+          const XeniaIOSProfileDataHost* current = xe_ios_profile_data_host();
+          return current && current->profile_in_game && current->profile_in_game(xuid);
+        };
+        xe::kernel::xam::ProfileImportResult result;
+        const ProfilePackageError imported = xe::kernel::xam::ImportProfilePackage(
+            content_root, package, import_options, ProfileDataProgress(), &result);
+        const uint64_t xuid = result.xuid;
+        const bool created = result.created;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (imported != ProfilePackageError::kNone) {
+            XELOGW("Profile import failed: {}", xe::kernel::xam::ProfilePackageErrorName(imported));
+            done(xe_ios_profile_package_error(imported, NO));
+            return;
+          }
+          const XeniaIOSProfileDataHost* after = xe_ios_profile_data_host();
+          if (after && after->profile_imported) {
+            after->profile_imported(xuid, created);
+          }
+          [self postChange];
+          done(nil);
+        });
+      });
+    });
   });
 }
 
@@ -966,20 +1352,39 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   });
 }
 
-#pragma mark Approving on another device: not in the lobby
+#pragma mark Approving on another device
 
-- (XeniaLiveIncomingApproval*)pendingApproval {
-  return nil;
-}
+// ---- This device asks the account's others ----
 
 - (void)requestApprovalForGamertag:(NSString*)gamertag
                         completion:(void (^)(XeniaLiveApprovalRequest*,
                                              XeniaLiveApprovalStatus))completion {
   void (^done)(XeniaLiveApprovalRequest*, XeniaLiveApprovalStatus) =
       [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(nil, XeniaLiveApprovalStatusUnreachable);
-  });
+  // The join ends the approval before it, if any, then this one is set up.
+  XeniaLiveAccountReal* service = self;
+  const BOOL started =
+      [self startJoin:live::AccountJoin{live::AccountJoin::Mode::kRequest, ToStd(gamertag)}
+              timeout:0
+                 done:^(XeniaLiveLinkStatus status) {
+                   [service endApproval:[service approvalStatusFor:status]];
+                 }];
+  if (!started) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(nil, XeniaLiveApprovalStatusUnreachable);
+    });
+    return;
+  }
+  [_approvalOutcome release];
+  _approvalOutcome = nil;
+  _approvalStarted = [done copy];
+  const NSUInteger generation = _joinGeneration;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kConnectTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_joinGeneration == generation && _approvalStarted) {
+                     [self finishJoin:XeniaLiveLinkStatusUnreachable gamertag:std::string()];
+                   }
+                 });
 }
 
 - (void)requestQRLinkWithCompletion:(void (^)(XeniaLiveApprovalRequest*,
@@ -987,34 +1392,243 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   [self requestApprovalForGamertag:@"" completion:completion];
 }
 
+- (void)approvalPending:(const std::string&)requestId
+                 number:(const std::string&)number
+                    ttl:(uint32_t)ttl_s {
+  if (!_approvalStarted) {
+    return;
+  }
+  XeniaLiveApprovalRequest* request = [[[XeniaLiveApprovalRequest alloc] init] autorelease];
+  request.requestId = ToNS(requestId);
+  if (number.empty()) {
+    request.qrPayload = ToNS(live::JoinQrPayload(requestId));
+  } else {
+    request.matchNumber = ToNS(number);
+  }
+  request.expires = [NSDate dateWithTimeIntervalSinceNow:ttl_s];
+  [_approvalRequest release];
+  _approvalRequest = [request retain];
+  void (^started)(XeniaLiveApprovalRequest*, XeniaLiveApprovalStatus) =
+      [_approvalStarted autorelease];
+  _approvalStarted = nil;
+  // The lobby ends the request itself at ttl_s; this only covers a lobby that went quiet.
+  const NSUInteger generation = _joinGeneration;
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ttl_s + kConnectTimeout) * NSEC_PER_SEC)),
+      dispatch_get_main_queue(), ^{
+        if (_joinGeneration == generation && _joinDone) {
+          _joinFailure = "expired";
+          [self finishJoin:_joinMoved ? XeniaLiveLinkStatusLinked : XeniaLiveLinkStatusUnreachable
+                  gamertag:std::string()];
+        }
+      });
+  started(request, XeniaLiveApprovalStatusApproved);
+}
+
+// The outcome of the join, as the player sees it.
+- (XeniaLiveApprovalStatus)approvalStatusFor:(XeniaLiveLinkStatus)status {
+  const std::string why = _joinFailure;
+  _joinFailure.clear();
+  if (status == XeniaLiveLinkStatusLinked) {
+    return XeniaLiveApprovalStatusApproved;
+  }
+  if (why == "declined") {
+    return XeniaLiveApprovalStatusDenied;
+  }
+  if (why == "expired") {
+    return XeniaLiveApprovalStatusTimedOut;
+  }
+  if (why == "cancelled") {
+    return XeniaLiveApprovalStatusCancelled;
+  }
+  return XeniaLiveApprovalStatusUnreachable;
+}
+
+// Gives the outcome to whoever waits for it, or keeps it for waitForApproval:.
+- (void)endApproval:(XeniaLiveApprovalStatus)status {
+  [_approvalRequest release];
+  _approvalRequest = nil;
+  if (_approvalStarted) {
+    void (^started)(XeniaLiveApprovalRequest*, XeniaLiveApprovalStatus) =
+        [_approvalStarted autorelease];
+    _approvalStarted = nil;
+    started(nil, status);
+  } else if (_approvalWait) {
+    void (^wait)(XeniaLiveApprovalStatus) = [_approvalWait autorelease];
+    _approvalWait = nil;
+    wait(status);
+  } else {
+    [_approvalOutcome release];
+    _approvalOutcome = [@(status) retain];
+  }
+}
+
 - (void)waitForApproval:(XeniaLiveApprovalRequest*)request
              completion:(void (^)(XeniaLiveApprovalStatus))completion {
   void (^done)(XeniaLiveApprovalStatus) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(XeniaLiveApprovalStatusUnreachable);
-  });
+  if (_approvalOutcome) {
+    const XeniaLiveApprovalStatus status = (XeniaLiveApprovalStatus)_approvalOutcome.integerValue;
+    [_approvalOutcome release];
+    _approvalOutcome = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(status);
+    });
+    return;
+  }
+  if (!_approvalRequest || ![_approvalRequest.requestId isEqualToString:request.requestId]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(XeniaLiveApprovalStatusUnreachable);
+    });
+    return;
+  }
+  // One waiter: one waiting already hears it was cancelled rather than nothing.
+  if (_approvalWait) {
+    void (^replaced)(XeniaLiveApprovalStatus) = [_approvalWait autorelease];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      replaced(XeniaLiveApprovalStatusCancelled);
+    });
+  }
+  _approvalWait = [done copy];
 }
 
-- (void)cancelApproval:(XeniaLiveApprovalRequest*)request {}
+- (void)cancelApproval:(XeniaLiveApprovalRequest*)request {
+  if (!_joinDone || !(_approvalStarted || _approvalRequest)) {
+    return;
+  }
+  if (_approvalRequest && ![_approvalRequest.requestId isEqualToString:request.requestId]) {
+    return;
+  }
+  _joinFailure = "cancelled";
+  [self finishJoin:XeniaLiveLinkStatusUnreachable gamertag:std::string()];
+}
+
+// ---- Another device asks this one ----
+
+- (XeniaLiveIncomingApproval*)pendingApproval {
+  return _incoming;
+}
+
+- (void)postIncoming {
+  [[NSNotificationCenter defaultCenter] postNotificationName:XeniaLiveIncomingApprovalNotification
+                                                      object:nil];
+}
+
+- (void)joinRequested:(const live::JoinRequest&)request {
+  XeniaLiveIncomingApproval* approval = IncomingFrom(request);
+  if (request.scanned) {
+    // The answer to a scan goes to the scanner, not to the whole app; only this device's own
+    // scan may go without a number (it saw the new device's code).
+    if (_peekDone && [_peekId isEqualToString:approval.requestId]) {
+      _incomingNumbers[approval.requestId] = ToNS(request.number);
+      void (^done)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus) = [_peekDone autorelease];
+      _peekDone = nil;
+      done(approval, XeniaLiveLinkStatusLinked);
+    }
+    return;
+  }
+  if (request.number.empty()) {
+    // Without a number to match, a tap could let in a device the player isn't holding.
+    XELOGW("Live account (app): a sign-in request came without its number; ignored");
+    return;
+  }
+  _incomingNumbers[approval.requestId] = ToNS(request.number);
+  XELOGI("Live account (app): another device asks to sign in");
+  [_incoming release];
+  _incoming = [approval retain];
+  [self postIncoming];
+}
+
+// The request ended, here or on another device: its prompt goes.
+- (void)joinClosed:(const std::string&)requestId reason:(const std::string&)reason {
+  NSString* key = ToNS(requestId);
+  [_incomingNumbers removeObjectForKey:key];
+  if ([_incoming.requestId isEqualToString:key]) {
+    [_incoming release];
+    _incoming = nil;
+    [self postIncoming];
+  }
+  void (^waiter)(XeniaLiveApprovalStatus) = [[_approving[key] retain] autorelease];
+  if (waiter) {
+    [_approving removeObjectForKey:key];
+    waiter(reason == "approved"  ? XeniaLiveApprovalStatusApproved
+           : reason == "expired" ? XeniaLiveApprovalStatusTimedOut
+           : reason == "left"    ? XeniaLiveApprovalStatusCancelled
+                                 : XeniaLiveApprovalStatusDenied);
+  }
+}
 
 - (void)approveIncoming:(XeniaLiveIncomingApproval*)approval
                  chosen:(NSString*)chosen
              completion:(void (^)(XeniaLiveApprovalStatus))completion {
   void (^done)(XeniaLiveApprovalStatus) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(XeniaLiveApprovalStatusUnreachable);
-  });
+  NSString* key = [[approval.requestId copy] autorelease];
+  NSString* number = _incomingNumbers[key];
+  auto share = SignedInShare();
+  if (!share || !number) {
+    // Not signed in, or the request ended already.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(share ? XeniaLiveApprovalStatusTimedOut : XeniaLiveApprovalStatusUnreachable);
+    });
+    return;
+  }
+  // The number is checked here: the lobby only passes the request on.
+  if (number.length && ![number isEqualToString:chosen ?: @""]) {
+    (*share)->DenyJoin(ToStd(key));
+    [self joinClosed:ToStd(key) reason:"declined"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(XeniaLiveApprovalStatusDenied);
+    });
+    return;
+  }
+  AddWaiterForKey(_approving, key, done);
+  (*share)->ApproveJoin(ToStd(key));
+  void (^waiting)(XeniaLiveApprovalStatus) = _approving[key];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_approving[key] == waiting) {
+                     [[waiting retain] autorelease];
+                     [_approving removeObjectForKey:key];
+                     waiting(XeniaLiveApprovalStatusUnreachable);
+                   }
+                 });
 }
 
-- (void)denyIncoming:(XeniaLiveIncomingApproval*)approval {}
+- (void)denyIncoming:(XeniaLiveIncomingApproval*)approval {
+  NSString* key = [[approval.requestId copy] autorelease];
+  if (auto share = SignedInShare()) {
+    (*share)->DenyJoin(ToStd(key));
+  }
+  [self joinClosed:ToStd(key) reason:"declined"];
+}
 
 - (void)beginApprovalFromQRPayload:(NSString*)payload
                         completion:(void (^)(XeniaLiveIncomingApproval*,
                                              XeniaLiveLinkStatus))completion {
   void (^done)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus) = [[completion copy] autorelease];
-  dispatch_async(dispatch_get_main_queue(), ^{
-    done(nil, XeniaLiveLinkStatusBadCode);
-  });
+  const std::string id = live::ParseJoinQrPayload(ToStd(payload));
+  auto share = SignedInShare();
+  if (id.empty() || !share) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(nil, id.empty() ? XeniaLiveLinkStatusBadCode : XeniaLiveLinkStatusUnreachable);
+    });
+    return;
+  }
+  if (_peekDone) {
+    void (^previous)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus) = [_peekDone autorelease];
+    _peekDone = nil;
+    previous(nil, XeniaLiveLinkStatusUnreachable);
+  }
+  _peekDone = [done copy];
+  [_peekId release];
+  _peekId = [ToNS(id) copy];
+  void (^waiting)(XeniaLiveIncomingApproval*, XeniaLiveLinkStatus) = _peekDone;
+  (*share)->PeekJoin(id);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_peekDone == waiting) {
+                     [self requestFailed:"join_peek" reason:"unreachable"];
+                   }
+                 });
 }
 
 @end
@@ -1029,7 +1643,8 @@ void xe_ios_live_account_real_install(const XeniaIOSLiveSocialHost* host) {
 bool xe_ios_live_account_real_handles(const std::string& request) {
   return request == "check" || request == "rename" || request == "register" ||
          request == "link_code" || request == "recovery_new" || request == "devices" ||
-         request == "remove_device";
+         request == "remove_device" || request == "join_approve" || request == "join_deny" ||
+         request == "join_peek";
 }
 
 void xe_ios_live_account_real_add_events(live::AccountClient::Events& events) {
@@ -1098,9 +1713,27 @@ void xe_ios_live_account_real_add_events(live::AccountClient::Events& events) {
       [service registerRefused:copy];
     });
   };
+  events.join_requested = [on_main](const live::JoinRequest& request) {
+    const live::JoinRequest copy = request;
+    on_main(^(XeniaLiveAccountReal* service) {
+      [service joinRequested:copy];
+    });
+  };
+  events.join_closed = [on_main](const std::string& id, const std::string& reason) {
+    const std::string copy = id, why = reason;
+    on_main(^(XeniaLiveAccountReal* service) {
+      [service joinClosed:copy reason:why];
+    });
+  };
   events.removed = [on_main] {
     on_main(^(XeniaLiveAccountReal* service) {
       [service removedFromAccount];
+    });
+  };
+  events.signed_in_elsewhere = [on_main](const std::string& device) {
+    const std::string name = device;
+    on_main(^(XeniaLiveAccountReal* service) {
+      [service signedInElsewhere:ToNS(name)];
     });
   };
 }

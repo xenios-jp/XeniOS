@@ -31,8 +31,13 @@ NSString* xe_ios_normalize_system_link_room_code(NSString* text);
 
 // xenios://link/CODE?title=XXXXXXXX, which launches the game in that room.
 NSURL* xe_ios_system_link_invite_url(uint32_t title_id, NSString* code);
-// The room code an invite names, or nil for any other URL. Any app or web page
-// can open one, so the room is only set once the player agrees to the launch.
+// What sharing a room sends: the lobby's page for it (https://…/j/TITLE/CODE), which shows a
+// card in chats and opens XeniOS from its button, or the xenios:// invite when the lobby has no
+// pages.
+NSURL* xe_ios_system_link_share_url(uint32_t title_id, NSString* code);
+// The room code an invite names (xenios://link/CODE?title=…, the lobby page's
+// xenios://join?t=TITLE&r=CODE, or the page itself), or nil for any other URL. Any app or web
+// page can open one, so the room is only set once the player agrees to the launch.
 NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out);
 // Sentences for the launch prompt: the room the invite uses for this launch only, who sees the
 // player's IP address, that it needs Online Features, and, when |restarts| is set, that the
