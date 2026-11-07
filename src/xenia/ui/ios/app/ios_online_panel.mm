@@ -9,8 +9,11 @@
 
 #import "xenia/ui/ios/app/ios_online_panel.h"
 
+#import <LinkPresentation/LinkPresentation.h>
+
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
+#import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
@@ -68,6 +71,15 @@ UIColor* AvatarColor(NSString* name) {
     hash = hash * 31 + [name characterAtIndex:i];
   }
   return HexColor(kPalette[hash % (sizeof(kPalette) / sizeof(kPalette[0]))]);
+}
+
+// A code letter by letter, so VoiceOver doesn't read it as a word.
+NSString* SpokenCode(NSString* code) {
+  NSMutableArray<NSString*>* letters = [NSMutableArray array];
+  for (NSUInteger i = 0; i < code.length; ++i) {
+    [letters addObject:[code substringWithRange:NSMakeRange(i, 1)]];
+  }
+  return [letters componentsJoinedByString:@" "];
 }
 
 // System blue, the colour of an invite and of "back".
@@ -660,6 +672,150 @@ NSString* GamertagFor(uint64_t xuid) {
 
 @end
 
+#pragma mark - Friend link, shared
+
+// Messages, Mail, AirDrop and Copy take the text and the link apart, and show the link's preview.
+// Other apps' share extensions (Discord, say) often keep only one of two items, so they get
+// both in one text.
+static BOOL XeniaShareKeepsItemsApart(UIActivityType type) {
+  return [type isEqualToString:UIActivityTypeMessage] || [type isEqualToString:UIActivityTypeMail] ||
+         [type isEqualToString:UIActivityTypeAirDrop] ||
+         [type isEqualToString:UIActivityTypeCopyToPasteboard];
+}
+
+// The text in the share sheet; with the link in it for apps that keep one item.
+@interface XeniaShareTextItem : NSObject <UIActivityItemSource>
+- (instancetype)initWithText:(NSString*)text url:(NSURL*)url;
+@end
+
+@implementation XeniaShareTextItem {
+  NSString* _text;
+  NSURL* _url;
+}
+
+- (instancetype)initWithText:(NSString*)text url:(NSURL*)url {
+  if ((self = [super init])) {
+    _text = [text copy];
+    _url = [url retain];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [_text release];
+  [_url release];
+  [super dealloc];
+}
+
+- (id)activityViewControllerPlaceholderItem:(UIActivityViewController* __unused)controller {
+  return _text;
+}
+
+- (id)activityViewController:(UIActivityViewController* __unused)controller
+         itemForActivityType:(UIActivityType)type {
+  if (!_url || XeniaShareKeepsItemsApart(type)) {
+    return _text;
+  }
+  return [NSString stringWithFormat:@"%@\n%@", _text, _url.absoluteString];
+}
+
+@end
+
+// A link, for the apps that keep it apart from the text (in the text for the others).
+@interface XeniaShareURLItem : NSObject <UIActivityItemSource>
+- (instancetype)initWithURL:(NSURL*)url;
+@end
+
+@implementation XeniaShareURLItem {
+  NSURL* _url;
+}
+
+- (instancetype)initWithURL:(NSURL*)url {
+  if ((self = [super init])) {
+    _url = [url retain];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [_url release];
+  [super dealloc];
+}
+
+- (id)activityViewControllerPlaceholderItem:(UIActivityViewController* __unused)controller {
+  return _url;
+}
+
+- (id)activityViewController:(UIActivityViewController* __unused)controller
+         itemForActivityType:(UIActivityType)type {
+  return XeniaShareKeepsItemsApart(type) ? _url : nil;
+}
+
+@end
+
+// The link in the share sheet, with a title and the QR code as its preview (not a bare URL).
+@interface XeniaFriendLinkItem : NSObject <UIActivityItemSource>
+@property(nonatomic, readonly) NSURL* url;
+- (instancetype)initWithCode:(NSString*)code;
+@end
+
+@implementation XeniaFriendLinkItem {
+  NSString* _code;
+  NSURL* _url;
+}
+
+- (instancetype)initWithCode:(NSString*)code {
+  if ((self = [super init])) {
+    _code = [code copy];
+    _url = [[NSURL URLWithString:xe_ios_friend_link(code)] retain];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [_code release];
+  [_url release];
+  [super dealloc];
+}
+
+- (id)activityViewControllerPlaceholderItem:(UIActivityViewController* __unused)controller {
+  return _url;
+}
+
+- (id)activityViewController:(UIActivityViewController* __unused)controller
+         itemForActivityType:(UIActivityType)type {
+  // In the text for the others.
+  return XeniaShareKeepsItemsApart(type) ? _url : nil;
+}
+
+- (NSURL*)url {
+  return _url;
+}
+
+- (LPLinkMetadata*)activityViewControllerLinkMetadata:
+    (UIActivityViewController* __unused)controller {
+  LPLinkMetadata* metadata = [[[LPLinkMetadata alloc] init] autorelease];
+  metadata.originalURL = _url;
+  metadata.URL = _url;
+  metadata.title = [NSString
+      stringWithFormat:NSLocalizedString(@"Add me as a friend · %@",
+                                         @"Share sheet title; %@ is the user's friend code"),
+                       xe_ios_format_friend_code(_code)];
+  // The QR code on white, so the preview is something to scan as well as a link.
+  UIImage* qr = xe_ios_qr_image(_url.absoluteString, 120);
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(144, 144)] autorelease];
+  UIImage* tile = [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused c) {
+    [[UIColor whiteColor] setFill];
+    UIRectFill(CGRectMake(0, 0, 144, 144));
+    [qr drawInRect:CGRectMake(12, 12, 120, 120)];
+  }];
+  metadata.iconProvider = [[[NSItemProvider alloc] initWithObject:tile] autorelease];
+  return metadata;
+}
+
+@end
+
 #pragma mark - Online panel
 
 typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
@@ -673,6 +829,10 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
 
 @implementation XeniaIOSOnlinePanel {
   UIStackView* _header;
+  NSLayoutConstraint* _headerTop;
+  NSLayoutConstraint* _headerLeading;
+  NSLayoutConstraint* _headerTrailing;
+  NSLayoutConstraint* _stackBottom;
   UIScrollView* _scroll;
   UIStackView* _stack;
   NSLayoutConstraint* _fitHeight;
@@ -680,6 +840,9 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   UITextField* _codeField;
   UITextField* _searchField;
   NSString* _query;
+  // Under Add Friend's field: what happened to the last request (sent, or why the lobby said no).
+  NSString* _addStatus;
+  BOOL _addStatusFailed;
   XeniaOnlinePage _page;
   XeniaOnlinePage _cardReturn;
   BOOL _leaveArmed;
@@ -689,6 +852,9 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   void (^_closeHandler)(void);
   BOOL _embedded;
   BOOL _fitsContent;
+  // Start a Party was tapped: the party arrives from the server a moment later, and its page
+  // opens then.
+  BOOL _openPartyWhenReady;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -731,17 +897,23 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
     _fitHeight = [[_scroll.heightAnchor constraintEqualToAnchor:_stack.heightAnchor
                                                        constant:12.0] retain];
     _fitHeight.priority = UILayoutPriorityDefaultHigh;
+    _headerTop = [[_header.topAnchor constraintEqualToAnchor:self.topAnchor] retain];
+    _headerLeading = [[_header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor] retain];
+    _headerTrailing = [[_header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor] retain];
+    _stackBottom =
+        [[_stack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor]
+            retain];
+    [self updateCardInsets];
     [NSLayoutConstraint activateConstraints:@[
-      [_header.topAnchor constraintEqualToAnchor:self.topAnchor constant:14],
-      [_header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:20],
-      [_header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
+      _headerTop,
+      _headerLeading,
+      _headerTrailing,
       [_scroll.topAnchor constraintEqualToAnchor:_header.bottomAnchor constant:6],
       [_scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
       [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
       [_scroll.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
       [_stack.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor],
-      [_stack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor
-                                          constant:-12],
+      _stackBottom,
       [_stack.leadingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.leadingAnchor
                                            constant:16],
       [_stack.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor
@@ -752,6 +924,10 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
                                              selector:@selector(socialChanged:)
                                                  name:XeniaLiveSocialDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(requestFailed:)
+                                                 name:XeniaLiveSocialRequestFailedNotification
+                                               object:nil];
     [self reload];
   }
   return self;
@@ -760,6 +936,10 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [_header release];
+  [_headerTop release];
+  [_headerLeading release];
+  [_headerTrailing release];
+  [_stackBottom release];
   [_scroll release];
   [_stack release];
   [_fitHeight release];
@@ -767,6 +947,7 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   [_codeField release];
   [_searchField release];
   [_query release];
+  [_addStatus release];
   [_acceptInviteHandler release];
   [_joinFriendHandler release];
   [_allFriendsHandler release];
@@ -799,9 +980,22 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   return _embedded;
 }
 
+// Embedded, the panel is a glass card over the library: its title and buttons sit where a glass
+// card's bar puts them (Profiles, Public Games), and its last row 16 above the card's edge.
+// Floating beside the game menu it keeps its own.
+- (void)updateCardInsets {
+  _headerTop.constant = _embedded ? 10.0 : 14.0;
+  _headerLeading.constant = _embedded ? 16.0 : 20.0;
+  _headerTrailing.constant = _embedded ? -16.0 : -14.0;
+  const CGFloat bottom = _embedded ? 16.0 : 12.0;
+  _stackBottom.constant = -bottom;
+  _fitHeight.constant = bottom;
+}
+
 // In a sheet the sheet is the window: drop the floating chrome and let the page fill it.
 - (void)setEmbedded:(BOOL)embedded {
   _embedded = embedded;
+  [self updateCardInsets];
   self.layer.cornerRadius = embedded ? 0.0 : kPanelRadius;
   self.layer.borderWidth = embedded ? 0.0 : 1.0;
   self.layer.shadowOpacity = embedded ? 0.0f : 0.14f;
@@ -829,7 +1023,32 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       _searchField.isFirstResponder) {
     return;
   }
+  if (_openPartyWhenReady && [XeniaLiveSocial shared].partyMembers.count) {
+    _openPartyWhenReady = NO;
+    [self showParty];
+    return;
+  }
   [self reload];
+}
+
+- (void)requestFailed:(NSNotification*)note {
+  NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
+  if (_page != XeniaOnlinePageAdd || !_addStatus || !message.length) {
+    return;
+  }
+  [self setAddStatus:message failed:YES];
+}
+
+- (void)setAddStatus:(NSString*)status failed:(BOOL)failed {
+  [_addStatus autorelease];
+  _addStatus = [status copy];
+  _addStatusFailed = failed;
+  if (_page == XeniaOnlinePageAdd) {
+    [self reload];
+  }
+  if (status.length) {
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, status);
+  }
 }
 
 - (void)clear {
@@ -851,6 +1070,9 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   _card = nil;
   _page = page;
   _leaveArmed = NO;
+  if (page != XeniaOnlinePageParty) {
+    _openPartyWhenReady = NO;
+  }
   [self reload];
   [_scroll setContentOffset:CGPointZero animated:NO];
   UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, _header);
@@ -883,6 +1105,8 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
 }
 
 - (void)showAdd {
+  [_addStatus release];
+  _addStatus = nil;
   [self goTo:XeniaOnlinePageAdd];
 }
 
@@ -997,7 +1221,8 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   UIStackView* row = [[[UIStackView alloc] initWithArrangedSubviews:items] autorelease];
   row.axis = UILayoutConstraintAxisHorizontal;
   row.alignment = UIStackViewAlignmentCenter;
-  row.spacing = 8.0;
+  // A glass card's bar spaces its buttons 12 apart.
+  row.spacing = _embedded ? 12.0 : 8.0;
   [row.heightAnchor constraintGreaterThanOrEqualToConstant:36.0].active = YES;
   return row;
 }
@@ -1224,7 +1449,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     } else {
       row = Row(RowSymbol(@"person.2"), NSLocalizedString(@"Start a Party", @"Online panel row"),
                 nil, NO, @[ Chevron() ], ^{
-                  [[XeniaLiveSocial shared] createParty];
+                  unsafe_self->_openPartyWhenReady = [[XeniaLiveSocial shared] createParty];
                   [unsafe_self showParty];
                 });
     }
@@ -1431,10 +1656,13 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   if (rows.count) {
     [_stack addArrangedSubview:Group(rows, nil)];
   } else {
-    [_stack addArrangedSubview:[self caption:NSLocalizedString(@"No friends are online to "
-                                                               @"invite.",
-                                                               @"Online panel: nobody to invite")
-                                      center:YES]];
+    // The same empty state as the friends list, not a bare line under the title.
+    [_stack addArrangedSubview:EmptyState(@"person.2",
+                                          NSLocalizedString(@"No friends online",
+                                                            @"Online panel: empty state"),
+                                          NSLocalizedString(@"Friends show up here to invite "
+                                                            @"when they come online.",
+                                                            @"Online panel: nobody to invite"))];
   }
 }
 
@@ -1448,14 +1676,34 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                                                     @"Online panel: add-friend "
                                                                     @"page")]];
 
-  // Your own code, to read out or copy.
+  // Your own code: a QR code to scan across the room, the code to read out, and a link to send.
   if (social.friendCode.length) {
-    NSString* formatted = xe_ios_format_friend_code(social.friendCode);
-    UILabel* mine_title = [self caption:NSLocalizedString(@"Your code", @"Online panel")
-                                 center:YES];
+    NSString* code = social.friendCode;
+    NSString* formatted = xe_ios_format_friend_code(code);
+    UIImageView* qr =
+        [[[UIImageView alloc] initWithImage:xe_ios_qr_image(xe_ios_friend_link(code), 132)]
+            autorelease];
+    qr.contentMode = UIViewContentModeCenter;
+    qr.backgroundColor = [UIColor whiteColor];
+    qr.layer.cornerRadius = 18.0;
+    qr.layer.cornerCurve = kCACornerCurveContinuous;
+    qr.translatesAutoresizingMaskIntoConstraints = NO;
+    [qr.widthAnchor constraintEqualToConstant:156.0].active = YES;
+    [qr.heightAnchor constraintEqualToConstant:156.0].active = YES;
+    qr.isAccessibilityElement = YES;
+    qr.accessibilityLabel = NSLocalizedString(@"Your friend QR code", @"Online panel: QR code");
     UILabel* mine = NewLabel(formatted, UIFontTextStyleTitle2, 24.0, UIFontWeightBold,
                              [XeniaTheme textPrimary]);
+    mine.font = [UIFont monospacedSystemFontOfSize:S(24.0) weight:UIFontWeightBold];
     mine.textAlignment = NSTextAlignmentCenter;
+    mine.accessibilityLabel =
+        [NSString stringWithFormat:NSLocalizedString(@"Your friend code, %@",
+                                                     @"Online panel: VoiceOver; %@ is the code"),
+                                   SpokenCode(code)];
+    UIButton* share = Capsule(NSLocalizedString(@"Share…", @"Online panel: share your friend link"),
+                              @"square.and.arrow.up", YES, NO, ^(UIButton* sender) {
+                                [unsafe_self shareFriendCode:code from:sender];
+                              });
     UIButton* copy = Capsule(NSLocalizedString(@"Copy", @"Online panel: copy your friend code"),
                              @"doc.on.doc", NO, NO, ^(UIButton* sender) {
                                [UIPasteboard generalPasteboard].string = formatted;
@@ -1465,12 +1713,18 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                config.image = [UIImage systemImageNamed:@"checkmark"];
                                sender.configuration = config;
                              });
+    UIStackView* buttons =
+        [[[UIStackView alloc] initWithArrangedSubviews:@[ share, copy ]] autorelease];
+    buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.spacing = 8.0;
     UIStackView* card =
-        [[[UIStackView alloc] initWithArrangedSubviews:@[ mine_title, mine, copy ]] autorelease];
+        [[[UIStackView alloc] initWithArrangedSubviews:@[ qr, mine, buttons ]] autorelease];
     card.axis = UILayoutConstraintAxisVertical;
     card.alignment = UIStackViewAlignmentCenter;
-    card.spacing = 6.0;
-    card.layoutMargins = UIEdgeInsetsMake(12, 12, 12, 12);
+    card.spacing = 10.0;
+    [card setCustomSpacing:14.0 afterView:qr];
+    [card setCustomSpacing:12.0 afterView:mine];
+    card.layoutMargins = UIEdgeInsetsMake(18, 12, 16, 12);
     card.layoutMarginsRelativeArrangement = YES;
     [_stack addArrangedSubview:Group(@[ card ], nil)];
   }
@@ -1499,12 +1753,30 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   }
   UIButton* add = Capsule(NSLocalizedString(@"Add", @"Online panel: add a friend by code"), nil,
                           YES, NO, ^(UIButton* __unused b) { [unsafe_self addFriendFromField]; });
+  UIButton* scan = Capsule(nil, @"qrcode.viewfinder", NO, NO,
+                           ^(UIButton* __unused b) { [unsafe_self scanFriendCode]; });
+  scan.accessibilityLabel =
+      NSLocalizedString(@"Scan a Friend’s Code", @"Online panel: camera button");
+  [scan.heightAnchor constraintEqualToConstant:44.0].active = YES;
+  [scan.widthAnchor constraintEqualToConstant:44.0].active = YES;
   UIStackView* add_row =
-      [[[UIStackView alloc] initWithArrangedSubviews:@[ _codeField, add ]] autorelease];
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ _codeField, scan, add ]] autorelease];
   add_row.axis = UILayoutConstraintAxisHorizontal;
   add_row.alignment = UIStackViewAlignmentCenter;
   add_row.spacing = 8.0;
   [_stack addArrangedSubview:add_row];
+  if (_addStatus.length) {
+    UILabel* status = [self caption:_addStatus center:NO];
+    if (_addStatusFailed) {
+      status.textColor = [UIColor systemRedColor];
+    }
+    // In line with the field's text, not its edge.
+    UIStackView* inset = [[[UIStackView alloc] initWithArrangedSubviews:@[ status ]] autorelease];
+    inset.layoutMargins = UIEdgeInsetsMake(0, 14, 0, 14);
+    inset.layoutMarginsRelativeArrangement = YES;
+    [_stack addArrangedSubview:inset];
+    [_stack setCustomSpacing:6.0 afterView:add_row];
+  }
 
   NSArray<XeniaLiveFriend*>* incoming = social.incomingRequests;
   if (incoming.count) {
@@ -1556,17 +1828,23 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     _searchField.returnKeyType = UIReturnKeySearch;
     _searchField.clearButtonMode = UITextFieldViewModeWhileEditing;
     _searchField.textColor = [XeniaTheme textPrimary];
-    _searchField.tintColor = InviteBlue();
+    // Blue is for invites; the cursor and Cancel take the accent, like every other field.
+    _searchField.tintColor = [XeniaTheme accent];
     _searchField.font = xe_scaled_system_font(UIFontTextStyleBody, 16.0, UIFontWeightRegular);
     _searchField.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
-    _searchField.layer.cornerRadius = 12.0;
+    _searchField.layer.cornerRadius = S(18.0);
     _searchField.layer.cornerCurve = kCACornerCurveContinuous;
     UIImageView* glass = [[[UIImageView alloc]
         initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]] autorelease];
     glass.tintColor = [XeniaTheme textSecondary];
     glass.contentMode = UIViewContentModeCenter;
-    glass.frame = CGRectMake(0, 0, 34, 36);
-    _searchField.leftView = glass;
+    // In a box, so the field keeps the magnifier clear of its round end and the text where the
+    // library's search field has it.
+    UIView* glass_box = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, 40, 36)] autorelease];
+    glass.frame = CGRectMake(10, 0, 24, 36);
+    [glass_box addSubview:glass];
+    [glass_box.widthAnchor constraintEqualToConstant:40].active = YES;
+    _searchField.leftView = glass_box;
     _searchField.leftViewMode = UITextFieldViewModeAlways;
     [_searchField.heightAnchor constraintEqualToConstant:S(36.0)].active = YES;
     [_searchField addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
@@ -1582,7 +1860,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   UIButton* cancel = [UIButton buttonWithType:UIButtonTypeSystem];
   cancel.translatesAutoresizingMaskIntoConstraints = NO;
   [cancel setTitle:NSLocalizedString(@"Cancel", @"Online panel: leave search") forState:UIControlStateNormal];
-  cancel.tintColor = InviteBlue();
+  cancel.tintColor = [XeniaTheme accent];
   cancel.titleLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 16.0, UIFontWeightRegular);
   [cancel addTarget:self action:@selector(cancelSearch:) forControlEvents:UIControlEventTouchUpInside];
   [cancel setContentHuggingPriority:UILayoutPriorityRequired
@@ -1647,18 +1925,86 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
 }
 
 - (void)addFriendFromField {
-  NSString* code = xe_ios_normalize_friend_code(_codeField.text ?: @"");
+  if (!_codeField.text.length) {
+    return;
+  }
+  NSString* code = xe_ios_normalize_friend_code(_codeField.text);
   if (!code) {
-    _codeField.text = @"";
-    _codeField.placeholder =
-        NSLocalizedString(@"That code isn't right", @"Online panel: add-friend field, bad code");
+    [self setAddStatus:NSLocalizedString(@"A friend code is 8 letters and numbers.",
+                                         @"Online panel: add-friend, bad code")
+                failed:YES];
+    return;
+  }
+  if ([code isEqualToString:[XeniaLiveSocial shared].friendCode]) {
+    [self setAddStatus:NSLocalizedString(@"That’s your own code.",
+                                         @"Online panel: add-friend, own code")
+                failed:YES];
     return;
   }
   [[XeniaLiveSocial shared] addFriendWithCode:code];
   _codeField.text = @"";
-  _codeField.placeholder =
-      NSLocalizedString(@"Request sent", @"Online panel: add-friend field after sending");
   [_codeField resignFirstResponder];
+  [self setAddStatus:[NSString stringWithFormat:NSLocalizedString(
+                                                    @"Request sent to %@.",
+                                                    @"Online panel: add-friend; %@ is the code"),
+                                                xe_ios_format_friend_code(code)]
+              failed:NO];
+}
+
+// The controller showing this panel, to present the share sheet and the camera from.
+- (UIViewController*)owningController {
+  for (UIResponder* r = self.nextResponder; r; r = r.nextResponder) {
+    if ([r isKindOfClass:[UIViewController class]]) {
+      return (UIViewController*)r;
+    }
+  }
+  return nil;
+}
+
+- (void)shareFriendCode:(NSString*)code from:(UIView*)source {
+  UIViewController* owner = [self owningController];
+  if (!owner) {
+    return;
+  }
+  // The code in words for anyone without XeniOS at hand, and the link that opens Add Friend.
+  NSString* text = [NSString
+      stringWithFormat:NSLocalizedString(@"Add me as a friend in XeniOS: %@",
+                                         @"Shared text; %@ is the user's friend code"),
+                       xe_ios_format_friend_code(code)];
+  XeniaFriendLinkItem* link = [[[XeniaFriendLinkItem alloc] initWithCode:code] autorelease];
+  XeniaShareTextItem* words = [[[XeniaShareTextItem alloc] initWithText:text
+                                                                    url:link.url] autorelease];
+  UIActivityViewController* share =
+      [[[UIActivityViewController alloc] initWithActivityItems:@[ words, link ]
+                                         applicationActivities:nil] autorelease];
+  share.popoverPresentationController.sourceView = source;
+  share.popoverPresentationController.sourceRect = source.bounds;
+  // On iPad the owner is the library, already presenting the Friends card: present on top.
+  while (owner.presentedViewController && !owner.presentedViewController.isBeingDismissed) {
+    owner = owner.presentedViewController;
+  }
+  [owner presentViewController:share animated:YES completion:nil];
+}
+
+- (void)scanFriendCode {
+  UIViewController* owner = [self owningController];
+  if (!owner) {
+    return;
+  }
+  [_codeField resignFirstResponder];
+  __unsafe_unretained XeniaIOSOnlinePanel* unsafe_self = self;
+  xe_ios_present_code_scanner(
+      owner, NSLocalizedString(@"Scan a Friend’s Code", @"Scan page title"),
+      NSLocalizedString(@"Point at the code in their Add Friend", @"Scan page: camera hint"),
+      xe_ios_friend_link(@"K7Q2M9XD"), ^BOOL(NSString* text) {
+        NSString* scanned = xe_ios_friend_code_from_text(text);
+        if (!scanned || ![text.lowercaseString hasPrefix:@"xenios://friend"]) {
+          return NO;
+        }
+        unsafe_self->_codeField.text = scanned;
+        [unsafe_self addFriendFromField];
+        return YES;
+      });
 }
 
 - (uint32_t)runningTitle {
@@ -1914,13 +2260,18 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   XEInstallGlassCardSurface(_panel);
   [self.view addSubview:_panel];
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
+  const CGFloat inset = [XeniaTheme glassCardInset];
+  // As wide as the other cards: the screen less its insets on a phone, at most
+  // kXEGlassCardMaxWidth and centred on iPad.
+  NSLayoutConstraint* widest = [_panel.widthAnchor constraintEqualToConstant:kXEGlassCardMaxWidth];
+  widest.priority = UILayoutPriorityDefaultHigh;
   [NSLayoutConstraint activateConstraints:@[
     [_panel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:4],
     [_panel.bottomAnchor constraintLessThanOrEqualToAnchor:safe.bottomAnchor constant:-4],
-    [_panel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor
-                                         constant:[XeniaTheme glassCardInset]],
-    [_panel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor
-                                          constant:-[XeniaTheme glassCardInset]],
+    [_panel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
+    [_panel.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:inset],
+    [_panel.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-inset],
+    widest,
   ]];
   [[XeniaLiveSocial shared] refresh];
 }
@@ -2308,6 +2659,14 @@ NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
   if (!self.isViewLoaded) {
     return;
   }
+  [self rebuildList];
+  // The list arrives after the card opens (and changes with the filter): fit the card to it now,
+  // since the scroll view's own layout doesn't reach viewDidLayoutSubviews.
+  [_scroll layoutIfNeeded];
+  XEFitGlassCardToHeight(self, _scroll.contentSize.height);
+}
+
+- (void)rebuildList {
   for (UIView* row in [[_list.arrangedSubviews copy] autorelease]) {
     [_list removeArrangedSubview:row];
     [row removeFromSuperview];
@@ -2474,3 +2833,102 @@ NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
 }
 
 @end
+
+// Sends the request; if the lobby turns it down soon after (no such code, a full list), says why
+// in an alert, since no Add Friend page is open to show it.
+static void xe_ios_send_friend_request_reporting_failure(NSString* code,
+                                                         UIViewController* presenter) {
+  __block id observer = nil;
+  void (^stop)(void) = [[^{
+    if (observer) {
+      [[NSNotificationCenter defaultCenter] removeObserver:observer];
+      [observer release];
+      observer = nil;
+    }
+  } copy] autorelease];
+  observer = [[[NSNotificationCenter defaultCenter]
+      addObserverForName:XeniaLiveSocialRequestFailedNotification
+                  object:nil
+                   queue:[NSOperationQueue mainQueue]
+              usingBlock:^(NSNotification* note) {
+                stop();
+                UIAlertController* alert = [UIAlertController
+                    alertControllerWithTitle:NSLocalizedString(@"Couldn’t Send Request",
+                                                               @"Friend link alert title")
+                                     message:note.userInfo[XeniaLiveSocialMessageKey]
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK",
+                                                                                  @"Alert button")
+                                                          style:UIAlertActionStyleCancel
+                                                        handler:nil]];
+                UIViewController* top = presenter.view.window ? presenter : nil;
+                while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+                  top = top.presentedViewController;
+                }
+                [top presentViewController:alert animated:YES completion:nil];
+              }] retain];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), stop);
+  [[XeniaLiveSocial shared] addFriendWithCode:code];
+}
+
+BOOL xe_ios_handle_friend_url(NSURL* url, UIViewController* presenter) {
+  if (![url.scheme.lowercaseString isEqualToString:@"xenios"] ||
+      ![url.host.lowercaseString isEqualToString:@"friend"]) {
+    return NO;
+  }
+  UIViewController* top = presenter;
+  while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+    top = top.presentedViewController;
+  }
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  NSString* code = xe_ios_friend_code_from_text(url.absoluteString);
+  NSString* title = nil;
+  NSString* message = nil;
+  if (!code) {
+    title = NSLocalizedString(@"This Link Doesn’t Work", @"Friend link alert title");
+    message = NSLocalizedString(@"Ask your friend to share their code again.",
+                                @"Friend link alert: malformed code");
+  } else if (social.state != XeniaLiveSocialStateOnline || !social.friendCode.length) {
+    title = NSLocalizedString(@"You’re Not Online", @"Friend link alert title");
+    message = NSLocalizedString(@"Get a Gamertag in Profiles, then open the link again.",
+                                @"Friend link alert: not signed in");
+  } else if ([code isEqualToString:social.friendCode]) {
+    title = NSLocalizedString(@"That’s Your Own Code", @"Friend link alert title");
+    message = NSLocalizedString(@"Send it to a friend so they can add you.",
+                                @"Friend link alert: own code");
+  }
+  UIAlertController* alert = nil;
+  if (title) {
+    alert = [UIAlertController alertControllerWithTitle:title
+                                                message:message
+                                         preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"OK", @"Alert button")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  } else {
+    // Any page can open a xenios:// link, so the player says yes before a request goes out.
+    alert = [UIAlertController
+        alertControllerWithTitle:NSLocalizedString(@"Add Friend?", @"Friend link alert title")
+                         message:[NSString stringWithFormat:
+                                               NSLocalizedString(
+                                                   @"Send a friend request to the player with "
+                                                   @"code %@.",
+                                                   @"Friend link alert; %@ is their friend code"),
+                                               xe_ios_format_friend_code(code)]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    UIAlertAction* send = [UIAlertAction
+        actionWithTitle:NSLocalizedString(@"Send Request", @"Friend link alert button")
+                  style:UIAlertActionStyleDefault
+                handler:^(UIAlertAction* __unused a) {
+                  xe_ios_send_friend_request_reporting_failure(code, top);
+                }];
+    [alert addAction:send];
+    alert.preferredAction = send;
+  }
+  [top presentViewController:alert animated:YES completion:nil];
+  return YES;
+}

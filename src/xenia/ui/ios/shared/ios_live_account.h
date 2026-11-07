@@ -87,7 +87,9 @@ typedef NS_ENUM(NSInteger, XeniaLiveLinkStatus) {
 @interface XeniaLiveExportOptions : NSObject
 @property(nonatomic) BOOL saves;
 @property(nonatomic) BOOL achievements;
-@property(nonatomic) BOOL settings;
+@property(nonatomic) BOOL settings;  // Controls and the profile's own settings.
+// Per-game settings (graphics, patches). Tuned for each device, so the sheet leaves it off.
+@property(nonatomic) BOOL gameSettings;
 @end
 
 // ---- Saves on this device, between profiles -----------------------------------------------

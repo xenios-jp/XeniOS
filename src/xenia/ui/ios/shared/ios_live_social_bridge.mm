@@ -1013,3 +1013,26 @@ NSString* xe_ios_normalize_friend_code(NSString* text) {
   }
   return code.length == 8 ? code : nil;
 }
+
+NSString* xe_ios_friend_link(NSString* code) {
+  return [@"xenios://friend?c=" stringByAppendingString:xe_ios_normalize_friend_code(code) ?: @""];
+}
+
+NSString* xe_ios_friend_code_from_text(NSString* text) {
+  NSString* trimmed =
+      [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSURLComponents* components = [NSURLComponents componentsWithString:trimmed];
+  if (components.scheme) {
+    if (![components.scheme.lowercaseString isEqualToString:@"xenios"] ||
+        ![components.host.lowercaseString isEqualToString:@"friend"]) {
+      return nil;
+    }
+    for (NSURLQueryItem* item in components.queryItems) {
+      if ([item.name isEqualToString:@"c"]) {
+        return xe_ios_normalize_friend_code(item.value ?: @"");
+      }
+    }
+    return nil;
+  }
+  return xe_ios_normalize_friend_code(trimmed);
+}

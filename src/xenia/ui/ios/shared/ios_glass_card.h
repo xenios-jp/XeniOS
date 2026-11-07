@@ -15,6 +15,10 @@
 // The glass card (docs/ios_design_language.md, rule 2): short things opened from a control,
 // such as Profiles and Public Games, float over the dimmed screen instead of covering it.
 
+// The card's widest: enough for a list on iPad; on a phone the card spans the screen less its
+// insets. Centred in the safe area when narrower than it.
+constexpr CGFloat kXEGlassCardMaxWidth = 440.0;
+
 // Makes |navigation| present as the card: inset from the screen edges under the status bar,
 // radius 34, Liquid Glass, as tall as the page it shows (up to the screen), with the root page's
 // title on the leading side of its bar. A tap beside the card closes it. Call before presenting

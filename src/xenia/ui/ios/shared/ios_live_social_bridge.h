@@ -197,5 +197,9 @@ NSString* xe_ios_format_friend_code(NSString* code);
 // What the player typed, uppercased without spaces or dashes; nil when it
 // can't be a code.
 NSString* xe_ios_normalize_friend_code(NSString* text);
+// "xenios://friend?c=K7Q2M9XD": what Add Friend's QR code and shared link hold.
+NSString* xe_ios_friend_link(NSString* code);
+// The code in a friend link, or in text that is just a code; nil otherwise.
+NSString* xe_ios_friend_code_from_text(NSString* text);
 
 #endif  // XENIA_UI_IOS_SHARED_IOS_LIVE_SOCIAL_BRIDGE_H_

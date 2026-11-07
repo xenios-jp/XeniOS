@@ -85,14 +85,9 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 @property(nonatomic, readonly) BOOL headerOverArt;
 @property(nonatomic, copy) void (^headerOverArtChangedHandler)(void);
 @property(nonatomic, copy) void (^gameLaunchedHandler)(NSUInteger gameIndex);
-@property(nonatomic, copy) void (^copyLaunchURLHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^gameSettingsHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^touchLayoutHandler)(NSUInteger gameIndex);
 @property(nonatomic, copy) void (^compatibilityHandler)(NSUInteger gameIndex);
-@property(nonatomic, copy) void (^manageContentHandler)(NSUInteger gameIndex);
-@property(nonatomic, copy) void (^discSelectionHandler)(NSUInteger gameIndex);
-@property(nonatomic, copy) void (^patchesHandler)(NSUInteger gameIndex);
-@property(nonatomic, copy) void (^zarConversionHandler)(NSUInteger gameIndex);
 // The notice suggesting the library be converted to ZAR: Convert, and its close button.
 @property(nonatomic, copy) void (^zarSuggestionHandler)(void);
 @property(nonatomic, copy) void (^zarSuggestionDismissHandler)(void);
@@ -169,6 +164,9 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
                           rowsView:(UIView*)rowsView
                           moreMenu:(UIMenu*)moreMenu;
 - (void)hideGameDetailAnimated:(BOOL)animated;
+// The game page's own title, buttons and rows: what fades back while a page is pushed inside
+// it. Its art stays.
+- (NSArray<UIView*>*)gameDetailForegroundViews;
 
 @end
 

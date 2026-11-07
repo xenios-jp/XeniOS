@@ -155,6 +155,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_art_wash.mm
   shared/ios_glass_card.h
   shared/ios_glass_card.mm
+  shared/ios_page_push.h
+  shared/ios_page_push.mm
   shared/ios_edge_adapter.h
   shared/ios_edge_adapter.cc
   shared/ios_system_utils.h
@@ -250,6 +252,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework GameController"
   "-framework ImageIO"
   "-framework IOSurface"
+  "-framework LinkPresentation"
   "-framework LocalAuthentication"
   "-framework Metal"
   "-framework MetalKit"
