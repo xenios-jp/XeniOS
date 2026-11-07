@@ -151,6 +151,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   // A player's gamer card (user index, the player's online XUID, 0 for the user's own); returns
   // once it's closed.
   using GamerCardUIPromptCallback = std::function<bool(uint32_t, uint64_t)>;
+  // The Online panel (friends, invites, the party) for a user; returns once it's closed.
+  using OnlinePanelPromptCallback = std::function<bool(uint32_t)>;
   using AchievementNotificationCallback =
       std::function<bool(const AchievementNotificationPayload&)>;
   using PatchFilesListCallback = std::function<std::vector<IOSPatchFileSummary>(uint32_t)>;
@@ -327,6 +329,16 @@ class IOSWindowedAppContext final : public WindowedAppContext {
       return false;
     }
     return gamer_card_ui_prompt_callback_(user_index, xuid);
+  }
+
+  void set_online_panel_prompt_callback(OnlinePanelPromptCallback callback) {
+    online_panel_prompt_callback_ = std::move(callback);
+  }
+  bool PromptOnlinePanel(uint32_t user_index) const {
+    if (!online_panel_prompt_callback_) {
+      return false;
+    }
+    return online_panel_prompt_callback_(user_index);
   }
 
   void set_achievement_notification_callback(AchievementNotificationCallback callback) {
@@ -569,6 +581,7 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   AchievementsSnapshotCallback achievements_snapshot_callback_;
   AchievementsUIPromptCallback achievements_ui_prompt_callback_;
   GamerCardUIPromptCallback gamer_card_ui_prompt_callback_;
+  OnlinePanelPromptCallback online_panel_prompt_callback_;
   AchievementNotificationCallback achievement_notification_callback_;
   PatchFilesListCallback patch_files_list_callback_;
   PatchDiscoverySummaryCallback patch_discovery_summary_callback_;

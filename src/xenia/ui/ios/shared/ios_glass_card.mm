@@ -89,7 +89,9 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
   const CGFloat inset = [XeniaTheme glassCardInset];
   const CGFloat available_width = bounds.size.width - safe.left - safe.right - 2.0 * inset;
   const CGFloat width = MIN(available_width, kXEGlassCardMaxWidth);
-  const CGFloat top = safe.top + 4.0;
+  // Just under the status bar; a phone in landscape has none, so the card keeps its inset from
+  // the screen's top edge as from the others.
+  const CGFloat top = MAX(safe.top + 4.0, inset);
   const CGFloat max_height = bounds.size.height - top - MAX(safe.bottom, inset);
   CGFloat height = max_height;
   UINavigationController* navigation = [self navigation];

@@ -35,6 +35,9 @@ struct XeniaIOSLiveProfile {
 struct XeniaIOSLiveSocialHost {
   // The profile signed in to the first slot, if any.
   std::function<std::optional<XeniaIOSLiveProfile>()> active_profile;
+  // The profiles can't be read right now (a game is starting or stopping, so the kernel and its
+  // profiles are being rebuilt). The open connection stays as it is until they're back.
+  std::function<bool()> profiles_busy;
   // Turns online play on for the profile (it gets an online XUID).
   std::function<bool(uint64_t xuid)> enable_online;
   // The service moved the account to another online XUID: keep it.
@@ -106,6 +109,22 @@ typedef NS_ENUM(NSInteger, XeniaLiveFriendState) {
 @property(nonatomic, readonly) BOOL me;
 @end
 
+typedef NS_ENUM(NSInteger, XeniaLiveGamePlayerRelation) {
+  XeniaLiveGamePlayerRelationNone = 0,
+  XeniaLiveGamePlayerRelationFriend,
+  XeniaLiveGamePlayerRelationRequestSent,      // This profile asked them.
+  XeniaLiveGamePlayerRelationRequestReceived,  // They asked this profile.
+};
+
+// Someone else in the game this app is running.
+@interface XeniaLiveGamePlayer : NSObject
+@property(nonatomic, readonly) uint64_t xuid;
+// Nil while this profile doesn't know it: a stranger, until a friend request or the party
+// names them.
+@property(nonatomic, readonly, copy) NSString* gamertag;
+@property(nonatomic, readonly) XeniaLiveGamePlayerRelation relation;
+@end
+
 // Posted on the main thread when anything a screen shows may have changed:
 // the state, friends, presence or invites.
 extern NSNotificationName const XeniaLiveSocialDidChangeNotification;
@@ -146,6 +165,9 @@ extern NSString* const XeniaLiveSocialMessageKey;
 
 // The party this profile is in: its members, the leader first; empty when in none.
 @property(nonatomic, readonly) NSArray<XeniaLivePartyMember*>* partyMembers;
+// The other players in the running game with an account on this service: the players the game
+// put in its sessions. Named ones by name, then the rest. Empty at the library or offline.
+@property(nonatomic, readonly) NSArray<XeniaLiveGamePlayer*>* gamePlayers;
 // Whether creating, leaving and inviting to a party can be asked now (signed
 // in).
 @property(nonatomic, readonly) BOOL partyActionsAvailable;
@@ -158,6 +180,8 @@ extern NSString* const XeniaLiveSocialMessageKey;
 
 - (void)addFriendWithCode:(NSString*)code;
 - (void)acceptFriendRequest:(uint64_t)xuid;
+// Asks a player to be friends (someone in the game), or accepts their request.
+- (void)sendFriendRequestTo:(uint64_t)xuid;
 - (void)declineFriendRequest:(uint64_t)xuid;
 // Removes a friend, or cancels a request this profile sent.
 - (void)removeFriend:(uint64_t)xuid;

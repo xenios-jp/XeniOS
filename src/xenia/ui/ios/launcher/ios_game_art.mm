@@ -299,6 +299,11 @@ void xe_fetch_art(NSString* key, NSArray<NSURL*>* urls, NSString* dir, uint32_t 
       if (image) {
         [xe_art_retry_after() removeObjectForKey:key];
         [xe_art_thumbnail_cache() removeObjectForKey:@(title_id)];
+        if (dir == xe_game_art_cache_dir()) {
+          [[NSNotificationCenter defaultCenter]
+              postNotificationName:XeniaGameArtCoverDidArriveNotification
+                            object:@(title_id)];
+        }
       } else {
         // Throttle repeated failed downloads while still allowing
         // periodic retries.
@@ -313,11 +318,24 @@ void xe_fetch_art(NSString* key, NSArray<NSURL*>* urls, NSString* dir, uint32_t 
 
 }  // namespace
 
+NSNotificationName const XeniaGameArtCoverDidArriveNotification =
+    @"XeniaGameArtCoverDidArriveNotification";
+
 UIImage* xe_cached_game_art(uint32_t title_id) {
   if (!title_id) {
     return nil;
   }
   return [UIImage imageWithContentsOfFile:xe_art_path(xe_game_art_cache_dir(), title_id)];
+}
+
+NSString* xe_cached_game_art_path(uint32_t title_id) {
+  if (!title_id) {
+    return nil;
+  }
+  NSString* path = xe_art_path(xe_game_art_cache_dir(), title_id);
+  NSDictionary* attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path
+                                                                              error:nil];
+  return attributes.fileSize > 0 ? path : nil;
 }
 
 UIImage* xe_cached_game_background_art(uint32_t title_id) {

@@ -169,6 +169,21 @@ DECLARE_bool(log_to_stdout);
     dispatch_release(sem);
     return true;
   });
+  app_context_->set_online_panel_prompt_callback([vc](uint32_t) {
+    if ([NSThread isMainThread]) {
+      [vc presentOnlineSheetWithCompletion:nil];
+      return true;
+    }
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [vc presentOnlineSheetWithCompletion:^{
+        dispatch_semaphore_signal(sem);
+      }];
+    });
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    dispatch_release(sem);
+    return true;
+  });
   app_context_->set_achievement_notification_callback(
       [vc](const xe::ui::AchievementNotificationPayload& payload) {
         if (!vc) {

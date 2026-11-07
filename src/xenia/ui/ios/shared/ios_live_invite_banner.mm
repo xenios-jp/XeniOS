@@ -9,6 +9,9 @@
 
 #import "xenia/ui/ios/shared/ios_live_invite_banner.h"
 
+#import <QuartzCore/QuartzCore.h>
+
+#include "xenia/base/logging.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -18,6 +21,11 @@ namespace {
 // Long enough to read and reach for the screen; the invite stays in Friends after.
 constexpr NSTimeInterval kBannerLifetime = 20.0;
 constexpr CGFloat kBannerMaxWidth = 520.0;
+// Over a game the player's thumbs are on the screen: a tap that lands on the
+// banner as it slides in is the game's, not an answer. Its buttons wait this
+// long after it shows (2026-11-07: an invite was accepted 0.7 s after it came,
+// unseen).
+constexpr NSTimeInterval kOverGameArmDelay = 1.2;
 }  // namespace
 
 @implementation XeniaIOSLiveInviteBanner {
@@ -26,6 +34,8 @@ constexpr CGFloat kBannerMaxWidth = 520.0;
   void (^decline_)(XeniaLiveInvite*);
   UIImageView* cover_;
   NSTimer* timer_;
+  // Taps before this (CACurrentMediaTime) are ignored.
+  CFTimeInterval armed_at_;
 }
 
 + (XeniaIOSLiveInviteBanner*)bannerInView:(UIView*)host {
@@ -94,8 +104,8 @@ constexpr CGFloat kBannerMaxWidth = 520.0;
   invite_ = [invite retain];
   accept_ = [accept copy];
   decline_ = [decline copy];
+  armed_at_ = CACurrentMediaTime() + (over_game ? kOverGameArmDelay : 0.0);
   // Dark glass, as the library's header over its art, whatever is under it.
-  (void)over_game;
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   xe_apply_glass_card_chrome(self, NO);
   self.layer.cornerRadius = XeniaRadiusXl;
@@ -302,7 +312,18 @@ constexpr CGFloat kBannerMaxWidth = 520.0;
   [self dismissAnimated:YES];
 }
 
+- (BOOL)armed {
+  if (CACurrentMediaTime() >= armed_at_) {
+    return YES;
+  }
+  XELOGI("iOS: ignored a tap on the invite banner as it appeared");
+  return NO;
+}
+
 - (void)acceptTapped:(id)__unused sender {
+  if (![self armed]) {
+    return;
+  }
   void (^accept)(XeniaLiveInvite*) = [[accept_ retain] autorelease];
   XeniaLiveInvite* invite = [[invite_ retain] autorelease];
   [self dismissAnimated:YES];
@@ -312,6 +333,9 @@ constexpr CGFloat kBannerMaxWidth = 520.0;
 }
 
 - (void)declineTapped:(id)__unused sender {
+  if (![self armed]) {
+    return;
+  }
   void (^decline)(XeniaLiveInvite*) = [[decline_ retain] autorelease];
   XeniaLiveInvite* invite = [[invite_ retain] autorelease];
   [self dismissAnimated:YES];

@@ -245,6 +245,16 @@ X_RESULT ShowGamerCard(uint32_t user_index, uint64_t xuid) {
       0);
 }
 
+X_RESULT ShowOnlinePanel(uint32_t user_index) {
+  XELOGI("iOS XAM: Online panel for user {}", user_index);
+  return DispatchDialog(
+      [=](ui::IOSWindowedAppContext& context) -> X_RESULT {
+        return context.PromptOnlinePanel(user_index) ? X_ERROR_SUCCESS
+                                                     : X_ERROR_CANCELLED;
+      },
+      0);
+}
+
 void Notify(std::string text, uint32_t user_index, uint8_t position) {
   auto* context = GetContext(kernel_state());
   if (!context) {

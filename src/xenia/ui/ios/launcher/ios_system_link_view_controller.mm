@@ -121,11 +121,20 @@ NSString* UnnamedGame(uint32_t title_id) {
 }
 
 // Busiest first, then by title ID.
+// Each title someone plays or has players in its public lobby, by the larger count: a game in a
+// Live session or a private room is played online without being in its public lobby, and the
+// library's tiles already count it as played.
 std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
+  NSMutableDictionary<NSNumber*, NSNumber*>* merged = [NSMutableDictionary dictionary];
+  for (NSDictionary<NSNumber*, NSNumber*>* counts in
+       @[ xe_ios_system_link_online_titles() ?: @{}, xe_ios_system_link_online_playing() ?: @{} ]) {
+    for (NSNumber* title_id in counts) {
+      merged[title_id] = @(std::max(merged[title_id].integerValue, counts[title_id].integerValue));
+    }
+  }
   std::vector<std::pair<uint32_t, NSInteger>> online;
-  NSDictionary<NSNumber*, NSNumber*>* titles = xe_ios_system_link_online_titles();
-  for (NSNumber* title_id in titles) {
-    online.emplace_back(title_id.unsignedIntValue, titles[title_id].integerValue);
+  for (NSNumber* title_id in merged) {
+    online.emplace_back(title_id.unsignedIntValue, merged[title_id].integerValue);
   }
   std::sort(online.begin(), online.end(), [](const auto& a, const auto& b) {
     return a.second != b.second ? a.second > b.second : a.first < b.first;
@@ -379,7 +388,7 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
       break;
     }
     case Row::kNobodyOnline:
-      title = NSLocalizedString(@"Nobody is in a public lobby right now.",
+      title = NSLocalizedString(@"Nobody is playing online right now.",
                                 @"system link view controller: row");
       symbol = @"person.2.slash";
       button = NO;
@@ -1019,7 +1028,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
       break;
     }
     case StatusRow::kNobodyOnline:
-      title = NSLocalizedString(@"Nobody is in a public lobby right now.",
+      title = NSLocalizedString(@"Nobody is playing online right now.",
                                 @"system link view controller: row");
       symbol = @"person.2.slash";
       tint = nil;
