@@ -22,6 +22,12 @@ namespace xe {
 namespace hid {
 namespace keyboard {
 
+// Whether the input_script asked for a screenshot since the last call.
+bool TakeScriptScreenshotRequest();
+
+// How far the input_script file has been read, in bytes.
+int64_t ScriptReadOffset();
+
 class KeyboardInputDriver final : public InputDriver {
  public:
   explicit KeyboardInputDriver(xe::ui::Window* window, size_t window_z_order);
