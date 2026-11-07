@@ -282,6 +282,14 @@ extern NSString* const XeniaLiveSocialSignedOutReasonKey;
 - (void)declineFriendRequest:(uint64_t)xuid;
 // Removes a friend, or cancels a request this profile sent.
 - (void)removeFriend:(uint64_t)xuid;
+// Looks players up by the start of their gamertag (3 or more characters); playersMatching: has
+// them once the service answers.
+- (void)searchPlayers:(NSString*)prefix;
+// The players the last search for |query| found (not this profile, nor blocked players, nor ones
+// who take requests by code only); empty until the service answers that search.
+- (NSArray<XeniaLiveGamePlayer*>*)playersMatching:(NSString*)query;
+// Whether the service has answered a search for |query| (found players or not).
+- (BOOL)searchAnswered:(NSString*)query;
 
 // YES for another account's online XUID while online: the only players a friend request, block
 // or report can name (the service drops the connection over any other).
@@ -334,6 +342,10 @@ extern NSString* const XeniaLiveSocialSignedOutReasonKey;
 - (BOOL)createParty;
 - (BOOL)leaveParty;
 - (BOOL)inviteFriendToParty:(XeniaLiveFriend*)peer;
+// Any player, a friend or not, as from a gamer card: the lobby turns away one who takes friend
+// requests by code only, and drops one from a player they blocked.
+- (BOOL)invitePlayerToRunningGame:(uint64_t)xuid;
+- (BOOL)invitePlayerToParty:(uint64_t)xuid;
 // Joins the party of a party invite (leaving the one this profile is in).
 - (BOOL)acceptPartyInvite:(XeniaLiveInvite*)invite;
 

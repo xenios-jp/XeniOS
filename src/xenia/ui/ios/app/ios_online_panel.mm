@@ -53,9 +53,9 @@ NSString* PartyVoiceText(uint64_t xuid, UIColor** color) {
       return NSLocalizedString(@"Muted", @"Online panel: a party member muted themselves");
     case XeniaPartyVoiceMemberStateUnreachable:
       *color = [XeniaTheme statusWarning];
-      return NSLocalizedString(@"No voice connection",
-                               @"Online panel: no direct path reaches this party member, so "
-                               @"neither hears the other");
+      return NSLocalizedString(@"No voice",
+                               @"Online panel, under a party member's name (keep it short): no "
+                               @"direct path reaches them, so neither hears the other");
     default:
       return nil;
   }
@@ -67,6 +67,11 @@ void ShowPartyVoice(UILabel* label, uint64_t xuid) {
   label.text = text;
   label.textColor = color ?: [XeniaTheme textSecondary];
   label.hidden = text == nil;
+  label.accessibilityLabel =
+      xe_ios_party_voice_member_state(xuid) == XeniaPartyVoiceMemberStateUnreachable
+          ? NSLocalizedString(@"No voice connection",
+                              @"Online panel, VoiceOver: no direct path reaches this party member")
+          : text;
 }
 
 // A small caption over a group of rows.
@@ -716,8 +721,8 @@ UIViewController* PresenterFor(UIView* view) {
   }
   const BOOL blocked = !me && [social isBlocked:_xuid];
   _more.hidden = me || ![social canActOnPlayer:_xuid];
-  _more.menu = _more.hidden ? nil : [self moreMenuBlocked:blocked];
   XeniaLiveFriend* peer = me ? nil : [social friendWithXuid:_xuid];
+  _more.menu = _more.hidden ? nil : [self moreMenuBlocked:blocked friend:peer != nil];
   XeniaLiveFriend* incoming = nil;
   XeniaLiveFriend* outgoing = nil;
   for (XeniaLiveFriend* request in social.incomingRequests) {
@@ -838,13 +843,40 @@ UIViewController* PresenterFor(UIView* view) {
                                    sender.enabled = NO;
                                  })];
     }
+    // Anyone can be invited, as from a gamer card on the console.
+    if ([social canActOnPlayer:xuid] && social.runningGameOnline) {
+      [buttons addObject:Capsule(NSLocalizedString(@"Invite to Game", @"Gamer card button"),
+                                 @"paperplane", NO, YES, ^(UIButton* sender) {
+                                   if ([[XeniaLiveSocial shared] invitePlayerToRunningGame:xuid]) {
+                                     UIButtonConfiguration* config = sender.configuration;
+                                     config.title = NSLocalizedString(
+                                         @"Invited", @"Gamer card button after inviting");
+                                     config.image = [UIImage systemImageNamed:@"checkmark"];
+                                     sender.configuration = config;
+                                     sender.enabled = NO;
+                                   }
+                                 })];
+    }
+    if ([social canActOnPlayer:xuid] && social.partyActionsAvailable && ![self inMyParty]) {
+      [buttons addObject:Capsule(NSLocalizedString(@"Invite to Party", @"Gamer card button"),
+                                 @"person.3", NO, YES, ^(UIButton* sender) {
+                                   if ([[XeniaLiveSocial shared] invitePlayerToParty:xuid]) {
+                                     UIButtonConfiguration* config = sender.configuration;
+                                     config.title = NSLocalizedString(
+                                         @"Invited to Party", @"Gamer card button after inviting");
+                                     config.image = [UIImage systemImageNamed:@"checkmark"];
+                                     sender.configuration = config;
+                                     sender.enabled = NO;
+                                   }
+                                 })];
+    }
   }
   for (UIButton* button in buttons) {
     [_actions addArrangedSubview:button];
   }
 }
 
-- (UIMenu*)moreMenuBlocked:(BOOL)blocked {
+- (UIMenu*)moreMenuBlocked:(BOOL)blocked friend:(BOOL)is_friend {
   __unsafe_unretained XeniaIOSGamerCardView* unsafe_self = self;
   const uint64_t xuid = _xuid;
   UIAction* report = [UIAction
@@ -874,7 +906,52 @@ UIViewController* PresenterFor(UIView* view) {
                               }];
     block.attributes = UIMenuElementAttributesDestructive;
   }
-  return [UIMenu menuWithChildren:@[ report, block ]];
+  if (!is_friend) {
+    return [UIMenu menuWithChildren:@[ report, block ]];
+  }
+  UIAction* remove = [UIAction
+      actionWithTitle:NSLocalizedString(@"Remove Friend…", @"Gamer card menu")
+                image:[UIImage systemImageNamed:@"person.badge.minus"]
+           identifier:nil
+              handler:^(__kindof UIAction* __unused action) {
+                [unsafe_self confirmRemoveFriend];
+              }];
+  remove.attributes = UIMenuElementAttributesDestructive;
+  return [UIMenu menuWithChildren:@[ report, remove, block ]];
+}
+
+// Removing a friend ends it for both of you, so it asks first.
+- (void)confirmRemoveFriend {
+  UIViewController* presenter = PresenterFor(self);
+  if (!presenter) {
+    return;
+  }
+  NSString* name = _gamertag.length
+                       ? _gamertag
+                       : NSLocalizedString(@"this friend", @"Remove friend alert: a friend whose "
+                                                           @"gamertag isn't known");
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(
+                                                              @"Remove %@ as a friend?",
+                                                              @"Remove friend alert title; %@ is "
+                                                              @"a gamertag"),
+                                                          name]
+                       message:NSLocalizedString(@"You’ll each leave the other’s friends list. "
+                                                 @"You can send a new request later.",
+                                                 @"Remove friend alert message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel",
+                                                                    @"Remove friend alert button")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  const uint64_t xuid = _xuid;
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Remove",
+                                                                    @"Remove friend alert button")
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [[XeniaLiveSocial shared] removeFriend:xuid];
+                                          }]];
+  [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 // Blocking ends a friendship and hides them everywhere, so it asks first.
@@ -1367,8 +1444,13 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
 
 - (void)socialChanged:(NSNotification* __unused)note {
   // A gamer card refreshes itself; a field being typed in keeps its text.
-  if (_page == XeniaOnlinePageCard || _codeField.isFirstResponder ||
-      _searchField.isFirstResponder) {
+  if (_page == XeniaOnlinePageCard || _codeField.isFirstResponder) {
+    return;
+  }
+  // While searching, only the results change (players the service found come in later).
+  if (_searchField.isFirstResponder) {
+    [self clear];
+    [self buildSearchResults];
     return;
   }
   if (_openPartyWhenReady && [XeniaLiveSocial shared].partyMembers.count) {
@@ -1823,8 +1905,24 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                       unsafe_self->_acceptInviteHandler(held);
                     }
                   });
-      [rows addObject:PlayerRow(invite.gamertag, detail, NO, NO, YES, @[ decline, join ],
-                                [self cardOpener:invite.fromXuid gamertag:invite.gamertag])];
+      // The buttons go under the name: beside it, in the half-screen panel, they left the
+      // gamertag no room.
+      UIView* who = PlayerRow(invite.gamertag, detail, NO, NO, YES, @[],
+                              [self cardOpener:invite.fromXuid gamertag:invite.gamertag]);
+      [join setContentHuggingPriority:UILayoutPriorityDefaultLow
+                              forAxis:UILayoutConstraintAxisHorizontal];
+      UIStackView* buttons =
+          [[[UIStackView alloc] initWithArrangedSubviews:@[ join, decline ]] autorelease];
+      buttons.axis = UILayoutConstraintAxisHorizontal;
+      buttons.alignment = UIStackViewAlignmentCenter;
+      buttons.spacing = 8.0;
+      UIStackView* invite_row =
+          [[[UIStackView alloc] initWithArrangedSubviews:@[ who, buttons ]] autorelease];
+      invite_row.axis = UILayoutConstraintAxisVertical;
+      invite_row.spacing = 2.0;
+      invite_row.layoutMargins = UIEdgeInsetsMake(0, 0, 12, 0);
+      invite_row.layoutMarginsRelativeArrangement = YES;
+      [rows addObject:invite_row];
     }
     [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Invites",
                                                               @"Online panel section"))];
@@ -1859,8 +1957,17 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   NSMutableArray<XeniaLiveFriend*>* in_game = [NSMutableArray array];
   NSMutableArray<XeniaLiveFriend*>* playing = [NSMutableArray array];
   NSMutableArray<XeniaLiveFriend*>* idle = [NSMutableArray array];
+  NSMutableArray<XeniaLiveFriend*>* offline = [NSMutableArray array];
+  BOOL friend_in_this_game = NO;
   for (XeniaLiveFriend* peer in social.friends) {
-    if (!peer.online || [in_this_game containsObject:@(peer.xuid)]) {
+    if (peer.online && [in_this_game containsObject:@(peer.xuid)]) {
+      friend_in_this_game = YES;
+    }
+    if (!peer.online) {
+      [offline addObject:peer];
+      continue;
+    }
+    if ([in_this_game containsObject:@(peer.xuid)]) {
       continue;
     }
     if ([social friendInYourGame:peer]) {
@@ -1874,17 +1981,32 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   NSMutableArray<XeniaLiveFriend*>* online = [NSMutableArray arrayWithArray:in_game];
   [online addObjectsFromArray:playing];
   [online addObjectsFromArray:idle];
-  [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Online now",
-                                                            @"Online panel section"))];
+  // With the only friends online listed in this game, "no friends online" would be wrong.
   if (online.count) {
+    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Online now",
+                                                              @"Online panel section"))];
     [_stack addArrangedSubview:Group([self rowsForFriends:online], nil)];
-  } else {
+  } else if (!friend_in_this_game) {
+    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Online now",
+                                                              @"Online panel section"))];
     [_stack addArrangedSubview:EmptyState(@"person.2",
                                           NSLocalizedString(@"No friends online",
                                                             @"Online panel: empty state"),
-                                          NSLocalizedString(@"Search to see all your friends, or "
-                                                            @"add one with a code.",
+                                          NSLocalizedString(@"Add a friend with their code.",
                                                             @"Online panel: empty state hint"))];
+  }
+  // Offline friends, by name, as on the console's friends list.
+  if (offline.count) {
+    [offline sortUsingComparator:^NSComparisonResult(XeniaLiveFriend* a, XeniaLiveFriend* b) {
+      return [a.gamertag localizedCaseInsensitiveCompare:b.gamertag];
+    }];
+    [_stack addArrangedSubview:SectionLabel([NSString
+                                   stringWithFormat:NSLocalizedString(@"Offline · %ld",
+                                                                      @"Online panel section: "
+                                                                      @"friends who are offline; "
+                                                                      @"%ld is how many"),
+                                                    long(offline.count)])];
+    [_stack addArrangedSubview:Group([self rowsForFriends:offline], nil)];
   }
 
   // The party, which can be in other games, or a way to start one.
@@ -2087,6 +2209,9 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                [XeniaTheme textPrimary]);
       name.textAlignment = NSTextAlignmentCenter;
       name.lineBreakMode = NSLineBreakByTruncatingTail;
+      // Gamertags are up to 15 characters: shrink a little before cutting them off.
+      name.adjustsFontSizeToFitWidth = YES;
+      name.minimumScaleFactor = 0.7;
       name.accessibilityLabel = member.leader
                                     ? [NSString stringWithFormat:NSLocalizedString(
                                                                      @"%@, party leader",
@@ -2100,12 +2225,14 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       cell.alignment = UIStackViewAlignmentCenter;
       cell.spacing = 4.0;
       cell.isAccessibilityElement = NO;
+      [cell.widthAnchor constraintGreaterThanOrEqualToConstant:S(88.0)].active = YES;
       [name.widthAnchor constraintEqualToAnchor:cell.widthAnchor].active = YES;
       if (!member.me) {
         UILabel* voice = NewLabel(nil, UIFontTextStyleCaption2, 11.0, UIFontWeightMedium,
                                   [XeniaTheme textSecondary]);
         voice.textAlignment = NSTextAlignmentCenter;
-        voice.numberOfLines = 2;
+        voice.adjustsFontSizeToFitWidth = YES;
+        voice.minimumScaleFactor = 0.7;
         ShowPartyVoice(voice, member.xuid);
         [cell addArrangedSubview:voice];
         [voice.widthAnchor constraintEqualToAnchor:cell.widthAnchor].active = YES;
@@ -2412,7 +2539,8 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   if (!_searchField) {
     _searchField = [[UITextField alloc] init];
     _searchField.translatesAutoresizingMaskIntoConstraints = NO;
-    _searchField.placeholder = NSLocalizedString(@"Search friends", @"Online panel: search field");
+    _searchField.placeholder = NSLocalizedString(@"Search friends and players",
+                                                 @"Online panel: search field");
     _searchField.autocorrectionType = UITextAutocorrectionTypeNo;
     _searchField.spellCheckingType = UITextSpellCheckingTypeNo;
     _searchField.returnKeyType = UIReturnKeySearch;
@@ -2474,6 +2602,19 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   _query = [_searchField.text copy];
   [self clear];
   [self buildSearchResults];
+  // Players who aren't friends come from the service, once typing pauses.
+  [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                           selector:@selector(searchPlayers)
+                                             object:nil];
+  [self performSelector:@selector(searchPlayers) withObject:nil afterDelay:0.5];
+}
+
+- (void)searchPlayers {
+  NSString* query =
+      [_query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (query.length >= 3) {
+    [[XeniaLiveSocial shared] searchPlayers:query];
+  }
 }
 
 // Every friend, online first, filtered by what's typed.
@@ -2491,6 +2632,23 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     }
     return [a.gamertag localizedCaseInsensitiveCompare:b.gamertag];
   }];
+  // Players found by gamertag who aren't friends, to add.
+  NSMutableArray<UIView*>* player_rows = [NSMutableArray array];
+  for (XeniaLiveGamePlayer* player in [social playersMatching:_query]) {
+    if (player.relation == XeniaLiveGamePlayerRelationFriend) {
+      continue;
+    }
+    UIButton* action = FriendActionFor(player);
+    [player_rows addObject:PlayerRow(PlayerName(player), RelationText(player), NO, NO, YES,
+                                     action ? @[ action ] : @[],
+                                     [self cardOpener:player.xuid gamertag:player.gamertag])];
+  }
+  if (player_rows.count) {
+    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Players",
+                                                              @"Online panel: search results "
+                                                              @"who aren't friends"))];
+    [_stack addArrangedSubview:Group(player_rows, nil)];
+  }
   if (matches.count) {
     NSString* count = matches.count == 1 ? NSLocalizedString(@"1 friend", @"Online panel: search "
                                                                           @"results")
@@ -2502,15 +2660,36 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                                          long(matches.count)];
     [_stack addArrangedSubview:SectionLabel(count)];
     [_stack addArrangedSubview:Group([self rowsForFriends:matches], nil)];
-  } else {
-    [_stack addArrangedSubview:[self caption:social.friends.count
-                                                 ? NSLocalizedString(@"No friends match.",
-                                                                     @"Online panel: search found "
-                                                                     @"nobody")
-                                                 : NSLocalizedString(@"You don't have friends "
-                                                                     @"yet. Add one with a code.",
-                                                                     @"Online panel: no friends")
-                                      center:YES]];
+  } else if (!player_rows.count) {
+    NSString* typed =
+        [_query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSString* text = social.friends.count
+                         ? NSLocalizedString(@"No friends match.",
+                                             @"Online panel: search found nobody")
+                         : NSLocalizedString(@"You don't have friends yet. Add one with a code.",
+                                             @"Online panel: no friends");
+    if (social.state == XeniaLiveSocialStateOnline && typed.length >= 3) {
+      text = [social searchAnswered:typed]
+                 ? [NSString stringWithFormat:NSLocalizedString(
+                                                  @"No player found named “%@”. Players who "
+                                                  @"take friend requests by code only can't be "
+                                                  @"found: ask them for their friend code.",
+                                                  @"Online panel: player search found nobody; "
+                                                  @"%@ is what was typed"),
+                                              typed]
+                 : [NSString stringWithFormat:NSLocalizedString(
+                                                  @"Looking for players named “%@”…",
+                                                  @"Online panel: player search in progress; "
+                                                  @"%@ is what was typed"),
+                                              typed];
+    } else if (social.state == XeniaLiveSocialStateOnline && typed.length) {
+      text = [text stringByAppendingFormat:@" %@",
+                                           NSLocalizedString(@"Type 3 letters or more to find "
+                                                             @"other players.",
+                                                             @"Online panel: player search needs "
+                                                             @"more letters")];
+    }
+    [_stack addArrangedSubview:[self caption:text center:YES]];
   }
 }
 
