@@ -7,6 +7,8 @@ target_sources(xenia-ui-ios PRIVATE
   app/ios_app_delegate.mm
   app/ios_in_game_menu_overlay.h
   app/ios_in_game_menu_overlay.mm
+  app/ios_online_panel.h
+  app/ios_online_panel.mm
   app/ios_landscape_navigation_controller.h
   app/ios_landscape_navigation_controller.mm
   app/ios_lifecycle_audio_session.h
@@ -108,6 +110,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_launcher_overlay_view.mm
   launcher/ios_library_ambient_view.h
   launcher/ios_library_ambient_view.mm
+  launcher/ios_friends_view_controller.h
+  launcher/ios_friends_view_controller.mm
   launcher/ios_system_link_view_controller.h
   launcher/ios_system_link_view_controller.mm
   launcher/zar_converter.h
@@ -151,6 +155,10 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_system_utils.mm
   shared/ios_status_toast.h
   shared/ios_status_toast.mm
+  shared/ios_live_invite_banner.h
+  shared/ios_live_invite_banner.mm
+  shared/ios_live_social_bridge.h
+  shared/ios_live_social_bridge.mm
   shared/ios_system_link.h
   shared/ios_system_link.mm
   shared/ios_update_check.h

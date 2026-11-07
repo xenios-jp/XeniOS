@@ -1089,14 +1089,16 @@ titleForFooterInSection:(NSInteger)section {
   if (section == XeniaPrivacySectionOnline) {
     if (!xe_ios_diagnostics_available()) {
       return NSLocalizedString(
-          @"Update checks, cover art, compatibility data, discussions and reports, and System "
-          @"Link over the internet. Games still run with this off.",
+          @"Update checks, cover art, compatibility data, discussions and reports, System Link "
+          @"over the internet, and which game you're playing (counted without your name or "
+          @"device). Games still run with this off.",
           @"settings hub view controller: user-visible text");
     }
     return NSLocalizedString(
         @"Update checks, cover art, compatibility data, discussions and reports, System Link "
-        @"over the internet, and diagnostics. Games still run with this off. To stop only "
-        @"diagnostics, turn off Share Diagnostics.",
+        @"over the internet, which game you're playing (counted without your name or device), "
+        @"and diagnostics. Games still run with this off. To stop only diagnostics, turn off "
+        @"Share Diagnostics.",
         @"settings hub view controller: footer of the Online Features switch");
   }
   if (section == XeniaPrivacySectionDiagnostics) {

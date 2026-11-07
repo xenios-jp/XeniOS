@@ -955,7 +955,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                                forAxis:UILayoutConstraintAxisHorizontal];
   [self updateSortMenu];
 
-  _searchRow = [[UIStackView alloc] initWithArrangedSubviews:@[ _searchField, _sortButton ]];
+  // Search, the globe (Public Games, with the players online on XeniOS) and sort.
+  _searchRow = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _searchField, xe_ios_new_system_link_globe_button(), _sortButton ]];
   _searchRow.spacing = 10.0;
   _searchRow.alignment = UIStackViewAlignmentFill;
   _searchRow.hidden = YES;  // Until there are games.
