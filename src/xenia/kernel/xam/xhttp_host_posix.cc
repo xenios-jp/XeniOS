@@ -7,6 +7,11 @@
  ******************************************************************************
  */
 
+#include "xenia/base/platform.h"
+
+// Apple platforms send requests with xhttp_host_apple.mm.
+#if !XE_PLATFORM_APPLE
+
 #include "xenia/kernel/xam/xhttp_host.h"
 
 #include "xenia/base/logging.h"
@@ -66,3 +71,5 @@ std::unique_ptr<HostRequest> OpenRequest(
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe
+
+#endif  // !XE_PLATFORM_APPLE

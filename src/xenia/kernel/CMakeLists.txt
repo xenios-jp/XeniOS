@@ -22,6 +22,12 @@ target_link_libraries(xenia-kernel PUBLIC
 )
 if(WIN32)
   target_link_libraries(xenia-kernel PUBLIC winhttp)
+elseif(APPLE)
+  # xe_platform_sources globs *.cc only; .mm sources need explicit listing.
+  target_sources(xenia-kernel PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/xam/xhttp_host_apple.mm
+  )
+  target_link_libraries(xenia-kernel PUBLIC "-framework Foundation")
 endif()
 xe_target_defaults(xenia-kernel)
 
