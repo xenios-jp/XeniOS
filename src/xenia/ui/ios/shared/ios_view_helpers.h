@@ -114,12 +114,42 @@ void xe_apply_shadow_token(UIView* view, XeniaShadowElevation elevation);
 @property(nonatomic, copy) void (^onTraitChange)(UITraitCollection* previousTraits);
 @end
 
-// A Settings-style row icon: |symbol| in white on a 29 pt rounded square of |color|.
-// Autoreleased, cached per symbol and colour.
-UIImage* XESettingsBadgeImage(NSString* symbol, UIColor* color);
+// A row's leading symbol: a bare 22-pt SF Symbol in white 85%, in a 29-pt box so row text
+// lines up. Pass |state_color| only when the row carries a state (destructive, warning, the
+// mint accent); nil otherwise. Autoreleased, cached per symbol and colour.
+UIImage* XERowSymbolImage(NSString* symbol, UIColor* state_color);
 
 // Presents a one-button "OK" alert. No-ops when `presenter` is nil.
 void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* message);
+
+// The one header (docs/ios_design_language.md, rule 4). ✕ is always last on the trailing side
+// and closes whatever was presented; the system ‹ is the only thing on the leading side, and
+// only on pushed pages. Extra actions (⋯, +, search) sit just before ✕.
+//
+// XESetSheetClose gives |view_controller| its ✕. A page pushed inside a sheet whose root has
+// one gets the same ✕ (same target and action) on its own. XESetSheetActions sets the extra
+// actions in reading order; pass an empty array to clear them. Both relayout at once.
+// The XESheet* base classes call XEApplySheetHeader in viewWillAppear; other controllers call
+// it themselves.
+void XESetSheetClose(UIViewController* view_controller, id target, SEL action);
+void XESetSheetActions(UIViewController* view_controller, NSArray<UIBarButtonItem*>* actions);
+void XEApplySheetHeader(UIViewController* view_controller);
+// The page's ✕, to enable or disable it; nil when it has none.
+UIBarButtonItem* XESheetCloseItem(UIViewController* view_controller);
+// The action next to ✕ (the last in reading order), for a controller's quick-action button.
+UIBarButtonItem* XESheetPrimaryAction(UIViewController* view_controller);
+
+// A form's one commit button (rule 4): a white capsule, 52 high, 16 from the sides, at the
+// bottom of the screen and above the keyboard while it is up. It shows while |view_controller|
+// is on screen (the XESheet* base classes attach and detach it) and starts disabled; enable it
+// through the returned button. Busy swaps the title for a spinner and stops taps.
+UIButton* XESetFormCommit(UIViewController* view_controller, NSString* title, id target, SEL action);
+void XESetFormCommitBusy(UIViewController* view_controller, BOOL busy);
+void XESetFormCommitHidden(UIViewController* view_controller, BOOL hidden);
+// The form's commit button while it can be pressed (shown, enabled, not busy), else nil.
+UIButton* XEFormCommitButton(UIViewController* view_controller);
+void XEAttachFormCommit(UIViewController* view_controller);
+void XEDetachFormCommit(UIViewController* view_controller);
 
 // UITableViewController base class with the orientation overrides every
 // Xenia sheet shares: rotates freely (no upside-down) and starts in

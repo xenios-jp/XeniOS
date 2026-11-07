@@ -142,7 +142,7 @@
   if (textView != notes_text_view_) {
     return;
   }
-  self.navigationItem.rightBarButtonItem = keyboard_done_button_;
+  XESetSheetActions(self, @[ keyboard_done_button_ ]);
   [self scrollNotesEditorIntoViewAnimated:YES];
 }
 
@@ -154,7 +154,7 @@
 
 - (void)textViewDidEndEditing:(UITextView*)textView {
   if (textView == notes_text_view_) {
-    self.navigationItem.rightBarButtonItem = nil;
+    XESetSheetActions(self, @[]);
   }
 }
 

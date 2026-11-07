@@ -11,7 +11,9 @@
 
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
+#import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
+#import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -21,13 +23,18 @@ namespace {
 
 constexpr CGFloat kPanelRadius = 28.0;
 
+// The panel's sizes are drawn for the small floating card over a game. On the home screen it is a
+// whole sheet, so everything grows by this factor to read like the rest of the app's pages.
+CGFloat gPanelScale = 1.0;
+inline CGFloat S(CGFloat value) { return value * gPanelScale; }
+
 UILabel* NewLabel(NSString* text, UIFontTextStyle style, CGFloat size, UIFontWeight weight,
                   UIColor* color) {
   UILabel* label = [[[UILabel alloc] init] autorelease];
   label.translatesAutoresizingMaskIntoConstraints = NO;
   label.text = text;
   label.textColor = color;
-  xe_apply_label_font(label, style, size, weight);
+  xe_apply_label_font(label, style, S(size), weight);
   return label;
 }
 
@@ -39,7 +46,7 @@ UIView* SectionLabel(NSString* text) {
   UIStackView* box = [[[UIStackView alloc] initWithArrangedSubviews:@[ label ]] autorelease];
   box.translatesAutoresizingMaskIntoConstraints = NO;
   box.axis = UILayoutConstraintAxisVertical;
-  box.layoutMargins = UIEdgeInsetsMake(4, 4, 2, 0);
+  box.layoutMargins = UIEdgeInsetsMake(8, 16, 0, 16);
   box.layoutMarginsRelativeArrangement = YES;
   // Without a floor the scroll view's height pressure squeezes the label to nothing.
   [label.heightAnchor constraintGreaterThanOrEqualToConstant:16].active = YES;
@@ -119,6 +126,7 @@ UIView* Avatar(NSString* name, CGFloat size, BOOL highlighted) {
   avatar.textAlignment = NSTextAlignmentCenter;
   avatar.textColor = highlighted ? [XeniaTheme accentFg] : [UIColor whiteColor];
   avatar.backgroundColor = highlighted ? [XeniaTheme accent] : AvatarColor(name);
+  size = S(size);
   avatar.font = [UIFont systemFontOfSize:size * 0.42 weight:UIFontWeightSemibold];
   avatar.layer.cornerRadius = size / 2.0;
   avatar.layer.masksToBounds = YES;
@@ -146,7 +154,7 @@ UIView* AvatarWithPresence(NSString* name, CGFloat size, BOOL me, BOOL online) {
     const CGFloat dot_size = MAX(10.0, size * 0.33);
     UIView* dot = [[[UIView alloc] init] autorelease];
     dot.translatesAutoresizingMaskIntoConstraints = NO;
-    dot.backgroundColor = HexColor(0x30D158);
+    dot.backgroundColor = [XeniaTheme accent];
     dot.layer.cornerRadius = dot_size / 2.0;
     dot.layer.borderWidth = 2.0;
     dot.layer.borderColor = [UIColor colorWithWhite:0.17 alpha:1.0].CGColor;
@@ -201,7 +209,7 @@ UIView* Row(UIView* leading, NSString* name, NSString* detail, BOOL leader,
   row.layoutMargins = UIEdgeInsetsMake(8, 0, 8, 0);
   row.layoutMarginsRelativeArrangement = YES;
   row.isAccessibilityElement = NO;
-  [row.heightAnchor constraintGreaterThanOrEqualToConstant:52.0].active = YES;
+  [row.heightAnchor constraintGreaterThanOrEqualToConstant:S([XeniaTheme glassRowMinHeight])].active = YES;
   name_label.accessibilityLabel =
       leader ? [NSString stringWithFormat:NSLocalizedString(@"%@, party leader",
                                                             @"Online panel, VoiceOver; %@ is "
@@ -266,7 +274,7 @@ UIView* Chevron() {
 UIView* Hairline() {
   UIView* line = [[[UIView alloc] init] autorelease];
   line.translatesAutoresizingMaskIntoConstraints = NO;
-  line.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+  line.backgroundColor = [XeniaTheme glassHairline];
   [line.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale].active = YES;
   return line;
 }
@@ -275,8 +283,8 @@ UIView* Hairline() {
 UIView* Group(NSArray<UIView*>* rows, UIColor* tint) {
   UIView* box = [[[UIView alloc] init] autorelease];
   box.translatesAutoresizingMaskIntoConstraints = NO;
-  box.backgroundColor = tint ?: [UIColor colorWithWhite:1.0 alpha:0.07];
-  box.layer.cornerRadius = 16.0;
+  box.backgroundColor = tint ?: [XeniaTheme glassGroupFill];
+  box.layer.cornerRadius = [XeniaTheme glassGroupRadius];
   box.layer.cornerCurve = kCACornerCurveContinuous;
   NSMutableArray<UIView*>* items = [NSMutableArray array];
   for (UIView* row in rows) {
@@ -292,10 +300,80 @@ UIView* Group(NSArray<UIView*>* rows, UIColor* tint) {
   [NSLayoutConstraint activateConstraints:@[
     [column.topAnchor constraintEqualToAnchor:box.topAnchor],
     [column.bottomAnchor constraintEqualToAnchor:box.bottomAnchor],
-    [column.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:12],
-    [column.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-12],
+    [column.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+    [column.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
   ]];
   return box;
+}
+
+// A plain row symbol, no tile: white on the glass, in a fixed box so row titles line up.
+UIView* RowSymbol(NSString* name) {
+  UIImageView* symbol = [[[UIImageView alloc]
+      initWithImage:[UIImage systemImageNamed:name
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleBody]]]
+      autorelease];
+  symbol.translatesAutoresizingMaskIntoConstraints = NO;
+  symbol.tintColor = [XeniaTheme textPrimary];
+  symbol.contentMode = UIViewContentModeCenter;
+  symbol.isAccessibilityElement = NO;
+  [symbol.widthAnchor constraintEqualToConstant:S(26.0)].active = YES;
+  return symbol;
+}
+
+// The one empty-state shape: symbol, one bold line, one plain line, in a glass group.
+UIView* EmptyStateWithButton(NSString* symbol_name, NSString* title, NSString* detail,
+                             NSString* button_title, void (^action)(void)) {
+  NSMutableArray<UIView*>* items = [NSMutableArray array];
+  if (symbol_name) {
+    UIImageView* symbol = [[[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:symbol_name
+                              withConfiguration:[UIImageSymbolConfiguration
+                                                    configurationWithTextStyle:UIFontTextStyleTitle2]]]
+        autorelease];
+    symbol.tintColor = [XeniaTheme textSecondary];
+    symbol.contentMode = UIViewContentModeCenter;
+    symbol.isAccessibilityElement = NO;
+    [items addObject:symbol];
+  }
+  UILabel* title_label =
+      NewLabel(title, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold,
+               [XeniaTheme textPrimary]);
+  title_label.numberOfLines = 0;
+  title_label.textAlignment = NSTextAlignmentCenter;
+  [items addObject:title_label];
+  if (detail.length) {
+    UILabel* detail_label = NewLabel(detail, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular,
+                                     [XeniaTheme textSecondary]);
+    detail_label.numberOfLines = 0;
+    detail_label.textAlignment = NSTextAlignmentCenter;
+    [items addObject:detail_label];
+  }
+  UIButton* button = nil;
+  if (button_title.length && action) {
+    void (^handler)(void) = [[action copy] autorelease];
+    button = Capsule(button_title, nil, YES, NO, ^(UIButton* __unused sender) {
+      handler();
+    });
+    [items addObject:button];
+  }
+  UIStackView* column = [[[UIStackView alloc] initWithArrangedSubviews:items] autorelease];
+  column.axis = UILayoutConstraintAxisVertical;
+  column.alignment = UIStackViewAlignmentCenter;
+  column.spacing = 4.0;
+  if (symbol_name) {
+    [column setCustomSpacing:10.0 afterView:items[0]];
+  }
+  column.layoutMargins = UIEdgeInsetsMake(20, 4, 20, 4);
+  column.layoutMarginsRelativeArrangement = YES;
+  if (button) {
+    [column setCustomSpacing:14.0 afterView:items[items.count - 2]];
+  }
+  return Group(@[ column ], nil);
+}
+
+UIView* EmptyState(NSString* symbol_name, NSString* title, NSString* detail) {
+  return EmptyStateWithButton(symbol_name, title, detail, nil, nil);
 }
 
 // A round 32 pt icon button for the header, with an optional blue count on its corner.
@@ -306,10 +384,12 @@ UIButton* IconButton(NSString* symbol, NSString* label, NSInteger badge, void (^
   config.contentInsets = NSDirectionalEdgeInsetsZero;
   config.preferredSymbolConfigurationForImage =
       [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleSubheadline];
+  // The configuration draws the fill: a layer corner radius set on the button doesn't survive
+  // its background view, which left these as rounded squares.
+  config.background.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
   UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
   button.translatesAutoresizingMaskIntoConstraints = NO;
-  button.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
-  button.layer.cornerRadius = 16.0;
   button.accessibilityLabel = label;
   void (^handler)(void) = [[action copy] autorelease];
   [button addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
@@ -317,8 +397,8 @@ UIButton* IconButton(NSString* symbol, NSString* label, NSInteger badge, void (^
           }]
    forControlEvents:UIControlEventTouchUpInside];
   [NSLayoutConstraint activateConstraints:@[
-    [button.widthAnchor constraintEqualToConstant:32.0],
-    [button.heightAnchor constraintEqualToConstant:32.0],
+    [button.widthAnchor constraintEqualToConstant:S([XeniaTheme glassControlSize])],
+    [button.heightAnchor constraintEqualToConstant:S([XeniaTheme glassControlSize])],
   ]];
   if (badge > 0) {
     UILabel* count = NewLabel([NSString stringWithFormat:@"%ld", (long)badge],
@@ -607,8 +687,8 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   void (^_joinFriendHandler)(XeniaLiveFriend*);
   void (^_allFriendsHandler)(void);
   void (^_closeHandler)(void);
-  void (^_gamesHandler)(void);
   BOOL _embedded;
+  BOOL _fitsContent;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -652,9 +732,9 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
                                                        constant:12.0] retain];
     _fitHeight.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-      [_header.topAnchor constraintEqualToAnchor:self.topAnchor constant:12],
-      [_header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:12],
-      [_header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+      [_header.topAnchor constraintEqualToAnchor:self.topAnchor constant:14],
+      [_header.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:20],
+      [_header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
       [_scroll.topAnchor constraintEqualToAnchor:_header.bottomAnchor constant:6],
       [_scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
       [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
@@ -663,9 +743,9 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
       [_stack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor
                                           constant:-12],
       [_stack.leadingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.leadingAnchor
-                                           constant:12],
+                                           constant:16],
       [_stack.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor
-                                            constant:-12],
+                                            constant:-16],
       _fitHeight,
     ]];
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -691,7 +771,6 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
   [_joinFriendHandler release];
   [_allFriendsHandler release];
   [_closeHandler release];
-  [_gamesHandler release];
   [super dealloc];
 }
 
@@ -713,7 +792,6 @@ XE_COPY_BLOCK_PROPERTY(void (^)(XeniaLiveFriend*), joinFriendHandler, setJoinFri
 XE_COPY_BLOCK_PROPERTY(void (^)(void), allFriendsHandler, setAllFriendsHandler,
                        _allFriendsHandler)
 XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHandler)
-XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHandler)
 
 #undef XE_COPY_BLOCK_PROPERTY
 
@@ -732,8 +810,17 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
       view.hidden = embedded;
     }
   }
-  _fitHeight.active = !embedded;
+  _fitHeight.active = !embedded || _fitsContent;
   [self reload];
+}
+
+- (BOOL)fitsContent {
+  return _fitsContent;
+}
+
+- (void)setFitsContent:(BOOL)fits {
+  _fitsContent = fits;
+  _fitHeight.active = fits || !_embedded;
 }
 
 - (void)socialChanged:(NSNotification* __unused)note {
@@ -868,26 +955,35 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
 
 // "‹ Online" on the left, a centred title, and room on the right to balance.
 - (UIView*)navHeaderBack:(NSString*)back_title action:(SEL)action title:(NSString*)title {
-  UIButton* back = [self backButtonTo:back_title action:action];
-  [back.widthAnchor constraintEqualToConstant:92.0].active = YES;
+  __unsafe_unretained XeniaIOSOnlinePanel* unsafe_self = self;
+  UIButton* back = IconButton(@"chevron.left",
+                              [NSString stringWithFormat:NSLocalizedString(@"Back to %@",
+                                                                           @"VoiceOver; %@ is a page"),
+                                                         back_title],
+                              0, ^{
+                                [unsafe_self performSelector:action];
+                              });
   UILabel* label =
       NewLabel(title, UIFontTextStyleHeadline, 17.0, UIFontWeightSemibold, [XeniaTheme textPrimary]);
   label.textAlignment = NSTextAlignmentCenter;
   label.accessibilityTraits = UIAccessibilityTraitHeader;
   UIView* balance = [[[UIView alloc] init] autorelease];
   balance.translatesAutoresizingMaskIntoConstraints = NO;
-  [balance.widthAnchor constraintEqualToConstant:92.0].active = YES;
+  [balance.widthAnchor constraintEqualToConstant:S([XeniaTheme glassControlSize])].active = YES;
   UIStackView* row =
       [[[UIStackView alloc] initWithArrangedSubviews:@[ back, label, balance ]] autorelease];
   row.axis = UILayoutConstraintAxisHorizontal;
   row.alignment = UIStackViewAlignmentCenter;
-  [row.heightAnchor constraintGreaterThanOrEqualToConstant:36.0].active = YES;
+  [row.heightAnchor constraintGreaterThanOrEqualToConstant:S(36.0)].active = YES;
   return row;
 }
 
 - (UIView*)titleHeader:(NSString*)title icons:(NSArray<UIView*>*)icons {
-  UILabel* label =
-      NewLabel(title, UIFontTextStyleTitle2, 22.0, UIFontWeightBold, [XeniaTheme textPrimary]);
+  // The card's large leading title; the smaller card beside the in-game menu keeps a title-2.
+  UILabel* label = _embedded ? NewLabel(title, UIFontTextStyleTitle1, 28.0, UIFontWeightBold,
+                                        [XeniaTheme textPrimary])
+                             : NewLabel(title, UIFontTextStyleTitle2, 22.0, UIFontWeightBold,
+                                        [XeniaTheme textPrimary]);
   label.accessibilityTraits = UIAccessibilityTraitHeader;
   [label setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                          forAxis:UILayoutConstraintAxisHorizontal];
@@ -929,7 +1025,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
     [_header addArrangedSubview:[self titleHeader:NSLocalizedString(@"Friends",
                                                                     @"Online panel title")
                                             icons:@[]]];
-    [_stack addArrangedSubview:[self caption:social.statusText center:NO]];
+    [_stack addArrangedSubview:EmptyState(nil, social.statusText, nil)];
     return;
   }
   switch (_page) {
@@ -1015,38 +1111,16 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
     avatar.layer.borderColor = [UIColor colorWithWhite:0.2 alpha:1.0].CGColor;
     [box addSubview:avatar];
     [NSLayoutConstraint activateConstraints:@[
-      [avatar.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:i * step],
+      [avatar.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:S(i * step)],
       [avatar.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
     ]];
   }
   [NSLayoutConstraint activateConstraints:@[
-    [box.widthAnchor constraintEqualToConstant:size + (MAX(count, (NSUInteger)1) - 1) * step],
-    [box.heightAnchor constraintEqualToConstant:36.0],
+    [box.widthAnchor constraintEqualToConstant:S(size + (MAX(count, (NSUInteger)1) - 1) * step)],
+    [box.heightAnchor constraintEqualToConstant:S(36.0)],
   ]];
   box.isAccessibilityElement = NO;
   return box;
-}
-
-- (UIView*)iconTile:(NSString*)symbol {
-  UIView* tile = [[[UIView alloc] init] autorelease];
-  tile.translatesAutoresizingMaskIntoConstraints = NO;
-  tile.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-  tile.layer.cornerRadius = 18.0;
-  UIImageView* image = [[[UIImageView alloc]
-      initWithImage:[UIImage systemImageNamed:symbol]] autorelease];
-  image.translatesAutoresizingMaskIntoConstraints = NO;
-  image.tintColor = [XeniaTheme textPrimary];
-  image.preferredSymbolConfiguration =
-      [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleBody];
-  [tile addSubview:image];
-  [NSLayoutConstraint activateConstraints:@[
-    [tile.widthAnchor constraintEqualToConstant:36.0],
-    [tile.heightAnchor constraintEqualToConstant:36.0],
-    [image.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
-    [image.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
-  ]];
-  tile.isAccessibilityElement = NO;
-  return tile;
 }
 
 - (void)buildList {
@@ -1067,19 +1141,6 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
   }
   [_header addArrangedSubview:[self titleHeader:NSLocalizedString(@"Friends", @"Online panel title")
                                           icons:icons]];
-  const NSInteger online_count = social.onlineFriendCount;
-  NSString* subtitle =
-      online_count == 0
-          ? NSLocalizedString(@"No friends online", @"Online panel: subtitle")
-      : online_count == 1
-          ? NSLocalizedString(@"1 friend online", @"Online panel: subtitle")
-          : [NSString localizedStringWithFormat:NSLocalizedString(@"%ld friends online",
-                                                                  @"Online panel: subtitle; %ld "
-                                                                  @"is how many"),
-                                                long(online_count)];
-  UILabel* sub = [self caption:subtitle center:NO];
-  sub.accessibilityLabel = subtitle;
-  [_header addArrangedSubview:sub];
 
   // Invites waiting, in blue.
   NSArray<XeniaLiveInvite*>* invites = social.invites;
@@ -1106,7 +1167,41 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
       [rows addObject:PlayerRow(invite.gamertag, detail, NO, NO, YES, @[ decline, join ],
                                 [self cardOpener:invite.fromXuid gamertag:invite.gamertag])];
     }
+    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Invites",
+                                                              @"Online panel section"))];
     [_stack addArrangedSubview:Group(rows, [InviteBlue() colorWithAlphaComponent:0.24])];
+  }
+
+  // Online now, in one group: those in your game first, then who's playing, then the rest.
+  NSMutableArray<XeniaLiveFriend*>* in_game = [NSMutableArray array];
+  NSMutableArray<XeniaLiveFriend*>* playing = [NSMutableArray array];
+  NSMutableArray<XeniaLiveFriend*>* idle = [NSMutableArray array];
+  for (XeniaLiveFriend* peer in social.friends) {
+    if (!peer.online) {
+      continue;
+    }
+    if ([social friendInYourGame:peer]) {
+      [in_game addObject:peer];
+    } else if (peer.titleId) {
+      [playing addObject:peer];
+    } else {
+      [idle addObject:peer];
+    }
+  }
+  NSMutableArray<XeniaLiveFriend*>* online = [NSMutableArray arrayWithArray:in_game];
+  [online addObjectsFromArray:playing];
+  [online addObjectsFromArray:idle];
+  [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Online now",
+                                                            @"Online panel section"))];
+  if (online.count) {
+    [_stack addArrangedSubview:Group([self rowsForFriends:online], nil)];
+  } else {
+    [_stack addArrangedSubview:EmptyState(@"person.2",
+                                          NSLocalizedString(@"No friends online",
+                                                            @"Online panel: empty state"),
+                                          NSLocalizedString(@"Search to see all your friends, or "
+                                                            @"add one with a code.",
+                                                            @"Online panel: empty state hint"))];
   }
 
   // The party, which can be in other games, or a way to start one.
@@ -1127,87 +1222,15 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
       row = Row([self avatarStackFor:names], NSLocalizedString(@"Party", @"Online panel row"),
                 detail, NO, @[ Chevron() ], ^{ [unsafe_self showParty]; });
     } else {
-      row = Row([self iconTile:@"person.3.fill"],
-                NSLocalizedString(@"Start a Party", @"Online panel row"),
-                NSLocalizedString(@"Play together", @"Online panel: under Start a Party"), NO,
-                @[ Chevron() ], ^{
+      row = Row(RowSymbol(@"person.2"), NSLocalizedString(@"Start a Party", @"Online panel row"),
+                nil, NO, @[ Chevron() ], ^{
                   [[XeniaLiveSocial shared] createParty];
                   [unsafe_self showParty];
                 });
     }
+    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Play together",
+                                                              @"Online panel section"))];
     [_stack addArrangedSubview:Group(@[ row ], nil)];
-  }
-
-  // Online friends: those in your game first, then who's playing, then the rest.
-  NSMutableArray<XeniaLiveFriend*>* in_game = [NSMutableArray array];
-  NSMutableArray<XeniaLiveFriend*>* playing = [NSMutableArray array];
-  NSMutableArray<XeniaLiveFriend*>* idle = [NSMutableArray array];
-  for (XeniaLiveFriend* peer in social.friends) {
-    if (!peer.online) {
-      continue;
-    }
-    if ([social friendInYourGame:peer]) {
-      [in_game addObject:peer];
-    } else if (peer.titleId) {
-      [playing addObject:peer];
-    } else {
-      [idle addObject:peer];
-    }
-  }
-  NSArray* sections = @[
-    @[ NSLocalizedString(@"In Your Game", @"Online panel section"), in_game ],
-    @[ NSLocalizedString(@"Playing", @"Online panel section"), playing ],
-    @[ NSLocalizedString(@"Online", @"Online panel section: friends online"), idle ],
-  ];
-  for (NSArray* section in sections) {
-    NSArray<XeniaLiveFriend*>* friends = section[1];
-    if (!friends.count) {
-      continue;
-    }
-    [_stack addArrangedSubview:SectionLabel(section[0])];
-    [_stack addArrangedSubview:Group([self rowsForFriends:friends], nil)];
-  }
-  if (_embedded && _gamesHandler) {
-    void (^open_games)(void) = [[_gamesHandler copy] autorelease];
-    const NSInteger players = xe_ios_system_link_online_total();
-    NSString* detail =
-        !xe_ios_system_link_online_connected()
-            ? NSLocalizedString(@"Not connected", @"Online panel: games row while the lobby "
-                                                  @"doesn't answer")
-        : players > 0 ? [NSString localizedStringWithFormat:
-                                      NSLocalizedString(@"%ld playing now",
-                                                        @"Online panel: games row; %ld is how many "
-                                                        @"players are in public lobbies"),
-                                      long(players)]
-                      : NSLocalizedString(@"Nobody's playing yet", @"Online panel: games row");
-    UIImageView* symbol = [[[UIImageView alloc]
-        initWithImage:[UIImage systemImageNamed:@"gamecontroller.fill"]] autorelease];
-    symbol.tintColor = [UIColor whiteColor];
-    symbol.contentMode = UIViewContentModeCenter;
-    symbol.translatesAutoresizingMaskIntoConstraints = NO;
-    UIView* tile = [[[UIView alloc] init] autorelease];
-    tile.translatesAutoresizingMaskIntoConstraints = NO;
-    tile.backgroundColor = HexColor(0x5E5CE6);
-    tile.layer.cornerRadius = 10.0;
-    [tile addSubview:symbol];
-    [NSLayoutConstraint activateConstraints:@[
-      [tile.widthAnchor constraintEqualToConstant:36.0],
-      [tile.heightAnchor constraintEqualToConstant:36.0],
-      [symbol.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
-      [symbol.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
-    ]];
-    tile.isAccessibilityElement = NO;
-    [_stack addArrangedSubview:SectionLabel(NSLocalizedString(@"Games Online", @"Online panel section"))];
-    [_stack addArrangedSubview:Group(@[ Row(tile, NSLocalizedString(@"Public Games", @"Online panel row"),
-                                           detail, NO, @[ Chevron() ], open_games) ],
-                                     nil)];
-  }
-  if (!in_game.count && !playing.count && !idle.count && !invites.count) {
-    UILabel* empty = [self caption:NSLocalizedString(@"Nobody's online right now. Search to see "
-                                                     @"all your friends, or add one with a code.",
-                                                     @"Online panel: no friends online")
-                            center:YES];
-    [_stack addArrangedSubview:empty];
   }
 }
 
@@ -1545,7 +1568,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
     glass.frame = CGRectMake(0, 0, 34, 36);
     _searchField.leftView = glass;
     _searchField.leftViewMode = UITextFieldViewModeAlways;
-    [_searchField.heightAnchor constraintEqualToConstant:36.0].active = YES;
+    [_searchField.heightAnchor constraintEqualToConstant:S(36.0)].active = YES;
     [_searchField addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
                     [unsafe_self searchTextChanged];
                   }]
@@ -1681,14 +1704,16 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
   XeniaIOSOnlinePanel* _panel;
   void (^_acceptInviteHandler)(XeniaLiveInvite*);
   void (^_joinFriendHandler)(XeniaLiveFriend*);
-  void (^_gamesHandler)(void);
+  CGRect _sourceRect;
+  BOOL _expanded;
+  BOOL _closing;
 }
 
 - (void)dealloc {
+  gPanelScale = 1.0;
   [_panel release];
   [_acceptInviteHandler release];
   [_joinFriendHandler release];
-  [_gamesHandler release];
   [super dealloc];
 }
 
@@ -1710,36 +1735,162 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
     _joinFriendHandler = [handler copy];
   }
 }
-- (void (^)(void))gamesHandler {
-  return _gamesHandler;
+
+- (CGRect)sourceRect {
+  return _sourceRect;
 }
-- (void)setGamesHandler:(void (^)(void))handler {
-  if (handler != _gamesHandler) {
-    [_gamesHandler release];
-    _gamesHandler = [handler copy];
+- (void)setSourceRect:(CGRect)rect {
+  _sourceRect = rect;
+}
+
+// The card as a transform that lays it exactly over the button it grows from.
+- (CGAffineTransform)collapsedTransform {
+  const CGRect from = [self.view convertRect:_sourceRect fromView:nil];
+  const CGRect to = _panel.frame;
+  if (CGRectIsEmpty(from) || CGRectIsEmpty(to)) {
+    return CGAffineTransformIdentity;
   }
+  return CGAffineTransformMake(from.size.width / to.size.width, 0, 0,
+                               from.size.height / to.size.height, CGRectGetMidX(from) - CGRectGetMidX(to),
+                               CGRectGetMidY(from) - CGRectGetMidY(to));
+}
+
+- (void)setCardContentAlpha:(CGFloat)alpha {
+  for (UIView* view in _panel.subviews) {
+    if (![view isKindOfClass:[UIVisualEffectView class]]) {
+      view.alpha = alpha;
+    }
+  }
+}
+
+- (void)setCornerRadiusAnimated:(CGFloat)radius duration:(NSTimeInterval)duration {
+  CABasicAnimation* animation = [CABasicAnimation animationWithKeyPath:@"cornerRadius"];
+  animation.fromValue = @(_panel.layer.cornerRadius);
+  animation.toValue = @(radius);
+  animation.duration = duration;
+  animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+  [_panel.layer addAnimation:animation forKey:@"cornerRadius"];
+  _panel.layer.cornerRadius = radius;
+}
+
+- (BOOL)growsFromButton {
+  return !CGRectIsEmpty(_sourceRect) && !UIAccessibilityIsReduceMotionEnabled();
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  if (_expanded || !_panel || CGRectIsEmpty(_panel.frame)) {
+    return;
+  }
+  _expanded = YES;
+  if (![self growsFromButton]) {
+    return;
+  }
+  // Start as the button: the card laid over it, round as a pill, its contents not yet visible.
+  const CGRect from = [self.view convertRect:_sourceRect fromView:nil];
+  _panel.transform = [self collapsedTransform];
+  const CGFloat scale_y = from.size.height / MAX(_panel.bounds.size.height, 1.0);
+  _panel.layer.cornerRadius = MIN(from.size.height / 2.0 / MAX(scale_y, 0.01), 400.0);
+  [self setCardContentAlpha:0.0];
+  const UIColor* dim = self.view.backgroundColor;
+  self.view.backgroundColor = [UIColor clearColor];
+  __unsafe_unretained XeniaIOSOnlineSheetViewController* unsafe_self = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [unsafe_self setCornerRadiusAnimated:[XeniaTheme glassCardRadius] duration:0.45];
+    [UIView animateWithDuration:0.55
+                          delay:0.0
+         usingSpringWithDamping:0.82
+          initialSpringVelocity:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+                       unsafe_self->_panel.transform = CGAffineTransformIdentity;
+                       unsafe_self.view.backgroundColor = (UIColor*)dim;
+                     }
+                     completion:nil];
+    [UIView animateWithDuration:0.25
+                          delay:0.14
+                        options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+                       [unsafe_self setCardContentAlpha:1.0];
+                     }
+                     completion:nil];
+  });
+}
+
+// Closing sends the card back toward the button it came from: it shrinks evenly (never squashed
+// out of proportion) and fades as it goes, with the dim lifting at the same pace. The spring
+// front-loads the motion, so the shrink is seen before the card is gone.
+- (void)closeAnimated {
+  if (_closing) {
+    return;
+  }
+  _closing = YES;
+  if (![self growsFromButton]) {
+    [self dismissViewControllerAnimated:YES completion:nil];
+    return;
+  }
+  const CGRect from = [self.view convertRect:_sourceRect fromView:nil];
+  const CGRect to = _panel.frame;
+  const CGFloat scale = 0.5;
+  const CGFloat travel = 0.6;  // most of the way to the button, so it reads as going back in
+  const CGAffineTransform target = CGAffineTransformScale(
+      CGAffineTransformMakeTranslation((CGRectGetMidX(from) - CGRectGetMidX(to)) * travel,
+                                       (CGRectGetMidY(from) - CGRectGetMidY(to)) * travel),
+      scale, scale);
+  __unsafe_unretained XeniaIOSOnlineSheetViewController* unsafe_self = self;
+  [UIView animateWithDuration:0.12
+                   animations:^{
+                     [unsafe_self setCardContentAlpha:0.0];
+                   }];
+  // A blur ignores its parent's alpha, so it fades by losing its effect; otherwise a frosted
+  // slab lingers after the card has gone.
+  [UIView animateWithDuration:0.3
+      delay:0.0
+      usingSpringWithDamping:1.0
+      initialSpringVelocity:0.0
+      options:UIViewAnimationOptionBeginFromCurrentState
+      animations:^{
+        unsafe_self->_panel.transform = target;
+        unsafe_self->_panel.alpha = 0.0;
+        for (UIView* view in unsafe_self->_panel.subviews) {
+          if ([view isKindOfClass:[UIVisualEffectView class]]) {
+            ((UIVisualEffectView*)view).effect = nil;
+          }
+        }
+        unsafe_self.view.backgroundColor = [UIColor clearColor];
+      }
+      completion:^(BOOL __unused finished) {
+        [unsafe_self dismissViewControllerAnimated:NO completion:nil];
+      }];
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
   // Dark glass whatever the system setting, like the panel over a game.
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-  self.view.backgroundColor = [UIColor clearColor];
-  UIVisualEffectView* backdrop = [[[UIVisualEffectView alloc]
-      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark]]
-      autorelease];
-  backdrop.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.view addSubview:backdrop];
+  // The home screen stays visible and dimmed; the panel floats over it as the glass card it is
+  // in the game menu. A tap beside it closes it.
+  self.view.backgroundColor = [XeniaTheme glassDim];
+  UIButton* outside = [UIButton buttonWithType:UIButtonTypeCustom];
+  outside.translatesAutoresizingMaskIntoConstraints = NO;
+  outside.isAccessibilityElement = NO;
+  [self.view addSubview:outside];
+  [NSLayoutConstraint activateConstraints:@[
+    [outside.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+    [outside.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    [outside.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [outside.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+  ]];
+  __unsafe_unretained XeniaIOSOnlineSheetViewController* unsafe_close = self;
+  [outside addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
+             [unsafe_close closeAnimated];
+           }]
+    forControlEvents:UIControlEventTouchUpInside];
 
   __unsafe_unretained XeniaIOSOnlineSheetViewController* unsafe_self = self;
   _panel = [[XeniaIOSOnlinePanel alloc] initWithFrame:CGRectZero];
   _panel.closeHandler = ^{
-    [unsafe_self dismissViewControllerAnimated:YES completion:nil];
-  };
-  _panel.gamesHandler = ^{
-    if (unsafe_self->_gamesHandler) {
-      unsafe_self->_gamesHandler();
-    }
+    [unsafe_self closeAnimated];
   };
   _panel.acceptInviteHandler = ^(XeniaLiveInvite* invite) {
     void (^handler)(XeniaLiveInvite*) = [[unsafe_self->_acceptInviteHandler copy] autorelease];
@@ -1758,17 +1909,18 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), gamesHandler, setGamesHandler, _gamesHand
                                     }];
   };
   _panel.embedded = YES;  // after the handlers, so the first page has its close button
+  _panel.fitsContent = YES;
+  // The same Liquid Glass card as Profiles and Public Games.
+  XEInstallGlassCardSurface(_panel);
   [self.view addSubview:_panel];
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
   [NSLayoutConstraint activateConstraints:@[
-    [backdrop.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-    [backdrop.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    [backdrop.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-    [backdrop.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    [_panel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
-    [_panel.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    [_panel.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:8],
-    [_panel.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+    [_panel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:4],
+    [_panel.bottomAnchor constraintLessThanOrEqualToAnchor:safe.bottomAnchor constant:-4],
+    [_panel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor
+                                         constant:[XeniaTheme glassCardInset]],
+    [_panel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor
+                                          constant:-[XeniaTheme glassCardInset]],
   ]];
   [[XeniaLiveSocial shared] refresh];
 }
@@ -1858,14 +2010,81 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
 }
 
 
+namespace {
+
+// "1,284": full numbers in text (badges go compact).
+NSString* FullCount(NSInteger count) {
+  return [NSNumberFormatter localizedStringFromNumber:@(count)
+                                          numberStyle:NSNumberFormatterDecimalStyle];
+}
+
+NSString* PlayersText(NSInteger count) {
+  return count == 1 ? NSLocalizedString(@"1 player", @"Public Games: count")
+                    : [NSString localizedStringWithFormat:NSLocalizedString(
+                                                              @"%@ players",
+                                                              @"Public Games: count; %@ is a "
+                                                              @"formatted number, \"1,284\""),
+                                                          FullCount(count)];
+}
+
+// Two or three faces overlapping, the rest as "+2".
+UIView* AvatarStack(NSArray<NSString*>* names) {
+  NSMutableArray<UIView*>* faces = [NSMutableArray array];
+  const NSUInteger shown = names.count > 3 ? 2 : names.count;
+  for (NSUInteger i = 0; i < shown; ++i) {
+    UIView* face = Avatar(names[i], 30.0, NO);
+    face.layer.borderWidth = 1.5;
+    face.layer.borderColor = [UIColor colorWithWhite:0.0 alpha:0.35].CGColor;
+    [faces addObject:face];
+  }
+  if (names.count > shown) {
+    UILabel* more = (UILabel*)Avatar(@"+", 30.0, NO);
+    more.text = [NSString stringWithFormat:@"+%lu", (unsigned long)(names.count - shown)];
+    more.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+    more.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold];
+    [faces addObject:more];
+  }
+  UIStackView* stack = [[[UIStackView alloc] initWithArrangedSubviews:faces] autorelease];
+  stack.translatesAutoresizingMaskIntoConstraints = NO;
+  stack.spacing = -8.0;
+  stack.isAccessibilityElement = NO;
+  [stack setContentHuggingPriority:UILayoutPriorityRequired
+                           forAxis:UILayoutConstraintAxisHorizontal];
+  return stack;
+}
+
+// "NobleSix, Arbiter and 2 more".
+NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
+  if (names.count <= shown) {
+    return [NSListFormatter localizedStringByJoiningStrings:names];
+  }
+  NSArray<NSString*>* head = [names subarrayWithRange:NSMakeRange(0, shown)];
+  return [NSString localizedStringWithFormat:NSLocalizedString(
+                                                 @"%@ and %lu more",
+                                                 @"Public Games: friends row; %@ is names, %lu "
+                                                 @"how many others"),
+                                             [head componentsJoinedByString:@", "],
+                                             (unsigned long)(names.count - shown)];
+}
+
+}  // namespace
+
 @implementation XeniaIOSPublicGamesViewController {
   NSDictionary<NSNumber*, NSString*>* _library;
   void (^_openGame)(uint32_t);
+  void (^_openFriends)(void);
+  UIScrollView* _scroll;
+  UIStackView* _content;
   UIStackView* _list;
   UILabel* _subtitle;
   UIView* _dot;
+  UISegmentedControl* _filter;
   NSMutableSet<NSNumber*>* _coverFetches;
+  BOOL _filterChosen;
+  CFAbsoluteTime _openedAt;
 }
+
+@synthesize openFriendsHandler = _openFriends;
 
 - (instancetype)initWithLibraryNames:(NSDictionary<NSNumber*, NSString*>*)names
                             openGame:(void (^)(uint32_t))open_game {
@@ -1879,11 +2098,16 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [NSObject cancelPreviousPerformRequestsWithTarget:self];
   [_library release];
   [_openGame release];
+  [_openFriends release];
+  [_scroll release];
+  [_content release];
   [_list release];
   [_subtitle release];
   [_dot release];
+  [_filter release];
   [_coverFetches release];
   [super dealloc];
 }
@@ -1891,94 +2115,98 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-  // Dark glass like the Friends sheet: the sheet's own material shows through. The title and the
-  // ✕ are the navigation bar's, as on Profiles.
+  // A glass card from the globe: the card's own glass is the backdrop, its bar holds the title
+  // and the ✕.
   self.view.backgroundColor = [UIColor clearColor];
   self.title = NSLocalizedString(@"Public Games", @"Public Games: page title");
-  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                           target:self
-                           action:@selector(closeTapped)] autorelease];
+  XESetSheetClose(self, self, @selector(closeTapped));
+  _openedAt = CFAbsoluteTimeGetCurrent();
 
   _dot = [[UIView alloc] init];
   _dot.translatesAutoresizingMaskIntoConstraints = NO;
-  _dot.backgroundColor = HexColor(0x30D158);
-  _dot.layer.cornerRadius = 4.5;
+  _dot.backgroundColor = [XeniaTheme accent];
+  _dot.layer.cornerRadius = 4.0;
   [NSLayoutConstraint activateConstraints:@[
-    [_dot.widthAnchor constraintEqualToConstant:9],
-    [_dot.heightAnchor constraintEqualToConstant:9],
+    [_dot.widthAnchor constraintEqualToConstant:8],
+    [_dot.heightAnchor constraintEqualToConstant:8],
   ]];
   _subtitle = [NewLabel(@"", UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular,
-                        [UIColor colorWithWhite:1.0 alpha:0.62]) retain];
+                        [XeniaTheme textSecondary]) retain];
+  _subtitle.numberOfLines = 0;
   UIStackView* subtitle_row =
       [[[UIStackView alloc] initWithArrangedSubviews:@[ _dot, _subtitle ]] autorelease];
   subtitle_row.spacing = 7;
   subtitle_row.alignment = UIStackViewAlignmentCenter;
+  subtitle_row.layoutMargins = UIEdgeInsetsMake(0, 4, 0, 4);
+  subtitle_row.layoutMarginsRelativeArrangement = YES;
+
+  _filter = [[UISegmentedControl alloc] initWithItems:@[
+    NSLocalizedString(@"In My Library", @"Public Games: filter"),
+    NSLocalizedString(@"All Games", @"Public Games: filter"),
+  ]];
+  _filter.translatesAutoresizingMaskIntoConstraints = NO;
+  _filter.selectedSegmentIndex = 0;
+  [_filter addTarget:self action:@selector(filterChanged) forControlEvents:UIControlEventValueChanged];
 
   _list = [[UIStackView alloc] init];
   _list.translatesAutoresizingMaskIntoConstraints = NO;
   _list.axis = UILayoutConstraintAxisVertical;
   _list.spacing = 8;
 
-  UIStackView* header = [[[UIStackView alloc] initWithArrangedSubviews:@[ subtitle_row ]]
-      autorelease];
-  header.translatesAutoresizingMaskIntoConstraints = NO;
-  header.axis = UILayoutConstraintAxisVertical;
-  header.alignment = UIStackViewAlignmentLeading;
-  header.spacing = 4;
-
-  UIScrollView* scroll = [[[UIScrollView alloc] init] autorelease];
-  scroll.translatesAutoresizingMaskIntoConstraints = NO;
-  scroll.alwaysBounceVertical = YES;
-  scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-  UIStackView* content = [[[UIStackView alloc] initWithArrangedSubviews:@[ header, _list ]]
-      autorelease];
-  content.translatesAutoresizingMaskIntoConstraints = NO;
-  content.axis = UILayoutConstraintAxisVertical;
-  content.spacing = 18;
-  [scroll addSubview:content];
-  [self.view addSubview:scroll];
+  _scroll = [[UIScrollView alloc] init];
+  _scroll.translatesAutoresizingMaskIntoConstraints = NO;
+  _scroll.alwaysBounceVertical = NO;
+  _content = [[UIStackView alloc] initWithArrangedSubviews:@[ subtitle_row, _filter, _list ]];
+  _content.translatesAutoresizingMaskIntoConstraints = NO;
+  _content.axis = UILayoutConstraintAxisVertical;
+  _content.spacing = 14;
+  [_scroll addSubview:_content];
+  [self.view addSubview:_scroll];
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
-  UILayoutGuide* column = [[[UILayoutGuide alloc] init] autorelease];
-  [self.view addLayoutGuide:column];
-  NSLayoutConstraint* fill = [column.widthAnchor constraintEqualToAnchor:safe.widthAnchor
-                                                                constant:-32];
-  fill.priority = UILayoutPriorityDefaultHigh;
   [NSLayoutConstraint activateConstraints:@[
-    [column.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
-    [column.widthAnchor constraintLessThanOrEqualToConstant:720],
-    fill,
-    [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:4],
-    [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-    [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-    [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    [content.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
-    [content.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor
-                                         constant:-24],
-    [content.leadingAnchor constraintEqualToAnchor:column.leadingAnchor],
-    [content.trailingAnchor constraintEqualToAnchor:column.trailingAnchor],
-    [scroll.contentLayoutGuide.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+    [_scroll.topAnchor constraintEqualToAnchor:safe.topAnchor],
+    [_scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+    [_scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    [_scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    [_content.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor constant:2],
+    [_content.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor
+                                          constant:-16],
+    [_content.leadingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.leadingAnchor
+                                           constant:16],
+    [_content.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor
+                                            constant:-16],
   ]];
 
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(reload)
-                                               name:XeniaIOSSystemLinkOnlineDidChangeNotification
-                                             object:nil];
+  for (NSNotificationName name : @[ XeniaIOSSystemLinkOnlineDidChangeNotification,
+                                    XeniaLiveSocialDidChangeNotification ]) {
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(reload)
+                                                 name:name
+                                               object:nil];
+  }
   [self reload];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
-  self.navigationController.navigationBar.prefersLargeTitles = YES;
-  self.navigationController.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   xe_ios_system_link_keep_online(YES);
   xe_ios_system_link_refresh_online();
 }
 
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  // As tall as its content, up to the screen.
+  XEFitGlassCardToHeight(self, _scroll.contentSize.height);
+}
+
 - (void)closeTapped {
   [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)filterChanged {
+  _filterChosen = YES;
+  [self reload];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -2001,113 +2229,248 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
   view.translatesAutoresizingMaskIntoConstraints = NO;
   view.contentMode = UIViewContentModeScaleAspectFill;
   view.clipsToBounds = YES;
-  view.layer.cornerRadius = 6;
+  view.layer.cornerRadius = 5;
   view.layer.cornerCurve = kCACornerCurveContinuous;
   view.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.1];
+  view.isAccessibilityElement = NO;
   if (!cover) {
     view.image = [UIImage systemImageNamed:@"gamecontroller.fill"];
     view.contentMode = UIViewContentModeCenter;
     view.tintColor = [UIColor colorWithWhite:1.0 alpha:0.4];
+    view.preferredSymbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleCaption2];
   }
   [NSLayoutConstraint activateConstraints:@[
-    [view.widthAnchor constraintEqualToConstant:48],
-    [view.heightAnchor constraintEqualToConstant:64],
+    [view.widthAnchor constraintEqualToConstant:30],
+    [view.heightAnchor constraintEqualToConstant:40],
   ]];
   return view;
 }
 
+- (NSString*)nameForTitle:(uint32_t)title_id {
+  return _library[@(title_id)] ?: xe_ios_game_name_for_title(title_id);
+}
+
+- (void)openTitle:(uint32_t)title_id {
+  void (^open)(uint32_t) = [[_openGame copy] autorelease];
+  [self dismissViewControllerAnimated:YES
+                           completion:^{
+                             if (open) open(title_id);
+                           }];
+}
+
+- (void)openFriends {
+  void (^open)(void) = [[_openFriends copy] autorelease];
+  [self dismissViewControllerAnimated:YES
+                           completion:^{
+                             if (open) open();
+                           }];
+}
+
+// One row at the top for every friend in a game: faces, names, which games.
+- (UIView*)friendsRowForGames:(NSDictionary<NSNumber*, NSNumber*>*)counts {
+  NSMutableArray<NSString*>* names = [NSMutableArray array];
+  NSMutableOrderedSet<NSString*>* games = [NSMutableOrderedSet orderedSet];
+  for (XeniaLiveFriend* peer in [XeniaLiveSocial shared].friends) {
+    if (!peer.online || !peer.titleId) {
+      continue;
+    }
+    [names addObject:peer.gamertag];
+    [games addObject:[self nameForTitle:peer.titleId]];
+  }
+  if (!names.count) {
+    return nil;
+  }
+  NSString* where =
+      games.count <= 2
+          ? [NSString localizedStringWithFormat:NSLocalizedString(@"In %@",
+                                                                  @"Public Games: friends row; "
+                                                                  @"%@ is one or two games"),
+                                                [NSListFormatter localizedStringByJoiningStrings:
+                                                                     games.array]]
+          : [NSString localizedStringWithFormat:NSLocalizedString(
+                                                    @"In %@ and %lu other games",
+                                                    @"Public Games: friends row"),
+                                                games.firstObject,
+                                                (unsigned long)(games.count - 1)];
+  __unsafe_unretained XeniaIOSPublicGamesViewController* unsafe_self = self;
+  void (^tapped)(void) = nil;
+  if (_openFriends) {
+    tapped = ^{
+      [unsafe_self openFriends];
+    };
+  }
+  return Row(AvatarStack(names), JoinedNames(names, 2), where, NO,
+             tapped ? @[ Chevron() ] : @[], tapped);
+}
+
 - (void)reload {
+  if (!self.isViewLoaded) {
+    return;
+  }
   for (UIView* row in [[_list.arrangedSubviews copy] autorelease]) {
     [_list removeArrangedSubview:row];
     [row removeFromSuperview];
   }
   const BOOL connected = xe_ios_system_link_online_connected();
   const NSInteger others = xe_ios_system_link_players_elsewhere();
-  _dot.hidden = others <= 0;
-  _subtitle.text =
-      !connected ? NSLocalizedString(@"Not connected", @"Public Games: subtitle when the lobby "
-                                                       @"can't be reached")
-      : others <= 0 ? NSLocalizedString(@"Nobody else is online", @"Public Games: subtitle")
-      : others == 1 ? NSLocalizedString(@"1 player online", @"Public Games: subtitle")
-                    : [NSString localizedStringWithFormat:NSLocalizedString(
-                                                              @"%ld players online",
-                                                              @"Public Games: subtitle; %ld is "
-                                                              @"how many other players are on "
-                                                              @"XeniOS"),
-                                                          long(others)];
 
-  // Games with someone in them, the library's first, then by how many are playing.
   NSDictionary<NSNumber*, NSNumber*>* counts = xe_ios_system_link_online_playing();
   if (!counts.count) {
     counts = xe_ios_system_link_online_titles();
   }
-  NSMutableArray<NSNumber*>* games = [NSMutableArray array];
+  NSMutableArray<NSNumber*>* all = [NSMutableArray array];
+  NSMutableArray<NSNumber*>* mine = [NSMutableArray array];
   for (NSNumber* title_id in counts) {
-    if (counts[title_id].integerValue > 0) {
-      [games addObject:title_id];
+    if (counts[title_id].integerValue <= 0) {
+      continue;
+    }
+    [all addObject:title_id];
+    if (_library[title_id]) {
+      [mine addObject:title_id];
     }
   }
-  [games sortUsingComparator:^NSComparisonResult(NSNumber* a, NSNumber* b) {
-    const BOOL a_mine = _library[a] != nil, b_mine = _library[b] != nil;
-    if (a_mine != b_mine) {
-      return a_mine ? NSOrderedAscending : NSOrderedDescending;
-    }
-    return [counts[b] compare:counts[a]];
-  }];
+  // Busiest first; a tie keeps a stable order.
+  NSComparator busiest = ^NSComparisonResult(NSNumber* a, NSNumber* b) {
+    const NSComparisonResult by_count = [counts[b] compare:counts[a]];
+    return by_count != NSOrderedSame ? by_count : [a compare:b];
+  };
+  [all sortUsingComparator:busiest];
+  [mine sortUsingComparator:busiest];
 
-  if (!games.count) {
-    UILabel* empty = NewLabel(connected ? NSLocalizedString(@"No public games right now",
-                                                            @"Public Games: empty state")
-                                        : NSLocalizedString(@"Can't reach XeniOS online",
-                                                            @"Public Games: empty state"),
-                              UIFontTextStyleHeadline, 17.0, UIFontWeightSemibold,
-                              [UIColor colorWithWhite:1.0 alpha:0.7]);
-    empty.textAlignment = NSTextAlignmentCenter;
-    UILabel* hint = NewLabel(connected ? NSLocalizedString(@"Start a game from your library and "
-                                                           @"it shows up here.",
-                                                           @"Public Games: empty state hint")
-                                       : NSLocalizedString(@"Check your connection and try again.",
-                                                           @"Public Games: empty state hint"),
-                             UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular,
-                             [UIColor colorWithWhite:1.0 alpha:0.5]);
-    hint.textAlignment = NSTextAlignmentCenter;
-    hint.numberOfLines = 0;
-    UIStackView* box = [[[UIStackView alloc] initWithArrangedSubviews:@[ empty, hint ]] autorelease];
-    box.axis = UILayoutConstraintAxisVertical;
-    box.spacing = 6;
-    box.layoutMargins = UIEdgeInsetsMake(80, 0, 0, 0);
-    box.layoutMarginsRelativeArrangement = YES;
-    [_list addArrangedSubview:box];
+  // Opens on your games when any have players; after that it's your choice.
+  if (!_filterChosen) {
+    _filter.selectedSegmentIndex = mine.count || !all.count ? 0 : 1;
+  }
+  const BOOL library_only = _filter.selectedSegmentIndex == 0;
+  NSArray<NSNumber*>* games = library_only ? mine : all;
+
+  _dot.hidden = !connected || others <= 0;
+  if (!connected) {
+    _subtitle.text = NSLocalizedString(@"Not connected", @"Public Games: subtitle");
+  } else {
+    NSString* players =
+        others <= 0 ? NSLocalizedString(@"Nobody else online", @"Public Games: subtitle")
+                    : [NSString localizedStringWithFormat:NSLocalizedString(
+                                                              @"%@ on XeniOS",
+                                                              @"Public Games: subtitle; %@ is "
+                                                              @"\"1,284 players\""),
+                                                          PlayersText(others)];
+    _subtitle.text =
+        all.count == 0 ? players
+        : all.count == 1
+            ? [NSString stringWithFormat:@"%@ · %@", players,
+                                         NSLocalizedString(@"1 game", @"Public Games: subtitle")]
+            : [NSString stringWithFormat:@"%@ · %@", players,
+                                         [NSString localizedStringWithFormat:
+                                                       NSLocalizedString(@"%lu games",
+                                                                         @"Public Games: subtitle"),
+                                                       (unsigned long)all.count]];
+  }
+  _filter.hidden = !connected || !all.count;
+
+  __unsafe_unretained XeniaIOSPublicGamesViewController* unsafe_self = self;
+  if (!connected) {
+    // The lobby takes a moment on open: a few seconds of "Connecting" before saying it can't.
+    const CFAbsoluteTime waited = CFAbsoluteTimeGetCurrent() - _openedAt;
+    if (waited < 4.0) {
+      _subtitle.text = NSLocalizedString(@"Connecting…", @"Public Games: subtitle");
+      [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(reload) object:nil];
+      [self performSelector:@selector(reload) withObject:nil afterDelay:4.0 - waited + 0.05];
+      UIActivityIndicatorView* spinner = [[[UIActivityIndicatorView alloc]
+          initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium] autorelease];
+      [spinner startAnimating];
+      [_list addArrangedSubview:Group(@[ [self paddedState:spinner] ], nil)];
+      return;
+    }
+    [_list addArrangedSubview:
+               EmptyStateWithButton(@"waveform.path.ecg",
+                                    NSLocalizedString(@"Can't reach Public Games",
+                                                      @"Public Games: offline state"),
+                                    NSLocalizedString(@"Your games still work offline.",
+                                                      @"Public Games: offline state"),
+                                    NSLocalizedString(@"Try Again", @"Public Games: button"), ^{
+                                      unsafe_self->_openedAt = CFAbsoluteTimeGetCurrent();
+                                      xe_ios_system_link_refresh_online();
+                                      [unsafe_self reload];
+                                    })];
     return;
   }
 
-  __unsafe_unretained XeniaIOSPublicGamesViewController* unsafe_self = self;
+  UIView* friends = [self friendsRowForGames:counts];
+  if (friends) {
+    [_list addArrangedSubview:SectionLabel(NSLocalizedString(@"Friends playing",
+                                                             @"Public Games: section"))];
+    [_list addArrangedSubview:Group(@[ friends ], nil)];
+  }
+
+  if (!all.count) {
+    [_list addArrangedSubview:EmptyState(@"gamecontroller",
+                                         NSLocalizedString(@"No public games right now",
+                                                           @"Public Games: empty state"),
+                                         NSLocalizedString(@"Start one from your library and it "
+                                                           @"shows up here.",
+                                                           @"Public Games: empty state"))];
+    return;
+  }
+  if (!games.count) {
+    // Your games are quiet, others aren't: say so, and offer the way out.
+    [_list addArrangedSubview:
+               EmptyStateWithButton(@"line.3.horizontal.decrease",
+                                    NSLocalizedString(@"None of your games right now",
+                                                      @"Public Games: filtered state"),
+                                    all.count == 1
+                                        ? NSLocalizedString(@"1 other game has players.",
+                                                            @"Public Games: filtered state")
+                                        : [NSString localizedStringWithFormat:
+                                                        NSLocalizedString(
+                                                            @"%lu other games have players.",
+                                                            @"Public Games: filtered state"),
+                                                        (unsigned long)all.count],
+                                    NSLocalizedString(@"Show All Games", @"Public Games: button"),
+                                    ^{
+                                      unsafe_self->_filterChosen = YES;
+                                      unsafe_self->_filter.selectedSegmentIndex = 1;
+                                      [unsafe_self reload];
+                                    })];
+    return;
+  }
+
   NSMutableArray<UIView*>* rows = [NSMutableArray array];
   for (NSNumber* number in games) {
     const uint32_t title_id = number.unsignedIntValue;
-    const NSInteger playing = counts[number].integerValue;
-    NSString* library_name = _library[number];
-    NSString* name = library_name ?: xe_ios_game_name_for_title(title_id);
-    NSString* detail = [NSString localizedStringWithFormat:NSLocalizedString(
-                                                               @"%ld playing",
-                                                               @"Public Games: row detail; %ld "
-                                                               @"is how many are in the game"),
-                                                           long(playing)];
+    const BOOL in_library = _library[number] != nil;
+    NSString* detail = PlayersText(counts[number].integerValue);
+    if (!library_only && !in_library) {
+      detail = [NSString stringWithFormat:@"%@ · %@", detail,
+                                          NSLocalizedString(@"Not in your library",
+                                                            @"Public Games: row detail")];
+    }
     void (^tapped)(void) = nil;
-    if (library_name) {
+    if (in_library) {
       tapped = ^{
-        void (^open)(uint32_t) = [[unsafe_self->_openGame copy] autorelease];
-        [unsafe_self dismissViewControllerAnimated:YES
-                                        completion:^{
-                                          if (open) open(title_id);
-                                        }];
+        [unsafe_self openTitle:title_id];
       };
     }
-    UIView* row = Row([self coverForTitle:title_id], name, detail, NO,
-                      library_name ? @[ Chevron() ] : @[], tapped);
+    UIView* row = Row([self coverForTitle:title_id], [self nameForTitle:title_id], detail, NO,
+                      in_library ? @[ Chevron() ] : @[], tapped);
     [rows addObject:row];
   }
+  [_list addArrangedSubview:SectionLabel(library_only
+                                             ? NSLocalizedString(@"Most played · your games",
+                                                                 @"Public Games: section")
+                                             : NSLocalizedString(@"Most played",
+                                                                 @"Public Games: section"))];
   [_list addArrangedSubview:Group(rows, nil)];
+}
+
+- (UIView*)paddedState:(UIView*)view {
+  UIStackView* column = [[[UIStackView alloc] initWithArrangedSubviews:@[ view ]] autorelease];
+  column.axis = UILayoutConstraintAxisVertical;
+  column.alignment = UIStackViewAlignmentCenter;
+  column.layoutMargins = UIEdgeInsetsMake(28, 0, 28, 0);
+  column.layoutMarginsRelativeArrangement = YES;
+  return column;
 }
 
 @end

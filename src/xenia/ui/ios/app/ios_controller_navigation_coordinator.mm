@@ -18,6 +18,7 @@
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
 
@@ -93,6 +94,16 @@ BOOL TriggerBarButtonItem(UIBarButtonItem* item) {
                                               forEvent:nil];
 }
 
+// The quick-action button presses a page's main action: a form's commit button, or the header
+// action next to ✕.
+BOOL TriggerSheetPrimaryAction(UIViewController* view_controller) {
+  if (UIButton* commit = XEFormCommitButton(view_controller)) {
+    [commit sendActionsForControlEvents:UIControlEventTouchUpInside];
+    return YES;
+  }
+  return TriggerBarButtonItem(XESheetPrimaryAction(view_controller));
+}
+
 // B on a sheet, as a swipe down would: the presentation delegate may refuse,
 // and hears about the dismissal, so whoever waits on the sheet is told.
 void DismissLikeSwipe(UIViewController* presented) {
@@ -102,8 +113,7 @@ void DismissLikeSwipe(UIViewController* presented) {
     UIViewController* top = [presented isKindOfClass:[UINavigationController class]]
                                 ? ((UINavigationController*)presented).topViewController
                                 : presented;
-    if (TriggerBarButtonItem(top.navigationItem.leftBarButtonItem) ||
-        TriggerBarButtonItem(top.navigationItem.rightBarButtonItem)) {
+    if (TriggerBarButtonItem(XESheetCloseItem(top))) {
       return;
     }
   }
@@ -741,8 +751,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
     handled = YES;
   }
 
-  if (actions.quick_action &&
-      TriggerBarButtonItem(table_controller.navigationItem.rightBarButtonItem)) {
+  if (actions.quick_action && TriggerSheetPrimaryAction(table_controller)) {
     handled = YES;
   }
 
@@ -808,7 +817,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
       return YES;
     }
     if (actions.quick_action) {
-      TriggerBarButtonItem(top.navigationItem.rightBarButtonItem);
+      TriggerSheetPrimaryAction(top);
     }
     // A sheet takes every press: none reaches the Library or game behind it.
     return YES;

@@ -29,6 +29,7 @@
 #import "xenia/ui/ios/shared/ios_state_reporting.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
 
 namespace {
 
@@ -408,7 +409,7 @@ void RunDebugTriggers() {
 
 // Settings > Privacy > Pending Reports. Laid out like the log viewer: the text
 // view is a constrained subview and gets its text once it is on screen.
-@interface XeniaPendingReportsViewController : UIViewController
+@interface XeniaPendingReportsViewController : XESheetViewController
 @end
 
 @implementation XeniaPendingReportsViewController {

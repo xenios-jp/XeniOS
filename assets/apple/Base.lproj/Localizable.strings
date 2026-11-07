@@ -581,6 +581,9 @@
    Name of a controller button in a touch control preview */
 "Back" = "Back";
 
+/* VoiceOver; %@ is a page */
+"Back to %@" = "Back to %@";
+
 /* settings hub view controller: title */
 "Backend and anisotropic filtering." = "Backend and anisotropic filtering.";
 
@@ -2124,6 +2127,7 @@
 "Install Touch Layout" = "Install Touch Layout";
 
 /* game content view controller: title
+   settings hub: System Software row value
    system software view controller: status */
 "Installed" = "Installed";
 
@@ -2652,6 +2656,9 @@
 /* game disc view controller: label text */
 "No discs available" = "No discs available";
 
+/* settings hub: Display row value when the frame rate isn't limited */
+"No FPS Limit" = "No FPS Limit";
+
 /* Online panel: nobody to invite */
 "No friends are online to invite." = "No friends are online to invite.";
 
@@ -2795,7 +2802,8 @@
 /* choice list view controller: accessibility value */
 "Not selected" = "Not selected";
 
-/* launcher overlay view: Dashboard tile status, before the system software is installed */
+/* launcher overlay view: Dashboard tile status, before the system software is installed
+   settings hub: System Software row value */
 "Not Set Up" = "Not Set Up";
 
 /* launcher overlay view: accessibility value */
@@ -2879,6 +2887,7 @@
    Online panel section: friends online
    Online panel: back to the list
    online view controller: title
+   settings hub: profile heading, the profile has an online account
    system link status view controller: state */
 "Online" = "Online";
 
@@ -3276,6 +3285,9 @@
    Pause menu row
    settings hub view controller: title */
 "Profile" = "Profile";
+
+/* settings hub: profile heading link */
+"Profile and Account" = "Profile and Account";
 
 /* Alert message: profile creation failed
    Toast: profile creation failed */
@@ -4539,6 +4551,9 @@
 
 /* Gamertag sheet: message */
 "Too many tries. Wait a moment and try again." = "Too many tries. Wait a moment and try again.";
+
+/* settings hub: Controls row value when no controller is connected */
+"Touch" = "Touch";
 
 /* VoiceOver label of the on-screen controller area */
 "Touch controller" = "Touch controller";

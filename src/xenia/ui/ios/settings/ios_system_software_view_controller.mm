@@ -62,10 +62,7 @@ enum InstallRow : NSInteger {
 - (void)viewDidLoad {
   [super viewDidLoad];
   if (self.showsDoneButton) {
-    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-               action:@selector(doneTapped:)] autorelease];
+    XESetSheetClose(self, self, @selector(doneTapped:));
   }
   [self reloadInfo];
 }
@@ -173,17 +170,15 @@ enum InstallRow : NSInteger {
                             destructive:(BOOL)destructive {
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
-  // Settings-style badge, as on every other list; only Remove reads in red.
-  UIColor* badge_color = !enabled      ? [XeniaTheme sectionIconGray]
-                         : destructive ? [XeniaTheme sectionIconRed]
-                                       : [XeniaTheme sectionIconBlue];
+  // A plain row symbol, as on every other list; only Remove reads in red.
+  UIColor* symbol_color = enabled && destructive ? [XeniaTheme statusError] : nil;
   cell.textLabel.text = title;
   // Wrap long titles instead of cutting them off.
   cell.textLabel.numberOfLines = 0;
   cell.textLabel.textColor = !enabled      ? [XeniaTheme textMuted]
                              : destructive ? [XeniaTheme statusError]
                                            : [XeniaTheme textPrimary];
-  cell.imageView.image = XESettingsBadgeImage(symbol_name, badge_color);
+  cell.imageView.image = XERowSymbolImage(symbol_name, symbol_color);
   cell.userInteractionEnabled = enabled;
   cell.accessibilityTraits =
       UIAccessibilityTraitButton | (enabled ? UIAccessibilityTraitNone : UIAccessibilityTraitNotEnabled);

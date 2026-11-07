@@ -19,6 +19,7 @@
 #import "xenia/ui/ios/launcher/ios_library_ambient_view.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
+#import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -40,34 +41,6 @@ static void XEPrefetchBackgroundArt(NSArray<NSNumber*>* title_ids, NSUInteger in
   xe_fetch_game_background_art(title_id.unsignedIntValue, ^(UIImage* __unused image) {
     XEPrefetchBackgroundArt(title_ids, index + 1);
   });
-}
-
-// A small, heavily blurred copy of |image| for backdrops: art that isn't sharp enough to be shown
-// large reads as colour and light instead of as blurry pixels.
-static UIImage* XEBlurredBackdropImage(UIImage* image) {
-  if (!image.CGImage) {
-    return nil;
-  }
-  static CIContext* context = [[CIContext contextWithOptions:nil] retain];
-  CIImage* input = [CIImage imageWithCGImage:image.CGImage];
-  const CGFloat longest = MAX(input.extent.size.width, input.extent.size.height);
-  if (longest <= 0.0) {
-    return nil;
-  }
-  const CGFloat scale = MIN(1.0, 160.0 / longest);
-  const CGRect extent =
-      CGRectMake(0.0, 0.0, floor(input.extent.size.width * scale),
-                 floor(input.extent.size.height * scale));
-  CIImage* small = [input imageByApplyingTransform:CGAffineTransformMakeScale(scale, scale)];
-  CIImage* blurred = [[small imageByClampingToExtent]
-      imageByApplyingGaussianBlurWithSigma:MAX(6.0, extent.size.width / 14.0)];
-  CGImageRef rendered = [context createCGImage:blurred fromRect:extent];
-  if (!rendered) {
-    return nil;
-  }
-  UIImage* result = [UIImage imageWithCGImage:rendered];
-  CGImageRelease(rendered);
-  return result;
 }
 
 @implementation XeniaIOSLauncherGameSnapshot
@@ -1009,7 +982,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                                                   configurationWithTextStyle:UIFontTextStyleBody
                                                                        scale:
                                                                            UIImageSymbolScaleMedium]]];
-  _jitStatusIcon.tintColor = [XeniaTheme sectionIconOrange];
+  _jitStatusIcon.tintColor = [XeniaTheme statusWarning];
   _jitTitleLabel = [[UILabel alloc] init];
   _jitTitleLabel.text = NSLocalizedString(@"JIT Is Off", @"launcher overlay view: JIT card title");
   _jitStatusLabel = [[UILabel alloc] init];
@@ -1315,7 +1288,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   if (_heroCompatButton.superview == row) {
     return;
   }
+  // A stack builds its constraints from the hidden state it last saw for a view, which a move
+  // between stacks can leave stale: the capsule then stays unplaced, on top of the title. Moving
+  // it hidden and showing it again makes the new stack lay it out.
+  const BOOL hidden = _heroCompatButton.hidden;
   [_heroCompatButton removeFromSuperview];
+  _heroCompatButton.hidden = YES;
   if (own_line) {
     [_heroText insertArrangedSubview:_heroCompatButton
                              atIndex:[_heroText.arrangedSubviews indexOfObject:_heroButtons]];
@@ -1323,6 +1301,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   } else {
     [_heroButtons addArrangedSubview:_heroCompatButton];
   }
+  _heroCompatButton.hidden = hidden;
 }
 
 // Upright, the game page's ⋯ sits in the header's corner, across from ✕. Beside the art it joins
@@ -1465,11 +1444,22 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroTopScrim.frame = CGRectMake(0.0, 0.0, hero_bounds.size.width, 150.0);
   _heroScrim.frame = hero_bounds;
   UIColor* page = [[XeniaTheme bgPrimary] resolvedColorWithTraitCollection:self.traitCollection];
-  // Beside the game's page the art dissolves into a dimmed blur of itself behind the rows.
-  const BOOL ambient = side && hero && (_detailGame != nil) && _ambientArt.image != nil;
+  // The art dissolves into a dimmed blur of itself: behind a game's rows, and behind the Library
+  // when its background is the game's colours, so the Library and the game's page read the same.
+  // The turning colour field read too saturated behind rows; it stays for the green background.
+  const BOOL game_colours =
+      XeniaLibraryBackgroundSetting() == XeniaLibraryBackgroundGameColours;
+  const BOOL ambient =
+      hero && (_detailGame != nil || game_colours) && _ambientArt.image != nil;
   _ambientArt.frame = bounds;
   _ambientDim.frame = _ambientArt.bounds;
   _ambientArt.alpha = ambient ? 1.0 : 0.0;
+  // The blur covers the field; the field stops drawing while it can't be seen.
+  const CGFloat field_alpha = ambient ? 0.0 : 1.0;
+  if (_ambientField.alpha != field_alpha) {
+    _ambientField.alpha = field_alpha;
+    [_ambientField visibilityMayHaveChanged];
+  }
   // The dissolve masks the art and its scrims, not the hero, so the title and buttons stay whole.
   // Each mask is in its own layer's space: solid to 55% of the hero's width, clear at its edge.
   const BOOL field = _ambientField.drawsBackground;
@@ -1512,12 +1502,12 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   // A cover's blur behind the hero: over the Library Background the field draws it, lined up
   // and toned like the rest of the page, so the page reads as one piece from top to bottom.
   _heroArt.alpha = field && _heroArtIsCover && !ambient ? 0.0 : 1.0;
-  if (ambient || (field && side)) {
+  if (side && (ambient || field)) {
     _heroArt.layer.mask = dissolve_for(_heroArt.layer);
     _heroScrim.mask = dissolve_for(_heroScrim);
     _heroTopScrim.mask = dissolve_for(_heroTopScrim);
     _heroView.backgroundColor = UIColor.clearColor;
-  } else if (field) {
+  } else if (field || ambient) {
     _heroArt.layer.mask = fade_down(_heroArt.layer);
     _heroScrim.mask = fade_down(_heroScrim);
     _heroTopScrim.mask = nil;
@@ -1540,8 +1530,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
     _heroScrim.locations = @[ @0.0, @0.45, @1.0 ];
     _heroScrim.startPoint = CGPointMake(0.5, 0.0);
     _heroScrim.endPoint = CGPointMake(0.5, 1.0);
-  } else if (side && ambient) {
-    // Darkens toward the text at the bottom only; the right edge is the mask's.
+  } else if (ambient) {
+    // Darkens toward the text at the bottom only; the far edge is the mask's.
     _heroScrim.colors = @[
       (id)[page colorWithAlphaComponent:0.0].CGColor, (id)[page colorWithAlphaComponent:0.0].CGColor,
       (id)[page colorWithAlphaComponent:0.5].CGColor
@@ -1670,6 +1660,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroArt.image = _heroArtIsCover ? blurred : image;
   _heroCover.image = _heroArtIsCover ? image : nil;
   _ambientArt.image = blurred;
+  XESetArtWashImage(blurred);  // Every sheet opened from here sits on the same wash.
   [_ambientField setGameImage:image
                           key:image ? [NSString stringWithFormat:@"%08X-%d", _heroArtTitleId,
                                                                  _heroArtIsCover]

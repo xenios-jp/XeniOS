@@ -56,10 +56,7 @@ NSString* XeniaGameDiscDetail(const xe::ui::IOSDiscoveredGame::Disc& disc) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(doneTapped:));
 }
 
 - (void)doneTapped:(id)__unused sender {
@@ -122,7 +119,7 @@ NSString* XeniaGameDiscDetail(const xe::ui::IOSDiscoveredGame::Disc& disc) {
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text = XeniaGameDiscDetail(disc);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  cell.imageView.image = XESettingsBadgeImage(@"opticaldisc", [XeniaTheme accent]);
+  cell.imageView.image = XERowSymbolImage(@"opticaldisc", nil);
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityLabel = cell.textLabel.text;

@@ -399,15 +399,14 @@ std::string UniqueTouchControlIdentifier(const xe::hid::touch::IOSTouchLayoutMod
   self.title = NSLocalizedString(@"Tune", @"Title of the touch analog tuning screen");
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   self.view.backgroundColor = [UIColor clearColor];
-  self.navigationItem.rightBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                     target:self
-                                                     action:@selector(donePressed:)] autorelease];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Reset", @"Button resetting the touch analog tuning values")
-              style:UIBarButtonItemStylePlain
-             target:self
-             action:@selector(resetTunePressed:)] autorelease];
+  XESetSheetClose(self, self, @selector(donePressed:));
+  XESetSheetActions(self, @[ [[[UIBarButtonItem alloc]
+                              initWithTitle:NSLocalizedString(
+                                                @"Reset",
+                                                @"Button resetting the touch analog tuning values")
+                                      style:UIBarButtonItemStylePlain
+                                     target:self
+                                     action:@selector(resetTunePressed:)] autorelease] ]);
 
   scroll_view_ = [[UIScrollView alloc] initWithFrame:CGRectZero];
   scroll_view_.alwaysBounceVertical = YES;

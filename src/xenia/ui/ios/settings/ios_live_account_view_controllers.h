@@ -20,6 +20,9 @@
 // |profile_gamertag| is the active profile's (offline) name.
 UIViewController* xe_ios_new_account_view_controller(NSString* profile_gamertag);
 
+// Move Profile: exports the online profile to a file, for AirDrop or Files.
+void xe_ios_present_move_profile(UIViewController* presenter);
+
 // The gamertag sheet for going online (claims the name, renames the profile in place),
 // then the recovery code once for a new account. |done| runs when the profile is online.
 void xe_ios_present_go_online(UIViewController* presenter, NSString* profile_gamertag,

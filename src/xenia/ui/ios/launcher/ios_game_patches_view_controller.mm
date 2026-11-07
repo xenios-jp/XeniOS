@@ -110,10 +110,7 @@ NSAttributedString* PatchDetailText(const xe::ui::IOSPatchEntrySummary& patch) {
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 76.0;
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(doneTapped:));
   [self reloadPatches];
 }
 

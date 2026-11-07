@@ -169,6 +169,7 @@ NSString* AgoText(NSDate* date) {
   NSArray<XeniaLiveFriend*>* in_game_;
   NSArray<XeniaLiveFriend*>* online_;
   NSArray<XeniaLiveFriend*>* offline_;
+  UIBarButtonItem* add_item_;  // Owned by the header.
   NSArray<XeniaLiveFriend*>* sent_;
   // Friends invited from this screen (Invite mode): their button says so.
   NSMutableSet<NSNumber*>* invited_;
@@ -225,17 +226,15 @@ NSString* AgoText(NSDate* date) {
   if (game_title_.length) {
     self.navigationItem.subtitle = game_title_;
   }
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                           target:self
-                           action:@selector(closeTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(closeTapped:));
   UIBarButtonItem* add = [[[UIBarButtonItem alloc]
       initWithImage:[UIImage systemImageNamed:@"person.badge.plus"]
               style:UIBarButtonItemStylePlain
              target:self
              action:@selector(addTapped:)] autorelease];
   add.accessibilityLabel = NSLocalizedString(@"Add Friend", @"Friends: add friend button");
-  self.navigationItem.rightBarButtonItem = add;
+  add_item_ = add;
+  XESetSheetActions(self, @[ add ]);
   [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kCellId];
   // With dozens of friends the list needs a way in: search covers all of them, offline too.
   search_controller_ = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -349,7 +348,7 @@ NSString* AgoText(NSDate* date) {
   [sections_ release];
   sections_ = [sections copy];
 
-  self.navigationItem.rightBarButtonItem.enabled = online;
+  add_item_.enabled = online;
   self.navigationItem.searchController.searchBar.userInteractionEnabled = online;
   self.contentUnavailableConfiguration =
       searching && !sections.count ? [UIContentUnavailableConfiguration searchConfiguration] : nil;
@@ -1121,6 +1120,7 @@ static const NSUInteger kPartyFoldsAbove = 3;
 
 @implementation XeniaIOSAddFriendViewController {
   UITextField* field_;
+  UIButton* send_button_;  // Owned by the commit helper.
   XeniaIOSStatusToastPresenter* toast_;
 }
 
@@ -1136,13 +1136,9 @@ static const NSUInteger kPartyFoldsAbove = 3;
   [super viewDidLoad];
   self.title = NSLocalizedString(@"Add Friend", @"Add Friend screen title");
   toast_ = [[XeniaIOSStatusToastPresenter alloc] init];
-  UIBarButtonItem* send = [[[UIBarButtonItem alloc]
-      initWithTitle:NSLocalizedString(@"Send", @"Add Friend: send the request")
-              style:UIBarButtonItemStyleProminent
-             target:self
-             action:@selector(sendTapped:)] autorelease];
-  send.enabled = NO;
-  self.navigationItem.rightBarButtonItem = send;
+  send_button_ = XESetFormCommit(
+      self, NSLocalizedString(@"Send Request", @"Add Friend: send the request"), self,
+      @selector(sendTapped:));
 
   field_ = [[UITextField alloc] init];
   field_.placeholder = NSLocalizedString(@"Friend Code", @"Add Friend: code field placeholder");
@@ -1190,7 +1186,7 @@ static const NSUInteger kPartyFoldsAbove = 3;
 }
 
 - (void)codeChanged:(UITextField*)__unused field {
-  self.navigationItem.rightBarButtonItem.enabled = xe_ios_normalize_friend_code(field_.text) != nil;
+  send_button_.enabled = xe_ios_normalize_friend_code(field_.text) != nil;
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField*)__unused textField {
@@ -1216,7 +1212,7 @@ static const NSUInteger kPartyFoldsAbove = 3;
   }
   [[XeniaLiveSocial shared] addFriendWithCode:code];
   field_.text = nil;
-  self.navigationItem.rightBarButtonItem.enabled = NO;
+  send_button_.enabled = NO;
   [toast_ presentMessage:NSLocalizedString(@"Friend request sent.", @"Add Friend toast")
                    style:XeniaIOSStatusToastStyleSuccess
                   inView:self.navigationController.view ?: self.view];

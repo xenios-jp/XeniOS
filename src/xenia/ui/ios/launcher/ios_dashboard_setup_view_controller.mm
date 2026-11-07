@@ -164,10 +164,7 @@ constexpr CGFloat kContentWidth = 440.0;
   // The page's own heading names it; a large title above it would say it twice, cut short.
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   self.navigationItem.title = @"";
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-                                       action:@selector(closeTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(closeTapped:));
   [self showStage];
 }
 

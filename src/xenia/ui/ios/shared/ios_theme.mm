@@ -31,18 +31,6 @@ inline UIColor* XEDynamicTokenColor(
   }];
 }
 
-// Same pattern but pulls from the section-icon palette, which is part of the
-// per-variant ThemeTokens (so dark/light pick different shades automatically).
-inline UIColor* XEDynamicSectionIconColor(
-    xe::ui::apple::ColorRGBA8 (^accessor)(const xe::ui::apple::ThemeSectionIconTokens&)) {
-  return [UIColor colorWithDynamicProvider:^UIColor*(UITraitCollection* traits) {
-    const auto& tokens = (traits.userInterfaceStyle == UIUserInterfaceStyleLight)
-                             ? xe::ui::apple::GetLightThemeTokens()
-                             : xe::ui::apple::GetDarkThemeTokens();
-    return XEColorFromToken(accessor(tokens.section_icons));
-  }];
-}
-
 // Picks the right shadow recipe for the given elevation. Same recipe in both
 // variants; only the alpha shifts.
 inline const xe::ui::apple::ThemeShadow& XEShadowForElevation(XeniaShadowElevation elevation) {
@@ -195,36 +183,6 @@ XeniaTextStyle XeniaTextStyleTitle2(void) {
     return c.overlay_light;
   });
 }
-+ (UIColor*)sectionIconBlue {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.blue;
-  });
-}
-+ (UIColor*)sectionIconIndigo {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.indigo;
-  });
-}
-+ (UIColor*)sectionIconOrange {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.orange;
-  });
-}
-+ (UIColor*)sectionIconPurple {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.purple;
-  });
-}
-+ (UIColor*)sectionIconRed {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.red;
-  });
-}
-+ (UIColor*)sectionIconGray {
-  return XEDynamicSectionIconColor(^(const xe::ui::apple::ThemeSectionIconTokens& c) {
-    return c.gray;
-  });
-}
 + (UIColor*)touchTintAmber {
   return XEColorFromToken(xe::ui::apple::GetTouchTintTokens().amber);
 }
@@ -257,6 +215,29 @@ XeniaTextStyle XeniaTextStyleTitle2(void) {
     return [UIColor colorWithWhite:0.0 alpha:alpha];
   }];
 }
+static UIColor* XEGlassColor(xe::ui::apple::ColorRGBA8 c) {
+  return [UIColor colorWithRed:c.Rf() green:c.Gf() blue:c.Bf() alpha:c.Af()];
+}
++ (UIColor*)glassSheet { return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.sheet); }
++ (UIColor*)glassCardTint {
+  return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.card_tint);
+}
++ (UIColor*)glassGroupFill {
+  return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.group_fill);
+}
++ (UIColor*)glassHairline {
+  return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.hairline);
+}
++ (UIColor*)glassCardEdge {
+  return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.card_edge);
+}
++ (UIColor*)glassDim { return XEGlassColor(xe::ui::apple::GetDarkThemeTokens().glass.dim); }
++ (CGFloat)glassCardRadius { return xe::ui::apple::GetDarkThemeTokens().glass.card_radius; }
++ (CGFloat)glassGroupRadius { return xe::ui::apple::GetDarkThemeTokens().glass.group_radius; }
++ (CGFloat)glassControlSize { return xe::ui::apple::GetDarkThemeTokens().glass.control_size; }
++ (CGFloat)glassTileSize { return xe::ui::apple::GetDarkThemeTokens().glass.tile_size; }
++ (CGFloat)glassRowMinHeight { return xe::ui::apple::GetDarkThemeTokens().glass.row_min_height; }
++ (CGFloat)glassCardInset { return xe::ui::apple::GetDarkThemeTokens().glass.card_inset; }
 + (CGFloat)spacingXs { return xe::ui::apple::GetDarkThemeTokens().spacing.xs; }
 + (CGFloat)spacingSm { return xe::ui::apple::GetDarkThemeTokens().spacing.sm; }
 + (CGFloat)spacingMd { return xe::ui::apple::GetDarkThemeTokens().spacing.md; }

@@ -58,14 +58,8 @@
     self.navigationItem.prompt = game_title_;
   }
   self.view.backgroundColor = [UIColor blackColor];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
-  self.navigationItem.rightBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                     target:self
-                                                     action:@selector(doneTapped:)] autorelease];
+  // The layout saves on close, so ✕ is the only way out.
+  XESetSheetClose(self, self, @selector(doneTapped:));
 
   overlay_ = [[XeniaTouchControlsOverlayView alloc] initWithRuntimeModel:runtime_model_.get()];
   overlay_.translatesAutoresizingMaskIntoConstraints = NO;

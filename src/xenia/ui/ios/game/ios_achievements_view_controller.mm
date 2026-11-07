@@ -56,6 +56,7 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   BOOL show_locked_info_;
   xe::ui::IOSAchievementsSnapshot snapshot_;
   void (^dismissal_handler_)(void);
+  UIBarButtonItem* show_hidden_item_;
 }
 
 @synthesize dismissalHandler = dismissal_handler_;
@@ -76,6 +77,7 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 - (void)dealloc {
   // Never leave a guest waiting on this sheet.
   [self runDismissalHandlerOnce];
+  [show_hidden_item_ release];
   [super dealloc];
 }
 
@@ -99,16 +101,14 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
               return a.achievement_id < b.achievement_id;
             });
 
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(closeTapped:)] autorelease];
-  self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
+  XESetSheetClose(self, self, @selector(closeTapped:));
+  show_hidden_item_ = [[UIBarButtonItem alloc]
       initWithTitle:NSLocalizedString(@"Show Hidden",
                                       @"Navigation bar button that reveals hidden achievements")
               style:UIBarButtonItemStylePlain
              target:self
-             action:@selector(toggleHiddenInfo:)] autorelease];
+             action:@selector(toggleHiddenInfo:)];
+  XESetSheetActions(self, @[ show_hidden_item_ ]);
   self.tableView.tableHeaderView = [self summaryHeaderView];
 }
 
@@ -245,7 +245,7 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
 
 - (void)toggleHiddenInfo:(id)sender {
   show_locked_info_ = !show_locked_info_;
-  self.navigationItem.rightBarButtonItem.title =
+  show_hidden_item_.title =
       show_locked_info_
           ? NSLocalizedString(@"Hide Hidden",
                               @"Navigation bar button toggling hidden achievement details")
