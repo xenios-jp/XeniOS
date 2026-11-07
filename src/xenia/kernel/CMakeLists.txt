@@ -17,7 +17,7 @@ if(XE_TARGET_X86_64)
   )
 endif()
 target_link_libraries(xenia-kernel PUBLIC
-  asio fmt mbedtls zlib-ng pugixml xenia-apu xenia-base xenia-cpu
+  asio fmt mbedtls zlib-ng pugixml xenia-apu xenia-apu-voice xenia-base xenia-cpu
   xenia-hid xenia-net xenia-vfs
 )
 if(WIN32)

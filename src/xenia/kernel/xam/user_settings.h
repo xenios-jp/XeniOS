@@ -547,8 +547,12 @@ class UserSetting : public UserData {
   }
 };
 
-const static std::array<UserSetting, 3> default_setting_values = {
+const static std::array<UserSetting, 4> default_setting_values = {
     UserSetting(UserSettingId::XPROFILE_OPTION_CONTROLLER_VIBRATION, 3),
+    // Titles scale headset playback by it, and 0 is silence. Measured with
+    // Halo 3: 10 plays speech about 3 dB below what was sent, 20 about 3 dB
+    // above, clipping. The console's own default isn't known.
+    UserSetting(UserSettingId::XPROFILE_OPTION_VOICE_VOLUME, 10),
     UserSetting(
         UserSettingId::XPROFILE_GAMER_TIER,
         X_XAMACCOUNTINFO::AccountSubscriptionTier::kSubscriptionTierGold),

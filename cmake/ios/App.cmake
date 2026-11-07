@@ -51,6 +51,7 @@ target_link_libraries(xenia-app PRIVATE
   xenia-apu-nop
   xenia-apu-phase
   xenia-apu-sdl
+  xenia-apu-voice-apple
   xenia-base
   xenia-core
   xenia-cpu
