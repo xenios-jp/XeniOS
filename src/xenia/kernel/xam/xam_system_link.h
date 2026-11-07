@@ -57,6 +57,10 @@ void SystemLinkRoomChanged();
 // The running title asked for the network link while System Link is off.
 void SystemLinkOffQueried(KernelState* kernel_state);
 
+// The lobby whose session directory Live matchmaking uses: the relay's, when
+// System Link goes through the relay. Empty otherwise.
+std::string LiveSessionLobby();
+
 // Whether the running title has cross-platform System Link.
 bool CrossPlatformTitle(KernelState* kernel_state);
 // Whether the running title uses cross-platform System Link.

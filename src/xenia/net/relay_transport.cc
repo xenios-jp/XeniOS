@@ -540,4 +540,9 @@ void SetLobbySocketFactory(LobbySocketFactory factory) {
   lobby_factory = std::move(factory);
 }
 
+LobbySocketFactory GetLobbySocketFactory() {
+  std::lock_guard lock(factory_mutex);
+  return lobby_factory;
+}
+
 }  // namespace xe::net::secure

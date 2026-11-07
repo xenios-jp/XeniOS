@@ -10,12 +10,15 @@
 #include "xenia/kernel/xsession.h"
 
 #include <algorithm>
+#include <cstring>
 #include <span>
+#include <tuple>
 
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_tracker.h"
+#include "xenia/kernel/xam/xam_live_sessions.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/net/system_link.h"
@@ -101,6 +104,23 @@ X_RESULT XSession::Create(uint32_t flags, uint32_t user_index,
                           uint32_t session_info_ptr, uint32_t nonce_ptr) {
   {
     std::lock_guard lock(mutex_);
+    user_index_ = user_index;  // CreatorContext reads it.
+  }
+  // Flag combinations XAM refuses (from the Netplay fork).
+  if ((flags & SessionFlags::JOIN_VIA_PRESENCE_DISABLED) &&
+      (flags & SessionFlags::JOIN_VIA_PRESENCE_FRIENDS_ONLY)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  if ((flags & SessionFlags::ARBITRATION) &&
+      !(flags & (SessionFlags::STATS | SessionFlags::PEER_NETWORK))) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  if (CreatorContext(kContextGameType) == kGameTypeRanked &&
+      !(flags & SessionFlags::ARBITRATION)) {
+    return 0x80155205;  // X_ONLINE_E_SESSION_REQUIRES_ARBITRATION
+  }
+  {
+    std::lock_guard lock(mutex_);
     flags_ = flags;
     user_index_ = user_index;
     max_public_slots_ = max_public_slots;
@@ -135,6 +155,8 @@ X_RESULT XSession::Create(uint32_t flags, uint32_t user_index,
   {
     std::lock_guard lock(mutex_);
     info_ = *info;
+    has_info_ = true;
+    PublishLocked();
   }
   if (!link) {
     return X_ERROR_SUCCESS;
@@ -152,10 +174,17 @@ X_RESULT XSession::Create(uint32_t flags, uint32_t user_index,
   return X_ERROR_SUCCESS;
 }
 
+XSession::~XSession() {
+  if (published_) {
+    xam::WithdrawLiveSession(info_.session_id);
+  }
+}
+
 X_RESULT XSession::DeleteSession() {
   {
     std::lock_guard lock(mutex_);
     state_ = kDeleted;
+    PublishLocked();
   }
   if (registered_key_) {
     if (auto link = system_link_.lock()) {
@@ -200,6 +229,7 @@ void XSession::Join(uint32_t count, uint32_t xuids_ptr,
       members_.push_back(member);
     }
   }
+  PublishLocked();
 }
 
 void XSession::Leave(uint32_t count, uint32_t xuids_ptr,
@@ -219,6 +249,7 @@ void XSession::Leave(uint32_t count, uint32_t xuids_ptr,
                     [&](const Member& member) { return member.xuid == xuid; });
     }
   }
+  PublishLocked();
 }
 
 void XSession::Start() {
@@ -230,6 +261,7 @@ void XSession::Start() {
     game_mode_ = CreatorContext(kContextGameMode);
   }
   state_ = kInGame;
+  PublishLocked();
 }
 
 void XSession::End() {
@@ -237,6 +269,7 @@ void XSession::End() {
   if (state_ == kInGame) {
     state_ = kLobby;
   }
+  PublishLocked();
 }
 
 X_RESULT XSession::Modify(uint32_t flags, uint32_t max_public_slots,
@@ -269,6 +302,7 @@ X_RESULT XSession::Modify(uint32_t flags, uint32_t max_public_slots,
   }
   max_public_slots_ = max_public_slots;
   max_private_slots_ = max_private_slots;
+  PublishLocked();
   return X_ERROR_SUCCESS;
 }
 
@@ -315,7 +349,7 @@ X_RESULT XSession::GetDetails(uint32_t size_ptr, uint32_t details_ptr) {
   details->state = state_;
   details->nonce = nonce_;
   details->session_info = info_;
-  details->arbitration_id = {};
+  details->arbitration_id = arbitration_id_;
 
   // Members follow the details and those that don't fit are only counted.
   const uint32_t members_ptr =
@@ -343,6 +377,135 @@ std::pair<uint32_t, uint32_t> XSession::UsedSlots() const {
   const auto used_private = uint32_t(std::ranges::count_if(
       members_, [](const Member& member) { return member.private_slot; }));
   return {uint32_t(members_.size()) - used_private, used_private};
+}
+
+X_RESULT XSession::RegisterArbitration(uint32_t results_size,
+                                       uint32_t results_ptr) {
+  net::KeyId session_id;
+  xam::ArbitrationRegistrant self;
+  std::vector<uint64_t> members;
+  {
+    std::lock_guard lock(mutex_);
+    if (state_ != kLobby && state_ != kRegistration) {
+      return 0x80155206;  // X_ONLINE_E_SESSION_WRONG_STATE
+    }
+    session_id = info_.session_id;
+    // Titles add their own players by XUID too, so a player is local when a
+    // profile signed in here has that XUID.
+    auto* xam = kernel_state_->xam_state();
+    auto local = [xam](uint64_t xuid) {
+      for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+        const auto* profile = xam->GetUserProfile(i);
+        if (profile && (profile->GetLogonXUID() == xuid ||
+                        profile->xuid() == xuid)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const auto& member : members_) {
+      members.push_back(member.xuid);
+      if (member.user_index != XUserIndexNone || local(member.xuid)) {
+        self.xuids.push_back(member.xuid);
+      }
+    }
+    state_ = kRegistration;
+  }
+  if (auto link = xam::GetSystemLink(kernel_state_)) {
+    self.machine_id = net::SystemLink::MachineId(link->identity());
+  }
+  // Live answered once every machine had registered or the registration
+  // window closed. 5 s covers machines that register together; see the TODO
+  // in xam_live_sessions.cc for one that comes later.
+  const auto registrants =
+      xam::RegisterArbitration(kernel_state_, session_id, self, members, 5000);
+
+  // XSESSION_REGISTRATION_RESULTS, the XSESSION_REGISTRANTs, then their XUIDs.
+  constexpr uint32_t kRegistrantSize = 0x18;
+  uint32_t needed = 8 + uint32_t(registrants.size()) * kRegistrantSize;
+  for (const auto& registrant : registrants) {
+    needed += uint32_t(registrant.xuids.size()) * 8;
+  }
+  if (!results_ptr || results_size < needed) {
+    return X_E_INSUFFICIENT_BUFFER;
+  }
+  auto* results = memory()->TranslateVirtual<uint8_t*>(results_ptr);
+  std::memset(results, 0, needed);
+  xe::store_and_swap<uint32_t>(results, uint32_t(registrants.size()));
+  xe::store_and_swap<uint32_t>(results + 4, results_ptr + 8);
+  uint32_t xuids_ptr =
+      results_ptr + 8 + uint32_t(registrants.size()) * kRegistrantSize;
+  for (size_t i = 0; i < registrants.size(); ++i) {
+    auto* registrant = results + 8 + i * kRegistrantSize;
+    xe::store_and_swap<uint64_t>(registrant, registrants[i].machine_id);
+    xe::store_and_swap<uint32_t>(registrant + 8, 1);  // Trustworthiness.
+    xe::store_and_swap<uint32_t>(registrant + 0xC,
+                                 uint32_t(registrants[i].xuids.size()));
+    xe::store_and_swap<uint32_t>(registrant + 0x10, xuids_ptr);
+    for (const uint64_t xuid : registrants[i].xuids) {
+      xe::store_and_swap<uint64_t>(memory()->TranslateVirtual(xuids_ptr), xuid);
+      xuids_ptr += 8;
+    }
+  }
+  std::lock_guard lock(mutex_);
+  arbitration_id_ = session_id;
+  return X_E_SUCCESS;
+}
+
+void XSession::PublishLocked() {
+  const bool joinable =
+      state_ != kDeleted &&
+      !(state_ >= kInGame && (flags_ & SessionFlags::JOIN_IN_PROGRESS_DISABLED));
+  if (!has_info_ || !(flags_ & SessionFlags::HOST) ||
+      !(flags_ & SessionFlags::MATCHMAKING) || !joinable) {
+    if (published_) {
+      xam::WithdrawLiveSession(info_.session_id);
+      published_ = false;
+    }
+    return;
+  }
+  auto* xam = kernel_state_->xam_state();
+  const auto* profile = xam->GetUserProfile(user_index_);
+  if (!profile) {
+    return;
+  }
+  xam::LiveSessionAdvert advert;
+  advert.info = info_;
+  advert.flags = flags_;
+  advert.max_public_slots = max_public_slots_;
+  advert.max_private_slots = max_private_slots_;
+  std::tie(advert.used_public_slots, advert.used_private_slots) = UsedSlots();
+  advert.host_xuid = profile->xuid();
+  advert.in_game = state_ >= kInGame;
+  auto* tracker = xam->user_tracker();
+  for (const auto key : tracker->GetUserContextIds(profile->xuid())) {
+    if (const auto value = tracker->GetUserContext(profile->xuid(), key.value)) {
+      advert.contexts.push_back({key.value, *value});
+    }
+  }
+  for (const auto key : tracker->GetUserPropertyIds(profile->xuid())) {
+    switch (static_cast<xam::X_USER_DATA_TYPE>(key.type)) {
+      case xam::X_USER_DATA_TYPE::INT32:
+      case xam::X_USER_DATA_TYPE::INT64:
+      case xam::X_USER_DATA_TYPE::DOUBLE:
+      case xam::X_USER_DATA_TYPE::FLOAT:
+      case xam::X_USER_DATA_TYPE::DATETIME:
+        break;
+      default:
+        continue;  // Strings and blobs would need guest memory.
+    }
+    xam::XUSER_PROPERTY property{};
+    property.property_id = key.value;
+    uint32_t size = 0;
+    if (tracker->GetProperty(profile->xuid(), &size, &property) ==
+        X_E_SUCCESS) {
+      xam::LiveSessionAdvert::Property entry{key.value, {}};
+      std::memcpy(entry.data.data(), &property.data, entry.data.size());
+      advert.properties.push_back(entry);
+    }
+  }
+  xam::AdvertiseLiveSession(kernel_state_, advert);
+  published_ = true;
 }
 
 uint32_t XSession::CreatorContext(uint32_t id) const {

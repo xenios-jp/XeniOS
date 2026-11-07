@@ -11,6 +11,7 @@
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_live_sessions.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xenumerator.h"
@@ -442,6 +443,45 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       }
       return session->Modify(flags, max_public_slots, max_private_slots);
     }
+    case 0x000B001A: {
+      assert_true(!buffer_length || buffer_length == 0x20);
+      const uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
+      // After the flags: the 64-bit nonce at 0x8 and the duration at 0x10.
+      const uint32_t results_size = xe::load_and_swap<uint32_t>(buffer + 0x14);
+      const uint32_t results_ptr = xe::load_and_swap<uint32_t>(buffer + 0x18);
+      XELOGD("XSessionArbitrationRegister({:08X}, {}, {:08X})", session_ptr,
+             results_size, results_ptr);
+      auto session = XSession::FromGuest(kernel_state_, session_ptr);
+      if (!session) {
+        return X_E_INVALIDARG;
+      }
+      return session->RegisterArbitration(results_size, results_ptr);
+    }
+    case 0x000B0016:  // XSessionSearch: XSessionSearchEx without num_users.
+    case 0x000B001C: {
+      assert_true(!buffer_length || buffer_length == 0x20 ||
+                  buffer_length == 0x24);
+      return SessionSearch(buffer);
+    }
+    case 0x000B0065: {
+      assert_true(!buffer_length || buffer_length == 0x34);
+      return SessionSearchWeighted(buffer);
+    }
+    case 0x000B001B: {  // XSessionSearchByID
+      assert_true(!buffer_length || buffer_length == 0x14);
+      return SessionSearchByIds(buffer, buffer + 0x4, 1, 0xC, 0x10);
+    }
+    case 0x000B0060: {  // XSessionSearchByIds
+      assert_true(!buffer_length || buffer_length == 0x20);
+      const uint32_t count = xe::load_and_swap<uint32_t>(buffer + 0x4);
+      const uint32_t ids_ptr = xe::load_and_swap<uint32_t>(buffer + 0x8);
+      if (!ids_ptr || !count || count > 100) {
+        return X_E_INVALIDARG;
+      }
+      return SessionSearchByIds(
+          buffer, memory_->TranslateVirtual<const uint8_t*>(ids_ptr), count,
+          0xC, 0x10);
+    }
     case 0x000B001D: {
       assert_true(!buffer_length || buffer_length == 0x18);
       uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
@@ -666,6 +706,220 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       "arg2={:08X}",
       app_id(), message, buffer_ptr, buffer_length);
   return X_E_FAIL;
+}
+
+// Writes an XSESSION_SEARCHRESULT_HEADER and as many of |sessions| as fit in
+// |buffer_size| (at most |max_results|): the results, then each one's
+// properties and contexts. Returns how many it wrote.
+uint32_t XgiApp::WriteSearchResults(
+    const std::vector<LiveSessionAdvert>& sessions, uint32_t max_results,
+    uint32_t buffer_size, uint32_t results_ptr) {
+  // The header, the results, then each result's properties and contexts.
+  constexpr uint32_t kResultSize = 0x5C;
+  uint32_t count = std::min<uint32_t>(uint32_t(sessions.size()), max_results);
+  auto needed = [&](uint32_t n) {
+    uint32_t size = 8 + n * kResultSize;
+    for (uint32_t i = 0; i < n; ++i) {
+      size += uint32_t(sessions[i].properties.size()) * 0x18 +
+              uint32_t(sessions[i].contexts.size()) * 8;
+    }
+    return size;
+  };
+  while (count && needed(count) > buffer_size) {
+    --count;
+  }
+
+  auto* header = memory_->TranslateVirtual<uint8_t*>(results_ptr);
+  std::memset(header, 0, std::min(buffer_size, needed(count)));
+  xe::store_and_swap<uint32_t>(header, count);
+  xe::store_and_swap<uint32_t>(header + 4, count ? results_ptr + 8 : 0);
+  uint32_t extra = results_ptr + 8 + count * kResultSize;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& session = sessions[i];
+    auto* result =
+        memory_->TranslateVirtual<uint8_t*>(results_ptr + 8 + i * kResultSize);
+    std::memcpy(result, &session.info, sizeof(session.info));
+    xe::store_and_swap<uint32_t>(
+        result + 0x3C, session.max_public_slots - session.used_public_slots);
+    xe::store_and_swap<uint32_t>(
+        result + 0x40,
+        session.max_private_slots -
+            std::min(session.used_private_slots, session.max_private_slots));
+    xe::store_and_swap<uint32_t>(result + 0x44, session.used_public_slots);
+    xe::store_and_swap<uint32_t>(result + 0x48, session.used_private_slots);
+    xe::store_and_swap<uint32_t>(result + 0x4C,
+                                 uint32_t(session.properties.size()));
+    xe::store_and_swap<uint32_t>(result + 0x50,
+                                 uint32_t(session.contexts.size()));
+    xe::store_and_swap<uint32_t>(result + 0x54,
+                                 session.properties.empty() ? 0 : extra);
+    for (const auto& property : session.properties) {
+      auto* out = memory_->TranslateVirtual<uint8_t*>(extra);
+      xe::store_and_swap<uint32_t>(out, property.id);
+      std::memcpy(out + 8, property.data.data(), property.data.size());
+      extra += 0x18;
+    }
+    xe::store_and_swap<uint32_t>(result + 0x58,
+                                 session.contexts.empty() ? 0 : extra);
+    for (const auto& context : session.contexts) {
+      auto* out = memory_->TranslateVirtual<uint8_t*>(extra);
+      xe::store_and_swap<uint32_t>(out, context.id);
+      xe::store_and_swap<uint32_t>(out + 4, context.value);
+      extra += 8;
+    }
+  }
+  return count;
+}
+
+// XSessionSearchByID(s): the announced sessions with the given IDs, full or
+// not (invites and joining a friend look a session up by its ID). A size of 0
+// asks for the size needed.
+X_HRESULT XgiApp::SessionSearchByIds(uint8_t* args, const uint8_t* ids,
+                                     uint32_t id_count,
+                                     uint32_t size_offset,
+                                     uint32_t results_offset) {
+  const uint32_t user_index = xe::load_and_swap<uint32_t>(args);
+  const uint32_t buffer_size = xe::load_and_swap<uint32_t>(args + size_offset);
+  const uint32_t results_ptr =
+      xe::load_and_swap<uint32_t>(args + results_offset);
+  constexpr uint32_t kResultSize = 0x5C;
+  if (user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  if (!buffer_size) {
+    xe::store_and_swap<uint32_t>(args + size_offset,
+                                 8 + id_count * kResultSize);
+    return 0x80155207;  // X_ONLINE_E_SESSION_INSUFFICIENT_BUFFER
+  }
+  if (!results_ptr || buffer_size < 8) {
+    return X_E_INVALIDARG;
+  }
+  auto sessions = FindLiveSessions(kernel_state_, 1500);
+  std::erase_if(sessions, [&](const LiveSessionAdvert& session) {
+    for (uint32_t i = 0; i < id_count; ++i) {
+      if (!std::memcmp(session.info.session_id.data(), ids + i * 8, 8)) {
+        return false;
+      }
+    }
+    return true;
+  });
+  const uint32_t count =
+      WriteSearchResults(sessions, id_count, buffer_size, results_ptr);
+  XELOGI("XSessionSearchByIds({} IDs) -> {} found", id_count, count);
+  return X_E_SUCCESS;
+}
+
+X_HRESULT XgiApp::SessionSearch(const uint8_t* args) {
+  SearchQuery query;
+  query.proc_index = xe::load_and_swap<uint32_t>(args + 0x0);
+  query.max_results = xe::load_and_swap<uint32_t>(args + 0x8);
+  query.num_props = xe::load_and_swap<uint16_t>(args + 0xC);
+  query.num_contexts = xe::load_and_swap<uint16_t>(args + 0xE);
+  query.props_ptr = xe::load_and_swap<uint32_t>(args + 0x10);
+  query.contexts_ptr = xe::load_and_swap<uint32_t>(args + 0x14);
+  query.buffer_size = xe::load_and_swap<uint32_t>(args + 0x18);
+  query.results_ptr = xe::load_and_swap<uint32_t>(args + 0x1C);
+  return SessionSearch(query, "XSessionSearch");
+}
+
+// XSessionSearchWeighted (Halo: Reach): XSessionSearchEx plus properties and
+// contexts the server ranks results by. Those only order results on Live,
+// so they're logged and the rest is an ordinary search.
+X_HRESULT XgiApp::SessionSearchWeighted(const uint8_t* args) {
+  SearchQuery query;
+  query.proc_index = xe::load_and_swap<uint32_t>(args + 0x0);
+  query.max_results = xe::load_and_swap<uint32_t>(args + 0x8);
+  const uint16_t num_weighted_props = xe::load_and_swap<uint16_t>(args + 0xC);
+  const uint16_t num_weighted_contexts =
+      xe::load_and_swap<uint16_t>(args + 0xE);
+  const uint32_t weighted_props_ptr = xe::load_and_swap<uint32_t>(args + 0x10);
+  const uint32_t weighted_contexts_ptr =
+      xe::load_and_swap<uint32_t>(args + 0x14);
+  query.num_props = xe::load_and_swap<uint16_t>(args + 0x18);
+  query.num_contexts = xe::load_and_swap<uint16_t>(args + 0x1A);
+  query.props_ptr = xe::load_and_swap<uint32_t>(args + 0x1C);
+  query.contexts_ptr = xe::load_and_swap<uint32_t>(args + 0x20);
+  query.buffer_size = xe::load_and_swap<uint32_t>(args + 0x24);
+  query.results_ptr = xe::load_and_swap<uint32_t>(args + 0x28);
+  std::string weighted;
+  for (uint32_t i = 0; weighted_contexts_ptr && i < num_weighted_contexts;
+       ++i) {
+    const auto* context = memory_->TranslateVirtual<const uint8_t*>(
+        weighted_contexts_ptr + i * 8);
+    weighted +=
+        fmt::format(" ctx {:08X}={}", xe::load_and_swap<uint32_t>(context),
+                    xe::load_and_swap<uint32_t>(context + 4));
+  }
+  for (uint32_t i = 0; weighted_props_ptr && i < num_weighted_props; ++i) {
+    const auto* property = memory_->TranslateVirtual<const uint8_t*>(
+        weighted_props_ptr + i * 0x18);
+    weighted += fmt::format(" prop {:08X}={:016X}",
+                            xe::load_and_swap<uint32_t>(property),
+                            xe::load_and_swap<uint64_t>(property + 0x8));
+  }
+  XELOGI("XSessionSearchWeighted: weighted{}", weighted);
+  return SessionSearch(query, "XSessionSearchWeighted");
+}
+
+X_HRESULT XgiApp::SessionSearch(const SearchQuery& search,
+                                std::string_view name) {
+  const uint32_t proc_index = search.proc_index;
+  const uint32_t max_results = search.max_results;
+  const uint16_t num_props = search.num_props;
+  const uint16_t num_contexts = search.num_contexts;
+  const uint32_t props_ptr = search.props_ptr;
+  const uint32_t contexts_ptr = search.contexts_ptr;
+  const uint32_t buffer_size = search.buffer_size;
+  const uint32_t results_ptr = search.results_ptr;
+  if (!results_ptr || buffer_size < 8) {
+    return X_E_INVALIDARG;
+  }
+
+  // Live matched the query procedure on its servers. Here a session is left
+  // out only when it was made for another game context than the searcher
+  // asks for.
+  // TODO(xenios-jp): run the title's query (proc_index in its SPA: filters and
+  // comparisons on properties, sometimes skill ranges). Titles that rely on
+  // it can match too loosely now. Halo 3, Gears of War and Virtua Fighter 5
+  // matched correctly with context matching alone.
+  std::vector<std::pair<uint32_t, uint32_t>> wanted;
+  std::string query;
+  for (uint32_t i = 0; contexts_ptr && i < num_contexts; ++i) {
+    const auto* context =
+        memory_->TranslateVirtual<const uint8_t*>(contexts_ptr + i * 8);
+    wanted.emplace_back(xe::load_and_swap<uint32_t>(context),
+                        xe::load_and_swap<uint32_t>(context + 4));
+    query += fmt::format(" ctx {:08X}={}", wanted.back().first,
+                         wanted.back().second);
+  }
+  for (uint32_t i = 0; props_ptr && i < num_props; ++i) {
+    const auto* property =
+        memory_->TranslateVirtual<const uint8_t*>(props_ptr + i * 0x18);
+    query += fmt::format(" prop {:08X}={:016X}",
+                         xe::load_and_swap<uint32_t>(property),
+                         xe::load_and_swap<uint64_t>(property + 0x8));
+  }
+
+  auto sessions = FindLiveSessions(kernel_state_, 1500);
+  std::erase_if(sessions, [&](const LiveSessionAdvert& session) {
+    if (session.used_public_slots >= session.max_public_slots) {
+      return true;
+    }
+    for (const auto& [id, value] : wanted) {
+      for (const auto& context : session.contexts) {
+        if (context.id == id && context.value != value) {
+          return true;
+        }
+      }
+    }
+    return false;
+  });
+
+  const uint32_t count =
+      WriteSearchResults(sessions, max_results, buffer_size, results_ptr);
+  XELOGI("{}(proc {}):{} -> {} of {} announced", name, proc_index, query,
+         count, sessions.size());
+  return X_E_SUCCESS;
 }
 
 }  // namespace apps

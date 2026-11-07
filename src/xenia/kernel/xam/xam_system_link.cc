@@ -391,6 +391,13 @@ void SystemLinkOffQueried(KernelState* kernel_state) {
   }
 }
 
+std::string LiveSessionLobby() {
+  if (!SystemLinkEnabled() || cvars::systemlink_transport != "relay") {
+    return {};
+  }
+  return cvars::systemlink_lobby;
+}
+
 bool CrossPlatformTitle(KernelState* kernel_state) {
   auto module = kernel_state->GetExecutableModule();
   if (!module) {
