@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -1585,43 +1584,32 @@ void SpirvShaderTranslator::PostTranslation() {
     return;
   }
   SpirvShader* spirv_shader = dynamic_cast<SpirvShader*>(&translation.shader());
-  if (spirv_shader && !spirv_shader->bindings_setup_entered_.test_and_set(
-                          std::memory_order_relaxed)) {
-    spirv_shader->texture_bindings_.clear();
-    spirv_shader->texture_bindings_.reserve(texture_bindings_.size());
-    for (const TextureBinding& translator_binding : texture_bindings_) {
-      SpirvShader::TextureBinding& shader_binding =
-          spirv_shader->texture_bindings_.emplace_back();
-      // For a stable hash.
-      std::memset(&shader_binding, 0, sizeof(shader_binding));
-      shader_binding.fetch_constant = translator_binding.fetch_constant;
-      shader_binding.dimension = translator_binding.dimension;
-      shader_binding.is_signed = translator_binding.is_signed;
-      spirv_shader->used_texture_mask_ |= UINT32_C(1)
-                                          << translator_binding.fetch_constant;
-    }
-    spirv_shader->sampler_bindings_.clear();
-    spirv_shader->sampler_bindings_.reserve(sampler_bindings_.size());
-    for (const SamplerBinding& translator_binding : sampler_bindings_) {
-      SpirvShader::SamplerBinding& shader_binding =
-          spirv_shader->sampler_bindings_.emplace_back();
-      shader_binding.fetch_constant = translator_binding.fetch_constant;
-      shader_binding.mag_filter = translator_binding.mag_filter;
-      shader_binding.min_filter = translator_binding.min_filter;
-      shader_binding.mip_filter = translator_binding.mip_filter;
-      shader_binding.aniso_filter = translator_binding.aniso_filter;
-    }
-    // Publish the bindings to draw-thread readers (GetGuestMesaSpirvShader)
-    // after they are fully written, so a PS translated on a creation thread is
-    // only consulted once its bindings are complete.
-    spirv_shader->bindings_ready_.store(true, std::memory_order_release);
-  } else if (spirv_shader) {
-    // Wait for the translation still publishing the shader's bindings since
-    // this one counts as done on return.
-    while (!spirv_shader->bindings_ready()) {
-      std::this_thread::yield();
-    }
+  if (!spirv_shader) {
+    return;
   }
+  std::vector<SpirvShader::TextureBinding> texture_bindings;
+  texture_bindings.reserve(texture_bindings_.size());
+  for (const TextureBinding& translator_binding : texture_bindings_) {
+    SpirvShader::TextureBinding& shader_binding =
+        texture_bindings.emplace_back();
+    // For a stable hash.
+    std::memset(&shader_binding, 0, sizeof(shader_binding));
+    shader_binding.fetch_constant = translator_binding.fetch_constant;
+    shader_binding.dimension = translator_binding.dimension;
+    shader_binding.is_signed = translator_binding.is_signed;
+  }
+  std::vector<SpirvShader::SamplerBinding> sampler_bindings;
+  sampler_bindings.reserve(sampler_bindings_.size());
+  for (const SamplerBinding& translator_binding : sampler_bindings_) {
+    SpirvShader::SamplerBinding& shader_binding =
+        sampler_bindings.emplace_back();
+    shader_binding.fetch_constant = translator_binding.fetch_constant;
+    shader_binding.mag_filter = translator_binding.mag_filter;
+    shader_binding.min_filter = translator_binding.min_filter;
+    shader_binding.mip_filter = translator_binding.mip_filter;
+    shader_binding.aniso_filter = translator_binding.aniso_filter;
+  }
+  spirv_shader->PublishBindings(texture_bindings, sampler_bindings);
 }
 
 void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {

@@ -593,13 +593,16 @@ class MetalCommandProcessor : public CommandProcessor,
   // claim and the caller should retry rather than wait.
   ShaderCompileStatus EnsureTranslationSpirv(Shader::Translation* translation,
                                              SpirvShaderTranslator& translator);
+  // The translation itself, for a caller that holds the claim.
+  ShaderCompileStatus TranslateClaimedSpirv(Shader::Translation* translation,
+                                            SpirvShaderTranslator& translator);
   // Builds the Metal function of one translation on whichever guest shader
   // path is active: SPIR-V -> MSL, or SPIR-V -> DXIL -> AIR.
   bool CompileHostShader(Shader::Translation* translation, bool is_ios,
                          std::vector<uint8_t>* metallib_out = nullptr);
   // EnsureTranslationSpirv then CompileHostShader, or neither when the title's
-  // shader library cache has what they would make. kPending as for
-  // EnsureTranslationSpirv.
+  // shader library cache has what they would make (the library and the
+  // shader's bindings). kPending as for EnsureTranslationSpirv.
   ShaderCompileStatus TranslateAndCompileHostShader(
       Shader::Translation* translation, SpirvShaderTranslator& translator,
       bool is_ios);
