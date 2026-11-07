@@ -153,6 +153,22 @@ DECLARE_bool(log_to_stdout);
     dispatch_release(sem);
     return success ? true : false;
   });
+  app_context_->set_gamer_card_ui_prompt_callback([vc](uint32_t, uint64_t xuid) {
+    if ([NSThread isMainThread]) {
+      [vc presentGamerCardForXuid:xuid completion:nil];
+      return true;
+    }
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [vc presentGamerCardForXuid:xuid
+                       completion:^{
+                         dispatch_semaphore_signal(sem);
+                       }];
+    });
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    dispatch_release(sem);
+    return true;
+  });
   app_context_->set_achievement_notification_callback(
       [vc](const xe::ui::AchievementNotificationPayload& payload) {
         if (!vc) {

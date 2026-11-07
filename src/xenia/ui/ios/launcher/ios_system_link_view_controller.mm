@@ -561,6 +561,27 @@ constexpr CGFloat kOnlineCoverWidth = 32.0;
 constexpr CGFloat kOnlineCoverHeight = kOnlineCoverWidth * 300.0 / 219.0;
 
 // "● 3 playing", the dot in the online green.
+// The Online sheet's games: each title someone plays (`playing`) or has players in its public
+// lobby, by the larger count, busiest first.
+std::vector<std::pair<uint32_t, NSInteger>> SortedPlaying() {
+  NSMutableDictionary<NSNumber*, NSNumber*>* merged = [NSMutableDictionary dictionary];
+  NSDictionary<NSNumber*, NSNumber*>* lobbies = xe_ios_system_link_online_titles();
+  NSDictionary<NSNumber*, NSNumber*>* playing = xe_ios_system_link_online_playing();
+  for (NSDictionary<NSNumber*, NSNumber*>* counts in @[ lobbies ?: @{}, playing ?: @{} ]) {
+    for (NSNumber* title_id in counts) {
+      merged[title_id] = @(std::max(merged[title_id].integerValue, counts[title_id].integerValue));
+    }
+  }
+  std::vector<std::pair<uint32_t, NSInteger>> online;
+  for (NSNumber* title_id in merged) {
+    online.emplace_back(title_id.unsignedIntValue, merged[title_id].integerValue);
+  }
+  std::sort(online.begin(), online.end(), [](const auto& a, const auto& b) {
+    return a.second != b.second ? a.second > b.second : a.first < b.first;
+  });
+  return online;
+}
+
 NSAttributedString* PlayingText(NSInteger players) {
   NSString* text =
       players == 1
@@ -578,6 +599,26 @@ NSAttributedString* PlayingText(NSInteger players) {
                                       attributes:@{
                                         NSForegroundColorAttributeName : [XeniaTheme textSecondary]
                                       }] autorelease]];
+  return out;
+}
+
+// "● 4 playing", and "· 3 in a public room" when that many are in its public lobby.
+NSAttributedString* PlayingText(NSInteger players, NSInteger in_lobby) {
+  NSMutableAttributedString* out = [[[NSMutableAttributedString alloc]
+      initWithAttributedString:PlayingText(players)] autorelease];
+  if (in_lobby > 0) {
+    NSString* lobby = [NSString
+        localizedStringWithFormat:NSLocalizedString(@" · %ld in a public room",
+                                                    @"online view controller: after \"4 "
+                                                    @"playing\", players in the game's public "
+                                                    @"System Link lobby; %ld is how many"),
+                                  long(in_lobby)];
+    [out appendAttributedString:[[[NSAttributedString alloc]
+                                    initWithString:lobby
+                                        attributes:@{
+                                          NSForegroundColorAttributeName : [XeniaTheme textSecondary]
+                                        }] autorelease]];
+  }
   return out;
 }
 
@@ -808,10 +849,13 @@ NSAttributedString* PlayingText(NSInteger players) {
   self.navigationItem.title = @"";
   self.navigationItem.backButtonTitle = self.title;
   self.tableView.tableHeaderView = summary_;
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  // ✕ when it's the sheet's first page; pushed (from Friends), the back button.
+  if (!self.navigationController || self.navigationController.viewControllers.firstObject == self) {
+    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                             target:self
+                             action:@selector(doneTapped:)] autorelease];
+  }
   // The status changes when a game's NAT check finishes.
   for (NSString* name in @[
          XeniaIOSSystemLinkOnlineDidChangeNotification,
@@ -867,7 +911,7 @@ NSAttributedString* PlayingText(NSInteger players) {
     return;
   }
   if (xe_ios_system_link_uses_relay() && xe_ios_system_link_online_titles()) {
-    for (const auto& game : SortedOnline()) {
+    for (const auto& game : SortedPlaying()) {
       if (library_names_[@(game.first)]) {
         mine_.push_back(game);
       } else if (others_.size() < kMaxOnlineGames) {
@@ -931,8 +975,29 @@ NSAttributedString* PlayingText(NSInteger players) {
                                                       @"%ld is how many devices have XeniOS open"),
                                     long(online)];
     }
-    if (playing == 0) {
-      detail = NSLocalizedString(@"Start System Link in a game to play together.",
+    NSInteger in_games = 0;
+    NSDictionary<NSNumber*, NSNumber*>* games = xe_ios_system_link_online_playing();
+    for (NSNumber* title_id in games) {
+      in_games += games[title_id].integerValue;
+    }
+    if (playing == 0 && in_games > 0) {
+      // Nobody in a public room, but the lobby says what's being played.
+      detail = in_games == 1 ? NSLocalizedString(@"1 is playing a game.",
+                                                 @"online view controller: line under \"9 "
+                                                 @"Online\"")
+               : games.count == 1
+                   ? [NSString localizedStringWithFormat:
+                                   NSLocalizedString(@"%ld are playing 1 game.",
+                                                     @"online view controller: line under \"9 "
+                                                     @"Online\"; %ld is how many apps run it"),
+                                   long(in_games)]
+                   : [NSString localizedStringWithFormat:
+                                   NSLocalizedString(@"%1$ld are playing %2$ld games.",
+                                                     @"online view controller: line under \"9 "
+                                                     @"Online\"; %1$ld apps in games, %2$ld games"),
+                                   long(in_games), long(games.count)];
+    } else if (playing == 0) {
+      detail = NSLocalizedString(@"Start a game to play together.",
                                  @"online view controller: line under the summary title, when "
                                  @"nobody is in a game");
     } else if (in_lobbies == 0) {
@@ -1152,7 +1217,10 @@ NSAttributedString* PlayingText(NSInteger players) {
   const auto& [title_id, players] =
       mine ? mine_[size_t(indexPath.row)] : others_[size_t(indexPath.row) - mine_.size()];
   content.text = mine ? library_names_[@(title_id)] : [self otherNameForTitleID:title_id];
-  content.secondaryAttributedText = PlayingText(players);
+  content.secondaryAttributedText =
+      xe_ios_system_link_online_playing().count
+          ? PlayingText(players, xe_ios_system_link_online_players(title_id))
+          : PlayingText(players);
   // The box cover, as in the library; the icon or a plain tile until it arrives.
   UIImage* cover = [self coverForTitleID:title_id];
   content.image = cover ?: [self iconForTitleID:title_id]
@@ -1293,6 +1361,20 @@ NSAttributedString* PlayingText(NSInteger players) {
 }
 
 @end
+
+NSString* xe_ios_game_name_for_title(uint32_t title_id) {
+  static NSDictionary<NSString*, NSString*>* names = nil;
+  if (!names) {
+    names = [LoadGameNames() copy];
+  }
+  return names[XEFormatTitleIDHexUpper(title_id)] ?: UnnamedGame(title_id);
+}
+
+UIViewController* xe_ios_new_online_view_controller(
+    const std::vector<XeniaIOSOnlineLibraryGame>& library, void (^open_game)(uint32_t title_id)) {
+  return [[[XeniaIOSOnlineViewController alloc] initWithLibrary:library openGame:open_game]
+      autorelease];
+}
 
 void xe_ios_present_online_sheet(UIViewController* presenter,
                                  const std::vector<XeniaIOSOnlineLibraryGame>& library,

@@ -60,6 +60,13 @@ struct XeniaIOSOnlineLibraryGame {
   NSData* icon = nil;  // PNG or JPEG, or nil
 };
 
+// A game's name from the compatibility data, or "Game 4D5307E6" without one. For games that
+// aren't in the library.
+NSString* xe_ios_game_name_for_title(uint32_t title_id);
+
+// The Online sheet's page, to push from another sheet (Friends). Autoreleased.
+UIViewController* xe_ios_new_online_view_controller(
+    const std::vector<XeniaIOSOnlineLibraryGame>& library, void (^open_game)(uint32_t title_id));
 // Presents the Online sheet over |presenter|: how many players are in each game's public
 // lobby, the player's games first. Choosing one of them dismisses the sheet and calls
 // |open_game| with its title ID.

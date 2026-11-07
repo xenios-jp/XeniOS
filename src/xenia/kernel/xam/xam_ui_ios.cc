@@ -235,6 +235,16 @@ X_RESULT ShowAchievements(uint32_t user_index, uint32_t title_id) {
       0);
 }
 
+X_RESULT ShowGamerCard(uint32_t user_index, uint64_t xuid) {
+  XELOGI("iOS XAM: gamer card for user {} ({:016X})", user_index, xuid);
+  return DispatchDialog(
+      [=](ui::IOSWindowedAppContext& context) -> X_RESULT {
+        return context.PromptGamerCardUI(user_index, xuid) ? X_ERROR_SUCCESS
+                                                           : X_ERROR_CANCELLED;
+      },
+      0);
+}
+
 void Notify(std::string text, uint32_t user_index, uint8_t position) {
   auto* context = GetContext(kernel_state());
   if (!context) {

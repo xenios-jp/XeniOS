@@ -25,7 +25,11 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
   XeniaIOSInGameMenuActionExit,
   XeniaIOSInGameMenuActionGraphics = 8,
   XeniaIOSInGameMenuActionPauseEmulator,
+  XeniaIOSInGameMenuActionFriends,
 };
+
+@class XeniaLiveFriend;
+@class XeniaLiveInvite;
 
 @interface XeniaIOSInGameMenuOverlay : UIView
 
@@ -37,6 +41,13 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, copy) void (^exitHandler)(void);
 @property(nonatomic, copy) void (^graphicsHandler)(void);
 @property(nonatomic, copy) void (^pauseEmulatorHandler)(void);
+// Friends, to invite them to the game (ios_friends_view_controller, Invite mode).
+@property(nonatomic, copy) void (^friendsHandler)(void);
+// Game invites and friend requests waiting; shown beside "Friends".
+@property(nonatomic) NSInteger friendsAttentionCount;
+// The Online panel's Join on a game invite, and Join Game on a friend's card.
+@property(nonatomic, copy) void (^onlineAcceptInviteHandler)(XeniaLiveInvite* invite);
+@property(nonatomic, copy) void (^onlineJoinFriendHandler)(XeniaLiveFriend* peer);
 @property(nonatomic, strong) UIMenu* displayMenu;
 // Whether the user paused the game from the menu: the pause button then offers to resume.
 @property(nonatomic, assign) BOOL emulatorPaused;
@@ -55,6 +66,11 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 - (void)setOverlayVisible:(BOOL)visible
                  animated:(BOOL)animated
                completion:(void (^)(BOOL finished))completion;
+
+// The Online panel beside the menu (or dropped down under the Online pill when there's no room
+// beside it): opened and closed by the pill.
+- (void)toggleOnlinePanel;
+- (void)hideOnlinePanel;
 
 @end
 

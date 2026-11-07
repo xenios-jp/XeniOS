@@ -11,6 +11,8 @@
 
 #import <GameController/GameController.h>
 
+#import "xenia/ui/ios/app/ios_online_panel.h"
+#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -35,6 +37,10 @@ constexpr CGFloat kTileHeight = 70.0;
 constexpr CGFloat kTileHeightCompact = 54.0;
 constexpr CGFloat kTileRadius = 20.0;
 constexpr CGFloat kPanelRadius = 34.0;
+constexpr CGFloat kOnlinePanelWidth = 300.0;
+constexpr CGFloat kOnlinePanelGap = 12.0;
+// The narrowest the menu gets to keep the Online panel beside it.
+constexpr CGFloat kMenuWidthBesidePanel = 340.0;
 
 }  // namespace
 
@@ -58,6 +64,8 @@ constexpr CGFloat kPanelRadius = 34.0;
   UIButton* _settingsButton;
   UIButton* _graphicsButton;
   UIButton* _liveLogButton;
+  UIButton* _friendsButton;
+  NSInteger _friendsAttentionCount;
   UIButton* _pauseEmulatorButton;
   UIButton* _exitButton;
   UIMenu* _displayMenu;
@@ -77,6 +85,12 @@ constexpr CGFloat kPanelRadius = 34.0;
   void (^_graphicsHandler)(void);
   BOOL _emulatorPaused;
   uint32_t _coverTitleID;
+  NSLayoutConstraint* _panelCenterXConstraint;
+  XeniaIOSOnlinePanel* _onlinePanel;
+  UIButton* _onlineDismissArea;
+  NSArray<NSLayoutConstraint*>* _onlinePanelConstraints;
+  BOOL _onlinePanelBeside;
+  BOOL _onlinePanelOpen;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -137,7 +151,10 @@ constexpr CGFloat kPanelRadius = 34.0;
       [[[UIStackView alloc] initWithArrangedSubviews:@[ _titleLabel, _subtitleLabel ]] autorelease];
   header_text.axis = UILayoutConstraintAxisVertical;
   header_text.spacing = 2.0;
-  _headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[ _coverView, header_text ]];
+  // Online or System Link: a small pill at the header's end, opening Friends or the room.
+  _systemLinkLabel = xe_ios_new_system_link_status_view();
+  _headerStack = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _coverView, header_text, _systemLinkLabel ]];
   _headerStack.axis = UILayoutConstraintAxisHorizontal;
   _headerStack.alignment = UIStackViewAlignmentCenter;
   _headerStack.spacing = 14.0;
@@ -151,7 +168,6 @@ constexpr CGFloat kPanelRadius = 34.0;
   _thermalLabel.numberOfLines = 0;
   xe_apply_label_font(_thermalLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   _thermalLabel.hidden = YES;
-  _systemLinkLabel = xe_ios_new_system_link_status_view();
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(thermalStateChanged:)
                                                name:NSProcessInfoThermalStateDidChangeNotification
@@ -194,20 +210,26 @@ constexpr CGFloat kPanelRadius = 34.0;
                                         imageName:@"pause.fill"
                                        menuAction:XeniaIOSInGameMenuActionPauseEmulator
                                            action:@selector(pauseEmulatorPressed:)];
-  _liveLogButton = [self newButtonWithTitle:NSLocalizedString(@"Live Log", @"In-game menu button")
+  _liveLogButton = [self newButtonWithTitle:NSLocalizedString(@"Log", @"In-game menu button, opens the live emulator log")
                                   imageName:@"doc.text"
                                  menuAction:XeniaIOSInGameMenuActionLiveLog
                                      action:@selector(liveLogPressed:)];
 
+  _friendsButton = [self newButtonWithTitle:NSLocalizedString(@"Friends",
+                                                              @"In-game menu button, opens friends, party and invites")
+                                  imageName:@"person.2"
+                                 menuAction:XeniaIOSInGameMenuActionFriends
+                                     action:@selector(friendsPressed:)];
+
   _rowOneStack = [self newRowWithButtons:@[ _editControlsButton, _settingsButton, _exitButton ]];
   _rowTwoStack =
       [self newRowWithButtons:@[ _graphicsButton, _displayButton, _achievementsButton ]];
-  _footerStack = [self newRowWithButtons:@[ _pauseEmulatorButton, _liveLogButton ]];
+  _footerStack =
+      [self newRowWithButtons:@[ _friendsButton, _pauseEmulatorButton, _liveLogButton ]];
 
   _contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[
     _headerStack,
     _thermalLabel,
-    _systemLinkLabel,
     _resumeButton,
     _rowOneStack,
     _rowTwoStack,
@@ -221,8 +243,9 @@ constexpr CGFloat kPanelRadius = 34.0;
   [_contentStack setCustomSpacing:4.0 afterView:_rowTwoStack];
   [_panel addSubview:_contentStack];
 
+  _panelCenterXConstraint = [[_panel.centerXAnchor constraintEqualToAnchor:self.centerXAnchor] retain];
   [NSLayoutConstraint activateConstraints:@[
-    [_panel.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+    _panelCenterXConstraint,
     [_panel.centerYAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.centerYAnchor],
     [_panel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor
                                                       constant:12],
@@ -303,20 +326,29 @@ constexpr CGFloat kPanelRadius = 34.0;
   [_settingsButton release];
   [_graphicsButton release];
   [_liveLogButton release];
+  [_friendsButton release];
+  [_friendsHandler release];
+  [_onlineAcceptInviteHandler release];
+  [_onlineJoinFriendHandler release];
+  [_panelCenterXConstraint release];
+  [_onlinePanel release];
+  [_onlineDismissArea release];
+  [_onlinePanelConstraints release];
   [_pauseEmulatorButton release];
   [_exitButton release];
   [super dealloc];
 }
 
-// Resume is the one white button; the six actions are tiles, an icon over a short name; Pause
-// Emulator and Live Log are quiet text buttons at the foot.
+// Resume is the one white button; the six actions are tiles, an icon over a short name; Friends,
+// Pause and Log are quiet text buttons at the foot.
 - (UIButton*)newButtonWithTitle:(NSString*)title
                       imageName:(NSString*)imageName
                      menuAction:(XeniaIOSInGameMenuAction)menuAction
                          action:(SEL)action {
   const BOOL resume = menuAction == XeniaIOSInGameMenuActionResume;
   const BOOL footer = menuAction == XeniaIOSInGameMenuActionPauseEmulator ||
-                      menuAction == XeniaIOSInGameMenuActionLiveLog;
+                      menuAction == XeniaIOSInGameMenuActionLiveLog ||
+                      menuAction == XeniaIOSInGameMenuActionFriends;
   const BOOL exit = menuAction == XeniaIOSInGameMenuActionExit;
   UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
@@ -401,9 +433,16 @@ constexpr CGFloat kPanelRadius = 34.0;
     case XeniaIOSInGameMenuActionPauseEmulator:
       button.accessibilityHint = [self pauseEmulatorHint];
       break;
+    case XeniaIOSInGameMenuActionFriends:
+      button.accessibilityHint = NSLocalizedString(@"Shows your friends, your party and invites.",
+                                                   @"VoiceOver hint for the Friends button");
+      break;
     case XeniaIOSInGameMenuActionNone:
     default:
       break;
+  }
+  if (menuAction == XeniaIOSInGameMenuActionPauseEmulator) {
+    button.accessibilityLabel = [self pauseEmulatorAccessibilityLabel];
   }
   if (action) {
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
@@ -517,10 +556,17 @@ constexpr CGFloat kPanelRadius = 34.0;
 
 - (NSString*)pauseEmulatorTitle {
   return _emulatorPaused
-             ? NSLocalizedString(@"Resume Emulator",
-                                 @"In-game menu button, runs the game again after a pause")
-             : NSLocalizedString(@"Pause Emulator",
+             ? NSLocalizedString(@"Paused",
+                                 @"In-game menu button while the emulator is paused; tapping it "
+                                 @"runs the game again")
+             : NSLocalizedString(@"Pause",
                                  @"In-game menu button, stops the game while the menu is open");
+}
+
+- (NSString*)pauseEmulatorAccessibilityLabel {
+  return _emulatorPaused
+             ? NSLocalizedString(@"Resume Emulator", @"VoiceOver label for the paused Pause button")
+             : NSLocalizedString(@"Pause Emulator", @"VoiceOver label for the Pause button");
 }
 
 - (NSString*)pauseEmulatorHint {
@@ -529,6 +575,59 @@ constexpr CGFloat kPanelRadius = 34.0;
                                  @"VoiceOver hint for the Resume Emulator button")
              : NSLocalizedString(@"Stops the game until you resume it or close the menu.",
                                  @"VoiceOver hint for the Pause Emulator button");
+}
+
+- (NSInteger)friendsAttentionCount {
+  return _friendsAttentionCount;
+}
+
+// Signed in to the account, the Online pill is the way in (it carries the invite count), so the
+// footer keeps just Pause and Log. Otherwise Friends stays, as the way to the sheet that explains.
+- (void)updateFriendsButtonVisibility {
+  const BOOL online = [XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline;
+  if (_friendsButton.hidden == online) {
+    return;
+  }
+  _friendsButton.hidden = online;
+  if (online && _focusedAction == XeniaIOSInGameMenuActionFriends) {
+    _focusedAction = XeniaIOSInGameMenuActionPauseEmulator;
+  }
+}
+
+// Invites and friend requests waiting: the count follows "Friends" in the accent color.
+- (void)setFriendsAttentionCount:(NSInteger)count {
+  count = MAX(count, (NSInteger)0);
+  [self updateFriendsButtonVisibility];
+  if (_friendsAttentionCount == count) {
+    return;
+  }
+  _friendsAttentionCount = count;
+  UIButtonConfiguration* config = _friendsButton.configuration;
+  NSString* title = NSLocalizedString(@"Friends",
+                                      @"In-game menu button, opens friends, party and invites");
+  UIFont* font = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  NSMutableAttributedString* text = [[[NSMutableAttributedString alloc]
+      initWithString:title
+          attributes:@{NSFontAttributeName : font}] autorelease];
+  if (count) {
+    [text appendAttributedString:[[[NSAttributedString alloc]
+                                     initWithString:[NSString stringWithFormat:@"  %ld", (long)count]
+                                         attributes:@{
+                                           NSFontAttributeName : xe_scaled_system_font(
+                                               UIFontTextStyleFootnote, 13.0, UIFontWeightBold),
+                                           NSForegroundColorAttributeName : [XeniaTheme accent],
+                                         }] autorelease]];
+  }
+  config.attributedTitle = text;
+  config.image = [UIImage systemImageNamed:count ? @"person.2.fill" : @"person.2"];
+  _friendsButton.configuration = config;
+  _friendsButton.accessibilityValue =
+      count ? [NSString localizedStringWithFormat:
+                            NSLocalizedString(@"%ld waiting",
+                                              @"VoiceOver value of the in-game Friends button; "
+                                              @"%ld counts invites and friend requests"),
+                            (long)count]
+            : nil;
 }
 
 - (BOOL)emulatorPaused {
@@ -545,7 +644,7 @@ constexpr CGFloat kPanelRadius = 34.0;
   config.title = [self pauseEmulatorTitle];
   _pauseEmulatorButton.configuration = config;
   [self updateHeader];
-  _pauseEmulatorButton.accessibilityLabel = [self pauseEmulatorTitle];
+  _pauseEmulatorButton.accessibilityLabel = [self pauseEmulatorAccessibilityLabel];
   _pauseEmulatorButton.accessibilityHint = [self pauseEmulatorHint];
 }
 
@@ -596,6 +695,8 @@ constexpr CGFloat kPanelRadius = 34.0;
       return _graphicsButton;
     case XeniaIOSInGameMenuActionPauseEmulator:
       return _pauseEmulatorButton;
+    case XeniaIOSInGameMenuActionFriends:
+      return _friendsButton;
     case XeniaIOSInGameMenuActionNone:
     default:
       return nil;
@@ -663,15 +764,28 @@ constexpr CGFloat kPanelRadius = 34.0;
   [self setButton:_pauseEmulatorButton
       controllerFocused:_controllerNavigationEnabled &&
                         _focusedAction == XeniaIOSInGameMenuActionPauseEmulator];
+  [self setButton:_friendsButton
+      controllerFocused:_controllerNavigationEnabled &&
+                        _focusedAction == XeniaIOSInGameMenuActionFriends];
 }
 
 - (void)setOverlayVisible:(BOOL)visible
                  animated:(BOOL)animated
                completion:(void (^)(BOOL finished))completion {
   self.userInteractionEnabled = visible;
+  if (!visible) {
+    [self hideOnlinePanelAnimated:NO];
+  }
   if (visible) {
     [self updateThermalNotice];
     [self updateHeader];
+    [self updateFriendsButtonVisibility];
+    // After layout, so the room beside the menu is known.
+    XeniaIOSInGameMenuOverlay* retained = [self retain];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [retained openOnlinePanelIfUseful];
+      [retained release];
+    });
   }
   if (visible == !self.hidden) {
     if (completion) {
@@ -741,13 +855,193 @@ constexpr CGFloat kPanelRadius = 34.0;
   const BOOL regularWidth =
       self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
   // Three tiles to a row read best a little wider than a phone is in portrait.
-  _panelWidthConstraint.constant =
-      MIN(regularWidth ? 480.0 : 440.0, MAX(300.0, safeFrame.size.width - 24.0));
+  CGFloat menu_width = MIN(regularWidth ? 480.0 : 440.0, MAX(300.0, safeFrame.size.width - 24.0));
+  // With the Online panel beside it, the menu gives up the room the panel needs.
+  if (_onlinePanelOpen && [self onlinePanelFitsBeside]) {
+    menu_width = MIN(menu_width, safeFrame.size.width - 24.0 - kOnlinePanelGap - kOnlinePanelWidth);
+  }
+  _panelWidthConstraint.constant = menu_width;
   if (!_hasAppliedMenuLayout || _appliedCompactLandscape != compactLandscape) {
     _hasAppliedMenuLayout = YES;
     _appliedCompactLandscape = compactLandscape;
     [self applyMenuLayoutForCompactLandscape:compactLandscape];
   }
+  if (_onlinePanelOpen && [self onlinePanelFitsBeside] != _onlinePanelBeside) {
+    [self placeOnlinePanel];
+  }
+}
+
+#pragma mark Online panel
+
+// Beside the menu when both fit side by side, the menu a little narrower (a phone in landscape, an
+// iPad); else it drops down under the pill, over the menu (a phone in portrait).
+- (BOOL)onlinePanelFitsBeside {
+  CGRect safe = self.safeAreaLayoutGuide.layoutFrame;
+  if (CGRectIsEmpty(safe)) {
+    safe = self.bounds;
+  }
+  return safe.size.width - 24.0 - kOnlinePanelGap - kOnlinePanelWidth >= kMenuWidthBesidePanel;
+}
+
+- (void)placeOnlinePanel {
+  [NSLayoutConstraint deactivateConstraints:_onlinePanelConstraints];
+  [_onlinePanelConstraints release];
+  _onlinePanelBeside = [self onlinePanelFitsBeside];
+  UILayoutGuide* safe = self.safeAreaLayoutGuide;
+  NSMutableArray<NSLayoutConstraint*>* constraints = [NSMutableArray array];
+  if (_onlinePanelBeside) {
+    // The pair is centred: the menu moves left by half the panel.
+    _panelCenterXConstraint.constant = -(kOnlinePanelWidth + kOnlinePanelGap) / 2.0;
+    [constraints addObjectsFromArray:@[
+      [_onlinePanel.leadingAnchor constraintEqualToAnchor:_panel.trailingAnchor
+                                                 constant:kOnlinePanelGap],
+      [_onlinePanel.widthAnchor constraintEqualToConstant:kOnlinePanelWidth],
+      [_onlinePanel.topAnchor constraintEqualToAnchor:_panel.topAnchor],
+      [_onlinePanel.bottomAnchor constraintLessThanOrEqualToAnchor:_panel.bottomAnchor],
+    ]];
+  } else {
+    _panelCenterXConstraint.constant = 0.0;
+    NSLayoutConstraint* width = [_onlinePanel.widthAnchor constraintEqualToConstant:300.0];
+    width.priority = UILayoutPriorityDefaultHigh;
+    [constraints addObjectsFromArray:@[
+      [_onlinePanel.topAnchor constraintEqualToAnchor:_systemLinkLabel.bottomAnchor constant:8.0],
+      [_onlinePanel.trailingAnchor constraintEqualToAnchor:_panel.trailingAnchor constant:-10.0],
+      [_onlinePanel.leadingAnchor constraintGreaterThanOrEqualToAnchor:_panel.leadingAnchor
+                                                              constant:10.0],
+      width,
+      [_onlinePanel.bottomAnchor constraintLessThanOrEqualToAnchor:safe.bottomAnchor constant:-8.0],
+    ]];
+  }
+  _onlineDismissArea.hidden = _onlinePanelBeside;
+  _onlinePanelConstraints = [constraints copy];
+  [NSLayoutConstraint activateConstraints:_onlinePanelConstraints];
+}
+
+// What the player last chose for the panel beside the menu: closed, so it stays closed.
+static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer";
+
+- (void)toggleOnlinePanel {
+  const BOOL beside = [self onlinePanelFitsBeside];
+  if (_onlinePanelOpen) {
+    if (beside) {
+      [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kOnlinePanelClosedKey];
+    }
+    [self hideOnlinePanelAnimated:YES];
+    return;
+  }
+  if (beside) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kOnlinePanelClosedKey];
+  }
+  [self openOnlinePanelAnimated:YES];
+}
+
+// Beside the menu there's room, so the panel opens by itself when there's something in it:
+// an invite, a party, or a friend online. Closing it once keeps it closed.
+- (void)openOnlinePanelIfUseful {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  if (_onlinePanelOpen || self.hidden || social.state != XeniaLiveSocialStateOnline ||
+      ![self onlinePanelFitsBeside] ||
+      [[NSUserDefaults standardUserDefaults] boolForKey:kOnlinePanelClosedKey]) {
+    return;
+  }
+  if (social.attentionCount > 0 || social.partyMembers.count > 0 || social.onlineFriendCount > 0) {
+    [self openOnlinePanelAnimated:NO];
+  }
+}
+
+- (void)openOnlinePanelAnimated:(BOOL)animated {
+  if (_onlinePanelOpen) {
+    return;
+  }
+  if (!_onlinePanel) {
+    __unsafe_unretained XeniaIOSInGameMenuOverlay* unsafe_self = self;
+    // Below the panel, over the menu: a tap beside a dropped-down panel closes it.
+    _onlineDismissArea = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
+    _onlineDismissArea.frame = self.bounds;
+    _onlineDismissArea.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _onlineDismissArea.isAccessibilityElement = NO;
+    [_onlineDismissArea addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
+                          [unsafe_self hideOnlinePanelAnimated:YES];
+                        }]
+                 forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:_onlineDismissArea];
+    _onlinePanel = [[XeniaIOSOnlinePanel alloc] initWithFrame:CGRectZero];
+    _onlinePanel.acceptInviteHandler = ^(XeniaLiveInvite* invite) {
+      if (unsafe_self->_onlineAcceptInviteHandler) {
+        unsafe_self->_onlineAcceptInviteHandler(invite);
+      }
+    };
+    _onlinePanel.joinFriendHandler = ^(XeniaLiveFriend* peer) {
+      if (unsafe_self->_onlineJoinFriendHandler) {
+        unsafe_self->_onlineJoinFriendHandler(peer);
+      }
+    };
+    _onlinePanel.allFriendsHandler = ^{
+      if (unsafe_self->_friendsHandler) {
+        unsafe_self->_friendsHandler();
+      }
+    };
+    [self addSubview:_onlinePanel];
+  }
+  [_onlinePanel showList];
+  _onlinePanelOpen = YES;
+  _onlinePanel.hidden = NO;
+  [self placeOnlinePanel];
+  [self setNeedsLayout];
+  if (!animated) {
+    _onlinePanel.alpha = 1.0;
+    _onlinePanel.transform = CGAffineTransformIdentity;
+    [self layoutIfNeeded];
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, _onlinePanel);
+    return;
+  }
+  _onlinePanel.alpha = 0.0;
+  _onlinePanel.transform = _onlinePanelBeside ? CGAffineTransformMakeTranslation(-16.0, 0.0)
+                                              : CGAffineTransformMakeTranslation(0.0, -12.0);
+  [UIView animateWithDuration:0.28
+                        delay:0.0
+       usingSpringWithDamping:0.9
+        initialSpringVelocity:0.0
+                      options:UIViewAnimationOptionBeginFromCurrentState
+                   animations:^{
+                     self->_onlinePanel.alpha = 1.0;
+                     self->_onlinePanel.transform = CGAffineTransformIdentity;
+                     [self layoutIfNeeded];
+                   }
+                   completion:nil];
+  UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, _onlinePanel);
+}
+
+- (void)hideOnlinePanel {
+  [self hideOnlinePanelAnimated:YES];
+}
+
+- (void)hideOnlinePanelAnimated:(BOOL)animated {
+  if (!_onlinePanelOpen) {
+    return;
+  }
+  _onlinePanelOpen = NO;
+  [self.window endEditing:YES];
+  _onlineDismissArea.hidden = YES;
+  [self setNeedsLayout];
+  _panelCenterXConstraint.constant = 0.0;
+  void (^finish)(BOOL) = ^(BOOL __unused finished) {
+    self->_onlinePanel.hidden = YES;
+    self->_onlinePanel.alpha = 1.0;
+    self->_onlinePanel.transform = CGAffineTransformIdentity;
+  };
+  if (!animated) {
+    finish(YES);
+    [self setNeedsLayout];
+    return;
+  }
+  [UIView animateWithDuration:0.2
+                   animations:^{
+                     self->_onlinePanel.alpha = 0.0;
+                     [self layoutIfNeeded];
+                   }
+                   completion:finish];
 }
 
 - (void)resumePressed:(UIButton*)__unused sender {
@@ -783,6 +1077,17 @@ constexpr CGFloat kPanelRadius = 34.0;
 - (void)graphicsPressed:(UIButton*)__unused sender {
   if (_graphicsHandler) {
     _graphicsHandler();
+  }
+}
+
+- (void)friendsPressed:(UIButton*)__unused sender {
+  // Signed in to the account: the same Online panel as the pill. Otherwise the sheet explains.
+  if ([XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline) {
+    [self toggleOnlinePanel];
+    return;
+  }
+  if (_friendsHandler) {
+    _friendsHandler();
   }
 }
 

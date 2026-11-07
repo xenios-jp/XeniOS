@@ -24,6 +24,7 @@
 #include "xenia/net/relay_protocol.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_storage.h"
+#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -62,6 +63,16 @@ RelayStatus g_last;
 // Whether a game plays System Link through the relay now.
 bool g_active = false;
 bool g_told_online = false;
+// The running game plays online through the profile's account (invites, friends): its traffic
+// still rides the System Link room, but the player isn't in System Link, so the card and the
+// toasts speak of the game's players instead. Set by the app.
+BOOL (^g_live_game)(void) = nil;
+NSString* (^g_live_players)(void) = nil;
+void (^g_live_open)(void) = nil;
+
+bool LiveGame() {
+  return g_live_game && g_live_game();
+}
 bool g_told_offline = false;
 bool g_told_unreachable = false;
 // The room the running game asked for, and the game.
@@ -286,7 +297,12 @@ void OnStatus(const RelayStatus& status) {
     case State::kOnline:
       break;
   }
-  if (!g_told_online || g_told_offline) {
+  if (LiveGame()) {
+    // The room's other players are strangers in the same game's public room, and the game's own
+    // lobby shows who's with the player: nothing to say about the room.
+    g_told_online = true;
+    g_told_offline = false;
+  } else if (!g_told_online || g_told_offline) {
     NSString* message = g_told_online
                             ? NSLocalizedString(@"System Link is back online.",
                                                 @"System Link toast: the relay answers again")
@@ -302,7 +318,7 @@ void OnStatus(const RelayStatus& status) {
                                   @"System Link toast: someone left the room"),
           XeniaIOSStatusToastStyleInfo);
   }
-  if (status.version_mismatch && !last.version_mismatch) {
+  if (status.version_mismatch && !last.version_mismatch && !LiveGame()) {
     Toast(VersionMismatchMessage(), XeniaIOSStatusToastStyleWarning);
   }
   if (status.nat != last.nat) {
@@ -439,9 +455,12 @@ NSString* xe_ios_system_link_room_name(NSString* code) {
              : NSLocalizedString(@"Public Lobby", @"system link view controller: room row");
 }
 
-// The in-game menu's System Link card, which keeps itself current.
+// The in-game menu's online / System Link pill, which keeps itself current.
 @interface XeniaIOSSystemLinkStatusCard : UIButton
 @end
+
+// Invites and friend requests waiting, from the social bridge (defined below).
+NSInteger xe_ios_system_link_social_attention(void);
 
 namespace {
 
@@ -456,33 +475,47 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
 
 }  // namespace
 
-@implementation XeniaIOSSystemLinkStatusCard
+@implementation XeniaIOSSystemLinkStatusCard {
+  UILabel* _badge;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
   if ((self = [super initWithFrame:frame])) {
+    // A small glass capsule beside the game's title: a dot and one short line. The full story
+    // is in the sheet it opens and in VoiceOver.
     UIButtonConfiguration* configuration = [UIButtonConfiguration glassButtonConfiguration];
-    configuration.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-    configuration.titleAlignment = UIButtonConfigurationTitleAlignmentLeading;
-    configuration.titlePadding = 2.0;
-    configuration.subtitleTextAttributesTransformer =
-        CardText(xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightRegular),
-                 [XeniaTheme textSecondary]);
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    configuration.titleLineBreakMode = NSLineBreakByTruncatingTail;
+    configuration.titleTextAttributesTransformer =
+        CardText(xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold),
+                 [XeniaTheme textPrimary]);
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(6.0, 10.0, 6.0, 12.0);
+    configuration.imagePadding = 6.0;
+    configuration.preferredSymbolConfigurationForImage =
+        [UIImageSymbolConfiguration configurationWithPointSize:7.0 weight:UIImageSymbolWeightBold];
     self.configuration = configuration;
     self.translatesAutoresizingMaskIntoConstraints = NO;
-    // The menu's rows have fixed heights, so the card is the one that would be squeezed.
+    // The title beside it wraps before the pill gives way; the pill keeps to its own width.
+    [self setContentHuggingPriority:UILayoutPriorityRequired
+                            forAxis:UILayoutConstraintAxisHorizontal];
+    [self setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh + 10
+                                          forAxis:UILayoutConstraintAxisHorizontal];
     [self setContentCompressionResistancePriority:UILayoutPriorityRequired
                                           forAxis:UILayoutConstraintAxisVertical];
-    self.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
-    self.accessibilityHint =
-        NSLocalizedString(@"Shows the System Link room, its players and who's online.",
-                          @"In-game menu, VoiceOver: System Link card hint");
+    [self.widthAnchor constraintLessThanOrEqualToConstant:220.0].active = YES;
     [self addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(statusChanged:)
                                                  name:XeniaIOSSystemLinkStatusDidChangeNotification
                                                object:nil];
-    [self registerForTraitChanges:@[ [UITraitVerticalSizeClass class] ]
-                       withAction:@selector(statusChanged:)];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(statusChanged:)
+                                                 name:XeniaIOSSystemLinkLiveGameDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(statusChanged:)
+                                                 name:XeniaIOSSystemLinkOnlineDidChangeNotification
+                                               object:nil];
     [self statusChanged:nil];
   }
   return self;
@@ -490,20 +523,137 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_badge release];
   [super dealloc];
+}
+
+// A blue count on the pill's corner while invites or friend requests wait, in an online game.
+- (void)updateBadge {
+  const NSInteger count = LiveGame() ? xe_ios_system_link_social_attention() : 0;
+  if (count <= 0) {
+    _badge.hidden = YES;
+    return;
+  }
+  if (!_badge) {
+    _badge = [[UILabel alloc] init];
+    _badge.translatesAutoresizingMaskIntoConstraints = NO;
+    _badge.textAlignment = NSTextAlignmentCenter;
+    _badge.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightBold];
+    _badge.textColor = [UIColor whiteColor];
+    _badge.backgroundColor = [UIColor colorWithRed:10.0 / 255.0 green:132.0 / 255.0 blue:1.0
+                                             alpha:1.0];
+    _badge.layer.cornerRadius = 10.0;
+    _badge.layer.cornerCurve = kCACornerCurveContinuous;
+    _badge.clipsToBounds = YES;
+    _badge.isAccessibilityElement = NO;
+    _badge.userInteractionEnabled = NO;
+    [self addSubview:_badge];
+    [NSLayoutConstraint activateConstraints:@[
+      [_badge.heightAnchor constraintEqualToConstant:20.0],
+      [_badge.widthAnchor constraintGreaterThanOrEqualToConstant:20.0],
+      [_badge.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:2.0],
+      [_badge.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6.0],
+    ]];
+  }
+  _badge.hidden = NO;
+  _badge.text = [NSString stringWithFormat:@" %ld ", (long)count];
+}
+
+// The in-game menu shows the pill again each time it opens: whether the game plays online can
+// have changed meanwhile (the title signs in to the account after it starts).
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (self.window) {
+    [self statusChanged:nil];
+  }
 }
 
 - (void)statusChanged:(id __unused)sender {
   const Snapshot snapshot = xe_ios_system_link_snapshot();
-  self.hidden = snapshot.state == Snapshot::State::kOff;
+  self.hidden = snapshot.state == Snapshot::State::kOff && !LiveGame();
   [self setNeedsUpdateConfiguration];
 }
 
+- (void)showLine:(NSString*)line dot:(UIColor*)dot {
+  UIButtonConfiguration* configuration = self.configuration;
+  configuration.title = line;
+  configuration.image = [[UIImage systemImageNamed:@"circle.fill"]
+      imageWithTintColor:dot
+           renderingMode:UIImageRenderingModeAlwaysOriginal];
+  self.configuration = configuration;
+}
+
+- (void)updateLiveConfiguration {
+  [self updateBadge];
+  NSString* online = NSLocalizedString(@"Online", @"In-game menu: online game pill");
+  NSString* players = g_live_players ? g_live_players() : nil;
+  [self showLine:players.length ? [NSString stringWithFormat:@"%@ · %@", online, players] : online
+             dot:[XeniaTheme accent]];
+  self.accessibilityLabel = NSLocalizedString(@"Playing Online", @"In-game menu: online game pill");
+  const NSInteger waiting = xe_ios_system_link_social_attention();
+  self.accessibilityValue =
+      waiting > 0
+          ? [NSString localizedStringWithFormat:NSLocalizedString(@"%ld waiting for you",
+                                                                  @"In-game menu, VoiceOver: "
+                                                                  @"online pill; %ld counts "
+                                                                  @"invites and friend requests"),
+                                                long(waiting)]
+      : players.length
+          ? [NSString stringWithFormat:NSLocalizedString(@"With %@",
+                                                         @"In-game menu: online game pill, "
+                                                         @"VoiceOver; %@ lists the friends in "
+                                                         @"the game"),
+                                       players]
+          : nil;
+  self.accessibilityHint = NSLocalizedString(@"Shows your friends, your party and invites.",
+                                             @"In-game menu, VoiceOver: online game pill hint");
+}
+
 - (void)updateConfiguration {
+  if (LiveGame()) {
+    [self updateLiveConfiguration];
+    return;
+  }
   const Snapshot snapshot = xe_ios_system_link_snapshot();
   const bool problem = snapshot.state == Snapshot::State::kOffline ||
                        snapshot.state == Snapshot::State::kRejected || snapshot.other_version ||
                        (snapshot.others && snapshot.direct + snapshot.relayed < snapshot.others);
+  NSString* system_link = NSLocalizedString(@"System Link", @"In-game menu: System Link pill");
+  NSString* line = system_link;
+  switch (snapshot.state) {
+    case Snapshot::State::kConnecting:
+    case Snapshot::State::kReconnecting:
+      line = NSLocalizedString(@"Connecting…", @"In-game menu: System Link pill");
+      break;
+    case Snapshot::State::kOffline:
+      line = [NSString
+          stringWithFormat:@"%@ · %@", system_link,
+                           NSLocalizedString(@"Offline", @"In-game menu: System Link pill, the "
+                                                         @"server doesn't answer")];
+      break;
+    case Snapshot::State::kRejected:
+      line = [NSString
+          stringWithFormat:@"%@ · %@", system_link,
+                           NSLocalizedString(@"Turned Away", @"In-game menu: System Link pill")];
+      break;
+    case Snapshot::State::kOnline:
+      if (snapshot.others) {
+        line = [NSString
+            stringWithFormat:NSLocalizedString(@"System Link · %lu Players",
+                                               @"In-game menu: System Link pill; %lu counts "
+                                               @"everyone in the room, you included"),
+                             (unsigned long)(snapshot.others + 1)];
+      }
+      break;
+    case Snapshot::State::kOff:
+      break;
+  }
+  UIColor* dot = problem                                      ? [XeniaTheme statusWarning]
+                 : snapshot.state == Snapshot::State::kOnline ? [XeniaTheme accent]
+                                                              : [XeniaTheme textSecondary];
+  [self showLine:line dot:dot];
+
+  // VoiceOver hears all of it: the room, the players, what's wrong.
   NSString* detail = snapshot.problem;
   if (snapshot.state == Snapshot::State::kOffline) {
     detail = NSLocalizedString(@"Still trying.",
@@ -522,48 +672,18 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
                                                   @"In-game menu: System Link card, another "
                                                   @"player runs another version of the game")];
   }
-  UIButtonConfiguration* configuration = self.configuration;
-  NSString* title = CardTitle(snapshot);
-  // Short of height, a phone in landscape: one line, small, cut short if it must be. The icon's
-  // color says it's online.
-  const bool compact = self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact;
-  if (compact) {
-    NSString* line = snapshot.state == Snapshot::State::kOnline
-                         ? NSLocalizedString(@"System Link", @"In-game menu: System Link card")
-                         : title;
-    configuration.title = detail ? [NSString stringWithFormat:@"%@ · %@", line, detail] : line;
-    configuration.subtitle = nil;
-    configuration.titleLineBreakMode = NSLineBreakByTruncatingTail;
-    configuration.titleTextAttributesTransformer =
-        CardText(xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold),
-                 [XeniaTheme textPrimary]);
-    configuration.contentInsets = NSDirectionalEdgeInsetsMake(7.0, 12.0, 7.0, 12.0);
-    configuration.imagePadding = 8.0;
-  } else {
-    configuration.title = title;
-    configuration.subtitle = detail;
-    configuration.titleLineBreakMode = NSLineBreakByWordWrapping;
-    configuration.titleTextAttributesTransformer =
-        CardText(xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold),
-                 [XeniaTheme textPrimary]);
-    configuration.contentInsets = NSDirectionalEdgeInsetsMake(10.0, 14.0, 10.0, 14.0);
-    configuration.imagePadding = 12.0;
-  }
-  UIColor* tint = problem                                      ? [XeniaTheme statusWarning]
-                  : snapshot.state == Snapshot::State::kOnline ? [XeniaTheme accent]
-                                                               : [XeniaTheme textSecondary];
-  configuration.image =
-      [[UIImage systemImageNamed:problem ? @"exclamationmark.triangle.fill" : @"network"]
-          imageWithTintColor:tint
-               renderingMode:UIImageRenderingModeAlwaysOriginal];
-  configuration.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration
-      configurationWithTextStyle:compact ? UIFontTextStyleSubheadline : UIFontTextStyleTitle3];
-  self.configuration = configuration;
-  self.accessibilityLabel = title;
+  self.accessibilityLabel = CardTitle(snapshot);
   self.accessibilityValue = detail;
+  self.accessibilityHint =
+      NSLocalizedString(@"Shows the System Link room, its players and who's online.",
+                        @"In-game menu, VoiceOver: System Link card hint");
 }
 
 - (void)tapped:(id __unused)sender {
+  if (LiveGame() && g_live_open) {
+    g_live_open();
+    return;
+  }
   UIResponder* responder = self.nextResponder;
   while (responder && ![responder isKindOfClass:[UIViewController class]]) {
     responder = responder.nextResponder;
@@ -669,9 +789,12 @@ NSString* xe_ios_system_link_invite_note(NSString* code, BOOL restarts) {
 }
 
 void xe_ios_join_system_link_room(uint32_t title_id, NSString* code) {
-  if (NSString* normalized = xe_ios_normalize_system_link_room_code(code)) {
+  NSString* normalized = xe_ios_normalize_system_link_room_code(code);
+  // An empty code is the title's public lobby, over a private room kept for the title.
+  if (normalized || (code && !code.length)) {
     std::lock_guard lock(g_invite_mutex);
-    g_invites[title_id] = {normalized.UTF8String, [NSProcessInfo processInfo].systemUptime};
+    g_invites[title_id] = {normalized ? normalized.UTF8String : "",
+                           [NSProcessInfo processInfo].systemUptime};
   }
   if (!xe_ios_online_features_enabled()) {
     Toast([NSString stringWithFormat:@"%@ %@",
@@ -845,7 +968,7 @@ NSString* const XeniaIOSSystemLinkOnlineDidChangeNotification =
 namespace {
 
 // The lobby answers from a copy up to two minutes old, so asking more often gains nothing.
-constexpr NSTimeInterval kOnlineInterval = 120.0;
+constexpr NSTimeInterval kOnlineInterval = 30.0;
 // Counts that haven't been answered again for this long are dropped rather than shown.
 constexpr NSTimeInterval kOnlineStale = 5 * 60.0;
 // How often the app tells the lobby it's open, in the library or in a game.
@@ -858,6 +981,11 @@ constexpr NSTimeInterval kHereCounted = 6 * 60.0;
 NSDictionary<NSNumber*, NSNumber*>* g_online = nil;
 NSInteger g_here = -1;
 NSInteger g_private = -1;
+// Title ID to apps running it wherever they play (`playing` in the lobby's counts); empty from a
+// lobby that doesn't say.
+NSDictionary<NSNumber*, NSNumber*>* g_playing = nil;
+// The game this app runs, told to the lobby on the presence socket; 0 in the library.
+uint32_t g_playing_title = 0;
 NSTimeInterval g_here_said = 0;
 NSTimeInterval g_online_asked = 0;
 NSTimeInterval g_online_answered = 0;
@@ -956,47 +1084,59 @@ NSInteger CountIn(NSDictionary* body, NSString* key) {
                                                                              : -1;
 }
 
-// {"v": 1, "titles": {"4D5307E6": 3}, "private": 2, "here": 7} -> @{@0x4D5307E6: @3}, 2 and 7,
-// or nil when it isn't that.
+// {"v": 1, "titles": {"4D5307E6": 3}, "private": 2, "here": 7, "playing": {"4D5307E6": 4}} ->
+// @{@0x4D5307E6: @3}, 2, 7 and @{@0x4D5307E6: @4}, or nil when it isn't that.
+// Title ID keys ("4D5307E6") to positive counts.
+NSDictionary<NSNumber*, NSNumber*>* ParseTitleCounts(id titles) {
+  NSMutableDictionary<NSNumber*, NSNumber*>* counts = [NSMutableDictionary dictionary];
+  if (![titles isKindOfClass:[NSDictionary class]]) {
+    return counts;
+  }
+  NSCharacterSet* not_hex =
+      [[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"] invertedSet];
+  for (id key in titles) {
+    id count = titles[key];
+    if (![key isKindOfClass:[NSString class]] || [key length] != 8 ||
+        [key rangeOfCharacterFromSet:not_hex].location != NSNotFound ||
+        ![count isKindOfClass:[NSNumber class]] || [count integerValue] <= 0) {
+      continue;
+    }
+    counts[@(uint32_t(strtoul([key UTF8String], nullptr, 16)))] = @([count integerValue]);
+  }
+  return counts;
+}
+
 NSDictionary<NSNumber*, NSNumber*>* ParseOnline(NSData* data, NSInteger* here_out,
-                                                NSInteger* private_out) {
+                                                NSInteger* private_out,
+                                                NSDictionary<NSNumber*, NSNumber*>** playing_out) {
   id body = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
   if (![body isKindOfClass:[NSDictionary class]] || ![body[@"v"] isEqual:@1]) {
     return nil;
   }
   *here_out = CountIn(body, @"here");
   *private_out = CountIn(body, @"private");
-  id titles = body[@"titles"];
-  if (![titles isKindOfClass:[NSDictionary class]]) {
+  *playing_out = ParseTitleCounts(body[@"playing"]);
+  if (![body[@"titles"] isKindOfClass:[NSDictionary class]]) {
     return nil;
   }
-  NSCharacterSet* not_hex =
-      [[NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEF"] invertedSet];
-  NSMutableDictionary<NSNumber*, NSNumber*>* online = [NSMutableDictionary dictionary];
-  for (id key in titles) {
-    id players = titles[key];
-    if (![key isKindOfClass:[NSString class]] || [key length] != 8 ||
-        [key rangeOfCharacterFromSet:not_hex].location != NSNotFound ||
-        ![players isKindOfClass:[NSNumber class]] || [players integerValue] <= 0) {
-      continue;
-    }
-    online[@(uint32_t(strtoul([key UTF8String], nullptr, 16)))] = @([players integerValue]);
-  }
-  return online;
+  return ParseTitleCounts(body[@"titles"]);
 }
 
 void SetOnline(NSDictionary<NSNumber*, NSNumber*>* online, NSInteger here = -1,
-               NSInteger in_private = -1) {
+               NSInteger in_private = -1, NSDictionary<NSNumber*, NSNumber*>* playing = nil) {
   if (!online) {
     here = -1;
     in_private = -1;
+    playing = nil;
   }
   if ((online == g_online || [online isEqualToDictionary:g_online]) && here == g_here &&
-      in_private == g_private) {
+      in_private == g_private && (playing == g_playing || [playing isEqualToDictionary:g_playing])) {
     return;
   }
   [g_online release];
   g_online = [online copy];
+  [g_playing release];
+  g_playing = [playing copy];
   g_here = here;
   g_private = in_private;
   [[NSNotificationCenter defaultCenter]
@@ -1009,7 +1149,7 @@ void SetOnline(NSDictionary<NSNumber*, NSNumber*>* online, NSInteger here = -1,
 
 // While the app is in the foreground with Online Features on, it keeps a socket open to the lobby,
 // which counts the app while it's open and sends the counts on it when they change, in place of
-// asking for them and checking in. The app sends only WebSocket pings on it. While it fails to
+// asking for them and checking in. The app sends WebSocket pings on it, and which game it runs. While it fails to
 // open (an older lobby, or one that's full), the app asks and checks in meanwhile.
 constexpr NSTimeInterval kPresencePing = 30.0;
 constexpr NSTimeInterval kPresenceRetry = 5.0;
@@ -1082,9 +1222,10 @@ void ReceivePresence(NSURLSessionWebSocketTask* task) {
     NSDictionary<NSNumber*, NSNumber*>* online = nil;
     NSInteger here = -1;
     NSInteger in_private = -1;
+    NSDictionary<NSNumber*, NSNumber*>* playing = nil;
     if (!error && message.type == NSURLSessionWebSocketMessageTypeString) {
-      online =
-          ParseOnline([message.string dataUsingEncoding:NSUTF8StringEncoding], &here, &in_private);
+      online = ParseOnline([message.string dataUsingEncoding:NSUTF8StringEncoding], &here,
+                           &in_private, &playing);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       if (task != g_presence) {
@@ -1099,11 +1240,23 @@ void ReceivePresence(NSURLSessionWebSocketTask* task) {
         g_presence_failures = 0;
         g_online_answered = Uptime();
         SaveHere();
-        SetOnline(online, here, in_private);
+        SetOnline(online, here, in_private, playing);
       }
       ReceivePresence(task);
     });
   }];
+}
+
+// {"t": "playing", "title": "4D5307E6"}, or "title": null in the library: which game this app
+// runs, counted (without the player) in the lobby's `playing`.
+void SendPlaying(NSURLSessionWebSocketTask* task) {
+  NSString* text =
+      g_playing_title
+          ? [NSString stringWithFormat:@"{\"t\":\"playing\",\"title\":\"%08X\"}", g_playing_title]
+          : @"{\"t\":\"playing\",\"title\":null}";
+  [task sendMessage:[[[NSURLSessionWebSocketMessage alloc] initWithString:text] autorelease]
+      completionHandler:^(NSError* __unused error){
+      }];
 }
 
 // Opens the socket while it's wanted, and closes it when it isn't.
@@ -1125,6 +1278,10 @@ void KeepPresence() {
   g_presence = task;
   [task resume];
   ReceivePresence(task);
+  // A new socket hears the game again.
+  if (g_playing_title) {
+    SendPlaying(task);
+  }
   g_presence_pinger = [[NSTimer
       timerWithTimeInterval:kPresencePing
                     repeats:YES
@@ -1190,9 +1347,10 @@ void AskOnline() {
                     NSDictionary<NSNumber*, NSNumber*>* online = nil;
                     NSInteger here = -1;
                     NSInteger in_private = -1;
+                    NSDictionary<NSNumber*, NSNumber*>* playing = nil;
                     if (!error && [response isKindOfClass:[NSHTTPURLResponse class]] &&
                         ((NSHTTPURLResponse*)response).statusCode == 200) {
-                      online = ParseOnline(data, &here, &in_private);
+                      online = ParseOnline(data, &here, &in_private, &playing);
                     }
                     dispatch_async(dispatch_get_main_queue(), ^{
                       g_online_asking = false;
@@ -1203,7 +1361,7 @@ void AskOnline() {
                       // A failed answer keeps the last counts until they're stale.
                       if (online && OnlineAllowed()) {
                         g_online_answered = Uptime();
-                        SetOnline(online, here, in_private);
+                        SetOnline(online, here, in_private, playing);
                       }
                     });
                   }] resume];
@@ -1291,6 +1449,24 @@ NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_titles(void) { ret
 NSInteger xe_ios_system_link_online_here(void) { return g_online ? g_here : -1; }
 
 NSInteger xe_ios_system_link_online_private(void) { return g_online ? g_private : -1; }
+
+NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_playing(void) {
+  return g_online ? g_playing : nil;
+}
+
+NSInteger xe_ios_system_link_online_playing_count(uint32_t title_id) {
+  return title_id && g_online ? [g_playing[@(title_id)] integerValue] : 0;
+}
+
+void xe_ios_system_link_set_playing(uint32_t title_id) {
+  if (g_playing_title == title_id) {
+    return;
+  }
+  g_playing_title = title_id;
+  if (g_presence) {
+    SendPlaying(g_presence);
+  }
+}
 
 NSInteger xe_ios_system_link_online_players(uint32_t title_id) {
   return title_id ? [g_online[@(title_id)] integerValue] : 0;
@@ -1383,6 +1559,8 @@ NSInteger xe_ios_system_link_online_total(void) {
 
 namespace {
 void (^g_online_menu)(void) = nil;
+NSInteger g_friends_online = 0;
+NSInteger g_social_attention = 0;
 }  // namespace
 
 void xe_ios_system_link_set_online_menu(void (^open)(void)) {
@@ -1390,7 +1568,23 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
   g_online_menu = [open copy];
 }
 
-@implementation XeniaIOSSystemLinkOnlineButton
+NSInteger xe_ios_system_link_social_attention(void) { return g_social_attention; }
+
+void xe_ios_system_link_set_social_counts(NSInteger friends_online, NSInteger attention) {
+  if (g_friends_online == friends_online && g_social_attention == attention) {
+    return;
+  }
+  g_friends_online = friends_online;
+  g_social_attention = attention;
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:XeniaIOSSystemLinkOnlineDidChangeNotification
+                    object:nil];
+}
+
+@implementation XeniaIOSSystemLinkOnlineButton {
+  // Invites waiting (accent), or friends online (glass), at the capsule's top trailing corner.
+  UILabel* badge_;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
@@ -1406,7 +1600,49 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [badge_ release];
   [super dealloc];
+}
+
+- (void)updateBadge {
+  const NSInteger count = g_social_attention > 0 ? g_social_attention : g_friends_online;
+  if (count <= 0) {
+    badge_.hidden = YES;
+    return;
+  }
+  if (!badge_) {
+    badge_ = [[UILabel alloc] init];
+    badge_.translatesAutoresizingMaskIntoConstraints = NO;
+    badge_.textAlignment = NSTextAlignmentCenter;
+    badge_.font = [UIFont monospacedDigitSystemFontOfSize:11.0 weight:UIFontWeightBold];
+    badge_.layer.cornerRadius = 9.0;
+    badge_.layer.cornerCurve = kCACornerCurveContinuous;
+    badge_.clipsToBounds = YES;
+    badge_.isAccessibilityElement = NO;
+    badge_.userInteractionEnabled = NO;
+    [self addSubview:badge_];
+    [NSLayoutConstraint activateConstraints:@[
+      [badge_.heightAnchor constraintEqualToConstant:18.0],
+      [badge_.widthAnchor constraintGreaterThanOrEqualToConstant:18.0],
+      [badge_.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:3.0],
+      [badge_.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-5.0],
+    ]];
+  }
+  badge_.hidden = NO;
+  const BOOL attention = g_social_attention > 0;
+  // Blue for something waiting (an invite, a request), green for friends online.
+  badge_.backgroundColor = attention ? [UIColor colorWithRed:10.0 / 255.0
+                                                       green:132.0 / 255.0
+                                                        blue:1.0
+                                                       alpha:1.0]
+                                     : [UIColor colorWithRed:48.0 / 255.0
+                                                       green:209.0 / 255.0
+                                                        blue:88.0 / 255.0
+                                                       alpha:1.0];
+  badge_.textColor = attention ? [UIColor whiteColor] : [UIColor colorWithWhite:0.0 alpha:0.78];
+  badge_.text = count > 9 && attention ? @"9+"
+                                       : [NSString stringWithFormat:@" %ld ", (long)std::min<NSInteger>(count, 99)];
+  [self bringSubviewToFront:badge_];
 }
 
 - (void)onlineChanged:(NSNotification* __unused)note {
@@ -1421,45 +1657,32 @@ void xe_ios_system_link_set_online_menu(void (^open)(void)) {
 
 - (void)updateConfiguration {
   UIButtonConfiguration* configuration = self.configuration;
-  // The Online sheet's headline: apps open (one device each), or the players in lobbies and
-  // rooms when the lobby doesn't say how many apps are open.
-  const NSInteger total =
-      std::max(xe_ios_system_link_online_here(),
-               xe_ios_system_link_online_total() +
-                   std::max<NSInteger>(0, xe_ios_system_link_online_private()));
-  // A status dot, green while the lobby answers, so the library says whether the app is online.
-  const BOOL connected = xe_ios_system_link_online_connected();
-  UIColor* status = connected ? [XeniaTheme accent] : [XeniaTheme textMuted];
-  configuration.image = [[UIImage
-       systemImageNamed:@"circle.fill"
-      withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:8.0
-                                                                        weight:UIImageSymbolWeightBold]]
-      imageWithTintColor:status
-           renderingMode:UIImageRenderingModeAlwaysOriginal];
-  configuration.baseForegroundColor = connected ? [XeniaTheme textPrimary] : [XeniaTheme textMuted];
-  configuration.title =
-      !connected ? NSLocalizedString(@"Offline", @"Game library: Online button while the app "
-                                                 @"can't reach the System Link lobby")
-      : total > 0
-          ? [NSString localizedStringWithFormat:NSLocalizedString(
-                                                    @"%ld Online",
-                                                    @"online view controller: summary title; "
-                                                    @"%ld is how many devices have XeniOS open"),
-                                                long(total)]
-          : NSLocalizedString(@"Online", @"Game library: Online button");
+  configuration.image = [UIImage
+       systemImageNamed:@"person.2.fill"
+      withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13.0
+                                                                        weight:UIImageSymbolWeightSemibold]];
+  configuration.baseForegroundColor = [XeniaTheme textPrimary];
+  configuration.title = NSLocalizedString(@"Friends", @"Game library: Friends button");
   self.configuration = configuration;
-  self.accessibilityValue =
-      total == 1
-          ? NSLocalizedString(@"1 device online", @"Game library, VoiceOver: Online button value, "
-                                                  @"when only one device has XeniOS open")
-      : total > 1
-          ? [NSString localizedStringWithFormat:NSLocalizedString(
-                                                    @"%ld devices online",
-                                                    @"Game library, VoiceOver: Online button "
-                                                    @"value; %ld is how many devices have XeniOS "
-                                                    @"open"),
-                                                long(total)]
-          : nil;
+  [self updateBadge];
+  NSMutableArray<NSString*>* social = [NSMutableArray array];
+  if (g_social_attention > 0) {
+    [social addObject:[NSString localizedStringWithFormat:NSLocalizedString(
+                                                              @"%ld waiting for you",
+                                                              @"Game library, VoiceOver: Online "
+                                                              @"button; %ld is how many invites "
+                                                              @"and friend requests wait"),
+                                                          long(g_social_attention)]];
+  }
+  if (g_friends_online > 0) {
+    [social addObject:[NSString localizedStringWithFormat:NSLocalizedString(
+                                                              @"%ld friends online",
+                                                              @"Game library, VoiceOver: Online "
+                                                              @"button; %ld is how many friends "
+                                                              @"are online"),
+                                                          long(g_friends_online)]];
+  }
+  self.accessibilityValue = social.count ? [social componentsJoinedByString:@", "] : nil;
 }
 
 @end
@@ -1482,11 +1705,162 @@ UIButton* xe_ios_new_system_link_online_button(void) {
       [[[XeniaIOSSystemLinkOnlineButton alloc] initWithFrame:CGRectZero] autorelease];
   button.configuration = configuration;
   button.translatesAutoresizingMaskIntoConstraints = NO;
-  button.accessibilityLabel = NSLocalizedString(@"Online", @"Game library: Online button");
+  button.accessibilityLabel = NSLocalizedString(@"Friends", @"Game library: Friends button");
   button.accessibilityHint =
-      NSLocalizedString(@"Shows who has XeniOS open and the games they're playing.",
-                        @"Game library, VoiceOver: Online button hint");
+      NSLocalizedString(@"Shows your friends, invites and your party.",
+                        @"Game library, VoiceOver: Friends button hint");
   [button setContentCompressionResistancePriority:UILayoutPriorityRequired
                                           forAxis:UILayoutConstraintAxisHorizontal];
   return button;
+}
+
+
+namespace {
+void (^g_globe_action)(void) = nil;
+}  // namespace
+
+void xe_ios_system_link_set_globe_action(void (^open)(void)) {
+  [g_globe_action release];
+  g_globe_action = [open copy];
+}
+
+NSInteger xe_ios_system_link_players_elsewhere(void) {
+  // Signed out of Live, or the lobby isn't answering: no count. The lobby's |here| counts this
+  // device too.
+  if ([XeniaLiveSocial shared].state != XeniaLiveSocialStateOnline) {
+    return 0;
+  }
+  const NSInteger here = xe_ios_system_link_online_here();
+  return here > 1 ? here - 1 : 0;
+}
+
+NSString* xe_ios_system_link_players_text(NSInteger count) {
+  if (count < 1000) {
+    return [NSString stringWithFormat:@"%ld", (long)count];
+  }
+  if (count < 10000) {
+    return [NSString stringWithFormat:@"%ld.%ldk", (long)(count / 1000), (long)(count % 1000 / 100)];
+  }
+  return [NSString stringWithFormat:@"%ldk", (long)(count / 1000)];
+}
+
+@interface XeniaIOSSystemLinkGlobeButton : UIButton
+@end
+
+@implementation XeniaIOSSystemLinkGlobeButton {
+  UILabel* badge_;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    for (NSNotificationName name : @[ XeniaIOSSystemLinkOnlineDidChangeNotification,
+                                      XeniaLiveSocialDidChangeNotification ]) {
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(playersChanged:)
+                                                   name:name
+                                                 object:nil];
+    }
+    [self addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [badge_ release];
+  [super dealloc];
+}
+
+- (void)playersChanged:(NSNotification* __unused)note {
+  [self setNeedsUpdateConfiguration];
+}
+
+- (void)tapped:(id)__unused sender {
+  if (g_globe_action) {
+    g_globe_action();
+  }
+}
+
+- (void)updateConfiguration {
+  const NSInteger count = xe_ios_system_link_players_elsewhere();
+  if (!badge_) {
+    badge_ = [[UILabel alloc] init];
+    badge_.translatesAutoresizingMaskIntoConstraints = NO;
+    badge_.textAlignment = NSTextAlignmentCenter;
+    badge_.font = [UIFont monospacedDigitSystemFontOfSize:11.0 weight:UIFontWeightBold];
+    badge_.backgroundColor = [UIColor colorWithRed:48.0 / 255.0 green:209.0 / 255.0 blue:88.0 / 255.0 alpha:1.0];
+    badge_.textColor = [UIColor colorWithWhite:0.0 alpha:0.78];
+    badge_.layer.cornerRadius = 9.0;
+    badge_.layer.cornerCurve = kCACornerCurveContinuous;
+    badge_.clipsToBounds = YES;
+    badge_.isAccessibilityElement = NO;
+    badge_.userInteractionEnabled = NO;
+    [self addSubview:badge_];
+    [NSLayoutConstraint activateConstraints:@[
+      [badge_.heightAnchor constraintEqualToConstant:18.0],
+      [badge_.widthAnchor constraintGreaterThanOrEqualToConstant:18.0],
+      [badge_.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:3.0],
+      [badge_.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-3.0],
+    ]];
+  }
+  badge_.hidden = count <= 0;
+  badge_.text = [NSString stringWithFormat:@" %@ ", xe_ios_system_link_players_text(count)];
+  [self bringSubviewToFront:badge_];
+  self.accessibilityValue =
+      count > 0 ? [NSString localizedStringWithFormat:NSLocalizedString(
+                                                          @"%ld players on XeniOS",
+                                                          @"Game library, VoiceOver: Public Games "
+                                                          @"button value; %ld is how many other "
+                                                          @"players are online"),
+                                                      long(count)]
+                : nil;
+}
+
+@end
+
+UIButton* xe_ios_new_system_link_globe_button(void) {
+  UIButtonConfiguration* configuration = [UIButtonConfiguration glassButtonConfiguration];
+  configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  configuration.baseForegroundColor = [XeniaTheme textPrimary];
+  configuration.image = [UIImage
+       systemImageNamed:@"globe"
+      withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17.0
+                                                                        weight:UIImageSymbolWeightSemibold]];
+  configuration.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 0.0, 0.0, 0.0);
+  XeniaIOSSystemLinkGlobeButton* button =
+      [[[XeniaIOSSystemLinkGlobeButton alloc] initWithFrame:CGRectZero] autorelease];
+  button.configuration = configuration;
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.accessibilityLabel = NSLocalizedString(@"Public Games", @"Game library: globe button");
+  button.accessibilityHint = NSLocalizedString(@"Shows the games people are playing on XeniOS.",
+                                               @"Game library, VoiceOver: globe button hint");
+  [NSLayoutConstraint activateConstraints:@[
+    [button.widthAnchor constraintEqualToConstant:44.0],
+    [button.heightAnchor constraintEqualToConstant:44.0],
+  ]];
+  [button setContentHuggingPriority:UILayoutPriorityRequired
+                            forAxis:UILayoutConstraintAxisHorizontal];
+  [button setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                          forAxis:UILayoutConstraintAxisHorizontal];
+  return button;
+}
+
+NSString* const XeniaIOSSystemLinkLiveGameDidChangeNotification =
+    @"XeniaIOSSystemLinkLiveGameDidChangeNotification";
+
+void xe_ios_system_link_set_live_game(BOOL (^is_live)(void), NSString* (^players)(void),
+                                      void (^open)(void)) {
+  [g_live_game release];
+  g_live_game = [is_live copy];
+  [g_live_players release];
+  g_live_players = [players copy];
+  [g_live_open release];
+  g_live_open = [open copy];
+}
+
+void xe_ios_system_link_live_game_changed(void) {
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:XeniaIOSSystemLinkLiveGameDidChangeNotification
+                    object:nil];
 }
