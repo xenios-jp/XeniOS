@@ -261,6 +261,11 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
     if (auto secret = ParseHex<uint64_t>(String(message, "secret"), 16)) {
       // Old lobbies don't name the network, or count the app.
       net_ = ParseHex<uint64_t>(String(message, "net"), 16);
+      if (const std::string_view resume = String(message, "resume");
+          resume.size() == 32 && resume.find_first_not_of("0123456789abcdef") ==
+                                     std::string_view::npos) {
+        resume_ = resume;
+      }
       auto here = message.FindMember("here");
       app_counted_ = here != message.MemberEnd() && here->value.IsBool() &&
                      here->value.GetBool();
@@ -346,11 +351,37 @@ void RelayClient::OnPeers(std::vector<Listed> listed, uint64_t now_ms,
       if (peer.listed.candidates != entry.candidates) {
         peer.probes = 0;
         peer.next_probe_ms = now_ms;
+        // A player that moved to another network is no longer at its old
+        // address.
+        if (peer.direct &&
+            std::none_of(entry.candidates.begin(), entry.candidates.end(),
+                         [&](const Endpoint& candidate) {
+                           return SameAddress(candidate, *peer.direct);
+                         })) {
+          XELOGI("System Link: {} moved from {}", MacText(entry.mac),
+                 ToString(*peer.direct));
+          peer.direct.reset();
+          peer.quiet.reset();
+          peer.reflexive.reset();
+          peer.keepalive_sent_ms = 0;
+          peer.rtt_ms = 0;
+        }
       }
     } else {
       peer.next_probe_ms = now_ms;
     }
-    peer.listed = std::move(entry);
+    if (old == peers_.end() ||
+        old->second.listed.candidates != entry.candidates) {
+      std::string list;
+      for (const Endpoint& candidate : entry.candidates) {
+        list += (list.empty() ? "" : ", ") + ToString(candidate);
+      }
+      peer.listed = std::move(entry);
+      XELOGI("System Link: {} is at {} ({} network)", MacText(peer.listed.mac),
+             list, SameNetwork(peer) ? "this" : "another");
+    } else {
+      peer.listed = std::move(entry);
+    }
     updated[peer.listed.mac] = std::move(peer);
   }
   peers_ = std::move(updated);
@@ -381,7 +412,10 @@ void RelayClient::LobbyClosed(uint64_t now_ms, bool refused) {
     down_since_ms_ = now_ms;
   }
   uint64_t wait_ms;
-  if (rejected_ && Reconnecting(now_ms)) {
+  if (restart_lobby_) {
+    restart_lobby_ = false;
+    wait_ms = 0;
+  } else if (rejected_ && Reconnecting(now_ms)) {
     wait_ms = kRejoinRetryMs;
   } else if (rejected_ || refused) {
     wait_ms = std::min<uint64_t>(kMaxRefusedBackoffMs,
@@ -397,7 +431,8 @@ void RelayClient::LobbyClosed(uint64_t now_ms, bool refused) {
 }
 
 bool RelayClient::LobbyStale(uint64_t now_ms) const {
-  return (lobby_ == Lobby::kOpen && now_ms - lobby_heard_ms_ > kLobbyLostMs) ||
+  return (lobby_ != Lobby::kClosed && restart_lobby_) ||
+         (lobby_ == Lobby::kOpen && now_ms - lobby_heard_ms_ > kLobbyLostMs) ||
          // A join that is neither welcomed nor rejected.
          (lobby_ == Lobby::kOpen && !answered_ &&
           now_ms - join_sent_ms_ > kWelcomeMs) ||
@@ -442,9 +477,46 @@ void RelayClient::UseIceServer(std::optional<Endpoint> server, uint64_t now_ms,
 }
 
 void RelayClient::SetHostCandidates(std::vector<Endpoint> candidates,
-                                    Outbox& out) {
+                                    uint64_t now_ms, Outbox& out) {
+  // Any change counts: traffic follows the new route even when the old
+  // network's address stays (cellular to Wi-Fi), and a cellular address isn't
+  // among these at all.
+  const bool changed = host_candidates_read_ && candidates != host_candidates_;
+  host_candidates_read_ = true;
   host_candidates_ = std::move(candidates);
+  if (changed) {
+    OnNetworkChanged(now_ms, out);
+  }
   UpdatePresence(out);
+}
+
+void RelayClient::OnNetworkChanged(uint64_t now_ms, Outbox& out) {
+  XELOGI("System Link: the network changed");
+  // Paths through the old network are gone. Every player is probed now from
+  // the new one, at the addresses it had, which needs no lobby.
+  for (auto& [mac, peer] : peers_) {
+    peer.direct.reset();
+    peer.quiet.reset();
+    peer.reflexive.reset();
+    peer.keepalive_sent_ms = 0;
+    peer.rtt_ms = 0;
+    peer.probes = 0;
+    peer.next_probe_ms = now_ms;
+  }
+  // So is the public address, which STUN finds again.
+  if (turn_) {
+    turn_->Release(out.datagrams);
+    turn_.reset();
+  }
+  next_ice_ms_ = now_ms;
+  // The lobby connection most likely went with the network, and the room
+  // needs the new addresses: it's opened again now rather than once it times
+  // out.
+  if (lobby_ == Lobby::kClosed) {
+    next_connect_ms_ = std::min(next_connect_ms_, now_ms);
+  } else {
+    restart_lobby_ = true;
+  }
 }
 
 std::vector<Endpoint> RelayClient::Candidates() const {
@@ -491,6 +563,10 @@ std::string RelayClient::Presence(bool join) const {
             std::string::npos) {
       json.Key("here");
       json.String(config_.app_id.c_str());
+    }
+    if (!resume_.empty()) {
+      json.Key("resume");
+      json.String(resume_.c_str());
     }
   }
   json.Key("candidates");
@@ -560,7 +636,13 @@ bool RelayClient::SendTo(Peer& peer,
     return true;
   }
   if (!turn_ || !peer.listed.relay) {
-    return false;
+    if (!config_.direct_paths || !peer.quiet) {
+      return false;
+    }
+    for (const auto& fragment : fragments) {
+      out.datagrams.push_back({*peer.quiet, fragment});
+    }
+    return true;
   }
   bool sent = true;
   for (const auto& fragment : fragments) {
@@ -610,9 +692,6 @@ std::optional<std::vector<uint8_t>> RelayClient::OnPeerDatagram(
   if (peer == peers_.end()) {
     return std::nullopt;
   }
-  if (!relayed && peer->second.direct == from) {
-    peer->second.heard_ms = now_ms;
-  }
   const Mac source = frame.source;
   auto whole = reassembler_.Add(std::move(frame), now_ms);
   if (!whole || whole->size() < kEthernetHeaderSize ||
@@ -638,14 +717,15 @@ void RelayClient::OnProbe(const Probe& probe, const Endpoint& from,
     if (found != peers_.end()) {
       Peer& peer = found->second;
       const auto& candidates = peer.listed.candidates;
-      if (peer.direct == from) {
-        peer.heard_ms = now_ms;
-      } else if (std::find(candidates.begin(), candidates.end(), from) ==
-                     candidates.end() &&
-                 std::any_of(candidates.begin(), candidates.end(),
-                             [&](const Endpoint& candidate) {
-                               return SameAddress(candidate, from);
-                             })) {
+      // Only answers to its own probes keep a direct path alive: hearing
+      // the peer shows only that the path works toward this side.
+      if (peer.direct != from &&
+          std::find(candidates.begin(), candidates.end(), from) ==
+              candidates.end() &&
+          std::any_of(candidates.begin(), candidates.end(),
+                      [&](const Endpoint& candidate) {
+                        return SameAddress(candidate, from);
+                      })) {
         // A NAT that maps each destination to its own port. Only another port
         // of a listed address, so no one else can name where the peer is.
         peer.reflexive = from;
@@ -680,8 +760,10 @@ void RelayClient::OnProbe(const Probe& probe, const Endpoint& from,
     if (working && (!IsLocal(from) || IsLocal(*peer.direct))) {
       return;
     }
-    XELOGI("System Link: reaching {} directly", MacText(peer.listed.mac));
+    XELOGI("System Link: reaching {} directly at {}", MacText(peer.listed.mac),
+           ToString(from));
     peer.direct = from;
+    peer.quiet.reset();
     peer.next_probe_ms = now_ms + kActiveKeepaliveMs;
   }
   peer.heard_ms = now_ms;
@@ -821,8 +903,9 @@ void RelayClient::TickPeers(uint64_t now_ms, Outbox& out) {
         }
         continue;
       }
-      XELOGI("System Link: lost the direct path to {}; using the relay",
-             MacText(mac));
+      XELOGI("System Link: lost the direct path to {} at {}; using the relay",
+             MacText(mac), ToString(*peer.direct));
+      peer.quiet = peer.direct;
       peer.direct.reset();
       peer.probes = 0;
       peer.keepalive_sent_ms = 0;

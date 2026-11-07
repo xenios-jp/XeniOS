@@ -136,8 +136,12 @@ class RelayClient {
   void UseIceServer(std::optional<Endpoint> server, uint64_t now_ms,
                     Outbox& out);
 
-  // The addresses this instance's socket has on the host's own networks.
-  void SetHostCandidates(std::vector<Endpoint> candidates, Outbox& out);
+  // The addresses this instance's socket has on the host's own networks. A
+  // change means the network changed (Wi-Fi to cellular, say): direct
+  // paths, the public address and the lobby connection are found again at
+  // once, so play carries on before the game times the other players out.
+  void SetHostCandidates(std::vector<Endpoint> candidates, uint64_t now_ms,
+                         Outbox& out);
 
   // False when the frame can't go anywhere yet.
   bool Send(std::span<const uint8_t> ethernet, uint64_t now_ms, Outbox& out);
@@ -210,6 +214,10 @@ class RelayClient {
     std::optional<Endpoint> direct;
     // Where its probes come from, when that isn't one of its candidates.
     std::optional<Endpoint> reflexive;
+    // The direct path that stopped answering. Frames still go there while
+    // nothing else reaches the peer: with no relay, a path that only dropped
+    // a few answers is better than none, and the peer may still hear them.
+    std::optional<Endpoint> quiet;
     uint64_t heard_ms = 0;
     uint64_t sent_ms = 0;
     uint64_t next_probe_ms = 0;
@@ -233,6 +241,7 @@ class RelayClient {
   bool WantsTurn() const;
   void RenewIce(uint64_t now_ms, Outbox& out);
   void OnPeers(std::vector<Listed> listed, uint64_t now_ms, Outbox& out);
+  void OnNetworkChanged(uint64_t now_ms, Outbox& out);
   // Lets the other players' relayed addresses reach this one's allocation.
   void PermitRelays(uint64_t now_ms, Outbox& out);
   std::optional<std::vector<uint8_t>> OnPeerDatagram(
@@ -289,6 +298,12 @@ class RelayClient {
   bool left_ = false;
   Reject reject_ = Reject::kFull;
   uint64_t room_secret_ = 0;
+  // From the welcome: shown on the next join, it lets the lobby replace this
+  // player's old connection from another network.
+  std::string resume_;
+  // The network changed under the open lobby connection, which is closed and
+  // opened again straight away.
+  bool restart_lobby_ = false;
 
   std::optional<IceServers> ice_;
   std::unique_ptr<TurnClient> turn_;
@@ -304,6 +319,7 @@ class RelayClient {
   uint64_t next_ice_ask_ms_ = 0;
 
   std::vector<Endpoint> host_candidates_;
+  bool host_candidates_read_ = false;
   std::vector<Endpoint> sent_candidates_;
   std::optional<Endpoint> sent_relay_;
 
