@@ -16,7 +16,6 @@
 #include <memory>
 
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
-#import "xenia/ui/ios/launcher/ios_system_update_page_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
@@ -199,11 +198,12 @@ enum InstallRow : NSInteger {
   }
   if (indexPath.section == kSectionInstall) {
     if (indexPath.row == kRowGetUpdate) {
-      return [self actionCellWithTitle:NSLocalizedString(@"Get the Update from Microsoft",
+      return [self actionCellWithTitle:NSLocalizedString(@"Download & Install",
                                                          @"system software view controller: action")
                             symbolName:@"arrow.down"
                                   hint:NSLocalizedString(
-                                           @"Opens Microsoft's system update page.",
+                                           @"Downloads the system update from Microsoft and "
+                                           @"installs it.",
                                            @"system software view controller: accessibility hint")
                                enabled:[self canChangeSystemSoftware]
                            destructive:NO];
@@ -242,7 +242,7 @@ enum InstallRow : NSInteger {
     return;
   }
   if (indexPath.section == kSectionInstall && indexPath.row == kRowGetUpdate) {
-    [self pushSystemUpdatePage];
+    [self downloadAndInstall];
   } else if (indexPath.section == kSectionInstall) {
     [self presentInstallPicker];
   } else if (indexPath.section == kSectionRemove) {
@@ -252,14 +252,60 @@ enum InstallRow : NSInteger {
 
 #pragma mark - Install
 
-- (void)pushSystemUpdatePage {
-  __unsafe_unretained XeniaSystemSoftwareViewController* unsafe_self = self;
-  XeniaSystemUpdatePageViewController* page =
-      [[[XeniaSystemUpdatePageViewController alloc] initWithDownloadHandler:^(NSURL* file) {
-        [unsafe_self.navigationController popToViewController:unsafe_self animated:YES];
-        [unsafe_self installFromURL:file];
-      }] autorelease];
-  [self.navigationController pushViewController:page animated:YES];
+- (void)downloadAndInstall {
+  busy_ = YES;
+  [self.tableView reloadData];
+
+  auto cancel = std::make_shared<std::atomic<bool>>(false);
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Downloading the System Update",
+                                                 @"system software view controller: title")
+                       message:@" "
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(UIAlertAction* __unused action) {
+                                            cancel->store(true);
+                                          }]];
+  [progress_alert_ release];
+  progress_alert_ = [alert retain];
+  [self setProgressPercent:0];
+  [self presentViewController:alert animated:YES completion:nil];
+
+  xe::ui::DownloadAndInstallIOSSystemUpdateAsync(
+      cancel,
+      ^(int percent, BOOL installing) {
+        if (installing) {
+          progress_alert_.title = NSLocalizedString(@"Installing System Software",
+                                                    @"system software view controller: title");
+        }
+        [self setProgressPercent:percent];
+      },
+      ^(xe::ui::SystemUpdateDownload download, xe::ui::SystemFilesResult install) {
+        if (download == xe::ui::SystemUpdateDownload::kDownloaded) {
+          [self finishInstallWithResult:install pickedURL:nil];
+          return;
+        }
+        busy_ = NO;
+        [self reloadInfo];
+        NSString* message = xe::ui::IOSSystemUpdateDownloadFailureMessage(download);
+        void (^report)(void) = ^{
+          if (message) {
+            XEPresentOKAlert(self,
+                             NSLocalizedString(@"Couldn't Download the System Update",
+                                               @"system software view controller: title"),
+                             message);
+          }
+        };
+        // Cancel has already closed it.
+        UIAlertController* progress = [progress_alert_ autorelease];
+        progress_alert_ = nil;
+        if (progress.presentingViewController) {
+          [progress dismissViewControllerAnimated:YES completion:report];
+        } else {
+          report();
+        }
+      });
 }
 
 - (void)presentInstallPicker {

@@ -21,6 +21,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/ui/audio_helper.h"
 #include "xenia/ui/ios/app/windowed_app_context_ios.h"

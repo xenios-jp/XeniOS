@@ -38,12 +38,17 @@
 
 DECLARE_path(storage_root);
 
+// Edge's setting (emulator_window.cc), for the iOS app.
+DEFINE_bool(boot_to_dashboard, false,
+            "Start the installed dashboard after the boot animation instead of "
+            "showing the game list, and go back to the dashboard when a title "
+            "exits.",
+            "General");
+
 NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification =
     @"XeniaIOSSystemSoftwareDidChangeNotification";
 NSNotificationName const XeniaIOSTitleWillStartNotification = @"XeniaIOSTitleWillStartNotification";
 NSString* const XeniaIOSTitlePathKey = @"path";
-NSString* const XeniaIOSSystemUpdateSupportURL =
-    @"https://support.xbox.com/en-US/help/xbox-360/console/system-updates-info";
 
 namespace xe {
 namespace ui {
@@ -278,6 +283,8 @@ bool IsIOSDashboardInstalled() {
   return std::filesystem::is_regular_file(IOSInstalledDashboardPath(), ec);
 }
 
+bool IsIOSDashboardHome() { return cvars::boot_to_dashboard && IsIOSDashboardInstalled(); }
+
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path) {
   std::error_code ec;
   return !path.empty() && std::filesystem::equivalent(path, IOSInstalledDashboardPath(), ec);
@@ -382,6 +389,66 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
     [source release];
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(result);
+    });
+  });
+}
+
+NSString* IOSSystemUpdateDownloadFailureMessage(SystemUpdateDownload result) {
+  switch (result) {
+    case SystemUpdateDownload::kDownloaded:
+    case SystemUpdateDownload::kCancelled:
+      return nil;
+    case SystemUpdateDownload::kFailed:
+      return NSLocalizedString(@"Download failed. Check your internet connection and try again.",
+                               @"system software view controller: download error");
+    case SystemUpdateDownload::kNotVerified:
+      return NSLocalizedString(
+          @"The downloaded file failed integrity verification and was discarded.",
+          @"system software view controller: download error");
+    case SystemUpdateDownload::kWriteFailed:
+      return NSLocalizedString(@"Failed to write the system files.",
+                               @"system software view controller: download error");
+  }
+  return nil;
+}
+
+void DownloadAndInstallIOSSystemUpdateAsync(std::shared_ptr<std::atomic<bool>> cancel,
+                                            void (^progress)(int percent, BOOL installing),
+                                            void (^completion)(SystemUpdateDownload download,
+                                                               SystemFilesResult install)) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const auto system_path = IOSSystemFilesPath();
+    int last_percent = -1;
+    const auto report = [&last_percent, progress](int percent, BOOL installing) {
+      if (percent != last_percent) {
+        last_percent = percent;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          progress(percent, installing);
+        });
+      }
+    };
+    const auto download =
+        DownloadSystemUpdate(system_path, [&report, &cancel](uint64_t received, uint64_t size) {
+          report(size ? static_cast<int>(received * 100 / size) : 0, NO);
+          return !cancel->load();
+        });
+    auto install = SystemFilesResult::kCancelled;
+    if (download == SystemUpdateDownload::kDownloaded) {
+      last_percent = -1;
+      const auto zip_path = GetSystemUpdateDownloadPath(system_path);
+      install = InstallIOSSystemSoftware(zip_path, [&report, &cancel](size_t done, size_t total) {
+        report(total ? static_cast<int>(done * 100 / total) : 0, YES);
+        return !cancel->load();
+      });
+      // Kept until it's installed, so a failed install doesn't download it
+      // again.
+      if (install == SystemFilesResult::kSuccess) {
+        std::error_code ec;
+        std::filesystem::remove(zip_path, ec);
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(download, install);
     });
   });
 }

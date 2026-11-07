@@ -12,6 +12,7 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include "xenia/app/game_title_db.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -22,7 +23,8 @@ namespace {
 constexpr CGFloat kMaxStoredArtPixels = 1024.0;
 // Covers not in the library and untouched for this long are pruned.
 constexpr NSTimeInterval kArtPruneAge = 30.0 * 24.0 * 3600.0;
-// How long a title the art repository has no image for waits before asking again.
+// How long a title none of the art sources has an image for waits before
+// asking again.
 constexpr NSTimeInterval kArtMissingRetryAge = 7.0 * 24.0 * 3600.0;
 
 NSString* xe_art_cache_dir_named(NSString* name) {
@@ -42,7 +44,13 @@ NSString* xe_game_art_cache_dir(void) {
   static NSString* dir;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    dir = [xe_art_cache_dir_named(@"game-art") retain];  // MRC
+    // Covers from edge's sources. "game-art" held another repository's.
+    dir = [xe_art_cache_dir_named(@"game-boxart") retain];  // MRC
+    NSString* old_dir = [dir.stringByDeletingLastPathComponent
+        stringByAppendingPathComponent:@"game-art"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      [[NSFileManager defaultManager] removeItemAtPath:old_dir error:nil];
+    });
   });
   return dir;
 }
@@ -202,17 +210,49 @@ void xe_art_call_all(NSArray* completions, UIImage* image) {
 // Shared cover/background fetcher. Duplicate requests for a key that is in
 // flight, or recently failed, are folded into the same waiter list and every
 // completion is invoked exactly once on the main thread (nil on failure).
-void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
+// Tries |urls| in order, as edge's DownloadCoverArt does, and calls back with
+// the first image. A title is remembered as missing when every URL is a 404.
+void xe_fetch_art_from(NSArray<NSURL*>* urls, NSUInteger index, bool all_missing,
+                       NSString* path, NSString* missing_path,
+                       void (^done)(UIImage* _Nullable image, bool is_http)) {
+  if (index >= urls.count) {
+    if (all_missing) {
+      [[NSData data] writeToFile:missing_path atomically:YES];
+    }
+    done(nil, all_missing);
+    return;
+  }
+  NSURLSessionDataTask* task = [[NSURLSession sharedSession]
+        dataTaskWithURL:urls[index]
+      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
+        const bool is_http = !error && [http isKindOfClass:[NSHTTPURLResponse class]];
+        if (is_http && http.statusCode == 200 && data.length > 0) {
+          if (UIImage* image = xe_art_store_download(data, path)) {
+            [[NSFileManager defaultManager] removeItemAtPath:missing_path error:nil];
+            done(image, true);
+            return;
+          }
+        }
+        xe_fetch_art_from(urls, index + 1, all_missing && is_http && http.statusCode == 404,
+                          path, missing_path, done);
+      }];
+  [task resume];
+}
+
+void xe_fetch_art(NSString* key, NSArray<NSURL*>* urls, NSString* dir, uint32_t title_id,
                   void (^completion)(UIImage* _Nullable image)) {
   if (![NSThread isMainThread]) {
     void (^copied)(UIImage*) = [completion copy];
+    [urls retain];
     dispatch_async(dispatch_get_main_queue(), ^{
-      xe_fetch_art(key, url, dir, title_id, copied);
+      xe_fetch_art(key, urls, dir, title_id, copied);
+      [urls release];
     });
     [copied release];
     return;
   }
-  if (!url) {
+  if (!urls.count) {
     if (completion) {
       completion(nil);
     }
@@ -228,8 +268,8 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
   }
   NSDate* retry_after = xe_art_retry_after()[key];
   NSString* path = xe_art_path(dir, title_id);
-  // The art repository has no image for some titles: a 404 is remembered on
-  // disk, so those aren't asked for again on every launch.
+  // The art sources have no image for some titles: 404s from all of them are
+  // remembered on disk, so those aren't asked for again on every launch.
   NSString* missing_path = [path.stringByDeletingPathExtension
       stringByAppendingPathExtension:@"missing"];
   NSDate* missing_since = [[NSFileManager defaultManager] attributesOfItemAtPath:missing_path
@@ -248,41 +288,27 @@ void xe_fetch_art(NSString* key, NSURL* url, NSString* dir, uint32_t title_id,
   }
   waiters[key] = pending;
 
-  NSURLSessionDataTask* task = [[NSURLSession sharedSession]
-        dataTaskWithURL:url
-      completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-        UIImage* image = nil;
-        NSHTTPURLResponse* http = (NSHTTPURLResponse*)response;
-        const bool is_http = !error && [http isKindOfClass:[NSHTTPURLResponse class]];
-        if (is_http && http.statusCode == 200 && data.length > 0) {
-          image = xe_art_store_download(data, path);
-          if (image) {
-            [[NSFileManager defaultManager] removeItemAtPath:missing_path error:nil];
-          }
-        } else if (is_http && http.statusCode == 404) {
-          [[NSData data] writeToFile:missing_path atomically:YES];
-        }
-        // A dropped or timed-out connection (cellular, a tunnel) is worth asking again soon; a
-        // server that answered without the image, much later.
-        const NSTimeInterval retry_delay = is_http ? 300.0 : 30.0;
-        [image retain];
-        dispatch_async(dispatch_get_main_queue(), ^{
-          NSArray* completions = [waiters[key] retain];
-          [waiters removeObjectForKey:key];
-          if (image) {
-            [xe_art_retry_after() removeObjectForKey:key];
-            [xe_art_thumbnail_cache() removeObjectForKey:@(title_id)];
-          } else {
-            // Throttle repeated failed downloads while still allowing
-            // periodic retries.
-            xe_art_retry_after()[key] = [NSDate dateWithTimeIntervalSinceNow:retry_delay];
-          }
-          xe_art_call_all(completions, image);
-          [completions release];
-          [image release];
-        });
-      }];
-  [task resume];
+  xe_fetch_art_from(urls, 0, true, path, missing_path, ^(UIImage* image, bool is_http) {
+    // A dropped or timed-out connection (cellular, a tunnel) is worth asking
+    // again soon; servers that answered without the image, much later.
+    const NSTimeInterval retry_delay = is_http ? 300.0 : 30.0;
+    [image retain];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSArray* completions = [waiters[key] retain];
+      [waiters removeObjectForKey:key];
+      if (image) {
+        [xe_art_retry_after() removeObjectForKey:key];
+        [xe_art_thumbnail_cache() removeObjectForKey:@(title_id)];
+      } else {
+        // Throttle repeated failed downloads while still allowing
+        // periodic retries.
+        xe_art_retry_after()[key] = [NSDate dateWithTimeIntervalSinceNow:retry_delay];
+      }
+      xe_art_call_all(completions, image);
+      [completions release];
+      [image release];
+    });
+  });
 }
 
 }  // namespace
@@ -382,12 +408,14 @@ void xe_fetch_game_art(uint32_t title_id, void (^completion)(UIImage* _Nullable 
     }
     return;
   }
-  NSString* hex = xe_game_art_hex(title_id);
-  NSString* url_str = [NSString
-      stringWithFormat:
-          @"https://raw.githubusercontent.com/Element18592/360-Game-Art/main/Games/%@/cover.jpg",
-          hex];
-  xe_fetch_art([@"cover:" stringByAppendingString:hex], [NSURL URLWithString:url_str],
+  // Edge's box art sources for the title, best first.
+  NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+  for (const std::string& url : xe::app::GetBoxArtUrls(title_id)) {
+    if (NSURL* ns_url = [NSURL URLWithString:@(url.c_str())]) {
+      [urls addObject:ns_url];
+    }
+  }
+  xe_fetch_art([@"cover:" stringByAppendingString:xe_game_art_hex(title_id)], urls,
                xe_game_art_cache_dir(), title_id, completion);
 }
 
@@ -402,6 +430,6 @@ void xe_fetch_game_background_art(uint32_t title_id, void (^completion)(UIImage*
                                                  @"x360db/main/titles/%@/artwork/background.jpg",
                                                  XEFormatTitleIDHexUpper(title_id)];
   xe_fetch_art([@"background:" stringByAppendingString:xe_game_art_hex(title_id)],
-               [NSURL URLWithString:url_str], xe_game_background_cache_dir(), title_id,
+               @[ [NSURL URLWithString:url_str] ], xe_game_background_cache_dir(), title_id,
                completion);
 }

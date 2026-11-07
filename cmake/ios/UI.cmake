@@ -10,9 +10,13 @@ list(FILTER _xe_ios_ui_sources EXCLUDE REGEX
 # (system_files_source_ios.cc).
 list(APPEND _xe_ios_ui_sources
   "${CMAKE_CURRENT_SOURCE_DIR}/system_files_installer_wx.cc"
-  "${CMAKE_CURRENT_SOURCE_DIR}/system_files_installer_wx.h")
+  "${CMAKE_CURRENT_SOURCE_DIR}/system_files_installer_wx.h"
+  # Downloads through NSURLSession, as http_download_wx.cc does through wx.
+  "${CMAKE_CURRENT_SOURCE_DIR}/http_download_ios.mm")
 set_target_properties(xenia-ui PROPERTIES SOURCES "${_xe_ios_ui_sources}")
 target_link_libraries(xenia-ui PUBLIC xenia-base)
+# mbedtls: the system update's SHA-256 in system_files_installer_wx.cc.
+target_link_libraries(xenia-ui PRIVATE mbedtls)
 xe_target_defaults(xenia-ui)
 xe_embed_binary_assets(xenia-ui "${PROJECT_SOURCE_DIR}/assets/font" font)
 xe_embed_binary_assets(xenia-ui "${PROJECT_SOURCE_DIR}/assets/icon" app_icon)

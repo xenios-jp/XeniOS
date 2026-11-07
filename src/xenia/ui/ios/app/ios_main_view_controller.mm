@@ -465,6 +465,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   BOOL compat_fetch_started_;
   BOOL update_check_started_;
   BOOL online_features_notice_presented_;
+  BOOL home_dashboard_started_;
   BOOL external_title_launch_rescanned_;
   UIAlertController* pending_url_confirmation_;  // retained
   std::filesystem::path pending_external_launch_path_;
@@ -804,7 +805,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   }
   const std::filesystem::path path([path_ns fileSystemRepresentation]);
   const BOOL starts_dashboard = xe::ui::IsIOSInstalledDashboardPath(path);
-  self.inGameMenuOverlay.exitsToDashboard = dashboard_session_ && !starts_dashboard;
+  self.inGameMenuOverlay.exitsToDashboard =
+      (dashboard_session_ || xe::ui::IsIOSDashboardHome()) && !starts_dashboard;
   self.inGameMenuOverlay.sessionStartDate = [NSDate date];
   active_game_title_id_ = [self titleIDForGamePath:path];
   if (launched_accesses_ && path == launched_path_) {
@@ -874,6 +876,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 }
 
 - (void)runAppearanceTasks {
+  [self startHomeDashboardIfNeeded];
   [self startCompatFetchIfNeeded];
   [self startUpdateCheckIfNeeded];
   [self presentPendingTouchLayoutInstallIfReady];
@@ -1960,6 +1963,18 @@ static bool XeJITUsable() {
                 preventInteractiveDismissal:NO
                                  completion:nil];
   [log_vc release];
+}
+
+// With the dashboard as home (boot_to_dashboard), XeniOS opens on it, once.
+- (void)startHomeDashboardIfNeeded {
+  if (home_dashboard_started_) {
+    return;
+  }
+  home_dashboard_started_ = YES;
+  if (!xe::ui::IsIOSDashboardHome() || self.gameRunning || self.gameStopInProgress) {
+    return;
+  }
+  [self launchDashboard];
 }
 
 // A game the dashboard started goes back to it, as the game's own exit does.
