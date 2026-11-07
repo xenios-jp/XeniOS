@@ -112,13 +112,6 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   // The faulting thread may hold the guest's FP control. Returning from the
   // signal restores the interrupted value from the signal context.
   SetHostDefaultFpControl();
-  if (signal_number == SIGTRAP && signal_info->si_code <= 0) {
-    // raise()/kill(), not a trap instruction - xenia_assert uses this. Nothing
-    // here can claim it, and the handlers below would swallow it.
-    sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
-    raise(SIGTRAP);
-    return;
-  }
   if (signal_number == SIGSEGV &&
       xe::threading::Fiber::IsStackOverflowFault(signal_info->si_addr)) {
     // Crash-safe diagnostic, the process is going down on the default action.
@@ -160,6 +153,15 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     }
   }
 #endif
+
+  if (signal_number == SIGTRAP && signal_info->si_code <= 0) {
+    // raise()/kill(), not a trap instruction - xenia_assert uses this. Nothing
+    // here can claim it, and the handlers below would swallow it. Darwin also
+    // reports brk with si_code 0, so the JIT request check above goes first.
+    sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
+    raise(SIGTRAP);
+    return;
+  }
 
   HostThreadContext thread_context;
 
