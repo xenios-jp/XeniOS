@@ -1801,11 +1801,10 @@ static bool XeJITUsable() {
     [unsafe_self inGameLiveLogTapped:nil];
   };
   self.inGameMenuOverlay.exitHandler = ^{
-    if (unsafe_self.inGameMenuOverlay.exitsToDashboard) {
-      [unsafe_self exitGameToDashboard];
-    } else {
-      [unsafe_self exitGameTapped:nil];
-    }
+    [unsafe_self exitGameTapped:nil];
+  };
+  self.inGameMenuOverlay.exitToDashboardHandler = ^{
+    [unsafe_self exitGameToDashboard];
   };
   self.inGameMenuOverlay.graphicsHandler = ^{
     [unsafe_self presentQuickSettings];
@@ -3556,6 +3555,10 @@ static bool XeJITUsable() {
 // The library's Online button: the same Online panel as the in-game menu, as a glass card over
 // the library. Signed out, it says why and how to go online.
 - (void)presentOnlineSheet {
+  [self presentOnlineSheetWithCompletion:nil];
+}
+
+- (void)presentOnlineSheetWithCompletion:(void (^)(void))completion {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   XeniaIOSOnlineSheetViewController* sheet =
       [[[XeniaIOSOnlineSheetViewController alloc] init] autorelease];
@@ -3565,7 +3568,9 @@ static bool XeJITUsable() {
   sheet.joinFriendHandler = ^(XeniaLiveFriend* peer) {
     [unsafe_self joinLiveFriend:peer];
   };
-  sheet.sourceRect = xe_ios_system_link_online_button_rect();
+  sheet.dismissedHandler = completion;
+  // From the library's Online button it grows out of the button; asked for by a game, it fades in.
+  sheet.sourceRect = completion ? CGRectZero : xe_ios_system_link_online_button_rect();
   UINavigationController* sheet_navigation =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:sheet] autorelease];
   sheet_navigation.navigationBarHidden = YES;

@@ -102,6 +102,12 @@ std::unordered_map<uint32_t, std::vector<uint8_t>>& CoverThumbnails() {
 // The cover the library fetched for the title, whole, in the dashboard's
 // square thumbnail, as a PNG that fits a content header. Nothing if the
 // library has no cover for it yet.
+// The library's full-size cover of |title_id|, empty when it has none yet.
+std::filesystem::path CoverPath(uint32_t title_id) {
+  NSString* path = xe_cached_game_art_path(title_id);
+  return path ? std::filesystem::path(path.fileSystemRepresentation) : std::filesystem::path();
+}
+
 std::vector<uint8_t> CoverThumbnail(uint32_t title_id) {
   auto& thumbnails = CoverThumbnails();
   if (auto it = thumbnails.find(title_id); it != thumbnails.end()) {
@@ -242,6 +248,7 @@ void UseFetchedCover(uint32_t title_id) {
       }
     }
     title.icon_path = std::move(icon_path);
+    title.boxart_path = CoverPath(title_id);
   }
 }
 
@@ -487,6 +494,8 @@ void PublishIOSLibraryToDashboard(std::vector<IOSDiscoveredGame> games) {
         if (cover.empty()) {
           missing_covers.push_back(game.title_id);
         }
+        // My Games shows the cover itself, not the thumbnail.
+        title.boxart_path = CoverPath(game.title_id);
       }
       const auto& icon = cover.empty() ? game.icon_data : cover;
       if (!icons_path.empty()) {

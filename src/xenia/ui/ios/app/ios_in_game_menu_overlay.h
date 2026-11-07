@@ -38,7 +38,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, copy) void (^achievementsHandler)(void);
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^liveLogHandler)(void);
+// Leaves the game for the library.
 @property(nonatomic, copy) void (^exitHandler)(void);
+// Leaves a game the dashboard started for the dashboard (see exitsToDashboard).
+@property(nonatomic, copy) void (^exitToDashboardHandler)(void);
 @property(nonatomic, copy) void (^graphicsHandler)(void);
 @property(nonatomic, copy) void (^pauseEmulatorHandler)(void);
 // Game invites and friend requests waiting; shown beside "Friends".
@@ -49,7 +52,8 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
 @property(nonatomic, strong) UIMenu* displayMenu;
 // Whether the user paused the game from the menu: the pause button then offers to resume.
 @property(nonatomic, assign) BOOL emulatorPaused;
-// A game the Xbox 360 Dashboard started exits to the dashboard, not the library.
+// A game the Xbox 360 Dashboard started: its Quit tile asks where to go, the dashboard or the
+// library.
 @property(nonatomic) BOOL exitsToDashboard;
 // The header: the running game's name, its cover (from the title ID) and how long it has run.
 @property(nonatomic, copy) NSString* gameTitle;

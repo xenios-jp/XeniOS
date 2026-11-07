@@ -11,15 +11,18 @@
 
 #include <algorithm>
 #include <memory>
+#include <unordered_map>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/kernel/kernel.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/xam/xam_live_invites.h"
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_system_link.h"
+#include "xenia/kernel/xsession.h"
 #include "xenia/net/live_account_hub.h"
 #import "xenia/ui/ios/shared/ios_live_account_real.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
@@ -206,6 +209,40 @@ NSString* ProblemText(const std::string& problem) {
 }
 @end
 
+@interface XeniaLiveGamePlayer ()
+- (instancetype)initWithXuid:(uint64_t)xuid
+                    gamertag:(NSString*)gamertag
+                    relation:(XeniaLiveGamePlayerRelation)relation;
+@end
+
+@implementation XeniaLiveGamePlayer {
+  NSString* gamertag_;
+}
+@synthesize xuid = xuid_;
+@synthesize relation = relation_;
+
+- (instancetype)initWithXuid:(uint64_t)xuid
+                    gamertag:(NSString*)gamertag
+                    relation:(XeniaLiveGamePlayerRelation)relation {
+  if ((self = [super init])) {
+    xuid_ = xuid;
+    gamertag_ = [gamertag copy];
+    relation_ = relation;
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [gamertag_ release];
+  [super dealloc];
+}
+
+- (NSString*)gamertag {
+  return gamertag_;
+}
+
+@end
+
 @interface XeniaLivePartyMember ()
 - (instancetype)initWithXuid:(uint64_t)xuid
                     gamertag:(NSString*)gamertag
@@ -269,6 +306,8 @@ NSString* ProblemText(const std::string& problem) {
   // Presence the bridge last set: the library (no title).
   BOOL presence_at_library_;
   BOOL change_posted_;
+  // When the profiles became unreadable with the connection open, or 0.
+  CFAbsoluteTime profiles_busy_since_;
   NSTimer* timer_;
   uint32_t (^running_title_provider_)(void);
   NSString* (^title_name_provider_)(uint32_t);
@@ -294,6 +333,12 @@ NSString* ProblemText(const std::string& problem) {
          ]) {
       [center addObserver:self selector:@selector(refreshSoon) name:name object:nil];
     }
+    // Players joining and leaving the running game's sessions, on the guest's threads.
+    xe::kernel::SetSessionRemotePlayersListener([] {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [[XeniaLiveSocial shared] postChange];
+      });
+    });
   }
   return self;
 }
@@ -364,6 +409,20 @@ NSString* ProblemText(const std::string& problem) {
 - (void)refresh {
   if (!g_host) {
     return;
+  }
+  // Quitting a game rebuilds the kernel, and for a moment no profile is signed in. Dropping the
+  // connection then would sign out, empty Friends and Online, and sign in again.
+  // A launch that failed can leave them unreadable for good: hold on for a while only.
+  if (share_ && g_host->profiles_busy && g_host->profiles_busy()) {
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (!profiles_busy_since_) {
+      profiles_busy_since_ = now;
+    }
+    if (now - profiles_busy_since_ < 60.0) {
+      return;
+    }
+  } else {
+    profiles_busy_since_ = 0;
   }
   const std::string lobby = xe::kernel::xam::LiveSessionLobby();
   std::optional<XeniaIOSLiveProfile> profile;
@@ -685,6 +744,57 @@ NSString* ProblemText(const std::string& problem) {
   return result;
 }
 
+- (NSArray<XeniaLiveGamePlayer*>*)gamePlayers {
+  NSMutableArray<XeniaLiveGamePlayer*>* result = [NSMutableArray array];
+  if (!share_ || self.state != XeniaLiveSocialStateOnline) {
+    return result;
+  }
+  const uint64_t me = (*share_)->xuid();
+  // What this profile knows of each: the friend list (requests too), then the party.
+  std::unordered_map<uint64_t, std::pair<std::string, XeniaLiveGamePlayerRelation>> known;
+  for (const auto& f : (*share_)->Friends()) {
+    XeniaLiveGamePlayerRelation relation = XeniaLiveGamePlayerRelationFriend;
+    if (f.state == live::Friend::State::kIncoming) {
+      relation = XeniaLiveGamePlayerRelationRequestReceived;
+    } else if (f.state == live::Friend::State::kOutgoing) {
+      relation = XeniaLiveGamePlayerRelationRequestSent;
+    }
+    known[f.xuid] = {f.gamertag, relation};
+  }
+  if (auto party = (*share_)->Party()) {
+    for (const auto& [xuid, gamertag] : party->members) {
+      known.try_emplace(xuid, gamertag, XeniaLiveGamePlayerRelationNone);
+    }
+  }
+  std::vector<uint64_t> session_players = xe::kernel::SessionRemotePlayers();
+  for (uint64_t xuid : session_players) {
+    // Only accounts here can be friends; a game's offline or guest players can't.
+    if (xuid == me || !xe::kernel::IsOnlineXUID(xuid) || xe::kernel::IsGuestXUID(xuid) ||
+        (*share_)->IsBlocked(xuid)) {
+      continue;
+    }
+    auto it = known.find(xuid);
+    NSString* gamertag = it != known.end() && !it->second.first.empty()
+                             ? ToNS(it->second.first)
+                             : nil;
+    XeniaLiveGamePlayerRelation relation =
+        it != known.end() ? it->second.second : XeniaLiveGamePlayerRelationNone;
+    [result addObject:[[[XeniaLiveGamePlayer alloc] initWithXuid:xuid
+                                                        gamertag:gamertag
+                                                        relation:relation] autorelease]];
+  }
+  [result sortUsingComparator:^NSComparisonResult(XeniaLiveGamePlayer* a, XeniaLiveGamePlayer* b) {
+    if (!a.gamertag != !b.gamertag) {
+      return a.gamertag ? NSOrderedAscending : NSOrderedDescending;
+    }
+    if (!a.gamertag) {
+      return a.xuid < b.xuid ? NSOrderedAscending : NSOrderedDescending;
+    }
+    return [a.gamertag localizedCaseInsensitiveCompare:b.gamertag];
+  }];
+  return result;
+}
+
 - (BOOL)partyActionsAvailable {
   return share_ && self.state == XeniaLiveSocialStateOnline;
 }
@@ -799,6 +909,12 @@ NSString* ProblemText(const std::string& problem) {
   }
 }
 
+- (void)sendFriendRequestTo:(uint64_t)xuid {
+  if (share_) {
+    (*share_)->AddFriend(xuid);
+  }
+}
+
 - (void)declineFriendRequest:(uint64_t)xuid {
   if (share_) {
     (*share_)->DeclineFriend(xuid);
@@ -857,11 +973,11 @@ NSString* ProblemText(const std::string& problem) {
   if (raw.info.size() != sizeof(xe::kernel::XSESSION_INFO)) {
     raw.info = [self sessionForInvite:raw];
   }
+  // Answers the invite on the title's account, which is this one: answering
+  // it again here would find it gone ("That invite has expired").
   if (!xe::kernel::xam::AcceptLiveInvite(0, raw)) {
     return NO;
   }
-  // The title's account is this one: answering it there answered it here too.
-  (*share_)->ReplyInvite(raw.id, true);
   [self postChange];
   return YES;
 }

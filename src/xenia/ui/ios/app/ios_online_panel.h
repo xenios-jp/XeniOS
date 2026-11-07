@@ -52,6 +52,8 @@
 @property(nonatomic) CGRect sourceRect;
 @property(nonatomic, copy) void (^acceptInviteHandler)(XeniaLiveInvite* invite);
 @property(nonatomic, copy) void (^joinFriendHandler)(XeniaLiveFriend* peer);
+// Runs once, after the sheet is dismissed.
+@property(nonatomic, copy) void (^dismissedHandler)(void);
 @end
 
 // Public Games: the glass card from the globe. The games with players in them, busiest first,

@@ -764,24 +764,29 @@ dword_result_t XamShowNuiDirtyDiscErrorUI_entry(dword_t tracking_id) {
 }
 DECLARE_XAM_EXPORT1(XamShowNuiDirtyDiscErrorUI, kUI, kStub);
 
-// The guide's Friends and Party pages, where the host has them; none here.
+// The guide's Friends and Party pages are the app's Online panel, which has
+// both. There's none on other hosts.
 X_RESULT ShowFriendsAndParty(uint32_t user_index) {
   if (user_index >= XUserMaxUserCount ||
       !kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
     return X_ERROR_NO_SUCH_USER;
   }
+#if XE_PLATFORM_IOS
+  return ios::ShowOnlinePanel(user_index);
+#else
   return X_ERROR_FUNCTION_FAILED;
+#endif
 }
 
 dword_result_t XamShowFriendsUI_entry(dword_t user_index) {
   return ShowFriendsAndParty(user_index);
 }
-DECLARE_XAM_EXPORT1(XamShowFriendsUI, kUI, kStub);
+DECLARE_XAM_EXPORT1(XamShowFriendsUI, kUI, kSketchy);
 
 dword_result_t XamShowPartyUI_entry(dword_t user_index) {
   return ShowFriendsAndParty(user_index);
 }
-DECLARE_XAM_EXPORT1(XamShowPartyUI, kUI, kStub);
+DECLARE_XAM_EXPORT1(XamShowPartyUI, kUI, kSketchy);
 
 dword_result_t XamShowCommunitySessionsUI_entry(dword_t user_index,
                                                 dword_t social_sessions_flags) {

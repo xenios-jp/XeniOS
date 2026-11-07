@@ -79,6 +79,8 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   // reassign button configurations (which invalidates intrinsic sizes and
   // re-dirties layout, looping at display refresh rate) on every pass.
   BOOL _hasAppliedMenuLayout;
+  // The size the tiles' names are set at; 0 until the first layout.
+  CGFloat _tileTitlePointSize;
   BOOL _appliedCompactLandscape;
   BOOL _controllerNavigationEnabled;
   XeniaIOSInGameMenuAction _focusedAction;
@@ -190,6 +192,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
                                imageName:@"power"
                               menuAction:XeniaIOSInGameMenuActionExit
                                   action:@selector(exitPressed:)];
+  [self updateExitMenu];
   _graphicsButton = [self newButtonWithTitle:NSLocalizedString(@"Graphics", @"In-game menu button")
                                    imageName:@"cpu"
                                   menuAction:XeniaIOSInGameMenuActionGraphics
@@ -301,6 +304,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   [_settingsHandler release];
   [_liveLogHandler release];
   [_exitHandler release];
+  [_exitToDashboardHandler release];
   [_graphicsHandler release];
   [_pauseEmulatorHandler release];
   [_displayMenu release];
@@ -352,7 +356,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
   config.image = [UIImage systemImageNamed:imageName];
-  config.titleLineBreakMode = resume || footer ? NSLineBreakByTruncatingTail : NSLineBreakByClipping;
+  config.titleLineBreakMode = resume || footer ? NSLineBreakByTruncatingTail : NSLineBreakByWordWrapping;
   UIColor* tile_fill = [UIColor colorWithWhite:1.0 alpha:0.1];
   if (resume) {
     config.baseForegroundColor = [UIColor blackColor];
@@ -386,11 +390,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
     xe_apply_button_title_font(button, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
   }
   if (!resume && !footer) {
-    // A tile's label stays whole on its one line ("Achievements", "Edit Controls"): it shrinks a
-    // little at larger text sizes rather than ending in "…".
-    button.titleLabel.adjustsFontSizeToFitWidth = YES;
-    button.titleLabel.minimumScaleFactor = 0.7;
-    button.titleLabel.lineBreakMode = NSLineBreakByClipping;
+    button.titleLabel.textAlignment = NSTextAlignmentCenter;
   }
   // The controller focus ring follows the button's shape.
   button.layer.cornerRadius = resume ? kResumeHeight / 2.0 : (footer ? 12.0 : kTileRadius);
@@ -712,7 +712,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   if (!button || !button.enabled || button.hidden) {
     return;
   }
-  if (action == XeniaIOSInGameMenuActionDisplay) {
+  if (button.showsMenuAsPrimaryAction) {
     [button performPrimaryAction];
     return;
   }
@@ -860,6 +860,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
     menu_width = MIN(menu_width, safeFrame.size.width - 24.0 - kOnlinePanelGap - kOnlinePanelWidth);
   }
   _panelWidthConstraint.constant = menu_width;
+  [self fitTileTitles];
   if (!_hasAppliedMenuLayout || _appliedCompactLandscape != compactLandscape) {
     _hasAppliedMenuLayout = YES;
     _appliedCompactLandscape = compactLandscape;
@@ -1085,21 +1086,53 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
   }
 }
 
+// Quit Game either way; in a game the dashboard started it opens a menu: back to the dashboard,
+// as the game's own exit does, or to the library.
 - (NSString*)exitTitle {
-  return _exitsToDashboard
-             ? NSLocalizedString(@"Quit to Dashboard",
-                                 @"In-game menu button, leaves a game the Xbox 360 Dashboard "
-                                 @"started for the dashboard")
-             : NSLocalizedString(@"Quit Game", @"In-game menu button, leaves the game");
+  return NSLocalizedString(@"Quit Game", @"In-game menu button, leaves the game");
 }
 
 - (NSString*)exitAccessibilityHint {
   return _exitsToDashboard
-             ? NSLocalizedString(@"Stops the game and returns to the Xbox 360 Dashboard.",
+             ? NSLocalizedString(@"Stops the game. Choose the Xbox 360 Dashboard or the library.",
                                  @"VoiceOver hint for the Exit button in a game the dashboard "
                                  @"started")
              : NSLocalizedString(@"Stops the game and returns to the library.",
                                  @"VoiceOver hint for the Exit button");
+}
+
+- (void)updateExitMenu {
+  _exitButton.accessibilityHint = [self exitAccessibilityHint];
+  if (!_exitsToDashboard) {
+    _exitButton.showsMenuAsPrimaryAction = NO;
+    _exitButton.menu = nil;
+    return;
+  }
+  __unsafe_unretained XeniaIOSInGameMenuOverlay* unsafe_self = self;
+  UIAction* dashboard = [UIAction
+      actionWithTitle:NSLocalizedString(@"Quit to Dashboard",
+                                        @"In-game menu: leaves a game the Xbox 360 Dashboard "
+                                        @"started for the dashboard")
+                image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+           identifier:nil
+              handler:^(__kindof UIAction* __unused action) {
+                if (unsafe_self->_exitToDashboardHandler) {
+                  unsafe_self->_exitToDashboardHandler();
+                }
+              }];
+  dashboard.attributes = UIMenuElementAttributesDestructive;
+  UIAction* library = [UIAction
+      actionWithTitle:NSLocalizedString(@"Quit to Library",
+                                        @"In-game menu: leaves a game the Xbox 360 Dashboard "
+                                        @"started for the XeniOS library")
+                image:[UIImage systemImageNamed:@"square.grid.2x2"]
+           identifier:nil
+              handler:^(__kindof UIAction* __unused action) {
+                [unsafe_self exitPressed:nil];
+              }];
+  library.attributes = UIMenuElementAttributesDestructive;
+  _exitButton.menu = [UIMenu menuWithTitle:@"" children:@[ dashboard, library ]];
+  _exitButton.showsMenuAsPrimaryAction = YES;
 }
 
 - (void)setExitsToDashboard:(BOOL)exitsToDashboard {
@@ -1107,10 +1140,55 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
     return;
   }
   _exitsToDashboard = exitsToDashboard;
-  UIButtonConfiguration* config = _exitButton.configuration;
-  config.title = [self exitTitle];
-  _exitButton.configuration = config;
-  _exitButton.accessibilityHint = [self exitAccessibilityHint];
+  [self updateExitMenu];
+}
+
+// One size for every tile's name: the size it's set at (Footnote, with Dynamic Type) when the
+// longest fits the tile, smaller down to three quarters of it when not. A name still too long
+// for that goes on to a second line.
+- (void)fitTileTitles {
+  NSArray<UIButton*>* tiles = @[
+    _editControlsButton, _settingsButton, _exitButton, _graphicsButton, _displayButton,
+    _achievementsButton
+  ];
+  // The rows are laid out now, at this layout's menu width, so the tiles have their widths.
+  [_panel layoutIfNeeded];
+  CGFloat room = CGFLOAT_MAX;
+  for (UIButton* tile in tiles) {
+    const NSDirectionalEdgeInsets insets = tile.configuration.contentInsets;
+    if (tile.bounds.size.width > 0.0) {
+      room = MIN(room, tile.bounds.size.width - insets.leading - insets.trailing);
+    }
+  }
+  if (room == CGFLOAT_MAX || room <= 0.0) {
+    return;
+  }
+  UIFont* base = xe_scaled_system_font(UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+  CGFloat widest = 0.0;
+  for (UIButton* tile in tiles) {
+    NSString* title = tile.configuration.title ?: @"";
+    widest = MAX(widest, ceil([title sizeWithAttributes:@{NSFontAttributeName : base}].width));
+  }
+  CGFloat size = base.pointSize;
+  if (widest > room) {
+    size = MAX(floor(base.pointSize * room / widest * 2.0) / 2.0, base.pointSize * 0.75);
+  }
+  if (fabs(size - _tileTitlePointSize) < 0.01) {
+    return;
+  }
+  _tileTitlePointSize = size;
+  UIFont* font = [base fontWithSize:size];
+  UIConfigurationTextAttributesTransformer transformer =
+      [[^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
+        NSMutableDictionary<NSAttributedStringKey, id>* out = [[in mutableCopy] autorelease];
+        out[NSFontAttributeName] = font;
+        return out;
+      } copy] autorelease];
+  for (UIButton* tile in tiles) {
+    UIButtonConfiguration* config = tile.configuration;
+    config.titleTextAttributesTransformer = transformer;
+    tile.configuration = config;
+  }
 }
 
 - (void)exitPressed:(UIButton*)__unused sender {

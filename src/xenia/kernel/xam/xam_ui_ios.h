@@ -43,6 +43,8 @@ int ChooseOption(std::string title, std::string text,
 X_RESULT ShowAchievements(uint32_t user_index, uint32_t title_id);
 // The gamer card of |xuid| (an online XUID), or the user's own when it's 0.
 X_RESULT ShowGamerCard(uint32_t user_index, uint64_t xuid);
+// The app's Online panel: friends, invites and the party.
+X_RESULT ShowOnlinePanel(uint32_t user_index);
 void Notify(std::string text, uint32_t user_index, uint8_t position);
 void NotifyAchievement(KernelState* state, uint64_t xuid, uint32_t title_id,
                        const Achievement& achievement);

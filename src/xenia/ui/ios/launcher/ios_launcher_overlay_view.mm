@@ -1153,6 +1153,10 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
              selector:@selector(libraryBackgroundChanged:)
                  name:XeniaLibraryBackgroundDidChangeNotification
                object:nil];
+  [center addObserver:self
+             selector:@selector(coverDidArrive:)
+                 name:XeniaGameArtCoverDidArriveNotification
+               object:nil];
   [self applyLibraryBackground];
   return self;
 }
@@ -3262,6 +3266,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       });
     });
   });
+}
+
+// A cover fetched for anyone (the dashboard, the hero card, an earlier tile whose fetch this one
+// had given up on) goes on the tiles showing its title.
+- (void)coverDidArrive:(NSNotification*)notification {
+  const uint32_t titleId = [notification.object unsignedIntValue];
+  if (titleId && _gamesCollectionView) {
+    [self loadCoverForTitleId:titleId collectionView:_gamesCollectionView];
+  }
 }
 
 // Puts the cached cover on every visible tile that isn't showing it, and with |load| starts loading
