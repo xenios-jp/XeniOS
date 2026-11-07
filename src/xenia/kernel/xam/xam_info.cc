@@ -1127,6 +1127,18 @@ DECLARE_XAM_EXPORT1(XamGetCurrentDemand, kNone, kImplemented);
 dword_result_t XamLoaderGetPriorTitleId_entry() { return 0; }
 DECLARE_XAM_EXPORT1(XamLoaderGetPriorTitleId, kNone, kSketchy);
 
+// The console's experience mode. The Dashboard reads it at start; failing it
+// (as an unimplemented export does) makes the Dashboard show an empty "Xbox
+// Live" error box. Bit 0 set is the mode XamShowNuiTroubleshooterUI expects.
+dword_result_t XamPackageManagerGetExperienceMode_entry(lpdword_t mode_ptr) {
+  if (!mode_ptr) {
+    return X_E_INVALIDARG;
+  }
+  *mode_ptr = 1;
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerGetExperienceMode, kNone, kSketchy);
+
 // The header in front of data signed by an Xbox Live service ("YTGR"). Its
 // numbers are little-endian.
 struct X_XSIGNER_HEADER {
