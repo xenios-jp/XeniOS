@@ -50,6 +50,7 @@
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
+#include "xenia/kernel/xam/profile_package.h"
 #include "xenia/ui/imgui_audio_dialog.h"
 #include "xenia/ui/imgui_confirm_dialog.h"
 #include "xenia/ui/imgui_context_menu.h"
@@ -570,6 +571,70 @@ void ShowWindowMessage(ui::Window* window, const wxString& caption,
   wxMessageBox(message, caption, wxOK | icon,
                wx_window ? wx_window->frame() : nullptr);
 }
+
+// What a profile file holds, for the import question: "Saves for 12 games,
+// achievements and settings."
+wxString ProfilePackageContents(
+    const kernel::xam::ProfilePackageManifest& manifest) {
+  wxArrayString parts;
+  const size_t games = manifest.titles.size();
+  if (manifest.saves && games) {
+    parts.Add(games == 1
+                  ? wxString(_("saves for 1 game"))
+                  : wxString::Format(_("saves for %u games"), unsigned(games)));
+  }
+  if (manifest.achievements) {
+    parts.Add(_("achievements"));
+  }
+  if (manifest.settings) {
+    parts.Add(_("settings"));
+  }
+  if (parts.empty()) {
+    return _("The profile only: its gamertag and picture.");
+  }
+  wxString text = parts[0];
+  for (size_t i = 1; i < parts.size(); ++i) {
+    text += (i + 1 == parts.size() ? wxString(_(" and ")) : wxString(", ")) +
+            parts[i];
+  }
+  return text.Left(1).Upper() + text.Mid(1) + ".";
+}
+
+wxString ProfilePackageErrorText(kernel::xam::ProfilePackageError error,
+                                 bool exporting) {
+  using kernel::xam::ProfilePackageError;
+  switch (error) {
+    case ProfilePackageError::kNone:
+      return wxString();
+    case ProfilePackageError::kOpenFailed:
+      return exporting ? _("Couldn't create the profile file.")
+                       : _("Couldn't open the profile file.");
+    case ProfilePackageError::kBadFile:
+      return _(
+          "This isn't a profile file, or it's damaged. Export it again "
+          "on the other device.");
+    case ProfilePackageError::kNewerFormat:
+      return _(
+          "This profile comes from a newer version of Xenia or XeniOS. "
+          "Update Xenia, then open it again.");
+    case ProfilePackageError::kNoProfile:
+      return exporting ? _("That profile isn't here anymore.")
+                       : _("The profile to import into isn't here anymore.");
+    case ProfilePackageError::kProfileInUse:
+      return _("Quit the game first. This profile is playing it.");
+    case ProfilePackageError::kLowDiskSpace:
+      return _("There isn't enough free space for this profile.");
+    case ProfilePackageError::kTooLarge:
+      return _("This profile is too large to move in one file.");
+    case ProfilePackageError::kReadFailed:
+      return _("Some of the profile's files couldn't be read.");
+    case ProfilePackageError::kWriteFailed:
+      return _(
+          "Couldn't write the files. Check the free space and try "
+          "again.");
+  }
+  return _("Something went wrong.");
+}
 }  // namespace
 
 using xe::ui::FileDropEvent;
@@ -973,6 +1038,9 @@ void EmulatorWindow::OnEmulatorInitialized() {
   window_->SetMainMenuEnabled(true);
   RefreshProfileMenu();
   RefreshControllersMenu();
+  // Profile files opened before the emulator was up, deferred past the
+  // no-profile prompt and this setup.
+  ImportPendingProfileFiles();
   // Live-refresh the Controllers menu on hotplug / auto-bind / detach.
   // Deferred — BindSlot fires this with input_system->lock_ held, and the
   // refresh path needs that lock to enumerate. CallInUIThread would run the
@@ -1194,6 +1262,15 @@ bool EmulatorWindow::Initialize() {
                              std::bind(&EmulatorWindow::FileClose, this));
       file_stop_menu_item_ = stop_item.get();
       file_menu->AddChild(std::move(stop_item));
+      file_menu->AddChild(WxMenuItem::Create(MenuItem::Type::kSeparator));
+      // One .xeniosprofile file, to and from XeniOS on an iPhone or iPad and
+      // Xenia on another computer.
+      file_menu->AddChild(WxMenuItem::Create(
+          MenuItem::Type::kString, _("Import Profile..."),
+          std::bind(&EmulatorWindow::FileImportProfile, this)));
+      file_menu->AddChild(WxMenuItem::Create(
+          MenuItem::Type::kString, _("Export Profile..."),
+          std::bind(&EmulatorWindow::FileExportProfile, this)));
       file_menu->AddChild(WxMenuItem::Create(MenuItem::Type::kSeparator));
       file_menu->AddChild(WxMenuItem::Create(
           MenuItem::Type::kString, _("Show content directory..."),
@@ -2702,6 +2779,250 @@ void EmulatorWindow::ShowContentDirectory() {
   }
 
   LaunchFileExplorer(content_root);
+}
+
+void EmulatorWindow::FileImportProfile() {
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(false);
+  file_picker->set_title("Import Profile");
+  file_picker->set_extensions({
+      {"Profile (*.xeniosprofile)", "*.xeniosprofile"},
+      {"All Files", "*"},
+  });
+  if (!file_picker->Show(window_.get()) ||
+      file_picker->selected_files().empty()) {
+    return;
+  }
+  ImportProfileFile(file_picker->selected_files().front());
+}
+
+void EmulatorWindow::ImportPendingProfileFiles() {
+  if (pending_profile_imports_.empty()) {
+    return;
+  }
+  app_context_.CallInUIThreadDeferred([this]() {
+    std::vector<std::filesystem::path> paths;
+    paths.swap(pending_profile_imports_);
+    for (const auto& path : paths) {
+      ImportProfileFile(path);
+    }
+  });
+}
+
+void EmulatorWindow::ImportProfileFile(const std::filesystem::path& path) {
+  auto* kernel_state = emulator_->kernel_state();
+  auto* xam_state = kernel_state ? kernel_state->xam_state() : nullptr;
+  auto* profiles = xam_state ? xam_state->profile_manager() : nullptr;
+  if (!emulator_initialized_ || !profiles || importing_profile_) {
+    // Opened to launch the app: once the emulator is up. Opened during
+    // another import: once that's done.
+    pending_profile_imports_.push_back(path);
+    return;
+  }
+  importing_profile_ = true;
+  struct ImportEnd {
+    EmulatorWindow* window;
+    ~ImportEnd() {
+      window->importing_profile_ = false;
+      window->ImportPendingProfileFiles();
+    }
+  } import_end{this};
+  auto* wx_window = dynamic_cast<ui::WxWindow*>(window_.get());
+  wxWindow* parent = wx_window ? wx_window->frame() : nullptr;
+  const std::filesystem::path content_root = emulator_->content_root();
+
+  kernel::xam::ProfilePackageManifest manifest;
+  kernel::xam::ProfilePackageError error =
+      kernel::xam::InspectProfilePackage(path, &manifest);
+  if (error != kernel::xam::ProfilePackageError::kNone) {
+    ShowWindowMessage(window_.get(), _("Import Profile"),
+                      ProfilePackageErrorText(error, false), wxICON_ERROR);
+    return;
+  }
+  // The profile with the file's XUID, or the one here with its online
+  // account; none makes a new one.
+  const uint64_t target =
+      kernel::xam::FindProfileForPackage(content_root, manifest);
+  const uint64_t into = target ? target : manifest.xuid;
+  if (emulator_->is_title_open() && profiles->GetProfile(into)) {
+    ShowWindowMessage(
+        window_.get(), _("Import Profile"),
+        ProfilePackageErrorText(kernel::xam::ProfilePackageError::kProfileInUse,
+                                false),
+        wxICON_WARNING);
+    return;
+  }
+  const wxString gamertag = wxString::FromUTF8(manifest.gamertag);
+  const wxString question = wxString::Format(
+      target ? _("%s Your current saves are kept if they're newer; replaced "
+                 "ones are backed up.")
+             : _("%s It's added here as a new profile."),
+      ProfilePackageContents(manifest));
+  if (wxMessageBox(question, wxString::Format(_("Import %s?"), gamertag),
+                   wxYES_NO | wxICON_QUESTION, parent) != wxYES) {
+    return;
+  }
+
+  kernel::xam::ProfileImportOptions options;
+  options.target_xuid = target;
+  // Asked again just before anything here changes.
+  options.profile_in_use = [this, profiles](uint64_t xuid) {
+    return emulator_->is_title_open() && profiles->GetProfile(xuid);
+  };
+  kernel::xam::ProfileImportResult result;
+  {
+    wxProgressDialog progress(
+        _("Import Profile"), wxString::Format(_("Importing %s..."), gamertag),
+        1000, parent, wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_SMOOTH);
+    int shown = -1;
+    error = kernel::xam::ImportProfilePackage(
+        content_root, path, options,
+        [&progress, &shown](uint64_t done, uint64_t total) {
+          const int value = total ? int(done * 1000 / total) : 1000;
+          if (value != shown) {
+            shown = value;
+            progress.Update(value);
+          }
+        },
+        &result);
+  }
+  if (error != kernel::xam::ProfilePackageError::kNone) {
+    ShowWindowMessage(window_.get(), _("Import Profile"),
+                      ProfilePackageErrorText(error, false), wxICON_ERROR);
+    return;
+  }
+
+  // Reading the account mounts and dismounts the profile, so a signed-in one
+  // leaves its slot for that and comes back with the imported account and GPDs.
+  const uint8_t slot = profiles->GetUserIndexAssignedToProfile(result.xuid);
+  const bool signed_in = slot < XUserMaxUserCount &&
+                         profiles->GetProfile(slot) &&
+                         profiles->GetProfile(slot)->xuid() == result.xuid;
+  if (signed_in) {
+    profiles->Logout(slot, false);
+  }
+  profiles->ReloadProfile(result.xuid);
+  if (signed_in) {
+    profiles->Login(result.xuid, slot, true);
+  } else if (result.created && !profiles->IsAnyProfileSignedIn()) {
+    profiles->Login(result.xuid, 0, true);
+  }
+  RefreshProfileMenu();
+
+  wxString done = wxString::Format(_("Imported %s."), gamertag);
+  if (!result.backup_folder.empty()) {
+    done += "\n\n" +
+            wxString::Format(
+                _("The files it replaced are in %s."),
+                wxString::FromUTF8(xe::path_to_utf8(result.backup_folder)));
+  }
+  ShowWindowMessage(window_.get(), _("Import Profile"), done,
+                    wxICON_INFORMATION);
+}
+
+void EmulatorWindow::FileExportProfile() {
+  auto* kernel_state = emulator_->kernel_state();
+  auto* xam_state = kernel_state ? kernel_state->xam_state() : nullptr;
+  auto* profiles = xam_state ? xam_state->profile_manager() : nullptr;
+  if (!profiles || !profiles->GetAccountCount()) {
+    ShowWindowMessage(window_.get(), _("Export Profile"),
+                      _("There's no profile to export. Make one in the "
+                        "Profile menu."),
+                      wxICON_INFORMATION);
+    return;
+  }
+  auto* wx_window = dynamic_cast<ui::WxWindow*>(window_.get());
+  wxWindow* parent = wx_window ? wx_window->frame() : nullptr;
+
+  // The signed-in profiles first, the first slot's at the top.
+  std::vector<std::pair<uint64_t, std::string>> choices;
+  for (const auto& [xuid, account] : *profiles->GetAccounts()) {
+    std::string gamertag = account.GetGamertagString();
+    if (gamertag.empty()) {
+      gamertag = fmt::format("{:016X}", xuid);
+    }
+    choices.emplace_back(xuid, std::move(gamertag));
+  }
+  std::stable_sort(choices.begin(), choices.end(),
+                   [profiles](const auto& a, const auto& b) {
+                     return profiles->GetUserIndexAssignedToProfile(a.first) <
+                            profiles->GetUserIndexAssignedToProfile(b.first);
+                   });
+  size_t chosen = 0;
+  if (choices.size() > 1) {
+    wxArrayString names;
+    for (const auto& choice : choices) {
+      names.Add(wxString::FromUTF8(choice.second));
+    }
+    wxSingleChoiceDialog dialog(parent, _("Which profile?"),
+                                _("Export Profile"), names);
+    if (dialog.ShowModal() != wxID_OK || dialog.GetSelection() < 0) {
+      return;
+    }
+    chosen = size_t(dialog.GetSelection());
+  }
+  const uint64_t xuid = choices[chosen].first;
+
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kSave);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_title("Export Profile");
+  file_picker->set_file_name(
+      kernel::xam::ProfilePackageFileName(choices[chosen].second));
+  file_picker->set_extensions({
+      {"Profile (*.xeniosprofile)", "*.xeniosprofile"},
+  });
+  if (!file_picker->Show(window_.get()) ||
+      file_picker->selected_files().empty()) {
+    return;
+  }
+  std::filesystem::path path = file_picker->selected_files().front();
+  const std::string extension(kernel::xam::kProfilePackageExtension);
+  if (path.extension() != std::filesystem::path(extension)) {
+    path += extension;
+  }
+
+  kernel::xam::ProfileExportOptions options;
+  options.app =
+      fmt::format(XE_APP_NAME " {}@{}", XE_BUILD_BRANCH, XE_BUILD_COMMIT_SHORT);
+#if XE_PLATFORM_MAC
+  options.platform = "mac";
+#elif XE_PLATFORM_WIN32
+  options.platform = "windows";
+#else
+  options.platform = "linux";
+#endif
+  kernel::xam::ProfilePackageError error;
+  {
+    wxProgressDialog progress(
+        _("Export Profile"),
+        wxString::Format(_("Exporting %s..."),
+                         wxString::FromUTF8(choices[chosen].second)),
+        1000, parent, wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_SMOOTH);
+    int shown = -1;
+    error = kernel::xam::ExportProfilePackage(
+        emulator_->content_root(), xuid, options, path,
+        [&progress, &shown](uint64_t done, uint64_t total) {
+          const int value = total ? int(done * 1000 / total) : 1000;
+          if (value != shown) {
+            shown = value;
+            progress.Update(value);
+          }
+        });
+  }
+  if (error != kernel::xam::ProfilePackageError::kNone) {
+    ShowWindowMessage(window_.get(), _("Export Profile"),
+                      ProfilePackageErrorText(error, true), wxICON_ERROR);
+    return;
+  }
+  ShowWindowMessage(
+      window_.get(), _("Export Profile"),
+      _("Open the file on another device to import the profile: AirDrop it "
+        "to an iPhone or iPad, or save it to iCloud Drive and open it in "
+        "Files."),
+      wxICON_INFORMATION);
 }
 
 void EmulatorWindow::CpuTimeScalarReset() {

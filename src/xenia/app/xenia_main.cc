@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -19,6 +20,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
@@ -27,6 +29,7 @@
 #include "xenia/debug/gdb/gdbstub.h"
 #include "xenia/debug/ui/debug_window.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/xam/profile_package.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/redist_installer_wx.h"
@@ -219,6 +222,7 @@ class EmulatorApp final : public xe::ui::WindowedApp {
   std::string_view GetTitle() const override { return "xenia_edge"; }
 
   bool OnInitialize() override;
+  void OnOpenFiles(const std::vector<std::filesystem::path>& paths) override;
 
  protected:
   void OnDestroy() override;
@@ -353,6 +357,8 @@ class EmulatorApp final : public xe::ui::WindowedApp {
 
   std::unique_ptr<Emulator> emulator_;
   std::unique_ptr<EmulatorWindow> emulator_window_;
+  // Files the system opened with the app before its window was made.
+  std::vector<std::filesystem::path> pending_open_files_;
 
   // Created on demand, used by the emulator.
   std::unique_ptr<xe::debug::ui::DebugWindow> debug_window_;
@@ -539,6 +545,28 @@ std::vector<std::unique_ptr<hid::InputDriver>> EmulatorApp::CreateInputDrivers(
   return drivers;
 }
 
+void EmulatorApp::OnOpenFiles(const std::vector<std::filesystem::path>& paths) {
+  if (!emulator_window_) {
+    // Opened to launch the app: once the window is made.
+    pending_open_files_.insert(pending_open_files_.end(), paths.begin(),
+                               paths.end());
+    return;
+  }
+  for (const auto& path : paths) {
+    // Profile files (.xeniosprofile); anything else the Finder hands over is
+    // left alone.
+    std::string extension = xe::path_to_utf8(path.extension());
+    for (char& c : extension) {
+      if (c >= 'A' && c <= 'Z') {
+        c = char(c - 'A' + 'a');
+      }
+    }
+    if (extension == kernel::xam::kProfilePackageExtension) {
+      emulator_window_->ImportProfileFile(path);
+    }
+  }
+}
+
 bool EmulatorApp::OnInitialize() {
   Profiler::Initialize();
   Profiler::ThreadEnter("Main");
@@ -626,6 +654,11 @@ bool EmulatorApp::OnInitialize() {
   if (!emulator_window_) {
     XELOGE("Failed to create the main emulator window");
     return false;
+  }
+  if (!pending_open_files_.empty()) {
+    std::vector<std::filesystem::path> paths;
+    paths.swap(pending_open_files_);
+    OnOpenFiles(paths);
   }
 
   emulator_thread_quit_requested_.store(false, std::memory_order_relaxed);

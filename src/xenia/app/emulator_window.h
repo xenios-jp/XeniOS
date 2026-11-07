@@ -130,6 +130,15 @@ class EmulatorWindow {
   // Asks for a title or disc image to run, or returns an empty path.
   std::filesystem::path PickTitleFile();
   void FileAddGames();
+  // File > Import Profile... and Export Profile...: a profile as one
+  // .xeniosprofile file (kernel/xam/profile_package.h), to and from XeniOS on
+  // an iPhone or iPad and Xenia on another computer.
+  void FileImportProfile();
+  void FileExportProfile();
+  // Asks, then imports the profile file at |path|. One opened before the
+  // emulator is up (double-clicked to launch the app), or while another is
+  // imported, waits for it.
+  void ImportProfileFile(const std::filesystem::path& path);
   // Starts the installed dashboard after the boot animation.
   void StartDashboard();
   std::filesystem::path GetInstalledDashboardPath() const;
@@ -266,6 +275,11 @@ class EmulatorWindow {
   ui::Presenter* presenter_painting_ = nullptr;
 
   bool emulator_initialized_ = false;
+  // Profile files to import once the emulator is up, or once the import
+  // running (whose progress window lets other events in) ends.
+  std::vector<std::filesystem::path> pending_profile_imports_;
+  bool importing_profile_ = false;
+  void ImportPendingProfileFiles();
 
   std::string base_title_;
   bool initializing_shader_storage_ = false;
