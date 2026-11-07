@@ -183,6 +183,13 @@ extern NSNotificationName const XeniaLiveSocialJoinFailedNotification;
 // to a System Link game, which the player joins from the game's own System
 // Link screen; userInfo[XeniaLiveSocialMessageKey] says so, for a toast.
 extern NSNotificationName const XeniaLiveSocialSystemLinkJoinNotification;
+// Posted on the main thread when the running game accepted an invite to another game (or one
+// came with no game running): userInfo[XeniaLiveSocialTitleKey] (NSNumber) is the game to start
+// and userInfo[XeniaLiveSocialGamertagKey] the inviter. The app starts it from the library,
+// asking first when a game runs, and calls acceptHeldInviteForLaunch just before.
+extern NSNotificationName const XeniaLiveSocialInviteForOtherGameNotification;
+extern NSString* const XeniaLiveSocialTitleKey;
+extern NSString* const XeniaLiveSocialGamertagKey;
 extern NSString* const XeniaLiveSocialMessageKey;
 // In a RequestFailed userInfo: the request the service refused ("friend_add", ...).
 extern NSString* const XeniaLiveSocialRequestKey;
@@ -308,6 +315,9 @@ extern NSString* const XeniaLiveSocialSignedOutReasonKey;
 // (XInviteGetAcceptedInfo, XN_LIVE_INVITE_ACCEPTED). Also points System Link
 // at the invite's room.
 - (void)acceptInviteForLaunch:(XeniaLiveInvite*)invite;
+// The same for the invite to another game the running one accepted
+// (XeniaLiveSocialInviteForOtherGameNotification). Nothing when none is held.
+- (void)acceptHeldInviteForLaunch;
 // Accepts in the game that's running (its title is the invite's).
 - (BOOL)acceptInviteInRunningGame:(XeniaLiveInvite*)invite;
 // The same for a friend's joinable game, from their presence.

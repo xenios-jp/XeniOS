@@ -20,9 +20,13 @@
 // private room with a code while Online features are on.
 
 // The private room code |title_id| plays in, or nil for its public lobby.
-// Stored in NSUserDefaults.
+// Stored in NSUserDefaults. With private rooms by default, a game without a choice gets a new
+// room the first time it's asked.
 NSString* xe_ios_system_link_room(uint32_t title_id);
 void xe_ios_set_system_link_room(uint32_t title_id, NSString* code);
+// NSUserDefaults BOOL, Settings → Online: games without a room chosen start in a new private
+// room rather than their public lobby. Choices made on a game's page stay.
+extern NSString* const XeniaIOSSystemLinkPrivateByDefaultKey;
 
 // A new private room code.
 NSString* xe_ios_new_system_link_room_code(void);

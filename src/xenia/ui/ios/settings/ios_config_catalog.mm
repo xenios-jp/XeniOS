@@ -27,6 +27,7 @@
 #include "xenia/ui/config_helpers.h"
 
 #import "xenia/ui/ios/settings/ios_config_storage.h"
+#import "xenia/ui/ios/shared/ios_system_link.h"
 
 // SecTask entitlement APIs aren't public on iOS, so detect a granted entitlement
 // by scanning the bundle's embedded provisioning profile, where granted
@@ -432,13 +433,30 @@ static std::vector<IOSConfigSection> BuildAudioSections() {
                    "Spatial sound stays with the screen as you turn your head.", false);
   }
   PushIfNotEmpty(sections, std::move(audio));
+  return sections;
+}
 
+static std::vector<IOSConfigSection> BuildOnlineSections() {
+  std::vector<IOSConfigSection> sections;
+  IOSConfigSection rooms;
+  rooms.title = "Rooms";
+  rooms.footer = "Games you haven't picked a room for start in a new private room, with a code "
+                 "to share. Pick a game's room on its page. Live games find players through "
+                 "matchmaking either way.";
+  AddUserDefaultBoolSetting(rooms.items, XeniaIOSSystemLinkPrivateByDefaultKey,
+                            "Private Rooms by Default", "", false);
+  PushIfNotEmpty(sections, std::move(rooms));
+
+  // One Microphone choice (Off, this device, a headset) stands for voice_chat and
+  // voice_microphone; the in-game menu has the same one.
   IOSConfigSection voice;
   voice.title = "Voice Chat";
-  voice.footer = "Games that support voice hear your microphone, as if a headset were "
-                 "plugged into the first controller. Applies when a game starts.";
-  AddBoolSetting(voice.items, "voice_chat", "Voice Chat", "", false);
+  voice.footer = "Appear Offline and Blocked Players are on your profile's page.";
+  if (IOSConfigHasConfigVar("voice_chat")) {
+    AddActionSetting(voice.items, IOSConfigAction::kOpenMicrophone, "Microphone", "");
+  }
   PushIfNotEmpty(sections, std::move(voice));
+
   return sections;
 }
 
@@ -1025,6 +1043,8 @@ std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind) {
       return "Diagnostics";
     case IOSConfigCatalogKind::kSystem:
       return "Automation";
+    case IOSConfigCatalogKind::kOnline:
+      return "Online";
     case IOSConfigCatalogKind::kPerGame:
       return "Game Settings";
     case IOSConfigCatalogKind::kGraphicsCompat:
@@ -1045,6 +1065,7 @@ static const IOSConfigCatalogKind kCuratedPages[] = {
     IOSConfigCatalogKind::kAudio,       IOSConfigCatalogKind::kControls,
     IOSConfigCatalogKind::kPerformance, IOSConfigCatalogKind::kCompatibility,
     IOSConfigCatalogKind::kSystem,      IOSConfigCatalogKind::kDiagnostics,
+    IOSConfigCatalogKind::kOnline,
 };
 
 static std::vector<IOSConfigSection> BuildCuratedPageSections(IOSConfigCatalogKind kind) {
@@ -1065,6 +1086,8 @@ static std::vector<IOSConfigSection> BuildCuratedPageSections(IOSConfigCatalogKi
       return BuildSystemSections();
     case IOSConfigCatalogKind::kDiagnostics:
       return BuildDiagnosticsSections();
+    case IOSConfigCatalogKind::kOnline:
+      return BuildOnlineSections();
     default:
       return {};
   }
@@ -1141,6 +1164,7 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
     case IOSConfigCatalogKind::kCompatibility:
     case IOSConfigCatalogKind::kSystem:
     case IOSConfigCatalogKind::kDiagnostics:
+    case IOSConfigCatalogKind::kOnline:
       return BuildCuratedPageSections(kind);
 
     case IOSConfigCatalogKind::kAdvanced:

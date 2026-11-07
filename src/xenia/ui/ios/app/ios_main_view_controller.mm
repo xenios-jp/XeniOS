@@ -3512,6 +3512,25 @@ static bool XeJITUsable() {
                   usingBlock:^(NSNotification* note) {
                     [unsafe_self showLiveInviteBanner:note.object];
                   }];
+  // The running game accepted an invite to another game: start that one, as the console does.
+  [center addObserverForName:XeniaLiveSocialInviteForOtherGameNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    const uint32_t title_id =
+                        [note.userInfo[XeniaLiveSocialTitleKey] unsignedIntValue];
+                    NSString* inviter = note.userInfo[XeniaLiveSocialGamertagKey];
+                    if (!inviter.length) {
+                      inviter = NSLocalizedString(@"Your friend",
+                                                  @"A friend whose gamertag isn't known");
+                    }
+                    [unsafe_self launchTitleForLiveInvite:title_id
+                                                  inviter:inviter
+                                                  prepare:^{
+                                                    [[XeniaLiveSocial shared]
+                                                        acceptHeldInviteForLaunch];
+                                                  }];
+                  }];
   [center addObserverForName:XeniaLiveSocialSystemLinkJoinNotification
                       object:nil
                        queue:[NSOperationQueue mainQueue]

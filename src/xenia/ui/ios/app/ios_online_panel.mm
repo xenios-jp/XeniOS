@@ -16,6 +16,7 @@
 #import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
+#import "xenia/ui/ios/shared/ios_party_voice.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
@@ -39,6 +40,33 @@ UILabel* NewLabel(NSString* text, UIFontTextStyle style, CGFloat size, UIFontWei
   label.textColor = color;
   xe_apply_label_font(label, style, S(size), weight);
   return label;
+}
+
+// What party voice says of a member, under their name: nil when nothing.
+NSString* PartyVoiceText(uint64_t xuid, UIColor** color) {
+  switch (xe_ios_party_voice_member_state(xuid)) {
+    case XeniaPartyVoiceMemberStateTalking:
+      *color = [XeniaTheme accent];
+      return NSLocalizedString(@"Talking", @"Online panel: a party member is talking");
+    case XeniaPartyVoiceMemberStateMuted:
+      *color = [XeniaTheme textSecondary];
+      return NSLocalizedString(@"Muted", @"Online panel: a party member muted themselves");
+    case XeniaPartyVoiceMemberStateUnreachable:
+      *color = [XeniaTheme statusWarning];
+      return NSLocalizedString(@"No voice connection",
+                               @"Online panel: no direct path reaches this party member, so "
+                               @"neither hears the other");
+    default:
+      return nil;
+  }
+}
+
+void ShowPartyVoice(UILabel* label, uint64_t xuid) {
+  UIColor* color = nil;
+  NSString* text = PartyVoiceText(xuid, &color);
+  label.text = text;
+  label.textColor = color ?: [XeniaTheme textSecondary];
+  label.hidden = text == nil;
 }
 
 // A small caption over a group of rows.
@@ -1139,6 +1167,8 @@ NSString* PlayerName(XeniaLiveGamePlayer* player) {
 }  // namespace
 
 @implementation XeniaIOSOnlinePanel {
+  // The party page's voice line under each other member, by XUID.
+  NSMutableDictionary<NSNumber*, UILabel*>* _partyVoiceLabels;
   UIStackView* _header;
   NSLayoutConstraint* _headerTop;
   NSLayoutConstraint* _headerLeading;
@@ -1235,6 +1265,12 @@ NSString* PlayerName(XeniaLiveGamePlayer* player) {
                                              selector:@selector(socialChanged:)
                                                  name:XeniaLiveSocialDidChangeNotification
                                                object:nil];
+    // Talking and muted change often: the labels change in place.
+    _partyVoiceLabels = [[NSMutableDictionary alloc] init];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(partyVoiceChanged:)
+                                                 name:XeniaPartyVoiceDidChangeNotification
+                                               object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(requestFailed:)
                                                  name:XeniaLiveSocialRequestFailedNotification
@@ -1249,6 +1285,7 @@ NSString* PlayerName(XeniaLiveGamePlayer* player) {
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_partyVoiceLabels release];
   [_header release];
   [_headerTop release];
   [_headerLeading release];
@@ -1957,7 +1994,14 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   [_stack addArrangedSubview:Group(rows, nil)];
 }
 
+- (void)partyVoiceChanged:(NSNotification* __unused)note {
+  for (NSNumber* xuid in _partyVoiceLabels) {
+    ShowPartyVoice(_partyVoiceLabels[xuid], xuid.unsignedLongLongValue);
+  }
+}
+
 - (void)buildParty {
+  [_partyVoiceLabels removeAllObjects];
   __unsafe_unretained XeniaIOSOnlinePanel* unsafe_self = self;
   XeniaLiveSocial* social = [XeniaLiveSocial shared];
   NSArray<XeniaLivePartyMember*>* members = social.partyMembers;
@@ -2057,6 +2101,16 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       cell.spacing = 4.0;
       cell.isAccessibilityElement = NO;
       [name.widthAnchor constraintEqualToAnchor:cell.widthAnchor].active = YES;
+      if (!member.me) {
+        UILabel* voice = NewLabel(nil, UIFontTextStyleCaption2, 11.0, UIFontWeightMedium,
+                                  [XeniaTheme textSecondary]);
+        voice.textAlignment = NSTextAlignmentCenter;
+        voice.numberOfLines = 2;
+        ShowPartyVoice(voice, member.xuid);
+        [cell addArrangedSubview:voice];
+        [voice.widthAnchor constraintEqualToAnchor:cell.widthAnchor].active = YES;
+        _partyVoiceLabels[@(member.xuid)] = voice;
+      }
       if (!member.me) {
         void (^open)(void) = [self cardOpener:member.xuid gamertag:member.gamertag];
         UIButton* hit = [UIButton buttonWithType:UIButtonTypeCustom];

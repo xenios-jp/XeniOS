@@ -26,6 +26,8 @@ typedef NS_ENUM(NSInteger, XeniaIOSInGameMenuAction) {
   XeniaIOSInGameMenuActionGraphics = 8,
   XeniaIOSInGameMenuActionPauseEmulator,
   XeniaIOSInGameMenuActionFriends,
+  // The voice chat Microphone choice, as a menu.
+  XeniaIOSInGameMenuActionMicrophone,
 };
 
 @class XeniaLiveFriend;

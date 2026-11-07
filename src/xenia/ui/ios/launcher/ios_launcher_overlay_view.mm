@@ -1334,8 +1334,22 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   const CGFloat header_bottom = CGRectGetMaxY(_headerView.frame);
   _headerBackdrop.frame = CGRectMake(0.0, 0.0, bounds.size.width, header_bottom);
 
-  [_topInfoStack layoutIfNeeded];
-  const CGFloat stack_height = _topInfoStack.hidden ? 0.0 : _topInfoStack.bounds.size.height;
+  // The notices and search sit in the grid's top inset, so the inset needs their height at the
+  // width they will have, not their last frame: after a text-size change they wrap onto more
+  // lines, and a stale height would push them up over the header.
+  const CGFloat grid_width =
+      side ? bounds.size.width - (hero ? floor(bounds.size.width * 0.42) : safe.left) - safe.right
+           : bounds.size.width;
+  const CGFloat stack_height =
+      _topInfoStack.hidden
+          ? 0.0
+          : [_topInfoStack
+                  systemLayoutSizeFittingSize:CGSizeMake(MAX(grid_width - 2.0 * kLibraryMargin,
+                                                             0.0),
+                                                         UILayoutFittingCompressedSize.height)
+                withHorizontalFittingPriority:UILayoutPriorityRequired
+                      verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+                .height;
   const CGFloat stack_block =
       stack_height > 0.0 ? kLibraryHeaderTop + stack_height + kLibraryHeaderGap : kLibraryHeaderTop;
 
@@ -2932,6 +2946,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 - (void)layoutTraitsChanged {
   [self updateNoticeCardsForTextSize];
+  [self setNeedsLayout];  // The grid's top inset follows the notices' new height.
   [_gamesCollectionView.collectionViewLayout invalidateLayout];
   [self reconfigureVisibleGames];
 }
