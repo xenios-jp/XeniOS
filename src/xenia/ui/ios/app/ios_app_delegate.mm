@@ -10,6 +10,8 @@
 #import "xenia/ui/ios/app/ios_app_delegate.h"
 #import "xenia/ui/ios/app/ios_external_display.h"
 
+#include <unistd.h>
+
 #include <memory>
 #include <string>
 
@@ -347,6 +349,14 @@ DECLARE_bool(log_to_stdout);
 
 - (void)applicationWillTerminate:(UIApplication*)application {
   XELOGI("iOS lifecycle: applicationWillTerminate");
+  // iOS ends an app that takes 5 s to quit and reports it as a hang. Teardown has its own limit,
+  // but what runs around it (observers, destructors, exit handlers) can stall too.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, INT64_C(4) * NSEC_PER_SEC),
+                 dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                   XELOGE("iOS: still quitting after 4 s; exiting");
+                   xe::FlushLog();
+                   _exit(0);
+                 });
   xe::ui::IOSLifecycleObserverRemove();
   if (app_) {
     app_->InvokeOnDestroy();
