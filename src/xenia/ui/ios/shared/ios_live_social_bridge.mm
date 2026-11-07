@@ -110,8 +110,21 @@ NSString* RequestFailedText(const std::string& request, const std::string& reaso
     }
   }
   if (request == "invite" && reason == "not_friends") {
+    // An older lobby.
     return NSLocalizedString(@"You can only invite friends.",
                              @"Friends toast: inviting someone who isn't a friend");
+  }
+  if (request == "invite" && reason == "not_allowed") {
+    return NSLocalizedString(@"This player only takes invites from friends.",
+                             @"Friends toast: inviting a stranger whose privacy setting refuses it");
+  }
+  if (request == "invite" && reason == "in_party") {
+    return NSLocalizedString(@"They're already in your party.",
+                             @"Friends toast: a party invite to a member");
+  }
+  if (request == "invite" && reason == "blocked") {
+    return NSLocalizedString(@"You blocked this player.",
+                             @"Friends toast: inviting a player the user blocked");
   }
   if (request == "invite" && reason == "no_party") {
     return NSLocalizedString(@"Start a party first, then invite friends to it.",
@@ -549,6 +562,9 @@ NSString* ProblemText(const std::string& problem) {
   std::unordered_set<uint64_t> code_only_;
   // When the profiles became unreadable with the connection open, or 0.
   CFAbsoluteTime profiles_busy_since_;
+  // The last player search the service answered: what was searched for and who it found.
+  std::string search_prefix_;
+  std::vector<std::pair<uint64_t, std::string>> search_hits_;
   // The invite to another game the running one accepted, until the app starts that game (or
   // another invite replaces it). Main thread.
   std::optional<xe::kernel::xam::LaunchInvite> held_launch_invite_;
@@ -853,6 +869,17 @@ NSString* ProblemText(const std::string& problem) {
     dispatch_async(dispatch_get_main_queue(), ^{
       XeniaLiveSocial* social = [XeniaLiveSocial shared];
       [social namesHeard:copy];
+      [social postChange];
+    });
+  };
+  events.search_results = [](const std::string& prefix,
+                              const std::vector<std::pair<uint64_t, std::string>>& users) {
+    XELOGI("Live account (app): player search found {}", users.size());
+    const std::string prefix_copy = prefix;
+    const std::vector<std::pair<uint64_t, std::string>> copy = users;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      XeniaLiveSocial* social = [XeniaLiveSocial shared];
+      [social searchHeard:prefix_copy users:copy];
       [social postChange];
     });
   };
@@ -1373,6 +1400,51 @@ NSString* ProblemText(const std::string& problem) {
   [self postChange];
 }
 
+- (void)searchHeard:(const std::string&)prefix
+              users:(const std::vector<std::pair<uint64_t, std::string>>&)users {
+  search_prefix_ = prefix;
+  search_hits_ = users;
+}
+
+- (void)searchPlayers:(NSString*)prefix {
+  if (share_ && self.state == XeniaLiveSocialStateOnline && prefix.length) {
+    (*share_)->SearchPlayers(prefix.UTF8String);
+  }
+}
+
+- (BOOL)searchAnswered:(NSString*)query {
+  NSString* trimmed =
+      [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  return share_ && self.state == XeniaLiveSocialStateOnline && trimmed.length &&
+         [ToNS(search_prefix_) caseInsensitiveCompare:trimmed] == NSOrderedSame;
+}
+
+- (NSArray<XeniaLiveGamePlayer*>*)playersMatching:(NSString*)query {
+  NSMutableArray<XeniaLiveGamePlayer*>* result = [NSMutableArray array];
+  NSString* trimmed =
+      [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (!share_ || self.state != XeniaLiveSocialStateOnline || !trimmed.length ||
+      [ToNS(search_prefix_) caseInsensitiveCompare:trimmed] != NSOrderedSame) {
+    return result;
+  }
+  const uint64_t me = (*share_)->xuid();
+  const auto known = [self knownPlayers];
+  for (const auto& [xuid, gamertag] : search_hits_) {
+    if (xuid == me || (*share_)->IsBlocked(xuid)) {
+      continue;
+    }
+    auto it = known.find(xuid);
+    XeniaLiveGamePlayerRelation relation =
+        it != known.end() ? it->second.second : XeniaLiveGamePlayerRelationNone;
+    [result addObject:[[[XeniaLiveGamePlayer alloc] initWithXuid:xuid
+                                                        gamertag:ToNS(gamertag)
+                                                        relation:relation
+                                                        codeOnly:code_only_.count(xuid) != 0]
+                          autorelease]];
+  }
+  return result;
+}
+
 // Names the service gave: keep them for Recent Players, so the list names them offline too.
 - (void)namesHeard:(const std::vector<std::pair<uint64_t, std::string>>&)names {
   const uint64_t profile_xuid = [self recentProfileXuid];
@@ -1492,12 +1564,16 @@ NSString* ProblemText(const std::string& problem) {
 }
 
 - (BOOL)inviteFriendToParty:(XeniaLiveFriend*)peer {
+  return [self invitePlayerToParty:peer.xuid];
+}
+
+- (BOOL)invitePlayerToParty:(uint64_t)xuid {
   if (!self.partyActionsAvailable) {
     return NO;
   }
   // The game this profile is in, or the dashboard's at the library.
   const uint32_t running = running_title_provider_ ? running_title_provider_() : 0;
-  (*share_)->InviteToParty(peer.xuid, running ? running : xe::kernel::kDashboardID);
+  (*share_)->InviteToParty(xuid, running ? running : xe::kernel::kDashboardID);
   return YES;
 }
 
@@ -1922,6 +1998,10 @@ NSString* ProblemText(const std::string& problem) {
 }
 
 - (BOOL)inviteFriendToRunningGame:(XeniaLiveFriend*)peer {
+  return [self invitePlayerToRunningGame:peer.xuid];
+}
+
+- (BOOL)invitePlayerToRunningGame:(uint64_t)xuid {
   const uint32_t running = running_title_provider_ ? running_title_provider_() : 0;
   if (!share_ || !running) {
     return NO;
@@ -1929,8 +2009,8 @@ NSString* ProblemText(const std::string& problem) {
   // The game's session when it has one friends may join; else the title's public lobby, and
   // the friend finds the session from presence.
   auto joinable = xe::kernel::xam::LiveOwnJoinable(0);
-  (*share_)->SendInvite(peer.xuid, running, joinable.value_or(live::Joinable{}), {});
-  XELOGI("Live invite: the app invited {:016X} to {:08X}", peer.xuid, running);
+  (*share_)->SendInvite(xuid, running, joinable.value_or(live::Joinable{}), {});
+  XELOGI("Live invite: the app invited {:016X} to {:08X}", xuid, running);
   return YES;
 }
 
