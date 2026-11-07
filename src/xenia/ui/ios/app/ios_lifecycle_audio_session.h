@@ -28,6 +28,14 @@ void IOSAudioSessionRestore(const char* reason);
 // session was interrupted, reset, or the app was in the background).
 void IOSAudioSessionRestoreIfNeeded(const char* reason);
 
+// The Microphone choice between this device's microphone (false: Bluetooth stays
+// high quality) and a headset's own (true: Bluetooth hands-free). Applied at once
+// while voice runs, else when it next starts.
+void IOSAudioSessionSetHeadsetMicrophone(bool headset);
+
+// True while a game's headset has the session playing and recording.
+bool IOSAudioSessionVoiceActive();
+
 // Marks that the app moved to the background, so the next
 // IOSAudioSessionRestoreIfNeeded restores the session and engine.
 void IOSAudioSessionNoteBackgrounded();

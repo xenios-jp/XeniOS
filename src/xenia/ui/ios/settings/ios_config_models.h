@@ -58,6 +58,8 @@ enum class IOSConfigCatalogKind {
   kAllCvars,
   // Every curated setting in one list, de-duplicated by key. Visible to everyone.
   kAllSettings,
+  // Rooms and voice chat.
+  kOnline,
 };
 
 enum class IOSConfigAction {
@@ -69,6 +71,8 @@ enum class IOSConfigAction {
   kResetGameSettings,
   kResetAllSettings,
   kManageExternalFolders,
+  // Settings → Audio → Microphone, the voice chat choice.
+  kOpenMicrophone,
 };
 
 struct IOSConfigChoice {

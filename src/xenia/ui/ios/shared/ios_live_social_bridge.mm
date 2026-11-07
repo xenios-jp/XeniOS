@@ -41,6 +41,10 @@ NSNotificationName const XeniaLiveSocialJoinFailedNotification =
     @"XeniaLiveSocialJoinFailedNotification";
 NSNotificationName const XeniaLiveSocialSystemLinkJoinNotification =
     @"XeniaLiveSocialSystemLinkJoinNotification";
+NSNotificationName const XeniaLiveSocialInviteForOtherGameNotification =
+    @"XeniaLiveSocialInviteForOtherGameNotification";
+NSString* const XeniaLiveSocialTitleKey = @"XeniaLiveSocialTitle";
+NSString* const XeniaLiveSocialGamertagKey = @"XeniaLiveSocialGamertag";
 NSNotificationName const XeniaLiveSocialReportFailedNotification =
     @"XeniaLiveSocialReportFailedNotification";
 NSString* const XeniaLiveSocialMessageKey = @"message";
@@ -566,6 +570,7 @@ void AddPreviewFriends(NSMutableArray* result) {
 
 @interface XeniaLiveSocial ()
 - (void)refresh;
+- (void)holdLaunchInvite:(const xe::kernel::xam::LaunchInvite&)launch;
 - (std::shared_ptr<live::AccountShare>)currentShare;
 @end
 
@@ -598,6 +603,9 @@ void AddPreviewFriends(NSMutableArray* result) {
   std::unordered_set<uint64_t> code_only_;
   // When the profiles became unreadable with the connection open, or 0.
   CFAbsoluteTime profiles_busy_since_;
+  // The invite to another game the running one accepted, until the app starts that game (or
+  // another invite replaces it). Main thread.
+  std::optional<xe::kernel::xam::LaunchInvite> held_launch_invite_;
   NSTimer* timer_;
   uint32_t (^running_title_provider_)(void);
   NSString* (^title_name_provider_)(uint32_t);
@@ -646,6 +654,27 @@ void AddPreviewFriends(NSMutableArray* result) {
           NSString* name = [NSString stringWithUTF8String:gamertag.c_str()] ?: @"";
           [[XeniaLiveSocial shared] postSystemLinkJoin:name title:title_id];
         });
+    // The running game accepted an invite to another (in-game, or by live_auto_accept_invites):
+    // the app starts that one from the library, as the console does.
+    xe::kernel::xam::SetLiveInviteTitleHandler([](uint32_t user_index, const std::string& from,
+                                                  xe::kernel::xam::AcceptedInvite invite,
+                                                  const std::string& room) {
+      auto launch = std::make_shared<xe::kernel::xam::LaunchInvite>();
+      launch->user_index = user_index;
+      launch->invite = std::move(invite);
+      launch->room = room;
+      NSString* name = [NSString stringWithUTF8String:from.c_str()] ?: @"";
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [[XeniaLiveSocial shared] holdLaunchInvite:*launch];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:XeniaLiveSocialInviteForOtherGameNotification
+                          object:[XeniaLiveSocial shared]
+                        userInfo:@{
+                          XeniaLiveSocialTitleKey : @(launch->invite.title_id),
+                          XeniaLiveSocialGamertagKey : name
+                        }];
+      });
+    });
     xe::kernel::xam::SetLiveJoinFailedHandler(
         [](uint32_t, const std::string& gamertag, xe::kernel::xam::LiveJoinFailure reason) {
           NSString* text = JoinFailedText(gamertag, reason);
@@ -1605,8 +1634,7 @@ void AddPreviewFriends(NSMutableArray* result) {
 - (NSString*)systemLinkJoinText:(NSString*)gamertag title:(uint32_t)title_id {
   NSString* name = gamertag.length ? gamertag
                                    : NSLocalizedString(@"Your friend",
-                                                       @"System Link join toast: a friend whose "
-                                                       @"gamertag isn't known");
+                                                       @"A friend whose gamertag isn't known");
   return [NSString
       stringWithFormat:NSLocalizedString(@"%1$@ is in a System Link game: open System Link (or "
                                          @"LAN) in %2$@ to join.",
@@ -1847,6 +1875,30 @@ void AddPreviewFriends(NSMutableArray* result) {
   } else {
     xe::kernel::xam::SetAcceptedInvite(0, std::move(accepted));
     xe_ios_join_system_link_room(raw.title_id, ToNS(raw.room));
+  }
+  [self postChange];
+}
+
+- (void)holdLaunchInvite:(const xe::kernel::xam::LaunchInvite&)launch {
+  held_launch_invite_ = launch;
+}
+
+- (void)acceptHeldInviteForLaunch {
+  if (!held_launch_invite_) {
+    return;
+  }
+  auto launch = std::move(*held_launch_invite_);
+  held_launch_invite_.reset();
+  const uint32_t title_id = launch.invite.title_id;
+  // Answered already, by the game that accepted it.
+  if (launch.invite.info.empty()) {
+    xe_ios_join_system_link_room(title_id, ToNS(launch.room));
+    const auto presence =
+        share_ ? (*share_)->FriendPresence(launch.invite.inviter) : std::nullopt;
+    [self postSystemLinkJoin:presence ? ToNS(presence->gamertag) : @"" title:title_id];
+  } else {
+    xe::kernel::xam::SetAcceptedInvite(launch.user_index, std::move(launch.invite));
+    xe_ios_join_system_link_room(title_id, ToNS(launch.room));
   }
   [self postChange];
 }
