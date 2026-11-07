@@ -100,7 +100,9 @@ std::string OsBuild() {
   return build;
 }
 
-// Metal allocates about a part's size to open it and ends the app if it can't.
+// Opening a part maps it and reads its pipelines script, and Metal ends the app
+// when an allocation for that fails. A part holding only pipelines took no
+// measurable memory to open (iPad M5, 26 MB part), so this is a margin.
 bool HasRoomToOpen(const std::filesystem::path& path) {
   std::error_code ec;
   const uintmax_t size = std::filesystem::file_size(path, ec);
@@ -138,6 +140,8 @@ constexpr char kPartExtension[] = ".metalarchive";
 // More parts than this (a title whose pipelines keep changing) and they're
 // discarded, to start over with fewer.
 constexpr size_t kMaxParts = 64;
+// Holds the name of the part being opened, while Metal reads it.
+constexpr char kOpeningMarker[] = "opening";
 
 }  // namespace
 
@@ -166,6 +170,22 @@ void MetalPipelineArchive::UpdateArchivesArray() {
   }
 }
 
+MTL::BinaryArchive* MetalPipelineArchive::OpenPart(
+    const std::filesystem::path& path, NS::Error** error) {
+  // Metal can end the app while it reads a part (std::bad_alloc on its own
+  // queue, which nothing can catch), and it would again on every launch.
+  const std::filesystem::path marker_path = dir_ / kOpeningMarker;
+  const std::string name = xe::path_to_utf8(path.filename());
+  if (std::FILE* out = xe::filesystem::OpenFile(marker_path, "wb")) {
+    std::fwrite(name.data(), 1, name.size(), out);
+    std::fclose(out);
+  }
+  MTL::BinaryArchive* part = NewArchive(path, error);
+  std::error_code ec;
+  std::filesystem::remove(marker_path, ec);
+  return part;
+}
+
 NS::Array* MetalPipelineArchive::GetArchives() {
   std::lock_guard<std::mutex> lock(mutex_);
   return archives_ ? archives_->retain() : nullptr;
@@ -190,6 +210,16 @@ void MetalPipelineArchive::Open(MTL::Device* device,
   const std::filesystem::path id_path = dir / "archive.id";
   std::vector<std::pair<uint32_t, std::filesystem::path>> files;
   bool discard = ReadFile(id_path) != full_fingerprint;
+  // A part that ended the app while it was being opened. The marker itself is
+  // removed below with the other leftovers.
+  const std::string opening = ReadFile(dir / kOpeningMarker);
+  if (!opening.empty() &&
+      std::filesystem::path(opening).filename() == opening) {
+    XELOGW("Metal pipeline archive: dropping {}, which ended the app while it "
+           "was being opened",
+           opening);
+    std::filesystem::remove(dir / opening, ec);
+  }
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     const std::filesystem::path& path = entry.path();
     if (path.extension() == kPartExtension) {
@@ -221,15 +251,19 @@ void MetalPipelineArchive::Open(MTL::Device* device,
     }
   }
   std::sort(files.begin(), files.end());
+  // Past every part on disk, including any not opened below, so a save never
+  // writes over one.
+  for (const auto& file : files) {
+    next_part_ = std::max(next_part_, file.first + 1);
+  }
   for (const auto& [index, path] : files) {
-    next_part_ = std::max(next_part_, index + 1);
     if (!HasRoomToOpen(path)) {
       XELOGW("Metal pipeline archive: not enough memory to open {} of {} parts",
              files.size() - parts_.size(), files.size());
       break;
     }
     NS::Error* error = nullptr;
-    MTL::BinaryArchive* part = NewArchive(path, &error);
+    MTL::BinaryArchive* part = OpenPart(path, &error);
     if (!part) {
       XELOGW("Metal pipeline archive: dropping an unusable part: {}",
              ErrorText(error));
@@ -295,7 +329,7 @@ size_t MetalPipelineArchive::WriteParts(
     return (end - begin) - added;
   }
   if (written) {
-    MTL::BinaryArchive* part = NewArchive(path, &error);
+    MTL::BinaryArchive* part = OpenPart(path, &error);
     if (part) {
       ++next_part_;
       std::lock_guard<std::mutex> lock(mutex_);
@@ -322,31 +356,22 @@ size_t MetalPipelineArchive::WriteParts(
 }
 
 void MetalPipelineArchive::ReleasePending(
-    std::vector<MTL::RenderPipelineDescriptor*>& pipelines,
-    std::vector<PendingFunction>& functions) {
+    std::vector<MTL::RenderPipelineDescriptor*>& pipelines) {
   for (MTL::RenderPipelineDescriptor* desc : pipelines) {
     desc->release();
   }
   pipelines.clear();
-  for (PendingFunction& function : functions) {
-    function.desc->release();
-    function.library->release();
-  }
-  functions.clear();
 }
 
 void MetalPipelineArchive::Save() {
   std::lock_guard<std::mutex> save_lock(save_mutex_);
   std::vector<MTL::RenderPipelineDescriptor*> pipelines;
-  std::vector<PendingFunction> functions;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!device_ ||
-        (pending_pipelines_.empty() && pending_functions_.empty())) {
+    if (!device_ || pending_pipelines_.empty()) {
       return;
     }
     pipelines.swap(pending_pipelines_);
-    functions.swap(pending_functions_);
     added_.store(0, std::memory_order_relaxed);
   }
   const uint64_t start_ticks = xe::Clock::QueryHostTickCount();
@@ -357,23 +382,9 @@ void MetalPipelineArchive::Save() {
       return to->addRenderPipelineFunctions(desc, &error);
     });
   }
-  for (const PendingFunction& function : functions) {
-    additions.push_back([this, function](MTL::BinaryArchive* to) {
-      NS::Error* error = nullptr;
-      if (to->addFunction(function.desc, function.library, &error)) {
-        return true;
-      }
-      if (!function_error_logged_) {
-        function_error_logged_ = true;
-        XELOGW("Metal pipeline archive: can't hold a specialized function: {}",
-               ErrorText(error));
-      }
-      return false;
-    });
-  }
   const size_t parts_before = parts_.size();
   const size_t left_out = WriteParts(additions, 0, additions.size());
-  ReleasePending(pipelines, functions);
+  ReleasePending(pipelines);
   const uint64_t ms = (xe::Clock::QueryHostTickCount() - start_ticks) * 1000 /
                       xe::Clock::QueryHostTickFrequency();
   uintmax_t bytes = 0;
@@ -398,7 +409,7 @@ void MetalPipelineArchive::Close(bool save) {
   }
   std::lock_guard<std::mutex> save_lock(save_mutex_);
   std::lock_guard<std::mutex> lock(mutex_);
-  ReleasePending(pending_pipelines_, pending_functions_);
+  ReleasePending(pending_pipelines_);
   if (device_ && (hits_ || misses_)) {
     XELOGI("Metal pipeline archive: {} loaded, {} compiled", hits_, misses_);
   }
@@ -452,34 +463,6 @@ MTL::RenderPipelineState* MetalPipelineArchive::NewRenderPipelineState(
     added_.fetch_add(1, std::memory_order_relaxed);
   }
   return pipeline;
-}
-
-MTL::Function* MetalPipelineArchive::NewFunction(MTL::Library* library,
-                                                 MTL::FunctionDescriptor* desc,
-                                                 NS::Error** error) {
-  if (NS::Array* archives = GetArchives()) {
-    desc->setBinaryArchives(archives);
-    desc->setOptions(MTL::FunctionOptionFailOnBinaryArchiveMiss);
-    NS::Error* miss = nullptr;
-    MTL::Function* function = library->newFunction(desc, &miss);
-    desc->setOptions(MTL::FunctionOptionNone);
-    desc->setBinaryArchives(nullptr);
-    archives->release();
-    if (function) {
-      return function;
-    }
-  }
-  MTL::Function* function = library->newFunction(desc, error);
-  if (!function) {
-    return nullptr;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (device_) {
-    pending_functions_.push_back(
-        PendingFunction{desc->copy(), library->retain()});
-    added_.fetch_add(1, std::memory_order_relaxed);
-  }
-  return function;
 }
 
 }  // namespace metal
