@@ -37,8 +37,10 @@ using relay::RelayStatus;
 
 constexpr uint32_t kMtu = 1500;
 constexpr uint64_t kAskAllowedMs = 1000;
-// Networks come and go, so the host's addresses are read again now and then.
-constexpr uint64_t kHostCandidatesMs = 30000;
+// The host's addresses are read once a second, so a change of network is
+// noticed well before the game drops the other players (Halo 3 after about
+// 7 s without them).
+constexpr uint64_t kHostCandidatesMs = 1000;
 constexpr uint16_t kStunPort = 3478;
 
 uint64_t Now() { return Clock::QueryHostUptimeMillis(); }
@@ -86,6 +88,12 @@ struct LobbyInbox {
 std::vector<Endpoint> HostCandidates(uint16_t port) {
   std::vector<Endpoint> candidates;
   for (const HostInterface& host : HostInterfaces()) {
+    // A self-assigned 169.254 address (a Thunderbolt bridge, a USB network
+    // device) reaches nobody in the room, and the lobby turns away a player
+    // that offers one.
+    if ((host.address >> 16) == 0xA9FE) {
+      continue;
+    }
     Endpoint endpoint;
     for (int i = 0; i < 4; ++i) {
       endpoint.address[i] = uint8_t(host.address >> (24 - 8 * i));
@@ -227,7 +235,7 @@ class RelayTransport final : public PacketTransport {
     if (!gathered_ || now - gathered_ms_ >= kHostCandidatesMs) {
       gathered_ = true;
       gathered_ms_ = now;
-      client_.SetHostCandidates(HostCandidates(socket_.port()), out_);
+      client_.SetHostCandidates(HostCandidates(socket_.port()), now, out_);
     }
     DrainLobby(now);
     if (lobby_ && client_.LobbyStale(now)) {
