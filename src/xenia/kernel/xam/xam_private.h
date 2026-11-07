@@ -23,6 +23,10 @@ namespace kernel {
 class XModule;
 namespace xam {
 
+// True while a profile signed in to Live is in any slot: Xenia's Live counts
+// that user as logged on to the service.
+bool AnyUserSignedInToLive();
+
 xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 
 // XamLoaderLaunchTitleEx, which doesn't return.

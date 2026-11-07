@@ -23,6 +23,7 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -1181,6 +1182,17 @@ std::vector<uint32_t> KernelState::GetAllThreadIDs() {
   return thread_ids;
 }
 
+// The users signed in, one bit per user index, as SignInChanged carries them.
+uint32_t KernelState::SignedInUserMask() {
+  uint32_t mask = 0;
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    if (xam_state()->IsUserSignedIn(i)) {
+      mask |= 1u << i;
+    }
+  }
+  return mask;
+}
+
 void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
   auto global_lock = global_critical_region_.Acquire();
   notify_listeners_.push_back(retain_object(listener));
@@ -1192,7 +1204,9 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     has_notified_startup_ = true;
     listener->EnqueueNotification(kXNotificationSystemUI,
                                   xam_state()->IsUIActive());
-    listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
+    listener->EnqueueNotification(
+        kXNotificationSystemSignInChanged,
+        SignedInUserMask());
     // Sent when a storage device comes or goes. The dashboard rescans its
     // content on it. Content can change on the host between runs so the
     // dashboard gets one at start.
@@ -1203,11 +1217,27 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
   }
   if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
     has_notified_live_startup_ = true;
-    // X_ONLINE_S_LOGON_DISCONNECTED
-    listener->EnqueueNotification(kXNotificationLiveConnectionChanged,
-                                  0x001510F1L);
+    // X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED for Xenia's Live (a profile
+    // signed in to Live), X_ONLINE_S_LOGON_DISCONNECTED otherwise.
+    listener->EnqueueNotification(
+        kXNotificationLiveConnectionChanged,
+        xam::AnyUserSignedInToLive() ? 0x001510F0L : 0x001510F1L);
     listener->EnqueueNotification(kXNotificationLiveLinkStateChanged,
                                   xam::SystemLinkEnabled());
+  }
+
+  // A listener for both system and Live messages gets the signed-in users
+  // again (from the Netplay fork): 4E4D07ED and 58410869 can't create Live
+  // sessions, and 4D5307D4 won't open its Live menus, without it.
+  if (listener->mask() == (kXNotifySystem | kXNotifyLive)) {
+    listener->EnqueueNotification(
+        kXNotificationSystemSignInChanged,
+        SignedInUserMask());
+  }
+
+  if (!has_notified_party_startup_ && listener->mask() & kXNotifyParty) {
+    has_notified_party_startup_ = true;
+    listener->EnqueueNotification(kXNotificationPartyMembersChanged, 0);
   }
 
   if (!has_notified_xmp_startup_ && listener->mask() & kXNotifyXmp) {
