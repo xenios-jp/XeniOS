@@ -18,13 +18,19 @@
 #include <sstream>
 #include <utility>
 
+#include "xenia/apu/voice/party_voice.h"
+#include "xenia/apu/voice/voice_device.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_live_invites.h"
 #include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/net/packet_transport.h"
+#include "xenia/net/party_voice_wire.h"
+#include "xenia/net/relay_protocol.h"
 
 DEFINE_string(live_test_party_with, "",
               "Online XUIDs (hex, comma separated) the first signed-in "
@@ -440,6 +446,10 @@ void LivePartyChanged(uint32_t user_index) {
     auto& state = GetParty();
     std::lock_guard lock(state.mutex);
     auto& user = state.users[user_index];
+    // A party invite into the party it's now in is answered.
+    if (party && user.pending && user.pending->room == party->room) {
+      user.pending.reset();
+    }
     if (!party) {
       user.followed.clear();
       user.room.clear();
@@ -465,6 +475,98 @@ void LivePartyChanged(uint32_t user_index) {
   LivePartyPoll(user_index);
 }
 
+#if !XE_PLATFORM_IOS
+}  // namespace xam
+}  // namespace kernel
+}  // namespace xe
+
+DECLARE_bool(voice_chat);
+DECLARE_string(systemlink_lobby);
+DEFINE_bool(live_party_voice, true,
+            "Party chat with the other members of the first user's Live "
+            "party while voice_chat is on (or voice_test_input is set). The "
+            "iOS app runs its own, with its Microphone menu.",
+            "Live");
+
+namespace xe {
+namespace kernel {
+namespace xam {
+namespace {
+
+// The desktop app's party chat: the iOS app's Evaluate() without its menu
+// (party chat always, never muted). Changes come with the party's.
+void DesktopPartyVoice(uint32_t user_index, net::live::AccountClient& account,
+                       const std::optional<net::live::PartyState>& party) {
+  struct State {
+    std::mutex mutex;
+    std::unique_ptr<apu::voice::PartyVoice> session;
+    std::string room;
+    uint64_t xuid = 0;
+  };
+  static State* state = new State;
+  if (user_index != 0) {
+    return;
+  }
+  std::vector<uint64_t> others;
+  if (party) {
+    const auto blocked = account.Blocked();
+    for (const auto& member : party->members) {
+      if (member.first != account.xuid() &&
+          std::find(blocked.begin(), blocked.end(), member.first) ==
+              blocked.end()) {
+        others.push_back(member.first);
+      }
+    }
+  }
+  const bool want = cvars::live_party_voice && party && !others.empty() &&
+                    account.signed_in() &&
+                    (cvars::voice_chat || apu::voice::TestDeviceRequested());
+  std::unique_ptr<apu::voice::PartyVoice> closing;
+  std::lock_guard lock(state->mutex);
+  if (!want) {
+    if (state->session) {
+      XELOGI("Party voice: off (not in a party with voice)");
+      closing = std::move(state->session);
+      state->room.clear();
+    }
+    return;
+  }
+  if (!state->session || state->room != party->room ||
+      state->xuid != account.xuid()) {
+    closing = std::move(state->session);
+    const auto code = net::party_voice::VoiceRoomCode(party->room);
+    if (!code) {
+      XELOGW("Party voice: the party's code isn't a room code");
+      return;
+    }
+    apu::voice::PartyVoiceConfig config;
+    config.xuid = account.xuid();
+    const std::string lobby = cvars::systemlink_lobby;
+    const net::relay::Room room = net::relay::PrivateRoom(*code);
+    config.open_transport = [lobby, room](const net::secure::Mac& mac)
+        -> std::unique_ptr<net::secure::PacketTransport> {
+      net::relay::RelayConfig relay;
+      relay.lobby = lobby;
+      relay.room = room;
+      relay.report_status = false;
+      std::string error;
+      auto transport = net::secure::OpenRelayTransport(mac, relay, error);
+      if (!transport) {
+        XELOGE("Party voice: no voice room: {}", error);
+      }
+      return transport;
+    };
+    XELOGI("Party voice: on, in the voice room of party {}", party->room);
+    state->session = std::make_unique<apu::voice::PartyVoice>(std::move(config));
+    state->room = party->room;
+    state->xuid = account.xuid();
+  }
+  state->session->SetMembers(std::move(others));
+}
+
+}  // namespace
+#endif  // !XE_PLATFORM_IOS
+
 void LivePartyPoll(uint32_t user_index) {
   if (user_index >= XUserMaxUserCount) {
     return;
@@ -475,6 +577,9 @@ void LivePartyPoll(uint32_t user_index) {
   }
   auto party = LiveParty(user_index);
   TestParty(user_index, *account, party);
+#if !XE_PLATFORM_IOS
+  DesktopPartyVoice(user_index, *account, party);
+#endif
   if (party) {
     Follow(user_index, *account, *party);
   }

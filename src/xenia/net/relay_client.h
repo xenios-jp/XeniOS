@@ -47,6 +47,9 @@ struct RelayConfig {
   // Asked about once a second when set: a room other than |room| leaves it and
   // joins that one. Nothing keeps the transport where it is.
   std::function<std::optional<Room>()> current_room;
+  // Off keeps a transport's status from SetRelayStatusListener, which is the
+  // System Link UI's (party voice runs a room of its own beside it).
+  bool report_status = true;
   // Reported as this network's NAT type in place of checking it, for testing
   // what the player is told.
   std::optional<NatType> nat_override;

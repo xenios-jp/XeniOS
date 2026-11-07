@@ -45,6 +45,7 @@
 #include "xenia/apu/sdl/sdl_audio_system.h"
 #if XE_PLATFORM_MAC
 #include "xenia/apu/phase/phase_audio_system.h"
+#include "xenia/apu/voice/apple/apple_voice_codec.h"
 #include "xenia/apu/voice/apple/apple_voice_device.h"
 #endif  // XE_PLATFORM_MAC
 #endif  // !XE_PLATFORM_ANDROID
@@ -400,6 +401,8 @@ std::unique_ptr<apu::AudioSystem> EmulatorApp::CreateAudioSystem(
 #if XE_PLATFORM_MAC
   factory.Add<apu::phase::PHASEAudioSystem>("phase");
   apu::voice::SetVoiceDeviceFactory(apu::voice::CreateAppleVoiceDevice);
+  // Party voice's Opus.
+  apu::voice::SetVoiceCodecFactory(apu::voice::AppleOpusCodecFactory());
 #endif  // XE_PLATFORM_MAC
 #if !XE_PLATFORM_ANDROID
   factory.Add<apu::sdl::SDLAudioSystem>("sdl");
