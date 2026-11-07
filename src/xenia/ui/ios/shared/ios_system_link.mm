@@ -39,7 +39,8 @@ using xe::net::relay::NatType;
 using xe::net::relay::RelayStatus;
 using State = RelayStatus::State;
 
-// Title ID in hex to room code.
+// Title ID in hex to room code, or "" for a public lobby chosen while rooms are private by
+// default.
 NSString* const kRoomsKey = @"XeniaSystemLinkRooms";
 // The app's last check-in with the lobby: {"id": ID, "at": seconds since 1970}.
 NSString* const kHereKey = @"XeniaSystemLinkHere";
@@ -764,23 +765,42 @@ UIView* xe_ios_new_system_link_status_view(void) {
   return [[XeniaIOSSystemLinkStatusCard alloc] initWithFrame:CGRectZero];
 }
 
-NSString* xe_ios_system_link_room(uint32_t title_id) {
-  NSDictionary* rooms = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kRoomsKey];
-  id code = rooms[TitleKey(title_id)];
-  return [code isKindOfClass:[NSString class]] ? xe_ios_normalize_system_link_room_code(code) : nil;
-}
+NSString* const XeniaIOSSystemLinkPrivateByDefaultKey = @"XeniaSystemLinkPrivateByDefault";
 
-void xe_ios_set_system_link_room(uint32_t title_id, NSString* code) {
+namespace {
+
+void StoreRoom(uint32_t title_id, NSString* stored) {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   NSMutableDictionary* rooms = [[[defaults dictionaryForKey:kRoomsKey] mutableCopy] autorelease]
                                    ?: [NSMutableDictionary dictionary];
-  NSString* normalized = xe_ios_normalize_system_link_room_code(code);
-  if (normalized) {
-    rooms[TitleKey(title_id)] = normalized;
+  if (stored) {
+    rooms[TitleKey(title_id)] = stored;
   } else {
     [rooms removeObjectForKey:TitleKey(title_id)];
   }
   [defaults setObject:rooms forKey:kRoomsKey];
+}
+
+}  // namespace
+
+NSString* xe_ios_system_link_room(uint32_t title_id) {
+  NSDictionary* rooms = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kRoomsKey];
+  id code = rooms[TitleKey(title_id)];
+  if (!code && title_id &&
+      [[NSUserDefaults standardUserDefaults] boolForKey:XeniaIOSSystemLinkPrivateByDefaultKey]) {
+    code = xe_ios_new_system_link_room_code();
+    StoreRoom(title_id, code);
+  }
+  return [code isKindOfClass:[NSString class]] ? xe_ios_normalize_system_link_room_code(code) : nil;
+}
+
+void xe_ios_set_system_link_room(uint32_t title_id, NSString* code) {
+  NSString* normalized = xe_ios_normalize_system_link_room_code(code);
+  // The public lobby is kept as a choice while rooms are private by default.
+  StoreRoom(title_id, normalized ?: ([[NSUserDefaults standardUserDefaults]
+                                         boolForKey:XeniaIOSSystemLinkPrivateByDefaultKey]
+                                         ? @""
+                                         : nil));
   // A game that's running moves to its new room. Another game's room doesn't concern it, and
   // asking it again would drop the room an invite gave this launch.
   if (!g_title_id || g_title_id == title_id) {

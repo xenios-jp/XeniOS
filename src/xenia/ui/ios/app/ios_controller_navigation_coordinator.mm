@@ -42,6 +42,7 @@ static constexpr IOSFocusNodeId kInGameFocusLog = 106;
 static constexpr IOSFocusNodeId kInGameFocusExit = 107;
 static constexpr IOSFocusNodeId kInGameFocusGraphics = 108;
 static constexpr IOSFocusNodeId kInGameFocusPauseEmulator = 109;
+static constexpr IOSFocusNodeId kInGameFocusMicrophone = 110;
 
 uint64_t GetNowMs() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -79,6 +80,8 @@ XeniaIOSInGameMenuAction InGameActionForFocus(IOSFocusNodeId focus) {
       return XeniaIOSInGameMenuActionGraphics;
     case kInGameFocusPauseEmulator:
       return XeniaIOSInGameMenuActionPauseEmulator;
+    case kInGameFocusMicrophone:
+      return XeniaIOSInGameMenuActionMicrophone;
     default:
       return XeniaIOSInGameMenuActionNone;
   }
@@ -549,11 +552,20 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   achievements.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                      XeniaIOSInGameMenuActionAchievements];
 
-  // Footer: Pause Emulator, Live Log
+  // Footer: Microphone, Pause Emulator, Live Log
+  xe::ui::apple::FocusNode microphone;
+  microphone.id = kInGameFocusMicrophone;
+  microphone.up = kInGameFocusGraphics;
+  microphone.down = kInGameFocusResume;
+  microphone.right = kInGameFocusPauseEmulator;
+  microphone.enabled = [_host controllerNavigationInGameMenuActionEnabled:
+                                  XeniaIOSInGameMenuActionMicrophone];
+
   xe::ui::apple::FocusNode pause_emulator;
   pause_emulator.id = kInGameFocusPauseEmulator;
   pause_emulator.up = kInGameFocusGraphics;
   pause_emulator.down = kInGameFocusResume;
+  pause_emulator.left = kInGameFocusMicrophone;
   pause_emulator.right = kInGameFocusLog;
   pause_emulator.enabled = [_host controllerNavigationInGameMenuActionEnabled:
                                       XeniaIOSInGameMenuActionPauseEmulator];
@@ -573,6 +585,7 @@ void FollowCursorRing(UITableView* table_view, NSIndexPath* path) {
   _inGameFocusGraph.AddOrUpdateNode(settings);
   _inGameFocusGraph.AddOrUpdateNode(achievements);
   _inGameFocusGraph.AddOrUpdateNode(exit_node);
+  _inGameFocusGraph.AddOrUpdateNode(microphone);
   _inGameFocusGraph.AddOrUpdateNode(pause_emulator);
   _inGameFocusGraph.AddOrUpdateNode(log);
 

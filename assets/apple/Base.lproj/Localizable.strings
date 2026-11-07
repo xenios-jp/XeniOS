@@ -4974,7 +4974,7 @@
 /* Friends: %@ is the game; a friend in a System Link game (no Live session), joined from the game's System Link screen */
 "In a System Link game of %@" = "In a System Link game of %@";
 
-/* System Link join toast: a friend whose gamertag isn't known */
+/* A friend whose gamertag isn't known */
 "Your friend" = "Your friend";
 
 /* System Link join toast: %1$@ is the friend, %2$@ the game */

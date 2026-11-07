@@ -53,6 +53,8 @@
 #include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
 #include "xenia/ui/ios/shared/ios_live_social_bridge.h"
+#include "xenia/ui/ios/shared/ios_microphone.h"
+#include "xenia/ui/ios/shared/ios_party_voice.h"
 #include "xenia/ui/ios/shared/ios_profile_data.h"
 #include "xenia/ui/ios/shared/ios_session_stats.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
@@ -71,6 +73,7 @@
 #include "xenia/apu/nop/nop_audio_system.h"
 #include "xenia/apu/phase/phase_audio_system.h"
 #include "xenia/apu/sdl/sdl_audio_system.h"
+#include "xenia/apu/voice/apple/apple_voice_codec.h"
 #include "xenia/apu/voice/apple/apple_voice_device.h"
 
 // Input drivers.
@@ -82,6 +85,7 @@
 #include "xenia/kernel/xam/gamer_pictures.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -732,6 +736,9 @@ bool EmulatorAppIOS::OnInitialize() {
   XELOGI("iOS: Storage root: {}", xe::strip_pii(xe::path_to_utf8(storage_root)));
 
   config::SetupConfig(storage_root);
+  xe_ios_microphone_start();
+  // Party voice follows the party, the Microphone choice and Party/Game Chat.
+  xe_ios_party_voice_start();
 
   std::filesystem::path content_root = cvars::content_root;
   if (content_root.empty()) {
@@ -898,6 +905,17 @@ bool EmulatorAppIOS::OnInitialize() {
       }
       [value release];
     }
+  });
+  // Microphone access is asked when a game with voice chat first starts, not at launch.
+  emulator_->on_launch.AddListener([this](uint32_t, const std::string_view) {
+    uint32_t system_flags = 0;
+    if (auto module = emulator_->kernel_state()->GetExecutableModule()) {
+      module->GetOptHeader<uint32_t>(XEX_HEADER_SYSTEM_FLAGS, &system_flags);
+    }
+    const BOOL uses_voice = (system_flags & XEX_SYSTEM_USES_GAME_VOICE_CHANNEL) != 0;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      xe_ios_microphone_title_started(uses_voice);
+    });
   });
   // Diagnostics: the game a crash or a session belongs to, and the JIT's code
   // range, where crash frames in guest code fall.
@@ -2525,6 +2543,8 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 
 std::unique_ptr<apu::AudioSystem> EmulatorAppIOS::CreateAudioSystem(cpu::Processor* processor) {
   apu::voice::SetVoiceDeviceFactory(apu::voice::CreateAppleVoiceDevice);
+  // Party voice's Opus.
+  apu::voice::SetVoiceCodecFactory(apu::voice::AppleOpusCodecFactory());
   const std::string apu_name = cvars::apu;
   if (apu_name == "phase") {
     XELOGI("Audio backend: PHASE (spatial) selected via --apu/apu cvar");

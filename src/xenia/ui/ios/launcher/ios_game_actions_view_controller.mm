@@ -255,7 +255,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   }
   if (title_id_) {
     add(XeniaIOSGameActionSystemLink,
-        NSLocalizedString(@"System Link", @"game page: row"), @"network");
+        NSLocalizedString(@"Online Room", @"game page: row"), @"network");
   }
   if (supports_disc_selection_) {
     add(XeniaIOSGameActionLaunchDisc,

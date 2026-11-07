@@ -14,6 +14,7 @@
 #import "xenia/ui/ios/app/ios_online_panel.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/launcher/ios_game_art.h"
+#import "xenia/ui/ios/shared/ios_microphone.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -23,6 +24,7 @@
 - (UIStackView*)newRowWithButtons:(NSArray<UIButton*>*)buttons;
 - (void)applyMenuLayoutForCompactLandscape:(BOOL)compact;
 - (void)updateHeader;
+- (void)updateMicrophoneButton;
 - (NSString*)pauseEmulatorTitle;
 - (NSString*)pauseEmulatorHint;
 - (NSString*)exitAccessibilityHint;
@@ -64,6 +66,10 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   UIButton* _liveLogButton;
   UIButton* _friendsButton;
   NSInteger _friendsAttentionCount;
+  UIButton* _microphoneButton;
+  // At accessibility text sizes Pause and Log show only their symbols, so Friends fits.
+  BOOL _footerSymbolsOnly;
+  UILargeContentViewerInteraction* _footerLargeContentInteraction;
   UIButton* _pauseEmulatorButton;
   UIButton* _exitButton;
   UIMenu* _displayMenu;
@@ -225,11 +231,45 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
                                  menuAction:XeniaIOSInGameMenuActionFriends
                                      action:@selector(friendsPressed:)];
 
+  // Voice chat's Microphone choice, the same one as in Settings: it applies at once.
+  _microphoneButton =
+      [self newButtonWithTitle:NSLocalizedString(@"Mic", @"In-game Microphone button")
+                     imageName:@"mic.fill"
+                    menuAction:XeniaIOSInGameMenuActionMicrophone
+                        action:nil];
+  _microphoneButton.showsMenuAsPrimaryAction = YES;
+  // Off, This iPhone, Headset from the top, wherever the menu opens.
+  _microphoneButton.preferredMenuElementOrder = UIContextMenuConfigurationElementOrderFixed;
+  [self updateMicrophoneButton];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(microphoneStatusChanged:)
+                                               name:XeniaMicrophoneStatusDidChangeNotification
+                                             object:nil];
+
   _rowOneStack = [self newRowWithButtons:@[ _editControlsButton, _settingsButton, _exitButton ]];
   _rowTwoStack =
       [self newRowWithButtons:@[ _graphicsButton, _displayButton, _achievementsButton ]];
   _footerStack =
-      [self newRowWithButtons:@[ _friendsButton, _pauseEmulatorButton, _liveLogButton ]];
+      [self newRowWithButtons:@[ _friendsButton, _microphoneButton, _pauseEmulatorButton,
+                                 _liveLogButton ]];
+  // The Microphone button is only its symbol, so the three named buttons keep their room.
+  _footerStack.distribution = UIStackViewDistributionFill;
+  [_microphoneButton setContentHuggingPriority:UILayoutPriorityRequired
+                                       forAxis:UILayoutConstraintAxisHorizontal];
+  // The named buttons share the width evenly while it fits, but below their compression
+  // resistance, so at large text Friends takes Pause's and Log's spare room before
+  // truncating. Friends hides while signed in online; its stack-made zero width wins then.
+  NSLayoutConstraint* friends_width =
+      [_friendsButton.widthAnchor constraintEqualToAnchor:_pauseEmulatorButton.widthAnchor];
+  NSLayoutConstraint* log_width =
+      [_liveLogButton.widthAnchor constraintEqualToAnchor:_pauseEmulatorButton.widthAnchor];
+  friends_width.priority = UILayoutPriorityDefaultHigh - 50;
+  log_width.priority = UILayoutPriorityDefaultHigh - 50;
+  [NSLayoutConstraint activateConstraints:@[
+    friends_width,
+    log_width,
+    [_microphoneButton.widthAnchor constraintGreaterThanOrEqualToConstant:44.0],
+  ]];
 
   _contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[
     _headerStack,
@@ -332,6 +372,8 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   [_graphicsButton release];
   [_liveLogButton release];
   [_friendsButton release];
+  [_microphoneButton release];
+  [_footerLargeContentInteraction release];
   [_onlineAcceptInviteHandler release];
   [_onlineJoinFriendHandler release];
   [_panelCenterXConstraint release];
@@ -352,7 +394,8 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   const BOOL resume = menuAction == XeniaIOSInGameMenuActionResume;
   const BOOL footer = menuAction == XeniaIOSInGameMenuActionPauseEmulator ||
                       menuAction == XeniaIOSInGameMenuActionLiveLog ||
-                      menuAction == XeniaIOSInGameMenuActionFriends;
+                      menuAction == XeniaIOSInGameMenuActionFriends ||
+                      menuAction == XeniaIOSInGameMenuActionMicrophone;
   const BOOL exit = menuAction == XeniaIOSInGameMenuActionExit;
   UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
   config.title = title;
@@ -436,6 +479,13 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
     case XeniaIOSInGameMenuActionFriends:
       button.accessibilityHint = NSLocalizedString(@"Shows your friends, your party and invites.",
                                                    @"VoiceOver hint for the Friends button");
+      break;
+    case XeniaIOSInGameMenuActionMicrophone:
+      button.accessibilityLabel =
+          NSLocalizedString(@"Microphone", @"VoiceOver label for the in-game Microphone button");
+      button.accessibilityHint = NSLocalizedString(
+          @"Chooses the microphone for voice chat, or turns it off.",
+          @"VoiceOver hint for the in-game Microphone button");
       break;
     case XeniaIOSInGameMenuActionNone:
     default:
@@ -583,6 +633,21 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
 
 // Signed in to the account, the Online pill is the way in (it carries the invite count), so the
 // footer keeps just Pause and Log. Otherwise Friends stays, as the way to the sheet that explains.
+- (void)microphoneStatusChanged:(NSNotification*)__unused notification {
+  [self updateMicrophoneButton];
+}
+
+// The symbol of what is live (this device's mic, a headset's, off, no access); VoiceOver reads
+// the whole status, and the menu's heading says which microphone it is.
+- (void)updateMicrophoneButton {
+  UIButtonConfiguration* config = _microphoneButton.configuration;
+  config.title = nil;
+  config.image = [UIImage systemImageNamed:xe_ios_microphone_symbol_name()];
+  _microphoneButton.configuration = config;
+  _microphoneButton.menu = xe_ios_microphone_new_menu();
+  _microphoneButton.accessibilityValue = xe_ios_microphone_status_text();
+}
+
 - (void)updateFriendsButtonVisibility {
   const BOOL online = [XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline;
   if (_friendsButton.hidden == online) {
@@ -641,8 +706,9 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   _emulatorPaused = emulatorPaused;
   UIButtonConfiguration* config = _pauseEmulatorButton.configuration;
   config.image = [UIImage systemImageNamed:emulatorPaused ? @"play.fill" : @"pause.fill"];
-  config.title = [self pauseEmulatorTitle];
+  config.title = _footerSymbolsOnly ? nil : [self pauseEmulatorTitle];
   _pauseEmulatorButton.configuration = config;
+  _pauseEmulatorButton.largeContentTitle = [self pauseEmulatorTitle];
   [self updateHeader];
   _pauseEmulatorButton.accessibilityLabel = [self pauseEmulatorAccessibilityLabel];
   _pauseEmulatorButton.accessibilityHint = [self pauseEmulatorHint];
@@ -697,6 +763,8 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
       return _pauseEmulatorButton;
     case XeniaIOSInGameMenuActionFriends:
       return _friendsButton;
+    case XeniaIOSInGameMenuActionMicrophone:
+      return _microphoneButton;
     case XeniaIOSInGameMenuActionNone:
     default:
       return nil;
@@ -815,6 +883,9 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   [self setButton:_friendsButton
       controllerFocused:_controllerNavigationEnabled &&
                         _focusedAction == XeniaIOSInGameMenuActionFriends];
+  [self setButton:_microphoneButton
+      controllerFocused:_controllerNavigationEnabled &&
+                        _focusedAction == XeniaIOSInGameMenuActionMicrophone];
 }
 
 - (void)setOverlayVisible:(BOOL)visible
@@ -828,6 +899,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
     [self updateThermalNotice];
     [self updateHeader];
     [self updateFriendsButtonVisibility];
+    [self updateMicrophoneButton];
     // After layout, so the room beside the menu is known.
     XeniaIOSInGameMenuOverlay* retained = [self retain];
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -917,6 +989,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   }
   // After the layout: the compact one changes the tiles' insets.
   [self fitTileTitles];
+  [self fitFooterTitles];
   if (_onlinePanelOpen && [self onlinePanelFitsBeside] != _onlinePanelBeside) {
     [self placeOnlinePanel];
   }
@@ -1199,6 +1272,37 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
 // One size for every tile's name: the size it's set at (Footnote, with Dynamic Type) when the
 // longest fits the tile, smaller down to three quarters of it when not. A name still too long
 // for that goes on to a second line.
+// Four footer buttons don't fit the menu's width at accessibility text sizes. Pause and Log
+// then show only their symbols (VoiceOver and the large content viewer still name them), so
+// Friends keeps its name.
+- (void)fitFooterTitles {
+  const BOOL symbols_only =
+      UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+  if (symbols_only == _footerSymbolsOnly) {
+    return;
+  }
+  _footerSymbolsOnly = symbols_only;
+  UIButtonConfiguration* pause = _pauseEmulatorButton.configuration;
+  pause.title = symbols_only ? nil : [self pauseEmulatorTitle];
+  _pauseEmulatorButton.configuration = pause;
+  UIButtonConfiguration* log = _liveLogButton.configuration;
+  log.title = symbols_only ? nil
+                           : NSLocalizedString(@"Log",
+                                               @"In-game menu button, opens the live emulator log");
+  _liveLogButton.configuration = log;
+  _liveLogButton.accessibilityLabel =
+      NSLocalizedString(@"Log", @"In-game menu button, opens the live emulator log");
+  _pauseEmulatorButton.largeContentTitle = [self pauseEmulatorTitle];
+  _liveLogButton.largeContentTitle = _liveLogButton.accessibilityLabel;
+  if (symbols_only && !_footerLargeContentInteraction) {
+    _footerLargeContentInteraction = [[UILargeContentViewerInteraction alloc] init];
+    [_footerStack addInteraction:_footerLargeContentInteraction];
+  }
+  for (UIButton* button in @[ _pauseEmulatorButton, _liveLogButton ]) {
+    button.showsLargeContentViewer = symbols_only;
+  }
+}
+
 - (void)fitTileTitles {
   NSArray<UIButton*>* tiles = @[
     _editControlsButton, _settingsButton, _exitButton, _graphicsButton, _displayButton,

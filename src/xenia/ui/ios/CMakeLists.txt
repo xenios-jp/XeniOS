@@ -175,6 +175,10 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_live_account_real.mm
   shared/ios_live_social_bridge.h
   shared/ios_live_social_bridge.mm
+  shared/ios_microphone.h
+  shared/ios_microphone.mm
+  shared/ios_party_voice.h
+  shared/ios_party_voice.mm
   shared/ios_system_link.h
   shared/ios_system_link.mm
   shared/ios_update_check.h
@@ -250,6 +254,7 @@ target_link_options(xenia-ui-ios PUBLIC
 )
 
 target_link_libraries(xenia-ui-ios PUBLIC
+  xenia-apu-voice
   xenia-base
   xenia-hid-touch-model
   xenia-ui

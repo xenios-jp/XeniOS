@@ -159,6 +159,7 @@ typedef NS_ENUM(NSInteger, XeniaSettingsHubCategoryKind) {
   XeniaSettingsHubCategoryKindSystemSoftware,
   XeniaSettingsHubCategoryKindAutomation,
   XeniaSettingsHubCategoryKindPrivacy,
+  XeniaSettingsHubCategoryKindOnline,
   XeniaSettingsHubCategoryKindAbout,
   XeniaSettingsHubCategoryKindLink,  // Opens `url` outside the app.
 };
@@ -331,6 +332,8 @@ static XeniaSettingsHubCategoryKind XeniaSettingsKindForCatalog(
       return XeniaSettingsHubCategoryKindAdvancedDebug;
     case IOSConfigCatalogKind::kSystem:
       return XeniaSettingsHubCategoryKindAutomation;
+    case IOSConfigCatalogKind::kOnline:
+      return XeniaSettingsHubCategoryKindOnline;
     case IOSConfigCatalogKind::kAllSettings:
       return XeniaSettingsHubCategoryKindAllSettings;
     default:
@@ -358,6 +361,8 @@ static NSString* XeniaSettingsSymbolForCatalog(IOSConfigCatalogKind kind) {
       return @"slider.horizontal.3";
     case IOSConfigCatalogKind::kSystem:
       return @"wand.and.stars";
+    case IOSConfigCatalogKind::kOnline:
+      return @"person.2.fill";
     case IOSConfigCatalogKind::kAllSettings:
       return @"list.bullet";
     default:
@@ -1642,6 +1647,15 @@ titleForFooterInSection:(NSInteger)section {
                                    @"settings hub view controller: title")
                          symbolName:@"gamecontroller.fill"
                           tintColor:nil],
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindOnline
+                              title:NSLocalizedString(@"Online",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(
+                                        @"Rooms and voice chat.",
+                                        @"settings hub view controller: title")
+                         symbolName:@"person.2.fill"
+                          tintColor:nil],
                  ]];
 
   XeniaSettingsHubSection* games = [XeniaSettingsHubSection
@@ -2736,6 +2750,13 @@ titleForFooterInSection:(NSInteger)section {
     case XeniaSettingsHubCategoryKindAutomation: {
       XeniaConfigViewController* config = [[[XeniaConfigViewController alloc]
           initWithCatalogKind:IOSConfigCatalogKind::kSystem
+                        style:UITableViewStyleInsetGrouped] autorelease];
+      config.showsRootDismissButton = NO;
+      return config;
+    }
+    case XeniaSettingsHubCategoryKindOnline: {
+      XeniaConfigViewController* config = [[[XeniaConfigViewController alloc]
+          initWithCatalogKind:IOSConfigCatalogKind::kOnline
                         style:UITableViewStyleInsetGrouped] autorelease];
       config.showsRootDismissButton = NO;
       return config;

@@ -36,6 +36,7 @@
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/shared/ios_art_wash.h"
+#import "xenia/ui/ios/shared/ios_microphone.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
@@ -383,7 +384,12 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   [self replaceSections:full_sections_];
 }
 
+- (void)microphoneStatusChanged:(NSNotification*)__unused notification {
+  [self.tableView reloadData];
+}
+
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [search_controller_ release];
   [focus_key_ release];
   [focus_path_ release];
@@ -615,6 +621,13 @@ static bool IsSliderItem(const IOSConfigItem* item) {
     self.navigationItem.subtitle = game_title_;
   }
   XEUseArtWash(self);
+  if (catalog_kind_ == IOSConfigCatalogKind::kAudio) {
+    // The Microphone row shows what is in use now.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(microphoneStatusChanged:)
+                                                 name:XeniaMicrophoneStatusDidChangeNotification
+                                               object:nil];
+  }
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 132.0;
@@ -1216,7 +1229,12 @@ static bool IsSliderItem(const IOSConfigItem* item) {
                                     item->action == IOSConfigAction::kResetAllSettings;
     content.textProperties.color =
         destructive_action ? [UIColor systemRedColor] : [XeniaTheme textPrimary];
-    content.secondaryText = ToNSString(item->subtitle);
+    content.secondaryText = item->action == IOSConfigAction::kOpenMicrophone
+                                ? [NSString stringWithFormat:@"%@ · %@",
+                                                             xe_ios_microphone_choice_title(
+                                                                 xe_ios_microphone_choice()),
+                                                             xe_ios_microphone_status_text()]
+                                : ToNSString(item->subtitle);
     cell.contentConfiguration = content;
     cell.accessoryView = nil;
     cell.accessoryType = destructive_action ? UITableViewCellAccessoryNone
@@ -1786,6 +1804,12 @@ static bool IsSliderItem(const IOSConfigItem* item) {
         XeniaLogViewController* log_vc = [[XeniaLogViewController alloc] init];
         [self.navigationController pushViewController:log_vc animated:YES];
         [log_vc release];
+      } break;
+      case IOSConfigAction::kOpenMicrophone: {
+        XeniaIOSMicrophoneViewController* microphone_vc =
+            [[XeniaIOSMicrophoneViewController alloc] init];
+        [self.navigationController pushViewController:microphone_vc animated:YES];
+        [microphone_vc release];
       } break;
       case IOSConfigAction::kManageExternalFolders: {
         XeniaIOSExternalFoldersViewController* folders_vc =

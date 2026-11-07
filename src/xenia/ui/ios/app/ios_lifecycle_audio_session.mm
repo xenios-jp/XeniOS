@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -32,8 +33,57 @@ NSString* const kAudioSessionRestoredNotification = @"XeniaAudioSessionRestored"
 // title opens or closes it, with userInfo @{@"active": @(BOOL)}.
 NSString* const kVoiceChatChangedNotification = @"XeniaVoiceChatChanged";
 
+// Posted on the main queue whenever what the Microphone control shows may have
+// changed: voice started or stopped, the route changed, the session came back.
+NSString* const kMicrophoneStatusChangedNotification = @"XeniaMicrophoneStatusChanged";
+
 // True while a headset needs the microphone.
 std::atomic<bool> g_voice_chat{false};
+// The Microphone choice is Headset: a connected headset's own microphone.
+std::atomic<bool> g_headset_microphone{false};
+
+void PostMicrophoneStatusChanged() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMicrophoneStatusChangedNotification
+                                                        object:nil];
+  });
+}
+
+bool IsHeadsetMicrophonePort(NSString* port_type) {
+  return [port_type isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+         [port_type isEqualToString:AVAudioSessionPortHeadsetMic] ||
+         [port_type isEqualToString:AVAudioSessionPortUSBAudio] ||
+         [port_type isEqualToString:AVAudioSessionPortCarAudio];
+}
+
+// Runs on SessionQueue while voice is on. This iPhone/iPad: the built-in
+// microphone, even with wired headphones that have one. Headset: the
+// headset's microphone when one is connected, else the built-in one.
+void ApplyPreferredInput(AVAudioSession* session) {
+  const bool headset = g_headset_microphone.load(std::memory_order_acquire);
+  AVAudioSessionPortDescription* preferred = nil;
+  for (AVAudioSessionPortDescription* port in session.availableInputs) {
+    const bool wanted = headset ? IsHeadsetMicrophonePort(port.portType)
+                                : [port.portType isEqualToString:AVAudioSessionPortBuiltInMic];
+    if (wanted) {
+      preferred = port;
+      break;
+    }
+  }
+  AVAudioSessionPortDescription* current = session.preferredInput;
+  if (preferred == current || [preferred.UID isEqualToString:current.UID]) {
+    return;
+  }
+  NSError* error = nil;
+  if (![session setPreferredInput:preferred error:&error]) {
+    XELOGW("iOS audio session: setPreferredInput failed: {}",
+           error.localizedDescription ? std::string([error.localizedDescription UTF8String])
+                                      : std::string("unknown error"));
+    return;
+  }
+  XELOGI("iOS audio session: microphone {}",
+         preferred ? std::string([preferred.portName UTF8String]) : std::string("default"));
+}
 
 // The one place the category is chosen. Playback ignores the silent switch, as
 // decided for XeniOS, and stops other apps' audio; AVAudioSessionCategorySoloAmbient
@@ -44,15 +94,20 @@ NSString* AudioSessionCategory() {
                                                       : AVAudioSessionCategoryPlayback;
 }
 
-// Voice chat: the loudspeaker rather than the earpiece, and Bluetooth headsets with
-// their microphones.
+// Voice chat: the loudspeaker rather than the earpiece when nothing is connected,
+// and game audio to connected AirPods or headphones. Bluetooth stays A2DP (full
+// quality, the device's own microphone) unless the Microphone choice is Headset,
+// which takes the hands-free profile and so the headset's microphone, at call quality.
 AVAudioSessionCategoryOptions AudioSessionOptions() {
   if (!g_voice_chat.load(std::memory_order_acquire)) {
     return 0;
   }
-  return AVAudioSessionCategoryOptionDefaultToSpeaker |
-         AVAudioSessionCategoryOptionAllowBluetoothHFP |
-         AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+  AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker |
+                                          AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+  if (g_headset_microphone.load(std::memory_order_acquire)) {
+    options |= AVAudioSessionCategoryOptionAllowBluetoothHFP;
+  }
+  return options;
 }
 
 constexpr int kRestoreMaxAttempts = 10;
@@ -98,6 +153,8 @@ bool ConfigureAndActivate(bool log_state) {
     const bool active = [session setActive:YES error:&error];
     if (!active) {
       XELOGW("iOS audio session: activation failed: {}", ErrorText(error));
+    } else if (g_voice_chat.load(std::memory_order_acquire)) {
+      ApplyPreferredInput(session);
     }
     if (log_state) {
       XELOGI(
@@ -119,6 +176,7 @@ void RestoreAttempt(std::string reason, int attempt, uint64_t generation) {
     XELOGI("iOS audio session: restored ({}, attempt {})", reason, attempt);
     [[NSNotificationCenter defaultCenter] postNotificationName:kAudioSessionRestoredNotification
                                                         object:nil];
+    PostMicrophoneStatusChanged();
     return;
   }
   if (attempt >= kRestoreMaxAttempts) {
@@ -172,6 +230,17 @@ void HandleRouteChange(NSNotification* notification) {
       IOSAudioSessionRestore("category changed");
     }
   }
+  // A headset came or went: the Microphone choice picks the input again.
+  if ((reason == AVAudioSessionRouteChangeReasonNewDeviceAvailable ||
+       reason == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) &&
+      g_voice_chat.load(std::memory_order_acquire)) {
+    dispatch_async(SessionQueue(), ^{
+      @autoreleasepool {
+        ApplyPreferredInput([AVAudioSession sharedInstance]);
+      }
+    });
+  }
+  PostMicrophoneStatusChanged();
 }
 
 void HandleMediaServicesReset(NSNotification*) {
@@ -214,10 +283,20 @@ void IOSAudioSessionStart() {
                          queue:queue
                     usingBlock:^(NSNotification* n) {
                       const bool active = [n.userInfo[@"active"] boolValue];
-                      // Always reconfigure: the headset starts its engine once the
-                      // session is restored.
-                      g_voice_chat.store(active, std::memory_order_release);
-                      IOSAudioSessionRestore(active ? "voice chat started" : "voice chat ended");
+                      // Counted: party chat's device starts while the game's is
+                      // still stopping, and the game's "ended" mustn't end it.
+                      // Always reconfigure on a start: the device starts its engine
+                      // once the session is restored. A device without microphone
+                      // access posts false while none started; nothing to change.
+                      static int voice_devices = 0;
+                      const int was = voice_devices;
+                      voice_devices = std::max(0, voice_devices + (active ? 1 : -1));
+                      g_voice_chat.store(voice_devices > 0, std::memory_order_release);
+                      if (active || (was > 0 && voice_devices == 0)) {
+                        IOSAudioSessionRestore(active ? "voice chat started"
+                                                      : "voice chat ended");
+                      }
+                      PostMicrophoneStatusChanged();
                     }];
     [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification
                         object:session
@@ -242,6 +321,17 @@ void IOSAudioSessionRestoreIfNeeded(const char* reason) {
     IOSAudioSessionRestore(reason);
   }
 }
+
+void IOSAudioSessionSetHeadsetMicrophone(bool headset) {
+  const bool was_headset = g_headset_microphone.exchange(headset, std::memory_order_acq_rel);
+  if (was_headset != headset && g_voice_chat.load(std::memory_order_acquire)) {
+    // The options and input change now; the headset rebuilds its unit for them.
+    IOSAudioSessionRestore("microphone changed");
+  }
+  PostMicrophoneStatusChanged();
+}
+
+bool IOSAudioSessionVoiceActive() { return g_voice_chat.load(std::memory_order_acquire); }
 
 void IOSAudioSessionNoteBackgrounded() {
   g_needs_restore.store(true, std::memory_order_release);
