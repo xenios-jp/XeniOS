@@ -114,87 +114,85 @@ NSString* xe_compat_perf_label(NSString* perf) {
 }
 
 UIButton* xe_new_compat_capsule(void) {
-  UIButton* capsule = [UIButton buttonWithConfiguration:[UIButtonConfiguration
-                                                           glassButtonConfiguration]
-                                          primaryAction:nil];
-  capsule.translatesAutoresizingMaskIntoConstraints = NO;
-  capsule.showsMenuAsPrimaryAction = YES;
-  return capsule;
+  UIButton* line = [UIButton buttonWithConfiguration:[UIButtonConfiguration plainButtonConfiguration]
+                                       primaryAction:nil];
+  line.translatesAutoresizingMaskIntoConstraints = NO;
+  return line;
 }
 
-void xe_update_compat_capsule(UIButton* capsule, NSString* status, NSString* perf,
+void xe_update_compat_capsule(UIButton* line, NSString* status, NSString* perf,
                               NSString* notes, void (^reports)(void)) {
   const BOOL tested = status.length && ![status isEqualToString:kCompatStatusUntested.code];
   NSString* verdict =
       tested ? xe_compat_status_label(status)
-             : NSLocalizedString(@"Not Tested", @"game page: compatibility capsule");
+             : NSLocalizedString(@"Not Tested", @"game page: compatibility status line");
   NSString* runs = nil;
   if ([perf isEqualToString:@"great"]) {
-    runs = NSLocalizedString(@"Runs Great", @"game page: compatibility capsule");
+    runs = NSLocalizedString(@"Runs Great", @"game page: compatibility status line");
   } else if ([perf isEqualToString:@"ok"]) {
-    runs = NSLocalizedString(@"Runs Okay", @"game page: compatibility capsule");
+    runs = NSLocalizedString(@"Runs Okay", @"game page: compatibility status line");
   } else if ([perf isEqualToString:@"poor"]) {
-    runs = NSLocalizedString(@"Runs Poorly", @"game page: compatibility capsule");
+    runs = NSLocalizedString(@"Runs Poorly", @"game page: compatibility status line");
   }
 
-  UIButtonConfiguration* config = [UIButtonConfiguration glassButtonConfiguration];
-  config.title = verdict;
-  config.subtitle = runs;
-  // Drawn in its own colour: the glass style tints images with the foreground colour.
+  // "● Playable · Runs Great ›": a dot in the status's colour, then words, then a chevron.
+  UIFont* font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  UIColor* ink = [UIColor colorWithWhite:1.0 alpha:0.85];
+  NSMutableAttributedString* text = [[[NSMutableAttributedString alloc]
+      initWithString:runs ? [NSString stringWithFormat:@"%@ · %@", verdict, runs] : verdict
+          attributes:@{NSFontAttributeName : font, NSForegroundColorAttributeName : ink}]
+      autorelease];
+  NSTextAttachment* chevron = [NSTextAttachment
+      textAttachmentWithImage:[[UIImage
+                                  systemImageNamed:@"chevron.right"
+                                 withConfiguration:[UIImageSymbolConfiguration
+                                                       configurationWithFont:font
+                                                                       scale:
+                                                                           UIImageSymbolScaleSmall]]
+                                  imageWithTintColor:[UIColor colorWithWhite:1.0 alpha:0.5]
+                                       renderingMode:UIImageRenderingModeAlwaysOriginal]];
+  [text appendAttributedString:[[[NSAttributedString alloc] initWithString:@" "] autorelease]];
+  [text appendAttributedString:[NSAttributedString attributedStringWithAttachment:chevron]];
+
+  UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
+  config.attributedTitle = text;
   config.image = [[UIImage systemImageNamed:@"circle.fill"
                           withConfiguration:[UIImageSymbolConfiguration
                                                 configurationWithPointSize:8.0]]
       imageWithTintColor:tested ? xe_compat_status_color(status) : [XeniaTheme textMuted]
            renderingMode:UIImageRenderingModeAlwaysOriginal];
   config.imagePadding = 7.0;
-  config.titleAlignment = UIButtonConfigurationTitleAlignmentLeading;
-  config.titlePadding = 1.0;
-  config.baseForegroundColor = UIColor.whiteColor;
-  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-  config.contentInsets = NSDirectionalEdgeInsetsMake(0.0, 16.0, 0.0, 18.0);
-  config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
-      NSDictionary<NSAttributedStringKey, id>* attributes) {
-    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
-    updated[NSFontAttributeName] =
-        xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
-    return updated;
-  };
-  config.subtitleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id>*(
-      NSDictionary<NSAttributedStringKey, id>* attributes) {
-    NSMutableDictionary* updated = [[attributes mutableCopy] autorelease];
-    updated[NSFontAttributeName] =
-        xe_scaled_system_font(UIFontTextStyleCaption1, 12.0, UIFontWeightRegular);
-    updated[NSForegroundColorAttributeName] = [UIColor colorWithWhite:1.0 alpha:0.7];
-    return updated;
-  };
-  capsule.configuration = config;
-  // Its words never wrap a letter at a time; the row makes room or puts it on its own line.
-  [capsule setContentCompressionResistancePriority:UILayoutPriorityRequired
-                                           forAxis:UILayoutConstraintAxisHorizontal];
-  capsule.accessibilityLabel =
-      NSLocalizedString(@"Compatibility", @"game page: compatibility capsule");
-  capsule.accessibilityValue = runs ? [NSString stringWithFormat:@"%@, %@", verdict, runs] : verdict;
-
-  // The notes are someone's report, not a verdict, so they read as one.
-  NSString* heading =
-      notes.length ? [NSString stringWithFormat:NSLocalizedString(
-                                                    @"Reported: \u201C%@\u201D",
-                                                    @"game page: compatibility capsule menu; %@ is "
-                                                    @"a player's notes"),
-                                                notes]
-                   : nil;
+  config.contentInsets = NSDirectionalEdgeInsetsMake(4.0, 0.0, 4.0, 0.0);
+  config.titleLineBreakMode = NSLineBreakByTruncatingTail;
+  line.configuration = config;
+  // Readable over bright art, like the title above it.
+  line.layer.shadowColor = UIColor.blackColor.CGColor;
+  line.layer.shadowOpacity = 0.35f;
+  line.layer.shadowRadius = 6.0f;
+  line.layer.shadowOffset = CGSizeMake(0.0, 1.0);
+  line.accessibilityLabel =
+      NSLocalizedString(@"Compatibility", @"game page: compatibility status line");
+  line.accessibilityValue = runs ? [NSString stringWithFormat:@"%@, %@", verdict, runs] : verdict;
+  line.accessibilityHint = notes.length
+                               ? [NSString stringWithFormat:NSLocalizedString(
+                                                                @"Reported: “%@”",
+                                                                @"game page: compatibility line, "
+                                                                @"VoiceOver; %@ is a player's "
+                                                                @"notes"),
+                                                            notes]
+                               : nil;
+  // A tap opens Compatibility: the reports and the discussion.
   void (^open_reports)(void) = [[reports copy] autorelease];
-  UIAction* all = [UIAction
-      actionWithTitle:NSLocalizedString(@"Reports & Discussion",
-                                        @"game page: compatibility capsule menu")
-                image:[UIImage systemImageNamed:@"bubble.left.and.text.bubble.right"]
-           identifier:nil
-              handler:^(__unused UIAction* action) {
-                if (open_reports) {
-                  open_reports();
-                }
-              }];
-  capsule.menu = [UIMenu menuWithTitle:heading ?: @"" children:@[ all ]];
+  [line removeActionForIdentifier:@"xe.compat.open" forControlEvents:UIControlEventTouchUpInside];
+  [line addAction:[UIAction actionWithTitle:@""
+                                      image:nil
+                                 identifier:@"xe.compat.open"
+                                    handler:^(__unused UIAction* action) {
+                                      if (open_reports) {
+                                        open_reports();
+                                      }
+                                    }]
+      forControlEvents:UIControlEventTouchUpInside];
 }
 
 NSString* xe_format_iso_date(NSString* iso) {

@@ -1318,9 +1318,11 @@ static const NSUInteger kPartyFoldsAbove = 3;
                                            @"Shared text; %@ is the user's friend code"),
                          xe_ios_format_friend_code(code)];
     UIActivityViewController* share =
-        [[[UIActivityViewController alloc] initWithActivityItems:@[ text ]
-                                           applicationActivities:nil] autorelease];
-    share.popoverPresentationController.sourceView = [tableView cellForRowAtIndexPath:indexPath];
+        [[[UIActivityViewController alloc]
+            initWithActivityItems:@[ text, [NSURL URLWithString:xe_ios_friend_link(code)] ]
+            applicationActivities:nil] autorelease];
+    share.popoverPresentationController.sourceView = tableView;
+    share.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
     [self presentViewController:share animated:YES completion:nil];
   }
 }

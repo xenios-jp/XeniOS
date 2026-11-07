@@ -16,15 +16,13 @@
 
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
-// Per-game compatibility hero sheet. Renders the cover/background hero card
-// with status / perf pills, build pill and the most recent app-submitted
-// reports + GitHub discussion summary, plus animated radial-glow accents
-// keyed off the cover artwork's palette.
+// A game's Compatibility page: the verdict as the headline, the latest reports one row each
+// (each opens in full), the last row opens them all on GitHub, and Submit a Report as the
+// one white button. Pushed inside the game page on the phone.
 @interface XeniaGameCompatibilityViewController : XESheetTableViewController
 - (instancetype)initWithTitleID:(uint32_t)title_id
                           title:(NSString*)title
                      compatData:(NSDictionary*)compat_data;
-- (void)setHeroArtwork:(UIImage*)image;
 @end
 
 #endif  // XENIA_UI_IOS_GAME_COMPATIBILITY_VIEW_CONTROLLER_H_

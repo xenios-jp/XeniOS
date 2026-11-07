@@ -102,6 +102,7 @@
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
+#import "xenia/ui/ios/shared/ios_page_push.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 #import "xenia/ui/ios/touch/touch_controls_overlay_ios.h"
 #import "xenia/ui/ios/touch/touch_layout_editor_view_controller_ios.h"
@@ -800,9 +801,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 - (void)presentLauncherSheetWithRoot:(UIViewController*)root {
   XeniaLandscapeNavigationController* sheet =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:root] autorelease];
-  XEConfigureTaskSheet(sheet, self.view, CGSizeMake(620.0, 760.0), NO);
-  // A whole page (Dashboard setup, System Software), not a half-height sheet that cuts it off.
-  sheet.sheetPresentationController.detents = @[ [UISheetPresentationControllerDetent largeDetent] ];
+  // A page on the wash (rule 2): full screen on iPhone, the page size on iPad. Not a sheet.
+  XEConfigureDestinationPresentation(sheet, self.view, CGSizeMake(620.0, 760.0), NO);
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:sheet animated:YES completion:nil];
 }
@@ -1629,23 +1629,8 @@ static bool XeJITUsable() {
   self.launcherOverlayView.touchLayoutHandler = ^(NSUInteger gameIndex) {
     [unsafe_self presentGameTouchLayoutSheetForIndex:gameIndex];
   };
-  self.launcherOverlayView.manageContentHandler = ^(NSUInteger gameIndex) {
-    [unsafe_self presentManageContentSheetForIndex:gameIndex];
-  };
-  self.launcherOverlayView.discSelectionHandler = ^(NSUInteger gameIndex) {
-    [unsafe_self presentDiscSelectionSheetForIndex:gameIndex];
-  };
-  self.launcherOverlayView.patchesHandler = ^(NSUInteger gameIndex) {
-    [unsafe_self presentPatchesSheetForIndex:gameIndex];
-  };
-  self.launcherOverlayView.zarConversionHandler = ^(NSUInteger gameIndex) {
-    [unsafe_self.zarConversionCoordinator
-        presentConversionOptionsForGames:unsafe_self->discovered_games_
-                                   index:gameIndex];
-  };
-  self.launcherOverlayView.copyLaunchURLHandler = ^(NSUInteger gameIndex) {
-    [unsafe_self copyLaunchURLForGameAtIndex:gameIndex];
-  };
+  // Patches, Updates & Add-ons, discs, Convert to ZAR and the launch URL live on the game
+  // page.
 
   // Allocated but off-screen — existing code can set .text without crashing.
   UILabel* signed_in_profile_label = [[UILabel alloc] init];
@@ -2242,7 +2227,7 @@ static bool XeJITUsable() {
     [hub release];
     // Dark glass whatever the system appearance, as the workspace on iPad.
     nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    nav.view.backgroundColor = [XeniaTheme glassSheet];
+    nav.view.backgroundColor = [XeniaTheme bgPrimary];
     destination = nav;
   }
 
@@ -3343,6 +3328,15 @@ static bool XeJITUsable() {
     return YES;
   }
 
+  // Add a Device's QR code (xenios://link?c=…), opened by the Camera app: sign this device in.
+  if (xe_ios_handle_link_url(url, self)) {
+    return YES;
+  }
+  // Add Friend's QR code or a shared friend link (xenios://friend?c=…).
+  if (xe_ios_handle_friend_url(url, self)) {
+    return YES;
+  }
+
   // Touch-layout file URLs and xenios://touchlayout?... drops share the
   // launch URL surface, so handle them before the game-launch branches.
   if ([self handleExternalTouchLayoutFileURL:url]) {
@@ -4427,6 +4421,24 @@ static bool XeJITUsable() {
   [picker release];
 }
 
+// A screen about one game. Over the phone's in-place game page it is pushed inside the page,
+// on the game's own art; anywhere else (the iPad's game sheet, the in-game menu) it is a page of
+// its own.
+- (void)presentGameScreen:(UINavigationController*)navigation_controller
+            preferredSize:(CGSize)preferred_size {
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  if (presenter == self && !self.gameRunning && self.launcherOverlayView.showsGameDetail) {
+    __unsafe_unretained XeniaViewController* unsafe_self = self;
+    XEPreparePagePush(navigation_controller,
+                      [self.launcherOverlayView gameDetailForegroundViews], ^{
+                        [unsafe_self.launcherOverlayView hideGameDetailAnimated:YES];
+                      });
+  } else {
+    XEConfigureDestinationPresentation(navigation_controller, self.view, preferred_size, NO);
+  }
+  [presenter presentViewController:navigation_controller animated:YES completion:nil];
+}
+
 - (void)presentGameSettingsSheetForIndex:(size_t)game_index {
   if (game_index >= discovered_games_.size()) {
     return;
@@ -4453,9 +4465,7 @@ static bool XeJITUsable() {
   config_controller.gameRunning = self.gameRunning;
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:config_controller];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(640.0, 760.0),
-                                     NO);
-  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
+  [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(640.0, 760.0)];
   [navigation_controller release];
   [config_controller release];
 }
@@ -4578,38 +4588,15 @@ static bool XeJITUsable() {
   NSDictionary* compat_data = [compat_data_ objectForKey:XEFormatTitleIDHexUpper(game.title_id)];
   NSString* game_title =
       game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
-  // The visible tile already holds the decoded cover, so take that first. Reading and decoding
-  // the cached art file on the main thread is only the fallback for a tile that is off screen.
-  UIImage* hero_artwork = nil;
-  if (self.launcherOverlayView.gamesCollectionView) {
-    NSIndexPath* index_path = [NSIndexPath indexPathForItem:(NSInteger)game_index inSection:0];
-    XeniaGameTileCell* tile = (XeniaGameTileCell*)[self.launcherOverlayView.gamesCollectionView
-        cellForItemAtIndexPath:index_path];
-    if ([tile isKindOfClass:[XeniaGameTileCell class]]) {
-      hero_artwork = tile.iconView.image;
-    }
-  }
-  if (!hero_artwork) {
-    hero_artwork = xe_cached_game_art(game.title_id);
-  }
-  if (!hero_artwork && !game.icon_data.empty()) {
-    NSData* data = [NSData dataWithBytes:game.icon_data.data() length:game.icon_data.size()];
-    hero_artwork = [UIImage imageWithData:data];
-  }
   XeniaGameCompatibilityViewController* compatibility_controller =
       [[XeniaGameCompatibilityViewController alloc] initWithTitleID:game.title_id
                                                               title:game_title
                                                          compatData:compat_data];
-  if (hero_artwork) {
-    [compatibility_controller setHeroArtwork:hero_artwork];
-  }
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc]
           initWithRootViewController:compatibility_controller];
   navigation_controller.view.backgroundColor = [XeniaTheme bgPrimary];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(620.0, 720.0),
-                                     NO);
-  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
+  [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(620.0, 720.0)];
   [navigation_controller release];
   [compatibility_controller release];
 }
@@ -4641,9 +4628,7 @@ static bool XeJITUsable() {
                                           : ToNSString(game.title))host:self];
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:content_controller];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(600.0, 680.0),
-                                     NO);
-  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
+  [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(600.0, 680.0)];
   [navigation_controller release];
   [content_controller release];
 }
@@ -4683,9 +4668,7 @@ static bool XeJITUsable() {
       }];
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:disc_controller];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(520.0, 560.0),
-                                     NO);
-  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
+  [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(520.0, 560.0)];
   [navigation_controller release];
   [disc_controller release];
 }
@@ -4719,9 +4702,7 @@ static bool XeJITUsable() {
                                                    appContext:self.appContext];
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:patches_controller];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(600.0, 680.0),
-                                     NO);
-  [[self topPresentedControllerForModalPresentation] presentViewController:navigation_controller animated:YES completion:nil];
+  [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(600.0, 680.0)];
   [navigation_controller release];
   [patches_controller release];
 }

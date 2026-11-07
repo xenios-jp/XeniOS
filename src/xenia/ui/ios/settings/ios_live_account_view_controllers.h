@@ -15,16 +15,36 @@
 // The Live account screens (Profile > Online Account), on XeniaLiveAccountService in
 // shared/ios_live_account.h.
 
-// The account page, to push inside the Profile sheet: Go Online for an offline profile;
-// gamertag, devices, linking, recovery, and export and import once online.
-// |profile_gamertag| is the active profile's (offline) name.
-UIViewController* xe_ios_new_account_view_controller(NSString* profile_gamertag);
+// A profile's page, pushed in the Profiles card from the profile's ⓘ: Get a Gamertag for an
+// offline profile; devices, Shared Saves, Copy Profile, recovery and the gamertag once online.
+// |active| is the signed-in profile; any other gets "Switch to …", which calls |switch_to|
+// (YES when it signed in).
+UIViewController* xe_ios_new_profile_page(NSString* gamertag, BOOL active,
+                                          BOOL (^_Nullable switch_to)(void));
 
-// Move Profile: exports the online profile to a file, for AirDrop or Files.
-void xe_ios_present_move_profile(UIViewController* presenter);
+// I Have a Gamertag: sign this device in with a code from Add a Device (scanned or typed) or a
+// recovery code. A non-nil |code| is tried at once.
+void xe_ios_present_sign_in(UIViewController* presenter, NSString* _Nullable code);
 
-// The gamertag sheet for going online (claims the name, renames the profile in place),
-// then the recovery code once for a new account. |done| runs when the profile is online.
+// xenios://link?c=… (Add a Device's QR code, opened by the system Camera): the sign-in sheet
+// with that code. Returns NO for any other URL.
+BOOL xe_ios_handle_link_url(NSURL* url, UIViewController* presenter);
+
+// Copy Profile: saves, achievements and settings to AirDrop or Files, or saves to another
+// profile here.
+void xe_ios_present_copy_profile(UIViewController* presenter);
+
+// The QR code for |text| as a |side|-point image: round dots, black on clear (draw it on white).
+UIImage* xe_ios_qr_image(NSString* text, CGFloat side);
+
+// A camera page that reads a QR code. |on_text| takes what it read and says whether it was the
+// right kind; the page closes on YES and looks again on NO. |test_text| stands in for a code on a
+// device with no camera (the Simulator).
+void xe_ios_present_code_scanner(UIViewController* presenter, NSString* title, NSString* hint,
+                                 NSString* _Nullable test_text, BOOL (^on_text)(NSString* text));
+
+// The gamertag sheet for going online (claims the name, renames the profile in place). |done|
+// runs when the profile is online.
 void xe_ios_present_go_online(UIViewController* presenter, NSString* profile_gamertag,
                               void (^done)(void));
 

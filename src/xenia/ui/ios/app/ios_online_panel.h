@@ -68,6 +68,10 @@
 @end
 
 // A gamer card over the game, for a title's request to show one. |done| runs once it's closed.
+// xenios://friend?c=CODE, from Add Friend's QR code or a shared link: ask, then send the friend
+// request. Returns NO for any other URL.
+BOOL xe_ios_handle_friend_url(NSURL* url, UIViewController* presenter);
+
 void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(XeniaLiveFriend*),
                                void (^done)(void));
 

@@ -42,12 +42,15 @@ enum InstallRow : NSInteger {
   BOOL busy_;
   xe::ui::IOSSystemSoftwareInfo info_;
   UIAlertController* progress_alert_;
+  XEStatusHeaderView* header_;
 }
 
 - (instancetype)initWithGameRunning:(BOOL)game_running {
   self = [super initWithStyle:UITableViewStyleInsetGrouped];
   if (self) {
     game_running_ = game_running;
+    // On the wash like every page (rule 1), its rows in glass groups.
+    self.glassStyle = YES;
     // Short enough for a large title; the Settings row says what it is for.
     self.title = NSLocalizedString(@"System Software", @"system software view controller: title");
   }
@@ -56,6 +59,7 @@ enum InstallRow : NSInteger {
 
 - (void)dealloc {
   [progress_alert_ release];
+  [header_ release];
   [super dealloc];
 }
 
@@ -64,7 +68,58 @@ enum InstallRow : NSInteger {
   if (self.showsDoneButton) {
     XESetSheetClose(self, self, @selector(doneTapped:));
   }
+  // The status is the headline; the title stays small and centred so the two don't compete.
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  header_ = [[XEStatusHeaderView alloc] init];
+  [self refreshHeader];
   [self reloadInfo];
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  [header_ fitAsHeaderOfTable:self.tableView];
+}
+
+// "● Installed" over its version and size, or "● Not Installed" over what it is for: status is
+// a dot and words (rule 5), never a row.
+- (void)refreshHeader {
+  if (!header_) {
+    return;
+  }
+  if (!loaded_) {
+    header_.titleLabel.text =
+        NSLocalizedString(@"Checking…", @"system software view controller: status");
+    header_.dot.backgroundColor = [XeniaTheme textMuted];
+    header_.detailLabel.text = nil;
+  } else if (info_.installed) {
+    header_.titleLabel.text =
+        NSLocalizedString(@"Installed", @"system software view controller: status");
+    header_.dot.backgroundColor = [XeniaTheme accent];
+    NSMutableArray<NSString*>* parts = [NSMutableArray array];
+    if (!info_.version.empty()) {
+      [parts addObject:[NSString stringWithFormat:NSLocalizedString(
+                                                      @"Version %@",
+                                                      @"system software view controller: "
+                                                      @"header; %@ is the version"),
+                                                  [NSString stringWithUTF8String:
+                                                                info_.version.c_str()]]];
+    }
+    if (info_.size) {
+      [parts addObject:[NSByteCountFormatter
+                           stringFromByteCount:static_cast<long long>(info_.size)
+                                    countStyle:NSByteCountFormatterCountStyleFile]];
+    }
+    header_.detailLabel.text = [parts componentsJoinedByString:@" · "];
+  } else {
+    header_.titleLabel.text =
+        NSLocalizedString(@"Not Installed", @"system software view controller: status");
+    header_.dot.backgroundColor = [XeniaTheme statusWarning];
+    header_.detailLabel.text = NSLocalizedString(
+        @"The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system "
+        @"folder in Files.",
+        @"system software view controller: footer");
+  }
+  [self.view setNeedsLayout];
 }
 
 - (void)doneTapped:(id)__unused sender {
@@ -78,6 +133,7 @@ enum InstallRow : NSInteger {
     dispatch_async(dispatch_get_main_queue(), ^{
       info_ = *info;
       loaded_ = YES;
+      [self refreshHeader];
       [self.tableView reloadData];
     });
   });
@@ -98,7 +154,7 @@ enum InstallRow : NSInteger {
 - (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
   switch (section) {
     case kSectionStatus:
-      return info_.installed ? 2 : 1;
+      return 0;  // The header says it.
     case kSectionInstall:
       return 2;
     default:
@@ -116,10 +172,7 @@ enum InstallRow : NSInteger {
             @"XeniOS's system folder in Files. Move it back or delete it to install again.",
             @"system software view controller: footer");
       }
-      return NSLocalizedString(
-          @"The Xbox 360 Dashboard comes with the system software. XeniOS keeps it in its system "
-          @"folder in Files.",
-          @"system software view controller: footer");
+      return nil;
     case kSectionInstall:
       if (game_running_) {
         return NSLocalizedString(@"Quit the game to install the system software.",

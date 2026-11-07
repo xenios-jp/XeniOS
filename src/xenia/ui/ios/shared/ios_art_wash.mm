@@ -10,6 +10,7 @@
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 
 #import "xenia/ui/ios/shared/ios_glass_card.h"
+#import "xenia/ui/ios/shared/ios_page_push.h"
 
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
@@ -137,7 +138,7 @@ void XEInstallArtWashIfNeeded(UIViewController* page) {
     return;
   }
   // A glass card is its own backdrop.
-  if (XEIsInGlassCard(page)) {
+  if (XEIsInGlassCard(page) || XEIsPagePush(page)) {
     return;
   }
   // One wash for the whole container: pushes and the iPad's two columns share it.

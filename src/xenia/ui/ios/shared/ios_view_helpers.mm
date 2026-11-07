@@ -11,6 +11,8 @@
 
 #import <objc/runtime.h>
 
+#include <cmath>
+
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
@@ -417,8 +419,10 @@ void XESetFormCommitHidden(UIViewController* view_controller, BOOL hidden) {
   UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
   button.hidden = hidden;
   // Rows scroll clear of the button only while it is there.
+  // In a glass card the button keeps a full margin off the card's rounded bottom edge.
+  const CGFloat card_extra = XEIsInGlassCard(view_controller) ? kXEFormCommitMargin * 0.5 : 0.0;
   const CGFloat inset =
-      button && !hidden ? kXEFormCommitHeight + kXEFormCommitMargin : 0.0;
+      button && !hidden ? kXEFormCommitHeight + kXEFormCommitMargin + card_extra : 0.0;
   UIEdgeInsets safe = view_controller.additionalSafeAreaInsets;
   if (safe.bottom != inset) {
     safe.bottom = inset;
@@ -444,6 +448,20 @@ void XEAttachFormCommit(UIViewController* view_controller) {
   if (button.superview != host) {
     [button removeFromSuperview];
     [host addSubview:button];
+    // Pushed or popped to: fade in with the slide. Presented: it rides in with the sheet.
+    id<UIViewControllerTransitionCoordinator> coordinator = view_controller.transitionCoordinator;
+    const BOOL presenting = view_controller.isBeingPresented ||
+                            view_controller.navigationController.isBeingPresented;
+    if (coordinator.isAnimated && !presenting) {
+      button.alpha = 0.0;
+      [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>
+                                                    __unused context) {
+        button.alpha = 1.0;
+      }
+                                   completion:nil];
+    } else {
+      button.alpha = 1.0;
+    }
     UILayoutGuide* safe = host.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
       [button.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor
@@ -451,8 +469,10 @@ void XEAttachFormCommit(UIViewController* view_controller) {
       [button.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor
                                             constant:-kXEFormCommitMargin],
       [button.heightAnchor constraintEqualToConstant:kXEFormCommitHeight],
-      [button.bottomAnchor constraintEqualToAnchor:host.keyboardLayoutGuide.topAnchor
-                                          constant:-kXEFormCommitMargin * 0.5],
+      [button.bottomAnchor
+          constraintEqualToAnchor:host.keyboardLayoutGuide.topAnchor
+                         constant:XEIsInGlassCard(view_controller) ? -kXEFormCommitMargin
+                                                                   : -kXEFormCommitMargin * 0.5],
     ]];
   }
   XESetFormCommitHidden(view_controller, button.hidden);
@@ -461,6 +481,32 @@ void XEAttachFormCommit(UIViewController* view_controller) {
 void XEDetachFormCommit(UIViewController* view_controller) {
   UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
   [button removeFromSuperview];
+}
+
+void XEFormCommitWillDisappear(UIViewController* view_controller) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  if (!button.superview) {
+    return;
+  }
+  if (view_controller.isBeingDismissed || view_controller.navigationController.isBeingDismissed) {
+    return;  // Slides away with the sheet; viewDidDisappear takes it off.
+  }
+  id<UIViewControllerTransitionCoordinator> coordinator = view_controller.transitionCoordinator;
+  if (!coordinator.isAnimated) {
+    [button removeFromSuperview];
+    return;
+  }
+  [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>
+                                                __unused context) {
+    button.alpha = 0.0;
+  }
+      completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        if (context.isCancelled) {
+          button.alpha = 1.0;  // The swipe back was let go: the page stays.
+        } else {
+          [button removeFromSuperview];
+        }
+      }];
 }
 
 @implementation XESheetTableViewController
@@ -487,6 +533,25 @@ void XEDetachFormCommit(UIViewController* view_controller) {
     XEUseArtWash(self);
   }
   XEInstallArtWashIfNeeded(self);
+  id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+  if (!self.isMovingToParentViewController && coordinator && XEIsInGlassCard(self)) {
+    // Back from a pushed page, UIKit lays the section headers out mid-pop a few points too tall,
+    // and the card would keep that. Size them again once the pop lands.
+    UITableView* table = self.tableView;
+    [coordinator animateAlongsideTransition:nil
+                                 completion:^(id<UIViewControllerTransitionCoordinatorContext> c) {
+                                   if (c.isCancelled) {
+                                     return;
+                                   }
+                                   // Only fresh header views measure right; the reused ones
+                                   // keep the mid-pop height.
+                                   [UIView performWithoutAnimation:^{
+                                     [table reloadData];
+                                     [table layoutIfNeeded];
+                                   }];
+                                   XEFitGlassCardToTable(self);
+                                 }];
+  }
   XEFitGlassCardToTable(self);
 }
 
@@ -497,6 +562,13 @@ void XEDetachFormCommit(UIViewController* view_controller) {
 
 - (void)viewWillDisappear:(BOOL)animated {
   [super viewWillDisappear:animated];
+  // The keyboard goes down with the page, not after it.
+  [self.view endEditing:YES];
+  XEFormCommitWillDisappear(self);
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
   XEDetachFormCommit(self);
 }
 
@@ -554,6 +626,11 @@ forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
 
 - (void)viewWillDisappear:(BOOL)animated {
   [super viewWillDisappear:animated];
+  XEFormCommitWillDisappear(self);
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
   XEDetachFormCommit(self);
 }
 
@@ -602,3 +679,92 @@ UIImage* XERowSymbolImage(NSString* symbol, UIColor* state_color) {
   [cache setObject:image forKey:key];
   return image;
 }
+
+@implementation XEStatusHeaderView {
+  UIView* dot_;
+  UILabel* title_label_;
+  UILabel* detail_label_;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  if (!(self = [super initWithFrame:frame])) {
+    return nil;
+  }
+  dot_ = [[UIView alloc] init];
+  dot_.translatesAutoresizingMaskIntoConstraints = NO;
+  dot_.layer.cornerRadius = 6.0;
+  dot_.backgroundColor = [XeniaTheme textMuted];
+  [NSLayoutConstraint activateConstraints:@[
+    [dot_.widthAnchor constraintEqualToConstant:12.0],
+    [dot_.heightAnchor constraintEqualToConstant:12.0],
+  ]];
+  title_label_ = [[UILabel alloc] init];
+  title_label_.font = xe_scaled_system_font(UIFontTextStyleTitle1, 28.0, UIFontWeightBold);
+  title_label_.adjustsFontForContentSizeCategory = YES;
+  title_label_.textColor = [XeniaTheme textPrimary];
+  title_label_.numberOfLines = 0;
+  title_label_.accessibilityTraits = UIAccessibilityTraitHeader;
+  UIStackView* headline =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ dot_, title_label_ ]] autorelease];
+  headline.alignment = UIStackViewAlignmentCenter;
+  headline.spacing = 10.0;
+  detail_label_ = [[UILabel alloc] init];
+  detail_label_.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  detail_label_.adjustsFontForContentSizeCategory = YES;
+  detail_label_.textColor = [XeniaTheme textSecondary];
+  detail_label_.numberOfLines = 0;
+  UIStackView* column =
+      [[[UIStackView alloc] initWithArrangedSubviews:@[ headline, detail_label_ ]] autorelease];
+  column.axis = UILayoutConstraintAxisVertical;
+  column.alignment = UIStackViewAlignmentLeading;
+  column.spacing = 4.0;
+  column.translatesAutoresizingMaskIntoConstraints = NO;
+  [self addSubview:column];
+  [NSLayoutConstraint activateConstraints:@[
+    [column.topAnchor constraintEqualToAnchor:self.topAnchor constant:4.0],
+    [column.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-6.0],
+    [column.leadingAnchor constraintEqualToAnchor:self.layoutMarginsGuide.leadingAnchor],
+    [column.trailingAnchor constraintEqualToAnchor:self.layoutMarginsGuide.trailingAnchor],
+  ]];
+  return self;
+}
+
+- (void)dealloc {
+  [dot_ release];
+  [title_label_ release];
+  [detail_label_ release];
+  [super dealloc];
+}
+
+- (UIView*)dot {
+  return dot_;
+}
+
+- (UILabel*)titleLabel {
+  return title_label_;
+}
+
+- (UILabel*)detailLabel {
+  return detail_label_;
+}
+
+- (void)fitAsHeaderOfTable:(UITableView*)table {
+  // The table sizes its header from the header's frame: fit it to the width it has, lined up
+  // with the groups' text.
+  const CGFloat width = CGRectGetWidth(table.bounds);
+  detail_label_.hidden = detail_label_.text.length == 0;
+  self.layoutMargins =
+      UIEdgeInsetsMake(0, table.layoutMargins.left + 4.0, 0, table.layoutMargins.right);
+  const CGFloat height =
+      [self systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
+          withHorizontalFittingPriority:UILayoutPriorityRequired
+                verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+          .height;
+  if (table.tableHeaderView != self || std::fabs(CGRectGetHeight(self.frame) - height) >= 0.5 ||
+      std::fabs(CGRectGetWidth(self.frame) - width) >= 0.5) {
+    self.frame = CGRectMake(0, 0, width, height);
+    table.tableHeaderView = self;
+  }
+}
+
+@end

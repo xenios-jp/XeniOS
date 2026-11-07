@@ -240,6 +240,11 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
     XeniaIOSGameActionRow row = {action, title, symbol};
     [values addObject:[NSValue valueWithBytes:&row objCType:@encode(XeniaIOSGameActionRow)]];
   };
+  // On the phone page this is the one place compatibility shows: a row reads as what it is.
+  if (supports_compatibility_ && shows_rows_only_) {
+    add(XeniaIOSGameActionCompatibility,
+        NSLocalizedString(@"Compatibility", @"game page: row"), @"checkmark.seal");
+  }
   if (supports_patches_) {
     add(XeniaIOSGameActionPatches,
         NSLocalizedString(@"Patches", @"game page: row"), @"puzzlepiece.extension");
@@ -427,7 +432,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   title.minimumScaleFactor = 0.6;
   title.accessibilityTraits = UIAccessibilityTraitHeader;
   NSMutableArray<UIView*>* lines = [NSMutableArray arrayWithObject:title];
-  // With a capsule beside Play, the status reads there instead.
+  // With compatibility data, the status line below says it instead, a tap from the reports.
   if (status_text_.length && !supports_compatibility_) {
     UILabel* status = [[[UILabel alloc] init] autorelease];
     UIFont* font = xe_scaled_system_font(UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
@@ -499,14 +504,14 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
     [buttons addObject:settings];
   }
   if (supports_compatibility_) {
-    UIButton* capsule = xe_new_compat_capsule();
+    UIButton* capsule = xe_new_compat_capsule();  // the status line, under the title
     __unsafe_unretained XeniaIOSGameActionsViewController* unsafe_self = self;
     xe_update_compat_capsule(capsule, compatibility_status_, compatibility_performance_,
                              compatibility_notes_, ^{
                                [unsafe_self perform:XeniaIOSGameActionCompatibility];
                              });
-    [capsule.heightAnchor constraintEqualToConstant:54.0].active = YES;
-    [buttons addObject:capsule];
+    capsule.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+    [title_stack_ addArrangedSubview:capsule];
   }
   button_row_ = [[UIStackView alloc] initWithArrangedSubviews:buttons];
   button_row_.translatesAutoresizingMaskIntoConstraints = NO;
@@ -828,6 +833,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   // The table's safe area follows the frame set above only once the view has laid out, so the
   // rows take their margins again; otherwise they keep the full-width sensor-housing inset.
   [self applyTableInsets];
+
 }
 
 - (void)applyTableInsets {
@@ -865,6 +871,10 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 // What a heading says on its trailing side: "2 On", "Playable", "Public Lobby".
 - (NSString*)summaryForAction:(XeniaIOSGameAction)action {
   switch (action) {
+    case XeniaIOSGameActionCompatibility:
+      return status_text_.length
+                 ? status_text_
+                 : NSLocalizedString(@"Not Tested", @"game page: Compatibility row; no reports");
     case XeniaIOSGameActionPatches: {
       if (!patches_loaded_ || patches_.empty()) {
         return nil;
@@ -1194,6 +1204,19 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   return chevron;
 }
 
+// Every heading is one 53-pt row (rule 3's 52-pt row plus the hairline), scaled with the text
+// size. Self-sizing gave a heading with no value, Convert to ZAR, ~30 pt more than the rest;
+// the rows under a heading still size to what they hold.
+- (CGFloat)tableView:(UITableView*)tableView heightForRowAtIndexPath:(NSIndexPath*)indexPath {
+  XeniaGameRowChild* child = nil;
+  [self rowForTableRow:indexPath.row child:&child];
+  if (child) {
+    return UITableViewAutomaticDimension;
+  }
+  return ceil([[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+      scaledValueForValue:53.0 compatibleWithTraitCollection:tableView.traitCollection]);
+}
+
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   XeniaGameRowChild* child = nil;
@@ -1240,9 +1263,8 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   XeniaGameRowChild* child = nil;
   const XeniaIOSGameActionRow row = [self rowForTableRow:indexPath.row child:&child];
   NSString* summary = [self summaryForAction:row.action];
-  UIListContentConfiguration* content = summary
-                                            ? [UIListContentConfiguration valueCellConfiguration]
-                                            : [UIListContentConfiguration cellConfiguration];
+  // Every heading takes the value layout, with or without a value, so rows share one height.
+  UIListContentConfiguration* content = [UIListContentConfiguration valueCellConfiguration];
   content.text = row.title;
   content.textProperties.color = [XeniaTheme textPrimary];
   content.textProperties.font =
@@ -1256,6 +1278,16 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
     content.secondaryTextProperties.color = [XeniaTheme textSecondary];
     content.secondaryTextProperties.font =
         xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+    // Status is a dot and words (rule 5).
+    if (row.action == XeniaIOSGameActionCompatibility && status_color_) {
+      NSMutableAttributedString* value = [[[NSMutableAttributedString alloc]
+          initWithString:[@"\u25CF  " stringByAppendingString:summary]
+              attributes:@{NSForegroundColorAttributeName : [XeniaTheme textSecondary]}]
+          autorelease];
+      [value addAttribute:NSForegroundColorAttributeName value:status_color_
+                    range:NSMakeRange(0, 1)];
+      content.secondaryAttributedText = value;
+    }
   }
   cell.contentConfiguration = content;
   const BOOL open = [self shownChildrenForAction:row.action] != nil;
@@ -1475,6 +1507,11 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
         }
         break;
     }
+    return;
+  }
+  // Compatibility is its own page; every other heading opens in place.
+  if (row.action == XeniaIOSGameActionCompatibility) {
+    [self perform:XeniaIOSGameActionCompatibility];
     return;
   }
   [self toggleAction:row.action];
