@@ -1888,28 +1888,30 @@ enum X_INTERNET_SCHEME : uint32_t {
   X_INTERNET_SCHEME_HTTPS = 2,
 };
 
-dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
-                                          dword_t url_length, dword_t flags,
-                                          pointer_t<X_URL_COMPONENTS> parts) {
+// XHttpCrackUrl and XHttpCrackUrlW, for a URL of CharT at |url_address| whose
+// text, in host byte order, is |text|. Offsets and lengths count characters.
+template <typename CharT>
+uint32_t CrackUrl(uint32_t url_address, std::basic_string_view<CharT> text,
+                  uint32_t flags, X_URL_COMPONENTS* parts) {
   // TODO(has207): ICU_DECODE and ICU_ESCAPE are accepted but not applied.
-  if (!url_ptr || !parts || parts->struct_size != sizeof(X_URL_COMPONENTS) ||
+  if (!parts || parts->struct_size != sizeof(X_URL_COMPONENTS) ||
       (flags & ~(X_ICU_DECODE | X_ICU_ESCAPE))) {
     XThread::SetLastError(X_ERROR_INVALID_PARAMETER);
     return 0;
   }
-  // A length still stops at the first NUL.
-  const char* url = url_ptr.as<const char*>();
-  const std::string_view text(
-      url, url_length ? strnlen(url, url_length) : std::strlen(url));
+  constexpr auto npos = std::basic_string_view<CharT>::npos;
+  auto lit = [](const char* chars) {
+    return std::basic_string<CharT>(chars, chars + std::strlen(chars));
+  };
 
-  const size_t scheme_end = text.find(':');
-  if (scheme_end == std::string_view::npos) {
+  const size_t scheme_end = text.find(CharT(':'));
+  if (scheme_end == npos) {
     XThread::SetLastError(X_ERROR_WINHTTP_UNRECOGNIZED_SCHEME);
     return 0;
   }
-  std::string scheme(text.substr(0, scheme_end));
-  for (char& c : scheme) {
-    c = char(std::tolower(uint8_t(c)));
+  std::string scheme;
+  for (CharT c : text.substr(0, scheme_end)) {
+    scheme += c < 0x80 ? char(std::tolower(int(c))) : '?';
   }
   uint32_t scheme_id;
   uint16_t port;
@@ -1923,26 +1925,26 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
     XThread::SetLastError(X_ERROR_WINHTTP_UNRECOGNIZED_SCHEME);
     return 0;
   }
-  if (text.substr(scheme_end + 1, 2) != "//") {
+  if (text.substr(scheme_end + 1, 2) != lit("//")) {
     XThread::SetLastError(X_ERROR_WINHTTP_INVALID_URL);
     return 0;
   }
 
   // Offsets into text of each component.
   const size_t authority_begin = scheme_end + 3;
-  size_t authority_end = text.find_first_of("/?#", authority_begin);
-  if (authority_end == std::string_view::npos) {
+  size_t authority_end = text.find_first_of(lit("/?#"), authority_begin);
+  if (authority_end == npos) {
     authority_end = text.size();
   }
   size_t host_begin = authority_begin;
   size_t user_begin = 0, user_size = 0, password_begin = 0, password_size = 0;
   bool has_user = false, has_password = false;
-  const size_t at = text.rfind('@', authority_end - 1);
-  if (at != std::string_view::npos && at >= authority_begin) {
+  const size_t at = text.rfind(CharT('@'), authority_end - 1);
+  if (at != npos && at >= authority_begin) {
     has_user = true;
     user_begin = authority_begin;
-    const size_t colon = text.find(':', authority_begin);
-    if (colon != std::string_view::npos && colon < at) {
+    const size_t colon = text.find(CharT(':'), authority_begin);
+    if (colon != npos && colon < at) {
       user_size = colon - authority_begin;
       has_password = true;
       password_begin = colon + 1;
@@ -1955,18 +1957,18 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
   size_t host_end = authority_end;
   // An IPv6 literal's colons are inside its brackets.
   size_t port_search_begin = host_begin;
-  if (host_begin < authority_end && text[host_begin] == '[') {
-    const size_t bracket = text.find(']', host_begin);
+  if (host_begin < authority_end && text[host_begin] == CharT('[')) {
+    const size_t bracket = text.find(CharT(']'), host_begin);
     port_search_begin = bracket < authority_end ? bracket + 1 : authority_end;
   }
-  const size_t port_colon = text.rfind(':', authority_end - 1);
-  if (port_colon != std::string_view::npos && port_colon >= port_search_begin) {
-    const std::string_view digits =
+  const size_t port_colon = text.rfind(CharT(':'), authority_end - 1);
+  if (port_colon != npos && port_colon >= port_search_begin) {
+    const std::basic_string_view<CharT> digits =
         text.substr(port_colon + 1, authority_end - port_colon - 1);
     if (!digits.empty()) {
       uint32_t value = 0;
-      for (char c : digits) {
-        if (c < '0' || c > '9') {
+      for (CharT c : digits) {
+        if (c < CharT('0') || c > CharT('9')) {
           XThread::SetLastError(X_ERROR_WINHTTP_INVALID_URL);
           return 0;
         }
@@ -1984,8 +1986,8 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
     XThread::SetLastError(X_ERROR_WINHTTP_INVALID_URL);
     return 0;
   }
-  size_t extra_begin = text.find_first_of("?#", authority_end);
-  if (extra_begin == std::string_view::npos) {
+  size_t extra_begin = text.find_first_of(lit("?#"), authority_end);
+  if (extra_begin == npos) {
     extra_begin = text.size();
   }
 
@@ -1998,7 +2000,7 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
       return;
     }
     if (!ptr) {
-      ptr = present ? url_ptr.guest_address() + uint32_t(offset) : 0;
+      ptr = present ? url_address + uint32_t(offset * sizeof(CharT)) : 0;
       length = present ? uint32_t(size) : 0;
       return;
     }
@@ -2007,9 +2009,11 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
       insufficient = true;
       return;
     }
-    char* out = kernel_memory()->TranslateVirtual<char*>(ptr);
-    std::memcpy(out, url + offset, size);
-    out[size] = '\0';
+    auto* out = kernel_memory()->TranslateVirtual<CharT*>(ptr);
+    for (size_t i = 0; i < size; ++i) {
+      out[i] = xe::byte_swap(text[offset + i]);
+    }
+    out[size] = 0;
     length = uint32_t(size);
   };
   set(parts->scheme_ptr, parts->scheme_length, true, 0, scheme_end);
@@ -2031,7 +2035,40 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
   }
   return 1;
 }
+dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
+                                          dword_t url_length, dword_t flags,
+                                          pointer_t<X_URL_COMPONENTS> parts) {
+  if (!url_ptr) {
+    XThread::SetLastError(X_ERROR_INVALID_PARAMETER);
+    return 0;
+  }
+  // A length still stops at the first NUL.
+  const char* url = url_ptr.as<const char*>();
+  return CrackUrl<char>(
+      url_ptr.guest_address(),
+      std::string_view(
+          url, url_length ? strnlen(url, url_length) : std::strlen(url)),
+      flags, parts);
+}
 DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrl, kNetworking, kImplemented);
+
+// The dashboard cracks its content URLs with this.
+dword_result_t NetDll_XHttpCrackUrlW_entry(dword_t caller, lpvoid_t url_ptr,
+                                           dword_t url_length, dword_t flags,
+                                           pointer_t<X_URL_COMPONENTS> parts) {
+  if (!url_ptr) {
+    XThread::SetLastError(X_ERROR_INVALID_PARAMETER);
+    return 0;
+  }
+  // Guest text is big-endian. A length still stops at the first NUL.
+  const auto* url = url_ptr.as<const xe::be<char16_t>*>();
+  std::u16string text;
+  while ((!url_length || text.size() < url_length) && url[text.size()]) {
+    text += char16_t(url[text.size()]);
+  }
+  return CrackUrl<char16_t>(url_ptr.guest_address(), text, flags, parts);
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrlW, kNetworking, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel
