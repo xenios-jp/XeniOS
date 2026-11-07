@@ -146,7 +146,8 @@ NSUInteger CodeLength(NSString* formatted) {
 // A grouped sheet list with the text above and below its first group as views of its own.
 @interface XEForm : XESheetTableViewController
 - (void)addCloseButton;
-- (UIBarButtonItem*)addDoneButton;
+// The form's white commit button at the bottom; it calls doneTapped.
+- (UIButton*)addDoneButtonWithTitle:(NSString*)title;
 - (void)closeTapped;
 - (void)doneTapped;
 // Text above and below the first group; nil takes the space back.
@@ -186,22 +187,13 @@ NSUInteger CodeLength(NSString* formatted) {
 
 - (void)addCloseButton {
   if (self.navigationController && self.navigationController.viewControllers.firstObject != self) {
-    return;  // Pushed: the back button is enough.
+    return;  // Pushed: the page picks up the root's ✕.
   }
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                           target:self
-                           action:@selector(closeTapped)] autorelease];
+  XESetSheetClose(self, self, @selector(closeTapped));
 }
 
-- (UIBarButtonItem*)addDoneButton {
-  UIBarButtonItem* done = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                           target:self
-                           action:@selector(doneTapped)] autorelease];
-  done.enabled = NO;
-  self.navigationItem.rightBarButtonItem = done;
-  return done;
+- (UIButton*)addDoneButtonWithTitle:(NSString*)title {
+  return XESetFormCommit(self, title, self, @selector(doneTapped));
 }
 
 - (void)closeTapped {
@@ -277,7 +269,7 @@ void PresentForm(UIViewController* presenter, XEForm* form, BOOL modal) {
   // The sheet's own material follows the presented controller's style, so the glass reads dark
   // at every detent.
   navigation.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-  navigation.view.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+  navigation.view.backgroundColor = [XeniaTheme glassSheet];
   navigation.sheetPresentationController.detents = @[
     [UISheetPresentationControllerDetent mediumDetent],
     [UISheetPresentationControllerDetent largeDetent]
@@ -337,22 +329,8 @@ UITableViewCell* CodeCell(NSString* text, CGFloat size, UIColor* color, CGFloat 
   return cell;
 }
 
-// A plain symbol for a row: no coloured badge, like the Friends and Public Games rows.
-UIImage* Glyph(NSString* symbol) {
-  UIImageSymbolConfiguration* config =
-      [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightRegular];
-  return [[UIImage systemImageNamed:symbol withConfiguration:config]
-      imageWithTintColor:[UIColor colorWithWhite:1.0 alpha:0.7]
-           renderingMode:UIImageRenderingModeAlwaysOriginal];
-}
-
-UIBarButtonItem* BusyItem() {
-  UIActivityIndicatorView* busy =
-      [[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium]
-          autorelease];
-  [busy startAnimating];
-  return [[[UIBarButtonItem alloc] initWithCustomView:busy] autorelease];
-}
+// A plain symbol for a row, as on every other list.
+UIImage* Glyph(NSString* symbol) { return XERowSymbolImage(symbol, nil); }
 
 }  // namespace
 
@@ -392,7 +370,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   UIImageView* _icon;
   UIActivityIndicatorView* _spinner;
   UILabel* _counter;
-  UIBarButtonItem* _doneItem;
+  UIButton* _doneItem;
   XEGamertagState _state;
   NSUInteger _generation;
   NSArray<NSString*>* _suggestions;
@@ -456,7 +434,12 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
       break;
   }
   [self addCloseButton];
-  _doneItem = [[self addDoneButton] retain];  // Kept: a spinner takes its place meanwhile.
+  _doneItem = [[self addDoneButtonWithTitle:_mode == XEGamertagModeGoOnline
+                                                ? NSLocalizedString(@"Go Online",
+                                                                    @"Gamertag sheet: button")
+                                                : NSLocalizedString(@"Save Gamertag",
+                                                                    @"Gamertag sheet: button")]
+      retain];
 
   _field = [[UITextField alloc] init];
   _field.delegate = self;
@@ -623,7 +606,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   NSString* name = [[_field.text copy] autorelease];
   _claiming = YES;
   [_field resignFirstResponder];
-  self.navigationItem.rightBarButtonItem = BusyItem();
+  XESetFormCommitBusy(self, YES);
   __unsafe_unretained XEGamertagForm* unsafe_self = self;
   void (^finish)(XeniaLiveNameResult*) = ^(XeniaLiveNameResult* result) {
     [unsafe_self claimFinished:result name:name];
@@ -637,7 +620,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 - (void)claimFinished:(XeniaLiveNameResult*)result name:(NSString*)name {
   _claiming = NO;
-  self.navigationItem.rightBarButtonItem = _doneItem;
+  XESetFormCommitBusy(self, NO);
   if (result.status == XeniaLiveNameStatusAvailable) {
     void (^done)(XeniaLiveNameResult*) = [[_done copy] autorelease];
     XeniaLiveNameResult* held = [[result retain] autorelease];
@@ -835,7 +818,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   NSString* _code;
   BOOL _first;
   void (^_done)(void);
-  UIBarButtonItem* _doneItem;
+  UIButton* _doneItem;
   BOOL _saved;
   BOOL _copied;
 }
@@ -865,7 +848,9 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
                           : NSLocalizedString(@"This is your new code. The old one no longer works. "
                                               @"We show it once.",
                                               @"Recovery code sheet: text above the code")];
-  _doneItem = [self addDoneButton];  // No ✕: it stays until the code is saved.
+  // No ✕: it stays until the code is saved.
+  _doneItem = [self addDoneButtonWithTitle:NSLocalizedString(@"I’ve Saved It",
+                                                             @"Recovery code sheet: button")];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
@@ -1089,7 +1074,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 @implementation XEEnterCodeForm {
   BOOL _recovering;
   UITextField* _field;
-  UIBarButtonItem* _doneItem;
+  UIButton* _doneItem;
   BOOL _busy;
 }
 
@@ -1109,7 +1094,12 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   [self addCloseButton];
-  _doneItem = [[self addDoneButton] retain];  // Kept: a spinner takes its place meanwhile.
+  _doneItem = [[self addDoneButtonWithTitle:_recovering
+                                                ? NSLocalizedString(@"Recover",
+                                                                    @"Code sheet: button")
+                                                : NSLocalizedString(@"Link Device",
+                                                                    @"Code sheet: button")]
+      retain];
   _field = [[UITextField alloc] init];
   _field.delegate = self;
   _field.textAlignment = NSTextAlignmentCenter;
@@ -1190,11 +1180,11 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
     return;
   }
   _busy = YES;
-  self.navigationItem.rightBarButtonItem = BusyItem();
+  XESetFormCommitBusy(self, YES);
   __unsafe_unretained XEEnterCodeForm* unsafe_self = self;
   void (^finish)(XeniaLiveLinkStatus) = ^(XeniaLiveLinkStatus status) {
     unsafe_self->_busy = NO;
-    unsafe_self.navigationItem.rightBarButtonItem = unsafe_self->_doneItem;
+    XESetFormCommitBusy(unsafe_self, NO);
     if (status == XeniaLiveLinkStatusLinked) {
       [unsafe_self dismissViewControllerAnimated:YES completion:nil];
       return;
@@ -2036,7 +2026,7 @@ typedef NS_ENUM(NSInteger, XEApproveState) {
 
 @implementation XEApproveForm {
   UITextField* _field;
-  UIBarButtonItem* _doneItem;
+  UIButton* _doneItem;
   XEApproveState _state;
   XeniaLiveApprovalRequest* _request;
   NSString* _name;
@@ -2056,7 +2046,8 @@ typedef NS_ENUM(NSInteger, XEApproveState) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   [self addCloseButton];
-  _doneItem = [[self addDoneButton] retain];
+  _doneItem = [[self addDoneButtonWithTitle:NSLocalizedString(@"Ask for Approval",
+                                                              @"Approval sheet: button")] retain];
   _field = [[UITextField alloc] init];
   _field.delegate = self;
   _field.placeholder = NSLocalizedString(@"Gamertag", @"Gamertag sheet: field placeholder");
@@ -2113,20 +2104,21 @@ typedef NS_ENUM(NSInteger, XEApproveState) {
                                             @"approve this one.",
                                             @"Approval sheet: text above the field")];
       [self setFooterText:nil color:nil];
-      self.navigationItem.rightBarButtonItem = _doneItem;
+      XESetFormCommitBusy(self, NO);
+      XESetFormCommitHidden(self, NO);
       [self textChanged];
       break;
     case XEApproveStateWaiting:
       [self setHeaderText:NSLocalizedString(@"Open XeniOS on your iPhone, iPad or Mac and approve "
                                             @"this number.",
                                             @"Approval sheet: text above the number")];
-      self.navigationItem.rightBarButtonItem = nil;
+      XESetFormCommitHidden(self, YES);
       [self tick];
       break;
     case XEApproveStateSignedIn:
       [self setHeaderText:nil];
       [self setFooterText:nil color:nil];
-      self.navigationItem.rightBarButtonItem = nil;
+      XESetFormCommitHidden(self, YES);
       break;
     case XEApproveStateFailed:
       [self setHeaderText:nil];
@@ -2134,7 +2126,7 @@ typedef NS_ENUM(NSInteger, XEApproveState) {
                                             @"again.",
                                             @"Approval sheet: neutral failure")
                     color:nil];
-      self.navigationItem.rightBarButtonItem = nil;
+      XESetFormCommitHidden(self, YES);
       break;
   }
   [self.tableView reloadData];
@@ -2148,7 +2140,7 @@ typedef NS_ENUM(NSInteger, XEApproveState) {
   [_name release];
   _name = [_field.text copy];
   const NSUInteger generation = ++_generation;
-  self.navigationItem.rightBarButtonItem = BusyItem();
+  XESetFormCommitBusy(self, YES);
   __unsafe_unretained XEApproveForm* unsafe_self = self;
   [xe_ios_live_account_service()
       requestApprovalForGamertag:_name
@@ -2631,10 +2623,7 @@ NSString* ApproveTitle() {
   [super viewDidLoad];
   self.title = NSLocalizedString(@"Scan QR Code", @"Scanner title");
   self.view.backgroundColor = [UIColor blackColor];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                           target:self
-                           action:@selector(close)] autorelease];
+  XESetSheetClose(self, self, @selector(close));
   _hint = [[UILabel alloc] init];
   xe_apply_label_font(_hint, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
   _hint.textColor = [UIColor whiteColor];
@@ -3387,4 +3376,8 @@ BOOL xe_ios_handle_opened_profile_file(NSURL* url, UIViewController* presenter) 
                                }]];
   [TopOf(presenter) presentViewController:alert animated:YES completion:nil];
   return YES;
+}
+
+void xe_ios_present_move_profile(UIViewController* presenter) {
+  PresentForm(presenter, [[[XEExportForm alloc] init] autorelease], NO);
 }

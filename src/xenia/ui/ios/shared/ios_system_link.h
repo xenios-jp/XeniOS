@@ -143,6 +143,8 @@ NSInteger xe_ios_system_link_online_total(void);
 // calls what xe_ios_system_link_set_online_menu set. Autoreleased.
 UIButton* xe_ios_new_system_link_online_button(void);
 void xe_ios_system_link_set_online_menu(void (^open)(void));
+// The Online button's frame in window coordinates when it was last tapped, or CGRectNull.
+CGRect xe_ios_system_link_online_button_rect(void);
 // The library's globe button: a round glass button with the players online on XeniOS in a
 // green badge, which calls what xe_ios_system_link_set_globe_action set. Autoreleased.
 UIButton* xe_ios_new_system_link_globe_button(void);

@@ -338,17 +338,14 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(doneTapped:));
   UIBarButtonItem* add = [[[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
                            target:self
                            action:@selector(addTapped:)] autorelease];
   add.accessibilityLabel =
       NSLocalizedString(@"Add from Files", @"game content view controller: add button");
-  self.navigationItem.rightBarButtonItem = add;
+  XESetSheetActions(self, @[ add ]);
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(contentChanged:)
                                                name:XeniaGameContentDidChangeNotification

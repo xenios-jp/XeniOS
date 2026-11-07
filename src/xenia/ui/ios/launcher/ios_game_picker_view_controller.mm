@@ -69,10 +69,7 @@
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 72.0;
-  self.navigationItem.leftBarButtonItem =
-      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                                                     target:self
-                                                     action:@selector(cancelTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(cancelTapped:));
 }
 
 - (void)cancelTapped:(id)sender {

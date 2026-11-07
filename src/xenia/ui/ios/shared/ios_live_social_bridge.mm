@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -89,6 +90,16 @@ NSString* ProblemText(const std::string& problem) {
                            @"Friends status: the connection is down and retrying");
 }
 
+// Preview only: -XeniaLiveSocialPreviewFriends N (or the same defaults key) adds N made-up
+// friends to the real list, so a long list can be looked at in the Simulator. Never set in a
+// normal launch.
+NSInteger PreviewFriendCount() {
+  return MAX((NSInteger)0, MIN((NSInteger)200, [[NSUserDefaults standardUserDefaults]
+                                                   integerForKey:@"XeniaLiveSocialPreviewFriends"]));
+}
+
+void AddPreviewFriends(NSMutableArray* result);
+
 }  // namespace
 
 #pragma mark - Models
@@ -153,6 +164,43 @@ NSString* ProblemText(const std::string& problem) {
   [super dealloc];
 }
 @end
+
+namespace {
+
+void AddPreviewFriends(NSMutableArray* result) {
+  static const char* const kNames[] = {
+      "Bo",          "Aria Vance",   "NightOwl 42", "Kenji",       "Marisol",     "TurboTaco",
+      "Quiet Storm", "Lumen",        "Hollis",      "xXSniperXx",  "Priya",       "Cobalt Fox",
+      "Dee",         "MidnightRun",  "Oskar",       "Tamsin",      "Rook",        "Juniper Ash",
+      "Wren",        "PixelPirate",  "Sol",         "Ingrid",      "Mako",        "Velvet Echo"};
+  static const uint32_t kTitles[] = {0x4D5307E6, 0x4D530877, 0x415607F7, 0x584109F0, 0x4D5308AB};
+  const NSInteger count = PreviewFriendCount();
+  const NSInteger names = sizeof(kNames) / sizeof(kNames[0]);
+  for (NSInteger i = 0; i < count; ++i) {
+    live::Friend f;
+    f.xuid = 0xE000000000000000ull + (uint64_t)i;
+    f.gamertag = kNames[i % names];
+    if (i >= names) {
+      f.gamertag += " " + std::to_string(i / names + 1);
+    }
+    std::optional<live::Presence> presence;
+    if (i % 3 != 2) {  // two in three online
+      presence.emplace();
+      presence->xuid = f.xuid;
+      presence->online = true;
+      if (i % 2 == 0) {
+        presence->title_id = kTitles[(i / 2) % 5];
+        if (i % 4 == 0) {
+          presence->joinable.emplace();
+          presence->joinable->session_id = "00000000000000" + std::to_string(10 + i % 90);
+        }
+      }
+    }
+    [result addObject:[[[XeniaLiveFriend alloc] initWithFriend:f presence:presence] autorelease]];
+  }
+}
+
+}  // namespace
 
 @interface XeniaLiveInvite ()
 - (instancetype)initWithInvite:(const live::Invite&)invite received:(NSDate*)received;
@@ -556,6 +604,9 @@ NSString* ProblemText(const std::string& problem) {
 
 - (NSArray<XeniaLiveFriend*>*)peersInState:(XeniaLiveFriendState)state {
   NSMutableArray* result = [NSMutableArray array];
+  if (state == XeniaLiveFriendStateFriend) {
+    AddPreviewFriends(result);
+  }
   if (!share_) {
     return result;
   }
@@ -631,10 +682,17 @@ NSString* ProblemText(const std::string& problem) {
 }
 
 - (NSInteger)onlineFriendCount {
-  if (!share_) {
-    return 0;
-  }
   NSInteger count = 0;
+  if (PreviewFriendCount()) {
+    NSMutableArray* preview = [NSMutableArray array];
+    AddPreviewFriends(preview);
+    for (XeniaLiveFriend* peer in preview) {
+      count += peer.online;
+    }
+  }
+  if (!share_) {
+    return count;
+  }
   for (const auto& f : (*share_)->Friends()) {
     if (f.state == live::Friend::State::kFriend) {
       auto presence = (*share_)->FriendPresence(f.xuid);

@@ -124,19 +124,6 @@ struct ThemeTypographyScale {
   ThemeTypographyStyle title2;       // 22pt semibold
 };
 
-// Branded categorical icon palette — Xenia equivalents for the system colors
-// previously used by the settings hub
-// (systemBlue/Indigo/Orange/Purple/Red/Gray). Variant-aware so each picks the
-// correct shade for dark and light traits.
-struct ThemeSectionIconTokens {
-  ColorRGBA8 blue;
-  ColorRGBA8 indigo;
-  ColorRGBA8 orange;
-  ColorRGBA8 purple;
-  ColorRGBA8 red;
-  ColorRGBA8 gray;
-};
-
 // On-screen touch overlay tint palette. The same seven colours that
 // IOSTouchTintStyle enumerates. Not theme-variant-aware because the overlay
 // renders above game content rather than above iOS chrome.
@@ -150,6 +137,24 @@ struct ThemeTouchTintTokens {
   ColorRGBA8 slate;
 };
 
+// The glass language of the app's own chrome: the Online card over a game or the library, and
+// the charcoal sheets that open from it (Profile, Friends, Public Games, Settings). Always dark,
+// whatever the system appearance, so the same values serve both variants.
+struct ThemeGlassTokens {
+  ColorRGBA8 sheet;        // a sheet's page: one neutral charcoal
+  ColorRGBA8 card_tint;    // the tint of a floating card's Liquid Glass
+  ColorRGBA8 group_fill;   // rows grouped on the card or a sheet
+  ColorRGBA8 hairline;     // between rows in a group
+  ColorRGBA8 card_edge;    // the 1-pt rim of a floating card
+  ColorRGBA8 dim;          // what lies behind a floating card
+  float card_radius;       // floating card
+  float group_radius;      // row group
+  float control_size;      // round glass buttons (close, back, add)
+  float tile_size;         // avatars and icon tiles in rows
+  float row_min_height;    // a row in a group
+  float card_inset;        // card to the screen edge
+};
+
 struct ThemeTokens {
   ThemeColorTokens colors;
   ThemeTypographyTokens typography;
@@ -158,7 +163,7 @@ struct ThemeTokens {
   ThemeSpacingTokens spacing;
   ThemeOpacityTokens opacity;
   ThemeTypographyScale typography_scale;
-  ThemeSectionIconTokens section_icons;
+  ThemeGlassTokens glass;
 };
 
 const ThemeTokens& GetThemeTokens(ThemeVariant variant);

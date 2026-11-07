@@ -1073,7 +1073,7 @@ UIImage* XeniaLibraryBackgroundSwatch(NSArray<UIColor*>* colours, CGFloat side) 
 
 // Whether the Library is on screen: in a window, shown, and not under another page.
 - (BOOL)librarySeen {
-  if (!self.window || self.hidden ||
+  if (!self.window || self.hidden || self.alpha <= 0.01 ||
       UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) {
     return NO;
   }

@@ -9,6 +9,10 @@
 
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 
+#import <objc/runtime.h>
+
+#import "xenia/ui/ios/shared/ios_art_wash.h"
+#import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -286,6 +290,179 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
   [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+static char kXESheetCloseKey;
+static char kXESheetActionsKey;
+
+static void XELayoutSheetHeader(UIViewController* view_controller) {
+  UIBarButtonItem* close = objc_getAssociatedObject(view_controller, &kXESheetCloseKey);
+  NSArray<UIBarButtonItem*>* actions =
+      objc_getAssociatedObject(view_controller, &kXESheetActionsKey);
+  // UIKit lays rightBarButtonItems out from the trailing edge in.
+  NSMutableArray<UIBarButtonItem*>* items = [NSMutableArray array];
+  if (close) {
+    [items addObject:close];
+  }
+  for (UIBarButtonItem* item in actions.reverseObjectEnumerator) {
+    [items addObject:item];
+  }
+  if (![view_controller.navigationItem.rightBarButtonItems isEqualToArray:items]) {
+    view_controller.navigationItem.rightBarButtonItems = items;
+  }
+}
+
+void XESetSheetClose(UIViewController* view_controller, id target, SEL action) {
+  UIBarButtonItem* close =
+      [[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                     target:target
+                                                     action:action] autorelease];
+  close.accessibilityLabel = NSLocalizedString(@"Close", @"sheet close button");
+  objc_setAssociatedObject(view_controller, &kXESheetCloseKey, close,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  XELayoutSheetHeader(view_controller);
+}
+
+void XESetSheetActions(UIViewController* view_controller, NSArray<UIBarButtonItem*>* actions) {
+  objc_setAssociatedObject(view_controller, &kXESheetActionsKey, [[actions copy] autorelease],
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  XELayoutSheetHeader(view_controller);
+}
+
+UIBarButtonItem* XESheetCloseItem(UIViewController* view_controller) {
+  return objc_getAssociatedObject(view_controller, &kXESheetCloseKey);
+}
+
+UIBarButtonItem* XESheetPrimaryAction(UIViewController* view_controller) {
+  NSArray<UIBarButtonItem*>* actions =
+      objc_getAssociatedObject(view_controller, &kXESheetActionsKey);
+  return actions.lastObject;
+}
+
+void XEApplySheetHeader(UIViewController* view_controller) {
+  // A large title is for the page a sheet opens on; pushed pages centre theirs in the bar.
+  UINavigationController* navigation = view_controller.navigationController;
+  if (navigation.viewControllers.firstObject != view_controller &&
+      view_controller.navigationItem.largeTitleDisplayMode ==
+          UINavigationItemLargeTitleDisplayModeAutomatic) {
+    view_controller.navigationItem.largeTitleDisplayMode =
+        UINavigationItemLargeTitleDisplayModeNever;
+  }
+  UIBarButtonItem* close = objc_getAssociatedObject(view_controller, &kXESheetCloseKey);
+  if (!close) {
+    // Pushed inside a sheet: the root's ✕ closes the whole sheet from here too.
+    UIViewController* root = view_controller.navigationController.viewControllers.firstObject;
+    UIBarButtonItem* root_close =
+        root && root != view_controller ? objc_getAssociatedObject(root, &kXESheetCloseKey) : nil;
+    if (!root_close) {
+      return;  // Not closable (or not ours): leave the page's own items alone.
+    }
+    if (!objc_getAssociatedObject(view_controller, &kXESheetActionsKey)) {
+      // Items the page set directly become its extra actions.
+      objc_setAssociatedObject(view_controller, &kXESheetActionsKey,
+                               view_controller.navigationItem.rightBarButtonItems.reverseObjectEnumerator.allObjects,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    XESetSheetClose(view_controller, root_close.target, root_close.action);
+    return;
+  }
+  XELayoutSheetHeader(view_controller);
+}
+
+static char kXEFormCommitKey;
+static const CGFloat kXEFormCommitHeight = 52.0;
+static const CGFloat kXEFormCommitMargin = 16.0;
+
+UIButton* XESetFormCommit(UIViewController* view_controller, NSString* title, id target,
+                          SEL action) {
+  UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
+  config.title = title;
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.titleTextAttributesTransformer =
+      ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
+        NSMutableDictionary* out = [[in mutableCopy] autorelease];
+        out[NSFontAttributeName] = xe_scaled_system_font(UIFontTextStyleBody, 17.0,
+                                                         UIFontWeightSemibold);
+        return out;
+      };
+  UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  // White with black text; dimmed, not grey, while it can't be used.
+  button.configurationUpdateHandler = ^(UIButton* b) {
+    UIButtonConfiguration* c = [[b.configuration copy] autorelease];
+    const BOOL usable = b.enabled || c.showsActivityIndicator;
+    c.background.backgroundColor = [UIColor colorWithWhite:1.0 alpha:usable ? 1.0 : 0.3];
+    c.baseForegroundColor = [UIColor colorWithWhite:0.0 alpha:usable ? 1.0 : 0.5];
+    b.configuration = c;
+  };
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.enabled = NO;
+  [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+  XEDetachFormCommit(view_controller);
+  objc_setAssociatedObject(view_controller, &kXEFormCommitKey, button,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  if (view_controller.viewIfLoaded.window) {
+    XEAttachFormCommit(view_controller);
+  }
+  return button;
+}
+
+void XESetFormCommitBusy(UIViewController* view_controller, BOOL busy) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  UIButtonConfiguration* config = [[button.configuration copy] autorelease];
+  config.showsActivityIndicator = busy;
+  config.imagePlacement = NSDirectionalRectEdgeLeading;
+  button.configuration = config;
+  button.userInteractionEnabled = !busy;
+}
+
+void XESetFormCommitHidden(UIViewController* view_controller, BOOL hidden) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  button.hidden = hidden;
+  // Rows scroll clear of the button only while it is there.
+  const CGFloat inset =
+      button && !hidden ? kXEFormCommitHeight + kXEFormCommitMargin : 0.0;
+  UIEdgeInsets safe = view_controller.additionalSafeAreaInsets;
+  if (safe.bottom != inset) {
+    safe.bottom = inset;
+    view_controller.additionalSafeAreaInsets = safe;
+  }
+}
+
+UIButton* XEFormCommitButton(UIViewController* view_controller) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  if (!button.window || button.hidden || !button.enabled || !button.userInteractionEnabled) {
+    return nil;
+  }
+  return button;
+}
+
+void XEAttachFormCommit(UIViewController* view_controller) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  if (!button) {
+    return;
+  }
+  // The navigation controller's view, not the page's own: a table's view scrolls.
+  UIView* host = view_controller.navigationController.view ?: view_controller.view;
+  if (button.superview != host) {
+    [button removeFromSuperview];
+    [host addSubview:button];
+    UILayoutGuide* safe = host.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+      [button.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor
+                                           constant:kXEFormCommitMargin],
+      [button.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor
+                                            constant:-kXEFormCommitMargin],
+      [button.heightAnchor constraintEqualToConstant:kXEFormCommitHeight],
+      [button.bottomAnchor constraintEqualToAnchor:host.keyboardLayoutGuide.topAnchor
+                                          constant:-kXEFormCommitMargin * 0.5],
+    ]];
+  }
+  XESetFormCommitHidden(view_controller, button.hidden);
+}
+
+void XEDetachFormCommit(UIViewController* view_controller) {
+  UIButton* button = objc_getAssociatedObject(view_controller, &kXEFormCommitKey);
+  [button removeFromSuperview];
+}
+
 @implementation XESheetTableViewController
 
 @synthesize glassStyle;
@@ -297,25 +474,39 @@ void XEPresentOKAlert(UIViewController* presenter, NSString* title, NSString* me
   if (self.glassStyle) {
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.tableView.backgroundColor = [UIColor clearColor];
-    self.tableView.separatorColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    self.tableView.separatorColor = [XeniaTheme glassHairline];
   }
 }
 
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
+  XEApplySheetHeader(self);
+  XEAttachFormCommit(self);
   if (self.glassStyle) {
-    self.navigationController.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    // One neutral charcoal, as in the Online sheet, under every glass page, so a sheet never turns light or flat grey.
-    self.navigationController.view.backgroundColor =
-        [UIColor colorWithWhite:0.12 alpha:1.0];
+    // Glass rows sit on the art wash, never on a flat sheet.
+    XEUseArtWash(self);
   }
+  XEInstallArtWashIfNeeded(self);
+  XEFitGlassCardToTable(self);
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  XEFitGlassCardToTable(self);
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+  [super viewWillDisappear:animated];
+  XEDetachFormCommit(self);
 }
 
 - (void)tableView:(UITableView* __unused)tableView
   willDisplayCell:(UITableViewCell*)cell
 forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
-  if (self.glassStyle) {
-    cell.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.09];
+  // A cell the page made clear on purpose (a heading drawn as a row) stays clear.
+  if (self.glassStyle &&
+      !(cell.backgroundColor && CGColorGetAlpha(cell.backgroundColor.CGColor) == 0.0)) {
+    cell.backgroundColor = [XeniaTheme glassGroupFill];
   }
 }
 
@@ -354,6 +545,18 @@ forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
 
 @implementation XESheetViewController
 
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  XEApplySheetHeader(self);
+  XEAttachFormCommit(self);
+  XEInstallArtWashIfNeeded(self);
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+  [super viewWillDisappear:animated];
+  XEDetachFormCommit(self);
+}
+
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
   return UIInterfaceOrientationMaskAll;
 }
@@ -364,30 +567,32 @@ forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
 
 @end
 
-UIImage* XESettingsBadgeImage(NSString* symbol, UIColor* color) {
+UIImage* XERowSymbolImage(NSString* symbol, UIColor* state_color) {
+  // A bare 22-pt symbol, centred in a fixed 29-pt box so every row's text starts at the same
+  // place. White 85% unless the row carries a state (destructive, warning, the mint accent).
   static NSCache<NSString*, UIImage*>* cache = [[NSCache alloc] init];
+  UIColor* color = state_color ?: [UIColor colorWithWhite:1.0 alpha:0.85];
   CGFloat r = 0, g = 0, b = 0, a = 0;
   [color getRed:&r green:&g blue:&b alpha:&a];
-  NSString* key = [NSString stringWithFormat:@"%@|%.3f|%.3f|%.3f", symbol, r, g, b];
+  NSString* key = [NSString stringWithFormat:@"%@|%.3f|%.3f|%.3f|%.3f", symbol, r, g, b, a];
   if (UIImage* cached = [cache objectForKey:key]) {
     return cached;
   }
   const CGFloat side = 29.0;
+  const CGFloat glyph_max = 22.0;
   UIImage* glyph = [[UIImage systemImageNamed:symbol
                             withConfiguration:[UIImageSymbolConfiguration
-                                                  configurationWithPointSize:15.0
-                                                                      weight:UIImageSymbolWeightSemibold]]
-      imageWithTintColor:[UIColor whiteColor]
+                                                  configurationWithPointSize:19.0
+                                                                      weight:UIImageSymbolWeightMedium]]
+      imageWithTintColor:color
            renderingMode:UIImageRenderingModeAlwaysOriginal];
   UIGraphicsImageRenderer* renderer =
       [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)] autorelease];
   UIImage* image = [renderer imageWithActions:^(UIGraphicsImageRendererContext* __unused context) {
-    [color setFill];
-    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:7.0] fill];
     if (glyph) {
-      // Fit wide symbols inside the square.
+      // Fit wide symbols inside the box.
       CGSize size = glyph.size;
-      const CGFloat scale = MIN(1.0, 19.0 / MAX(size.width, size.height));
+      const CGFloat scale = MIN(1.0, glyph_max / MAX(size.width, size.height));
       size = CGSizeMake(size.width * scale, size.height * scale);
       [glyph drawInRect:CGRectMake((side - size.width) * 0.5, (side - size.height) * 0.5,
                                    size.width, size.height)];

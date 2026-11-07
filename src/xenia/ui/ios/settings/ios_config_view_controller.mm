@@ -35,6 +35,7 @@
 #import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
+#import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
@@ -613,7 +614,7 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   if (game_title_id_ && game_title_.length) {
     self.navigationItem.subtitle = game_title_;
   }
-  self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+  XEUseArtWash(self);
   self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 132.0;
@@ -914,19 +915,11 @@ static bool IsSliderItem(const IOSConfigItem* item) {
 }
 
 - (void)updateNavigationItems {
-  if ([self isRootSettingsController]) {
-    if (shows_root_dismiss_button_) {
-      self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-                 action:@selector(closeTapped:)] autorelease];
-    } else {
-      self.navigationItem.leftBarButtonItem = nil;
-    }
-  } else {
-    self.navigationItem.leftBarButtonItem = nil;
+  // Pushed, the page picks up the root's ✕ (XEApplySheetHeader).
+  if ([self isRootSettingsController] && shows_root_dismiss_button_) {
+    XESetSheetClose(self, self, @selector(closeTapped:));
   }
-  self.navigationItem.rightBarButtonItem = nil;
+  XESetSheetActions(self, @[]);
 }
 
 - (IOSConfigItem*)itemAtIndexPath:(NSIndexPath*)indexPath {
@@ -1061,6 +1054,13 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   field.textColor = [XeniaTheme textSecondary];
   field.frame = CGRectMake(0, 0, [self fieldWidthForText:text font:font baseWidth:base_width],
                            MAX(32.0, ceil(font.lineHeight) + 8.0));
+}
+
+// Rows in the glass groups of the charcoal page, as on the Settings list.
+- (void)tableView:(UITableView* __unused)tableView
+      willDisplayCell:(UITableViewCell*)cell
+    forRowAtIndexPath:(NSIndexPath* __unused)indexPath {
+  cell.backgroundColor = [XeniaTheme glassGroupFill];
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -1312,7 +1312,7 @@ static bool IsSliderItem(const IOSConfigItem* item) {
                           }
                           completion(YES);
                         }];
-  reset.backgroundColor = [XeniaTheme sectionIconOrange];
+  reset.backgroundColor = [XeniaTheme statusWarning];
   return [UISwipeActionsConfiguration configurationWithActions:@[ reset ]];
 }
 

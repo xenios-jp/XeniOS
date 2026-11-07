@@ -88,16 +88,6 @@ XeniaTextStyle XeniaTextStyleTitle2(void);
 + (UIColor*)overlay;       // black 85%
 + (UIColor*)overlayLight;  // black 58%
 
-// Branded categorical icon palette for the settings hub and similar surfaces.
-// Replaces the previous UIColor.system{Blue,Indigo,Orange,Purple,Red,Gray}Color
-// calls so the icon row stays on-brand rather than OS-default.
-+ (UIColor*)sectionIconBlue;
-+ (UIColor*)sectionIconIndigo;
-+ (UIColor*)sectionIconOrange;
-+ (UIColor*)sectionIconPurple;
-+ (UIColor*)sectionIconRed;
-+ (UIColor*)sectionIconGray;
-
 // On-screen touch overlay tints — single source of truth for the seven colours
 // that IOSTouchTintStyle enumerates. These render over the game view rather
 // than over iOS chrome, so they aren't trait-aware.
@@ -108,6 +98,21 @@ XeniaTextStyle XeniaTextStyleTitle2(void);
 + (UIColor*)touchTintLime;
 + (UIColor*)touchTintCoral;
 + (UIColor*)touchTintSlate;
+
+// Glass: the app's own chrome (the Online card, Profile, Friends, Settings sheets). Always dark;
+// see docs/ios_design_language.md.
++ (UIColor*)glassSheet;      // charcoal sheet page
++ (UIColor*)glassCardTint;   // floating card, over the thick dark material
++ (UIColor*)glassGroupFill;  // white 9%
++ (UIColor*)glassHairline;   // white 14%
++ (UIColor*)glassCardEdge;   // white 14%
++ (UIColor*)glassDim;        // black 42%
++ (CGFloat)glassCardRadius;     // 34
++ (CGFloat)glassGroupRadius;    // 22
++ (CGFloat)glassControlSize;    // 44
++ (CGFloat)glassTileSize;       // 36
++ (CGFloat)glassRowMinHeight;   // 52
++ (CGFloat)glassCardInset;      // 12
 
 // Dynamic shadow color for the given elevation. Always black; the alpha
 // resolves at the trait collection it's evaluated in (dark mode reads darker

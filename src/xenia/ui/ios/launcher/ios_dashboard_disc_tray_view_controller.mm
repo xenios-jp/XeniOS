@@ -107,7 +107,7 @@ UIImage* DrawCover(UIImage* cover, UIGraphicsImageRendererFormat* format) {
   leave_empty.accessibilityHint =
       NSLocalizedString(@"Closes the tray with no disc in the drive.",
                         @"VoiceOver hint for the disc tray's Leave Empty button");
-  self.navigationItem.leftBarButtonItem = leave_empty;
+  XESetSheetActions(self, @[ leave_empty ]);
   [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kDiscCellIdentifier];
 
   if (discs_.count > kSearchableDiscCount) {

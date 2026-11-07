@@ -1211,7 +1211,6 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   NSString* done_title_;
   NSString* done_summary_;
 
-  UIBarButtonItem* cancel_button_;
 }
 
 - (instancetype)initWithTitle:(NSString*)title requestCount:(NSUInteger)requestCount {
@@ -1250,7 +1249,6 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   [converting_eta_text_ release];
   [done_title_ release];
   [done_summary_ release];
-  [cancel_button_ release];
   [super dealloc];
 }
 
@@ -1260,9 +1258,6 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
   self.view.backgroundColor = [UIColor systemBackgroundColor];
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.estimatedRowHeight = 96.0;
-  cancel_button_ = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                                                                 target:self
-                                                                 action:@selector(cancelTapped:)];
   [self refreshChrome];
 }
 
@@ -1271,23 +1266,17 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
     return;
   }
   switch (phase_) {
+    // ✕ cancels while there is work to stop, and closes once it is done.
     case XeniaIOSZarPreflightPhaseEstimating:
     case XeniaIOSZarPreflightPhaseReady:
-      cancel_button_.enabled = YES;
-      self.navigationItem.leftBarButtonItem = cancel_button_;
-      self.navigationItem.rightBarButtonItem = nil;
+      XESetSheetClose(self, self, @selector(cancelTapped:));
       break;
     case XeniaIOSZarPreflightPhaseConverting:
-      cancel_button_.enabled = converting_cancel_enabled_;
-      self.navigationItem.leftBarButtonItem = cancel_button_;
-      self.navigationItem.rightBarButtonItem = nil;
+      XESetSheetClose(self, self, @selector(cancelTapped:));
+      XESheetCloseItem(self).enabled = converting_cancel_enabled_;
       break;
     case XeniaIOSZarPreflightPhaseDone:
-      self.navigationItem.leftBarButtonItem = nil;
-      self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
-          initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                               target:self
-                               action:@selector(doneTapped:)] autorelease];
+      XESetSheetClose(self, self, @selector(doneTapped:));
       break;
   }
 }
@@ -1577,7 +1566,9 @@ typedef NS_ENUM(NSInteger, XeniaIOSZarPreflightSection) {
 
 - (void)setConversionCancelEnabled:(BOOL)enabled {
   converting_cancel_enabled_ = enabled;
-  cancel_button_.enabled = enabled;
+  if (phase_ == XeniaIOSZarPreflightPhaseConverting) {
+    XESheetCloseItem(self).enabled = enabled;
+  }
   if (self.isViewLoaded) {
     [self refreshVisibleProgressCell];
   }

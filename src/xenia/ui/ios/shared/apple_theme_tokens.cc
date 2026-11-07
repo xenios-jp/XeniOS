@@ -64,6 +64,23 @@ constexpr ThemeRadiusTokens kSharedRadius = {
     /* xxl */ 24.0f,
 };
 
+// Settled with the Online card and the account sheets (2026-11): see
+// docs/ios_design_language.md for where each is used.
+constexpr ThemeGlassTokens kSharedGlass = {
+    /* sheet          */ {0x1F, 0x1F, 0x1F, 0xFF},  // white 0.12
+    /* card_tint      */ {0x22, 0x23, 0x28, 140},   // 55%
+    /* group_fill     */ {0xFF, 0xFF, 0xFF, 23},    // 9%
+    /* hairline       */ {0xFF, 0xFF, 0xFF, 36},    // 14%
+    /* card_edge      */ {0xFF, 0xFF, 0xFF, 36},    // 14%
+    /* dim            */ {0x00, 0x00, 0x00, 107},   // 42%
+    /* card_radius    */ 34.0f,
+    /* group_radius   */ 22.0f,
+    /* control_size   */ 44.0f,
+    /* tile_size      */ 36.0f,
+    /* row_min_height */ 52.0f,
+    /* card_inset     */ 12.0f,
+};
+
 constexpr ThemeTokens kThemeDark = {
     ThemeColorTokens{
         /* bg_primary */ {0x09, 0x09, 0x0B, 0xFF},
@@ -96,17 +113,7 @@ constexpr ThemeTokens kThemeDark = {
     kSharedSpacing,
     kSharedOpacity,
     kSharedTypographyScale,
-    ThemeSectionIconTokens{
-        // Branded equivalents for the system color palette previously used in
-        // the settings hub. Picked to read as the same categories while
-        // sitting next to the mint accent without clashing.
-        /* blue   */ {0x4F, 0x8C, 0xFF, 0xFF},
-        /* indigo */ {0x81, 0x8C, 0xF8, 0xFF},
-        /* orange */ {0xF5, 0x9E, 0x0B, 0xFF},
-        /* purple */ {0xA8, 0x55, 0xF7, 0xFF},
-        /* red    */ {0xF8, 0x71, 0x71, 0xFF},
-        /* gray   */ {0x71, 0x71, 0x7A, 0xFF},
-    },
+    kSharedGlass,
 };
 
 constexpr ThemeTokens kThemeLight = {
@@ -141,16 +148,7 @@ constexpr ThemeTokens kThemeLight = {
     kSharedSpacing,
     kSharedOpacity,
     kSharedTypographyScale,
-    ThemeSectionIconTokens{
-        // Darker variants for the same categorical palette on light
-        // backgrounds.
-        /* blue   */ {0x25, 0x63, 0xEB, 0xFF},
-        /* indigo */ {0x4F, 0x46, 0xE5, 0xFF},
-        /* orange */ {0xD9, 0x77, 0x06, 0xFF},
-        /* purple */ {0x7C, 0x3A, 0xED, 0xFF},
-        /* red    */ {0xDC, 0x26, 0x26, 0xFF},
-        /* gray   */ {0x71, 0x71, 0x7A, 0xFF},
-    },
+    kSharedGlass,
 };
 
 // Touch overlay tints — single set, matching the historical RGB values that
