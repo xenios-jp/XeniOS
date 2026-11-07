@@ -51,6 +51,14 @@ struct AssociationEvent {
   Packet packet;
 };
 
+// Process-wide: told when an association this side started connects, or
+// retires without having connected, with the key (the session's XNKID) it was
+// for. Joining a session reports why it failed by it. Called with the owner's
+// lock held: keep it short, and call nothing back into System Link.
+using AssociationObserver =
+    std::function<void(const KeyId& id, bool connected)>;
+void SetAssociationObserver(AssociationObserver observer);
+
 // The owner serializes calls. State changes only after a packet authenticates.
 class Associations {
  public:

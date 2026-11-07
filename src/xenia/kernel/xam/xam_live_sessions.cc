@@ -25,6 +25,8 @@
 #include "xenia/base/byte_order.h"
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/xam/xam_live_invites.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/net/live_directory.h"
 #include "xenia/net/system_link.h"
@@ -61,6 +63,12 @@ constexpr auto kArbitrationLifetime = std::chrono::seconds(60);
 // session it stopped hearing about.
 constexpr auto kAdvertInterval = std::chrono::milliseconds(1000);
 constexpr auto kHeardLifetime = std::chrono::milliseconds(4000);
+// Anyone in the room can send adverts and registrations: past these the
+// oldest go (a System Link game lists far fewer).
+constexpr size_t kMaxHeard = 256;
+constexpr size_t kMaxArbitrationSessions = 16;
+// A query is answered at most this often.
+constexpr auto kQueryReplyInterval = std::chrono::milliseconds(500);
 constexpr uint32_t kReceiveWaitMs = 200;
 
 class Writer {
@@ -357,6 +365,15 @@ class Directory {
           return;
         }
         const bool fresh = !heard_.contains(advert.info.session_id);
+        if (fresh && heard_.size() >= kMaxHeard) {
+          PruneLocked();
+          if (heard_.size() >= kMaxHeard) {
+            heard_.erase(std::min_element(
+                heard_.begin(), heard_.end(), [](const auto& a, const auto& b) {
+                  return a.second.seen < b.second.seen;
+                }));
+          }
+        }
         heard_[advert.info.session_id] = {std::move(advert), Clock::now()};
         if (fresh) {
           XELOGI("Live sessions: heard a session, {} sessions known",
@@ -366,6 +383,10 @@ class Directory {
         return;
       }
       case kQuery:
+        if (Clock::now() - last_query_reply_ < kQueryReplyInterval) {
+          return;
+        }
+        last_query_reply_ = Clock::now();
         for (const auto& [id, advert] : own_) {
           SendLocked(EncodeLiveSessionAdvert(title_id_, advert));
         }
@@ -385,8 +406,27 @@ class Directory {
             return;
           }
         }
+        if (!arbitration_.contains(id) &&
+            arbitration_.size() >= kMaxArbitrationSessions) {
+          // Ours are kept; another session's registrations go.
+          auto other = std::find_if(
+              arbitration_.begin(), arbitration_.end(), [&](const auto& entry) {
+                return std::none_of(own_arbitration_.begin(),
+                                    own_arbitration_.end(),
+                                    [&](const OwnRegistration& own) {
+                                      return own.session_id == entry.first;
+                                    });
+              });
+          if (other == arbitration_.end()) {
+            return;
+          }
+          arbitration_.erase(other);
+        }
         auto& registered = arbitration_[id];
         const bool fresh = !registered.contains(machine);
+        if (fresh && registered.size() >= kMaxEntries) {
+          return;
+        }
         registered[machine] = std::move(xuids);
         if (fresh) {
           // A machine that registered later has not heard this one yet.
@@ -419,6 +459,7 @@ class Directory {
   uint32_t title_id_ = 0;
   std::map<net::KeyId, LiveSessionAdvert> own_;
   std::map<net::KeyId, Heard> heard_;
+  Clock::time_point last_query_reply_{};
   // Machine ID to players, per ranked session.
   std::map<net::KeyId, std::map<uint64_t, std::vector<uint64_t>>>
       arbitration_;
@@ -431,26 +472,68 @@ Directory& GetDirectory() {
 }
 
 
+// The account the session directory signs in as: the first profile with a
+// signed-in Live account.
+std::shared_ptr<net::live::AccountClient> SessionAccount() {
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    auto account = LiveAccount(i);
+    if (account && account->signed_in()) {
+      return account;
+    }
+  }
+  return nullptr;
+}
+
+net::live::DirectoryAuth SessionAuth() {
+  net::live::DirectoryAuth auth;
+  auth.xuid = [] {
+    auto account = SessionAccount();
+    return account ? account->xuid() : 0;
+  };
+  auth.token = []() -> std::optional<std::string> {
+    auto account = SessionAccount();
+    return account ? account->SessionToken() : std::nullopt;
+  };
+  auth.request_token = [] {
+    if (auto account = SessionAccount()) {
+      account->RequestSessionToken();
+    }
+  };
+  return auth;
+}
+
 // Through the relay: the lobby's session directory, and the sessions this
 // machine lists in it.
 class OnlineSessions {
  public:
-  // Nothing when System Link doesn't go through the relay.
-  net::live::SessionDirectory* Directory(KernelState* kernel_state) {
+  // Nothing when System Link doesn't go through the relay, or this platform
+  // can't reach the lobby. A caller keeps the directory alive while it uses
+  // it: another title or lobby replaces it.
+  std::shared_ptr<net::live::SessionDirectory> Directory(
+      KernelState* kernel_state) {
     const std::string lobby = LiveSessionLobby();
-    std::lock_guard lock(mutex_);
-    if (lobby.empty()) {
+    if (lobby.empty() || !net::secure::GetLobbySocketFactory()) {
       return nullptr;
     }
     const uint32_t title_id = kernel_state->title_id();
+    std::shared_ptr<net::live::SessionDirectory> replaced;
+    std::lock_guard lock(mutex_);
     if (!directory_ || lobby != lobby_ || title_id != title_id_) {
+      // Destroyed after the lock is released, by its last user.
+      replaced = std::move(directory_);
       directory_ =
-          std::make_unique<net::live::SessionDirectory>(lobby, title_id);
+          std::make_shared<net::live::SessionDirectory>(lobby, title_id,
+                                                        SessionAuth());
       lobby_ = lobby;
       title_id_ = title_id;
       listed_.clear();
     }
-    return directory_.get();
+    return directory_;
+  }
+
+  std::shared_ptr<net::live::SessionDirectory> Current() {
+    std::lock_guard lock(mutex_);
+    return directory_;
   }
 
   void Listed(const std::string& id) {
@@ -458,10 +541,15 @@ class OnlineSessions {
     listed_.insert(id);
   }
 
-  // The directory, when it lists |id|; forgets |id|.
-  net::live::SessionDirectory* Unlist(const std::string& id) {
+  bool IsListed(const std::string& id) {
     std::lock_guard lock(mutex_);
-    return listed_.erase(id) ? directory_.get() : nullptr;
+    return listed_.contains(id);
+  }
+
+  // The directory, when it lists |id|; forgets |id|.
+  std::shared_ptr<net::live::SessionDirectory> Unlist(const std::string& id) {
+    std::lock_guard lock(mutex_);
+    return listed_.erase(id) ? directory_ : nullptr;
   }
 
   static std::string Key(const net::KeyId& session_id) {
@@ -472,7 +560,7 @@ class OnlineSessions {
 
  private:
   std::mutex mutex_;
-  std::unique_ptr<net::live::SessionDirectory> directory_;
+  std::shared_ptr<net::live::SessionDirectory> directory_;
   std::string lobby_;
   uint32_t title_id_ = 0;
   std::set<std::string> listed_;
@@ -604,7 +692,7 @@ bool DecodeLiveSessionAdvert(std::span<const uint8_t> bytes,
 void AdvertiseLiveSession(KernelState* kernel_state,
                           const LiveSessionAdvert& advert) {
   auto& online = GetOnlineSessions();
-  if (auto* directory = online.Directory(kernel_state)) {
+  if (auto directory = online.Directory(kernel_state)) {
     auto listing = ToDirectory(advert);
     online.Listed(listing.id);
     directory->Advertise(listing);
@@ -613,9 +701,24 @@ void AdvertiseLiveSession(KernelState* kernel_state,
   GetDirectory().Advertise(kernel_state, advert);
 }
 
+bool UpdateLiveSession(const net::KeyId& session_id, uint32_t used_public,
+                       uint32_t used_private) {
+  auto& online = GetOnlineSessions();
+  const std::string id = OnlineSessions::Key(session_id);
+  auto directory = online.Current();
+  return directory && online.IsListed(id) &&
+         directory->Update(id, used_public, used_private);
+}
+
+void LiveSessionTokenReady() {
+  if (auto directory = GetOnlineSessions().Current()) {
+    directory->TokenReady();
+  }
+}
+
 void WithdrawLiveSession(const net::KeyId& session_id) {
   const std::string id = OnlineSessions::Key(session_id);
-  if (auto* directory = GetOnlineSessions().Unlist(id)) {
+  if (auto directory = GetOnlineSessions().Unlist(id)) {
     directory->Withdraw(id);
     return;
   }
@@ -633,7 +736,7 @@ std::vector<ArbitrationRegistrant> RegisterArbitration(
 std::vector<LiveSessionAdvert> FindLiveSessions(KernelState* kernel_state,
                                                 uint32_t wait_ms) {
   auto& online = GetOnlineSessions();
-  if (auto* directory = online.Directory(kernel_state)) {
+  if (auto directory = online.Directory(kernel_state)) {
     const auto adverts = directory->Search({}, 50, true, wait_ms);
     std::vector<LiveSessionAdvert> sessions;
     for (const auto& advert : adverts) {
@@ -644,6 +747,68 @@ std::vector<LiveSessionAdvert> FindLiveSessions(KernelState* kernel_state,
     return sessions;
   }
   return GetDirectory().Find(kernel_state, wait_ms);
+}
+
+LiveSessionAdvert KnownLiveSession(const XSESSION_INFO& info) {
+  LiveSessionAdvert session;
+  session.info = info;
+  // Its slots aren't known: room for the joiner beside the host.
+  session.max_public_slots = 16;
+  session.used_public_slots = 1;
+  return session;
+}
+
+std::vector<LiveSessionAdvert> LookupLiveSessions(
+    KernelState* kernel_state, const std::vector<net::KeyId>& ids,
+    uint32_t wait_ms) {
+  auto wanted = [&](const net::KeyId& id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+  };
+  std::vector<LiveSessionAdvert> sessions;
+  auto& online = GetOnlineSessions();
+  if (auto directory = online.Directory(kernel_state)) {
+    std::vector<std::string> keys;
+    for (const auto& id : ids) {
+      keys.push_back(OnlineSessions::Key(id));
+    }
+    // One wait for all of them, not one per 16 (the lobby's most per
+    // lookup).
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(wait_ms);
+    for (size_t i = 0; i < keys.size(); i += 16) {
+      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (left.count() <= 0) {
+        break;
+      }
+      const std::vector<std::string> part(
+          keys.begin() + i, keys.begin() + std::min(keys.size(), i + 16));
+      for (const auto& advert :
+           directory->Lookup(part, static_cast<uint32_t>(left.count()))) {
+        if (auto session = FromDirectory(advert)) {
+          sessions.push_back(std::move(*session));
+        }
+      }
+    }
+  } else {
+    sessions = GetDirectory().Find(kernel_state, wait_ms);
+  }
+  std::erase_if(sessions, [&](const LiveSessionAdvert& session) {
+    return !wanted(session.info.session_id);
+  });
+  for (const auto& info : LiveKnownSessions()) {
+    if (!wanted(info.session_id)) {
+      continue;
+    }
+    bool found = false;
+    for (const auto& session : sessions) {
+      found |= session.info.session_id == info.session_id;
+    }
+    if (!found) {
+      sessions.push_back(KnownLiveSession(info));
+    }
+  }
+  return sessions;
 }
 
 }  // namespace xam

@@ -38,6 +38,10 @@ constexpr uint64_t kIdleLostMs = 30000;
 constexpr uint64_t kLobbyOpenMs = 20000;
 // As many as the lobby lets a player list.
 constexpr size_t kMaxListedCandidates = 8;
+// More players than a room holds, and more than a lobby message needs: past
+// these the lobby's word isn't followed.
+constexpr size_t kMaxPeers = 64;
+constexpr size_t kMaxLobbyText = 64 * 1024;
 
 bool IsGroup(const Mac& mac) { return mac[0] & 1; }
 
@@ -208,6 +212,10 @@ std::optional<RelayClient::Listed> ReadListed(const rapidjson::Value& peer,
 
 }  // namespace
 
+bool IsPublicServer(const Endpoint& endpoint) {
+  return IsPublicUnicast(endpoint);
+}
+
 RelayClient::RelayClient(const Mac& mac, const RelayConfig& config)
     : mac_(mac), config_(config) {
   UpdateStatus(0);
@@ -251,8 +259,12 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
   if (text == "pong") {
     return;
   }
+  // The iterative parser keeps deep nesting off the stack.
+  if (text.size() > kMaxLobbyText) {
+    return;
+  }
   rapidjson::Document message;
-  message.Parse(text.data(), text.size());
+  message.Parse<rapidjson::kParseIterativeFlag>(text.data(), text.size());
   if (message.HasParseError() || !message.IsObject()) {
     return;
   }
@@ -276,6 +288,9 @@ void RelayClient::LobbyMessage(std::string_view text, uint64_t now_ms,
     if (joined_ && peers != message.MemberEnd() && peers->value.IsArray()) {
       std::vector<Listed> listed;
       for (const auto& peer : peers->value.GetArray()) {
+        if (listed.size() == kMaxPeers) {
+          break;
+        }
         if (auto read = ReadListed(peer, config_.probe_local_candidates)) {
           listed.push_back(std::move(*read));
         }

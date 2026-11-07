@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -29,7 +30,31 @@ uint32_t Spi(std::span<const uint8_t> payload) {
          payload[3];
 }
 
+struct Observer {
+  std::mutex mutex;
+  AssociationObserver observer;
+};
+
+Observer& GetObserver() {
+  static Observer observer;
+  return observer;
+}
+
+void Observe(const KeyId& id, bool connected) {
+  auto& observer = GetObserver();
+  std::lock_guard lock(observer.mutex);
+  if (observer.observer) {
+    observer.observer(id, connected);
+  }
+}
+
 }  // namespace
+
+void SetAssociationObserver(AssociationObserver observer) {
+  auto& state = GetObserver();
+  std::lock_guard lock(state.mutex);
+  state.observer = std::move(observer);
+}
 
 struct Associations::State {
   explicit State(bool sequence_zero) : replay(sequence_zero) {}
@@ -247,6 +272,9 @@ void Associations::Established(State& state, uint64_t now) {
   }
   state.status = AssociationStatus::Established;
   XELOGI("XNet association established");
+  if (state.initiator) {
+    Observe(state.key.second, true);
+  }
   state.received = now;
   state.attempts = 0;
   events_.push_back({AssociationEvent::Type::Connected,
@@ -272,9 +300,13 @@ void Associations::Retired(PeerKey key, bool report) {
     return;
   }
   const uint32_t remote_spi = found->second->remote_spi;
-  XELOGI("XNet association retired: established={}, attempts={}",
-         found->second->status == AssociationStatus::Established,
+  const bool established =
+      found->second->status == AssociationStatus::Established;
+  XELOGI("XNet association retired: established={}, attempts={}", established,
          found->second->attempts);
+  if (found->second->initiator && !established) {
+    Observe(key.second, false);
+  }
   states_.erase(found);
   // Drop this generation's queued output and events so a rejoin starts clean.
   auto mac = MachineOf(key.first);

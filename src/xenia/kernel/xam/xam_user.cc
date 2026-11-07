@@ -21,6 +21,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_settings.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xenumerator.h"
@@ -768,7 +769,12 @@ dword_result_t XamUserAreUsersFriends_entry(
       if (user_profile->signin_state() != 2) {
         result = X_ERROR_NOT_LOGGED_ON;
       } else {
-        // No friends!
+        // Friends with all of them on the online service. A friends list
+        // holds 100 at most.
+        are_friends = xuids_ptr && xuids_count > 0 && xuids_count <= 100;
+        for (uint32_t i = 0; are_friends && i < xuids_count; ++i) {
+          are_friends = LiveAreFriends(user_index, xuids_ptr[i]);
+        }
         result = X_ERROR_SUCCESS;
       }
     } else {

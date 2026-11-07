@@ -55,11 +55,27 @@ struct LiveSessionAdvert {
 void AdvertiseLiveSession(KernelState* kernel_state,
                           const LiveSessionAdvert& advert);
 void WithdrawLiveSession(const net::KeyId& session_id);
+// A player joined or left a session this machine lists in the lobby's
+// directory: tells it how many slots are taken. False when the session
+// isn't listed there (advertise it instead).
+bool UpdateLiveSession(const net::KeyId& session_id, uint32_t used_public,
+                       uint32_t used_private);
+// The account has a session token for the lobby's directory, or signed in.
+void LiveSessionTokenReady();
 
 // The sessions other players of the running title announce. Asks them to
 // announce again and waits up to |wait_ms| when none were heard yet.
 std::vector<LiveSessionAdvert> FindLiveSessions(KernelState* kernel_state,
                                                 uint32_t wait_ms);
+
+// The sessions with these IDs, full, in game or not (XSessionSearchByID(s),
+// invites, joining a friend): those announced, then those only known from
+// friends' presence and invites, as sessions with free slots.
+std::vector<LiveSessionAdvert> LookupLiveSessions(
+    KernelState* kernel_state, const std::vector<net::KeyId>& ids,
+    uint32_t wait_ms);
+// A session known only by its XSESSION_INFO.
+LiveSessionAdvert KnownLiveSession(const XSESSION_INFO& info);
 
 // XSessionArbitrationRegister without Live: each machine in a ranked session
 // broadcasts its players for the session, and every machine ends up with the

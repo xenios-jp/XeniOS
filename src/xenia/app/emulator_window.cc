@@ -141,6 +141,7 @@
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/indie_game.h"
 #include "xenia/kernel/xam/profile_manager.h"
+#include "xenia/kernel/xam/xam_live_invites.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/ui/file_picker.h"
@@ -184,6 +185,8 @@
 DECLARE_bool(debug);
 DECLARE_path(target);
 DECLARE_bool(in_process_title_relaunch);
+DECLARE_bool(live_auto_accept_invites);
+DECLARE_string(live_accepted_invite);
 DECLARE_bool(discord);
 
 DECLARE_string(hid);
@@ -350,7 +353,7 @@ bool IsLaunchOnlyArg(std::string_view arg) {
        {"--target=", "--launch_module=", "--launch_flags=", "--launch_data=",
         "--launch_xbox_disc=", "--launch_package=",
         "--slot_bindings_passthrough=", "--boot_animation=",
-        "--input_script_offset="}) {
+        "--input_script_offset=", "--live_accepted_invite="}) {
     if (xe::utf8::starts_with(arg, name)) {
       return true;
     }
@@ -619,6 +622,7 @@ std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
 
 EmulatorWindow::~EmulatorWindow() {
   library_fill_alive_->store(false);
+  kernel::xam::SetLiveInviteTitleHandler(nullptr);
 
   // Stop the gamepad poll thread and wait for it to exit; it touches members of
   // this window and Thread::reset() does not join.
@@ -932,6 +936,16 @@ void EmulatorWindow::OnEmulatorInitialized() {
       RefreshProfileMenu();
     });
   });
+  // An invite accepted for another game: as on the console, that game starts
+  // from the library and reads the invite as it boots.
+  kernel::xam::SetLiveInviteTitleHandler(
+      [this](uint32_t user_index, const std::string& from,
+             kernel::xam::AcceptedInvite invite, const std::string& room) {
+        app_context_.CallInUIThreadDeferred(
+            [this, user_index, from, invite = std::move(invite), room]() {
+              StartTitleForLiveInvite(user_index, from, invite, room);
+            });
+      });
   emulator_->on_relaunch_failed.AddListener([this]() {
     app_context_.CallInUIThread([this]() { OnLaunchFailed(); });
   });
@@ -3850,6 +3864,13 @@ bool EmulatorWindow::SpawnEmulatorProcess(const std::vector<std::string>& args,
                                      hid::keyboard::ScriptReadOffset()));
   }
   child_args.insert(child_args.end(), args.begin(), args.end());
+  // An invite accepted here for the game this starts goes to that process
+  // alone.
+  if (!cvars::live_accepted_invite.empty() && !target.empty()) {
+    child_args.push_back("--live_accepted_invite=" +
+                         cvars::live_accepted_invite);
+    cvars::live_accepted_invite.clear();
+  }
   if (auto* input_system = emulator_ ? emulator_->input_system() : nullptr) {
     auto lock = input_system->lock();
     std::string slot_bindings =
@@ -3953,6 +3974,62 @@ bool EmulatorWindow::SpawnEmulatorProcess(const std::vector<std::string>& args,
   }
 #endif
   return true;
+}
+
+void EmulatorWindow::StartTitleForLiveInvite(
+    uint32_t user_index, const std::string& from,
+    const kernel::xam::AcceptedInvite& invite, const std::string& room) {
+  const uint32_t title_id = invite.title_id;
+  // The release played last, when the library has more than one.
+  const LibraryEntry* release = nullptr;
+  if (game_library_) {
+    for (const auto& entry : game_library_->entries()) {
+      if (entry.title_id == title_id && !entry.paths.empty() &&
+          (!release || entry.last_played > release->last_played)) {
+        release = &entry;
+      }
+    }
+  }
+  const wxString who = wxString::FromUTF8(from.empty() ? "A friend" : from);
+  auto* wx_window = dynamic_cast<ui::WxWindow*>(window_.get());
+  wxWindow* parent = wx_window ? wx_window->frame() : nullptr;
+  if (!release) {
+    XELOGW("Live invite: {}'s invite is to title {:08X}, which isn't in the "
+           "library",
+           from, title_id);
+    ShowWindowMessage(
+        window_.get(), _("Game Not in Library"),
+        wxString::Format(_("%s invited you to a game that isn't in your "
+                           "library (title %08X). Add the game, then accept "
+                           "the invite again."),
+                         who, title_id),
+        wxICON_INFORMATION);
+    return;
+  }
+  // Copied: the library may change while the question is up.
+  const std::filesystem::path path = release->default_path().path;
+  const std::string name = release->name;
+  release = nullptr;
+  if (emulator_->is_title_open() && !cvars::live_auto_accept_invites) {
+    const wxString running =
+        wxString::FromUTF8(emulator_->title_name().empty()
+                               ? std::string("the running game")
+                               : emulator_->title_name());
+    if (wxMessageBox(
+            wxString::Format(_("%s is playing %s. Unsaved progress in %s "
+                               "will be lost."),
+                             who, wxString::FromUTF8(name), running),
+            wxString::Format(_("Quit %s and Join?"), running),
+            wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, parent) != wxYES) {
+      XELOGI("Live invite: the player stayed in the running game");
+      return;
+    }
+  }
+  XELOGI("Live invite: starting {} ({:08X}) for {}'s invite", name, title_id,
+         from);
+  cvars::live_accepted_invite =
+      kernel::xam::EncodeAcceptedInvite(user_index, invite, room);
+  RunTitle(path);
 }
 
 void EmulatorWindow::LaunchTitleInNewProcess(

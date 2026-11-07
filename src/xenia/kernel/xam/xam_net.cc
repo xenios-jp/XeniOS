@@ -1921,7 +1921,11 @@ dword_result_t NetDll_XNetRegisterKey_entry(dword_t caller, lpdword_t key_id,
   net::Key key;
   std::memcpy(id.data(), key_id, id.size());
   std::memcpy(key.data(), exchange_key, key.size());
-  return link->RegisterKey(id, key);
+  const uint32_t error = link->RegisterKey(id, key);
+  if (!error) {
+    SystemLinkKeyRegistered(true);
+  }
+  return error;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetRegisterKey, kNetworking, kImplemented);
 
@@ -1936,7 +1940,11 @@ dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
   }
   net::KeyId id;
   std::memcpy(id.data(), key_id, id.size());
-  return link->UnregisterKey(id);
+  const uint32_t error = link->UnregisterKey(id);
+  if (!error) {
+    SystemLinkKeyRegistered(false);
+  }
+  return error;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterKey, kNetworking, kImplemented);
 
