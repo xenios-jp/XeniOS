@@ -1,3 +1,6 @@
+/* online view controller: after \"4 playing\", players in the game's public System Link lobby; %ld is how many */
+" · %ld in a public room" = " · %ld in a public room";
+
 /* Achievements summary; %1$@ is the unlocked count, %2$@ the gamerscore */
 "%1$@  %2$@" = "%1$@  %2$@";
 
@@ -9,6 +12,12 @@
 
 /* zar conversion coordinator: user-visible text */
 "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone." = "%1$@ can't be deleted because %2$@. Delete it in Files if you want it gone.";
+
+/* Invite banner, VoiceOver; %1$@ is the gamertag, %2$@ the game */
+"%1$@ invited you to %2$@" = "%1$@ invited you to %2$@";
+
+/* Alert message; %1$@ is the gamertag, %2$@ the invite's game, %3$@ the running game */
+"%1$@ is playing %2$@. Unsaved progress in %3$@ will be lost." = "%1$@ is playing %2$@. Unsaved progress in %3$@ will be lost.";
 
 /* game page: Convert to ZAR; %1$@ is the game's size, %2$@ the archive's */
 "%1$@ now. About %2$@ as a ZAR archive." = "%1$@ now. About %2$@ as a ZAR archive.";
@@ -46,6 +55,9 @@
 /* online view controller: line under \"9 Online\"; %1$ld and %2$ld are how many */
 "%1$ld are in games, %2$ld in private rooms." = "%1$ld are in games, %2$ld in private rooms.";
 
+/* online view controller: line under \"9 Online\"; %1$ld apps in games, %2$ld games */
+"%1$ld are playing %2$ld games." = "%1$ld are playing %2$ld games.";
+
 /* In-game menu: System Link card; %1$lu and %2$lu are counts */
 "%1$lu other players, %2$lu not connected yet" = "%1$lu other players, %2$lu not connected yet";
 
@@ -64,6 +76,15 @@
 /* zar conversion coordinator: detail text */
 "%@ - estimated savings unavailable" = "%@ - estimated savings unavailable";
 
+/* Invite banner title; %@ is the gamertag */
+"%@ invited you" = "%@ invited you";
+
+/* Alert message; %@ is the gamertag */
+"%@ invited you to a game that isn't in your library. Add the game, then accept from Friends within 10 minutes." = "%@ invited you to a game that isn't in your library. Add the game, then accept from Friends within 10 minutes.";
+
+/* Invite banner, VoiceOver; %@ is the gamertag */
+"%@ invited you to their party" = "%@ invited you to their party";
+
 /* zar conversion coordinator: user-visible text */
 "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed." = "%@ is present and valid. The original source was kept because XeniOS was closed before cleanup could be confirmed.";
 
@@ -73,9 +94,19 @@
 /* game page: Convert to ZAR; %@ is the game's size */
 "%@ now. Estimating its size as a ZAR archive…" = "%@ now. Estimating its size as a ZAR archive…";
 
+/* Online panel: party size, then who leads
+   Party summary; first %@ is the player count, second the leader */
+"%@ · %@ leads" = "%@ · %@ leads";
+
 /* game content view controller: detail text
    game page: an add-on linked from a folder; %@ is its kind */
 "%@ · Linked" = "%@ · Linked";
+
+/* Party: this profile's row; %@ is Leader or In the party */
+"%@ · You" = "%@ · You";
+
+/* Online panel, VoiceOver; %@ is the gamertag */
+"%@, party leader" = "%@, party leader";
 
 /* document import coordinator: message */
 "%@\nFor very large files, Link Folder plays them in place without copying." = "%@\nFor very large files, Link Folder plays them in place without copying.";
@@ -89,8 +120,18 @@
 /* online view controller: line under \"9 Online\"; %ld is how many */
 "%ld are in private rooms." = "%ld are in private rooms.";
 
-/* Game library, VoiceOver: Online button value; %ld is how many devices have XeniOS open */
-"%ld devices online" = "%ld devices online";
+/* online view controller: line under \"9 Online\"; %ld is how many apps run it */
+"%ld are playing 1 game." = "%ld are playing 1 game.";
+
+/* Online panel: search results; %ld is how many */
+"%ld friends" = "%ld friends";
+
+/* Game library, VoiceOver: Online button; %ld is how many friends are online
+   Online panel: subtitle; %ld is how many */
+"%ld friends online" = "%ld friends online";
+
+/* Online: System Link row; %ld is how many players are in games' public lobbies */
+"%ld in public lobbies" = "%ld in public lobbies";
 
 /* online view controller: summary title; %ld is how many devices have XeniOS open */
 "%ld Online" = "%ld Online";
@@ -98,7 +139,9 @@
 /* Game library: players in the game's public System Link lobby; %ld is how many */
 "%ld online" = "%ld online";
 
-/* system link view controller: players in a game's public lobby */
+/* Online panel: party size
+   Party: how many are in it
+   system link view controller: players in a game's public lobby */
 "%ld players" = "%ld players";
 
 /* system link view controller: room row detail, after \"Everyone playing this game.\"; %ld is how many */
@@ -107,11 +150,27 @@
 /* system link status view controller: footer; %ld is how many */
 "%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed." = "%ld players have XeniOS open with Online features on, you included. Games list their public lobbies; private rooms aren't listed.";
 
-/* Game library, VoiceOver: players in the game's public System Link lobby */
+/* Game library, VoiceOver: Public Games button value; %ld is how many other players are online */
+"%ld players on XeniOS" = "%ld players on XeniOS";
+
+/* Game library, VoiceOver: players in the game's public System Link lobby
+   Public Games: subtitle; %ld is how many other players are on XeniOS */
 "%ld players online" = "%ld players online";
 
-/* online view controller: players in a game's lobby; %ld is how many */
+/* online view controller: players in a game's lobby; %ld is how many
+   Public Games: row detail; %ld is how many are in the game */
 "%ld playing" = "%ld playing";
+
+/* Online panel: games row; %ld is how many players are in public lobbies */
+"%ld playing now" = "%ld playing now";
+
+/* Online panel, VoiceOver; %ld requests waiting
+   VoiceOver value of the in-game Friends button; %ld counts invites and friend requests */
+"%ld waiting" = "%ld waiting";
+
+/* Game library, VoiceOver: Online button; %ld is how many invites and friend requests wait
+   In-game menu, VoiceOver: online pill; %ld counts invites and friend requests */
+"%ld waiting for you" = "%ld waiting for you";
 
 /* zar conversion coordinator: user-visible text */
 "%lu cleanup step(s) failed." = "%lu cleanup step(s) failed.";
@@ -144,14 +203,20 @@
 /* zar conversion coordinator: user-visible text */
 "...and %lu more" = "...and %lu more";
 
-/* Game library, VoiceOver: Online button value, when only one device has XeniOS open */
-"1 device online" = "1 device online";
+/* Online panel: search results */
+"1 friend" = "1 friend";
+
+/* Online panel: subtitle */
+"1 friend online" = "1 friend online";
 
 /* online view controller: line under \"9 Online\" */
 "1 is in a game." = "1 is in a game.";
 
 /* online view controller: line under \"9 Online\" */
 "1 is in a private room." = "1 is in a private room.";
+
+/* online view controller: line under \"9 Online\" */
+"1 is playing a game." = "1 is playing a game.";
 
 /* zar conversion coordinator: user-visible text */
 "1 item" = "1 item";
@@ -168,7 +233,8 @@
 /* system link view controller: players in a game's public lobby */
 "1 player" = "1 player";
 
-/* Game library, VoiceOver: one player in the game's public System Link lobby */
+/* Game library, VoiceOver: one player in the game's public System Link lobby
+   Public Games: subtitle */
 "1 player online" = "1 player online";
 
 /* online view controller: players in a game's lobby */
@@ -195,11 +261,17 @@
 /* zar conversion coordinator: user-visible text */
 "A few seconds remaining" = "A few seconds remaining";
 
+/* Add Friend toast: the code is malformed */
+"A friend code has 8 letters and digits." = "A friend code has 8 letters and digits.";
+
 /* game library store: user-visible text */
 "A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder." = "A game folder's default.xex needs the rest of its folder. Put the game in its own folder, then import or link that folder.";
 
 /* config view controller: label text */
 "A game is running. Changes take effect after you relaunch XeniOS." = "A game is running. Changes take effect after you relaunch XeniOS.";
+
+/* Friends: the name of a game the library doesn't have */
+"a game that isn't in your library" = "a game that isn't in your library";
 
 /* Alert message; %1$@ is the game to launch, %2$@ the running game */
 "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost." = "A link wants to launch \"%1$@\". This will stop \"%2$@\", and unsaved progress will be lost.";
@@ -212,6 +284,9 @@
 
 /* Fallback version text in the update notice */
 "a new version" = "a new version";
+
+/* Friends footer under Create Party */
+"A party keeps up to 8 friends together from game to game." = "A party keeps up to 8 friends together from game to game.";
 
 /* settings appearance: detail of Off */
 "A plain background." = "A plain background.";
@@ -237,6 +312,24 @@
 /* zar conversion coordinator: user-visible text */
 "About %ld seconds remaining" = "About %ld seconds remaining";
 
+/* Friends: accept a friend request
+   Friends: accept a game invite
+   Invite banner button
+   Online panel: accept request */
+"Accept" = "Accept";
+
+/* Gamer card button */
+"Accept Friend Request" = "Accept Friend Request";
+
+/* VoiceOver; %@ is the gamertag */
+"Accept friend request from %@" = "Accept friend request from %@";
+
+/* VoiceOver: accept a game invite; %@ is the gamertag */
+"Accept invite from %@" = "Accept invite from %@";
+
+/* Friends footer under game and party invites */
+"Accepting a game invite starts the game and joins your friend. Invites expire after 10 minutes." = "Accepting a game invite starts the game and joins your friend. Invites expire after 10 minutes.";
+
 /* In-game menu button
    Pause menu row
    Title of the achievements screen
@@ -253,8 +346,17 @@
 /* Layout library row detail: the layout in use */
 "Active" = "Active";
 
+/* Online panel: add a friend by code */
+"Add" = "Add";
+
 /* game patches view controller: empty detail; %@ is the folder */
 "Add .patch.toml files for this game to %@." = "Add .patch.toml files for this game to %@.";
+
+/* Friends: the row when there are none yet */
+"Add a Friend" = "Add a Friend";
+
+/* Friends empty state text */
+"Add a friend with their friend code, and share yours so they can add you." = "Add a friend with their friend code, and share yours so they can add you.";
 
 /* settings hub view controller: title */
 "Add a layout from Files." = "Add a layout from Files.";
@@ -264,6 +366,16 @@
 
 /* VoiceOver label of the add control button */
 "Add control" = "Add control";
+
+/* Add Friend screen title
+   Friends: add friend button
+   Gamer card button
+   Online panel: add-friend page
+   Online panel: back to the add-friend page */
+"Add Friend" = "Add Friend";
+
+/* Online panel: add-friend button */
+"Add friend" = "Add friend";
 
 /* game content view controller: add button */
 "Add from Files" = "Add from Files";
@@ -282,6 +394,9 @@
 
 /* game page: under Patches */
 "Add its .patch.toml files to the patches folder in Files." = "Add its .patch.toml files to the patches folder in Files.";
+
+/* Shared text; %@ is the user's friend code */
+"Add me as a friend in XeniOS: %@" = "Add me as a friend in XeniOS: %@";
 
 /* profile view controller: empty state button */
 "Add Profile" = "Add Profile";
@@ -483,6 +598,9 @@
 /* settings hub view controller: search result note */
 "Can be overridden per game" = "Can be overridden per game";
 
+/* Friends status title */
+"Can't Connect" = "Can't Connect";
+
 /* System Link: players no path reaches, most likely because of theirs; %lu is how many */
 "Can't connect to %lu players. Their networks may be blocking direct connections." = "Can't connect to %lu players. Their networks may be blocking direct connections.";
 
@@ -504,20 +622,32 @@
 /* Alert title: a link failed */
 "Can't Open Link" = "Can't Open Link";
 
+/* Friends status: the connection is down and retrying */
+"Can't reach the online service. XeniOS keeps trying." = "Can't reach the online service. XeniOS keeps trying.";
+
 /* system link status view controller: state */
 "Can't Reach the Server" = "Can't Reach the Server";
 
+/* Public Games: empty state */
+"Can't reach XeniOS online" = "Can't reach XeniOS online";
+
 /* Action sheet button: cancel
+   Alert button
    Alert button: cancel
    config view controller: title
    document import coordinator: title
    external folders view controller: title
    file transfer: title
+   Friends: cancel a sent request
    game content view controller: title
    Launch screen button: stop a slow launch
+   Online panel: leave search
    system link view controller: button
    zar conversion coordinator: title */
 "Cancel" = "Cancel";
+
+/* VoiceOver; %@ is the gamertag */
+"Cancel friend request to %@" = "Cancel friend request to %@";
 
 /* file transfer: error message */
 "Cancelled." = "Cancelled.";
@@ -554,6 +684,9 @@
 
 /* config view controller: message */
 "Check xenia.log for details." = "Check xenia.log for details.";
+
+/* Public Games: empty state hint */
+"Check your connection and try again." = "Check your connection and try again.";
 
 /* settings hub view controller: label text */
 "Checking for Updates…" = "Checking for Updates…";
@@ -613,7 +746,10 @@
 /* settings hub view controller: title */
 "Clear This Game's Shaders" = "Clear This Game's Shaders";
 
-/* Message box button
+/* Gamer card button
+   Message box button
+   Online sheet: close button
+   Public Games: close button
    sheet close button */
 "Close" = "Close";
 
@@ -623,7 +759,8 @@
 /* VoiceOver label of the panel's expand/collapse button */
 "Collapse" = "Collapse";
 
-/* game page: row state */
+/* game page: row state
+   VoiceOver */
 "Collapsed" = "Collapsed";
 
 /* JIT sheet: step 3 without a game */
@@ -656,7 +793,10 @@
 /* system link status view controller: state detail */
 "Connected to the System Link server." = "Connected to the System Link server.";
 
-/* system link status view controller: state */
+/* Friends status title
+   Friends status: signing in
+   In-game menu: System Link pill
+   system link status view controller: state */
 "Connecting…" = "Connecting…";
 
 /* content management: user-visible text */
@@ -780,6 +920,9 @@
 /* Shader compile indicator title while the device is too hot to keep building at full speed */
 "Cooling down" = "Cooling down";
 
+/* Online panel: after copying */
+"Copied" = "Copied";
+
 /* Toast; %@ is the game title */
 "Copied launch URL for %@." = "Copied launch URL for %@.";
 
@@ -789,11 +932,15 @@
 /* Add menu: subtitle of Import Copy */
 "Copies the game into XeniOS." = "Copies the game into XeniOS.";
 
-/* log view controller: title */
+/* log view controller: title
+   Online panel: copy your friend code */
 "Copy" = "Copy";
 
 /* settings hub view controller: title */
 "Copy a game or add-on from Files." = "Copy a game or add-on from Files.";
+
+/* Add Friend row */
+"Copy Code" = "Copy Code";
 
 /* game page: more menu
    launcher overlay view: title */
@@ -835,8 +982,14 @@
 /* Error shown when saving a touch layout; %s is the system error */
 "Could not write layout file: %s" = "Could not write layout file: %s";
 
+/* Party toast */
+"Couldn't create a party." = "Couldn't create a party.";
+
 /* system software view controller: title */
 "Couldn't Install the System Software" = "Couldn't Install the System Software";
+
+/* Party toast */
+"Couldn't join the party." = "Couldn't join the party.";
 
 /* system software view controller: title */
 "Couldn't Remove the System Software" = "Couldn't Remove the System Software";
@@ -847,6 +1000,9 @@
 /* Alert title: the game failed to start */
 "Couldn't Start Game" = "Couldn't Start Game";
 
+/* Friends toast */
+"Couldn't turn on online play for this profile." = "Couldn't turn on online play for this profile.";
+
 /* Alert title: one-time notice that diagnostics are now sent, for installs that saw the older notice */
 "Crash Reports and Performance" = "Crash Reports and Performance";
 
@@ -855,6 +1011,9 @@
 
 /* zar conversion coordinator: title */
 "Create .zar archives in XeniOS, then decide how to handle the originals." = "Create .zar archives in XeniOS, then decide how to handle the originals.";
+
+/* Party action */
+"Create Party" = "Create Party";
 
 /* game page: under System Link
    system link view controller: button row */
@@ -929,6 +1088,20 @@
 
 /* settings hub view controller: title */
 "Debug overrides." = "Debug overrides.";
+
+/* Invite banner button
+   Online panel: decline invite
+   Online panel: decline request */
+"Decline" = "Decline";
+
+/* VoiceOver; %@ is the gamertag */
+"Decline friend request from %@" = "Decline friend request from %@";
+
+/* VoiceOver: decline a game invite; %@ is the gamertag */
+"Decline invite from %@" = "Decline invite from %@";
+
+/* VoiceOver: decline a party invite; %@ is the gamertag */
+"Decline party invite from %@" = "Decline party invite from %@";
 
 /* VoiceOver label of a touch control edit button */
 "Decrease size" = "Decrease size";
@@ -1160,6 +1333,9 @@
 /* settings hub view controller: title */
 "Edit Running Touch Layout" = "Edit Running Touch Layout";
 
+/* VoiceOver hint: the friend code field */
+"Eight letters and digits." = "Eight letters and digits.";
+
 /* config catalog: empty default value */
 "Empty" = "Empty";
 
@@ -1228,7 +1404,8 @@
 /* VoiceOver label of the panel's expand/collapse button */
 "Expand" = "Expand";
 
-/* game page: row state */
+/* game page: row state
+   VoiceOver */
 "Expanded" = "Expanded";
 
 /* Context menu item in the layout library
@@ -1412,6 +1589,43 @@
 /* external folders view controller: title */
 "Folder Unavailable" = "Folder Unavailable";
 
+/* Online panel: add-friend field
+   VoiceOver: the code field */
+"Friend code" = "Friend code";
+
+/* Add Friend: code field placeholder */
+"Friend Code" = "Friend Code";
+
+/* Add Friend toast */
+"Friend code copied." = "Friend code copied.";
+
+/* Gamer card: you asked them */
+"Friend request sent" = "Friend request sent";
+
+/* Add Friend toast */
+"Friend request sent." = "Friend request sent.";
+
+/* Friends section header */
+"Friend Requests" = "Friend Requests";
+
+/* Friends section header
+   Game library: Friends button
+   In-game menu button, opens friends, party and invites
+   Online panel title
+   Online panel, VoiceOver label
+   Online panel: back to the list
+   Online screen title: friends, invites, party and games online */
+"Friends" = "Friends";
+
+/* Friends status title */
+"Friends Are Off" = "Friends Are Off";
+
+/* Friends status: Online Features are off */
+"Friends need Online Features. Turn them on in Settings." = "Friends need Online Features. Turn them on in Settings.";
+
+/* Friends status: System Link isn't on the relay */
+"Friends need System Link over the internet. Turn it on in Settings." = "Friends need System Link over the internet. Turn it on in Settings.";
+
 /* compat report view controller: user-visible text
    game disc view controller: title
    Section header in the pause menu
@@ -1435,6 +1649,9 @@
 
 /* Fallback title of the pause menu */
 "Game Menu" = "Game Menu";
+
+/* Alert title: an invite's game isn't in the library */
+"Game Not in Library" = "Game Not in Library";
 
 /* Alert title: no game running */
 "Game Required" = "Game Required";
@@ -1464,7 +1681,8 @@
 /* settings hub view controller: title */
 "Gamertags and sign-in." = "Gamertags and sign-in.";
 
-/* settings hub view controller: title */
+/* Friends section header: games people are playing
+   settings hub view controller: title */
 "Games" = "Games";
 
 /* external folders view controller: user-visible text */
@@ -1482,6 +1700,13 @@
 
 /* JIT sheet: one-line explanation */
 "Games need JIT, and iOS only lets another app turn it on." = "Games need JIT, and iOS only lets another app turn it on.";
+
+/* Online panel section
+   Online: System Link row title */
+"Games Online" = "Games Online";
+
+/* Online: System Link row */
+"Games people are playing" = "Games people are playing";
 
 /* settings hub view controller: account card */
 "Games save progress and achievements to it." = "Games save progress and achievements to it.";
@@ -1632,6 +1857,15 @@
 /* document import coordinator: title */
 "Importing" = "Importing";
 
+/* Party: a member */
+"In the party" = "In the party";
+
+/* Online panel section */
+"In Your Game" = "In Your Game";
+
+/* Gamer card */
+"In your party" = "In your party";
+
 /* zar conversion coordinator: user-visible text */
 "Incomplete ZAR Conversion Removed" = "Incomplete ZAR Conversion Removed";
 
@@ -1703,6 +1937,49 @@
 /* Switch label in the touch analog tuning screen */
 "Invert Vertical" = "Invert Vertical";
 
+/* Friends: invite a friend to this game
+   Online panel button
+   Online panel button: invite friends to the party
+   Online panel: back to the invite page
+   Online panel: invite page */
+"Invite" = "Invite";
+
+/* VoiceOver; %@ is the gamertag */
+"Invite %@ to this game" = "Invite %@ to this game";
+
+/* Friends screen title from the game menu */
+"Invite Friends" = "Invite Friends";
+
+/* Gamer card button */
+"Invite to Game" = "Invite to Game";
+
+/* Gamer card button
+   Party action */
+"Invite to Party" = "Invite to Party";
+
+/* Friends: a friend was invited
+   Gamer card button after inviting
+   Online panel button after inviting */
+"Invited" = "Invited";
+
+/* Friends toast; %@ is the gamertag */
+"Invited %@." = "Invited %@.";
+
+/* Gamer card button after inviting */
+"Invited to Party" = "Invited to Party";
+
+/* Friends invite row; %1$@ is the game, %2$@ how long ago (\"2 min ago\") */
+"Invited you to %1$@ · %2$@" = "Invited you to %1$@ · %2$@";
+
+/* Online panel invite */
+"Invited you to a party" = "Invited you to a party";
+
+/* Friends party invite row; %@ is how long ago (\"2 min ago\") */
+"Invited you to their party · %@" = "Invited you to their party · %@";
+
+/* Friends section header: game and party invites */
+"Invites" = "Invites";
+
 /* compat report cells: label text */
 "iOS Version" = "iOS Version";
 
@@ -1736,8 +2013,17 @@
 /* Alert message: the JIT tool detached before the game started */
 "JIT was turned off before the game started. Open StikDebug, enable JIT for XeniOS again, and keep it connected until the game is running." = "JIT was turned off before the game started. Open StikDebug, enable JIT for XeniOS again, and keep it connected until the game is running.";
 
-/* system link view controller: button */
+/* Friends: join a friend's game
+   Online panel button: join a friend's game
+   Online panel invite button
+   system link view controller: button */
 "Join" = "Join";
+
+/* VoiceOver; %@ is the gamertag */
+"Join %@'s game" = "Join %@'s game";
+
+/* VoiceOver: accept a party invite; %@ is the gamertag */
+"Join %@'s party" = "Join %@'s party";
 
 /* system link view controller: alert title */
 "Join a Private Room" = "Join a Private Room";
@@ -1745,12 +2031,38 @@
 /* system link status view controller: button row */
 "Join Another Room…" = "Join Another Room…";
 
+/* Gamer card button */
+"Join Game" = "Join Game";
+
+/* Friends: accept a party invite
+   Invite banner button: accept a party invite
+   Online panel invite button */
+"Join Party" = "Join Party";
+
+/* Friends footer under friends in a game */
+"Join starts the game your friend is in and joins them." = "Join starts the game your friend is in and joins them.";
+
 /* online view controller: button */
 "Join with Code" = "Join with Code";
 
 /* game page: under System Link
    system link view controller: button row */
 "Join with Code…" = "Join with Code…";
+
+/* Toast; %@ is the gamertag */
+"Joining %@'s game…" = "Joining %@'s game…";
+
+/* VoiceOver hint on Join Party */
+"Joins the party. Your game keeps running." = "Joins the party. Your game keeps running.";
+
+/* Friends: an invite that came less than a minute ago */
+"just now" = "just now";
+
+/* Online panel: a party with only you */
+"Just you" = "Just you";
+
+/* Online panel: party page */
+"Just you so far" = "Just you so far";
 
 /* zar conversion coordinator: title */
 "Keep Original" = "Keep Original";
@@ -1834,11 +2146,20 @@
    Title of the touch layout library */
 "Layouts" = "Layouts";
 
+/* Party: the party's leader */
+"Leader" = "Leader";
+
+/* Online panel button: leave the party */
+"Leave" = "Leave";
+
 /* Alert message: edit a control's label */
 "Leave blank to use the default label." = "Leave blank to use the default label.";
 
 /* dashboard disc tray: button, closes the tray with no disc */
 "Leave Empty" = "Leave Empty";
+
+/* Party action */
+"Leave Party" = "Leave Party";
 
 /* zar conversion coordinator: title */
 "Leave the original game in place alongside the new .zar archive." = "Leave the original game in place alongside the new .zar archive.";
@@ -1851,6 +2172,7 @@
 "Letterbox" = "Letterbox";
 
 /* launcher overlay view: label text
+   Public Games: back button
    settings hub view controller: section */
 "Library" = "Library";
 
@@ -1915,8 +2237,7 @@
 /* document import coordinator: label text */
 "Linked external library: %@" = "Linked external library: %@";
 
-/* In-game menu button
-   log view controller: title */
+/* log view controller: title */
 "Live Log" = "Live Log";
 
 /* log view controller: section footer */
@@ -1939,6 +2260,9 @@
 
 /* Achievement state for VoiceOver */
 "Locked" = "Locked";
+
+/* In-game menu button, opens the live emulator log */
+"Log" = "Log";
 
 /* settings hub view controller: title */
 "Log detail and the log." = "Log detail and the log.";
@@ -2086,6 +2410,15 @@
 /* game disc view controller: label text */
 "No discs available" = "No discs available";
 
+/* Online panel: nobody to invite */
+"No friends are online to invite." = "No friends are online to invite.";
+
+/* Online panel: search found nobody */
+"No friends match." = "No friends match.";
+
+/* Online panel: subtitle */
+"No friends online" = "No friends online";
+
 /* dashboard disc tray: empty library title
    launcher overlay view: empty library title */
 "No Games" = "No Games";
@@ -2120,11 +2453,20 @@
 /* game page: under Patches */
 "No patches for this game." = "No patches for this game.";
 
+/* Friends toast: the friend code typed matches nobody */
+"No player has that friend code. Check it and try again." = "No player has that friend code. Check it and try again.";
+
+/* Friends status title */
+"No Profile" = "No Profile";
+
 /* Launcher label: a profile exists but none is signed in */
 "No profile signed in" = "No profile signed in";
 
 /* profile view controller: empty state title */
 "No Profiles" = "No Profiles";
+
+/* Public Games: empty state */
+"No public games right now" = "No public games right now";
 
 /* log view controller: label text */
 "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically." = "No recent log data found.\n\nExpected file:\n%@\n\nLaunch a game and keep this open. This view updates automatically.";
@@ -2150,6 +2492,9 @@
 /* game content view controller: empty title */
 "No Updates or Add-ons" = "No Updates or Add-ons";
 
+/* Public Games: subtitle */
+"Nobody else is online" = "Nobody else is online";
+
 /* system link view controller: row */
 "Nobody is in a public lobby right now." = "Nobody is in a public lobby right now.";
 
@@ -2162,6 +2507,12 @@
 /* system link view controller: room row detail, after \"Everyone playing this game.\" */
 "Nobody is there now." = "Nobody is there now.";
 
+/* Online panel: no friends online */
+"Nobody's online right now. Search to see all your friends, or add one with a code." = "Nobody's online right now. Search to see all your friends, or add one with a code.";
+
+/* Online panel: games row */
+"Nobody's playing yet" = "Nobody's playing yet";
+
 /* game page: Updates & Add-ons row; nothing added
    settings hub view controller: no pending reports */
 "None" = "None";
@@ -2171,6 +2522,11 @@
 
 /* system link view controller: alert title */
 "Not a Room Code" = "Not a Room Code";
+
+/* Online panel: games row while the lobby doesn't answer
+   Online: System Link row while the lobby doesn't answer
+   Public Games: subtitle when the lobby can't be reached */
+"Not connected" = "Not connected";
 
 /* system link status view controller: row */
 "Not Connected Yet" = "Not Connected Yet";
@@ -2184,6 +2540,9 @@
 /* Alert button: dismiss without enabling
    launcher overlay view: hides the ZAR suggestion */
 "Not Now" = "Not Now";
+
+/* Add Friend: no code yet */
+"Not online yet" = "Not online yet";
 
 /* online view controller: summary title */
 "Not Playing over the Internet" = "Not Playing over the Internet";
@@ -2236,7 +2595,10 @@
 /* Toast: bundled presets cannot be renamed */
 "Official presets cannot be renamed." = "Official presets cannot be renamed.";
 
-/* Game library: Online button while the app can't reach the System Link lobby */
+/* Friends section header
+   Friends: a friend who isn't online
+   In-game menu: System Link pill, the server doesn't answer
+   Online panel: a friend who is offline */
 "Offline" = "Offline";
 
 /* Alert button: confirm
@@ -2250,10 +2612,17 @@
    config view controller: accessibility value */
 "On" = "On";
 
+/* Friends toast: a friend list is full */
+"One of you already has 100 friends." = "One of you already has 100 friends.";
+
 /* system link view controller: room row detail, after \"Everyone playing this game.\" */
 "One player is there now." = "One player is there now.";
 
-/* Game library: Online button
+/* Friends section header
+   Friends: a friend online but in no game
+   In-game menu: online game pill
+   Online panel section: friends online
+   Online panel: back to the list
    online view controller: title
    system link status view controller: state */
 "Online" = "Online";
@@ -2280,6 +2649,9 @@
 
 /* online view controller: summary title */
 "Online Is Off" = "Online Is Off";
+
+/* Friends status title */
+"Online Play Is Off" = "Online Play Is Off";
 
 /* game page: under System Link
    system link view controller: room row detail */
@@ -2403,6 +2775,14 @@
 /* zar conversion coordinator: user-visible text */
 "Partial .zar output from the cancelled item was removed." = "Partial .zar output from the cancelled item was removed.";
 
+/* Friends section header
+   Online panel row
+   Online panel: back to the party
+   Online panel: back to the party page
+   Online panel: party page
+   Party: summary row */
+"Party" = "Party";
+
 /* game patches view controller: label text */
 "Patch %zu" = "Patch %zu";
 
@@ -2420,19 +2800,21 @@
    launcher overlay view: title */
 "Patches" = "Patches";
 
-/* Binding name of the pause button */
+/* Binding name of the pause button
+   In-game menu button, stops the game while the menu is open */
 "Pause" = "Pause";
 
 /* Menu item in the Add Control menu */
 "Pause Button" = "Pause Button";
 
-/* In-game menu button, stops the game while the menu is open */
+/* VoiceOver label for the Pause button */
 "Pause Emulator" = "Pause Emulator";
 
 /* log view controller: accessibility label */
 "Pause live log" = "Pause live log";
 
-/* In-game menu: the game is paused
+/* In-game menu button while the emulator is paused; tapping it runs the game again
+   In-game menu: the game is paused
    Title of the in-game menu without a game name */
 "Paused" = "Paused";
 
@@ -2494,6 +2876,9 @@
 /* Launch screen button: start the game while shaders keep being prepared */
 "Play Now" = "Play Now";
 
+/* Online panel: under Start a Party */
+"Play together" = "Play together";
+
 /* system link view controller: footer */
 "Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID." = "Play with others running XeniOS on iPhone, iPad or Mac. Players in a room find each other automatically and connect directly where their networks allow, otherwise through a relay. The in-game menu shows how the room is connected. Players in your room can see your IP address and a profile ID.";
 
@@ -2506,6 +2891,9 @@
 /* launcher overlay view: Continue Playing */
 "Played just now" = "Played just now";
 
+/* Gamer card: a player whose gamertag isn't known */
+"Player" = "Player";
+
 /* system link view controller: footer */
 "Players in each game's public lobby, updated every minute. Private rooms aren't counted." = "Players in each game's public lobby, updated every minute. Private rooms aren't counted.";
 
@@ -2515,14 +2903,22 @@
 /* system link status view controller: footer */
 "Players in your room can see your IP address and a profile ID." = "Players in your room can see your IP address and a profile ID.";
 
-/* In-game menu: the game is running */
+/* Friends section header: friends in a game
+   In-game menu: the game is running
+   Online panel section */
 "Playing" = "Playing";
+
+/* Friends: %@ is the game a friend is in */
+"Playing %@" = "Playing %@";
 
 /* online view controller: section header */
 "Playing Now" = "Playing Now";
 
 /* Device screen while the game is shown on a TV or monitor */
 "Playing on External Display" = "Playing on External Display";
+
+/* In-game menu: online game pill */
+"Playing Online" = "Playing Online";
 
 /* system link view controller: section header */
 "Playing Online Now" = "Playing Online Now";
@@ -2614,6 +3010,11 @@
 /* settings hub view controller: account card */
 "Profiles and sign-in" = "Profiles and sign-in";
 
+/* Game library: globe button
+   Online panel row
+   Public Games: page title */
+"Public Games" = "Public Games";
+
 /* game page: System Link row
    game page: under System Link
    system link view controller: room row */
@@ -2624,6 +3025,12 @@
 
 /* Section header in the pause menu */
 "Quick Settings" = "Quick Settings";
+
+/* Alert title: an invite or Join for another game; %@ is the running game */
+"Quit %@ and Join?" = "Quit %@ and Join?";
+
+/* Alert button: stop the running game and join a friend's */
+"Quit and Join" = "Quit and Join";
 
 /* In-game menu button, leaves the game */
 "Quit Game" = "Quit Game";
@@ -2686,8 +3093,16 @@
 /* system update page: button, reloads Microsoft's page */
 "Reload" = "Reload";
 
-/* system software view controller: action */
+/* Alert button: remove a friend
+   Friends: remove a friend
+   system software view controller: action */
 "Remove" = "Remove";
+
+/* Alert title; %@ is the gamertag */
+"Remove %@?" = "Remove %@?";
+
+/* Friends menu item */
+"Remove Friend" = "Remove Friend";
 
 /* system software view controller: action */
 "Remove System Software" = "Remove System Software";
@@ -2750,6 +3165,12 @@
 /* compat report view controller: user-visible text */
 "Reports are tagged as %@." = "Reports are tagged as %@.";
 
+/* Online panel: add-friend field after sending */
+"Request sent" = "Request sent";
+
+/* Online panel section; %ld is how many */
+"Requests · %ld" = "Requests · %ld";
+
 /* Alert button: confirm resetting game settings
    Button resetting the touch analog tuning values
    config view controller: swipe action title
@@ -2785,7 +3206,7 @@
 /* In-game menu button */
 "Resume" = "Resume";
 
-/* In-game menu button, runs the game again after a pause */
+/* VoiceOver label for the paused Pause button */
 "Resume Emulator" = "Resume Emulator";
 
 /* Pause menu row */
@@ -2896,7 +3317,8 @@
 /* compat report view controller: user-visible text */
 "Screenshots" = "Screenshots";
 
-/* launcher overlay view: search placeholder */
+/* launcher overlay view: search placeholder
+   Online panel: back to the search page */
 "Search" = "Search";
 
 /* launcher overlay view: search placeholder; %lu is the game count */
@@ -2904,6 +3326,11 @@
 
 /* launcher overlay view: search placeholder */
 "Search 1 Game" = "Search 1 Game";
+
+/* Friends: search field placeholder
+   Online panel: search button
+   Online panel: search field */
+"Search friends" = "Search friends";
 
 /* dashboard disc tray: search field placeholder */
 "Search Games" = "Search Games";
@@ -2943,11 +3370,20 @@
 /* settings hub view controller: detail text */
 "Selects this app icon." = "Selects this app icon.";
 
+/* Add Friend: send the request */
+"Send" = "Send";
+
 /* settings hub view controller: footer of the Share Diagnostics switch */
 "Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, load time, shader compiles, GPU errors, temperature, memory use and display settings. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself." = "Sends crash reports and performance statistics: device model, iOS version, XeniOS version, the game's title ID, frame rate, load time, shader compiles, GPU errors, temperature, memory use and display settings. Never your files, file names, Apple Account or location. Logs are only sent when you share them yourself.";
 
+/* Online panel section: friend requests sent */
+"Sent" = "Sent";
+
 /* Toast; %1$lu is the number of games, %2$@ the receiving app */
 "Sent %1$lu games to %2$@." = "Sent %1$lu games to %2$@.";
+
+/* Friends section header */
+"Sent Requests" = "Sent Requests";
 
 /* launcher overlay view: menu action */
 "Set Up Dashboard" = "Set Up Dashboard";
@@ -3007,6 +3443,9 @@
    log view controller: title */
 "Share" = "Share";
 
+/* Add Friend row */
+"Share Code…" = "Share Code…";
+
 /* settings hub view controller: label text */
 "Share Diagnostics" = "Share Diagnostics";
 
@@ -3019,6 +3458,9 @@
 /* game page: under System Link
    system link view controller: button row */
 "Share Invite…" = "Share Invite…";
+
+/* Add Friend footer under the user's own code */
+"Share it so friends can add you. Anyone with it can send you a friend request." = "Share it so friends can add you. Anyone with it can send you a friend request.";
 
 /* Alert button: shares the log file */
 "Share Log" = "Share Log";
@@ -3066,17 +3508,30 @@
 /* VoiceOver hint for the Achievements button */
 "Shows achievements for the current game." = "Shows achievements for the current game.";
 
+/* Game library, VoiceOver: globe button hint */
+"Shows the games people are playing on XeniOS." = "Shows the games people are playing on XeniOS.";
+
 /* acknowledgements view controller: accessibility hint */
 "Shows the license." = "Shows the license.";
 
 /* In-game menu, VoiceOver: System Link card hint */
 "Shows the System Link room, its players and who's online." = "Shows the System Link room, its players and who's online.";
 
-/* Game library, VoiceOver: Online button hint */
-"Shows who has XeniOS open and the games they're playing." = "Shows who has XeniOS open and the games they're playing.";
+/* Online panel, VoiceOver: player row hint */
+"Shows their gamer card." = "Shows their gamer card.";
+
+/* Game library, VoiceOver: Friends button hint */
+"Shows your friends, invites and your party." = "Shows your friends, invites and your party.";
+
+/* In-game menu, VoiceOver: online game pill hint
+   VoiceOver hint for the Friends button */
+"Shows your friends, your party and invites." = "Shows your friends, your party and invites.";
 
 /* settings hub view controller: account card */
 "Sign In" = "Sign In";
+
+/* Friends status: no profile is signed in */
+"Sign in to a profile to see your friends." = "Sign in to a profile to see your friends.";
 
 /* profile view controller: detail text */
 "Signed In" = "Signed In";
@@ -3140,15 +3595,24 @@
 /* Name of a controller button in a touch control preview */
 "Start" = "Start";
 
+/* Public Games: empty state hint */
+"Start a game from your library and it shows up here." = "Start a game from your library and it shows up here.";
+
+/* Friends toast */
+"Start a game to invite friends to it." = "Start a game to invite friends to it.";
+
+/* online view controller: line under the summary title, when nobody is in a game */
+"Start a game to play together." = "Start a game to play together.";
+
+/* Online panel row */
+"Start a Party" = "Start a Party";
+
 /* dashboard setup: button
    launcher overlay view: menu action */
 "Start Dashboard" = "Start Dashboard";
 
 /* dashboard setup: message */
 "Start it now, or later from its tile in the library." = "Start it now, or later from its tile in the library.";
-
-/* online view controller: line under the summary title, when nobody is in a game */
-"Start System Link in a game to play together." = "Start System Link in a game to play together.";
 
 /* launcher overlay view: button title */
 "Start the Xbox 360 Dashboard" = "Start the Xbox 360 Dashboard";
@@ -3158,6 +3622,9 @@
 
 /* Launch screen status: the game runs, nothing shown yet */
 "Starting the game…" = "Starting the game…";
+
+/* VoiceOver hint on Accept; %@ is the game */
+"Starts %@ and joins the game." = "Starts %@ and joins the game.";
 
 /* launcher overlay view: user-visible text */
 "Starts the Xbox 360 Dashboard." = "Starts the Xbox 360 Dashboard.";
@@ -3261,7 +3728,7 @@
 "Switches to StikDebug to enable JIT." = "Switches to StikDebug to enable JIT.";
 
 /* game page: row
-   In-game menu: System Link card
+   In-game menu: System Link pill
    system link view controller: title */
 "System Link" = "System Link";
 
@@ -3300,6 +3767,9 @@
 
 /* System Link toast: online features were turned off while a game was playing System Link */
 "System Link stopped: Online Features is off." = "System Link stopped: Online Features is off.";
+
+/* In-game menu: System Link pill; %lu counts everyone in the room, you included */
+"System Link · %lu Players" = "System Link · %lu Players";
 
 /* In-game menu: System Link card; %u is the round trip to the other players */
 "System Link · %u ms" = "System Link · %u ms";
@@ -3344,6 +3814,9 @@
 /* Prompt while picking a control to copy the size from */
 "Tap target for size" = "Tap target for size";
 
+/* Online panel: confirm leaving the party */
+"Tap to Leave" = "Tap to Leave";
+
 /* profile view controller: detail text */
 "Tap to sign in" = "Tap to sign in";
 
@@ -3353,11 +3826,23 @@
 /* game compatibility cells: label text */
 "Tested this game?" = "Tested this game?";
 
+/* Online panel: add-friend field, bad code */
+"That code isn't right" = "That code isn't right";
+
+/* Friends toast: answering an invite that's gone */
+"That invite has expired." = "That invite has expired.";
+
 /* system update page: error */
 "That isn't the system update. Tap the download link under “Copy to a USB flash drive”." = "That isn't the system update. Tap the download link under “Copy to a USB flash drive”.";
 
 /* Alert message: an incoming link was not usable */
 "That link could not be opened." = "That link could not be opened.";
+
+/* Gamer card for yourself */
+"That's you." = "That's you.";
+
+/* Add Friend toast */
+"That's your own friend code." = "That's your own friend code.";
 
 /* Alert message; %@ is the name of the requesting app */
 "The app \"%@\" is asking for the titles and icons of your game library." = "The app \"%@\" is asking for the titles and icons of your game library.";
@@ -3410,6 +3895,12 @@
 /* acknowledgements: fallback text shown when the license file is missing */
 "The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS" = "The license notices could not be loaded from this build.\n\nXeniOS is based on Xenia (BSD license) and includes third-party libraries. Their licenses are in the source repository: https://github.com/xenios-jp/XeniOS";
 
+/* Friends toast: any other refused request */
+"The online service couldn't do that. Try again in a moment." = "The online service couldn't do that. Try again in a moment.";
+
+/* Friends status: the lobby refused the device key */
+"The online service didn't accept this device for your profile." = "The online service didn't accept this device for your profile.";
+
 /* system software view controller: install error */
 "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again." = "The previous system software couldn't be put back. Its folders are in the \"unrestored\" folder in XeniOS's system folder in Files. Move them back or delete them to install again.";
 
@@ -3418,6 +3909,9 @@
 
 /* compat report submission: user-visible text */
 "The report server is having trouble right now. Please try again later." = "The report server is having trouble right now. Please try again later.";
+
+/* Alert text: the game that runs now */
+"the running game" = "the running game";
 
 /* Launch prompt for an invite link to the game that is already running */
 "The running game restarts to join." = "The running game restarts to join.";
@@ -3467,6 +3961,9 @@
 /* system software view controller: message */
 "The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay." = "The Xbox 360 Dashboard won't start until you install the system update again. Your games, profiles and saves stay.";
 
+/* Add Friend section header */
+"Their Code" = "Their Code";
+
 /* Row title in the touch control edit panel */
 "Then button" = "Then button";
 
@@ -3475,6 +3972,9 @@
 
 /* config view controller: label text */
 "These apply only to %1$@ (%2$@) and take effect the next time it starts." = "These apply only to %1$@ (%2$@) and take effect the next time it starts.";
+
+/* Friends footer under sent requests */
+"They become your friend once they accept." = "They become your friend once they accept.";
 
 /* system link status view controller: row detail */
 "They show up here when they start this game in the same room." = "They show up here when they start this game in the same room.";
@@ -3566,6 +4066,9 @@
 /* system link view controller: alert message */
 "This turns on all Online Features, not only System Link: update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet, where players can see your IP address and a profile ID." = "This turns on all Online Features, not only System Link: update checks, compatibility data, cover art, compatibility discussions and reports, and System Link over the internet, where players can see your IP address and a profile ID.";
 
+/* Friends status: the lobby refused the app's protocol version */
+"This version of XeniOS is too old for the online service. Update XeniOS to see your friends." = "This version of XeniOS is too old for the online service. Update XeniOS to see your friends.";
+
 /* Row title in the touch control edit panel */
 "Tint" = "Tint";
 
@@ -3602,6 +4105,9 @@
 
 /* game page: under Updates & Add-ons */
 "Title updates and DLC for this game." = "Title updates and DLC for this game.";
+
+/* Invite banner subtitle for a party invite */
+"To their party" = "To their party";
 
 /* game patches view controller: accessibility hint */
 "Toggles this patch for the next launch." = "Toggles this patch for the next launch.";
@@ -3670,7 +4176,14 @@
 /* system link view controller: alert title */
 "Turn On Online Features?" = "Turn On Online Features?";
 
-/* system link status view controller: state */
+/* Friends action row */
+"Turn On Online Play" = "Turn On Online Play";
+
+/* Friends status; %@ is the gamertag */
+"Turn on online play for %@ to add friends and get game invites. Friends see your gamertag and which game you're playing." = "Turn on online play for %@ to add friends and get game invites. Friends see your gamertag and which game you're playing.";
+
+/* In-game menu: System Link pill
+   system link status view controller: state */
 "Turned Away" = "Turned Away";
 
 /* compat report submission: message */
@@ -3768,10 +4281,10 @@
 "Update available: %@" = "Update available: %@";
 
 /* settings hub view controller: user-visible text */
-"Update checks, cover art, compatibility data, discussions and reports, and System Link over the internet. Games still run with this off." = "Update checks, cover art, compatibility data, discussions and reports, and System Link over the internet. Games still run with this off.";
+"Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and which game you're playing (counted without your name or device). Games still run with this off." = "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and which game you're playing (counted without your name or device). Games still run with this off.";
 
 /* settings hub view controller: footer of the Online Features switch */
-"Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics." = "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics.";
+"Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, which game you're playing (counted without your name or device), and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics." = "Update checks, cover art, compatibility data, discussions and reports, System Link over the internet, which game you're playing (counted without your name or device), and diagnostics. Games still run with this off. To stop only diagnostics, turn off Share Diagnostics.";
 
 /* game compatibility hero view: label text */
 "Updated %@" = "Updated %@";
@@ -3850,14 +4363,28 @@
 /* Launch screen status: the JIT tool is preparing memory */
 "Waiting for StikDebug to enable JIT…" = "Waiting for StikDebug to enable JIT…";
 
+/* Online panel: sent request */
+"Waiting for them" = "Waiting for them";
+
+/* Friends: sent request row */
+"Waiting for them to accept" = "Waiting for them to accept";
+
 /* Wait button once the user chose to wait */
 "Waiting…" = "Waiting…";
+
+/* Friends: incoming request row
+   Gamer card: a friend request from them
+   Online panel: a friend request */
+"Wants to be friends" = "Wants to be friends";
 
 /* settings hub view controller: title */
 "Website" = "Website";
 
 /* online game picker: header */
 "Which game is the room for?" = "Which game is the room for?";
+
+/* In-game menu: online game pill, VoiceOver; %@ lists the friends in the game */
+"With %@" = "With %@";
 
 /* Library: ZAR suggestion, after \"Save 18 GB\" */
 "with ZAR." = "with ZAR.";
@@ -3916,6 +4443,9 @@
 /* Alert title: the emulator failed to start */
 "XeniOS could not start" = "XeniOS could not start";
 
+/* Friends status: the device key couldn't be written */
+"XeniOS couldn't make this device's online key." = "XeniOS couldn't make this device's online key.";
+
 /* compat report submission: user-visible text */
 "XeniOS couldn't reach the report server. Check your connection and try again." = "XeniOS couldn't reach the report server. Check your connection and try again.";
 
@@ -3953,11 +4483,32 @@
 /* zar conversion coordinator: message */
 "XeniOS won't delete:\n%@\n\nThey are or contain folders XeniOS or you rely on. You can still convert and keep the originals." = "XeniOS won't delete:\n%@\n\nThey are or contain folders XeniOS or you rely on. You can still convert and keep the originals.";
 
+/* Online panel: your own cell */
+"You" = "You";
+
+/* Friends toast: adding a player the user blocked */
+"You blocked this player." = "You blocked this player.";
+
 /* compat report view controller: message */
 "You can attach up to 5 screenshots." = "You can attach up to 5 screenshots.";
 
 /* system link view controller: alert message */
 "You can change this in Settings > Privacy." = "You can change this in Settings > Privacy.";
+
+/* Friends toast: inviting someone who isn't a friend */
+"You can only invite friends." = "You can only invite friends.";
+
+/* Online panel: no friends */
+"You don't have friends yet. Add one with a code." = "You don't have friends yet. Add one with a code.";
+
+/* Friends toast: too many requests sent */
+"You have too many friend requests waiting. Cancel some first." = "You have too many friend requests waiting. Cancel some first.";
+
+/* Alert message: removing a friend */
+"You'll stop seeing what they play, and you can't invite each other until one of you adds the other again." = "You'll stop seeing what they play, and you can't invite each other until one of you adds the other again.";
+
+/* Online panel */
+"Your code" = "Your code";
 
 /* compat report view controller: message */
 "Your compatibility report has been submitted." = "Your compatibility report has been submitted.";
@@ -3967,6 +4518,16 @@
 
 /* Shader preparation sheet while the device is hot */
 "Your device is warm. This will take longer." = "Your device is warm. This will take longer.";
+
+/* Add Friend section header */
+"Your Friend Code" = "Your Friend Code";
+
+/* Gamer card for yourself; %@ is the code
+   VoiceOver; %@ is the code */
+"Your friend code: %@" = "Your friend code: %@";
+
+/* Add Friend footer */
+"Your friend finds their code in XeniOS: Online in the library, then Add Friend." = "Your friend finds their code in XeniOS: Online in the library, then Add Friend.";
 
 /* online view controller: section header */
 "Your Network" = "Your Network";

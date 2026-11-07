@@ -45,6 +45,7 @@
 #import "xenia/ui/ios/app/ios_controller_navigation_coordinator.h"
 #import "xenia/ui/ios/app/ios_external_display.h"
 #import "xenia/ui/ios/app/ios_in_game_menu_overlay.h"
+#import "xenia/ui/ios/app/ios_online_panel.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/app/ios_window_layout.h"
 #import "xenia/ui/ios/app/ios_window_position_overlay.h"
@@ -68,7 +69,10 @@
 #import "xenia/ui/ios/launcher/ios_game_content_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_disc_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_library.h"
+#import "xenia/ui/ios/launcher/ios_friends_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
+#import "xenia/ui/ios/shared/ios_live_invite_banner.h"
+#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/launcher/ios_game_patches_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_jit_sheet_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_picker_view_controller.h"
@@ -478,6 +482,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   BOOL emulation_paused_by_user_;
   BOOL presenting_stikdebug_automation_prompt_;
   uint32_t active_game_title_id_;
+  // The title an invite (or a friend's game) is being started for; 0 for other launches.
+  uint32_t live_invite_launch_title_;
   // The dashboard was launched from the library; the games it starts exit back to it.
   BOOL dashboard_session_;
   std::string active_touch_layout_local_id_;
@@ -560,24 +566,28 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
       ^{
         [system_link_owner.launcherOverlayView reloadGames];
       });
+  // The library's Online button: friends, invites, the party, and the games online.
   xe_ios_system_link_set_online_menu(^{
-    std::vector<XeniaIOSOnlineLibraryGame> library;
-    for (const IOSDiscoveredGame& game : system_link_owner->discovered_games_) {
-      library.push_back({game.title_id, ToNSString(game.title),
-                         game.icon_data.empty() ? nil
-                                                : [NSData dataWithBytes:game.icon_data.data()
-                                                                 length:game.icon_data.size()]});
-    }
-    xe_ios_present_online_sheet(system_link_owner, library, ^(uint32_t title_id) {
-      const std::vector<IOSDiscoveredGame>& games = system_link_owner->discovered_games_;
-      for (size_t i = 0; i < games.size(); ++i) {
-        if (games[i].title_id == title_id) {
-          [system_link_owner performGameAction:XeniaIOSGameActionSystemLink forIndex:i];
-          return;
-        }
-      }
-    });
+    [system_link_owner presentFriendsWithMode:XeniaIOSFriendsModeBrowse];
   });
+  // The globe: everyone on XeniOS, as a full page.
+  xe_ios_system_link_set_globe_action(^{
+    [system_link_owner presentPublicGames];
+  });
+  [self installLiveSocial];
+  // A game played through the profile's account (an invite, a friend's game): the in-game pill
+  // reads "Online · <who's in it>" and pops out the Online panel beside the menu, instead of the
+  // System Link room.
+  xe_ios_system_link_set_live_game(
+      ^BOOL {
+        return [XeniaLiveSocial shared].runningGameOnline;
+      },
+      ^NSString* {
+        return [[XeniaLiveSocial shared] playersWithYouText];
+      },
+      ^{
+        [system_link_owner.inGameMenuOverlay toggleOnlinePanel];
+      });
   // Create the Metal-backed rendering view. The frame is set explicitly via
   // -applyMetalViewLayout in -viewDidLayoutSubviews so the user-chosen
   // window scaling mode (Fit / Stretch / Zoom) and portrait position offset
@@ -809,6 +819,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
       (dashboard_session_ || xe::ui::IsIOSDashboardHome()) && !starts_dashboard;
   self.inGameMenuOverlay.sessionStartDate = [NSDate date];
   active_game_title_id_ = [self titleIDForGamePath:path];
+  xe_ios_system_link_set_playing(active_game_title_id_);
   if (launched_accesses_ && path == launched_path_) {
     // Started from the library: its launch already holds the folders.
     [self retainExternalGameAccessesForLaunch:launched_accesses_ replaceExisting:YES];
@@ -1800,6 +1811,19 @@ static bool XeJITUsable() {
   };
   self.inGameMenuOverlay.pauseEmulatorHandler = ^{
     [unsafe_self setEmulationPausedByUser:!unsafe_self.inGameMenuOverlay.emulatorPaused];
+  };
+  self.inGameMenuOverlay.friendsHandler = ^{
+    [unsafe_self hideInGameMenuOverlay];
+    [unsafe_self presentFriendsWithMode:XeniaIOSFriendsModeInvite];
+  };
+  self.inGameMenuOverlay.friendsAttentionCount = [XeniaLiveSocial shared].attentionCount;
+  self.inGameMenuOverlay.onlineAcceptInviteHandler = ^(XeniaLiveInvite* invite) {
+    [unsafe_self hideInGameMenuOverlay];
+    [unsafe_self acceptLiveInvite:invite];
+  };
+  self.inGameMenuOverlay.onlineJoinFriendHandler = ^(XeniaLiveFriend* peer) {
+    [unsafe_self hideInGameMenuOverlay];
+    [unsafe_self joinLiveFriend:peer];
   };
   [self refreshInGameDisplayMenu];
 }
@@ -3437,6 +3461,297 @@ static bool XeJITUsable() {
   return YES;
 }
 
+#pragma mark - Friends and game invites
+
+- (void)installLiveSocial {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  social.runningTitleProvider = ^uint32_t {
+    return unsafe_self.gameRunning ? unsafe_self->active_game_title_id_ : 0;
+  };
+  social.titleNameProvider = ^NSString*(uint32_t title_id) {
+    for (const IOSDiscoveredGame& game : unsafe_self->discovered_games_) {
+      if (game.title_id == title_id && !game.title.empty()) {
+        return ToNSString(game.title);
+      }
+    }
+    return nil;
+  };
+  NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+  [center addObserverForName:XeniaLiveSocialDidChangeNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* __unused note) {
+                    XeniaLiveSocial* live = [XeniaLiveSocial shared];
+                    xe_ios_system_link_set_social_counts(live.onlineFriendCount,
+                                                         live.attentionCount);
+                    xe_ios_system_link_live_game_changed();
+                    unsafe_self.inGameMenuOverlay.friendsAttentionCount = live.attentionCount;
+                  }];
+  [center addObserverForName:XeniaLiveSocialInviteReceivedNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    [unsafe_self showLiveInviteBanner:note.object];
+                  }];
+}
+
+- (void)showLiveInviteBanner:(XeniaLiveInvite*)invite {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  // Over whatever is up: the library, the game, or a sheet.
+  UIView* host = self.view.window ?: self.view;
+  [XeniaIOSLiveInviteBanner showInvite:invite
+                                inView:host
+                              overGame:self.gameRunning && self.launcherOverlayView.hidden
+                                accept:^(XeniaLiveInvite* accepted) {
+                                  if (accepted.party) {
+                                    [[XeniaLiveSocial shared] acceptPartyInvite:accepted];
+                                    return;
+                                  }
+                                  [unsafe_self acceptLiveInvite:accepted];
+                                }
+                               decline:^(XeniaLiveInvite* declined) {
+                                 [[XeniaLiveSocial shared] declineInvite:declined];
+                               }];
+}
+
+// The System Link page of the Online screen: each game's public lobby, the library's games
+// first; choosing one opens its System Link sheet.
+- (UIViewController*)gamesOnlineController {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  std::vector<XeniaIOSOnlineLibraryGame> library;
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    library.push_back({game.title_id, ToNSString(game.title),
+                       game.icon_data.empty() ? nil
+                                              : [NSData dataWithBytes:game.icon_data.data()
+                                                               length:game.icon_data.size()]});
+  }
+  return xe_ios_new_online_view_controller(library, ^(uint32_t title_id) {
+    const std::vector<IOSDiscoveredGame>& games = unsafe_self->discovered_games_;
+    for (size_t i = 0; i < games.size(); ++i) {
+      if (games[i].title_id == title_id) {
+        [unsafe_self performGameAction:XeniaIOSGameActionSystemLink forIndex:i];
+        return;
+      }
+    }
+  });
+}
+
+// Public Games, from the library's globe: the games with players in them, live. A full page on
+// iPhone, a large panel on iPad.
+- (void)presentPublicGames {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  NSMutableDictionary<NSNumber*, NSString*>* names = [NSMutableDictionary dictionary];
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    names[@(game.title_id)] = ToNSString(game.title);
+  }
+  XeniaIOSPublicGamesViewController* page = [[[XeniaIOSPublicGamesViewController alloc]
+      initWithLibraryNames:names
+                  openGame:^(uint32_t title_id) {
+                    const std::vector<IOSDiscoveredGame>& games = unsafe_self->discovered_games_;
+                    for (size_t i = 0; i < games.size(); ++i) {
+                      if (games[i].title_id == title_id) {
+                        [unsafe_self performGameAction:XeniaIOSGameActionSystemLink forIndex:i];
+                        return;
+                      }
+                    }
+                  }] autorelease];
+  UINavigationController* navigation =
+      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:page] autorelease];
+  navigation.navigationBarHidden = YES;
+  XEConfigureDestinationPresentation(navigation, self.view, CGSizeMake(720.0, 680.0), NO);
+  if (self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact) {
+    navigation.modalPresentationStyle = UIModalPresentationOverFullScreen;
+  }
+  navigation.presentationController.delegate = self;
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)presentFriendsWithMode:(XeniaIOSFriendsMode)mode {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  NSString* game = mode == XeniaIOSFriendsModeInvite ? [self runningGameDisplayName] : nil;
+  XeniaIOSFriendsViewController* friends =
+      [[[XeniaIOSFriendsViewController alloc] initWithMode:mode gameTitle:game] autorelease];
+  friends.acceptInviteHandler = ^(XeniaLiveInvite* invite) {
+    [unsafe_self acceptLiveInvite:invite];
+  };
+  friends.joinFriendHandler = ^(XeniaLiveFriend* peer) {
+    [unsafe_self joinLiveFriend:peer];
+  };
+  if (mode == XeniaIOSFriendsModeBrowse) {
+    friends.gamesOnlineProvider = ^UIViewController* {
+      return [unsafe_self gamesOnlineController];
+    };
+  }
+  if (mode == XeniaIOSFriendsModeBrowse && !self.gameRunning &&
+      [XeniaLiveSocial shared].state == XeniaLiveSocialStateOnline) {
+    // Signed in: the same Online pages as in the game menu. Not signed in: the older list
+    // below still holds the sign-in steps.
+    XeniaIOSOnlineSheetViewController* sheet =
+        [[[XeniaIOSOnlineSheetViewController alloc] init] autorelease];
+    sheet.acceptInviteHandler = friends.acceptInviteHandler;
+    sheet.joinFriendHandler = friends.joinFriendHandler;
+    UINavigationController* sheet_navigation =
+        [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:sheet] autorelease];
+    sheet_navigation.navigationBarHidden = YES;
+    XEConfigureDestinationPresentation(sheet_navigation, self.view, CGSizeMake(520.0, 680.0), NO);
+    sheet_navigation.presentationController.delegate = self;
+    UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+    [presenter presentViewController:sheet_navigation animated:YES completion:nil];
+    return;
+  }
+  if (self.gameRunning) {
+    [self presentPauseSheetWithRootController:friends
+                                preferredSize:CGSizeMake(520.0, 680.0)
+                  preventInteractiveDismissal:NO
+                                   completion:nil];
+    return;
+  }
+  XeniaLandscapeNavigationController* navigation_controller =
+      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:friends]
+          autorelease];
+  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(520.0, 680.0),
+                                     NO);
+  navigation_controller.presentationController.delegate = self;
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:navigation_controller animated:YES completion:nil];
+}
+
+// Accept from the banner or Friends: in the running game when it's the invite's, else start the
+// invite's game from the library, which reads the invite as it starts.
+- (void)acceptLiveInvite:(XeniaLiveInvite*)invite {
+  if (self.gameRunning && !self.gameStopInProgress && active_game_title_id_ == invite.titleId) {
+    if ([[XeniaLiveSocial shared] acceptInviteInRunningGame:invite]) {
+      [self showStatusToast:[NSString stringWithFormat:NSLocalizedString(
+                                                           @"Joining %@'s game…",
+                                                           @"Toast; %@ is the gamertag"),
+                                                       invite.gamertag]
+                      style:XeniaIOSStatusToastStyleInfo];
+    }
+    return;
+  }
+  XeniaLiveInvite* held = [[invite retain] autorelease];
+  [self launchTitleForLiveInvite:invite.titleId
+                         inviter:invite.gamertag
+                         prepare:^{
+                           [[XeniaLiveSocial shared] acceptInviteForLaunch:held];
+                         }];
+}
+
+- (void)presentGamerCardForXuid:(uint64_t)xuid completion:(void (^)(void))completion {
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  UIView* host = self.view.window ?: self.view;
+  xe_ios_present_gamer_card(
+      host, xuid,
+      ^(XeniaLiveFriend* peer) {
+        [unsafe_self joinLiveFriend:peer];
+      },
+      completion);
+}
+
+- (void)joinLiveFriend:(XeniaLiveFriend*)peer {
+  if (self.gameRunning && !self.gameStopInProgress && active_game_title_id_ == peer.titleId) {
+    if ([[XeniaLiveSocial shared] joinFriendInRunningGame:peer]) {
+      [self showStatusToast:[NSString stringWithFormat:NSLocalizedString(
+                                                           @"Joining %@'s game…",
+                                                           @"Toast; %@ is the gamertag"),
+                                                       peer.gamertag]
+                      style:XeniaIOSStatusToastStyleInfo];
+    }
+    return;
+  }
+  XeniaLiveFriend* held = [[peer retain] autorelease];
+  [self launchTitleForLiveInvite:peer.titleId
+                         inviter:peer.gamertag
+                         prepare:^{
+                           if (![[XeniaLiveSocial shared] joinFriendForLaunch:held]) {
+                             XELOGW("iOS: the friend's game can't be joined any more");
+                           }
+                         }];
+}
+
+// Finds |title_id| in the library and starts it, asking first when it replaces a running game.
+// |prepare| runs just before the launch: it leaves the invite for the title.
+- (void)launchTitleForLiveInvite:(uint32_t)title_id
+                         inviter:(NSString*)inviter
+                         prepare:(void (^)(void))prepare {
+  std::filesystem::path launch_path;
+  NSString* display_name = nil;
+  if (![self findDiscoveredGameWithTitleID:title_id
+                                    system:nullptr
+                                      path:&launch_path
+                               displayName:&display_name]) {
+    XELOGW("iOS: Live invite for title {:08X}, which isn't in the library", title_id);
+    XEPresentOKAlert([self topPresentedControllerForModalPresentation] ?: self,
+                     NSLocalizedString(@"Game Not in Library",
+                                       @"Alert title: an invite's game isn't in the library"),
+                     [NSString stringWithFormat:NSLocalizedString(
+                                                    @"%@ invited you to a game that isn't in "
+                                                    @"your library. Add the game, then accept "
+                                                    @"from Friends within 10 minutes.",
+                                                    @"Alert message; %@ is the gamertag"),
+                                                inviter]);
+    return;
+  }
+  if (!display_name.length) {
+    display_name = ToNSString(launch_path.filename().string());
+  }
+  void (^prepare_copy)(void) = [[prepare copy] autorelease];
+  const std::filesystem::path confirmed_path = launch_path;
+  NSString* name = [[display_name retain] autorelease];
+  void (^launch)(void) = ^{
+    prepare_copy();
+    live_invite_launch_title_ = title_id;
+    [self proceedWithExternalLaunchPath:confirmed_path displayName:name];
+  };
+  if (!self.gameRunning && !self.gameStopInProgress) {
+    launch();
+    return;
+  }
+  NSString* running_name = [self runningGameDisplayName];
+  if (!running_name.length) {
+    running_name = NSLocalizedString(@"the running game", @"Alert text: the game that runs now");
+  }
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(
+                                                              @"Quit %@ and Join?",
+                                                              @"Alert title: an invite or Join "
+                                                              @"for another game; %@ is the "
+                                                              @"running game"),
+                                                          running_name]
+                       message:[NSString stringWithFormat:
+                                             NSLocalizedString(
+                                                 @"%1$@ is playing %2$@. Unsaved progress in "
+                                                 @"%3$@ will be lost.",
+                                                 @"Alert message; %1$@ is the gamertag, %2$@ "
+                                                 @"the invite's game, %3$@ the running game"),
+                                             inviter, display_name, running_name]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Quit and Join",
+                                                         @"Alert button: stop the running game "
+                                                         @"and join a friend's")
+                                 style:UIAlertActionStyleDestructive
+                               handler:^(UIAlertAction* __unused action) {
+                                 launch();
+                               }]];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+// A launch that isn't for the invite accepted last drops it, so another game doesn't read it.
+- (void)noteLaunchForLiveInvite:(uint32_t)title_id {
+  if (!live_invite_launch_title_ || live_invite_launch_title_ != title_id) {
+    [[XeniaLiveSocial shared] forgetAcceptedInvite];
+  }
+  live_invite_launch_title_ = 0;
+}
+
 - (void)proceedWithExternalLaunchPath:(const std::filesystem::path&)launch_path
                           displayName:(NSString*)display_name {
   if (!self.jitAcquired) {
@@ -3680,6 +3995,7 @@ static bool XeJITUsable() {
       }
       self.gameStopInProgress = NO;
       active_game_title_id_ = launch_title_id;
+      xe_ios_system_link_set_playing(active_game_title_id_);
       [self applyTouchLayoutModelForTitleID:active_game_title_id_];
       xe_request_landscape_orientation(self);
       [UIView animateWithDuration:0.3
@@ -3694,6 +4010,7 @@ static bool XeJITUsable() {
       self.inGameMenuOverlay.gameTitle = display_name;
       self.inGameMenuOverlay.sessionStartDate = [NSDate date];
       [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
+      [self noteLaunchForLiveInvite:launch_title_id];
       self.appContext->LaunchGame(std::string([path_ns UTF8String]));
     } else {
       [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
@@ -3706,6 +4023,7 @@ static bool XeJITUsable() {
   self.gameRunning = YES;
   [self.launchStatusView beginLaunchWithTitle:display_name];
   active_game_title_id_ = launch_title_id;
+  xe_ios_system_link_set_playing(active_game_title_id_);
   [self applyTouchLayoutModelForTitleID:active_game_title_id_];
 
   xe_request_landscape_orientation(self);
@@ -3723,6 +4041,7 @@ static bool XeJITUsable() {
     self.inGameMenuOverlay.gameTitle = display_name;
     self.inGameMenuOverlay.sessionStartDate = [NSDate date];
     [self recordGamePlayed:launch_title_id dashboard:launches_dashboard];
+    [self noteLaunchForLiveInvite:launch_title_id];
     self.appContext->LaunchGame(std::string([path_ns UTF8String]));
   } else {
     [self presentLaunchProblemAlertWithMessage:NSLocalizedString(
@@ -5265,6 +5584,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
   }
   [self saveTouchLayoutModelForTitleID:active_game_title_id_];
   active_game_title_id_ = 0;
+  xe_ios_system_link_set_playing(active_game_title_id_);
   active_touch_layout_local_id_.clear();
   gameplay_modal_presentation_pending_ = NO;
   [self clearActiveExternalGameAccesses];

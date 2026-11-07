@@ -52,6 +52,7 @@
 #include "xenia/ui/ios/shared/ios_crash_reporting.h"
 #include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
+#include "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #include "xenia/ui/ios/shared/ios_session_stats.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/presenter.h"
@@ -1301,6 +1302,56 @@ bool EmulatorAppIOS::OnInitialize() {
     }
     return profile_manager->GetProfile(xuid) != nullptr;
   });
+
+  // Friends and game invites at the library: the profile in slot 0 stays online while the app
+  // is open (ios_live_social_bridge).
+  {
+    XeniaIOSLiveSocialHost live_host;
+    live_host.storage_root = GetStorageRootForCallbacks();
+    live_host.active_profile = [this]() -> std::optional<XeniaIOSLiveProfile> {
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        EnsureProfileServicesReady();
+        return std::nullopt;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      const auto* profile = profiles ? profiles->GetProfile(uint8_t(0)) : nullptr;
+      if (!profile) {
+        return std::nullopt;
+      }
+      XeniaIOSLiveProfile result;
+      result.xuid = profile->xuid();
+      result.online_xuid = profile->GetOnlineXUID();
+      result.gamertag = profile->name();
+      result.live_enabled = profile->IsLiveEnabled();
+      return result;
+    };
+    live_host.enable_online = [this](uint64_t xuid) {
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return false;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      const auto* account = profiles ? profiles->GetAccount(xuid) : nullptr;
+      if (!account) {
+        return false;
+      }
+      xe::kernel::xam::X_XAMACCOUNTINFO updated = *account;
+      updated.ToggleLiveFlag(true);
+      return profiles->UpdateAccount(xuid, &updated);
+    };
+    live_host.set_online_xuid = [this](uint64_t xuid, uint64_t online_xuid) {
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      const auto* account = profiles ? profiles->GetAccount(xuid) : nullptr;
+      if (account && account->xuid_online != online_xuid) {
+        xe::kernel::xam::X_XAMACCOUNTINFO updated = *account;
+        updated.xuid_online = online_xuid;
+        profiles->UpdateAccount(xuid, &updated);
+      }
+    };
+    xe_ios_live_social_install(std::move(live_host));
+  }
 
   ios_context.set_achievements_snapshot_callback([this](uint32_t user_index, uint32_t title_id) {
     ui::IOSAchievementsSnapshot snapshot;

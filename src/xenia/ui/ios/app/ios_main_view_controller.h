@@ -45,6 +45,9 @@ class IOSWindowedAppContext;
 - (void)presentSystemSigninPromptForUserIndex:(uint32_t)user_index
                                   usersNeeded:(uint32_t)users_needed
                                    completion:(void (^)(BOOL success))completion;
+// A player's gamer card over the game, for the title (XUID 0: the user's own). |completion| runs
+// once it's closed.
+- (void)presentGamerCardForXuid:(uint64_t)xuid completion:(void (^)(void))completion;
 - (void)presentAchievementsForUserIndex:(uint32_t)user_index
                                 titleID:(uint32_t)title_id
                              completion:(void (^)(BOOL success))completion;

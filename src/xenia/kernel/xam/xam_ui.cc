@@ -33,6 +33,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_content_device.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xmodule.h"
@@ -1511,9 +1512,38 @@ static X_RESULT xeXamShowProfileUI(uint32_t user_index) {
 }
 
 dword_result_t XamShowGamerCardUI_entry(dword_t user_index) {
+#if XE_PLATFORM_IOS
+  if (kernel_state()->xam_state()->GetUserProfile(user_index) &&
+      !kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowGamerCard(user_index, 0);
+  }
+#endif
   return xeXamShowProfileUI(user_index);
 }
 DECLARE_XAM_EXPORT1(XamShowGamerCardUI, kUserProfiles, kStub);
+
+// Another player's card ("View Gamer Card" in a lobby). The XUID is the player's online one.
+dword_result_t XamShowGamerCardUIForXUID_entry(dword_t user_index,
+                                               qword_t xuid_player) {
+  auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+  uint64_t xuid = xuid_player;
+  auto account = LiveAccount(user_index);
+  const bool own =
+      xuid == user->xuid() || (account && account->xuid() && xuid == account->xuid());
+  XELOGI("XamShowGamerCardUIForXUID(user {}, {:016X}){}", uint32_t(user_index),
+         xuid, own ? ": the user's own" : "");
+#if XE_PLATFORM_IOS
+  if (!kernel_state()->emulator()->imgui_drawer()) {
+    return ios::ShowGamerCard(user_index, own ? 0 : xuid);
+  }
+#endif
+  // The desktop shows signed-in profiles in the host UI only.
+  return own ? xeXamShowProfileUI(user_index) : X_RESULT(X_ERROR_SUCCESS);
+}
+DECLARE_XAM_EXPORT1(XamShowGamerCardUIForXUID, kUserProfiles, kImplemented);
 
 dword_result_t XamShowEditProfileUI_entry(dword_t user_index) {
   return xeXamShowProfileUI(user_index);

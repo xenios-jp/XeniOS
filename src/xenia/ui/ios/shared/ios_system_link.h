@@ -39,7 +39,8 @@ NSString* xe_ios_system_link_invite_room(NSURL* url, uint32_t* title_id_out);
 // running game restarts.
 NSString* xe_ios_system_link_invite_note(NSString* code, BOOL restarts);
 // Makes the room an invite named the room of the game's next launch only, leaving the saved room
-// alone, and tells the player when Online features are off.
+// alone, and tells the player when Online features are off. An empty code is the game's public
+// lobby.
 void xe_ios_join_system_link_room(uint32_t title_id, NSString* code);
 
 // Whether System Link is set to play through the relay.
@@ -95,9 +96,9 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void);
 NSString* xe_ios_system_link_room_name(NSString* code);
 // Posted on the main thread when the snapshot may have changed.
 extern NSString* const XeniaIOSSystemLinkStatusDidChangeNotification;
-// The in-game menu's System Link card: how it's connected, the room and the other players,
-// which opens the System Link status sheet. Hidden while System Link is off. Owned by the
-// caller.
+// The in-game menu's status pill, for the header beside the game's title: "Online · <friends>"
+// in a game signed in to the account (opens Friends), else the System Link room's state (opens
+// the System Link status sheet). Hidden while neither applies. Owned by the caller.
 UIView* xe_ios_new_system_link_status_view(void);
 
 // Who's online: the players in each game's public lobby, which the lobby counts, and the apps
@@ -114,6 +115,13 @@ void xe_ios_system_link_keep_online(BOOL keep);
 // Players by title ID, none with 0, or nil while the counts aren't known.
 NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_titles(void);
 NSInteger xe_ios_system_link_online_players(uint32_t title_id);
+// Title ID to how many apps run it, wherever they play (public lobby, private room or alone);
+// nil while the counts aren't known, empty from a lobby that doesn't count it.
+NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_playing(void);
+NSInteger xe_ios_system_link_online_playing_count(uint32_t title_id);
+// Tells the lobby which game this app runs (0 when it stops), on the presence socket, so the
+// Online sheet can count the players of each game. Main thread.
+void xe_ios_system_link_set_playing(uint32_t title_id);
 // How many apps are open with Online features on, in the library or in a game, this one
 // included, or -1 while unknown or the lobby doesn't say.
 NSInteger xe_ios_system_link_online_here(void);
@@ -135,6 +143,26 @@ NSInteger xe_ios_system_link_online_total(void);
 // calls what xe_ios_system_link_set_online_menu set. Autoreleased.
 UIButton* xe_ios_new_system_link_online_button(void);
 void xe_ios_system_link_set_online_menu(void (^open)(void));
+// The library's globe button: a round glass button with the players online on XeniOS in a
+// green badge, which calls what xe_ios_system_link_set_globe_action set. Autoreleased.
+UIButton* xe_ios_new_system_link_globe_button(void);
+void xe_ios_system_link_set_globe_action(void (^open)(void));
+// The players on XeniOS other than this device, or 0 while signed out of Live or offline.
+NSInteger xe_ios_system_link_players_elsewhere(void);
+// "23", "1.2k", "12k".
+NSString* xe_ios_system_link_players_text(NSInteger count);
+// What the Online button's badge shows: |attention| (game and friend invites waiting) in the
+// accent, else how many friends are online. Main thread.
+void xe_ios_system_link_set_social_counts(NSInteger friends_online, NSInteger attention);
+// A game that plays online through the profile's account (an invite, a friend's game) rides the
+// System Link room without being a System Link game. While |is_live| says so, the in-game card
+// reads "Playing Online · With <|players|>" and opens |open| (Friends), and the room's join,
+// leave and version toasts stay quiet. Main thread.
+void xe_ios_system_link_set_live_game(BOOL (^is_live)(void), NSString* (^players)(void),
+                                      void (^open)(void));
+// Something |is_live| or |players| depends on changed: the card shows it again.
+void xe_ios_system_link_live_game_changed(void);
+extern NSString* const XeniaIOSSystemLinkLiveGameDidChangeNotification;
 
 // Lets games play over the internet while Online features are on, each in its room, and
 // tells the player what System Link does through |toast| on the main thread. |link_off| is
