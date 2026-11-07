@@ -8,6 +8,7 @@
  */
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -47,6 +48,7 @@
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/fmt/include/fmt/xchar.h"
+#include "third_party/mbedtls/include/mbedtls/sha1.h"
 
 DEFINE_int32(avpack, 8,
              "Video modes\n"
@@ -1124,6 +1126,60 @@ DECLARE_XAM_EXPORT1(XamGetCurrentDemand, kNone, kImplemented);
 // kept here, so it's none, as for the first title started.
 dword_result_t XamLoaderGetPriorTitleId_entry() { return 0; }
 DECLARE_XAM_EXPORT1(XamLoaderGetPriorTitleId, kNone, kSketchy);
+
+// The header in front of data signed by an Xbox Live service ("YTGR"). Its
+// numbers are little-endian.
+struct X_XSIGNER_HEADER {
+  xe::be<uint32_t> magic;
+  xe::le<uint32_t> version;
+  xe::le<uint32_t> header_size;
+  uint8_t unknown_0C[8];
+  xe::le<uint32_t> content_size;
+  uint8_t unknown_18[4];
+  uint8_t content_digest[20];
+  uint8_t signature[256];
+};
+static_assert_size(X_XSIGNER_HEADER, 0x130);
+
+// Checks the signature on data from an Xbox Live service, such as the
+// dashboard's home page, and gives the offset of the data after it. Xenia
+// doesn't have the service's key, so it checks the header and the data's
+// digest but not the signature, as XeCryptBnQwBeSigVerify does. Callers that
+// accept unsigned data (flags 1 and 2) get it whole: the services Xenia talks
+// to cannot sign.
+dword_result_t XamVerifyXSignerSignature_entry(lpvoid_t data, dword_t size,
+                                               lpdword_t content_offset,
+                                               dword_t flags,
+                                               lpvoid_t digest_out,
+                                               dword_t digest_size) {
+  constexpr uint32_t kXSignerMagic = 0x59544752;  // YTGR
+  constexpr X_HRESULT kTrustNoSignature = 0x800B0100;
+  constexpr X_HRESULT kTrustSubjectNotTrusted = 0x800B0004;
+  if (!data || !content_offset || (digest_out && digest_size != 20)) {
+    return X_E_INVALIDARG;
+  }
+  *content_offset = 0;
+  const auto* header = data.as<const X_XSIGNER_HEADER*>();
+  if (size < sizeof(X_XSIGNER_HEADER) || header->magic != kXSignerMagic) {
+    return (flags & 0x3) ? X_E_SUCCESS : kTrustNoSignature;
+  }
+  if (header->header_size != sizeof(X_XSIGNER_HEADER) ||
+      header->content_size != size - sizeof(X_XSIGNER_HEADER)) {
+    return kTrustSubjectNotTrusted;
+  }
+  uint8_t digest[20];
+  mbedtls_sha1(data.as<const uint8_t*>() + sizeof(X_XSIGNER_HEADER),
+               header->content_size, digest);
+  if (std::memcmp(digest, header->content_digest, sizeof(digest))) {
+    return kTrustSubjectNotTrusted;
+  }
+  if (digest_out) {
+    std::memcpy(digest_out, header->content_digest, sizeof(digest));
+  }
+  *content_offset = sizeof(X_XSIGNER_HEADER);
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamVerifyXSignerSignature, kNone, kSketchy);
 
 uint32_t XamAllocImpl(uint32_t flags, uint32_t size,
                       xe::be<uint32_t>* out_ptr) {
