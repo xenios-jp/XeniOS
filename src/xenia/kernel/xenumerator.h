@@ -16,6 +16,7 @@
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam.h"
+#include "xenia/kernel/xam/xam_live_stats.h"
 #include "xenia/kernel/xobject.h"
 
 namespace xe {
@@ -248,20 +249,40 @@ class XUserStatsEnumerator : public XEnumerator {
                                 uint32_t buffer_guest,
                                 const std::vector<uint32_t>& view_ids);
 
-  XUserStatsEnumerator(KernelState* kernel_state, size_t items_per_enumerate,
-                       std::vector<uint32_t> view_ids, uint32_t buffer_size)
-      : XEnumerator(kernel_state, items_per_enumerate, 0),
-        view_ids_(std::move(view_ids)),
+  // XamUserCreateStatsEnumerator's types.
+  enum class Type : uint32_t { kXuid = 0, kRank = 1, kRankPerSpec = 2,
+                               kRating = 3 };
+
+  // Pages of |rows| rows in every view of |layout|, from the lobby: the first
+  // from |pivot| (a XUID, a rank or a rating, by |type|), the next ones by
+  // rank after the last row. With no store to ask, one page with no rows.
+  XUserStatsEnumerator(KernelState* kernel_state, uint32_t title_id, Type type,
+                       uint64_t pivot, uint32_t rows,
+                       std::vector<xam::StatsLayoutView> layout,
+                       uint32_t buffer_size)
+      : XEnumerator(kernel_state, rows, 0),
+        title_id_(title_id),
+        type_(type),
+        pivot_(pivot),
+        rows_(rows),
+        layout_(std::move(layout)),
         buffer_size_(buffer_size) {}
 
   uint32_t WriteItems(uint8_t* buffer_data, uint32_t buffer_size,
                       uint32_t* written_count) override;
 
  private:
-  std::vector<uint32_t> view_ids_;
+  uint32_t title_id_;
+  Type type_;
+  uint64_t pivot_;
+  uint32_t rows_;
+  std::vector<xam::StatsLayoutView> layout_;
   // The size reported to the title, which leaves room for every row.
   uint32_t buffer_size_;
-  bool written_ = false;
+  bool first_ = true;
+  bool done_ = false;
+  // The rank the next page starts at.
+  uint32_t next_rank_ = 1;
 };
 
 class XMPCreateUserPlaylistEnumerator : public XEnumerator {

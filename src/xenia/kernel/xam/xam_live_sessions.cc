@@ -710,6 +710,16 @@ bool UpdateLiveSession(const net::KeyId& session_id, uint32_t used_public,
          directory->Update(id, used_public, used_private);
 }
 
+std::shared_ptr<net::live::SessionDirectory> LiveStatsDirectory(
+    KernelState* kernel_state) {
+  return GetOnlineSessions().Directory(kernel_state);
+}
+
+uint64_t LiveStatsAccountXuid() {
+  auto account = SessionAccount();
+  return account ? account->xuid() : 0;
+}
+
 void LiveSessionTokenReady() {
   if (auto directory = GetOnlineSessions().Current()) {
     directory->TokenReady();

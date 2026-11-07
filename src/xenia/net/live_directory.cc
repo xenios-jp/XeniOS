@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <random>
 #include <set>
@@ -369,6 +370,241 @@ std::string EncodeLookup(const std::vector<std::string>& ids, uint32_t seq) {
   return buffer.GetString();
 }
 
+namespace {
+
+const char* StatsOpName(StatsOp op) {
+  switch (op) {
+    case StatsOp::kSum:
+      return "sum";
+    case StatsOp::kMax:
+      return "max";
+    case StatsOp::kMin:
+      return "min";
+    default:
+      return "last";
+  }
+}
+
+bool IsStatsType(uint8_t type) {
+  return type == 0 || type == 1 || type == 2 || type == 3 || type == 5 ||
+         type == 7;
+}
+
+bool IsSkillViewId(uint32_t view_id) {
+  return (view_id >> 16) == 0xFFFE || (view_id >> 16) == 0xFFFF;
+}
+
+void WriteStatsValue(Writer& w, const StatsValue& v) {
+  switch (v.type) {
+    case 0:
+      w.Uint(static_cast<uint32_t>(v.i));
+      break;
+    case 1:
+      w.Int(static_cast<int32_t>(v.i));
+      break;
+    case 3:
+    case 5:
+      w.Double(std::isfinite(v.d) ? v.d : 0.0);
+      break;
+    default:  // int64, datetime: decimal strings
+      w.String(fmt::format("{}", v.i).c_str());
+      break;
+  }
+}
+
+std::optional<StatsValue> ReadStatsValue(uint8_t type,
+                                         const rapidjson::Value& v) {
+  StatsValue value;
+  value.type = type;
+  switch (type) {
+    case 0:
+    case 1:
+      if (!v.IsInt64()) return std::nullopt;
+      value.i = v.GetInt64();
+      break;
+    case 3:
+    case 5:
+      if (!v.IsNumber()) return std::nullopt;
+      value.d = v.GetDouble();
+      break;
+    case 2:
+    case 7: {
+      if (!v.IsString()) return std::nullopt;
+      char* end = nullptr;
+      value.i = std::strtoll(v.GetString(), &end, 10);
+      if (!end || *end) return std::nullopt;
+      break;
+    }
+    default:
+      return std::nullopt;
+  }
+  return value;
+}
+
+void WriteSpecs(Writer& w, const std::vector<StatsSpec>& specs) {
+  w.Key("views");
+  w.StartArray();
+  for (size_t i = 0; i < specs.size() && i < kStatsMaxReadViews; ++i) {
+    w.StartObject();
+    w.Key("id");
+    w.Uint(specs[i].view_id);
+    w.Key("cols");
+    w.StartArray();
+    for (size_t c = 0; c < specs[i].columns.size() && c < kStatsMaxColumns;
+         ++c) {
+      w.Uint(specs[i].columns[c]);
+    }
+    w.EndArray();
+    w.EndObject();
+  }
+  w.EndArray();
+}
+
+std::vector<StatsViewData> ReadStatsViews(const rapidjson::Value& views) {
+  std::vector<StatsViewData> out;
+  if (!views.IsArray()) return out;
+  for (const auto& v : views.GetArray()) {
+    if (!v.IsObject()) continue;
+    StatsViewData view;
+    ReadUint(v, "id", view.view_id);
+    ReadUint(v, "total", view.total);
+    auto rows = v.FindMember("rows");
+    if (rows != v.MemberEnd() && rows->value.IsArray()) {
+      for (const auto& r : rows->value.GetArray()) {
+        if (!r.IsObject()) continue;
+        StatsRowData row;
+        auto xuid = r.FindMember("xuid");
+        if (xuid == r.MemberEnd() || !xuid->value.IsString()) continue;
+        row.xuid = std::strtoull(xuid->value.GetString(), nullptr, 16);
+        if (auto g = r.FindMember("gamertag");
+            g != r.MemberEnd() && g->value.IsString()) {
+          row.gamertag = CleanGamertag(g->value.GetString());
+        }
+        ReadUint(r, "rank", row.rank);
+        if (auto rating = r.FindMember("rating");
+            rating != r.MemberEnd() && rating->value.IsString()) {
+          row.rating = std::strtoll(rating->value.GetString(), nullptr, 10);
+        }
+        auto cols = r.FindMember("cols");
+        if (cols != r.MemberEnd() && cols->value.IsArray()) {
+          for (const auto& c : cols->value.GetArray()) {
+            if (!c.IsArray() || c.Size() != 3 || !c[0].IsUint() ||
+                !c[1].IsUint() || c[0].GetUint() > 0xFFFF ||
+                !IsStatsType(static_cast<uint8_t>(c[1].GetUint())) ||
+                c[1].GetUint() > 7) {
+              continue;
+            }
+            auto value =
+                ReadStatsValue(static_cast<uint8_t>(c[1].GetUint()), c[2]);
+            if (!value) continue;
+            row.cells.push_back(
+                {static_cast<uint16_t>(c[0].GetUint()), *value});
+          }
+        }
+        view.rows.push_back(std::move(row));
+      }
+    }
+    out.push_back(std::move(view));
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string EncodeStatsWrite(const std::vector<StatsViewWrite>& views,
+                             uint32_t seq) {
+  rapidjson::StringBuffer buffer;
+  Writer w(buffer);
+  w.StartObject();
+  w.Key("t");
+  w.String("stats_write");
+  w.Key("seq");
+  w.Uint(seq);
+  w.Key("views");
+  w.StartArray();
+  for (size_t i = 0; i < views.size() && i < kStatsMaxWriteViews; ++i) {
+    const auto& view = views[i];
+    w.StartObject();
+    w.Key("id");
+    w.Uint(view.view_id);
+    if (!IsSkillViewId(view.view_id)) {
+      w.Key("cols");
+      w.StartArray();
+      std::set<uint16_t> seen;
+      for (const auto& c : view.columns) {
+        if (seen.size() >= kStatsMaxColumns || !seen.insert(c.attr).second ||
+            !IsStatsType(c.value.type) || c.attr == kStatsAttrRank ||
+            c.attr == kStatsAttrGamertag ||
+            (c.attr == kStatsAttrRating && c.value.type != 2)) {
+          continue;
+        }
+        w.StartArray();
+        w.Uint(c.attr);
+        w.Uint(c.value.type);
+        w.String(StatsOpName(c.op));
+        WriteStatsValue(w, c.value);
+        w.EndArray();
+      }
+      w.EndArray();
+    }
+    w.EndObject();
+  }
+  w.EndArray();
+  w.EndObject();
+  return buffer.GetString();
+}
+
+std::string EncodeStatsRead(const std::vector<uint64_t>& xuids,
+                            const std::vector<StatsSpec>& specs,
+                            uint32_t seq) {
+  rapidjson::StringBuffer buffer;
+  Writer w(buffer);
+  w.StartObject();
+  w.Key("t");
+  w.String("stats_read");
+  w.Key("seq");
+  w.Uint(seq);
+  w.Key("xuids");
+  w.StartArray();
+  for (size_t i = 0; i < xuids.size() && i < kStatsMaxReadXuids; ++i) {
+    w.String(fmt::format("{:016x}", xuids[i]).c_str());
+  }
+  w.EndArray();
+  WriteSpecs(w, specs);
+  w.EndObject();
+  return buffer.GetString();
+}
+
+std::string EncodeStatsEnum(StatsEnumBy by, uint64_t pivot, uint32_t rows,
+                            const std::vector<StatsSpec>& specs,
+                            uint32_t seq) {
+  rapidjson::StringBuffer buffer;
+  Writer w(buffer);
+  w.StartObject();
+  w.Key("t");
+  w.String("stats_enum");
+  w.Key("seq");
+  w.Uint(seq);
+  w.Key("by");
+  w.String(by == StatsEnumBy::kRank    ? "rank"
+           : by == StatsEnumBy::kXuid ? "xuid"
+                                      : "rating");
+  w.Key("pivot");
+  if (by == StatsEnumBy::kRank) {
+    w.String(fmt::format("{}", std::clamp<uint64_t>(pivot, 1, 0xFFFFFFFF))
+                 .c_str());
+  } else if (by == StatsEnumBy::kXuid) {
+    w.String(fmt::format("{:016x}", pivot).c_str());
+  } else {
+    w.String(fmt::format("{}", static_cast<int64_t>(pivot)).c_str());
+  }
+  w.Key("rows");
+  w.Uint(std::clamp<uint32_t>(rows, 1, kStatsMaxEnumRows));
+  WriteSpecs(w, specs);
+  w.EndObject();
+  return buffer.GetString();
+}
+
 std::optional<DirectoryReply> ParseDirectoryReply(std::string_view text) {
   // Results are tens of KB at most; the iterative parser keeps deep nesting
   // off the stack.
@@ -397,6 +633,14 @@ std::optional<DirectoryReply> ParseDirectoryReply(std::string_view text) {
         name != doc.MemberEnd() && name->value.IsString()) {
       reply.gamertag = CleanGamertag(name->value.GetString());
     }
+    ReadUint(doc, "stats", reply.stats);
+  } else if (type == "stats") {
+    reply.kind = DirectoryReply::Kind::kStats;
+    if (auto views = doc.FindMember("views"); views != doc.MemberEnd()) {
+      reply.stats_views = ReadStatsViews(views->value);
+    }
+  } else if (type == "stats_written") {
+    reply.kind = DirectoryReply::Kind::kStatsWritten;
   } else if (type == "updated") {
     reply.kind = DirectoryReply::Kind::kUpdated;
     auto id = doc.FindMember("id");
@@ -554,10 +798,19 @@ void SessionDirectory::OnMessage(std::string text) {
       authed_ = true;
       denials_ = 0;
       denied_token_.clear();
-      XELOGI("Live directory: signed in as {}", reply->gamertag);
+      stats_version_ = reply->stats;
+      XELOGI("Live directory: signed in as {}{}", reply->gamertag,
+             stats_version_ ? ", stats on" : "");
       for (const auto& [id, advert] : adverts_) {
         socket_->Send(EncodeAdvertise(advert, kTtl));
       }
+      if (!stats_version_ && !stats_writes_.empty()) {
+        XELOGW("Live directory: this lobby keeps no stats; dropping {} "
+               "flush(es)",
+               stats_writes_.size());
+        stats_writes_.clear();
+      }
+      SendStatsWritesLocked();
       changed_.notify_all();
       break;
     case DirectoryReply::Kind::kResults:
@@ -566,6 +819,19 @@ void SessionDirectory::OnMessage(std::string text) {
         answers_[reply->seq] = std::move(reply->sessions);
         changed_.notify_all();
       }
+      break;
+    case DirectoryReply::Kind::kStats:
+      if (waiting_.contains(reply->seq)) {
+        stats_answers_[reply->seq] = std::move(reply->stats_views);
+        changed_.notify_all();
+      }
+      break;
+    case DirectoryReply::Kind::kStatsWritten:
+      std::erase_if(stats_writes_, [&](const PendingWrite& w) {
+        return w.seq && w.seq == reply->seq;
+      });
+      XELOGI("Live directory: stats written");
+      changed_.notify_all();
       break;
     case DirectoryReply::Kind::kRefreshed:
       // The lobby drops adverts that expired, or past its limits: advertise
@@ -606,6 +872,21 @@ void SessionDirectory::OnMessage(std::string text) {
             auth_.request_token();
           }
         }
+      } else if (reply->for_request == "stats_write") {
+        // Not kept: a refused flush won't be taken later either.
+        XELOGW("Live directory: the lobby refused stats ({})", reply->reason);
+        std::erase_if(stats_writes_, [&](const PendingWrite& w) {
+          return w.seq && w.seq == reply->seq;
+        });
+        changed_.notify_all();
+      } else if (reply->for_request == "stats_read" ||
+                 reply->for_request == "stats_enum") {
+        XELOGW("Live directory: the lobby refused a stats read ({})",
+               reply->reason);
+        if (waiting_.contains(reply->seq)) {
+          stats_answers_[reply->seq] = std::nullopt;
+          changed_.notify_all();
+        }
       } else if (reply->for_request == "update" &&
                  reply->reason == "not_found" && !reply->ids.empty() &&
                  adverts_.contains(reply->ids[0])) {
@@ -637,6 +918,10 @@ void SessionDirectory::OnClosed(std::string reason) {
   authed_ = false;
   auth_sent_ = false;
   closed_ = true;
+  // Flushes the lobby didn't answer go again on the next socket.
+  for (auto& w : stats_writes_) {
+    w.seq = 0;
+  }
   ++generation_;  // Ignores anything more from this socket.
   changed_.notify_all();
 }
@@ -665,8 +950,9 @@ void SessionDirectory::Run() {
       if (stopping_) {
         break;
       }
-      if (!adverts_.empty()) {
-        EnsureOpenLocked();  // Advertises them again once signed in.
+      if (!adverts_.empty() || !stats_writes_.empty()) {
+        // Advertises them again, and sends the flushes, once signed in.
+        EnsureOpenLocked();
       }
       continue;
     }
@@ -758,6 +1044,131 @@ std::vector<DirectoryAdvert> SessionDirectory::Ask(
   auto sessions = std::move(it->second);
   answers_.erase(it);
   return sessions;
+}
+
+std::optional<std::vector<StatsViewData>> SessionDirectory::AskStats(
+    const std::function<std::string(uint32_t seq)>& encode,
+    uint32_t timeout_ms) {
+  // No account: nothing to wait for.
+  if (!auth_.xuid || !auth_.xuid()) {
+    return std::nullopt;
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  std::unique_lock lock(mutex_);
+  EnsureOpenLocked();
+  if (!changed_.wait_until(lock, deadline,
+                           [this] {
+                             return authed_ || stopping_ || halted_ || !socket_;
+                           }) ||
+      !authed_ || !stats_version_) {
+    return std::nullopt;
+  }
+  const uint32_t seq = next_seq_++;
+  waiting_.insert(seq);
+  socket_->Send(encode(seq));
+  changed_.wait_until(lock, deadline, [&] {
+    return stats_answers_.contains(seq) || stopping_ || !authed_;
+  });
+  waiting_.erase(seq);
+  auto it = stats_answers_.find(seq);
+  if (it == stats_answers_.end()) {
+    return std::nullopt;
+  }
+  auto views = std::move(it->second);
+  stats_answers_.erase(it);
+  return views;
+}
+
+void SessionDirectory::SendStatsWritesLocked() {
+  if (!socket_ || !authed_ || !stats_version_) {
+    return;
+  }
+  for (auto& w : stats_writes_) {
+    if (!w.seq) {
+      w.seq = next_seq_++;
+      socket_->Send(EncodeStatsWrite(w.views, w.seq));
+    }
+  }
+}
+
+void SessionDirectory::WriteStats(std::vector<StatsViewWrite> views) {
+  if (views.empty()) {
+    return;
+  }
+  if (views.size() > kStatsMaxWriteViews) {
+    views.resize(kStatsMaxWriteViews);
+  }
+  std::lock_guard lock(mutex_);
+  stats_cache_.clear();
+  // A title that flushes and flushes again while the lobby can't be reached
+  // keeps its 8 newest.
+  constexpr size_t kMaxPending = 8;
+  if (stats_writes_.size() >= kMaxPending) {
+    stats_writes_.erase(stats_writes_.begin());
+  }
+  stats_writes_.push_back({std::move(views), 0});
+  EnsureOpenLocked();
+  SendStatsWritesLocked();
+}
+
+size_t SessionDirectory::PendingStatsWrites() {
+  std::lock_guard lock(mutex_);
+  return stats_writes_.size();
+}
+
+std::optional<std::vector<StatsViewData>> SessionDirectory::ReadStats(
+    const std::vector<uint64_t>& xuids, const std::vector<StatsSpec>& specs,
+    uint32_t timeout_ms) {
+  const std::string key = EncodeStatsRead(xuids, specs, 0);
+  constexpr auto kCacheFor = std::chrono::seconds(30);
+  {
+    std::lock_guard lock(mutex_);
+    auto it = stats_cache_.find(key);
+    if (it != stats_cache_.end() &&
+        std::chrono::steady_clock::now() - it->second.at < kCacheFor) {
+      return it->second.views;
+    }
+  }
+  auto views = AskStats(
+      [&](uint32_t seq) { return EncodeStatsRead(xuids, specs, seq); },
+      timeout_ms);
+  if (views) {
+    std::lock_guard lock(mutex_);
+    if (stats_cache_.size() >= 64) {
+      stats_cache_.clear();
+    }
+    stats_cache_[key] = {std::chrono::steady_clock::now(), *views};
+  }
+  return views;
+}
+
+std::optional<std::vector<StatsViewData>> SessionDirectory::EnumerateStats(
+    StatsEnumBy by, uint64_t pivot, uint32_t rows,
+    const std::vector<StatsSpec>& specs, uint32_t timeout_ms) {
+  const std::string key = EncodeStatsEnum(by, pivot, rows, specs, 0);
+  constexpr auto kCacheFor = std::chrono::seconds(30);
+  {
+    std::lock_guard lock(mutex_);
+    auto it = stats_cache_.find(key);
+    if (it != stats_cache_.end() &&
+        std::chrono::steady_clock::now() - it->second.at < kCacheFor) {
+      return it->second.views;
+    }
+  }
+  auto views = AskStats(
+      [&](uint32_t seq) {
+        return EncodeStatsEnum(by, pivot, rows, specs, seq);
+      },
+      timeout_ms);
+  if (views) {
+    std::lock_guard lock(mutex_);
+    if (stats_cache_.size() >= 64) {
+      stats_cache_.clear();
+    }
+    stats_cache_[key] = {std::chrono::steady_clock::now(), *views};
+  }
+  return views;
 }
 
 std::vector<DirectoryAdvert> SessionDirectory::Search(

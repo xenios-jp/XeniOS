@@ -12,6 +12,7 @@
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_live_sessions.h"
+#include "xenia/kernel/xam/xam_live_stats.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xenumerator.h"
@@ -524,24 +525,72 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         return X_E_INVALIDARG;
       }
 
-      // No stats service keeps rows, so every requested view reads back with
-      // none: everyone is unrated.
       using Enumerator = XUserStatsEnumerator;
       const auto* specs = memory_->TranslateVirtual<Enumerator::XUSER_STATS_SPEC*>(
           data->specs_guest_address);
       std::vector<uint32_t> view_ids;
+      std::vector<net::live::StatsSpec> wanted;
       for (uint32_t i = 0; i < data->specs_count; ++i) {
         view_ids.push_back(specs[i].ViewId);
+        net::live::StatsSpec spec;
+        spec.view_id = specs[i].ViewId;
+        for (uint32_t c = 0; c < std::min<uint32_t>(specs[i].NumColumnIds, 0x40);
+             ++c) {
+          spec.columns.push_back(specs[i].rgwColumnIds[c]);
+        }
+        wanted.push_back(std::move(spec));
       }
       // The title passes the size of its results buffer by value.
       const uint32_t needed = Enumerator::EmptyResultsSize(view_ids.size());
       if (!data->results_guest_address || data->results_size < needed) {
         return X_E_INSUFFICIENT_BUFFER;
       }
-      Enumerator::WriteEmptyResults(
-          memory_->TranslateVirtual(data->results_guest_address),
-          data->results_size, data->results_guest_address, view_ids);
+      std::vector<uint64_t> xuids;
+      const auto* xuid_list = data->xuids_guest_address
+                                  ? memory_->TranslateVirtual<const xe::be<uint64_t>*>(
+                                        data->xuids_guest_address)
+                                  : nullptr;
+      for (uint32_t i = 0; xuid_list && i < std::min<uint32_t>(data->xuids_count, 101);
+           ++i) {
+        xuids.push_back(xuid_list[i]);
+      }
+      // The lobby's rows for the title, one row per player asked for (rank 0
+      // for a player with none). With no store to ask, every view reads back
+      // with none: everyone is unrated.
+      auto rows = ReadLiveStats(kernel_state_, data->titleId, xuids, wanted);
+      if (!rows) {
+        Enumerator::WriteEmptyResults(
+            memory_->TranslateVirtual(data->results_guest_address),
+            data->results_size, data->results_guest_address, view_ids);
+        return X_E_SUCCESS;
+      }
+      WriteStatsResults(memory_->TranslateVirtual(data->results_guest_address),
+                        data->results_size, data->results_guest_address,
+                        StatsLayout(kernel_state_, wanted), *rows, &xuids);
+      size_t found = 0;
+      for (const auto& view : *rows) {
+        found += view.rows.size();
+      }
+      XELOGI("XUserReadStats: {} row(s) from the lobby", found);
       return X_E_SUCCESS;
+    }
+    case 0x000B0025:    // XSessionWriteStats
+    case 0x000B0026: {  // XSessionFlushStats
+      // Both: session at 0, XUID at 8, view count at 0x10, views at 0x14.
+      assert_true(!buffer_length || buffer_length == 0x18);
+      const uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
+      const uint64_t xuid = xe::load_and_swap<uint64_t>(buffer + 0x8);
+      const uint32_t num_views = xe::load_and_swap<uint32_t>(buffer + 0x10);
+      const uint32_t views_ptr = xe::load_and_swap<uint32_t>(buffer + 0x14);
+      auto session = XSession::FromGuest(kernel_state_, session_ptr);
+      if (!session) {
+        return X_E_INVALIDARG;
+      }
+      if (message == 0x000B0026) {
+        XELOGD("XSessionFlushStats({:08X})", session_ptr);
+        return session->FlushStats();
+      }
+      return session->WriteStats(xuid, num_views, views_ptr);
     }
     case 0x000B0036: {
       // Called after opening xbox live arcade and clicking on xbox live v5759

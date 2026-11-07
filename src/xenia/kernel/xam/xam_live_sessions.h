@@ -12,10 +12,15 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
 #include "xenia/kernel/xsession.h"
+
+namespace xe::net::live {
+class SessionDirectory;
+}  // namespace xe::net::live
 
 namespace xe {
 namespace kernel {
@@ -50,6 +55,13 @@ struct LiveSessionAdvert {
   std::vector<Context> contexts;
   std::vector<Property> properties;
 };
+
+// The running title's session directory through the relay (which also
+// keeps its stats), or nothing when there's none; and the account it signs
+// in as, 0 when none is signed in.
+std::shared_ptr<net::live::SessionDirectory> LiveStatsDirectory(
+    KernelState* kernel_state);
+uint64_t LiveStatsAccountXuid();
 
 // Announces |advert|, replacing an earlier one with the same session ID.
 void AdvertiseLiveSession(KernelState* kernel_state,
