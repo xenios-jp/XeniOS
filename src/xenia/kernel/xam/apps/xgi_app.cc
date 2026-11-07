@@ -740,7 +740,9 @@ uint32_t XgiApp::WriteSearchResults(
         memory_->TranslateVirtual<uint8_t*>(results_ptr + 8 + i * kResultSize);
     std::memcpy(result, &session.info, sizeof(session.info));
     xe::store_and_swap<uint32_t>(
-        result + 0x3C, session.max_public_slots - session.used_public_slots);
+        result + 0x3C,
+        session.max_public_slots -
+            std::min(session.used_public_slots, session.max_public_slots));
     xe::store_and_swap<uint32_t>(
         result + 0x40,
         session.max_private_slots -
@@ -794,15 +796,11 @@ X_HRESULT XgiApp::SessionSearchByIds(uint8_t* args, const uint8_t* ids,
   if (!results_ptr || buffer_size < 8) {
     return X_E_INVALIDARG;
   }
-  auto sessions = FindLiveSessions(kernel_state_, 1500);
-  std::erase_if(sessions, [&](const LiveSessionAdvert& session) {
-    for (uint32_t i = 0; i < id_count; ++i) {
-      if (!std::memcmp(session.info.session_id.data(), ids + i * 8, 8)) {
-        return false;
-      }
-    }
-    return true;
-  });
+  std::vector<net::KeyId> wanted(id_count);
+  for (uint32_t i = 0; i < id_count; ++i) {
+    std::memcpy(wanted[i].data(), ids + i * 8, 8);
+  }
+  const auto sessions = LookupLiveSessions(kernel_state_, wanted, 1500);
   const uint32_t count =
       WriteSearchResults(sessions, id_count, buffer_size, results_ptr);
   XELOGI("XSessionSearchByIds({} IDs) -> {} found", id_count, count);

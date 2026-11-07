@@ -10,15 +10,18 @@
 #include "xenia/kernel/xsession.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <span>
 #include <tuple>
+#include <unordered_map>
 
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam_live_sessions.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/net/system_link.h"
@@ -29,6 +32,7 @@ namespace kernel {
 namespace {
 
 constexpr uint32_t kContextGameType = 0x800A;
+constexpr uint32_t kContextPresence = 0x8001;
 constexpr uint32_t kContextGameMode = 0x800B;
 constexpr uint32_t kGameTypeRanked = 0;
 
@@ -69,8 +73,98 @@ static_assert_size(XSESSION_MEMBER, 0x10);
 
 }  // namespace
 
+namespace {
+
+// Each session's remote members, for SessionRemotePlayers.
+struct RemotePlayers {
+  std::mutex mutex;
+  std::unordered_map<const XSession*, std::vector<uint64_t>> by_session;
+  std::function<void()> changed;
+};
+
+RemotePlayers& Remote() {
+  static RemotePlayers remote;
+  return remote;
+}
+
+// |xuids| empty forgets the session.
+void SetRemotePlayers(const XSession* session, std::vector<uint64_t> xuids) {
+  std::function<void()> changed;
+  {
+    auto& remote = Remote();
+    std::lock_guard lock(remote.mutex);
+    auto it = remote.by_session.find(session);
+    if (xuids.empty()) {
+      if (it == remote.by_session.end()) {
+        return;
+      }
+      remote.by_session.erase(it);
+    } else if (it != remote.by_session.end() && it->second == xuids) {
+      return;
+    } else {
+      remote.by_session[session] = std::move(xuids);
+    }
+    changed = remote.changed;
+  }
+  if (changed) {
+    changed();
+  }
+}
+
+// Live sessions open now: those with presence.
+std::atomic<uint32_t> presence_sessions{0};
+
+}  // namespace
+
+uint32_t LivePresenceSessionsOpen() { return presence_sessions.load(); }
+
+void XSession::CountPresence(bool open) {
+  if (open == presence_counted_) {
+    return;
+  }
+  presence_counted_ = open;
+  const uint32_t before =
+      open ? presence_sessions.fetch_add(1) : presence_sessions.fetch_sub(1);
+  // Without one, a title playing System Link is in a System Link game.
+  if (before == (open ? 0u : 1u)) {
+    xam::LiveSystemLinkChanged();
+  }
+}
+
+std::vector<uint64_t> SessionRemotePlayers() {
+  auto& remote = Remote();
+  std::lock_guard lock(remote.mutex);
+  std::vector<uint64_t> result;
+  for (const auto& [session, xuids] : remote.by_session) {
+    for (uint64_t xuid : xuids) {
+      if (std::ranges::find(result, xuid) == result.end()) {
+        result.push_back(xuid);
+      }
+    }
+  }
+  return result;
+}
+
+void SetSessionRemotePlayersListener(std::function<void()> changed) {
+  auto& remote = Remote();
+  std::lock_guard lock(remote.mutex);
+  remote.changed = std::move(changed);
+}
+
 XSession::XSession(KernelState* kernel_state)
     : XObject(kernel_state, kObjectType) {}
+
+void XSession::PublishRemotePlayersLocked() {
+  std::vector<uint64_t> xuids;
+  if (state_ != kDeleted) {
+    for (const Member& member : members_) {
+      if (member.user_index == XUserIndexNone && member.xuid) {
+        xuids.push_back(member.xuid);
+      }
+    }
+  }
+  SetRemotePlayers(this, std::move(xuids));
+}
 
 X_STATUS XSession::Initialize() {
   // ObDereferenceObject finds the object by the handle CreateNative stashes.
@@ -135,6 +229,7 @@ X_RESULT XSession::Create(uint32_t flags, uint32_t user_index,
       }
     }
   }
+  CountPresence(flags & SessionFlags::PRESENCE);
   if (!session_info_ptr) {
     return X_ERROR_SUCCESS;
   }
@@ -171,12 +266,25 @@ X_RESULT XSession::Create(uint32_t flags, uint32_t user_index,
   }
   system_link_ = link;
   registered_key_ = info->session_id;
+  if (!error) {
+    key_counted_ = true;
+    xam::SystemLinkKeyRegistered(true);
+  }
   return X_ERROR_SUCCESS;
 }
 
 XSession::~XSession() {
+  CountPresence(false);
+  if (key_counted_) {
+    xam::SystemLinkKeyRegistered(false);
+  }
+  SetRemotePlayers(this, {});
   if (published_) {
     xam::WithdrawLiveSession(info_.session_id);
+  }
+  if (in_presence_) {
+    xam::LiveSetPresence(user_index_, kernel_state_->title_id(), 0,
+                         std::nullopt);
   }
 }
 
@@ -185,6 +293,7 @@ X_RESULT XSession::DeleteSession() {
     std::lock_guard lock(mutex_);
     state_ = kDeleted;
     PublishLocked();
+    PublishRemotePlayersLocked();
   }
   if (registered_key_) {
     if (auto link = system_link_.lock()) {
@@ -192,6 +301,11 @@ X_RESULT XSession::DeleteSession() {
     }
     registered_key_.reset();
   }
+  if (key_counted_) {
+    key_counted_ = false;
+    xam::SystemLinkKeyRegistered(false);
+  }
+  CountPresence(false);
   return X_ERROR_SUCCESS;
 }
 
@@ -229,7 +343,9 @@ void XSession::Join(uint32_t count, uint32_t xuids_ptr,
       members_.push_back(member);
     }
   }
-  PublishLocked();
+  XELOGI("XSession: {} member(s) after a join", members_.size());
+  PublishSlotsLocked();
+  PublishRemotePlayersLocked();
 }
 
 void XSession::Leave(uint32_t count, uint32_t xuids_ptr,
@@ -249,7 +365,8 @@ void XSession::Leave(uint32_t count, uint32_t xuids_ptr,
                     [&](const Member& member) { return member.xuid == xuid; });
     }
   }
-  PublishLocked();
+  PublishSlotsLocked();
+  PublishRemotePlayersLocked();
 }
 
 void XSession::Start() {
@@ -452,7 +569,46 @@ X_RESULT XSession::RegisterArbitration(uint32_t results_size,
   return X_E_SUCCESS;
 }
 
+void XSession::UpdatePresenceLocked() {
+  if (user_index_ >= XUserMaxUserCount ||
+      (!(flags_ & SessionFlags::PRESENCE) && !in_presence_)) {
+    return;
+  }
+  const bool joinable =
+      has_info_ && state_ != kDeleted && (flags_ & SessionFlags::PRESENCE) &&
+      (flags_ & SessionFlags::PEER_NETWORK) &&
+      !(flags_ & SessionFlags::JOIN_VIA_PRESENCE_DISABLED) &&
+      !(state_ >= kInGame && (flags_ & SessionFlags::JOIN_IN_PROGRESS_DISABLED));
+  std::optional<net::live::Joinable> presence;
+  if (joinable) {
+    presence.emplace();
+    for (const uint8_t byte : info_.session_id) {
+      presence->session_id += fmt::format("{:02x}", byte);
+    }
+    const auto* info = reinterpret_cast<const uint8_t*>(&info_);
+    presence->info.assign(info, info + sizeof(info_));
+  }
+  if (!presence && !in_presence_) {
+    return;
+  }
+  xam::LiveSetPresence(user_index_, kernel_state_->title_id(),
+                       CreatorContext(kContextPresence), std::move(presence));
+  in_presence_ = joinable;
+}
+
+// A join or leave changes the slots only: a session already in the lobby's
+// directory gets just that, anything else is published whole.
+void XSession::PublishSlotsLocked() {
+  const auto [used_public, used_private] = UsedSlots();
+  if (published_ &&
+      xam::UpdateLiveSession(info_.session_id, used_public, used_private)) {
+    return;
+  }
+  PublishLocked();
+}
+
 void XSession::PublishLocked() {
+  UpdatePresenceLocked();
   const bool joinable =
       state_ != kDeleted &&
       !(state_ >= kInGame && (flags_ & SessionFlags::JOIN_IN_PROGRESS_DISABLED));

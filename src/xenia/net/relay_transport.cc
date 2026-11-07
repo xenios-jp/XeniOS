@@ -297,6 +297,7 @@ class RelayTransport final : public PacketTransport {
       socket_.Resolve(
           host, port,
           [this, i](std::vector<Endpoint> endpoints, std::string /* error */) {
+            DropPrivateServers(endpoints);
             nat_resolved_[i] = std::move(endpoints);
             if (--nat_lookups_ == 0) {
               StartNatCheck();
@@ -395,6 +396,16 @@ class RelayTransport final : public PacketTransport {
     }
   }
 
+  // The lobby names the STUN and TURN servers; none on this device, its
+  // network or a reserved range is used (a test's local lobby excepted).
+  void DropPrivateServers(std::vector<Endpoint>& endpoints) const {
+    if (!config_.probe_local_candidates) {
+      std::erase_if(endpoints, [](const Endpoint& endpoint) {
+        return !relay::IsPublicServer(endpoint);
+      });
+    }
+  }
+
   void LookUp(const std::string& server) {
     std::string host;
     uint16_t port = kStunPort;
@@ -407,6 +418,10 @@ class RelayTransport final : public PacketTransport {
     socket_.Resolve(
         host, port,
         [this, host](std::vector<Endpoint> endpoints, std::string error) {
+          DropPrivateServers(endpoints);
+          if (endpoints.empty() && error.empty()) {
+            error = "not a public address";
+          }
           std::optional<Endpoint> server;
           if (!endpoints.empty()) {
             // Each lookup after a failure tries the next address.

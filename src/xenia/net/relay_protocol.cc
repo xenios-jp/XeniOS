@@ -262,6 +262,15 @@ std::optional<Endpoint> ParseEndpoint(std::string_view text) {
       endpoint.address[g * 2 + 1] = uint8_t(head[g]);
     }
     endpoint.v6 = true;
+    // ::ffff:a.b.c.d is a.b.c.d (the dual-stack socket sends it there), so the
+    // loopback and private-network checks must see the IPv4 address.
+    if (std::all_of(endpoint.address.begin(), endpoint.address.begin() + 10,
+                    [](uint8_t b) { return !b; }) &&
+        endpoint.address[10] == 0xFF && endpoint.address[11] == 0xFF) {
+      std::copy_n(endpoint.address.begin() + 12, 4, endpoint.address.begin());
+      std::fill(endpoint.address.begin() + 4, endpoint.address.end(), 0);
+      endpoint.v6 = false;
+    }
   } else {
     const size_t colon = text.rfind(':');
     if (colon == std::string_view::npos) {

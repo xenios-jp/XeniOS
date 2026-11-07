@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "xenia/kernel/xobject.h"
@@ -45,6 +46,10 @@ struct SystemLinkRelayPolicy {
   // A title asked whether the console has a network link while System Link
   // is off, the first time in this run for each title. Optional.
   std::function<void(uint32_t title_id)> link_off;
+  // Makes |code| (empty: the public lobby) |title_id|'s room for this launch,
+  // to play with a friend there (JoinSystemLinkRoom). Optional: without it
+  // systemlink_room is set.
+  std::function<void(uint32_t title_id, const std::string& code)> join_room;
 };
 void SetSystemLinkRelayPolicy(SystemLinkRelayPolicy policy);
 // What the policy's |allowed| or systemlink_transport says may have changed.
@@ -54,6 +59,19 @@ void SystemLinkAllowedChanged();
 // The policy's room for a title may have changed. A running title moves to it
 // within about a second, leaving the players in its old room.
 void SystemLinkRoomChanged();
+// The room |title_id| plays System Link in through the relay: a private
+// room's code, or empty for its public lobby. Nothing when System Link is off
+// or doesn't go through the relay, or that title hasn't started it.
+std::optional<std::string> SystemLinkRoomCode(uint32_t title_id);
+// The running title registered (or unregistered) an XNet key with System
+// Link: its own (XNetRegisterKey) or a session's.
+void SystemLinkKeyRegistered(bool registered);
+// Whether it has one: it hosts or plays a networked game.
+bool SystemLinkKeysRegistered();
+// Moves |title_id| into |code|'s room (empty: its public lobby) for this
+// launch, to play with a friend there; a running title moves within about a
+// second.
+void JoinSystemLinkRoom(uint32_t title_id, const std::string& code);
 // The running title asked for the network link while System Link is off.
 void SystemLinkOffQueried(KernelState* kernel_state);
 

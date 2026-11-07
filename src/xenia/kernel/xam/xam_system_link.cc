@@ -31,6 +31,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
+#include "xenia/kernel/xam/xam_live_social.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_crypt.h"
@@ -206,15 +207,48 @@ void RefreshRelayAllowed() {
   relay_allowed = !relay_policy.allowed || relay_policy.allowed();
 }
 
-std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
-  std::string code = cvars::systemlink_room;
+// The room the running title's relay transport last moved to, for presence.
+struct CurrentRoom {
+  std::mutex mutex;
+  uint32_t title_id = 0;
+  std::string code;  // Empty: the title's public lobby.
+};
+
+CurrentRoom& GetCurrentRoom() {
+  static CurrentRoom room;
+  return room;
+}
+
+// Keys the running title registered with System Link (XNetRegisterKey, or its
+// sessions'): a title hosting or in a System Link game has one.
+std::atomic<int32_t> registered_keys{0};
+
+void NoteRoom(uint32_t title_id, const std::string& code) {
+  auto& current = GetCurrentRoom();
   {
+    std::lock_guard lock(current.mutex);
+    if (current.title_id == title_id && current.code == code) {
+      return;
+    }
+    current.title_id = title_id;
+    current.code = code;
+  }
+  // Friends see the room the profile plays in.
+  LiveSystemLinkChanged();
+}
+
+std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
+  std::string code;
+  {
+    // JoinSystemLinkRoom may set it meanwhile.
     std::lock_guard lock(relay_policy_mutex);
+    code = cvars::systemlink_room;
     if (relay_policy.room) {
       code = relay_policy.room(title_id);
     }
   }
   if (code.empty()) {
+    NoteRoom(title_id, {});
     return net::relay::PublicLobby(title_id);
   }
   const auto normalized = net::relay::NormalizeRoomCode(code);
@@ -223,6 +257,7 @@ std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
     XELOGE("System Link: the room code isn't valid");
     return std::nullopt;
   }
+  NoteRoom(title_id, *normalized);
   return net::relay::PrivateRoom(*normalized);
 }
 
@@ -234,6 +269,8 @@ std::unique_ptr<net::secure::PacketTransport> OpenTransport(
   if (name == "relay") {
     net::relay::RelayConfig config;
     config.lobby = cvars::systemlink_lobby;
+    // A new launch: the keys of the last went with its System Link.
+    registered_keys = 0;
     const auto room = RelayRoom(execution.title_id);
     if (!room) {
       return nullptr;
@@ -372,6 +409,56 @@ void SystemLinkAllowedChanged() {
 }
 
 void SystemLinkRoomChanged() { ++relay_room_changes; }
+
+void SystemLinkKeyRegistered(bool registered) {
+  const int32_t now = registered_keys += registered ? 1 : -1;
+  XELOGI("System Link: the title {} a key ({} now)",
+         registered ? "registered" : "unregistered", std::max(now, 0));
+  if (now == (registered ? 1 : 0)) {
+    LiveSystemLinkChanged();
+  }
+}
+
+bool SystemLinkKeysRegistered() { return registered_keys.load() > 0; }
+
+std::optional<std::string> SystemLinkRoomCode(uint32_t title_id) {
+  if (!title_id || !SystemLinkEnabled() ||
+      cvars::systemlink_transport != "relay") {
+    return std::nullopt;
+  }
+  auto& current = GetCurrentRoom();
+  std::lock_guard lock(current.mutex);
+  if (current.title_id != title_id) {
+    return std::nullopt;
+  }
+  return current.code;
+}
+
+void JoinSystemLinkRoom(uint32_t title_id, const std::string& code) {
+  std::string room;
+  if (!code.empty()) {
+    const auto normalized = net::relay::NormalizeRoomCode(code);
+    if (!normalized) {
+      XELOGW("System Link: the room to join isn't valid");
+      return;
+    }
+    room = *normalized;
+  }
+  std::function<void(uint32_t, const std::string&)> join_room;
+  {
+    std::lock_guard lock(relay_policy_mutex);
+    join_room = relay_policy.join_room;
+    if (!join_room) {
+      cvars::systemlink_room = room;
+    }
+  }
+  XELOGI("System Link: moving {:08X} to {}", title_id,
+         room.empty() ? "its public lobby" : "a friend's private room");
+  if (join_room) {
+    join_room(title_id, room);
+  }
+  SystemLinkRoomChanged();
+}
 
 void SystemLinkOffQueried(KernelState* kernel_state) {
   // Games ask on every frame, so only a title's first ask goes further.

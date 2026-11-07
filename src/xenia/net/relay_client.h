@@ -114,6 +114,10 @@ struct Outbox {
 // the other players and where they may be reached, frames go straight to the
 // ones that answered a probe, and through this instance's TURN allocation to
 // the others' allocations otherwise.
+// A routable unicast address: where a STUN or TURN server the lobby names may
+// be. Loopback, private, link-local and reserved ones are not.
+bool IsPublicServer(const Endpoint& endpoint);
+
 class RelayClient {
  public:
   RelayClient(const Mac& mac, const RelayConfig& config);

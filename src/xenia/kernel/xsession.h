@@ -10,6 +10,8 @@
 #ifndef XENIA_KERNEL_XSESSION_H_
 #define XENIA_KERNEL_XSESSION_H_
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -117,6 +119,16 @@ class XSession : public XObject {
   // Announces a hosted matchmaking session to the title's other players, or
   // withdraws it once nobody can join, with mutex_ held.
   void PublishLocked();
+  // After a join or leave: just the slots when the lobby lists the session,
+  // with mutex_ held.
+  void PublishSlotsLocked();
+  // Tells the creator's friends about the session (Live presence), so they
+  // can join it, with mutex_ held.
+  void UpdatePresenceLocked();
+  // Tells SessionRemotePlayers who else is in this session, with mutex_ held.
+  void PublishRemotePlayersLocked();
+  // Counts it among LivePresenceSessionsOpen, or stops counting it.
+  void CountPresence(bool open);
 
   std::weak_ptr<net::SystemLink> system_link_;
   std::optional<net::KeyId> registered_key_;
@@ -135,8 +147,27 @@ class XSession : public XObject {
   bool has_info_ = false;
   net::KeyId arbitration_id_{};
   bool published_ = false;
+  bool in_presence_ = false;
+  bool presence_counted_ = false;
+  // Its key counts toward SystemLinkKeysRegistered.
+  bool key_counted_ = false;
   std::vector<Member> members_;
 };
+
+// How many sessions with Live presence the running title has open. A title
+// playing System Link through the relay with none is in a System Link game
+// (titles host those without a session, or with one without presence).
+uint32_t LivePresenceSessionsOpen();
+
+// The players the running title put in its sessions who aren't signed in on this
+// console (XSessionJoinRemote), while those sessions last, each once. For the
+// app's list of the players in the game.
+std::vector<uint64_t> SessionRemotePlayers();
+// |changed| is called, on whichever thread changed it, when that list may have
+// changed. One listener; an empty function removes it. It runs with that
+// session's lock held (not the registry's), so it must only note the change and
+// return: it must not block or call back into the session.
+void SetSessionRemotePlayersListener(std::function<void()> changed);
 
 }  // namespace kernel
 }  // namespace xe

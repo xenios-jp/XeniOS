@@ -43,6 +43,7 @@ class wxTimer;
 namespace xe {
 namespace kernel {
 namespace xam {
+struct AcceptedInvite;
 class DashMouse;
 }  // namespace xam
 }  // namespace kernel
@@ -114,6 +115,12 @@ class EmulatorWindow {
   // Notes a title the update index lists while none of its updates is
   // installed, whether or not the offer is on.
   void NoteMissingTitleUpdate(uint32_t title_id);
+  // Starts the invite's game from the library for the profile at
+  // |user_index|, asking first when it replaces a running one; or says the
+  // game isn't in the library.
+  void StartTitleForLiveInvite(uint32_t user_index, const std::string& from,
+                               const kernel::xam::AcceptedInvite& invite,
+                               const std::string& room);
   void UpdateTitle();
 
   void SetFullscreen(bool fullscreen);

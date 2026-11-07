@@ -12,16 +12,28 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <random>
+#include <set>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/rapidjson/include/rapidjson/document.h"
 #include "third_party/rapidjson/include/rapidjson/stringbuffer.h"
 #include "third_party/rapidjson/include/rapidjson/writer.h"
 #include "xenia/base/logging.h"
+#include "xenia/net/live_account.h"
 
 namespace xe::net::live {
 
 namespace {
+
+// 16 hex digits, or 0.
+uint64_t StrictXuid(std::string_view text) {
+  if (text.size() != 16 || text.find_first_not_of("0123456789abcdefABCDEF") !=
+                               std::string_view::npos) {
+    return 0;
+  }
+  return std::strtoull(std::string(text).c_str(), nullptr, 16);
+}
 
 using Writer = rapidjson::Writer<rapidjson::StringBuffer>;
 
@@ -96,6 +108,11 @@ std::optional<DirectoryAdvert> ReadAdvert(const rapidjson::Value& v) {
     return std::nullopt;
   }
   a.id = id->value.GetString();
+  // No more than an XSESSION_INFO, and a room code's length.
+  if (info->value.GetStringLength() > 2 * 0x3C ||
+      room->value.GetStringLength() > 64) {
+    return std::nullopt;
+  }
   auto bytes = FromHex(info->value.GetString());
   if (!bytes || a.id.size() != 16) {
     return std::nullopt;
@@ -124,7 +141,15 @@ std::optional<DirectoryAdvert> ReadAdvert(const rapidjson::Value& v) {
   }
   if (auto xuid = v.FindMember("xuid");
       xuid != v.MemberEnd() && xuid->value.IsString()) {
-    a.xuid = std::strtoull(xuid->value.GetString(), nullptr, 16);
+    a.xuid = StrictXuid(xuid->value.GetString());
+  }
+  if (auto mode = v.FindMember("mode");
+      mode != v.MemberEnd() && mode->value.IsString()) {
+    a.mode = mode->value.GetString();
+  }
+  if (auto map = v.FindMember("map");
+      map != v.MemberEnd() && map->value.IsString()) {
+    a.map = map->value.GetString();
   }
   if (auto contexts = v.FindMember("contexts"); contexts != v.MemberEnd()) {
     if (!contexts->value.IsArray()) {
@@ -173,7 +198,45 @@ std::optional<DirectoryAdvert> ReadAdvert(const rapidjson::Value& v) {
 
 std::string HexId(const uint8_t (&id)[8]) { return ToHex(id, 8); }
 
-std::string EncodeAdvertise(const DirectoryAdvert& a, uint32_t ttl) {
+namespace {
+
+// |text| cut to 64 bytes, not inside a UTF-8 sequence.
+std::string CutText(std::string text) {
+  if (text.size() > 64) {
+    size_t n = 64;
+    while (n && (uint8_t(text[n]) & 0xC0) == 0x80) {
+      --n;
+    }
+    text.resize(n);
+  }
+  return text;
+}
+
+}  // namespace
+
+DirectoryAdvert FitDirectoryLimits(DirectoryAdvert a) {
+  for (uint32_t* slots : {&a.public_slots, &a.private_slots, &a.used_public,
+                          &a.used_private}) {
+    *slots = std::min(*slots, kDirectoryMaxSlots);
+  }
+  // The first of each id, up to the limit.
+  auto fit = [](auto& pairs) {
+    std::set<uint32_t> seen;
+    std::erase_if(pairs, [&](const auto& pair) {
+      return seen.size() >= kDirectoryMaxPairs ||
+             !seen.insert(pair.first).second;
+    });
+  };
+  fit(a.contexts);
+  fit(a.props);
+  if (a.strings.size() > kDirectoryMaxStrings) {
+    a.strings.resize(kDirectoryMaxStrings);
+  }
+  return a;
+}
+
+std::string EncodeAdvertise(const DirectoryAdvert& advert, uint32_t ttl) {
+  const DirectoryAdvert a = FitDirectoryLimits(advert);
   rapidjson::StringBuffer buffer;
   Writer w(buffer);
   w.StartObject();
@@ -206,6 +269,14 @@ std::string EncodeAdvertise(const DirectoryAdvert& a, uint32_t ttl) {
     w.Key("xuid");
     w.String(fmt::format("{:016x}", a.xuid).c_str());
   }
+  if (!a.mode.empty()) {
+    w.Key("mode");
+    w.String(CutText(a.mode).c_str());
+  }
+  if (!a.map.empty()) {
+    w.Key("map");
+    w.String(CutText(a.map).c_str());
+  }
   WritePairs(w, "contexts", a.contexts);
   w.Key("props");
   w.StartArray();
@@ -233,6 +304,28 @@ std::string EncodeAdvertise(const DirectoryAdvert& a, uint32_t ttl) {
 
 std::string EncodeRefresh(uint32_t ttl) {
   return fmt::format(R"({{"t":"refresh","ttl":{}}})", ttl);
+}
+
+std::string EncodeUpdate(std::string_view id, uint32_t used_public,
+                         uint32_t used_private, uint32_t ttl) {
+  return fmt::format(
+      R"({{"t":"update","id":"{}","slots":{{"usedPublic":{},"usedPrivate":{}}},"ttl":{}}})",
+      id, std::min(used_public, kDirectoryMaxSlots),
+      std::min(used_private, kDirectoryMaxSlots), ttl);
+}
+
+std::string EncodeDirectoryAuth(uint64_t xuid, std::string_view token) {
+  rapidjson::StringBuffer buffer;
+  Writer w(buffer);
+  w.StartObject();
+  w.Key("t");
+  w.String("auth");
+  w.Key("xuid");
+  w.String(fmt::format("{:016x}", xuid).c_str());
+  w.Key("token");
+  w.String(token.data(), rapidjson::SizeType(token.size()));
+  w.EndObject();
+  return buffer.GetString();
 }
 
 std::string EncodeWithdraw(std::string_view id) {
@@ -277,8 +370,13 @@ std::string EncodeLookup(const std::vector<std::string>& ids, uint32_t seq) {
 }
 
 std::optional<DirectoryReply> ParseDirectoryReply(std::string_view text) {
+  // Results are tens of KB at most; the iterative parser keeps deep nesting
+  // off the stack.
+  if (text.size() > (1u << 20)) {
+    return std::nullopt;
+  }
   rapidjson::Document doc;
-  doc.Parse(text.data(), text.size());
+  doc.Parse<rapidjson::kParseIterativeFlag>(text.data(), text.size());
   if (doc.HasParseError() || !doc.IsObject()) {
     return std::nullopt;
   }
@@ -289,7 +387,23 @@ std::optional<DirectoryReply> ParseDirectoryReply(std::string_view text) {
   const std::string_view type = t->value.GetString();
   DirectoryReply reply;
   ReadUint(doc, "seq", reply.seq);
-  if (type == "results") {
+  if (type == "authed") {
+    reply.kind = DirectoryReply::Kind::kAuthed;
+    if (auto xuid = doc.FindMember("xuid");
+        xuid != doc.MemberEnd() && xuid->value.IsString()) {
+      reply.xuid = StrictXuid(xuid->value.GetString());
+    }
+    if (auto name = doc.FindMember("gamertag");
+        name != doc.MemberEnd() && name->value.IsString()) {
+      reply.gamertag = CleanGamertag(name->value.GetString());
+    }
+  } else if (type == "updated") {
+    reply.kind = DirectoryReply::Kind::kUpdated;
+    auto id = doc.FindMember("id");
+    if (id != doc.MemberEnd() && id->value.IsString()) {
+      reply.ids.emplace_back(id->value.GetString());
+    }
+  } else if (type == "results") {
     reply.kind = DirectoryReply::Kind::kResults;
     auto sessions = doc.FindMember("sessions");
     if (sessions != doc.MemberEnd() && sessions->value.IsArray()) {
@@ -315,18 +429,33 @@ std::optional<DirectoryReply> ParseDirectoryReply(std::string_view text) {
         }
       }
     }
-  } else if (type == "error") {
+  } else if (type == "error" || type == "reject") {
     reply.kind = DirectoryReply::Kind::kError;
+    reply.rejected = type == "reject";
     auto reason = doc.FindMember("reason");
     if (reason != doc.MemberEnd() && reason->value.IsString()) {
       reply.reason = reason->value.GetString();
+    }
+    if (auto request = doc.FindMember("for");
+        request != doc.MemberEnd() && request->value.IsString()) {
+      reply.for_request = request->value.GetString();
+    }
+    if (auto id = doc.FindMember("id");
+        id != doc.MemberEnd() && id->value.IsString()) {
+      reply.ids.emplace_back(id->value.GetString());
+    }
+    auto appeal = doc.FindMember("appeal");
+    if (appeal != doc.MemberEnd() && appeal->value.IsString()) {
+      reply.appeal = appeal->value.GetString();
     }
   }
   return reply;
 }
 
-SessionDirectory::SessionDirectory(std::string lobby, uint32_t title_id)
-    : url_(fmt::format("{}/v2/sessions/{:08X}", lobby, title_id)) {
+SessionDirectory::SessionDirectory(std::string lobby, uint32_t title_id,
+                                   DirectoryAuth auth)
+    : url_(fmt::format("{}/v2/sessions/{:08X}", lobby, title_id)),
+      auth_(std::move(auth)) {
   thread_ = std::thread([this] { Run(); });
 }
 
@@ -344,7 +473,7 @@ SessionDirectory::~SessionDirectory() {
 }
 
 void SessionDirectory::EnsureOpenLocked() {
-  if (socket_ || stopping_) {
+  if (socket_ || stopping_ || halted_) {
     return;
   }
   auto factory = secure::GetLobbySocketFactory();
@@ -377,10 +506,42 @@ void SessionDirectory::EnsureOpenLocked() {
 // The handlers run with |mutex_| held.
 void SessionDirectory::OnOpened() {
   open_ = true;
-  for (const auto& [id, advert] : adverts_) {
-    socket_->Send(EncodeAdvertise(advert, kTtl));
-  }
+  authed_ = false;
+  auth_sent_ = false;
+  opened_at_ = std::chrono::steady_clock::now();
+  // The adverts go out once the lobby answers the sign-in.
+  TryAuthLocked();
   changed_.notify_all();
+}
+
+void SessionDirectory::TryAuthLocked() {
+  using namespace std::chrono;
+  if (!open_ || !socket_ || authed_ || auth_sent_ || halted_) {
+    return;
+  }
+  const uint64_t xuid = auth_.xuid ? auth_.xuid() : 0;
+  if (!xuid) {
+    return;  // No account yet; TokenReady() comes when it signs in.
+  }
+  auto token = auth_.token ? auth_.token() : std::nullopt;
+  if (token && *token != denied_token_) {
+    sent_token_ = *token;
+    auth_sent_ = true;
+    socket_->Send(EncodeDirectoryAuth(xuid, *token));
+    return;
+  }
+  // Ask once, and again after 3 minutes (the lobby gives 20 an hour).
+  const auto now = steady_clock::now();
+  if (auth_.request_token &&
+      (!token_requested_ || now - *token_requested_ >= minutes(3))) {
+    token_requested_ = now;
+    auth_.request_token();
+  }
+}
+
+void SessionDirectory::TokenReady() {
+  std::lock_guard lock(mutex_);
+  TryAuthLocked();
 }
 
 void SessionDirectory::OnMessage(std::string text) {
@@ -389,12 +550,73 @@ void SessionDirectory::OnMessage(std::string text) {
     return;
   }
   switch (reply->kind) {
-    case DirectoryReply::Kind::kResults:
-      answers_[reply->seq] = std::move(reply->sessions);
+    case DirectoryReply::Kind::kAuthed:
+      authed_ = true;
+      denials_ = 0;
+      denied_token_.clear();
+      XELOGI("Live directory: signed in as {}", reply->gamertag);
+      for (const auto& [id, advert] : adverts_) {
+        socket_->Send(EncodeAdvertise(advert, kTtl));
+      }
       changed_.notify_all();
       break;
+    case DirectoryReply::Kind::kResults:
+      // Late answers, after Ask gave up, are dropped.
+      if (waiting_.contains(reply->seq)) {
+        answers_[reply->seq] = std::move(reply->sessions);
+        changed_.notify_all();
+      }
+      break;
+    case DirectoryReply::Kind::kRefreshed:
+      // The lobby drops adverts that expired, or past its limits: advertise
+      // those again.
+      for (const auto& [id, advert] : adverts_) {
+        if (std::find(reply->ids.begin(), reply->ids.end(), id) ==
+            reply->ids.end()) {
+          XELOGI("Live directory: the lobby dropped session {}, advertising "
+                 "it again",
+                 id);
+          socket_->Send(EncodeAdvertise(advert, kTtl));
+        }
+      }
+      break;
     case DirectoryReply::Kind::kError:
-      XELOGW("Live directory: {}", text);
+      if (reply->rejected && reply->reason == "banned") {
+        halted_ = true;
+        XELOGE("Live directory: this account is banned from the lobby, so "
+               "sessions are off{}",
+               reply->appeal.empty()
+                   ? std::string()
+                   : fmt::format(" (appeal: {})", reply->appeal));
+        changed_.notify_all();
+      } else if (reply->rejected && reply->reason == "denied") {
+        // A wrong or old token: one new token, then give up.
+        auth_sent_ = false;
+        if (++denials_ > 1) {
+          halted_ = true;
+          XELOGE("Live directory: the lobby denied the new session token "
+                 "too, so sessions are off");
+          changed_.notify_all();
+        } else {
+          XELOGW("Live directory: the session token was denied, asking for "
+                 "a new one");
+          denied_token_ = sent_token_;
+          token_requested_ = std::chrono::steady_clock::now();
+          if (auth_.request_token) {
+            auth_.request_token();
+          }
+        }
+      } else if (reply->for_request == "update" &&
+                 reply->reason == "not_found" && !reply->ids.empty() &&
+                 adverts_.contains(reply->ids[0])) {
+        // The lobby dropped the advert: advertise it whole again.
+        XELOGI("Live directory: the lobby dropped session {}, advertising "
+               "it again",
+               reply->ids[0]);
+        socket_->Send(EncodeAdvertise(adverts_[reply->ids[0]], kTtl));
+      } else {
+        XELOGW("Live directory: refused ({})", reply->reason);
+      }
       break;
     default:
       break;
@@ -403,7 +625,17 @@ void SessionDirectory::OnMessage(std::string text) {
 
 void SessionDirectory::OnClosed(std::string reason) {
   XELOGI("Live directory: closed ({})", reason);
+  // A socket that lasted a minute was fine; one that didn't (no lobby, or it
+  // refused what was sent) makes the next wait longer.
+  if (open_ && std::chrono::steady_clock::now() - opened_at_ >=
+                   std::chrono::minutes(1)) {
+    failures_ = 0;
+  } else {
+    ++failures_;
+  }
   open_ = false;
+  authed_ = false;
+  auth_sent_ = false;
   closed_ = true;
   ++generation_;  // Ignores anything more from this socket.
   changed_.notify_all();
@@ -423,12 +655,18 @@ void SessionDirectory::Run() {
       // lock its events take.
       closed_ = false;
       auto socket = std::move(socket_);
+      // Ask waits while a socket is there.
+      changed_.notify_all();
+      const auto delay = ReconnectDelayLocked();
       lock.unlock();
       socket.reset();
-      std::this_thread::sleep_for(seconds(2));
       lock.lock();
+      changed_.wait_for(lock, delay, [this] { return stopping_; });
+      if (stopping_) {
+        break;
+      }
       if (!adverts_.empty()) {
-        EnsureOpenLocked();  // Advertises them again once open.
+        EnsureOpenLocked();  // Advertises them again once signed in.
       }
       continue;
     }
@@ -436,7 +674,9 @@ void SessionDirectory::Run() {
       if (!socket_->Ping()) {
         socket_->Send("ping");
       }
-      if (steady_clock::now() >= next_refresh && !adverts_.empty()) {
+      TryAuthLocked();  // Asks again when no token came.
+      if (authed_ && steady_clock::now() >= next_refresh &&
+          !adverts_.empty()) {
         socket_->Send(EncodeRefresh(kTtl));
         next_refresh = steady_clock::now() + seconds(kTtl / 2);
       }
@@ -444,13 +684,39 @@ void SessionDirectory::Run() {
   }
 }
 
+std::chrono::milliseconds SessionDirectory::ReconnectDelayLocked() const {
+  using namespace std::chrono;
+  // 2 s, then doubling after each socket that didn't last, up to 5 minutes,
+  // and up to a quarter more at random so hosts don't come back together.
+  const milliseconds delay = std::min<milliseconds>(
+      minutes(5), seconds(2) * (1u << std::min(failures_ ? failures_ - 1 : 0,
+                                                 8u)));
+  thread_local std::minstd_rand rng{std::random_device{}()};
+  return delay + milliseconds(rng() % (delay.count() / 4 + 1));
+}
+
 void SessionDirectory::Advertise(const DirectoryAdvert& advert) {
   std::lock_guard lock(mutex_);
   adverts_[advert.id] = advert;
   EnsureOpenLocked();
-  if (socket_ && open_) {
+  if (socket_ && authed_) {
     socket_->Send(EncodeAdvertise(advert, kTtl));
   }
+}
+
+bool SessionDirectory::Update(const std::string& id, uint32_t used_public,
+                              uint32_t used_private) {
+  std::lock_guard lock(mutex_);
+  auto it = adverts_.find(id);
+  if (it == adverts_.end()) {
+    return false;
+  }
+  it->second.used_public = used_public;
+  it->second.used_private = used_private;
+  if (socket_ && authed_) {
+    socket_->Send(EncodeUpdate(id, used_public, used_private, kTtl));
+  }
+  return true;
 }
 
 void SessionDirectory::Withdraw(const std::string& id) {
@@ -458,7 +724,7 @@ void SessionDirectory::Withdraw(const std::string& id) {
   if (!adverts_.erase(id)) {
     return;
   }
-  if (socket_ && open_) {
+  if (socket_ && authed_) {
     socket_->Send(EncodeWithdraw(id));
   }
 }
@@ -470,18 +736,21 @@ std::vector<DirectoryAdvert> SessionDirectory::Ask(
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   std::unique_lock lock(mutex_);
   EnsureOpenLocked();
+  // Waits for the sign-in too: nothing is asked before it.
   if (!changed_.wait_until(lock, deadline,
-                           [this] { return open_ || stopping_ || !socket_; }) ||
-      !open_) {
+                           [this] {
+                             return authed_ || stopping_ || halted_ || !socket_;
+                           }) ||
+      !authed_) {
     return {};
   }
   const uint32_t seq = next_seq_++;
+  waiting_.insert(seq);
   socket_->Send(encode(seq));
-  if (!changed_.wait_until(lock, deadline, [&] {
-        return answers_.contains(seq) || stopping_ || !open_;
-      })) {
-    return {};
-  }
+  changed_.wait_until(lock, deadline, [&] {
+    return answers_.contains(seq) || stopping_ || !authed_;
+  });
+  waiting_.erase(seq);
   auto it = answers_.find(seq);
   if (it == answers_.end()) {
     return {};
