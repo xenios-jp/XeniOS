@@ -112,8 +112,6 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_system_link_view_controller.mm
   launcher/zar_converter.h
   launcher/zar_converter.cc
-  launcher/ios_system_update_page_view_controller.h
-  launcher/ios_system_update_page_view_controller.mm
   launcher/ios_zar_conversion_coordinator.h
   launcher/ios_zar_conversion_coordinator.mm
   settings/ios_acknowledgements_view_controller.h

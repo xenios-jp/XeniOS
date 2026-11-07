@@ -19,9 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Cover and background artwork cache for game tiles, hero cards and
 // compatibility sheets.
 //
-// Tile (cover) artwork is fetched from Element18592/360-Game-Art keyed by the
-// lower-case hex title id and stored in
-//   Library/Caches/game-art/{title_id_hex}.jpg.
+// Tile (cover) artwork comes from edge's box art sources for the title
+// (xe::app::GetBoxArtUrls: x360db, then the marketplace, or xdb for an
+// original Xbox game), tried in order, and is stored in
+//   Library/Caches/game-boxart/{title_id_hex}.jpg.
 // Background artwork is fetched from xenia-manager/x360db (upper-case hex)
 // and stored in
 //   Library/Caches/game-background-art/{title_id_hex_lower}.jpg.

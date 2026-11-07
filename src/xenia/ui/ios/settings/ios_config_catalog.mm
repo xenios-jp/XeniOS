@@ -567,6 +567,13 @@ static std::vector<IOSConfigSection> BuildSystemSections() {
       false);
   PushIfNotEmpty(sections, std::move(automation));
 
+  IOSConfigSection dashboard;
+  dashboard.title = "Dashboard";
+  AddBoolSetting(dashboard.items, "boot_to_dashboard", "Start with the Dashboard",
+                 "Opens the Xbox 360 Dashboard when XeniOS starts, instead of the library, "
+                 "and goes back to it when a game exits. Needs the system software.",
+                 false);
+  PushIfNotEmpty(sections, std::move(dashboard));
 
   return sections;
 }

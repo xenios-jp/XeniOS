@@ -35,8 +35,6 @@ extern NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification;
 // XeniaIOSTitlePathKey.
 extern NSNotificationName const XeniaIOSTitleWillStartNotification;
 extern NSString* const XeniaIOSTitlePathKey;
-// Microsoft's page for the Xbox 360 system update, which links the USB update.
-extern NSString* const XeniaIOSSystemUpdateSupportURL;
 #endif  // __OBJC__
 
 namespace xe {
@@ -48,6 +46,9 @@ std::filesystem::path IOSSystemFilesPath();
 // The dashboard in it, which the library starts.
 std::filesystem::path IOSInstalledDashboardPath();
 bool IsIOSDashboardInstalled();
+// boot_to_dashboard, as on edge: the installed dashboard is the home screen.
+// XeniOS opens on it, and every title exits back to it.
+bool IsIOSDashboardHome();
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path);
 
 struct IOSSystemSoftwareInfo {
@@ -94,6 +95,20 @@ NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result);
 void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
                                    void (^progress)(int percent),
                                    void (^completion)(SystemFilesResult result));
+
+// What a download that didn't succeed says. Nil for a finished or cancelled
+// one.
+NSString* IOSSystemUpdateDownloadFailureMessage(SystemUpdateDownload result);
+
+// Downloads the system update from Microsoft and installs it, off the main
+// thread, as edge's Download & Install does. |progress| gets whole percents of
+// the step under way, the download and then the install, and |completion|
+// both results; the install's is kCancelled when the download didn't finish.
+// Both run on the main thread. Setting |cancel| stops either step.
+void DownloadAndInstallIOSSystemUpdateAsync(std::shared_ptr<std::atomic<bool>> cancel,
+                                            void (^progress)(int percent, BOOL installing),
+                                            void (^completion)(SystemUpdateDownload download,
+                                                               SystemFilesResult install));
 #endif  // __OBJC__
 
 }  // namespace ui
