@@ -456,6 +456,83 @@ NSString* xe_ios_system_link_room_name(NSString* code) {
 }
 
 // The in-game menu's online / System Link pill, which keeps itself current.
+// A count on a button's corner (friends online, invites waiting, players in public games).
+// The number is centred on its cap height, not its line box, so the digits sit in the middle
+// of the bubble; the bubble sits on the button's rounded corner at 45 degrees, so it reads the
+// same on a capsule and on a circle.
+@interface XECountBadge : UIView
+- (void)setCount:(NSString*)text fill:(UIColor*)fill ink:(UIColor*)ink;
+@end
+
+@implementation XECountBadge {
+  UILabel* label_;
+}
+
++ (XECountBadge*)attachedTo:(UIView*)owner {
+  XECountBadge* badge = [[[XECountBadge alloc] init] autorelease];
+  badge.translatesAutoresizingMaskIntoConstraints = NO;
+  badge.userInteractionEnabled = NO;
+  badge.isAccessibilityElement = NO;
+  [owner addSubview:badge];
+  // The corner point of a radius-r curve, r = height / 2: (1 - 1/sqrt 2) r in from each edge.
+  UILayoutGuide* corner = [[[UILayoutGuide alloc] init] autorelease];
+  [owner addLayoutGuide:corner];
+  const CGFloat inset = (1.0 - M_SQRT1_2) / 2.0;
+  [NSLayoutConstraint activateConstraints:@[
+    [corner.topAnchor constraintEqualToAnchor:owner.topAnchor],
+    [corner.trailingAnchor constraintEqualToAnchor:owner.trailingAnchor],
+    [corner.widthAnchor constraintEqualToAnchor:owner.heightAnchor multiplier:inset],
+    [corner.heightAnchor constraintEqualToAnchor:owner.heightAnchor multiplier:inset],
+    [badge.centerXAnchor constraintEqualToAnchor:corner.leadingAnchor],
+    [badge.centerYAnchor constraintEqualToAnchor:corner.bottomAnchor],
+    [badge.heightAnchor constraintEqualToConstant:18.0],
+    [badge.widthAnchor constraintGreaterThanOrEqualToConstant:18.0],
+  ]];
+  return badge;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.layer.cornerRadius = 9.0;
+    self.layer.cornerCurve = kCACornerCurveContinuous;
+    label_ = [[UILabel alloc] init];
+    label_.font = [UIFont monospacedDigitSystemFontOfSize:11.0 weight:UIFontWeightBold];
+    label_.textAlignment = NSTextAlignmentCenter;
+    [self addSubview:label_];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [label_ release];
+  [super dealloc];
+}
+
+- (void)setCount:(NSString*)text fill:(UIColor*)fill ink:(UIColor*)ink {
+  self.backgroundColor = fill;
+  label_.textColor = ink;
+  label_.text = text;
+  [self invalidateIntrinsicContentSize];
+  [self setNeedsLayout];
+}
+
+- (CGSize)intrinsicContentSize {
+  const CGFloat text = ceil([label_ sizeThatFits:CGSizeMake(CGFLOAT_MAX, 18.0)].width);
+  return CGSizeMake(MAX(18.0, text + 10.0), 18.0);
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  UIFont* font = label_.font;
+  const CGSize size = self.bounds.size;
+  // Baseline where the cap height is centred.
+  const CGFloat baseline = (size.height + font.capHeight) / 2.0;
+  const CGFloat line = ceil(font.lineHeight);
+  label_.frame = CGRectMake(0, round((baseline - font.ascender) * 2.0) / 2.0, size.width, line);
+}
+
+@end
+
 @interface XeniaIOSSystemLinkStatusCard : UIButton
 @end
 
@@ -476,7 +553,7 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
 }  // namespace
 
 @implementation XeniaIOSSystemLinkStatusCard {
-  UILabel* _badge;
+  XECountBadge* _badge;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -535,28 +612,12 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
     return;
   }
   if (!_badge) {
-    _badge = [[UILabel alloc] init];
-    _badge.translatesAutoresizingMaskIntoConstraints = NO;
-    _badge.textAlignment = NSTextAlignmentCenter;
-    _badge.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightBold];
-    _badge.textColor = [UIColor whiteColor];
-    _badge.backgroundColor = [UIColor colorWithRed:10.0 / 255.0 green:132.0 / 255.0 blue:1.0
-                                             alpha:1.0];
-    _badge.layer.cornerRadius = 10.0;
-    _badge.layer.cornerCurve = kCACornerCurveContinuous;
-    _badge.clipsToBounds = YES;
-    _badge.isAccessibilityElement = NO;
-    _badge.userInteractionEnabled = NO;
-    [self addSubview:_badge];
-    [NSLayoutConstraint activateConstraints:@[
-      [_badge.heightAnchor constraintEqualToConstant:20.0],
-      [_badge.widthAnchor constraintGreaterThanOrEqualToConstant:20.0],
-      [_badge.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:2.0],
-      [_badge.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6.0],
-    ]];
+    _badge = [[XECountBadge attachedTo:self] retain];
   }
   _badge.hidden = NO;
-  _badge.text = [NSString stringWithFormat:@" %ld ", (long)count];
+  [_badge setCount:[NSString stringWithFormat:@"%ld", (long)count]
+              fill:[UIColor colorWithRed:10.0 / 255.0 green:132.0 / 255.0 blue:1.0 alpha:1.0]
+               ink:[UIColor whiteColor]];
 }
 
 // The in-game menu shows the pill again each time it opens: whether the game plays online can
@@ -1561,7 +1622,10 @@ namespace {
 void (^g_online_menu)(void) = nil;
 NSInteger g_friends_online = 0;
 NSInteger g_social_attention = 0;
+CGRect g_online_button_rect = CGRectNull;
 }  // namespace
+
+CGRect xe_ios_system_link_online_button_rect(void) { return g_online_button_rect; }
 
 void xe_ios_system_link_set_online_menu(void (^open)(void)) {
   [g_online_menu release];
@@ -1582,8 +1646,8 @@ void xe_ios_system_link_set_social_counts(NSInteger friends_online, NSInteger at
 }
 
 @implementation XeniaIOSSystemLinkOnlineButton {
-  // Invites waiting (accent), or friends online (glass), at the capsule's top trailing corner.
-  UILabel* badge_;
+  // Invites waiting (blue), or friends online (mint), on the capsule's top trailing corner.
+  XECountBadge* badge_;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -1611,37 +1675,18 @@ void xe_ios_system_link_set_social_counts(NSInteger friends_online, NSInteger at
     return;
   }
   if (!badge_) {
-    badge_ = [[UILabel alloc] init];
-    badge_.translatesAutoresizingMaskIntoConstraints = NO;
-    badge_.textAlignment = NSTextAlignmentCenter;
-    badge_.font = [UIFont monospacedDigitSystemFontOfSize:11.0 weight:UIFontWeightBold];
-    badge_.layer.cornerRadius = 9.0;
-    badge_.layer.cornerCurve = kCACornerCurveContinuous;
-    badge_.clipsToBounds = YES;
-    badge_.isAccessibilityElement = NO;
-    badge_.userInteractionEnabled = NO;
-    [self addSubview:badge_];
-    [NSLayoutConstraint activateConstraints:@[
-      [badge_.heightAnchor constraintEqualToConstant:18.0],
-      [badge_.widthAnchor constraintGreaterThanOrEqualToConstant:18.0],
-      [badge_.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:3.0],
-      [badge_.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-5.0],
-    ]];
+    badge_ = [[XECountBadge attachedTo:self] retain];
   }
   badge_.hidden = NO;
   const BOOL attention = g_social_attention > 0;
-  // Blue for something waiting (an invite, a request), green for friends online.
-  badge_.backgroundColor = attention ? [UIColor colorWithRed:10.0 / 255.0
-                                                       green:132.0 / 255.0
-                                                        blue:1.0
-                                                       alpha:1.0]
-                                     : [UIColor colorWithRed:48.0 / 255.0
-                                                       green:209.0 / 255.0
-                                                        blue:88.0 / 255.0
-                                                       alpha:1.0];
-  badge_.textColor = attention ? [UIColor whiteColor] : [UIColor colorWithWhite:0.0 alpha:0.78];
-  badge_.text = count > 9 && attention ? @"9+"
-                                       : [NSString stringWithFormat:@" %ld ", (long)std::min<NSInteger>(count, 99)];
+  // Blue for something waiting (an invite, a request), mint for friends online.
+  [badge_ setCount:count > 9 && attention
+                       ? @"9+"
+                       : [NSString stringWithFormat:@"%ld", (long)std::min<NSInteger>(count, 99)]
+              fill:attention ? [UIColor colorWithRed:10.0 / 255.0 green:132.0 / 255.0 blue:1.0
+                                               alpha:1.0]
+                             : [XeniaTheme accent]
+               ink:attention ? [UIColor whiteColor] : [XeniaTheme accentFg]];
   [self bringSubviewToFront:badge_];
 }
 
@@ -1650,6 +1695,8 @@ void xe_ios_system_link_set_social_counts(NSInteger friends_online, NSInteger at
 }
 
 - (void)tapped:(id)__unused sender {
+  // Where the card opens from.
+  g_online_button_rect = self.window ? [self convertRect:self.bounds toView:nil] : CGRectNull;
   if (g_online_menu) {
     g_online_menu();
   }
@@ -1735,20 +1782,24 @@ NSInteger xe_ios_system_link_players_elsewhere(void) {
 }
 
 NSString* xe_ios_system_link_players_text(NSInteger count) {
+  // Compact on a badge: 999, 1.2K, 12K, then 99K+.
   if (count < 1000) {
     return [NSString stringWithFormat:@"%ld", (long)count];
   }
-  if (count < 10000) {
-    return [NSString stringWithFormat:@"%ld.%ldk", (long)(count / 1000), (long)(count % 1000 / 100)];
+  if (count < 10000 && count % 1000 >= 100) {
+    return [NSString stringWithFormat:@"%ld.%ldK", (long)(count / 1000), (long)(count % 1000 / 100)];
   }
-  return [NSString stringWithFormat:@"%ldk", (long)(count / 1000)];
+  if (count < 100000) {
+    return [NSString stringWithFormat:@"%ldK", (long)(count / 1000)];
+  }
+  return @"99K+";
 }
 
 @interface XeniaIOSSystemLinkGlobeButton : UIButton
 @end
 
 @implementation XeniaIOSSystemLinkGlobeButton {
-  UILabel* badge_;
+  XECountBadge* badge_;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -1785,27 +1836,12 @@ NSString* xe_ios_system_link_players_text(NSInteger count) {
 - (void)updateConfiguration {
   const NSInteger count = xe_ios_system_link_players_elsewhere();
   if (!badge_) {
-    badge_ = [[UILabel alloc] init];
-    badge_.translatesAutoresizingMaskIntoConstraints = NO;
-    badge_.textAlignment = NSTextAlignmentCenter;
-    badge_.font = [UIFont monospacedDigitSystemFontOfSize:11.0 weight:UIFontWeightBold];
-    badge_.backgroundColor = [UIColor colorWithRed:48.0 / 255.0 green:209.0 / 255.0 blue:88.0 / 255.0 alpha:1.0];
-    badge_.textColor = [UIColor colorWithWhite:0.0 alpha:0.78];
-    badge_.layer.cornerRadius = 9.0;
-    badge_.layer.cornerCurve = kCACornerCurveContinuous;
-    badge_.clipsToBounds = YES;
-    badge_.isAccessibilityElement = NO;
-    badge_.userInteractionEnabled = NO;
-    [self addSubview:badge_];
-    [NSLayoutConstraint activateConstraints:@[
-      [badge_.heightAnchor constraintEqualToConstant:18.0],
-      [badge_.widthAnchor constraintGreaterThanOrEqualToConstant:18.0],
-      [badge_.centerYAnchor constraintEqualToAnchor:self.topAnchor constant:3.0],
-      [badge_.centerXAnchor constraintEqualToAnchor:self.trailingAnchor constant:-3.0],
-    ]];
+    badge_ = [[XECountBadge attachedTo:self] retain];
   }
   badge_.hidden = count <= 0;
-  badge_.text = [NSString stringWithFormat:@" %@ ", xe_ios_system_link_players_text(count)];
+  [badge_ setCount:xe_ios_system_link_players_text(count)
+              fill:[XeniaTheme accent]
+               ink:[XeniaTheme accentFg]];
   [self bringSubviewToFront:badge_];
   self.accessibilityValue =
       count > 0 ? [NSString localizedStringWithFormat:NSLocalizedString(

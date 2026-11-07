@@ -36,10 +36,12 @@
 // The full Friends sheet.
 @property(nonatomic, copy) void (^allFriendsHandler)(void);
 // Set when the panel fills a sheet of its own instead of floating over a game: no window chrome,
-// a close button in the header, and (with |gamesHandler|) a Games Online row.
+// a close button in the header.
 @property(nonatomic) BOOL embedded;
+// With |embedded|: the panel is only as tall as its page (up to the space it is given), so a short
+// page is a compact card rather than a mostly empty slab.
+@property(nonatomic) BOOL fitsContent;
 @property(nonatomic, copy) void (^closeHandler)(void);
-@property(nonatomic, copy) void (^gamesHandler)(void);
 - (void)reload;
 // Back to the list from a gamer card.
 - (void)showList;
@@ -47,15 +49,19 @@
 
 // The Online panel as a sheet over the home screen: the same pages as the in-game panel.
 @interface XeniaIOSOnlineSheetViewController : UIViewController
+// Window-coordinate frame of the button it opens from; the card grows out of it and shrinks back.
+// Leave empty for a plain fade.
+@property(nonatomic) CGRect sourceRect;
 @property(nonatomic, copy) void (^acceptInviteHandler)(XeniaLiveInvite* invite);
 @property(nonatomic, copy) void (^joinFriendHandler)(XeniaLiveFriend* peer);
-@property(nonatomic, copy) void (^gamesHandler)(void);
 @end
 
-// Public Games: everyone on XeniOS, as a full page. Lists the games with players in them (the
-// library's first), live, with how many are playing. Choosing a library game opens its System
-// Link sheet. View-only otherwise.
+// Public Games: the glass card from the globe. The games with players in them, busiest first,
+// your library's or all; friends in games as one row on top. Choosing a library game opens its
+// System Link sheet. Present it with XEPrepareGlassCard.
 @interface XeniaIOSPublicGamesViewController : UIViewController
+// Opens the Friends card, after this one closes, from the friends row.
+@property(nonatomic, copy) void (^openFriendsHandler)(void);
 // The library's games by title ID, and what to do when one is chosen (after the page closes).
 - (instancetype)initWithLibraryNames:(NSDictionary<NSNumber*, NSString*>*)names
                             openGame:(void (^)(uint32_t title_id))open_game;

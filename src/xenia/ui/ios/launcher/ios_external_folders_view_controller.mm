@@ -54,10 +54,7 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   // launcher's Add-to-Library sheet) we need a Close button; pushed onto an
   // existing stack (from Settings) the back button already handles dismissal.
   if (self.navigationController.viewControllers.firstObject == self) {
-    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-               action:@selector(doneTapped:)] autorelease];
+    XESetSheetClose(self, self, @selector(doneTapped:));
   }
 
   [self reloadFolders];
@@ -278,7 +275,7 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
         NSLocalizedString(@"Link Folder…", @"external folders view controller: button");
     cell.textLabel.textColor = [XeniaTheme accent];
     cell.detailTextLabel.text = nil;
-    cell.imageView.image = XESettingsBadgeImage(@"plus", [XeniaTheme accent]);
+    cell.imageView.image = XERowSymbolImage(@"plus", [XeniaTheme accent]);
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     cell.accessibilityTraits = UIAccessibilityTraitButton;
     return cell;
@@ -298,8 +295,8 @@ NSString* const kXeniaIOSExternalLibraryDidChangeNotification =
   cell.detailTextLabel.textColor =
       folder.available ? [XeniaTheme textSecondary] : [XeniaTheme statusWarning];
   cell.imageView.image =
-      folder.available ? XESettingsBadgeImage(@"folder.fill", [XeniaTheme sectionIconBlue])
-                       : XESettingsBadgeImage(@"exclamationmark.triangle.fill",
+      folder.available ? XERowSymbolImage(@"folder.fill", nil)
+                       : XERowSymbolImage(@"exclamationmark.triangle.fill",
                                               [XeniaTheme statusWarning]);
   cell.selectionStyle =
       folder.available ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;

@@ -101,6 +101,7 @@
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
+#import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 #import "xenia/ui/ios/touch/touch_controls_overlay_ios.h"
 #import "xenia/ui/ios/touch/touch_layout_editor_view_controller_ios.h"
@@ -2239,6 +2240,9 @@ static bool XeJITUsable() {
     XeniaLandscapeNavigationController* nav =
         [[XeniaLandscapeNavigationController alloc] initWithRootViewController:hub];
     [hub release];
+    // Dark glass whatever the system appearance, as the workspace on iPad.
+    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    nav.view.backgroundColor = [XeniaTheme glassSheet];
     destination = nav;
   }
 
@@ -2282,8 +2286,8 @@ static bool XeJITUsable() {
   profile.showsDismissButton = YES;
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:profile];
-  XEConfigureDestinationPresentation(navigation_controller, self.view, CGSizeMake(520.0, 680.0),
-                                     YES);
+  // A glass card from the avatar, like Friends from its pill.
+  XEPrepareGlassCard(navigation_controller);
   navigation_controller.presentationController.delegate = self;
 
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
@@ -3553,8 +3557,7 @@ static bool XeJITUsable() {
   });
 }
 
-// Public Games, from the library's globe: the games with players in them, live. A full page on
-// iPhone, a large panel on iPad.
+// Public Games, from the library's globe: the games with players in them, live, as a glass card.
 - (void)presentPublicGames {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   NSMutableDictionary<NSNumber*, NSString*>* names = [NSMutableDictionary dictionary];
@@ -3572,9 +3575,12 @@ static bool XeJITUsable() {
                       }
                     }
                   }] autorelease];
+  page.openFriendsHandler = ^{
+    [unsafe_self presentFriendsWithMode:XeniaIOSFriendsModeBrowse];
+  };
   UINavigationController* navigation =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:page] autorelease];
-  XEConfigureDestinationPresentation(navigation, self.view, CGSizeMake(720.0, 680.0), NO);
+  XEPrepareGlassCard(navigation);
   navigation.presentationController.delegate = self;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:navigation animated:YES completion:nil];
@@ -3604,13 +3610,21 @@ static bool XeJITUsable() {
         [[[XeniaIOSOnlineSheetViewController alloc] init] autorelease];
     sheet.acceptInviteHandler = friends.acceptInviteHandler;
     sheet.joinFriendHandler = friends.joinFriendHandler;
+    sheet.sourceRect = xe_ios_system_link_online_button_rect();
     UINavigationController* sheet_navigation =
         [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:sheet] autorelease];
     sheet_navigation.navigationBarHidden = YES;
-    XEConfigureDestinationPresentation(sheet_navigation, self.view, CGSizeMake(520.0, 680.0), NO);
+    // Over the library, which stays visible and dimmed: the panel floats as a glass card.
+    sheet_navigation.view.backgroundColor = [UIColor clearColor];
+    sheet_navigation.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    sheet_navigation.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     sheet_navigation.presentationController.delegate = self;
     UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
-    [presenter presentViewController:sheet_navigation animated:YES completion:nil];
+    // The card grows out of the button itself, so there is no cross-fade under it.
+    [presenter presentViewController:sheet_navigation
+                            animated:CGRectIsEmpty(sheet.sourceRect) ||
+                                     UIAccessibilityIsReduceMotionEnabled()
+                          completion:nil];
     return;
   }
   if (self.gameRunning) {

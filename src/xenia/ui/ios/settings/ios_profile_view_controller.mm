@@ -24,6 +24,7 @@
 
 @implementation XeniaNewProfileViewController {
   void (^create_)(NSString* gamertag);
+  UIButton* create_button_;  // Owned by the commit helper.
   UITextField* field_;
 }
 
@@ -46,16 +47,10 @@
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor clearColor];
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                           target:self
-                           action:@selector(closeTapped:)] autorelease];
-  UIBarButtonItem* done = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                           target:self
-                           action:@selector(doneTapped:)] autorelease];
-  done.enabled = NO;
-  self.navigationItem.rightBarButtonItem = done;
+  XESetSheetClose(self, self, @selector(closeTapped:));
+  create_button_ = XESetFormCommit(
+      self, NSLocalizedString(@"Create Profile", @"profile view controller: button"), self,
+      @selector(doneTapped:));
   field_ = [[UITextField alloc] init];
   field_.placeholder = NSLocalizedString(@"Gamertag", @"profile view controller: placeholder");
   field_.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
@@ -82,7 +77,7 @@
 }
 
 - (void)textChanged:(UITextField*)__unused sender {
-  self.navigationItem.rightBarButtonItem.enabled = [self gamertag].length > 0;
+  create_button_.enabled = [self gamertag].length > 0;
 }
 
 - (BOOL)textField:(UITextField*)textField
@@ -171,11 +166,20 @@
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor clearColor];
   if (shows_dismiss_button_) {
-    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-               action:@selector(doneTapped:)] autorelease];
+    XESetSheetClose(self, self, @selector(doneTapped:));
   }
+  // + adds a profile, just before ✕.
+  UIBarButtonItem* add =
+      [[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus"]
+                                        style:UIBarButtonItemStylePlain
+                                       target:self
+                                       action:@selector(addTapped:)] autorelease];
+  add.accessibilityLabel = NSLocalizedString(@"Add Profile", @"profile view controller: button");
+  XESetSheetActions(self, @[ add ]);
+}
+
+- (void)addTapped:(id __unused)sender {
+  [self presentCreateProfileAlert];
 }
 
 - (void)scheduleProfileServicesReload {
@@ -268,7 +272,8 @@
   return nil;
 }
 
-// A second section with Online Account, for the signed-in profile.
+// A second section, Online, for the signed-in profile: Online Account, and Move Profile once
+// the account is online.
 - (BOOL)showsAccountSection {
   return xe_ios_live_account_ui_enabled() && ![self showsEmptyState] && [self activeGamertag] != nil;
 }
@@ -277,25 +282,33 @@
   return [self showsAccountSection] ? 2 : 1;
 }
 
-// The profiles, then a last row that adds one.
 - (NSInteger)tableView:(UITableView* __unused)tableView
     numberOfRowsInSection:(NSInteger)section {
   if ([self showsEmptyState]) {
     return 0;
   }
   if (section == 1) {
-    return 1;
+    return xe_ios_live_account_service().summary.online ? 2 : 1;
   }
-  return static_cast<NSInteger>(profiles_.size()) + 1;
-}
-
-- (BOOL)isAddRow:(NSIndexPath*)indexPath {
-  return indexPath.row == static_cast<NSInteger>(profiles_.size());
+  return static_cast<NSInteger>(profiles_.size());
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
-    titleForFooterInSection:(NSInteger)section {
-  if ([self showsEmptyState] || section == 1) {
+    titleForHeaderInSection:(NSInteger)section {
+  if ([self showsEmptyState]) {
+    return nil;
+  }
+  if (section == 1) {
+    return NSLocalizedString(@"Online", @"profile view controller: section");
+  }
+  return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad
+             ? NSLocalizedString(@"On this iPad", @"profile view controller: section")
+             : NSLocalizedString(@"On this iPhone", @"profile view controller: section");
+}
+
+// The footer closes the card, under its last group.
+- (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
+  if ([self showsEmptyState] || section != [self numberOfSectionsInTableView:tableView] - 1) {
     return nil;
   }
   if (profiles_.empty() && app_context_ && !app_context_->ProfileServicesReady()) {
@@ -308,6 +321,23 @@
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section == 1 && indexPath.row == 1) {
+    UITableViewCell* move = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                                    reuseIdentifier:nil] autorelease];
+    move.textLabel.text = NSLocalizedString(@"Move Profile", @"profile view controller: row");
+    move.textLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
+    move.textLabel.textColor = [XeniaTheme textPrimary];
+    move.detailTextLabel.text = NSLocalizedString(@"To another device, as a file",
+                                                  @"profile view controller: row detail");
+    move.detailTextLabel.font =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
+    move.detailTextLabel.textColor = [XeniaTheme textSecondary];
+    move.imageView.image = XERowSymbolImage(@"square.and.arrow.up", nil);
+    move.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    XEApplyAccessibility(move, move.textLabel.text, move.detailTextLabel.text, nil,
+                         UIAccessibilityTraitButton);
+    return move;
+  }
   if (indexPath.section == 1) {
     UITableViewCell* account = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                        reuseIdentifier:nil] autorelease];
@@ -320,7 +350,7 @@
                        : NSLocalizedString(@"Play online with friends", @"profile view controller: row detail");
     account.detailTextLabel.font = xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
     account.detailTextLabel.textColor = [XeniaTheme textSecondary];
-    account.imageView.image = XESettingsBadgeImage(@"globe", [UIColor systemBlueColor]);
+    account.imageView.image = XERowSymbolImage(@"globe", nil);
     account.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     XEApplyAccessibility(account, account.textLabel.text, account.detailTextLabel.text, nil,
                          UIAccessibilityTraitButton);
@@ -339,16 +369,6 @@
   cell.accessoryView = nil;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
 
-  if ([self isAddRow:indexPath]) {
-    cell.textLabel.text = NSLocalizedString(@"Add Profile…", @"profile view controller: button");
-    cell.textLabel.textColor = [XeniaTheme accent];
-    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    cell.detailTextLabel.text = nil;
-    cell.imageView.image = nil;
-    XEApplyAccessibility(cell, cell.textLabel.text, nil, nil, UIAccessibilityTraitButton);
-    return cell;
-  }
-
   const auto& profile = profiles_[indexPath.row];
   NSString* gamertag = ToNSString(profile.gamertag);
   cell.textLabel.text = gamertag;
@@ -365,7 +385,7 @@
     cell.detailTextLabel.text =
         NSLocalizedString(@"Tap to sign in", @"profile view controller: detail text");
   }
-  cell.imageView.image = xe_profile_avatar_image(gamertag, profile.signed_in, 40.0);
+  cell.imageView.image = xe_profile_avatar_image(gamertag, profile.signed_in, 36.0);
   cell.textLabel.font = xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightSemibold);
   cell.detailTextLabel.font =
       xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightRegular);
@@ -398,13 +418,14 @@
   UINavigationController* navigation =
       [[[UINavigationController alloc] initWithRootViewController:new_profile] autorelease];
   navigation.modalPresentationStyle = UIModalPresentationFormSheet;
-  // Tall enough for the bar, the field and its footer; the keyboard lifts it.
+  // Tall enough for the bar, the field, its footer and Create Profile under them; the keyboard
+  // lifts it.
   navigation.sheetPresentationController.detents = @[ [UISheetPresentationControllerDetent
       customDetentWithIdentifier:@"xe.new-profile"
                         resolver:^CGFloat(
                             id<UISheetPresentationControllerDetentResolutionContext> __unused
                                 context) {
-                          return 200.0;
+                          return 276.0;
                         }] ];
   [self presentViewController:navigation animated:YES completion:nil];
 }
@@ -436,6 +457,10 @@
     return;
   }
 
+  if (indexPath.section == 1 && indexPath.row == 1) {
+    xe_ios_present_move_profile(self);
+    return;
+  }
   if (indexPath.section == 1) {
     NSString* gamertag = [self activeGamertag];
     if (gamertag) {
@@ -443,11 +468,6 @@
           pushViewController:xe_ios_new_account_view_controller(gamertag)
                     animated:YES];
     }
-    return;
-  }
-
-  if ([self isAddRow:indexPath]) {
-    [self presentCreateProfileAlert];
     return;
   }
 

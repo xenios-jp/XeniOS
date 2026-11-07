@@ -12,10 +12,12 @@
 
 #import <UIKit/UIKit.h>
 
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
+
 // The Xbox 360 Dashboard's setup, from its tile in the library: gets
 // Microsoft's system update, installs it, then offers to start the dashboard
 // through |startHandler| once the sheet has closed.
-@interface XeniaDashboardSetupViewController : UIViewController
+@interface XeniaDashboardSetupViewController : XESheetViewController
 - (instancetype)initWithStartHandler:(void (^)(void))start_handler;
 @end
 

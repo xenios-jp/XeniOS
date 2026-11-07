@@ -151,6 +151,10 @@ target_sources(xenia-ui-ios PRIVATE
   shared/apple_ui_navigation.h
   shared/ios_alert_actions.h
   shared/ios_alert_actions.mm
+  shared/ios_art_wash.h
+  shared/ios_art_wash.mm
+  shared/ios_glass_card.h
+  shared/ios_glass_card.mm
   shared/ios_edge_adapter.h
   shared/ios_edge_adapter.cc
   shared/ios_system_utils.h

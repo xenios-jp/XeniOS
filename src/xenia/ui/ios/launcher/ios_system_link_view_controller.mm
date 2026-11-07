@@ -172,16 +172,14 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
     self.navigationItem.subtitle = game_title_;
   }
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(doneTapped:));
   if (play_handler_) {
-    self.navigationItem.rightBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedString(@"Play", @"system link view controller: button")
-                style:UIBarButtonItemStyleProminent
-               target:self
-               action:@selector(playTapped:)] autorelease];
+    XESetSheetActions(self, @[ [[[UIBarButtonItem alloc]
+                                initWithTitle:NSLocalizedString(@"Play",
+                                                                @"system link view controller: button")
+                                        style:UIBarButtonItemStyleProminent
+                                       target:self
+                                       action:@selector(playTapped:)] autorelease] ]);
   }
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onlineChanged:)
@@ -391,8 +389,8 @@ std::vector<std::pair<uint32_t, NSInteger>> SortedOnline() {
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text = detail;
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  cell.imageView.image = XESettingsBadgeImage(
-      symbol, row == Row::kNobodyOnline ? [UIColor systemGrayColor] : [XeniaTheme accent]);
+  cell.imageView.image = XERowSymbolImage(
+      symbol, row == Row::kNobodyOnline ? nil : [XeniaTheme accent]);
   cell.accessoryType = checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
   cell.selectionStyle =
       button ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
@@ -694,7 +692,7 @@ NSAttributedString* PlayingText(NSInteger players, NSInteger in_lobby) {
   cell.textLabel.text = names_[title_id];
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.imageView.image =
-      icons_[title_id] ?: XESettingsBadgeImage(@"gamecontroller.fill", [XeniaTheme accent]);
+      icons_[title_id] ?: XERowSymbolImage(@"gamecontroller.fill", [XeniaTheme accent]);
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   return cell;
 }
@@ -851,10 +849,7 @@ NSAttributedString* PlayingText(NSInteger players, NSInteger in_lobby) {
   self.tableView.tableHeaderView = summary_;
   // ✕ when it's the sheet's first page; pushed (from Friends), the back button.
   if (!self.navigationController || self.navigationController.viewControllers.firstObject == self) {
-    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                             target:self
-                             action:@selector(doneTapped:)] autorelease];
+    XESetSheetClose(self, self, @selector(doneTapped:));
   }
   // The status changes when a game's NAT check finishes.
   for (NSString* name in @[
@@ -1224,7 +1219,7 @@ NSAttributedString* PlayingText(NSInteger players, NSInteger in_lobby) {
   // The box cover, as in the library; the icon or a plain tile until it arrives.
   UIImage* cover = [self coverForTitleID:title_id];
   content.image = cover ?: [self iconForTitleID:title_id]
-                               ?: XESettingsBadgeImage(@"gamecontroller.fill",
+                               ?: XERowSymbolImage(@"gamecontroller.fill",
                                                        [UIColor systemGrayColor]);
   content.imageProperties.reservedLayoutSize = CGSizeMake(kOnlineCoverWidth, kOnlineCoverHeight);
   content.imageProperties.maximumSize =
@@ -1443,10 +1438,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-             action:@selector(doneTapped:)] autorelease];
+  XESetSheetClose(self, self, @selector(doneTapped:));
   for (NSString* name in @[
          XeniaIOSSystemLinkStatusDidChangeNotification,
          XeniaIOSSystemLinkOnlineDidChangeNotification
@@ -1656,12 +1648,12 @@ constexpr size_t kMaxStatusOtherGames = 10;
           detail = NSLocalizedString(@"System Link starts when the game looks for other players.",
                                      @"system link status view controller: state detail");
           symbol = @"network.slash";
-          tint = [UIColor systemGrayColor];
+          tint = nil;
           break;
         case State::kConnecting:
           title = NSLocalizedString(@"Connecting…", @"system link status view controller: state");
           symbol = @"network";
-          tint = [UIColor systemGrayColor];
+          tint = nil;
           break;
         case State::kReconnecting:
           title =
@@ -1669,7 +1661,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
           detail = NSLocalizedString(@"The server still holds your old connection. Rejoining.",
                                      @"system link status view controller: state detail");
           symbol = @"network";
-          tint = [UIColor systemGrayColor];
+          tint = nil;
           break;
         case State::kOnline:
           title = NSLocalizedString(@"Online", @"system link status view controller: state");
@@ -1732,7 +1724,7 @@ constexpr size_t kMaxStatusOtherGames = 10;
       detail = NSLocalizedString(@"They show up here when they start this game in the same room.",
                                  @"system link status view controller: row detail");
       symbol = @"person.2.slash";
-      tint = [UIColor systemGrayColor];
+      tint = nil;
       break;
     case StatusRow::kDirect:
       title = NSLocalizedString(@"Connected Directly", @"system link status view controller: row");
@@ -1784,14 +1776,14 @@ constexpr size_t kMaxStatusOtherGames = 10;
       title = NSLocalizedString(@"Nobody is in a public lobby right now.",
                                 @"system link view controller: row");
       symbol = @"person.2.slash";
-      tint = [UIColor systemGrayColor];
+      tint = nil;
       break;
   }
   cell.textLabel.text = title;
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.text = detail;
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  cell.imageView.image = XESettingsBadgeImage(symbol, tint);
+  cell.imageView.image = XERowSymbolImage(symbol, tint);
   cell.selectionStyle =
       button ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
   cell.accessibilityTraits = button ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText;

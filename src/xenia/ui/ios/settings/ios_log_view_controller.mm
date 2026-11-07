@@ -132,7 +132,7 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
   UIBarButtonItem* more_button = [[[UIBarButtonItem alloc]
       initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                menu:[self buildActionsMenu]] autorelease];
-  self.navigationItem.rightBarButtonItems = @[ more_button, pauseButton_ ];
+  XESetSheetActions(self, @[ pauseButton_, more_button ]);
 
   textView_ = [[UITextView alloc] init];
   textView_.translatesAutoresizingMaskIntoConstraints = NO;
@@ -259,13 +259,9 @@ NSString* DecodeLogBytesToNSString(const std::string& content) {
 }
 
 - (void)updateCloseButton {
+  // Pushed, the page picks up the root's ✕ (XEApplySheetHeader).
   if ([self shouldShowCloseButton]) {
-    self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                               target:self
-               action:@selector(closeTapped:)] autorelease];
-  } else {
-    self.navigationItem.leftBarButtonItem = nil;
+    XESetSheetClose(self, self, @selector(closeTapped:));
   }
 }
 
