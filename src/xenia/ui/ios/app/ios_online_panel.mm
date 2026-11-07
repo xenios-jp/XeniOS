@@ -1891,49 +1891,16 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-  // Dark glass over the library, like the Friends sheet.
+  // Dark glass like the Friends sheet: the sheet's own material shows through. The title and the
+  // ✕ are the navigation bar's, as on Profiles.
   self.view.backgroundColor = [UIColor clearColor];
-  UIVisualEffectView* backdrop = [[[UIVisualEffectView alloc]
-      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark]]
-      autorelease];
-  backdrop.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.view addSubview:backdrop];
-  [NSLayoutConstraint activateConstraints:@[
-    [backdrop.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-    [backdrop.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    [backdrop.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-    [backdrop.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-  ]];
+  self.title = NSLocalizedString(@"Public Games", @"Public Games: page title");
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
+  self.navigationItem.leftBarButtonItem = [[[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                           target:self
+                           action:@selector(closeTapped)] autorelease];
 
-  const BOOL compact = self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact;
-  UIButton* back = [UIButton buttonWithType:UIButtonTypeSystem];
-  back.translatesAutoresizingMaskIntoConstraints = NO;
-  UIButtonConfiguration* back_config = [UIButtonConfiguration plainButtonConfiguration];
-  back_config.baseForegroundColor = InviteBlue();
-  if (compact) {
-    back_config.image = [UIImage systemImageNamed:@"chevron.left"
-                                withConfiguration:[UIImageSymbolConfiguration
-                                                      configurationWithWeight:UIImageSymbolWeightSemibold]];
-    back_config.title = NSLocalizedString(@"Library", @"Public Games: back button");
-    back_config.imagePadding = 4.0;
-    back_config.contentInsets = NSDirectionalEdgeInsetsMake(8, 0, 8, 8);
-  } else {
-    back_config.image = [UIImage systemImageNamed:@"xmark.circle.fill"];
-    back_config.baseForegroundColor = [UIColor colorWithWhite:1.0 alpha:0.5];
-  }
-  back.configuration = back_config;
-  back.accessibilityLabel =
-      compact ? NSLocalizedString(@"Library", @"Public Games: back button")
-              : NSLocalizedString(@"Close", @"Public Games: close button");
-  __unsafe_unretained XeniaIOSPublicGamesViewController* unsafe_self = self;
-  [back addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
-          [unsafe_self dismissViewControllerAnimated:YES completion:nil];
-        }]
-      forControlEvents:UIControlEventTouchUpInside];
-
-  UILabel* title = NewLabel(NSLocalizedString(@"Public Games", @"Public Games: page title"),
-                            UIFontTextStyleLargeTitle, 34.0, UIFontWeightBold,
-                            [UIColor whiteColor]);
   _dot = [[UIView alloc] init];
   _dot.translatesAutoresizingMaskIntoConstraints = NO;
   _dot.backgroundColor = HexColor(0x30D158);
@@ -1954,7 +1921,7 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
   _list.axis = UILayoutConstraintAxisVertical;
   _list.spacing = 8;
 
-  UIStackView* header = [[[UIStackView alloc] initWithArrangedSubviews:@[ title, subtitle_row ]]
+  UIStackView* header = [[[UIStackView alloc] initWithArrangedSubviews:@[ subtitle_row ]]
       autorelease];
   header.translatesAutoresizingMaskIntoConstraints = NO;
   header.axis = UILayoutConstraintAxisVertical;
@@ -1972,7 +1939,6 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
   content.spacing = 18;
   [scroll addSubview:content];
   [self.view addSubview:scroll];
-  [self.view addSubview:back];
 
   UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
   UILayoutGuide* column = [[[UILayoutGuide alloc] init] autorelease];
@@ -1984,10 +1950,7 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
     [column.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
     [column.widthAnchor constraintLessThanOrEqualToConstant:720],
     fill,
-    [back.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
-    compact ? [back.leadingAnchor constraintEqualToAnchor:column.leadingAnchor constant:-8]
-            : [back.trailingAnchor constraintEqualToAnchor:column.trailingAnchor],
-    [scroll.topAnchor constraintEqualToAnchor:back.bottomAnchor constant:4],
+    [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor constant:4],
     [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
     [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
@@ -2008,8 +1971,14 @@ void xe_ios_present_gamer_card(UIView* host, uint64_t xuid, void (^join_friend)(
 
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
+  self.navigationController.navigationBar.prefersLargeTitles = YES;
+  self.navigationController.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
   xe_ios_system_link_keep_online(YES);
   xe_ios_system_link_refresh_online();
+}
+
+- (void)closeTapped {
+  [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {

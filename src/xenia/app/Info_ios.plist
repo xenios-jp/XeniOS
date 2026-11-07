@@ -51,6 +51,18 @@
         <string>jp.xenios.xenios.touchlayout</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>XeniOS Profile</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>jp.xenios.xenios.profile</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
@@ -125,7 +137,28 @@
         </array>
       </dict>
     </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>jp.xenios.xenios.profile</string>
+      <key>UTTypeDescription</key>
+      <string>XeniOS Profile</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>xeniosprofile</string>
+        </array>
+      </dict>
+    </dict>
   </array>
+  <key>NSCameraUsageDescription</key>
+  <string>The camera scans the QR code on your new device so it can sign in to your account.</string>
+  <key>NSFaceIDUsageDescription</key>
+  <string>Face ID confirms it’s you before another device signs in to your account.</string>
   <key>CFBundleExecutable</key>
   <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
   <key>CFBundleIdentifier</key>

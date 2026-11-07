@@ -84,6 +84,8 @@
 #import "xenia/ui/ios/settings/ios_config_builder.h"
 #import "xenia/ui/ios/settings/ios_config_models.h"
 #import "xenia/ui/ios/settings/ios_config_view_controller.h"
+#import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
+#import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
@@ -893,6 +895,20 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [self presentPendingTouchLayoutInstallIfReady];
   [self.zarConversionCoordinator checkPendingConversionOnLaunch];
   xe_ios_offer_previous_session_report_if_needed(self);
+  [self runLiveAccountTasks];
+}
+
+// Sign-ins another device is waiting on, and "pick a new gamertag" for a flagged account.
+- (void)runLiveAccountTasks {
+  if (!xe_ios_live_account_ui_enabled()) {
+    return;
+  }
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  xe_ios_observe_incoming_approvals(^UIViewController* {
+    return unsafe_self;
+  });
+  xe_ios_present_incoming_approval_if_any(self);
+  xe_ios_present_flagged_rename_if_needed(self);
 }
 
 // Once, before the first launch fetches anything: what goes over the network and that
@@ -3558,11 +3574,7 @@ static bool XeJITUsable() {
                   }] autorelease];
   UINavigationController* navigation =
       [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:page] autorelease];
-  navigation.navigationBarHidden = YES;
   XEConfigureDestinationPresentation(navigation, self.view, CGSizeMake(720.0, 680.0), NO);
-  if (self.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassCompact) {
-    navigation.modalPresentationStyle = UIModalPresentationOverFullScreen;
-  }
   navigation.presentationController.delegate = self;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   [presenter presentViewController:navigation animated:YES completion:nil];
@@ -3809,6 +3821,9 @@ static bool XeJITUsable() {
 
 // A file opened from Files or AirDrop. Not a launch: route it through the import flow.
 - (BOOL)handleOpenedFileURL:(NSURL*)url {
+  if (xe_ios_handle_opened_profile_file(url, self)) {
+    return YES;
+  }
   if ([self handleExternalTouchLayoutFileURL:url]) {
     return YES;
   }
