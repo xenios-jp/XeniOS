@@ -14,6 +14,7 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_title_server.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/xbox.h"
 
@@ -123,6 +124,31 @@ dword_result_t XamCreateEnumeratorHandle_entry(
       result = XMPCreateUserPlaylistEnumeratorHandle(
           user_index, app_id, open_message, close_message, extra_size,
           item_count, flags, enum_handle);
+    } break;
+    case kTitleServerEnumerateMessage: {
+      // XTitleServerCreateEnumerator: the title's own Live servers. Xenia's
+      // Live lists the server set for the title, if any, to a user signed in
+      // to Live.
+      auto e = object_ref<XStaticUntypedEnumerator>(new XStaticUntypedEnumerator(
+          kernel_state(), item_count, kTitleServerInfoSize));
+      result = e->Initialize(user_index, app_id, open_message, close_message,
+                             flags, extra_size, nullptr);
+      if (XFAILED(result)) {
+        break;
+      }
+      const auto server = GetTitleServer();
+      if (server && AnyUserSignedInToLive()) {
+        uint8_t* item = e->AppendItem();
+        std::memset(item, 0, kTitleServerInfoSize);
+        xe::store_and_swap<uint32_t>(item + 0, server->address);  // inaServer
+        xe::store_and_swap<uint32_t>(item + 4, 0);                // dwFlags
+        std::memcpy(item + 8, server->info.data(), server->info.size());
+        XELOGI("XTitleServerCreateEnumerator: {}.{}.{}.{}:{} \"{}\"",
+               server->address >> 24, (server->address >> 16) & 0xFF,
+               (server->address >> 8) & 0xFF, server->address & 0xFF,
+               server->port, server->info);
+      }
+      enum_handle = e->handle();
     } break;
     default: {
       auto e = object_ref<XStaticUntypedEnumerator>(
