@@ -1252,16 +1252,16 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
                              NS::UTF8StringEncoding));
     }
   }
-  // Through the title's pipeline archive, which keeps the specialized function
-  // for the next launch.
+  // Not through the pipeline archive: the archived pipelines record their
+  // specialized functions, and their lookups hit with this one (see
+  // MetalPipelineArchive).
   MTL::FunctionDescriptor* function_desc =
       MTL::FunctionDescriptor::alloc()->init();
   function_desc->setName(
       NS::String::string(function_name.c_str(), NS::UTF8StringEncoding));
   function_desc->setConstantValues(values);
   NS::Error* error = nullptr;
-  MTL::Function* function =
-      pipeline_archive_.NewFunction(library, function_desc, &error);
+  MTL::Function* function = library->newFunction(function_desc, &error);
   function_desc->release();
   values->release();
   if (!function) {
