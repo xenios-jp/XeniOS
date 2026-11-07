@@ -25,6 +25,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_system_link.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
@@ -255,12 +256,28 @@ dword_result_t NetDll_XNetCleanup_entry(dword_t caller, lpvoid_t params) {
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetCleanup, kNetworking, kImplemented);
 
-dword_result_t XNetLogonGetMachineID_entry(lpqword_t machine_id_ptr) {
-  // See Netplay
-  *machine_id_ptr = 0;
-  return 0x80151802;  // X_ERROR_LOGON_NOT_LOGGED_ON;
+// Xenia's Live: a profile signed in to Live counts as logged on.
+bool AnyUserSignedInToLive() {
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    const auto profile = kernel_state()->xam_state()->GetUserProfile(i);
+    if (profile && profile->signin_state() ==
+                       static_cast<uint32_t>(SignInState::SignedInToLive)) {
+      return true;
+    }
+  }
+  return false;
 }
-DECLARE_XAM_EXPORT1(XNetLogonGetMachineID, kNetworking, kStub);
+
+dword_result_t XNetLogonGetMachineID_entry(lpqword_t machine_id_ptr) {
+  *machine_id_ptr = 0;
+  auto link = GetSystemLink(kernel_state());
+  if (!link || !AnyUserSignedInToLive()) {
+    return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+  }
+  *machine_id_ptr = net::SystemLink::MachineId(link->identity());
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XNetLogonGetMachineID, kNetworking, kImplemented);
 
 dword_result_t NetDll_XNetGetOpt_entry(dword_t one, dword_t option_id,
                                        lpvoid_t buffer_ptr,
@@ -609,8 +626,12 @@ dword_result_t NetDll_XNetGetTitleXnAddr_entry(dword_t caller,
                                                pointer_t<XNADDR> addr_ptr) {
   if (auto link = GetSystemLink(kernel_state())) {
     std::memcpy(addr_ptr, link->identity().data(), sizeof(XNADDR));
-    return XnAddrStatus::XNET_GET_XNADDR_ETHERNET |
-           XnAddrStatus::XNET_GET_XNADDR_STATIC;
+    uint32_t status = XnAddrStatus::XNET_GET_XNADDR_ETHERNET |
+                      XnAddrStatus::XNET_GET_XNADDR_STATIC;
+    if (AnyUserSignedInToLive()) {
+      status |= XnAddrStatus::XNET_GET_XNADDR_ONLINE;
+    }
+    return status;
   }
 
   // Just return a loopback address atm.

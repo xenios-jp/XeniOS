@@ -32,6 +32,10 @@ DEFINE_string(logged_profile_slot_2_xuid, "",
               "XUID of the profile to load on boot in slot 2", "Profiles");
 DEFINE_string(logged_profile_slot_3_xuid, "",
               "XUID of the profile to load on boot in slot 3", "Profiles");
+DEFINE_string(live_profile, "",
+              "Gamertag of a Live-enabled profile to create if missing and "
+              "sign in to slot 0 on boot (for testing without the UI)",
+              "Profiles");
 
 namespace xe {
 namespace kernel {
@@ -115,6 +119,13 @@ ProfileManager::ProfileManager(KernelState* kernel_state,
 
   // Nothing listens yet. The first title listener gets a sign-in change when
   // it registers and the host UI one once the kernel is up.
+  if (!cvars::live_profile.empty() &&
+      cvars::logged_profile_slot_0_xuid.empty()) {
+    if (const uint64_t xuid = EnsureLiveProfile(cvars::live_profile)) {
+      Login(xuid, 0, false);
+    }
+  }
+
   if (!cvars::logged_profile_slot_0_xuid.empty()) {
     Login(xe::string_util::from_string<uint64_t>(
               cvars::logged_profile_slot_0_xuid, true),
@@ -447,6 +458,12 @@ void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
 
   if (notify) {
     NotifySignInChanged();
+    if (profile.IsLiveEnabled()) {
+      // X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED: Xenia's Live logs a Live
+      // profile on as it signs in.
+      kernel_state_->BroadcastNotification(kXNotificationLiveConnectionChanged,
+                                           0x001510F0);
+    }
   }
   UpdateConfig(xuid, assigned_user_slot);
 }
@@ -746,6 +763,43 @@ bool ProfileManager::WriteAccount(const uint64_t xuid,
       &written_bytes);
   output_file->Destroy();
   return true;
+}
+
+uint64_t ProfileManager::EnsureLiveProfile(const std::string& gamertag) {
+  if (!IsGamertagValid(gamertag)) {
+    XELOGE("live_profile: invalid gamertag {}", gamertag);
+    return 0;
+  }
+  for (auto& [xuid, account] : accounts_) {
+    if (account.GetGamertagString() != gamertag) {
+      continue;
+    }
+    if (!account.IsLiveEnabled()) {
+      X_XAMACCOUNTINFO updated = account;
+      updated.ToggleLiveFlag(true);
+      if (!UpdateAccount(xuid, &updated)) {
+        XELOGE("live_profile: could not turn Live on for {}", gamertag);
+        return 0;
+      }
+    }
+    return xuid;
+  }
+
+  X_XAMACCOUNTINFO account = {};
+  string_util::copy_and_swap_truncating(account.gamertag,
+                                        xe::to_utf16(gamertag),
+                                        xe::countof(account.gamertag));
+  account.ToggleLiveFlag(true);
+  SetLiveDefaults(&account);
+  const uint64_t xuid = GenerateXuid();
+  if (!CreateProfile(&account, xuid)) {
+    XELOGE("live_profile: could not create {}", gamertag);
+    return 0;
+  }
+  DismountProfile(xuid);
+  XELOGI("live_profile: created {} (XUID {:016X}, online XUID {:016X})",
+         gamertag, xuid, static_cast<uint64_t>(account.xuid_online));
+  return xuid;
 }
 
 bool ProfileManager::SetLiveDefaults(X_XAMACCOUNTINFO* account) const {

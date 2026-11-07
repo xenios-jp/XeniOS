@@ -59,11 +59,15 @@ const static inline uint64_t GenerateXuid() {
   return ((uint64_t)0xE03 << 52) + (gen() % (1 << 31));
 }
 
+// Online XUIDs keep Live's 0x0009 prefix, which titles check, and use the high
+// 0x0009F part of it with 44 random bits, away from the low part that real Live
+// accounts (and profiles copied from a real console) use. The online service
+// may still replace one that another player already holds.
 const static inline uint64_t GenerateOnlineXuid() {
   std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937_64 gen((uint64_t(rd()) << 32) | rd());
 
-  return (0x9ULL << 48) + (gen() % (1ULL << 31));
+  return 0x0009F00000000000ULL | (gen() & 0x00000FFFFFFFFFFFULL);
 }
 
 class ProfileManager {
@@ -138,6 +142,10 @@ class ProfileManager {
   static bool IsGamertagValid(const std::string gamertag);
 
  private:
+  // For testing without the UI: makes sure a Live-enabled profile with this
+  // gamertag exists and returns its XUID (0 on failure).
+  uint64_t EnsureLiveProfile(const std::string& gamertag);
+
   void UpdateConfig(const uint64_t xuid, const uint8_t slot);
   // Tells titles and the host UI which slots are signed in now.
   void NotifySignInChanged();

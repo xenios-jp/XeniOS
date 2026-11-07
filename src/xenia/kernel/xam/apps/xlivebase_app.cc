@@ -11,7 +11,11 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
+
+#include <algorithm>
+#include <cstring>
 
 #include <asio.hpp>
 
@@ -72,8 +76,10 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
          XamGetLiveHiveValueA)
          - Return is Saved elsewhere and used here
       */
-      XELOGD("XLiveBaseLogonGetHR, implemented in netplay");
-      return 0x001510F1;  // X_ONLINE_S_LOGON_DISCONNECTED
+      XELOGD("XLiveBaseLogonGetHR");
+      return AnyUserSignedInToLive()
+                 ? 0x001510F0   // X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
+                 : 0x001510F1;  // X_ONLINE_S_LOGON_DISCONNECTED
     }
     case 0x00058004: {
       /* Notes:
@@ -89,7 +95,15 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
       // Buffer only set when online
       assert_true(!buffer_length || buffer_length == 4);
       XELOGD("XLiveBaseGetNatType({:08X})", buffer_ptr);
-      return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      if (!AnyUserSignedInToLive()) {
+        return 0x80151802;  // X_ONLINE_E_LOGON_NOT_LOGGED_ON
+      }
+      // Peers reach each other through the System Link relay whatever the
+      // host's NAT, so report XONLINE_NAT_OPEN.
+      if (buffer_ptr) {
+        xe::store_and_swap<uint32_t>(buffer, 1);
+      }
+      return X_E_SUCCESS;
     }
     case 0x00058007: {
       // Occurs if title calls XOnlineGetServiceInfo, expects dwServiceId
