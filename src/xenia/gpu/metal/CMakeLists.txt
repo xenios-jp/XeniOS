@@ -41,6 +41,22 @@ add_library(xenia-gpu-metal STATIC
 target_include_directories(xenia-gpu-metal PRIVATE
   ${PROJECT_SOURCE_DIR}/third_party/glslang
 )
+# The stored Metal libraries' key, from the sources that shape them rather than
+# the executable, so app updates that don't touch translation keep them.
+# Runs every build; the header changes only when the key does.
+set(XE_METAL_SHADER_CACHE_VERSION_H
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/xenia/gpu/metal/shader_cache_version.h)
+add_custom_target(xenia-gpu-metal-shader-cache-version
+  COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+          -DOUTPUT=${XE_METAL_SHADER_CACHE_VERSION_H}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/shader_cache_version.cmake
+  BYPRODUCTS ${XE_METAL_SHADER_CACHE_VERSION_H}
+  VERBATIM
+)
+add_dependencies(xenia-gpu-metal xenia-gpu-metal-shader-cache-version)
+target_include_directories(xenia-gpu-metal PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
 target_link_libraries(xenia-gpu-metal PUBLIC
   xenia-base
   xenia-gpu

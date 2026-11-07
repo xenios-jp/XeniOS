@@ -4217,6 +4217,10 @@ void MetalCommandProcessor::InitializeShaderStorage(
     const std::filesystem::path title_local_root =
         GetShaderStorageLocalRoot(cache_root) / "metal" /
         fmt::format("{:08X}", title_id);
+    // The libraries are discarded when the translation code, its compilers or
+    // the translation settings change (MakeFingerprint), and kept across builds
+    // that leave those alone. Rebuilding them is our own translation work only;
+    // the archive below keeps the GPU binaries.
     const std::string fingerprint = MetalShaderLibraryCache::MakeFingerprint(
         fmt::format("{} device={} msaa2x={} scale={}x{}",
                     UseDxilPath() ? "dxil" : "msl",

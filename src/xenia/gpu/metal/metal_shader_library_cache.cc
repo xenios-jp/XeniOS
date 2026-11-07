@@ -19,6 +19,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/xxhash.h"
+#include "xenia/gpu/metal/shader_cache_version.h"
 
 #include "third_party/fmt/include/fmt/format.h"
 
@@ -41,25 +42,30 @@ struct RecordHeader {
 };
 static_assert(sizeof(RecordHeader) == 32);
 
-// The main executable's LC_UUID: every link makes a new one.
-std::string ExecutableUuid() {
-  const mach_header* header = _dyld_get_image_header(0);
-  if (!header || header->magic != MH_MAGIC_64) {
-    return "none";
-  }
-  const auto* command = reinterpret_cast<const load_command*>(
-      reinterpret_cast<const uint8_t*>(header) + sizeof(mach_header_64));
-  for (uint32_t i = 0; i < header->ncmds; ++i) {
-    if (command->cmd == LC_UUID) {
-      const auto* uuid = reinterpret_cast<const uuid_command*>(command);
-      std::string text;
-      for (uint8_t byte : uuid->uuid) {
-        text += fmt::format("{:02X}", byte);
-      }
-      return text;
+// The LC_UUID of the first loaded image whose path contains |name|: every link
+// of it makes a new one.
+std::string ImageUuid(const char* name) {
+  for (uint32_t image = 0; image < _dyld_image_count(); ++image) {
+    const char* path = _dyld_get_image_name(image);
+    const mach_header* header = _dyld_get_image_header(image);
+    if (!path || !std::strstr(path, name) || !header ||
+        header->magic != MH_MAGIC_64) {
+      continue;
     }
-    command = reinterpret_cast<const load_command*>(
-        reinterpret_cast<const uint8_t*>(command) + command->cmdsize);
+    const auto* command = reinterpret_cast<const load_command*>(
+        reinterpret_cast<const uint8_t*>(header) + sizeof(mach_header_64));
+    for (uint32_t i = 0; i < header->ncmds; ++i) {
+      if (command->cmd == LC_UUID) {
+        const auto* uuid = reinterpret_cast<const uuid_command*>(command);
+        std::string text;
+        for (uint8_t byte : uuid->uuid) {
+          text += fmt::format("{:02X}", byte);
+        }
+        return text;
+      }
+      command = reinterpret_cast<const load_command*>(
+          reinterpret_cast<const uint8_t*>(command) + command->cmdsize);
+    }
   }
   return "none";
 }
@@ -68,7 +74,12 @@ std::string ExecutableUuid() {
 
 std::string MetalShaderLibraryCache::MakeFingerprint(
     const std::string& translator) {
-  std::string fingerprint = "exe=" + ExecutableUuid() + " " + translator;
+  // The translation sources and compilers (shader_cache_version.cmake), not the
+  // executable, so an update that leaves translation alone keeps the libraries.
+  // The Metal shader converter is a separate library, so its own build.
+  std::string fingerprint = std::string("src=") + XE_METAL_SHADER_CACHE_SOURCE +
+                            " msc=" + ImageUuid("libmetalirconverter") + " " +
+                            translator;
   // Every GPU and Metal option, so none that changes the translation is missed.
   // Changing an unrelated one only costs one translation of the stored shaders.
   if (cvar::ConfigVars) {
