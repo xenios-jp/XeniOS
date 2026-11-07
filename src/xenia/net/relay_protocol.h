@@ -31,8 +31,9 @@ namespace xe::net::relay {
 using secure::Mac;
 
 inline constexpr uint8_t kVersion = 1;
-inline constexpr std::string_view kDefaultLobby =
-    "wss://xenios-systemlink.xenios.workers.dev";
+inline constexpr std::string_view kDefaultLobby = "wss://live.xenios.jp";
+// The lobby's Workers address, the default before live.xenios.jp: the same service.
+inline constexpr std::string_view kWorkersLobby = "wss://xenios-systemlink.xenios.workers.dev";
 
 // Frames longer than this are split so no datagram is larger than an IPv6
 // path is guaranteed to carry unfragmented (1280 minus the IPv6 and UDP
