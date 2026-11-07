@@ -15,7 +15,7 @@
 
 static NSString* const kXeCompatETagKey = @"xenios.compat.etag";
 static NSString* const kXeCompatCheckTimeKey = @"xenios.compat.lastCheck";
-static const NSTimeInterval kXeCompatMinCheckInterval = 6 * 60 * 60;
+static const NSTimeInterval kXeCompatMinCheckInterval = 24 * 60 * 60;
 
 static void xe_compat_stamp_check_time(void) {
   [[NSUserDefaults standardUserDefaults] setDouble:[[NSDate date] timeIntervalSince1970]
@@ -160,7 +160,7 @@ void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
     return;
   }
 
-  // Checked within the last 6 hours: skip the network.
+  // Checked within the last day: skip the network.
   NSTimeInterval last_check =
       [[NSUserDefaults standardUserDefaults] doubleForKey:kXeCompatCheckTimeKey];
   NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - last_check;
