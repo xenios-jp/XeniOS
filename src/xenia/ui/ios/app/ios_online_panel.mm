@@ -927,6 +927,9 @@ typedef NS_ENUM(NSInteger, XeniaOnlinePage) {
                                              selector:@selector(requestFailed:)
                                                  name:XeniaLiveSocialRequestFailedNotification
                                                object:nil];
+    // Pages size some parts to the height they have (Add Friend's QR code).
+    [self registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
+                       withAction:@selector(reload)];
     [self reload];
   }
   return self;
@@ -1453,12 +1456,65 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
     [_stack addArrangedSubview:Group(rows, [InviteBlue() colorWithAlphaComponent:0.24])];
   }
 
+  // Everyone else in the game, friends or not, each with what can be done: add a stranger,
+  // accept their request.
+  NSArray<XeniaLiveGamePlayer*>* players = social.gamePlayers;
+  NSMutableSet<NSNumber*>* in_this_game = [NSMutableSet set];
+  if (players.count) {
+    NSMutableArray<UIView*>* rows = [NSMutableArray array];
+    for (XeniaLiveGamePlayer* player in players) {
+      [in_this_game addObject:@(player.xuid)];
+      const uint64_t xuid = player.xuid;
+      NSString* name =
+          player.gamertag ?: NSLocalizedString(@"Player", @"Online panel: a player in your "
+                                                          @"game whose gamertag isn't known");
+      NSString* detail = nil;
+      NSArray<UIView*>* accessories = @[];
+      switch (player.relation) {
+        case XeniaLiveGamePlayerRelationFriend:
+          detail = NSLocalizedString(@"Friend", @"Online panel: a player in your game who is "
+                                                @"a friend");
+          break;
+        case XeniaLiveGamePlayerRelationRequestSent:
+          detail = NSLocalizedString(@"Friend request sent", @"Online panel: a player in your "
+                                                             @"game you asked to be friends");
+          break;
+        case XeniaLiveGamePlayerRelationRequestReceived:
+          detail = NSLocalizedString(@"Wants to be friends", @"Online panel: a friend request");
+          accessories = @[ Capsule(NSLocalizedString(@"Accept", @"Online panel: accept request"),
+                                   nil, YES, NO, ^(UIButton* __unused b) {
+                                     [[XeniaLiveSocial shared] acceptFriendRequest:xuid];
+                                   }) ];
+          break;
+        case XeniaLiveGamePlayerRelationNone:
+          accessories = @[ Capsule(NSLocalizedString(@"Add", @"Online panel: add a player in "
+                                                            @"your game as a friend"),
+                                   @"person.badge.plus", NO, NO, ^(UIButton* sender) {
+                                     sender.enabled = NO;
+                                     [[XeniaLiveSocial shared] sendFriendRequestTo:xuid];
+                                   }) ];
+          break;
+      }
+      [rows addObject:PlayerRow(name, detail, NO, NO, YES, accessories,
+                                [self cardOpener:xuid gamertag:player.gamertag])];
+    }
+    [_stack addArrangedSubview:SectionLabel([NSString
+                                   stringWithFormat:NSLocalizedString(@"In this game · %ld",
+                                                                      @"Online panel section: "
+                                                                      @"the other players in "
+                                                                      @"the game; %ld is how "
+                                                                      @"many"),
+                                                    long(players.count)])];
+    [_stack addArrangedSubview:Group(rows, nil)];
+  }
+
   // Online now, in one group: those in your game first, then who's playing, then the rest.
+  // Friends listed in this game already aren't listed again.
   NSMutableArray<XeniaLiveFriend*>* in_game = [NSMutableArray array];
   NSMutableArray<XeniaLiveFriend*>* playing = [NSMutableArray array];
   NSMutableArray<XeniaLiveFriend*>* idle = [NSMutableArray array];
   for (XeniaLiveFriend* peer in social.friends) {
-    if (!peer.online) {
+    if (!peer.online || [in_this_game containsObject:@(peer.xuid)]) {
       continue;
     }
     if ([social friendInYourGame:peer]) {
@@ -1733,30 +1789,36 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                                                     @"page")]];
 
   // Your own code: a QR code to scan across the room, the code to read out, and a link to send.
+  // A phone in landscape is short: a smaller code and tighter spacing keep the field on screen.
+  const BOOL short_height =
+      self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact;
   if (social.friendCode.length) {
     NSString* code = social.friendCode;
     NSString* formatted = xe_ios_format_friend_code(code);
+    const CGFloat qr_size = short_height ? 92.0 : 132.0;
+    const CGFloat qr_box = qr_size + (short_height ? 16.0 : 24.0);
     UIImageView* qr =
-        [[[UIImageView alloc] initWithImage:xe_ios_qr_image(xe_ios_friend_link(code), 132)]
+        [[[UIImageView alloc] initWithImage:xe_ios_qr_image(xe_ios_friend_link(code), qr_size)]
             autorelease];
     qr.contentMode = UIViewContentModeCenter;
     qr.backgroundColor = [UIColor whiteColor];
-    qr.layer.cornerRadius = 18.0;
+    qr.layer.cornerRadius = short_height ? 14.0 : 18.0;
     qr.layer.cornerCurve = kCACornerCurveContinuous;
     qr.translatesAutoresizingMaskIntoConstraints = NO;
-    [qr.widthAnchor constraintEqualToConstant:156.0].active = YES;
-    [qr.heightAnchor constraintEqualToConstant:156.0].active = YES;
+    [qr.widthAnchor constraintEqualToConstant:qr_box].active = YES;
+    [qr.heightAnchor constraintEqualToConstant:qr_box].active = YES;
     qr.isAccessibilityElement = YES;
     qr.accessibilityLabel = NSLocalizedString(@"Your friend QR code", @"Online panel: QR code");
     UILabel* mine = NewLabel(formatted, UIFontTextStyleTitle2, 24.0, UIFontWeightBold,
                              [XeniaTheme textPrimary]);
-    mine.font = [UIFont monospacedSystemFontOfSize:S(24.0) weight:UIFontWeightBold];
+    mine.font = [UIFont monospacedSystemFontOfSize:S(short_height ? 20.0 : 24.0)
+                                            weight:UIFontWeightBold];
     mine.textAlignment = NSTextAlignmentCenter;
     mine.accessibilityLabel =
         [NSString stringWithFormat:NSLocalizedString(@"Your friend code, %@",
                                                      @"Online panel: VoiceOver; %@ is the code"),
                                    SpokenCode(code)];
-    UIButton* share = Capsule(NSLocalizedString(@"Share…", @"Online panel: share your friend link"),
+    UIButton* share = Capsule(NSLocalizedString(@"Share", @"Online panel: share your friend link"),
                               @"square.and.arrow.up", YES, NO, ^(UIButton* sender) {
                                 [unsafe_self shareFriendCode:code from:sender];
                               });
@@ -1769,19 +1831,44 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
                                config.image = [UIImage systemImageNamed:@"checkmark"];
                                sender.configuration = config;
                              });
+    // Share and Copy split the card's width, each name on one line. At large text sizes a name
+    // that wouldn't fit beside its icon goes without the icon.
+    // The panel's 300 pt, less the page's, the group's and the card's insets and the gap.
+    const CGFloat capsule_width = (300.0 - 2 * 16.0 - 2 * 16.0 - 2 * 12.0 - 8.0) / 2.0;
+    UIFont* capsule_font =
+        xe_scaled_system_font(UIFontTextStyleSubheadline, 14.0, UIFontWeightSemibold);
+    for (UIButton* button in @[ share, copy ]) {
+      UIButtonConfiguration* config = button.configuration;
+      config.titleLineBreakMode = NSLineBreakByTruncatingTail;
+      config.imagePadding = 4.0;
+      config.contentInsets = NSDirectionalEdgeInsetsMake(6, 8, 6, 8);
+      const CGFloat needed =
+          ceil([config.title sizeWithAttributes:@{NSFontAttributeName : capsule_font}].width) +
+          16.0 + 4.0 + ceil(capsule_font.lineHeight);
+      if (needed > capsule_width) {
+        config.image = nil;
+      }
+      button.configuration = config;
+      [button setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh
+                                              forAxis:UILayoutConstraintAxisHorizontal];
+    }
     UIStackView* buttons =
         [[[UIStackView alloc] initWithArrangedSubviews:@[ share, copy ]] autorelease];
     buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.distribution = UIStackViewDistributionFillEqually;
     buttons.spacing = 8.0;
     UIStackView* card =
         [[[UIStackView alloc] initWithArrangedSubviews:@[ qr, mine, buttons ]] autorelease];
     card.axis = UILayoutConstraintAxisVertical;
     card.alignment = UIStackViewAlignmentCenter;
-    card.spacing = 10.0;
-    [card setCustomSpacing:14.0 afterView:qr];
-    [card setCustomSpacing:12.0 afterView:mine];
-    card.layoutMargins = UIEdgeInsetsMake(18, 12, 16, 12);
+    card.spacing = short_height ? 6.0 : 10.0;
+    [card setCustomSpacing:short_height ? 8.0 : 14.0 afterView:qr];
+    [card setCustomSpacing:short_height ? 8.0 : 12.0 afterView:mine];
+    card.layoutMargins = short_height ? UIEdgeInsetsMake(12, 12, 12, 12)
+                                      : UIEdgeInsetsMake(18, 12, 16, 12);
     card.layoutMarginsRelativeArrangement = YES;
+    [buttons.widthAnchor constraintEqualToAnchor:card.layoutMarginsGuide.widthAnchor].active =
+        YES;
     [_stack addArrangedSubview:Group(@[ card ], nil)];
   }
 
@@ -2109,6 +2196,7 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   CGRect _sourceRect;
   BOOL _expanded;
   BOOL _closing;
+  void (^_dismissedHandler)(void);
 }
 
 - (void)dealloc {
@@ -2116,7 +2204,29 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
   [_panel release];
   [_acceptInviteHandler release];
   [_joinFriendHandler release];
+  [_dismissedHandler release];
   [super dealloc];
+}
+
+- (void (^)(void))dismissedHandler {
+  return _dismissedHandler;
+}
+- (void)setDismissedHandler:(void (^)(void))handler {
+  [_dismissedHandler release];
+  _dismissedHandler = [handler copy];
+}
+
+// However it closes (its Close button, a swipe, a tap outside), once it's gone.
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (!_dismissedHandler ||
+      !(self.isBeingDismissed || self.navigationController.isBeingDismissed ||
+        !self.navigationController.presentingViewController)) {
+    return;
+  }
+  void (^handler)(void) = [_dismissedHandler autorelease];
+  _dismissedHandler = nil;
+  handler();
 }
 
 - (void (^)(XeniaLiveInvite*))acceptInviteHandler {

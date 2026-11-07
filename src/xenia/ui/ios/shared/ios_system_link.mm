@@ -1047,6 +1047,21 @@ NSInteger g_private = -1;
 NSDictionary<NSNumber*, NSNumber*>* g_playing = nil;
 // The game this app runs, told to the lobby on the presence socket; 0 in the library.
 uint32_t g_playing_title = 0;
+// The counts include this app: in `playing` for the game it told the lobby, and in that game's
+// public room while it's there. Players see only the others. The lobby recounts on its own
+// schedule, so counts that came soon after a change may still be from before it.
+// The title the latest counts count this app under (0 for none), when they came on the socket.
+uint32_t g_counted_title = 0;
+bool g_counts_from_socket = false;
+// The titles the latest socket counts count this app under in `playing`, as the lobby said them
+// (its `self`), or nil from a lobby that doesn't, where the timing below guesses.
+NSArray<NSNumber*>* g_self = nil;
+// When the app last told the lobby its game.
+NSTimeInterval g_playing_told = 0;
+// Counts this long after a change are from after it.
+constexpr NSTimeInterval kPlayingSettled = 5.0;
+// The lobby recounts every 30 s: by now any counts are from after the change.
+constexpr NSTimeInterval kPlayingRecounted = 45.0;
 NSTimeInterval g_here_said = 0;
 NSTimeInterval g_online_asked = 0;
 NSTimeInterval g_online_answered = 0;
@@ -1167,9 +1182,22 @@ NSDictionary<NSNumber*, NSNumber*>* ParseTitleCounts(id titles) {
   return counts;
 }
 
+// ["4D5307E6"] -> @[@0x4D5307E6], or nil when it isn't a list.
+NSArray<NSNumber*>* ParseTitles(id titles) {
+  if (![titles isKindOfClass:[NSArray class]]) {
+    return nil;
+  }
+  NSMutableDictionary* keyed = [NSMutableDictionary dictionary];
+  for (id title in titles) {
+    keyed[title] = @1;
+  }
+  return ParseTitleCounts(keyed).allKeys;
+}
+
 NSDictionary<NSNumber*, NSNumber*>* ParseOnline(NSData* data, NSInteger* here_out,
                                                 NSInteger* private_out,
-                                                NSDictionary<NSNumber*, NSNumber*>** playing_out) {
+                                                NSDictionary<NSNumber*, NSNumber*>** playing_out,
+                                                NSArray<NSNumber*>** self_out = nullptr) {
   id body = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
   if (![body isKindOfClass:[NSDictionary class]] || ![body[@"v"] isEqual:@1]) {
     return nil;
@@ -1177,6 +1205,9 @@ NSDictionary<NSNumber*, NSNumber*>* ParseOnline(NSData* data, NSInteger* here_ou
   *here_out = CountIn(body, @"here");
   *private_out = CountIn(body, @"private");
   *playing_out = ParseTitleCounts(body[@"playing"]);
+  if (self_out) {
+    *self_out = ParseTitles(body[@"self"]);
+  }
   if (![body[@"titles"] isKindOfClass:[NSDictionary class]]) {
     return nil;
   }
@@ -1184,14 +1215,22 @@ NSDictionary<NSNumber*, NSNumber*>* ParseOnline(NSData* data, NSInteger* here_ou
 }
 
 void SetOnline(NSDictionary<NSNumber*, NSNumber*>* online, NSInteger here = -1,
-               NSInteger in_private = -1, NSDictionary<NSNumber*, NSNumber*>* playing = nil) {
+               NSInteger in_private = -1, NSDictionary<NSNumber*, NSNumber*>* playing = nil,
+               NSArray<NSNumber*>* self_titles = nil) {
   if (!online) {
     here = -1;
     in_private = -1;
     playing = nil;
+    self_titles = nil;
   }
+  const bool self_same =
+      self_titles == g_self ||
+      [[NSSet setWithArray:self_titles ?: @[]] isEqualToSet:[NSSet setWithArray:g_self ?: @[]]];
+  [g_self release];
+  g_self = [self_titles copy];
   if ((online == g_online || [online isEqualToDictionary:g_online]) && here == g_here &&
-      in_private == g_private && (playing == g_playing || [playing isEqualToDictionary:g_playing])) {
+      in_private == g_private && (playing == g_playing || [playing isEqualToDictionary:g_playing]) &&
+      self_same) {
     return;
   }
   [g_online release];
@@ -1255,6 +1294,7 @@ void ClosePresence() {
   [g_presence_pinger release];
   g_presence_pinger = nil;
   g_presence_up = false;
+  g_counted_title = 0;
   if (!g_presence) {
     return;
   }
@@ -1284,9 +1324,10 @@ void ReceivePresence(NSURLSessionWebSocketTask* task) {
     NSInteger here = -1;
     NSInteger in_private = -1;
     NSDictionary<NSNumber*, NSNumber*>* playing = nil;
+    NSArray<NSNumber*>* self_titles = nil;
     if (!error && message.type == NSURLSessionWebSocketMessageTypeString) {
       online = ParseOnline([message.string dataUsingEncoding:NSUTF8StringEncoding], &here,
-                           &in_private, &playing);
+                           &in_private, &playing, &self_titles);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       if (task != g_presence) {
@@ -1301,7 +1342,11 @@ void ReceivePresence(NSURLSessionWebSocketTask* task) {
         g_presence_failures = 0;
         g_online_answered = Uptime();
         SaveHere();
-        SetOnline(online, here, in_private, playing);
+        g_counts_from_socket = true;
+        if (Uptime() - g_playing_told >= kPlayingSettled) {
+          g_counted_title = g_playing_title;
+        }
+        SetOnline(online, here, in_private, playing, self_titles);
       }
       ReceivePresence(task);
     });
@@ -1311,6 +1356,7 @@ void ReceivePresence(NSURLSessionWebSocketTask* task) {
 // {"t": "playing", "title": "4D5307E6"}, or "title": null in the library: which game this app
 // runs, counted (without the player) in the lobby's `playing`.
 void SendPlaying(NSURLSessionWebSocketTask* task) {
+  g_playing_told = Uptime();
   NSString* text =
       g_playing_title
           ? [NSString stringWithFormat:@"{\"t\":\"playing\",\"title\":\"%08X\"}", g_playing_title]
@@ -1422,6 +1468,7 @@ void AskOnline() {
                       // A failed answer keeps the last counts until they're stale.
                       if (online && OnlineAllowed()) {
                         g_online_answered = Uptime();
+                        g_counts_from_socket = false;
                         SetOnline(online, here, in_private, playing);
                       }
                     });
@@ -1505,18 +1552,61 @@ void xe_ios_system_link_keep_online(BOOL keep) {
   AskOnline();
 }
 
-NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_titles(void) { return g_online; }
+namespace {
+
+// The titles the counts count this app under in `playing`: as the lobby said, or guessed from
+// when the app told it its game.
+NSArray<NSNumber*>* SelfCountedTitles() {
+  if (!g_counts_from_socket || !g_presence) {
+    return @[];
+  }
+  if (g_self) {
+    return g_self;
+  }
+  const uint32_t title =
+      Uptime() - g_playing_told >= kPlayingRecounted ? g_playing_title : g_counted_title;
+  return title ? @[ @(title) ] : @[];
+}
+
+// |counts| without this app. In `playing` it's left out of each title it's counted under; in a
+// public room's count only in the game it's running, the one whose room it can be in.
+NSDictionary<NSNumber*, NSNumber*>* WithoutSelf(NSDictionary<NSNumber*, NSNumber*>* counts,
+                                                bool rooms) {
+  if (!counts) {
+    return counts;
+  }
+  NSMutableDictionary<NSNumber*, NSNumber*>* others = nil;
+  for (NSNumber* key in SelfCountedTitles()) {
+    if (!counts[key] || (rooms && g_self && key.unsignedIntValue != g_playing_title)) {
+      continue;
+    }
+    others = others ?: [[counts mutableCopy] autorelease];
+    const NSInteger rest = others[key].integerValue - 1;
+    if (rest > 0) {
+      others[key] = @(rest);
+    } else {
+      [others removeObjectForKey:key];
+    }
+  }
+  return others ?: counts;
+}
+
+}  // namespace
+
+NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_titles(void) {
+  return WithoutSelf(g_online, true);
+}
 
 NSInteger xe_ios_system_link_online_here(void) { return g_online ? g_here : -1; }
 
 NSInteger xe_ios_system_link_online_private(void) { return g_online ? g_private : -1; }
 
 NSDictionary<NSNumber*, NSNumber*>* xe_ios_system_link_online_playing(void) {
-  return g_online ? g_playing : nil;
+  return g_online ? WithoutSelf(g_playing, false) : nil;
 }
 
 NSInteger xe_ios_system_link_online_playing_count(uint32_t title_id) {
-  return title_id && g_online ? [g_playing[@(title_id)] integerValue] : 0;
+  return title_id && g_online ? [WithoutSelf(g_playing, false)[@(title_id)] integerValue] : 0;
 }
 
 void xe_ios_system_link_set_playing(uint32_t title_id) {
@@ -1530,7 +1620,7 @@ void xe_ios_system_link_set_playing(uint32_t title_id) {
 }
 
 NSInteger xe_ios_system_link_online_players(uint32_t title_id) {
-  return title_id ? [g_online[@(title_id)] integerValue] : 0;
+  return title_id ? [xe_ios_system_link_online_titles()[@(title_id)] integerValue] : 0;
 }
 
 NSString* xe_ios_system_link_online_description(uint32_t title_id) {
@@ -1612,8 +1702,9 @@ BOOL xe_ios_system_link_online_connected(void) { return g_online != nil; }
 
 NSInteger xe_ios_system_link_online_total(void) {
   NSInteger total = 0;
-  for (NSNumber* title_id in g_online) {
-    total += g_online[title_id].integerValue;
+  NSDictionary<NSNumber*, NSNumber*>* others = xe_ios_system_link_online_titles();
+  for (NSNumber* title_id in others) {
+    total += others[title_id].integerValue;
   }
   return total;
 }

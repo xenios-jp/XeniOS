@@ -16,6 +16,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Posted on the main thread when a title's cover lands in the cache, whoever asked for it. Its
+// object is the title id (NSNumber). A tile that gave up on its cover picks it up from this.
+extern NSNotificationName const XeniaGameArtCoverDidArriveNotification;
+
 // Cover and background artwork cache for game tiles, hero cards and
 // compatibility sheets.
 //
@@ -29,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 UIImage* _Nullable xe_cached_game_art(uint32_t title_id);
 UIImage* _Nullable xe_cached_game_background_art(uint32_t title_id);
+// The cached cover's file, nil when there isn't one.
+NSString* _Nullable xe_cached_game_art_path(uint32_t title_id);
 // Whether the background art is on disk, without reading it.
 BOOL xe_has_cached_game_background_art(uint32_t title_id);
 

@@ -48,6 +48,9 @@ class IOSWindowedAppContext;
 // A player's gamer card over the game, for the title (XUID 0: the user's own). |completion| runs
 // once it's closed.
 - (void)presentGamerCardForXuid:(uint64_t)xuid completion:(void (^)(void))completion;
+// The Online panel over whatever is showing, for a game or the dashboard asking for it
+// (XamShowFriendsUI, XamShowPartyUI). |completion| runs once it's closed.
+- (void)presentOnlineSheetWithCompletion:(void (^)(void))completion;
 - (void)presentAchievementsForUserIndex:(uint32_t)user_index
                                 titleID:(uint32_t)title_id
                              completion:(void (^)(BOOL success))completion;

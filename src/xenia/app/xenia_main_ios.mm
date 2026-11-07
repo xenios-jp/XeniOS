@@ -782,6 +782,9 @@ bool EmulatorAppIOS::OnInitialize() {
     }
     return RequestGameStop("Exit to dashboard");
   });
+  // Powering off goes back to the library, never to the dashboard, as on the
+  // Mac; with no handler the app would quit.
+  emulator_->set_on_power_off([this]() { return RequestGameStop("Power off"); });
 
   // A disc swap offers the library's copies of the title's discs. It reads the
   // last scan's cache: a scan here would run on the guest thread, open and close
@@ -1376,6 +1379,11 @@ bool EmulatorAppIOS::OnInitialize() {
       result.gamertag = profile->name();
       result.live_enabled = profile->IsLiveEnabled();
       return result;
+    };
+    live_host.profiles_busy = [this]() {
+      return !static_cast<ui::IOSWindowedAppContext&>(app_context()).ProfileServicesReady() ||
+             !emulator_ || !emulator_->kernel_state() ||
+             !emulator_->kernel_state()->xam_state();
     };
     live_host.enable_online = [this](uint64_t xuid) {
       if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
