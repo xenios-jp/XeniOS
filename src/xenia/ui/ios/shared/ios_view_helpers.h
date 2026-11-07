@@ -150,6 +150,20 @@ void XESetFormCommitHidden(UIViewController* view_controller, BOOL hidden);
 UIButton* XEFormCommitButton(UIViewController* view_controller);
 void XEAttachFormCommit(UIViewController* view_controller);
 void XEDetachFormCommit(UIViewController* view_controller);
+// From viewWillDisappear: a page pushed over or popped fades its button out with the
+// transition; a sheet being dismissed keeps it, so it slides away with the page.
+void XEFormCommitWillDisappear(UIViewController* view_controller);
+
+// A page's status headline (rule 5: status is a dot and words): a 12-pt dot and a 28-pt bold
+// line over a plain detail line, as the table's header. Compatibility and System Software use it.
+@interface XEStatusHeaderView : UIView
+@property(nonatomic, readonly) UIView* dot;
+@property(nonatomic, readonly) UILabel* titleLabel;
+@property(nonatomic, readonly) UILabel* detailLabel;
+// Sets it as |table|'s header, sized to the table's width and its own content. Call from
+// viewDidLayoutSubviews and after changing its text.
+- (void)fitAsHeaderOfTable:(UITableView*)table;
+@end
 
 // UITableViewController base class with the orientation overrides every
 // Xenia sheet shares: rotates freely (no upside-down) and starts in

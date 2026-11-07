@@ -155,6 +155,12 @@ NSUInteger CodeLength(NSString* formatted) {
 - (void)setFooterText:(nullable NSString*)text color:(nullable UIColor*)color;
 @end
 
+// Header and footer views sit inside the inset group's margins, so text is measured to that width.
+static CGFloat TextWidth(UITableView* table) {
+  const UIEdgeInsets margins = table.layoutMargins;
+  return table.bounds.size.width - margins.left - margins.right;
+}
+
 @implementation XEForm {
   XEFormText* _header;
   XEFormText* _footer;
@@ -244,14 +250,14 @@ NSUInteger CodeLength(NSString* formatted) {
 
 - (CGFloat)tableView:(UITableView*)tableView heightForHeaderInSection:(NSInteger)section {
   if (section == 0) {
-    return _headerText.length ? [_header heightForWidth:tableView.bounds.size.width] : 12;
+    return _headerText.length ? [_header heightForWidth:TextWidth(tableView)] : 12;
   }
   return UITableViewAutomaticDimension;
 }
 
 - (CGFloat)tableView:(UITableView*)tableView heightForFooterInSection:(NSInteger)section {
   if (section == 0) {
-    return _footerText.length ? [_footer heightForWidth:tableView.bounds.size.width] : 12;
+    return _footerText.length ? [_footer heightForWidth:TextWidth(tableView)] : 12;
   }
   return UITableViewAutomaticDimension;
 }
@@ -260,21 +266,16 @@ NSUInteger CodeLength(NSString* formatted) {
 
 namespace {
 
-// A form in the Profile sheet's frame: a form sheet in a navigation controller. |modal| blocks
-// swiping it away.
+// A form is a page on the wash (docs/ios_design_language.md, rule 2): full screen on iPhone,
+// the page size on iPad, in a navigation controller. |modal| blocks swiping it away.
 void PresentForm(UIViewController* presenter, XEForm* form, BOOL modal) {
   UINavigationController* navigation =
       [[[UINavigationController alloc] initWithRootViewController:form] autorelease];
-  navigation.modalPresentationStyle = UIModalPresentationFormSheet;
-  // The sheet's own material follows the presented controller's style, so the glass reads dark
-  // at every detent.
   navigation.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-  navigation.view.backgroundColor = [XeniaTheme glassSheet];
-  navigation.sheetPresentationController.detents = @[
-    [UISheetPresentationControllerDetent mediumDetent],
-    [UISheetPresentationControllerDetent largeDetent]
-  ];
-  navigation.modalInPresentation = modal;
+  navigation.view.backgroundColor = [XeniaTheme bgPrimary];
+  XEConfigureDestinationPresentation(navigation, TopOf(presenter).view,
+                                     CGSizeMake(620.0, 720.0), modal);
+  navigation.navigationBar.prefersLargeTitles = NO;
   [TopOf(presenter) presentViewController:navigation animated:YES completion:nil];
 }
 
@@ -411,9 +412,13 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   switch (_mode) {
     case XEGamertagModeGoOnline:
       self.title = NSLocalizedString(@"Choose Your Gamertag", @"Gamertag sheet title");
-      [self setHeaderText:NSLocalizedString(@"This is how friends find you online. Your saves and "
-                                            @"achievements are kept.",
-                                            @"Gamertag sheet: text above the field")];
+      [self setHeaderText:[NSString stringWithFormat:NSLocalizedString(
+                                                         @"“%@” becomes this gamertag. Friends find "
+                                                         @"you by it, and your saves and "
+                                                         @"achievements stay.",
+                                                         @"Gamertag sheet: text above the field; %@ "
+                                                         @"is the profile's name"),
+                                                     _current]];
       break;
     case XEGamertagModeRename:
       self.title = NSLocalizedString(@"Change Gamertag", @"Gamertag sheet title");
@@ -435,7 +440,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   }
   [self addCloseButton];
   _doneItem = [[self addDoneButtonWithTitle:_mode == XEGamertagModeGoOnline
-                                                ? NSLocalizedString(@"Go Online",
+                                                ? NSLocalizedString(@"Get Gamertag",
                                                                     @"Gamertag sheet: button")
                                                 : NSLocalizedString(@"Save Gamertag",
                                                                     @"Gamertag sheet: button")]
@@ -842,14 +847,15 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   [super viewDidLoad];
   self.title = NSLocalizedString(@"Recovery Code", @"Recovery code sheet title");
   [self setHeaderText:_first
-                          ? NSLocalizedString(@"Save this code. It’s the only way back into your "
-                                              @"account if you lose every device. We show it once.",
+                          ? NSLocalizedString(@"Keep this code somewhere safe. It’s the only way "
+                                              @"back into your account if you lose every device. "
+                                              @"It’s shown once.",
                                               @"Recovery code sheet: text above the code")
                           : NSLocalizedString(@"This is your new code. The old one no longer works. "
-                                              @"We show it once.",
+                                              @"It’s shown once.",
                                               @"Recovery code sheet: text above the code")];
   // No ✕: it stays until the code is saved.
-  _doneItem = [self addDoneButtonWithTitle:NSLocalizedString(@"I’ve Saved It",
+  _doneItem = [self addDoneButtonWithTitle:NSLocalizedString(@"Done",
                                                              @"Recovery code sheet: button")];
 }
 
@@ -876,7 +882,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
                                                   reuseIdentifier:nil] autorelease];
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
-  content.text = NSLocalizedString(@"I saved it somewhere safe", @"Recovery code sheet: switch");
+  content.text = NSLocalizedString(@"I’ve kept it somewhere safe", @"Recovery code sheet: switch");
   cell.contentConfiguration = content;
   UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
   toggle.on = _saved;
@@ -922,7 +928,8 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   UIActivityViewController* share =
       [[[UIActivityViewController alloc] initWithActivityItems:@[ url ] applicationActivities:nil]
           autorelease];
-  share.popoverPresentationController.sourceView = [tableView cellForRowAtIndexPath:indexPath];
+  share.popoverPresentationController.sourceView = tableView;
+  share.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
   share.completionWithItemsHandler = ^(UIActivityType __unused type, BOOL __unused completed,
                                        NSArray* __unused items, NSError* __unused error) {
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
@@ -945,263 +952,6 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 @end
 
-// ---- Link another device: the code, with a countdown ------------------------------------------
-
-@interface XELinkCodeForm : XEForm
-@end
-
-@implementation XELinkCodeForm {
-  NSString* _code;
-  NSDate* _expires;
-  NSTimer* _timer;
-  BOOL _expired;
-  BOOL _failed;
-}
-
-- (void)dealloc {
-  [_timer invalidate];
-  [_code release];
-  [_expires release];
-  [super dealloc];
-}
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.title = NSLocalizedString(@"Link Another Device", @"Link code sheet title");
-  [self setHeaderText:NSLocalizedString(@"On the new device, choose “Use an Existing Account”, then "
-                                        @"“Enter Link Code”.",
-                                        @"Link code sheet: text above the code")];
-  [self addCloseButton];
-  [self load];
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-  [super viewDidDisappear:animated];
-  [_timer invalidate];
-  _timer = nil;
-}
-
-- (NSString*)note {
-  return NSLocalizedString(@"Both devices will share your gamertag, friends and blocks. Saves stay "
-                           @"on each device.",
-                           @"Link code sheet: note under the code");
-}
-
-- (void)load {
-  _expired = NO;
-  _failed = NO;
-  [_code release];
-  _code = nil;
-  [self setFooterText:NSLocalizedString(@"Getting a code…", @"Link code sheet: while waiting")
-                color:nil];
-  [self.tableView reloadData];
-  __unsafe_unretained XELinkCodeForm* unsafe_self = self;
-  [xe_ios_live_account_service()
-      createLinkCodeWithCompletion:^(NSString* code, NSDate* expires, NSError* __unused error) {
-        if (!code.length) {
-          unsafe_self->_failed = YES;
-          [unsafe_self setFooterText:NSLocalizedString(@"Can’t reach XeniOS. Try again.",
-                                                       @"Link code sheet: error")
-                               color:[UIColor systemRedColor]];
-          [unsafe_self.tableView reloadData];
-          return;
-        }
-        unsafe_self->_code = [code copy];
-        [unsafe_self->_expires release];
-        unsafe_self->_expires = [expires retain];
-        [unsafe_self->_timer invalidate];
-        unsafe_self->_timer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                               target:unsafe_self
-                                                             selector:@selector(tick)
-                                                             userInfo:nil
-                                                              repeats:YES];
-        [unsafe_self.tableView reloadData];
-        [unsafe_self tick];
-      }];
-}
-
-- (void)tick {
-  const NSInteger left = (NSInteger)ceil(_expires.timeIntervalSinceNow);
-  if (left <= 0) {
-    [_timer invalidate];
-    _timer = nil;
-    _expired = YES;
-    [self setFooterText:NSLocalizedString(@"This code has expired.", @"Link code sheet: expired")
-                  color:[UIColor systemOrangeColor]];
-    [self.tableView reloadData];
-    return;
-  }
-  [self setFooterText:[NSString stringWithFormat:NSLocalizedString(
-                                                     @"Expires in %1$ld:%2$02ld.\n%3$@",
-                                                     @"Link code sheet: countdown, then a note; "
-                                                     @"minutes, seconds, note"),
-                                                 (long)(left / 60), (long)(left % 60), [self note]]
-                color:nil];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return (_expired || _failed) ? 2 : 1;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (indexPath.section == 1) {
-    return ActionCell(NSLocalizedString(@"Get a New Code", @"Link code sheet: row"));
-  }
-  return CodeCell((_code.length && !_expired) ? _code : @"········", 40,
-                  _expired ? [XeniaTheme textMuted] : [XeniaTheme textPrimary], 28);
-}
-
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section == 1) {
-    [self load];
-  }
-}
-
-@end
-
-// ---- Use an existing account / Recover account: one field for either code ---------------------
-
-@interface XEEnterCodeForm : XEForm <UITextFieldDelegate>
-- (instancetype)initRecovering:(BOOL)recovering;
-@end
-
-@implementation XEEnterCodeForm {
-  BOOL _recovering;
-  UITextField* _field;
-  UIButton* _doneItem;
-  BOOL _busy;
-}
-
-- (instancetype)initRecovering:(BOOL)recovering {
-  if ((self = [super init])) {
-    _recovering = recovering;
-  }
-  return self;
-}
-
-- (void)dealloc {
-  [_field release];
-  [_doneItem release];
-  [super dealloc];
-}
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  [self addCloseButton];
-  _doneItem = [[self addDoneButtonWithTitle:_recovering
-                                                ? NSLocalizedString(@"Recover",
-                                                                    @"Code sheet: button")
-                                                : NSLocalizedString(@"Link Device",
-                                                                    @"Code sheet: button")]
-      retain];
-  _field = [[UITextField alloc] init];
-  _field.delegate = self;
-  _field.textAlignment = NSTextAlignmentCenter;
-  _field.textColor = [XeniaTheme textPrimary];
-  _field.font = [UIFont monospacedSystemFontOfSize:24 weight:UIFontWeightBold];
-  _field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
-  _field.autocorrectionType = UITextAutocorrectionTypeNo;
-  _field.spellCheckingType = UITextSpellCheckingTypeNo;
-  _field.returnKeyType = UIReturnKeyGo;
-  _field.adjustsFontSizeToFitWidth = YES;
-  _field.minimumFontSize = 16;
-  _field.clearButtonMode = UITextFieldViewModeWhileEditing;
-  [self applyMode];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-  [super viewDidAppear:animated];
-  [_field becomeFirstResponder];
-}
-
-- (NSString*)recoverNote {
-  return _recovering ? NSLocalizedString(@"Lost the code too? Nothing can recover the account.",
-                                         @"Code sheet: note under the field")
-                     : nil;
-}
-
-- (void)applyMode {
-  self.title = _recovering ? NSLocalizedString(@"Recover Account", @"Code sheet title")
-                           : NSLocalizedString(@"Existing Account", @"Code sheet title");
-  [self setHeaderText:_recovering
-                          ? NSLocalizedString(@"Enter the recovery code you saved. Your gamertag, "
-                                              @"friends and blocks come back to this device.",
-                                              @"Code sheet: text above the field")
-                          : NSLocalizedString(@"Enter the code from your other device. Open Link "
-                                              @"Another Device there.",
-                                              @"Code sheet: text above the field")];
-  _field.attributedPlaceholder = [[[NSAttributedString alloc]
-      initWithString:_recovering ? @"XXXX-XXXX-XXXX" : @"XXXX-XXXX"
-          attributes:@{NSForegroundColorAttributeName : [XeniaTheme textMuted]}] autorelease];
-  _field.text = @"";
-  [self setFooterText:[self recoverNote] color:nil];
-  _doneItem.enabled = NO;
-  [self.tableView reloadData];
-  [_field becomeFirstResponder];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 1;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath* __unused)indexPath {
-  return FieldCell(_field);
-}
-
-- (BOOL)textField:(UITextField*)field
-    shouldChangeCharactersInRange:(NSRange)range
-                replacementString:(NSString*)string {
-  NSString* next = [field.text stringByReplacingCharactersInRange:range withString:string];
-  const NSUInteger limit = _recovering ? 12 : 8;
-  field.text = FormattedCode(next, limit);
-  [self setFooterText:[self recoverNote] color:nil];
-  _doneItem.enabled = !_busy && CodeLength(field.text) == limit;
-  return NO;
-}
-
-- (BOOL)textFieldShouldReturn:(UITextField* __unused)field {
-  [self doneTapped];
-  return NO;
-}
-
-- (void)doneTapped {
-  if (!_doneItem.enabled) {
-    return;
-  }
-  _busy = YES;
-  XESetFormCommitBusy(self, YES);
-  __unsafe_unretained XEEnterCodeForm* unsafe_self = self;
-  void (^finish)(XeniaLiveLinkStatus) = ^(XeniaLiveLinkStatus status) {
-    unsafe_self->_busy = NO;
-    XESetFormCommitBusy(unsafe_self, NO);
-    if (status == XeniaLiveLinkStatusLinked) {
-      [unsafe_self dismissViewControllerAnimated:YES completion:nil];
-      return;
-    }
-    NSString* message = LinkMessage(status);
-    [unsafe_self setFooterText:message color:[UIColor systemRedColor]];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
-  };
-  if (_recovering) {
-    [xe_ios_live_account_service() recoverWithCode:_field.text completion:finish];
-  } else {
-    [xe_ios_live_account_service() linkWithCode:_field.text completion:finish];
-  }
-}
-
-@end
-
 // ---- Saves between profiles on this device ----------------------------------------------
 
 @interface XEShareProfileViewController : XESheetTableViewController
@@ -1211,7 +961,6 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 @implementation XEShareProfileViewController {
   XeniaLiveLocalProfile* _profile;
   NSArray<XeniaLiveSaveGame*>* _games;
-  BOOL _busy;
 }
 
 - (instancetype)initWithProfile:(XeniaLiveLocalProfile*)profile {
@@ -1246,25 +995,18 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 2;
+  return 1;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
-  return section == 0 ? 1 : (NSInteger)_games.count;
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
+  return (NSInteger)_games.count;
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  return section == 1 && _games.count ? NSLocalizedString(@"Keep shared", @"Share saves: header") : nil;
-}
-
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  if (section == 0) {
-    return NSLocalizedString(@"A one-time copy. If both profiles have a save, the newer one is kept.",
-                             @"Share saves: footer under Copy");
-  }
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger __unused)section {
   return _games.count ? [NSString stringWithFormat:NSLocalizedString(
-                                                       @"Shared games use one set of saves for both profiles. "
-                                                       @"%@’s old saves for them are kept as a backup.",
+                                                       @"A shared game uses one set of saves for both "
+                                                       @"profiles. %@’s own saves for it are kept as a "
+                                                       @"backup.",
                                                        @"Share saves: footer; %@ is a gamertag"),
                                                    _profile.gamertag]
                       : NSLocalizedString(@"No games have saves yet.", @"Share saves: empty");
@@ -1272,11 +1014,6 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (indexPath.section == 0) {
-    return ActionCell([NSString stringWithFormat:NSLocalizedString(@"Copy All Saves to %@…",
-                                                                   @"Share saves: row; %@ is a gamertag"),
-                                                 _profile.gamertag]);
-  }
   XeniaLiveSaveGame* game = _games[(NSUInteger)indexPath.row];
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
@@ -1284,6 +1021,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
   content.text = game.name;
   content.secondaryText = SizeText(game.bytes);
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
   cell.contentConfiguration = content;
   UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
   toggle.on = game.shared;
@@ -1311,32 +1049,6 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
       }];
 }
 
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section != 0 || _busy) {
-    return;
-  }
-  _busy = YES;
-  __unsafe_unretained XEShareProfileViewController* unsafe_self = self;
-  [xe_ios_live_account_service()
-      copySavesToProfile:_profile.profileId
-              completion:^(NSUInteger copied, NSUInteger kept, NSError* error) {
-                unsafe_self->_busy = NO;
-                NSString* message =
-                    error ? error.localizedDescription
-                          : [NSString stringWithFormat:NSLocalizedString(
-                                                           @"Copied %lu saves to %@. %lu newer saves there were "
-                                                           @"kept.",
-                                                           @"Share saves: result; counts and a gamertag"),
-                                                       (unsigned long)copied, unsafe_self->_profile.gamertag,
-                                                       (unsigned long)kept];
-                ShowAlert(unsafe_self,
-                          error ? NSLocalizedString(@"Couldn’t Copy", @"Share saves: alert title")
-                                : NSLocalizedString(@"Saves Copied", @"Share saves: alert title"),
-                          message);
-              }];
-}
-
 @end
 
 @interface XEShareHubViewController : XESheetTableViewController
@@ -1344,6 +1056,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 @implementation XEShareHubViewController {
   NSArray<XeniaLiveLocalProfile*>* _others;
+  NSMutableDictionary<NSString*, NSNumber*>* _sharedCounts;  // Games shared, by profile ID.
   BOOL _busy;
 }
 
@@ -1356,12 +1069,13 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 - (void)dealloc {
   [_others release];
+  [_sharedCounts release];
   [super dealloc];
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = NSLocalizedString(@"Share Saves", @"Share saves title");
+  self.title = NSLocalizedString(@"Shared Saves", @"Shared saves title");
   [self reload];
 }
 
@@ -1378,6 +1092,21 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
         [unsafe_self->_others release];
         unsafe_self->_others = [others copy];
         [unsafe_self.tableView reloadData];
+        for (XeniaLiveLocalProfile* other in others) {
+          [xe_ios_live_account_service()
+              saveGamesSharedWithProfile:other.profileId
+                              completion:^(NSArray<XeniaLiveSaveGame*>* games) {
+                                NSUInteger shared = 0;
+                                for (XeniaLiveSaveGame* game in games) {
+                                  shared += game.shared ? 1 : 0;
+                                }
+                                if (!unsafe_self->_sharedCounts) {
+                                  unsafe_self->_sharedCounts = [[NSMutableDictionary alloc] init];
+                                }
+                                unsafe_self->_sharedCounts[other.profileId] = @(shared);
+                                [unsafe_self.tableView reloadData];
+                              }];
+        }
       }];
 }
 
@@ -1394,7 +1123,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  return section == 1 ? NSLocalizedString(@"Or one profile", @"Share saves: header") : nil;
+  return section == 1 ? NSLocalizedString(@"Or Just Some Profiles", @"Share saves: header") : nil;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
@@ -1416,7 +1145,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
   if (indexPath.section == 0) {
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    content.text = NSLocalizedString(@"Share Across All Profiles", @"Share saves: switch");
+    content.text = NSLocalizedString(@"Share With Every Profile", @"Share saves: switch");
     cell.contentConfiguration = content;
     UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
     toggle.on = [self all];
@@ -1427,7 +1156,20 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
     return cell;
   }
   XeniaLiveLocalProfile* profile = _others[(NSUInteger)indexPath.row];
+  content = [UIListContentConfiguration valueCellConfiguration];
   content.text = profile.gamertag;
+  content.image = xe_profile_avatar_image(profile.gamertag, NO, 32.0);
+  NSNumber* count = _sharedCounts[profile.profileId];
+  if (count) {
+    content.secondaryText =
+        count.unsignedIntegerValue == 0
+            ? NSLocalizedString(@"Off", @"Share saves: row detail")
+            : count.unsignedIntegerValue == 1
+                  ? NSLocalizedString(@"1 Game", @"Share saves: row detail")
+                  : [NSString stringWithFormat:NSLocalizedString(@"%lu Games", @"Share saves: row detail; a count"),
+                                               (unsigned long)count.unsignedIntegerValue];
+  }
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
   cell.contentConfiguration = content;
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   return cell;
@@ -1458,7 +1200,7 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
     return;
   }
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Share Saves Across All Profiles?",
+      alertControllerWithTitle:NSLocalizedString(@"Share Saves With Every Profile?",
                                                  @"Share saves: alert title")
                        message:NSLocalizedString(@"Saves from every profile are merged, keeping the newest "
                                                  @"of each. The originals are backed up first. Don’t play "
@@ -1485,176 +1227,6 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
         pushViewController:[[[XEShareProfileViewController alloc]
                                initWithProfile:_others[(NSUInteger)indexPath.row]] autorelease]
                   animated:YES];
-  }
-}
-
-@end
-
-// ---- Export profile --------------------------------------------------------------------------
-
-@interface XEExportForm : XEForm <UIDocumentPickerDelegate>
-@end
-
-@implementation XEExportForm {
-  XeniaLiveExportOptions* _options;
-  NSArray<NSString*>* _sizes;
-  BOOL _sharing;
-}
-
-- (void)dealloc {
-  [_options release];
-  [_sizes release];
-  [super dealloc];
-}
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.title = NSLocalizedString(@"Move Profile", @"Export sheet title");
-  [self setHeaderText:NSLocalizedString(@"Saves, achievements and settings as one file. Saves don’t "
-                                        @"sync between devices.",
-                                        @"Export sheet: text above the list")];
-  [self addCloseButton];
-  _options = [[XeniaLiveExportOptions alloc] init];
-  _options.saves = _options.achievements = _options.settings = YES;
-  _sizes = [@[ @"", @"", @"" ] retain];
-  __unsafe_unretained XEExportForm* unsafe_self = self;
-  [xe_ios_live_account_service()
-      exportSizesWithCompletion:^(uint64_t saves, uint64_t achievements, uint64_t settings) {
-        [unsafe_self->_sizes release];
-        unsafe_self->_sizes = [@[ SizeText(saves), SizeText(achievements), SizeText(settings) ] retain];
-        [unsafe_self.tableView reloadData];
-      }];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 4;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
-  return section == 0 ? 3 : 1;
-}
-
-- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  return section == 3 ? NSLocalizedString(@"On this device", @"Export sheet: header") : nil;
-}
-
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  return section == 3 ? NSLocalizedString(@"Copy saves to another profile here, or keep them shared.",
-                                          @"Export sheet: footer")
-                      : nil;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (indexPath.section == 3) {
-    UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                    reuseIdentifier:nil] autorelease];
-    UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
-    content.text = NSLocalizedString(@"Share Saves with Profiles", @"Export sheet: row");
-    content.image = Glyph(@"person.2");
-    cell.contentConfiguration = content;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    return cell;
-  }
-  if (indexPath.section == 2) {
-    return ActionCell(NSLocalizedString(@"Import from File…", @"Export sheet: row"));
-  }
-  if (indexPath.section == 1) {
-    UITableViewCell* cell = ActionCell(NSLocalizedString(@"Export via AirDrop or Files…",
-                                                         @"Export sheet: row"));
-    cell.userInteractionEnabled = (_options.saves || _options.achievements || _options.settings) && !_sharing;
-    cell.contentView.alpha = cell.userInteractionEnabled ? 1.0 : 0.4;
-    return cell;
-  }
-  NSArray* rows = @[
-    @[ NSLocalizedString(@"Game Saves", @"Export sheet: row"), @"externaldrive.fill", @(0x0A84FF) ],
-    @[ NSLocalizedString(@"Achievements", @"Export sheet: row"), @"trophy.fill", @(0xFF9F0A) ],
-    @[ NSLocalizedString(@"Settings", @"Export sheet: row"), @"gearshape.fill", @(0x8E8E93) ],
-  ];
-  const NSUInteger index = (NSUInteger)indexPath.row;
-  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                  reuseIdentifier:nil] autorelease];
-  cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
-  content.text = rows[index][0];
-  content.secondaryText = _sizes[index].length ? _sizes[index] : nil;
-  content.image = Glyph(rows[index][1]);
-  cell.contentConfiguration = content;
-  UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
-  toggle.on = index == 0 ? _options.saves : index == 1 ? _options.achievements : _options.settings;
-  toggle.onTintColor = [XeniaTheme accent];
-  toggle.tag = (NSInteger)index;
-  toggle.accessibilityLabel = rows[index][0];
-  [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
-  cell.accessoryView = toggle;
-  return cell;
-}
-
-- (void)toggled:(UISwitch*)toggle {
-  switch (toggle.tag) {
-    case 0:
-      _options.saves = toggle.on;
-      break;
-    case 1:
-      _options.achievements = toggle.on;
-      break;
-    default:
-      _options.settings = toggle.on;
-      break;
-  }
-  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
-                withRowAnimation:UITableViewRowAnimationNone];
-}
-
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section == 3) {
-    [self.navigationController pushViewController:[[[XEShareHubViewController alloc] init] autorelease]
-                                         animated:YES];
-    return;
-  }
-  if (indexPath.section == 2) {
-    UTType* type = [UTType typeWithIdentifier:@"jp.xenios.xenios.profile"];
-    UIDocumentPickerViewController* picker = [[[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[ type ?: UTTypeItem ]
-                            asCopy:YES] autorelease];
-    picker.delegate = self;
-    [self presentViewController:picker animated:YES completion:nil];
-    return;
-  }
-  if (indexPath.section != 1 || _sharing) {
-    return;
-  }
-  _sharing = YES;
-  UIView* source = [tableView cellForRowAtIndexPath:indexPath];
-  __unsafe_unretained XEExportForm* unsafe_self = self;
-  [xe_ios_live_account_service()
-      exportProfileWithOptions:_options
-                    completion:^(NSURL* file, NSError* error) {
-                      unsafe_self->_sharing = NO;
-                      if (!file) {
-                        ShowAlert(unsafe_self,
-                                  NSLocalizedString(@"Couldn’t Export", @"Export sheet: alert title"),
-                                  error.localizedDescription);
-                        return;
-                      }
-                      UIActivityViewController* share = [[[UIActivityViewController alloc]
-                          initWithActivityItems:@[ file ]
-                          applicationActivities:nil] autorelease];
-                      share.popoverPresentationController.sourceView = source;
-                      share.completionWithItemsHandler =
-                          ^(UIActivityType __unused type, BOOL __unused completed,
-                            NSArray* __unused items, NSError* __unused e) {
-                            [[NSFileManager defaultManager] removeItemAtURL:file error:nil];
-                          };
-                      [unsafe_self presentViewController:share animated:YES completion:nil];
-                    }];
-}
-
-- (void)documentPicker:(UIDocumentPickerViewController* __unused)controller
-    didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-  if (urls.firstObject) {
-    xe_ios_handle_opened_profile_file(urls.firstObject, self);
   }
 }
 
@@ -1690,8 +1262,9 @@ UIImage* QRImage(NSString* text, CGFloat side) {
   CGColorSpaceRelease(space);
   CGImageRelease(cg);
   auto dark = [&](size_t x, size_t y) { return pixels[(y * n + x) * 4] < 128; };
+  // The generator's output has a one-module quiet border: the code itself starts at 1.
   auto in_eye = [&](size_t x, size_t y) {
-    return (x < 8 && y < 8) || (x >= n - 8 && y < 8) || (x < 8 && y >= n - 8);
+    return (x < 9 && y < 9) || (x >= n - 9 && y < 9) || (x < 9 && y >= n - 9);
   };
   const CGFloat unit = side / (CGFloat)n;
   UIGraphicsImageRenderer* renderer =
@@ -1704,7 +1277,7 @@ UIImage* QRImage(NSString* text, CGFloat side) {
         if (!dark(x, y) || in_eye(x, y)) {
           continue;
         }
-        if (x + 3 >= mid && x <= mid + 3 && y + 3 >= mid && y <= mid + 3) {
+        if (x + 2 >= mid && x <= mid + 2 && y + 2 >= mid && y <= mid + 2) {
           continue;  // Under the mark.
         }
         CGRect dot = CGRectMake((CGFloat)x * unit + unit * 0.06, (CGFloat)y * unit + unit * 0.06,
@@ -1712,7 +1285,7 @@ UIImage* QRImage(NSString* text, CGFloat side) {
         [[UIBezierPath bezierPathWithRoundedRect:dot cornerRadius:unit * 0.44] fill];
       }
     }
-    const size_t eyes[3][2] = {{0, 0}, {n - 7, 0}, {0, n - 7}};
+    const size_t eyes[3][2] = {{1, 1}, {n - 8, 1}, {1, n - 8}};
     for (const auto& eye : eyes) {
       CGRect ring = CGRectMake((CGFloat)eye[0] * unit + unit * 0.5, (CGFloat)eye[1] * unit + unit * 0.5,
                                unit * 6, unit * 6);
@@ -1724,9 +1297,10 @@ UIImage* QRImage(NSString* text, CGFloat side) {
                                unit * 3, unit * 3);
       [[UIBezierPath bezierPathWithRoundedRect:core cornerRadius:unit] fill];
     }
-    CGRect mark = CGRectMake(((CGFloat)mid - 2.5) * unit, ((CGFloat)mid - 2.5) * unit, unit * 5, unit * 5);
+    // Over exactly the modules left out above (mid - 2 to mid + 2).
+    CGRect mark = CGRectMake(((CGFloat)mid - 2) * unit, ((CGFloat)mid - 2) * unit, unit * 5, unit * 5);
     [[UIColor whiteColor] setFill];
-    [[UIBezierPath bezierPathWithRoundedRect:CGRectInset(mark, -unit * 0.4, -unit * 0.4)
+    [[UIBezierPath bezierPathWithRoundedRect:CGRectInset(mark, -unit * 0.15, -unit * 0.15)
                                 cornerRadius:unit * 1.6] fill];
     [[XeniaTheme accent] setFill];
     [[UIBezierPath bezierPathWithRoundedRect:mark cornerRadius:unit * 1.3] fill];
@@ -1756,7 +1330,7 @@ NSString* PlatformSymbol(NSString* platform) {
 
 }  // namespace
 
-// ---- The QR code page on the new device --------------------------------------------------
+// ---- The QR code on a white tile, with text under it ----------------------------------------
 
 @interface XEQRHero : UIView
 @property(nonatomic, readonly) UIImageView* code;
@@ -1854,481 +1428,6 @@ NSString* PlatformSymbol(NSString* platform) {
   const CGFloat d = 280;
   _glow.frame = CGRectMake(self.bounds.size.width / 2 - d / 2, 28 + 104 - d / 2, d, d);
 }
-@end
-
-@interface XEQRForm : XEForm
-@end
-
-@implementation XEQRForm {
-  XEQRHero* _hero;
-  XeniaLiveApprovalRequest* _request;
-  NSTimer* _timer;
-  NSUInteger _generation;
-  BOOL _done;
-}
-
-- (void)dealloc {
-  [_timer invalidate];
-  [_hero release];
-  [_request release];
-  [super dealloc];
-}
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.title = NSLocalizedString(@"Link Device", @"QR sheet title");
-  [self addCloseButton];
-  _hero = [[XEQRHero alloc] initWithFrame:CGRectMake(0, 0, 320, 400)];
-  _hero.title.text = NSLocalizedString(@"Scan with your other device", @"QR sheet: heading");
-  _hero.subtitle.text = NSLocalizedString(@"On it, open Online Account, then Link Another Device, "
-                                          @"then Scan QR Code.",
-                                          @"QR sheet: how to scan");
-  self.tableView.tableHeaderView = _hero;
-  [self fetch];
-}
-
-- (void)viewDidLayoutSubviews {
-  [super viewDidLayoutSubviews];
-  CGRect frame = _hero.frame;
-  frame.size.width = self.tableView.bounds.size.width;
-  const CGFloat height = [_hero systemLayoutSizeFittingSize:CGSizeMake(frame.size.width, UILayoutFittingCompressedSize.height)
-                              withHorizontalFittingPriority:UILayoutPriorityRequired
-                                    verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
-  if (fabs(frame.size.height - height) > 0.5 || fabs(_hero.frame.size.width - frame.size.width) > 0.5) {
-    frame.size.height = height;
-    _hero.frame = frame;
-    self.tableView.tableHeaderView = _hero;
-  }
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-  [super viewDidDisappear:animated];
-  if (self.isBeingDismissed || self.navigationController.isBeingDismissed || !self.parentViewController) {
-    [self stop];
-  }
-}
-
-- (void)stop {
-  [_timer invalidate];
-  _timer = nil;
-  ++_generation;
-  if (_request && !_done) {
-    [xe_ios_live_account_service() cancelApproval:_request];
-  }
-}
-
-// A new code now, and again whenever it runs out.
-- (void)fetch {
-  const NSUInteger generation = ++_generation;
-  __unsafe_unretained XEQRForm* unsafe_self = self;
-  [xe_ios_live_account_service()
-      requestQRLinkWithCompletion:^(XeniaLiveApprovalRequest* request, XeniaLiveApprovalStatus status) {
-        if (generation != unsafe_self->_generation) {
-          return;
-        }
-        if (!request.qrPayload.length) {
-          unsafe_self->_hero.refresh.text = status == XeniaLiveApprovalStatusUnreachable
-                                                ? NSLocalizedString(@"Can’t reach XeniOS", @"QR sheet: error")
-                                                : nil;
-          return;
-        }
-        [unsafe_self->_request release];
-        unsafe_self->_request = [request retain];
-        unsafe_self->_hero.code.image = QRImage(request.qrPayload, 176);
-        [unsafe_self->_timer invalidate];
-        unsafe_self->_timer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                               target:unsafe_self
-                                                             selector:@selector(tick)
-                                                             userInfo:nil
-                                                              repeats:YES];
-        [unsafe_self tick];
-        [xe_ios_live_account_service()
-            waitForApproval:request
-                 completion:^(XeniaLiveApprovalStatus result) {
-                   if (generation != unsafe_self->_generation) {
-                     return;
-                   }
-                   [unsafe_self finished:result];
-                 }];
-      }];
-}
-
-- (void)tick {
-  if (_request.expires.timeIntervalSinceNow <= 0) {
-    [_timer invalidate];
-    _timer = nil;
-    return;
-  }
-  _hero.refresh.text = [NSString stringWithFormat:NSLocalizedString(@"Refreshes in %@",
-                                                                    @"QR sheet: countdown; %@ is m:ss"),
-                                                  CountdownText(_request.expires)];
-}
-
-- (void)finished:(XeniaLiveApprovalStatus)status {
-  [_timer invalidate];
-  _timer = nil;
-  switch (status) {
-    case XeniaLiveApprovalStatusApproved:
-      _done = YES;
-      _hero.title.text = NSLocalizedString(@"Signed in", @"Sign-in approval: result");
-      _hero.refresh.text = nil;
-      _hero.code.alpha = 0.15;
-      UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, _hero.title.text);
-      [self performSelector:@selector(closeTapped) withObject:nil afterDelay:1.1];
-      break;
-    case XeniaLiveApprovalStatusTimedOut:
-      [self fetch];  // A fresh code.
-      break;
-    case XeniaLiveApprovalStatusCancelled:
-      break;
-    default:
-      _hero.refresh.text = NSLocalizedString(@"That didn’t go through. Try again.",
-                                             @"Sign-in approval: neutral failure");
-      [self performSelector:@selector(fetch) withObject:nil afterDelay:2.0];
-      break;
-  }
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 1;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath* __unused)indexPath {
-  UITableViewCell* cell = ActionCell(NSLocalizedString(@"Enter a code instead", @"QR sheet: row"));
-  return cell;
-}
-
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  [self stop];
-  [self.navigationController pushViewController:[[[XEEnterCodeForm alloc] initRecovering:NO] autorelease]
-                                       animated:YES];
-}
-
-@end
-
-// ---- Approve on another device: the new device waits ------------------------------------
-
-@interface XEApproveForm : XEForm <UITextFieldDelegate>
-@end
-
-typedef NS_ENUM(NSInteger, XEApproveState) {
-  XEApproveStateEntering = 0,
-  XEApproveStateWaiting,
-  XEApproveStateSignedIn,
-  XEApproveStateFailed,
-};
-
-@implementation XEApproveForm {
-  UITextField* _field;
-  UIButton* _doneItem;
-  XEApproveState _state;
-  XeniaLiveApprovalRequest* _request;
-  NSString* _name;
-  NSTimer* _timer;
-  NSUInteger _generation;
-}
-
-- (void)dealloc {
-  [_timer invalidate];
-  [_field release];
-  [_doneItem release];
-  [_request release];
-  [_name release];
-  [super dealloc];
-}
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  [self addCloseButton];
-  _doneItem = [[self addDoneButtonWithTitle:NSLocalizedString(@"Ask for Approval",
-                                                              @"Approval sheet: button")] retain];
-  _field = [[UITextField alloc] init];
-  _field.delegate = self;
-  _field.placeholder = NSLocalizedString(@"Gamertag", @"Gamertag sheet: field placeholder");
-  _field.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-  _field.adjustsFontForContentSizeCategory = YES;
-  _field.textColor = [XeniaTheme textPrimary];
-  _field.autocapitalizationType = UITextAutocapitalizationTypeWords;
-  _field.autocorrectionType = UITextAutocorrectionTypeNo;
-  _field.spellCheckingType = UITextSpellCheckingTypeNo;
-  _field.returnKeyType = UIReturnKeyContinue;
-  [_field addTarget:self action:@selector(textChanged) forControlEvents:UIControlEventEditingChanged];
-  [self showState:XEApproveStateEntering];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-  [super viewDidAppear:animated];
-  if (_state == XEApproveStateEntering) {
-    [_field becomeFirstResponder];
-  }
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-  [super viewDidDisappear:animated];
-  if (!self.parentViewController || self.navigationController.isBeingDismissed) {
-    [self stopWaiting];
-  }
-}
-
-- (void)stopWaiting {
-  [_timer invalidate];
-  _timer = nil;
-  ++_generation;
-  if (_request && _state == XEApproveStateWaiting) {
-    [xe_ios_live_account_service() cancelApproval:_request];
-  }
-}
-
-- (void)textChanged {
-  const BOOL ok = _field.text.length > 0 && xe_ios_gamertag_local_error(_field.text) == nil;
-  _doneItem.enabled = ok;
-}
-
-- (BOOL)textFieldShouldReturn:(UITextField* __unused)field {
-  [self doneTapped];
-  return NO;
-}
-
-- (void)showState:(XEApproveState)state {
-  _state = state;
-  self.title = NSLocalizedString(@"Approve on Another Device", @"Approval sheet title");
-  switch (state) {
-    case XEApproveStateEntering:
-      [self setHeaderText:NSLocalizedString(@"Enter your gamertag. We’ll ask your other devices to "
-                                            @"approve this one.",
-                                            @"Approval sheet: text above the field")];
-      [self setFooterText:nil color:nil];
-      XESetFormCommitBusy(self, NO);
-      XESetFormCommitHidden(self, NO);
-      [self textChanged];
-      break;
-    case XEApproveStateWaiting:
-      [self setHeaderText:NSLocalizedString(@"Open XeniOS on your iPhone, iPad or Mac and approve "
-                                            @"this number.",
-                                            @"Approval sheet: text above the number")];
-      XESetFormCommitHidden(self, YES);
-      [self tick];
-      break;
-    case XEApproveStateSignedIn:
-      [self setHeaderText:nil];
-      [self setFooterText:nil color:nil];
-      XESetFormCommitHidden(self, YES);
-      break;
-    case XEApproveStateFailed:
-      [self setHeaderText:nil];
-      [self setFooterText:NSLocalizedString(@"That didn’t go through. Check the gamertag and try "
-                                            @"again.",
-                                            @"Approval sheet: neutral failure")
-                    color:nil];
-      XESetFormCommitHidden(self, YES);
-      break;
-  }
-  [self.tableView reloadData];
-}
-
-- (void)doneTapped {
-  if (_state != XEApproveStateEntering || !_doneItem.enabled) {
-    return;
-  }
-  [_field resignFirstResponder];
-  [_name release];
-  _name = [_field.text copy];
-  const NSUInteger generation = ++_generation;
-  XESetFormCommitBusy(self, YES);
-  __unsafe_unretained XEApproveForm* unsafe_self = self;
-  [xe_ios_live_account_service()
-      requestApprovalForGamertag:_name
-                      completion:^(XeniaLiveApprovalRequest* request, XeniaLiveApprovalStatus status) {
-                        if (generation != unsafe_self->_generation) {
-                          return;
-                        }
-                        if (!request) {
-                          [unsafe_self failedWithStatus:status];
-                          return;
-                        }
-                        [unsafe_self->_request release];
-                        unsafe_self->_request = [request retain];
-                        [unsafe_self showState:XEApproveStateWaiting];
-                        unsafe_self->_timer =
-                            [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                             target:unsafe_self
-                                                           selector:@selector(tick)
-                                                           userInfo:nil
-                                                            repeats:YES];
-                        [xe_ios_live_account_service()
-                            waitForApproval:request
-                                 completion:^(XeniaLiveApprovalStatus result) {
-                                   if (generation != unsafe_self->_generation) {
-                                     return;
-                                   }
-                                   [unsafe_self failedOrDone:result];
-                                 }];
-                      }];
-}
-
-- (void)failedWithStatus:(XeniaLiveApprovalStatus)status {
-  (void)status;
-  [self showState:XEApproveStateFailed];
-}
-
-- (void)failedOrDone:(XeniaLiveApprovalStatus)status {
-  [_timer invalidate];
-  _timer = nil;
-  if (status == XeniaLiveApprovalStatusApproved) {
-    [self showState:XEApproveStateSignedIn];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                    NSLocalizedString(@"Signed in", @"Sign-in approval: result"));
-    [self performSelector:@selector(closeTapped) withObject:nil afterDelay:1.2];
-    return;
-  }
-  if (status == XeniaLiveApprovalStatusCancelled) {
-    return;
-  }
-  // Denied, timed out and unreachable read the same: nothing says whether the name exists.
-  [self showState:XEApproveStateFailed];
-  UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                  NSLocalizedString(@"That didn’t go through. Check the gamertag and try again.",
-                                                    @"Approval sheet: neutral failure"));
-}
-
-- (void)tick {
-  if (_state != XEApproveStateWaiting) {
-    return;
-  }
-  [self setFooterText:[NSString stringWithFormat:NSLocalizedString(@"Signing in as %1$@\n%2$@ left",
-                                                                   @"Approval sheet: under the number; "
-                                                                   @"gamertag, then m:ss"),
-                                                 _name, CountdownText(_request.expires)]
-                color:nil];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return _state == XEApproveStateSignedIn ? 1 : 2;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (indexPath.section == 1) {
-    return ActionCell(_state == XEApproveStateWaiting ? NSLocalizedString(@"Cancel", @"Approval sheet: row")
-                                                      : NSLocalizedString(@"Try Again", @"Approval sheet: row"));
-  }
-  switch (_state) {
-    case XEApproveStateEntering:
-      return FieldCell(_field);
-    case XEApproveStateWaiting:
-      return CodeCell(_request.matchNumber ?: @"", 64, [XeniaTheme textPrimary], 26);
-    case XEApproveStateSignedIn: {
-      UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                      reuseIdentifier:nil] autorelease];
-      cell.selectionStyle = UITableViewCellSelectionStyleNone;
-      UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
-      content.text = NSLocalizedString(@"Signed in", @"Sign-in approval: result");
-      content.textProperties.alignment = UIListContentTextAlignmentCenter;
-      content.image = [UIImage systemImageNamed:@"checkmark.circle.fill"];
-      content.imageProperties.tintColor = [UIColor systemGreenColor];
-      cell.contentConfiguration = content;
-      return cell;
-    }
-    case XEApproveStateFailed:
-      return FieldCell(_field);
-  }
-  return nil;
-}
-
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section != 1) {
-    return;
-  }
-  if (_state == XEApproveStateWaiting) {
-    [self stopWaiting];
-    [self closeTapped];
-  } else {
-    [self showState:XEApproveStateEntering];
-    [_field becomeFirstResponder];
-  }
-}
-
-@end
-
-// ---- The new device's way in: four ways to sign in --------------------------------------
-
-@interface XEExistingForm : XEForm
-@end
-
-@implementation XEExistingForm
-
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.title = NSLocalizedString(@"Existing Account", @"Existing account sheet title");
-  [self setHeaderText:NSLocalizedString(@"Bring your gamertag, friends and blocks to this device. "
-                                        @"Saves stay on each device.",
-                                        @"Existing account sheet: text above the list")];
-  [self addCloseButton];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
-  return 1;
-}
-
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 4;
-}
-
-- (UITableViewCell*)tableView:(UITableView* __unused)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  NSArray* rows = @[
-    @[ NSLocalizedString(@"Approve on Another Device", @"Existing account row"),
-       NSLocalizedString(@"Use your iPhone, iPad or Mac", @"Existing account row detail"),
-       @"checkmark.shield.fill", @(0x30D158) ],
-    @[ NSLocalizedString(@"Scan QR Code", @"Existing account row"),
-       NSLocalizedString(@"Show a code for your other device", @"Existing account row detail"),
-       @"qrcode", @(0x0A84FF) ],
-    @[ NSLocalizedString(@"Enter Link Code", @"Existing account row"), @"", @"link", @(0x5E5CE6) ],
-    @[ NSLocalizedString(@"Enter Recovery Code", @"Existing account row"), @"", @"key.fill", @(0xFF9F0A) ],
-  ];
-  NSArray* row = rows[(NSUInteger)indexPath.row];
-  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                  reuseIdentifier:nil] autorelease];
-  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
-  content.text = row[0];
-  content.secondaryText = [row[1] length] ? row[1] : nil;
-  content.image = Glyph(row[2]);
-  cell.contentConfiguration = content;
-  return cell;
-}
-
-- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-  [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  XEForm* next = nil;
-  switch (indexPath.row) {
-    case 0:
-      next = [[[XEApproveForm alloc] init] autorelease];
-      break;
-    case 1:
-      next = [[[XEQRForm alloc] init] autorelease];
-      break;
-    case 2:
-      next = [[[XEEnterCodeForm alloc] initRecovering:NO] autorelease];
-      break;
-    default:
-      next = [[[XEEnterCodeForm alloc] initRecovering:YES] autorelease];
-      break;
-  }
-  [self.navigationController pushViewController:next animated:YES];
-}
-
 @end
 
 // ---- The signed-in device: someone is signing in -----------------------------------------
@@ -2595,16 +1694,654 @@ NSString* ApproveTitle() {
 
 @end
 
-// ---- Scanning a QR code on the signed-in device ------------------------------------------
+// ---- Shared bits for the v3 pages ------------------------------------------------------------
 
-@interface XEScanViewController : UIViewController <AVCaptureMetadataOutputObjectsDelegate>
+namespace {
+
+NSString* const kRecoverySavedKey = @"XeniaLiveRecoverySaved";
+
+BOOL RecoverySaved() { return [[NSUserDefaults standardUserDefaults] boolForKey:kRecoverySavedKey]; }
+
+void SetRecoverySaved(BOOL saved) {
+  [[NSUserDefaults standardUserDefaults] setBool:saved forKey:kRecoverySavedKey];
+}
+
+// "xenios://link?c=K7Q2M9XD": what Add a Device's QR code holds. The system Camera opens it in
+// XeniOS on the new device; the sign-in sheet's own camera reads it too.
+NSString* LinkURL(NSString* code) {
+  NSString* squeezed = [code stringByReplacingOccurrencesOfString:@"-" withString:@""];
+  return [@"xenios://link?c=" stringByAppendingString:squeezed];
+}
+
+NSString* CodeFromLinkURL(NSString* text) {
+  NSURLComponents* components = [NSURLComponents componentsWithString:text];
+  if (![components.scheme.lowercaseString isEqualToString:@"xenios"] ||
+      ![components.host.lowercaseString isEqualToString:@"link"]) {
+    return nil;
+  }
+  for (NSURLQueryItem* item in components.queryItems) {
+    if ([item.name isEqualToString:@"c"] && item.value.length) {
+      return item.value;
+    }
+  }
+  return nil;
+}
+
+// A view sized by its constraints, set as |table|'s header at the table's width.
+void FitTableHeader(UIView* header, UITableView* table) {
+  const CGFloat width = CGRectGetWidth(table.bounds);
+  if (width <= 0) {
+    return;
+  }
+  const CGFloat height =
+      [header systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
+            withHorizontalFittingPriority:UILayoutPriorityRequired
+                  verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+          .height;
+  if (table.tableHeaderView != header || std::fabs(CGRectGetHeight(header.frame) - height) >= 0.5 ||
+      std::fabs(CGRectGetWidth(header.frame) - width) >= 0.5) {
+    header.frame = CGRectMake(0, 0, width, height);
+    table.tableHeaderView = header;
+  }
+}
+
+// The page's one white button, as in the Games and TV apps.
+UIButton* PrimaryButton(NSString* title, id target, SEL action) {
+  UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
+  config.title = title;
+  config.baseBackgroundColor = [XeniaTheme textPrimary];
+  config.baseForegroundColor = [XeniaTheme bgPrimary];
+  config.buttonSize = UIButtonConfigurationSizeLarge;
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.titleTextAttributesTransformer =
+      ^NSDictionary<NSAttributedStringKey, id>*(NSDictionary<NSAttributedStringKey, id>* in) {
+        NSMutableDictionary* out = [[in mutableCopy] autorelease];
+        out[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        return out;
+      };
+  UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+  return button;
+}
+
+// A dot that says "this wants doing", before the row's chevron.
+UIView* AttentionAccessory() {
+  UIView* dot = [[[UIView alloc] init] autorelease];
+  dot.backgroundColor = [UIColor systemOrangeColor];
+  dot.layer.cornerRadius = 4.5;
+  dot.translatesAutoresizingMaskIntoConstraints = NO;
+  UIImageView* chevron = [[[UIImageView alloc]
+      initWithImage:[UIImage systemImageNamed:@"chevron.forward"
+                            withConfiguration:[UIImageSymbolConfiguration
+                                                  configurationWithTextStyle:UIFontTextStyleFootnote
+                                                                       scale:UIImageSymbolScaleMedium]]]
+      autorelease];
+  chevron.tintColor = [XeniaTheme textMuted];
+  UIStackView* stack = [[[UIStackView alloc] initWithArrangedSubviews:@[ dot, chevron ]] autorelease];
+  stack.alignment = UIStackViewAlignmentCenter;
+  stack.spacing = 10;
+  [NSLayoutConstraint activateConstraints:@[
+    [dot.widthAnchor constraintEqualToConstant:9], [dot.heightAnchor constraintEqualToConstant:9]
+  ]];
+  stack.frame = CGRectMake(0, 0, 32, 20);
+  return stack;
+}
+
+}  // namespace
+
+// ---- The profile page's top: avatar, name, a status line, and its one action -----------------
+
+@interface XEProfileHeader : UIView
+@property(nonatomic, readonly) UIImageView* avatar;
+@property(nonatomic, readonly) UILabel* name;
+@property(nonatomic, readonly) UILabel* status;
+@property(nonatomic, readonly) UILabel* caption;
+- (void)setButton:(nullable UIButton*)button;
 @end
 
-@implementation XEScanViewController {
+@implementation XEProfileHeader {
+  UIImageView* _avatar;
+  UILabel* _name;
+  UILabel* _status;
+  UILabel* _caption;
+  UIStackView* _stack;
+  UIButton* _button;
+}
+- (UIImageView*)avatar { return _avatar; }
+- (UILabel*)name { return _name; }
+- (UILabel*)status { return _status; }
+- (UILabel*)caption { return _caption; }
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _avatar = [[UIImageView alloc] init];
+    _avatar.contentMode = UIViewContentModeScaleAspectFit;
+    _avatar.isAccessibilityElement = NO;
+    _name = [[UILabel alloc] init];
+    _name.font = xe_scaled_system_font(UIFontTextStyleTitle2, 24.0, UIFontWeightBold);
+    _name.adjustsFontForContentSizeCategory = YES;
+    _name.textColor = [XeniaTheme textPrimary];
+    _name.textAlignment = NSTextAlignmentCenter;
+    _name.numberOfLines = 0;
+    _name.accessibilityTraits = UIAccessibilityTraitHeader;
+    _status = [[UILabel alloc] init];
+    xe_apply_label_font(_status, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+    _status.textColor = [XeniaTheme textSecondary];
+    _status.textAlignment = NSTextAlignmentCenter;
+    _status.numberOfLines = 0;
+    _caption = [[UILabel alloc] init];
+    xe_apply_label_font(_caption, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
+    _caption.textColor = [XeniaTheme textSecondary];
+    _caption.textAlignment = NSTextAlignmentCenter;
+    _caption.numberOfLines = 0;
+    _stack = [[UIStackView alloc] initWithArrangedSubviews:@[ _avatar, _name, _status, _caption ]];
+    _stack.axis = UILayoutConstraintAxisVertical;
+    _stack.alignment = UIStackViewAlignmentFill;
+    _stack.spacing = 4;
+    [_stack setCustomSpacing:10 afterView:_avatar];
+    _stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_stack];
+    [NSLayoutConstraint activateConstraints:@[
+      [_avatar.heightAnchor constraintEqualToConstant:72],
+      [_stack.topAnchor constraintEqualToAnchor:self.topAnchor constant:4],
+      [_stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:24],
+      [_stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-24],
+      [_stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-14],
+    ]];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [_avatar release];
+  [_name release];
+  [_status release];
+  [_caption release];
+  [_stack release];
+  [_button release];
+  [super dealloc];
+}
+
+- (void)setButton:(UIButton*)button {
+  if (_button == button) {
+    return;
+  }
+  [_button removeFromSuperview];
+  [_button release];
+  _button = [button retain];
+  if (button) {
+    // Under the status line, above its caption.
+    [_stack insertArrangedSubview:button atIndex:3];
+    [_stack setCustomSpacing:18 afterView:_status];
+    [_stack setCustomSpacing:10 afterView:button];
+  } else {
+    [_stack setCustomSpacing:4 afterView:_status];
+  }
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  _caption.hidden = _caption.text.length == 0;
+}
+@end
+
+// ---- Copy Profile: what, then where ----------------------------------------------------------
+
+@interface XECopyProfileForm : XEForm
+@end
+
+@implementation XECopyProfileForm {
+  XeniaLiveExportOptions* _options;
+  NSArray<NSString*>* _sizes;
+  NSArray<XeniaLiveLocalProfile*>* _others;
+  BOOL _busy;
+}
+
+- (void)dealloc {
+  [_options release];
+  [_sizes release];
+  [_others release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = NSLocalizedString(@"Copy Profile", @"Copy profile sheet title");
+  [self addCloseButton];
+  _options = [[XeniaLiveExportOptions alloc] init];
+  _options.saves = _options.achievements = _options.settings = YES;
+  // Graphics and patches are tuned to each device: off unless asked for.
+  _options.gameSettings = NO;
+  _sizes = [@[ @"", @"", @"" ] retain];
+  __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  [xe_ios_live_account_service()
+      exportSizesWithCompletion:^(uint64_t saves, uint64_t achievements, uint64_t settings) {
+        [unsafe_self->_sizes release];
+        unsafe_self->_sizes = [@[ SizeText(saves), SizeText(achievements), SizeText(settings) ] retain];
+        [unsafe_self.tableView reloadData];
+      }];
+  [xe_ios_live_account_service()
+      localProfilesWithCompletion:^(NSArray<XeniaLiveLocalProfile*>* profiles) {
+        NSMutableArray* others = [NSMutableArray array];
+        for (XeniaLiveLocalProfile* profile in profiles) {
+          if (!profile.thisProfile) {
+            [others addObject:profile];
+          }
+        }
+        [unsafe_self->_others release];
+        unsafe_self->_others = [others copy];
+        [unsafe_self.tableView reloadData];
+      }];
+}
+
+- (BOOL)anything {
+  return _options.saves || _options.achievements || _options.settings || _options.gameSettings;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 2;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  return section == 0 ? 4 : 2;
+}
+
+// Two plain section headers, What and To, lined up with each other.
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  return section == 1 ? NSLocalizedString(@"To", @"Copy profile sheet: header")
+                      : NSLocalizedString(@"What", @"Copy profile sheet: header");
+}
+
+- (UIView*)tableView:(UITableView* __unused)tableView viewForHeaderInSection:(NSInteger __unused)section {
+  return nil;
+}
+
+- (CGFloat)tableView:(UITableView* __unused)tableView heightForHeaderInSection:(NSInteger __unused)section {
+  return UITableViewAutomaticDimension;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  if (section != 1) {
+    return nil;
+  }
+  return _others.count ? NSLocalizedString(@"Another profile here gets the game saves. If it has a "
+                                           @"newer save for a game, that one is kept.",
+                                           @"Copy profile sheet: footer")
+                       : nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView* __unused)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.section == 1) {
+    const BOOL to_profile = indexPath.row == 1;
+    UITableViewCell* cell =
+        ActionCell(to_profile ? NSLocalizedString(@"Another Profile on This Device…",
+                                                  @"Copy profile sheet: row")
+                              : NSLocalizedString(@"AirDrop or Files…", @"Copy profile sheet: row"));
+    const BOOL enabled =
+        !_busy && (to_profile ? (_options.saves && _others.count) : [self anything]);
+    cell.userInteractionEnabled = enabled;
+    cell.contentView.alpha = enabled ? 1.0 : 0.4;
+    return cell;
+  }
+  NSArray* rows = @[
+    @[ NSLocalizedString(@"Game Saves", @"Copy profile sheet: switch"), @"externaldrive" ],
+    @[ NSLocalizedString(@"Achievements", @"Copy profile sheet: switch"), @"trophy" ],
+    @[ NSLocalizedString(@"Controls and Profile Settings", @"Copy profile sheet: switch"),
+       @"gamecontroller" ],
+    @[ NSLocalizedString(@"Game Settings", @"Copy profile sheet: switch"), @"slider.horizontal.3" ],
+  ];
+  const NSUInteger index = (NSUInteger)indexPath.row;
+  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:nil] autorelease];
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  content.text = rows[index][0];
+  if (index < 3) {
+    content.secondaryText = _sizes[index].length ? _sizes[index] : nil;
+  } else {
+    content.secondaryText =
+        NSLocalizedString(@"Tuned for each device", @"Copy profile sheet: switch detail");
+  }
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  content.image = Glyph(rows[index][1]);
+  cell.contentConfiguration = content;
+  UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+  toggle.on = index == 0   ? _options.saves
+              : index == 1 ? _options.achievements
+              : index == 2 ? _options.settings
+                           : _options.gameSettings;
+  toggle.onTintColor = [XeniaTheme accent];
+  toggle.tag = (NSInteger)index;
+  toggle.accessibilityLabel = rows[index][0];
+  [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
+  cell.accessoryView = toggle;
+  return cell;
+}
+
+- (void)toggled:(UISwitch*)toggle {
+  switch (toggle.tag) {
+    case 0:
+      _options.saves = toggle.on;
+      break;
+    case 1:
+      _options.achievements = toggle.on;
+      break;
+    case 2:
+      _options.settings = toggle.on;
+      break;
+    default:
+      _options.gameSettings = toggle.on;
+      break;
+  }
+  [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1]
+                withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section != 1 || _busy) {
+    return;
+  }
+  if (indexPath.row == 1) {
+    [self chooseProfileFrom:[tableView cellForRowAtIndexPath:indexPath]];
+  } else {
+    [self exportFrom:indexPath];
+  }
+}
+
+- (void)exportFrom:(NSIndexPath*)row {
+  _busy = YES;
+  __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  [xe_ios_live_account_service()
+      exportProfileWithOptions:_options
+                    completion:^(NSURL* file, NSError* error) {
+                      unsafe_self->_busy = NO;
+                      [unsafe_self.tableView reloadData];
+                      if (!file) {
+                        ShowAlert(unsafe_self,
+                                  NSLocalizedString(@"Couldn’t Copy", @"Copy profile sheet: alert title"),
+                                  error.localizedDescription);
+                        return;
+                      }
+                      UIActivityViewController* share = [[[UIActivityViewController alloc]
+                          initWithActivityItems:@[ file ]
+                          applicationActivities:nil] autorelease];
+                      // The table, not the cell: the reload above recycles the cell, and a
+                      // popover anchored to it lands in the iPad window's corner.
+                      share.popoverPresentationController.sourceView = unsafe_self.tableView;
+                      share.popoverPresentationController.sourceRect =
+                          [unsafe_self.tableView rectForRowAtIndexPath:row];
+                      share.completionWithItemsHandler =
+                          ^(UIActivityType __unused type, BOOL __unused completed,
+                            NSArray* __unused items, NSError* __unused e) {
+                            [[NSFileManager defaultManager] removeItemAtURL:file error:nil];
+                          };
+                      [unsafe_self presentViewController:share animated:YES completion:nil];
+                    }];
+  [self.tableView reloadData];
+}
+
+- (void)chooseProfileFrom:(UIView*)source {
+  UIAlertController* sheet = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Copy Game Saves To", @"Copy profile sheet: menu title")
+                       message:nil
+                preferredStyle:UIAlertControllerStyleActionSheet];
+  __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  for (XeniaLiveLocalProfile* profile in _others) {
+    [sheet addAction:[UIAlertAction actionWithTitle:profile.gamertag
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction* __unused action) {
+                                              [unsafe_self copyToProfile:profile];
+                                            }]];
+  }
+  [sheet addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Copy profile sheet: menu")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  sheet.popoverPresentationController.sourceView = source;
+  sheet.popoverPresentationController.sourceRect = source.bounds;
+  [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)copyToProfile:(XeniaLiveLocalProfile*)profile {
+  _busy = YES;
+  [self.tableView reloadData];
+  __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  NSString* name = [[profile.gamertag copy] autorelease];
+  [xe_ios_live_account_service()
+      copySavesToProfile:profile.profileId
+              completion:^(NSUInteger copied, NSUInteger kept, NSError* error) {
+                unsafe_self->_busy = NO;
+                [unsafe_self.tableView reloadData];
+                if (error) {
+                  ShowAlert(unsafe_self, NSLocalizedString(@"Couldn’t Copy", @"Copy profile sheet: alert title"),
+                            error.localizedDescription);
+                  return;
+                }
+                NSString* message =
+                    kept ? [NSString stringWithFormat:NSLocalizedString(
+                                                          @"%1$lu saves copied to %2$@. %3$lu newer saves "
+                                                          @"there were kept.",
+                                                          @"Copy profile sheet: result; count, gamertag, count"),
+                                                      (unsigned long)copied, name, (unsigned long)kept]
+                         : [NSString stringWithFormat:NSLocalizedString(
+                                                          @"%1$lu saves copied to %2$@.",
+                                                          @"Copy profile sheet: result; count, gamertag"),
+                                                      (unsigned long)copied, name];
+                ShowAlert(unsafe_self, NSLocalizedString(@"Saves Copied", @"Copy profile sheet: alert title"),
+                          message);
+              }];
+}
+
+@end
+
+// ---- Add a Device: a QR code and the same code to type, on the signed-in device ---------------
+
+@interface XEAddDeviceForm : XEForm
+@end
+
+@implementation XEAddDeviceForm {
+  XEQRHero* _hero;
+  NSString* _code;
+  NSDate* _expires;
+  NSTimer* _timer;
+  BOOL _expired;
+  BOOL _failed;
+}
+
+- (void)dealloc {
+  [_timer invalidate];
+  [_hero release];
+  [_code release];
+  [_expires release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = NSLocalizedString(@"Add a Device", @"Add a device sheet title");
+  [self addCloseButton];
+  _hero = [[XEQRHero alloc] init];
+  _hero.title.font = [UIFont monospacedSystemFontOfSize:30 weight:UIFontWeightBold];
+  _hero.subtitle.text = NSLocalizedString(@"Scan it with the other device’s camera, or type the code "
+                                          @"there in I Have a Gamertag.",
+                                          @"Add a device sheet: text under the code");
+  [self load];
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  FitTableHeader(_hero, self.tableView);
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (self.isBeingDismissed || self.navigationController.isBeingDismissed) {
+    [_timer invalidate];
+    _timer = nil;
+  }
+}
+
+- (void)load {
+  _expired = NO;
+  _failed = NO;
+  [_code release];
+  _code = nil;
+  _hero.code.image = nil;
+  _hero.title.text = @"····-····";
+  _hero.title.textColor = [XeniaTheme textMuted];
+  _hero.refresh.text = NSLocalizedString(@"Getting a code…", @"Add a device sheet: while waiting");
+  [self.tableView reloadData];
+  __unsafe_unretained XEAddDeviceForm* unsafe_self = self;
+  [xe_ios_live_account_service()
+      createLinkCodeWithCompletion:^(NSString* code, NSDate* expires, NSError* __unused error) {
+        if (!code.length) {
+          unsafe_self->_failed = YES;
+          unsafe_self->_hero.refresh.text =
+              NSLocalizedString(@"Can’t reach XeniOS. Try again.", @"Add a device sheet: error");
+          [unsafe_self.tableView reloadData];
+          return;
+        }
+        unsafe_self->_code = [FormattedCode(code, 8) copy];
+        [unsafe_self->_expires release];
+        unsafe_self->_expires = [expires retain];
+        unsafe_self->_hero.code.image = QRImage(LinkURL(code), 176);
+        unsafe_self->_hero.title.text = unsafe_self->_code;
+        unsafe_self->_hero.title.textColor = [XeniaTheme textPrimary];
+        unsafe_self->_hero.title.accessibilityLabel =
+            [[unsafe_self->_code componentsSeparatedByString:@"-"] componentsJoinedByString:@" "];
+        [unsafe_self->_timer invalidate];
+        unsafe_self->_timer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                               target:unsafe_self
+                                                             selector:@selector(tick)
+                                                             userInfo:nil
+                                                              repeats:YES];
+        [unsafe_self tick];
+        [unsafe_self.tableView reloadData];
+      }];
+}
+
+- (void)tick {
+  const NSInteger left = (NSInteger)ceil(_expires.timeIntervalSinceNow);
+  if (left <= 0) {
+    [_timer invalidate];
+    _timer = nil;
+    _expired = YES;
+    _hero.code.image = nil;
+    _hero.title.textColor = [XeniaTheme textMuted];
+    _hero.refresh.text = NSLocalizedString(@"This code has expired.", @"Add a device sheet: expired");
+    [self.tableView reloadData];
+    return;
+  }
+  _hero.refresh.text = [NSString
+      stringWithFormat:NSLocalizedString(@"Expires in %1$ld:%2$02ld",
+                                         @"Add a device sheet: countdown; minutes, seconds"),
+                       (long)(left / 60), (long)(left % 60)];
+}
+
+- (BOOL)needsNewCode {
+  return _expired || _failed;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 1;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
+  return [self needsNewCode] ? 2 : 1;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger __unused)section {
+  return nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView* __unused)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if ([self needsNewCode] && indexPath.row == 0) {
+    return ActionCell(NSLocalizedString(@"Get a New Code", @"Add a device sheet: row"));
+  }
+  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:nil] autorelease];
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  content.text = NSLocalizedString(@"Also Copy Profile…", @"Add a device sheet: row");
+  content.secondaryText = NSLocalizedString(@"Saves, achievements and settings",
+                                            @"Add a device sheet: row detail");
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  content.image = Glyph(@"square.and.arrow.up");
+  cell.contentConfiguration = content;
+  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  return cell;
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if ([self needsNewCode] && indexPath.row == 0) {
+    [self load];
+    return;
+  }
+  [self.navigationController pushViewController:[[[XECopyProfileForm alloc] init] autorelease]
+                                       animated:YES];
+}
+
+@end
+
+// ---- A camera that reads a XeniOS QR code ----------------------------------------------------
+
+@interface XECodeScannerView : UIView <AVCaptureMetadataOutputObjectsDelegate>
+@property(nonatomic, copy, nullable) void (^onCode)(NSString* text);
+// What the frame says while it looks, and with no camera; and what Use Test Code reads, with no
+// camera.
+@property(nonatomic, copy) NSString* hint;
+@property(nonatomic, copy) NSString* noCameraHint;
+@property(nonatomic, copy) NSString* testText;
+// The camera frame's height: 220 under a form's field; taller on a page that is only the camera.
+@property(nonatomic) CGFloat frameHeight;
+- (void)resume;
+@end
+
+@implementation XECodeScannerView {
   AVCaptureSession* _session;
   AVCaptureVideoPreviewLayer* _preview;
   UILabel* _hint;
-  BOOL _handling;
+  UIView* _frame;
+  BOOL _started;
+  BOOL _paused;
+  NSString* _noCameraHint;
+  NSString* _testText;
+  NSLayoutConstraint* _frameHeight;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _frame = [[UIView alloc] init];
+    _frameHeight = [[_frame.heightAnchor constraintEqualToConstant:220] retain];
+    _frame.backgroundColor = [UIColor blackColor];
+    _frame.layer.cornerRadius = 20;
+    _frame.layer.cornerCurve = kCACornerCurveContinuous;
+    _frame.layer.masksToBounds = YES;
+    _frame.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:_frame];
+    _hint = [[UILabel alloc] init];
+    xe_apply_label_font(_hint, UIFontTextStyleFootnote, 13.0, UIFontWeightSemibold);
+    _hint.textColor = [UIColor whiteColor];
+    _hint.textAlignment = NSTextAlignmentCenter;
+    _hint.numberOfLines = 0;
+    _hint.text = NSLocalizedString(@"Point at the code on your other device",
+                                   @"Sign in sheet: camera hint");
+    _hint.translatesAutoresizingMaskIntoConstraints = NO;
+    [_frame addSubview:_hint];
+    [NSLayoutConstraint activateConstraints:@[
+      [_frame.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
+      [_frame.leadingAnchor constraintEqualToAnchor:self.layoutMarginsGuide.leadingAnchor],
+      [_frame.trailingAnchor constraintEqualToAnchor:self.layoutMarginsGuide.trailingAnchor],
+      [_frame.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-4],
+      _frameHeight,
+      [_hint.leadingAnchor constraintEqualToAnchor:_frame.leadingAnchor constant:16],
+      [_hint.trailingAnchor constraintEqualToAnchor:_frame.trailingAnchor constant:-16],
+      [_hint.bottomAnchor constraintEqualToAnchor:_frame.bottomAnchor constant:-14],
+    ]];
+  }
+  return self;
 }
 
 - (void)dealloc {
@@ -2612,37 +2349,72 @@ NSString* ApproveTitle() {
   [_session release];
   [_preview release];
   [_hint release];
+  [_frame release];
+  [_onCode release];
+  [_noCameraHint release];
+  [_testText release];
+  [_frameHeight release];
   [super dealloc];
 }
 
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.title = NSLocalizedString(@"Scan QR Code", @"Scanner title");
-  self.view.backgroundColor = [UIColor blackColor];
-  XESetSheetClose(self, self, @selector(close));
-  _hint = [[UILabel alloc] init];
-  xe_apply_label_font(_hint, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
-  _hint.textColor = [UIColor whiteColor];
-  _hint.textAlignment = NSTextAlignmentCenter;
-  _hint.numberOfLines = 0;
-  _hint.text = NSLocalizedString(@"Point the camera at the code on your new device.", @"Scanner: hint");
-  _hint.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.view addSubview:_hint];
-  [NSLayoutConstraint activateConstraints:@[
-    [_hint.leadingAnchor constraintEqualToAnchor:self.view.layoutMarginsGuide.leadingAnchor constant:12],
-    [_hint.trailingAnchor constraintEqualToAnchor:self.view.layoutMarginsGuide.trailingAnchor constant:-12],
-    [_hint.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-28],
-  ]];
-  [self startCamera];
+- (CGFloat)frameHeight {
+  return _frameHeight.constant;
 }
 
-- (void)viewDidLayoutSubviews {
-  [super viewDidLayoutSubviews];
-  _preview.frame = self.view.bounds;
+- (void)setFrameHeight:(CGFloat)height {
+  _frameHeight.constant = height;
 }
 
-- (void)close {
-  [self dismissViewControllerAnimated:YES completion:nil];
+- (NSString*)hint {
+  return _hint.text;
+}
+
+- (void)setHint:(NSString*)hint {
+  _hint.text = hint;
+}
+
+- (NSString*)noCameraHint {
+  return _noCameraHint ?: NSLocalizedString(@"This device has no camera. Type the code below.",
+                                            @"Sign in sheet: no camera");
+}
+
+- (void)setNoCameraHint:(NSString*)text {
+  [_noCameraHint autorelease];
+  _noCameraHint = [text copy];
+}
+
+- (NSString*)testText {
+  return _testText;
+}
+
+- (void)setTestText:(NSString*)text {
+  [_testText autorelease];
+  _testText = [text copy];
+}
+
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (self.window && !_started) {
+    _started = YES;
+    [self startCamera];
+  } else if (!self.window) {
+    [_session stopRunning];
+  }
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  _preview.frame = _frame.bounds;
+}
+
+- (void)resume {
+  _paused = NO;
+  AVCaptureSession* session = _session;
+  if (session && !session.running) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      [session startRunning];
+    });
+  }
 }
 
 - (void)startCamera {
@@ -2653,28 +2425,30 @@ NSString* ApproveTitle() {
   }
   const AVAuthorizationStatus status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
   if (status == AVAuthorizationStatusDenied || status == AVAuthorizationStatusRestricted) {
-    _hint.text = NSLocalizedString(@"Allow camera access for XeniOS in Settings to scan the code.",
-                                   @"Scanner: camera denied");
+    _hint.text = NSLocalizedString(@"Allow camera access for XeniOS in Settings to scan, or type the "
+                                   @"code below.",
+                                   @"Sign in sheet: camera denied");
     return;
   }
-  __unsafe_unretained XEScanViewController* unsafe_self = self;
+  [self retain];
   [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
                            completionHandler:^(BOOL granted) {
                              dispatch_async(dispatch_get_main_queue(), ^{
                                if (granted) {
-                                 [unsafe_self configureSession:device];
+                                 [self configureSession:device];
                                } else {
-                                 unsafe_self->_hint.text = NSLocalizedString(
-                                     @"Allow camera access for XeniOS in Settings to scan the code.",
-                                     @"Scanner: camera denied");
+                                 self->_hint.text = NSLocalizedString(
+                                     @"Allow camera access for XeniOS in Settings to scan, or type "
+                                     @"the code below.",
+                                     @"Sign in sheet: camera denied");
                                }
+                               [self release];
                              });
                            }];
 }
 
 - (void)configureSession:(AVCaptureDevice*)device {
-  NSError* error = nil;
-  AVCaptureDeviceInput* input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+  AVCaptureDeviceInput* input = [AVCaptureDeviceInput deviceInputWithDevice:device error:nil];
   if (!input) {
     [self noCamera];
     return;
@@ -2687,299 +2461,396 @@ NSString* ApproveTitle() {
   output.metadataObjectTypes = @[ AVMetadataObjectTypeQRCode ];
   _preview = [[AVCaptureVideoPreviewLayer alloc] initWithSession:_session];
   _preview.videoGravity = AVLayerVideoGravityResizeAspectFill;
-  _preview.frame = self.view.bounds;
-  [self.view.layer insertSublayer:_preview atIndex:0];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    [_session startRunning];
-  });
+  _preview.frame = _frame.bounds;
+  [_frame.layer insertSublayer:_preview atIndex:0];
+  [self resume];
 }
 
-// No camera (the Simulator): the fake service can still hand over a test code.
+// No camera (the Simulator): a page given a test code still takes it.
 - (void)noCamera {
-  _hint.text = NSLocalizedString(@"This device has no camera.", @"Scanner: no camera");
-  if (xe_ios_live_account_service_is_stub()) {
-    UIButton* test = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIButtonConfiguration* config = [UIButtonConfiguration filledButtonConfiguration];
-    config.title = @"Use Test Code";
-    config.baseBackgroundColor = [XeniaTheme accent];
-    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    test.configuration = config;
-    test.translatesAutoresizingMaskIntoConstraints = NO;
-    [test addTarget:self action:@selector(useTestCode) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:test];
-    [NSLayoutConstraint activateConstraints:@[
-      [test.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-      [test.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-    ]];
+  _hint.text = self.noCameraHint;
+  if (!_testText) {
+    return;
   }
+  UIButtonConfiguration* config = [UIButtonConfiguration grayButtonConfiguration];
+  config.title = @"Use Test Code";
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  UIButton* test = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  test.translatesAutoresizingMaskIntoConstraints = NO;
+  [test addTarget:self action:@selector(useTestCode) forControlEvents:UIControlEventTouchUpInside];
+  [_frame addSubview:test];
+  [NSLayoutConstraint activateConstraints:@[
+    [test.centerXAnchor constraintEqualToAnchor:_frame.centerXAnchor],
+    [test.centerYAnchor constraintEqualToAnchor:_frame.centerYAnchor constant:-12],
+  ]];
 }
 
 - (void)useTestCode {
-  [self handlePayload:@"xenios://link?r=test"];
+  if (_onCode) {
+    _onCode(self.testText);
+  }
 }
 
 - (void)captureOutput:(AVCaptureOutput* __unused)output
     didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject*>*)objects
               fromConnection:(AVCaptureConnection* __unused)connection {
+  if (_paused) {
+    return;
+  }
   for (AVMetadataObject* object in objects) {
-    if ([object isKindOfClass:[AVMetadataMachineReadableCodeObject class]]) {
-      NSString* value = ((AVMetadataMachineReadableCodeObject*)object).stringValue;
-      if (value.length) {
-        [self handlePayload:value];
-        return;
-      }
+    if (![object isKindOfClass:[AVMetadataMachineReadableCodeObject class]]) {
+      continue;
+    }
+    NSString* value = ((AVMetadataMachineReadableCodeObject*)object).stringValue;
+    if (value.length && _onCode) {
+      _paused = YES;
+      [_session stopRunning];
+      _onCode(value);
+      return;
     }
   }
 }
 
-- (void)handlePayload:(NSString*)payload {
-  if (_handling) {
-    return;
-  }
-  _handling = YES;
-  [_session stopRunning];
-  __unsafe_unretained XEScanViewController* unsafe_self = self;
-  [xe_ios_live_account_service()
-      beginApprovalFromQRPayload:payload
-                      completion:^(XeniaLiveIncomingApproval* approval, XeniaLiveLinkStatus status) {
-                        if (!approval) {
-                          unsafe_self->_hint.text = status == XeniaLiveLinkStatusUnreachable
-                                                        ? NSLocalizedString(@"Can’t reach XeniOS. Check your connection.",
-                                                                            @"Scanner: error")
-                                                        : NSLocalizedString(@"That isn’t a XeniOS code. Try again.",
-                                                                            @"Scanner: wrong code");
-                          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                                         dispatch_get_main_queue(), ^{
-                                           unsafe_self->_handling = NO;
-                                           unsafe_self->_hint.text = NSLocalizedString(
-                                               @"Point the camera at the code on your new device.",
-                                               @"Scanner: hint");
-                                           dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                                             [unsafe_self->_session startRunning];
-                                           });
-                                         });
-                          return;
-                        }
-                        UIViewController* presenter = unsafe_self.presentingViewController;
-                        [unsafe_self dismissViewControllerAnimated:YES
-                                                        completion:^{
-                                                          PresentForm(presenter,
-                                                                      [[[XEIncomingForm alloc] initWithApproval:approval] autorelease],
-                                                                      YES);
-                                                        }];
-                      }];
-}
-
 @end
 
-// ---- Devices ---------------------------------------------------------------------------------
+// ---- A camera page on its own: Add Friend's scan button --------------------------------------
 
-@interface XEDevicesViewController : XESheetTableViewController
+@interface XEScanForm : XEForm
+- (instancetype)initWithTitle:(NSString*)title
+                         hint:(NSString*)hint
+                     testText:(nullable NSString*)test_text
+                       onText:(BOOL (^)(NSString* text))on_text;
 @end
 
-@implementation XEDevicesViewController {
-  NSArray<XeniaLiveDevice*>* _devices;
-  BOOL _failed;
+@implementation XEScanForm {
+  XECodeScannerView* _scanner;
+  NSString* _hint;
+  BOOL (^_onText)(NSString*);
 }
 
-- (instancetype)init {
-  if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
-    self.glassStyle = YES;
+- (instancetype)initWithTitle:(NSString*)title
+                         hint:(NSString*)hint
+                     testText:(NSString*)test_text
+                       onText:(BOOL (^)(NSString*))on_text {
+  if ((self = [super init])) {
+    self.title = title;
+    _hint = [hint copy];
+    _onText = [on_text copy];
+    _scanner = [[XECodeScannerView alloc] init];
+    _scanner.hint = hint;
+    _scanner.frameHeight = 360;
+    _scanner.noCameraHint = NSLocalizedString(@"This device has no camera. Type the code instead.",
+                                              @"Scan page: no camera");
+    if (test_text) {
+      _scanner.testText = test_text;
+    }
   }
   return self;
 }
 
 - (void)dealloc {
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
-  [_devices release];
+  _scanner.onCode = nil;
+  [_scanner release];
+  [_hint release];
+  [_onText release];
   [super dealloc];
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = NSLocalizedString(@"Devices", @"Devices screen title");
-  self.tableView.backgroundColor = [UIColor clearColor];
-  [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(reload)
-                                               name:XeniaLiveAccountDidChangeNotification
-                                             object:nil];
-  [self reload];
+  [self addCloseButton];
+  __unsafe_unretained XEScanForm* unsafe_self = self;
+  _scanner.onCode = ^(NSString* text) {
+    [unsafe_self scanned:text];
+  };
 }
 
-- (void)reload {
-  __unsafe_unretained XEDevicesViewController* unsafe_self = self;
-  [xe_ios_live_account_service()
-      loadDevicesWithCompletion:^(NSArray<XeniaLiveDevice*>* devices, NSError* __unused error) {
-        unsafe_self->_failed = devices == nil;
-        if (devices) {
-          [unsafe_self->_devices release];
-          unsafe_self->_devices = [devices copy];
-        }
-        [unsafe_self.tableView reloadData];
-      }];
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  FitTableHeader(_scanner, self.tableView);
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 0;
+}
+
+- (void)scanned:(NSString*)text {
+  if (_onText && _onText(text)) {
+    [self dismissViewControllerAnimated:YES completion:nil];
+    return;
+  }
+  // Not one of ours: say so in the frame, then look again.
+  _scanner.hint = NSLocalizedString(@"That isn’t a XeniOS code.", @"Scan page: wrong QR");
+  __unsafe_unretained XEScanForm* unsafe_self = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   unsafe_self->_scanner.hint = unsafe_self->_hint;
+                   [unsafe_self->_scanner resume];
+                 });
+}
+
+@end
+
+// ---- I Have a Gamertag: the camera, or the code typed, or a recovery code ----------------------
+
+@interface XESignInForm : XEForm <UITextFieldDelegate>
+- (instancetype)initWithCode:(nullable NSString*)code;
+@end
+
+@implementation XESignInForm {
+  NSString* _initialCode;
+  BOOL _recovering;
+  XECodeScannerView* _scanner;
+  UITextField* _field;
+  UIButton* _doneItem;
+  BOOL _busy;
+}
+
+- (instancetype)initWithCode:(NSString*)code {
+  if ((self = [super init])) {
+    _initialCode = [code copy];
+  }
+  return self;
+}
+
+- (void)dealloc {
+  _scanner.onCode = nil;
+  [_scanner release];
+  [_initialCode release];
+  [_field release];
+  [_doneItem release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = NSLocalizedString(@"Sign In", @"Sign in sheet title");
+  [self addCloseButton];
+  _doneItem = [[self addDoneButtonWithTitle:NSLocalizedString(@"Sign In", @"Sign in sheet: button")]
+      retain];
+  _field = [[UITextField alloc] init];
+  _field.delegate = self;
+  _field.textAlignment = NSTextAlignmentCenter;
+  _field.textColor = [XeniaTheme textPrimary];
+  _field.font = [UIFont monospacedSystemFontOfSize:24 weight:UIFontWeightBold];
+  _field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+  _field.autocorrectionType = UITextAutocorrectionTypeNo;
+  _field.spellCheckingType = UITextSpellCheckingTypeNo;
+  _field.returnKeyType = UIReturnKeyGo;
+  _field.adjustsFontSizeToFitWidth = YES;
+  _field.minimumFontSize = 16;
+  _field.clearButtonMode = UITextFieldViewModeWhileEditing;
+  _scanner = [[XECodeScannerView alloc] init];
+  __unsafe_unretained XESignInForm* unsafe_self = self;
+  _scanner.onCode = ^(NSString* text) {
+    [unsafe_self scanned:text];
+  };
+  [self applyMode];
+  if (_initialCode.length) {
+    _field.text = FormattedCode(_initialCode, 8);
+    _doneItem.enabled = CodeLength(_field.text) == 8;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [unsafe_self doneTapped];
+    });
+  }
+}
+
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  if (!_recovering) {
+    FitTableHeader(_scanner, self.tableView);
+  }
+}
+
+- (NSUInteger)limit {
+  return _recovering ? 12 : 8;
+}
+
+- (void)applyMode {
+  [self setHeaderText:_recovering
+                          ? NSLocalizedString(@"Type the recovery code you kept. Your gamertag, "
+                                              @"friends and blocks come back to this device.",
+                                              @"Sign in sheet: text above the field")
+                          : NSLocalizedString(@"Or type the code from Add a Device on your other "
+                                              @"device.",
+                                              @"Sign in sheet: text above the field")];
+  _field.attributedPlaceholder = [[[NSAttributedString alloc]
+      initWithString:_recovering ? @"XXXX-XXXX-XXXX" : @"XXXX-XXXX"
+          attributes:@{NSForegroundColorAttributeName : [XeniaTheme textMuted]}] autorelease];
+  _field.text = @"";
+  _field.accessibilityLabel = _recovering
+                                  ? NSLocalizedString(@"Recovery code", @"Sign in sheet: field")
+                                  : NSLocalizedString(@"Code", @"Sign in sheet: field");
+  [self setFooterText:nil color:nil];
+  _doneItem.enabled = NO;
+  if (_recovering) {
+    self.tableView.tableHeaderView = nil;
+    [_field becomeFirstResponder];
+  } else {
+    [self.view setNeedsLayout];
+  }
+  [self.tableView reloadData];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
   return 2;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
-  return section == 0 ? (NSInteger)_devices.count : 2;
-}
-
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  if (section == 0) {
-    return _failed ? NSLocalizedString(@"Can’t load devices right now.", @"Devices screen: footer")
-                   : NSLocalizedString(@"Remove a device you’ve lost. It’s signed out and can’t "
-                                       @"come back without a new code.",
-                                       @"Devices screen: footer");
-  }
-  return nil;
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
+  return 1;
 }
 
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   if (indexPath.section == 1) {
-    return ActionCell(indexPath.row == 0 ? NSLocalizedString(@"Show Link Code…", @"Devices screen: row")
-                                         : NSLocalizedString(@"Scan QR Code…", @"Devices screen: row"));
+    return ActionCell(_recovering ? NSLocalizedString(@"Use a Code From My Other Device",
+                                                      @"Sign in sheet: row")
+                                  : NSLocalizedString(@"Use a Recovery Code Instead",
+                                                      @"Sign in sheet: row"));
   }
-  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                                  reuseIdentifier:nil] autorelease];
-  cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  XeniaLiveDevice* device = _devices[(NSUInteger)indexPath.row];
-  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
-  NSString* symbol = [device.kind isEqualToString:@"ipad"]  ? @"ipad"
-                     : [device.kind isEqualToString:@"mac"] ? @"laptopcomputer"
-                                                            : @"iphone";
-  content.text = device.thisDevice
-                     ? [NSString stringWithFormat:NSLocalizedString(@"%@ (this device)",
-                                                                    @"Devices screen: row; %@ is "
-                                                                    @"the device name"),
-                                                  device.name]
-                     : device.name;
-  content.secondaryText =
-      !device.lastSeen
-          ? NSLocalizedString(@"Active now", @"Devices screen: row detail")
-          : [NSString stringWithFormat:NSLocalizedString(@"Last seen %@", @"Devices screen: row "
-                                                                         @"detail; %@ is a time"),
-                                       [[[[NSRelativeDateTimeFormatter alloc] init] autorelease]
-                                           localizedStringForDate:device.lastSeen
-                                                   relativeToDate:[NSDate date]]];
-  content.image = Glyph(symbol);
-  cell.contentConfiguration = content;
-  if (!device.thisDevice) {
-    UIButton* remove = [UIButton buttonWithType:UIButtonTypeSystem];
-    [remove setTitle:NSLocalizedString(@"Remove", @"Devices screen: button") forState:UIControlStateNormal];
-    remove.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    [remove setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
-    [remove sizeToFit];
-    __unsafe_unretained XEDevicesViewController* unsafe_self = self;
-    [remove addAction:[UIAction actionWithHandler:^(__kindof UIAction* __unused a) {
-              [unsafe_self confirmRemove:device];
-            }]
-        forControlEvents:UIControlEventTouchUpInside];
-    cell.accessoryView = remove;
-  }
-  return cell;
+  return FieldCell(_field);
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  return section == 1 && _recovering
+             ? NSLocalizedString(@"Lost the recovery code too? Nothing can bring the account back.",
+                                 @"Sign in sheet: footer")
+             : nil;
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section != 1) {
+  if (indexPath.section == 1 && !_busy) {
+    _recovering = !_recovering;
+    [self applyMode];
+  }
+}
+
+- (void)scanned:(NSString*)text {
+  NSString* code = CodeFromLinkURL(text);
+  if (!code.length) {
+    [self setFooterText:NSLocalizedString(@"That isn’t a XeniOS code.", @"Sign in sheet: wrong QR")
+                  color:[UIColor systemRedColor]];
+    __unsafe_unretained XECodeScannerView* scanner = _scanner;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     [scanner resume];
+                   });
     return;
   }
-  if (indexPath.row == 0) {
-    PresentForm(self, [[[XELinkCodeForm alloc] init] autorelease], NO);
+  _field.text = FormattedCode(code, 8);
+  _doneItem.enabled = CodeLength(_field.text) == 8;
+  [self doneTapped];
+}
+
+- (BOOL)textField:(UITextField*)field
+    shouldChangeCharactersInRange:(NSRange)range
+                replacementString:(NSString*)string {
+  NSString* next = [field.text stringByReplacingCharactersInRange:range withString:string];
+  field.text = FormattedCode(next, [self limit]);
+  [self setFooterText:nil color:nil];
+  _doneItem.enabled = !_busy && CodeLength(field.text) == [self limit];
+  return NO;
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField* __unused)field {
+  [self doneTapped];
+  return NO;
+}
+
+- (void)doneTapped {
+  if (!_doneItem.enabled || _busy) {
+    return;
+  }
+  _busy = YES;
+  XESetFormCommitBusy(self, YES);
+  __unsafe_unretained XESignInForm* unsafe_self = self;
+  void (^finish)(XeniaLiveLinkStatus) = ^(XeniaLiveLinkStatus status) {
+    unsafe_self->_busy = NO;
+    XESetFormCommitBusy(unsafe_self, NO);
+    if (status == XeniaLiveLinkStatusLinked) {
+      // A second device, or a recovered one: the account has a way back in already.
+      SetRecoverySaved(YES);
+      [unsafe_self dismissViewControllerAnimated:YES completion:nil];
+      return;
+    }
+    NSString* message = LinkMessage(status);
+    [unsafe_self setFooterText:message color:[UIColor systemRedColor]];
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
+    [unsafe_self->_scanner resume];
+  };
+  if (_recovering) {
+    [xe_ios_live_account_service() recoverWithCode:_field.text completion:finish];
   } else {
-    UINavigationController* navigation = [[[UINavigationController alloc]
-        initWithRootViewController:[[[XEScanViewController alloc] init] autorelease]] autorelease];
-    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:navigation animated:YES completion:nil];
+    [xe_ios_live_account_service() linkWithCode:_field.text completion:finish];
   }
 }
 
-- (void)confirmRemove:(XeniaLiveDevice*)device {
-  UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(@"Remove %@?",
-                                                                            @"Devices screen: alert "
-                                                                            @"title; %@ is the "
-                                                                            @"device name"),
-                                                          device.name]
-                       message:NSLocalizedString(@"It will be signed out and can’t come back without "
-                                                 @"a new code.",
-                                                 @"Devices screen: alert message")
-                preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Devices screen: alert button")
-                                            style:UIAlertActionStyleCancel
-                                          handler:nil]];
-  __unsafe_unretained XEDevicesViewController* unsafe_self = self;
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Remove", @"Devices screen: alert button")
-                                 style:UIAlertActionStyleDestructive
-                               handler:^(UIAlertAction* __unused action) {
-                                 [xe_ios_live_account_service()
-                                     removeDevice:device
-                                       completion:^(NSError* error) {
-                                         if (error) {
-                                           ShowAlert(unsafe_self,
-                                                     NSLocalizedString(@"Couldn’t Remove",
-                                                                       @"Devices screen: alert title"),
-                                                     error.localizedDescription);
-                                         }
-                                         [unsafe_self reload];
-                                       }];
-                               }]];
-  [self presentViewController:alert animated:YES completion:nil];
-}
-
 @end
 
-// ---- The account page ------------------------------------------------------------------------
+// ---- The profile page: one list for the profile's account, devices and data ------------------
 
-typedef NS_ENUM(NSInteger, XEAccountRow) {
-  XEAccountRowGoOnline = 0,
-  XEAccountRowUseExisting,
-  XEAccountRowGamertag,
-  XEAccountRowDevices,
-  XEAccountRowLink,
-  XEAccountRowScan,
-  XEAccountRowRecovery,
-  XEAccountRowExport,
-  XEAccountRowImport,
+typedef NS_ENUM(NSInteger, XEPageRow) {
+  XEPageRowAddDevice = 0,
+  XEPageRowSharedSaves,
+  XEPageRowCopyProfile,
+  XEPageRowRecovery,
+  XEPageRowGamertag,
+  XEPageRowDevice = 1000,  // + index into the device list.
 };
 
-@interface XEAccountViewController : XESheetTableViewController <UIDocumentPickerDelegate>
-- (instancetype)initWithProfileGamertag:(NSString*)gamertag;
+@interface XEProfilePageViewController : XESheetTableViewController
+- (instancetype)initWithGamertag:(NSString*)gamertag
+                          active:(BOOL)active
+                        switchTo:(nullable BOOL (^)(void))switch_to;
 @end
 
-@implementation XEAccountViewController {
-  NSString* _profile;
+@implementation XEProfilePageViewController {
+  NSString* _gamertag;
+  BOOL _active;
+  BOOL (^_switchTo)(void);
+  XEProfileHeader* _header;
   NSArray<NSArray<NSNumber*>*>* _sections;
-  NSInteger _deviceCount;
+  NSArray<NSString*>* _sectionTitles;
+  NSArray<XeniaLiveDevice*>* _devices;
+  NSString* _sharedText;
 }
 
-- (instancetype)initWithProfileGamertag:(NSString*)gamertag {
+- (instancetype)initWithGamertag:(NSString*)gamertag
+                          active:(BOOL)active
+                        switchTo:(BOOL (^)(void))switch_to {
   if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
     self.glassStyle = YES;
-    _profile = [gamertag copy];
-    _deviceCount = -1;
+    _gamertag = [gamertag copy];
+    _active = active;
+    _switchTo = [switch_to copy];
   }
   return self;
 }
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
-  [_profile release];
+  [_gamertag release];
+  [_switchTo release];
+  [_header release];
   [_sections release];
+  [_sectionTitles release];
+  [_devices release];
+  [_sharedText release];
   [super dealloc];
+}
+
+- (BOOL)online {
+  return _active && xe_ios_live_account_service().summary.online;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.title = NSLocalizedString(@"Online Account", @"Account screen title");
   self.tableView.backgroundColor = [UIColor clearColor];
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  _header = [[XEProfileHeader alloc] init];
   [[NSNotificationCenter defaultCenter] addObserver:self
-                                           selector:@selector(reload)
+                                           selector:@selector(accountChanged)
                                                name:XeniaLiveAccountDidChangeNotification
                                              object:nil];
   [self reload];
@@ -2989,35 +2860,168 @@ typedef NS_ENUM(NSInteger, XEAccountRow) {
   [super viewWillAppear:animated];
   [self reload];
   [self refreshDevices];
+  [self refreshShared];
+}
+
+- (void)viewDidLayoutSubviews {
+  FitTableHeader(_header, self.tableView);
+  [super viewDidLayoutSubviews];
+}
+
+- (void)accountChanged {
+  [self reload];
+  [self refreshDevices];
 }
 
 - (void)refreshDevices {
-  if (!xe_ios_live_account_service().summary.online) {
+  if (![self online]) {
+    [_devices release];
+    _devices = nil;
     return;
   }
-  __unsafe_unretained XEAccountViewController* unsafe_self = self;
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
   [xe_ios_live_account_service()
       loadDevicesWithCompletion:^(NSArray<XeniaLiveDevice*>* devices, NSError* __unused error) {
-        unsafe_self->_deviceCount = devices ? (NSInteger)devices.count : -1;
-        [unsafe_self.tableView reloadData];
+        [unsafe_self->_devices release];
+        unsafe_self->_devices = [devices copy];
+        [unsafe_self reload];
       }];
+}
+
+// "With Kid", "With 2 Profiles", "Every Profile" or "Off".
+- (void)refreshShared {
+  if (!_active) {
+    return;
+  }
+  id<XeniaLiveAccountService> service = xe_ios_live_account_service();
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
+  void (^set)(NSString*) = ^(NSString* text) {
+    [unsafe_self->_sharedText release];
+    unsafe_self->_sharedText = [text copy];
+    [unsafe_self.tableView reloadData];
+  };
+  if (service.savesSharedAcrossProfiles) {
+    set(NSLocalizedString(@"Every Profile", @"Profile page: Shared Saves detail"));
+    return;
+  }
+  [service localProfilesWithCompletion:^(NSArray<XeniaLiveLocalProfile*>* profiles) {
+    NSMutableArray<XeniaLiveLocalProfile*>* others = [NSMutableArray array];
+    for (XeniaLiveLocalProfile* profile in profiles) {
+      if (!profile.thisProfile) {
+        [others addObject:profile];
+      }
+    }
+    if (!others.count) {
+      set(NSLocalizedString(@"Off", @"Profile page: Shared Saves detail"));
+      return;
+    }
+    NSMutableArray<NSString*>* with = [NSMutableArray array];
+    __block NSUInteger waiting = others.count;
+    for (XeniaLiveLocalProfile* profile in others) {
+      [service saveGamesSharedWithProfile:profile.profileId
+                               completion:^(NSArray<XeniaLiveSaveGame*>* games) {
+                                 for (XeniaLiveSaveGame* game in games) {
+                                   if (game.shared) {
+                                     [with addObject:profile.gamertag];
+                                     break;
+                                   }
+                                 }
+                                 if (--waiting) {
+                                   return;
+                                 }
+                                 if (!with.count) {
+                                   set(NSLocalizedString(@"Off", @"Profile page: Shared Saves detail"));
+                                 } else if (with.count == 1) {
+                                   set([NSString stringWithFormat:NSLocalizedString(
+                                                                      @"With %@",
+                                                                      @"Profile page: Shared Saves "
+                                                                      @"detail; %@ is a gamertag"),
+                                                                  with.firstObject]);
+                                 } else {
+                                   set([NSString stringWithFormat:NSLocalizedString(
+                                                                      @"With %lu Profiles",
+                                                                      @"Profile page: Shared Saves "
+                                                                      @"detail"),
+                                                                  (unsigned long)with.count]);
+                                 }
+                               }];
+    }
+  }];
 }
 
 - (void)reload {
   XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
-  [_sections release];
-  if (summary.online) {
-    _sections = [@[
-      @[ @(XEAccountRowGamertag), @(XEAccountRowDevices), @(XEAccountRowRecovery) ],
-      @[ @(XEAccountRowExport) ],
-    ] retain];
+  const BOOL online = [self online];
+  NSString* name = online ? summary.gamertag : _gamertag;
+  // The name is the page's headline, under the avatar; the bar keeps only ‹ and ✕ (as Contacts).
+  self.title = name;
+  self.navigationItem.title = @"";
+  _header.avatar.image = xe_profile_avatar_image(name, _active, 72.0);
+  _header.name.text = name;
+  _header.status.textColor = [XeniaTheme textSecondary];
+  _header.caption.text = nil;
+  NSString* device = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad
+                         ? NSLocalizedString(@"On this iPad only", @"Profile page: status")
+                         : NSLocalizedString(@"On this iPhone only", @"Profile page: status");
+  if (!_active) {
+    _header.status.text = device;
+    [_header setButton:_switchTo ? PrimaryButton([NSString stringWithFormat:NSLocalizedString(
+                                                                    @"Switch to %@",
+                                                                    @"Profile page: button; %@ is "
+                                                                    @"a gamertag"),
+                                                                _gamertag],
+                                                 self, @selector(switchTapped))
+                                 : nil];
+  } else if (!online) {
+    _header.status.text = device;
+    [_header setButton:PrimaryButton(NSLocalizedString(@"Get a Gamertag", @"Profile page: button"),
+                                     self, @selector(getGamertagTapped))];
+    _header.caption.text =
+        NSLocalizedString(@"Play with friends, in parties and public games. Your saves and "
+                          @"achievements stay.",
+                          @"Profile page: caption under Get a Gamertag");
   } else {
-    _sections = [@[
-      @[ @(XEAccountRowGoOnline) ],
-      @[ @(XEAccountRowUseExisting), @(XEAccountRowImport) ],
-    ] retain];
+    [_header setButton:nil];
+    if (summary.renameFlagged) {
+      _header.status.text =
+          NSLocalizedString(@"Pick a new gamertag", @"Profile page: status when flagged");
+      _header.status.textColor = [UIColor systemOrangeColor];
+    } else if (_devices.count > 1) {
+      _header.status.text = [NSString
+          stringWithFormat:NSLocalizedString(@"On %lu devices", @"Profile page: status; a count"),
+                           (unsigned long)_devices.count];
+    } else {
+      _header.status.text = NSLocalizedString(@"Online", @"Profile page: status");
+    }
   }
+  _header.isAccessibilityElement = NO;
+  [_header setNeedsLayout];
+
+  NSMutableArray* sections = [NSMutableArray array];
+  NSMutableArray* titles = [NSMutableArray array];
+  if (_active) {
+    if (online) {
+      NSMutableArray* devices = [NSMutableArray array];
+      for (NSUInteger i = 0; i < _devices.count; ++i) {
+        [devices addObject:@(XEPageRowDevice + (NSInteger)i)];
+      }
+      [devices addObject:@(XEPageRowAddDevice)];
+      [sections addObject:devices];
+      [titles addObject:NSLocalizedString(@"Devices", @"Profile page: header")];
+    }
+    [sections addObject:@[ @(XEPageRowSharedSaves), @(XEPageRowCopyProfile) ]];
+    [titles addObject:NSLocalizedString(@"Profile Data", @"Profile page: header")];
+    if (online) {
+      [sections addObject:@[ @(XEPageRowRecovery), @(XEPageRowGamertag) ]];
+      [titles addObject:@""];
+    }
+  }
+  [_sections release];
+  _sections = [sections copy];
+  [_sectionTitles release];
+  _sectionTitles = [titles copy];
   [self.tableView reloadData];
+  [self.view setNeedsLayout];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
@@ -3028,136 +3032,177 @@ typedef NS_ENUM(NSInteger, XEAccountRow) {
   return (NSInteger)_sections[(NSUInteger)section].count;
 }
 
-- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
-  if (!summary.online && section == 0) {
-    return NSLocalizedString(@"Friends, parties and public games. Your saves and achievements stay. "
-                             @"Offline play works the same, with no account.",
-                             @"Account screen: footer under Go Online");
-  }
-  if (summary.online && section == 1) {
-    return NSLocalizedString(@"Saves and achievements don’t sync between devices. Move them as a file.",
-                             @"Account screen: footer");
-  }
-  return nil;
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  NSString* title = _sectionTitles[(NSUInteger)section];
+  return title.length ? title : nil;
 }
 
-- (XEAccountRow)rowAt:(NSIndexPath*)indexPath {
-  return (XEAccountRow)_sections[(NSUInteger)indexPath.section][(NSUInteger)indexPath.row].integerValue;
+- (NSInteger)rowAt:(NSIndexPath*)indexPath {
+  return _sections[(NSUInteger)indexPath.section][(NSUInteger)indexPath.row].integerValue;
+}
+
+- (BOOL)wantsRecovery {
+  return !RecoverySaved() && _devices.count <= 1;
 }
 
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  const XEAccountRow row = [self rowAt:indexPath];
+  const NSInteger row = [self rowAt:indexPath];
   XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
-  if (row == XEAccountRowGoOnline) {
-    UITableViewCell* cell = ActionCell(NSLocalizedString(@"Go Online…", @"Account screen: row"));
-    cell.accessibilityTraits |= UIAccessibilityTraitButton;
-    return cell;
+  if (row == XEPageRowAddDevice) {
+    return ActionCell(NSLocalizedString(@"Add a Device…", @"Profile page: row"));
   }
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
+  UIListContentConfiguration* content = [UIListContentConfiguration valueCellConfiguration];
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
-  switch (row) {
-    case XEAccountRowGamertag: {
-      content.text = summary.gamertag;
-      NSString* detail;
-      UIColor* detail_color = [XeniaTheme textSecondary];
-      if (summary.renameFlagged) {
-        detail = NSLocalizedString(@"Pick a new gamertag", @"Account screen: row detail");
-        detail_color = [UIColor systemOrangeColor];
-      } else if (summary.nextRename.timeIntervalSinceNow > 0) {
-        detail = [NSString stringWithFormat:NSLocalizedString(@"Change again after %@",
-                                                              @"Account screen: row detail; %@ is "
-                                                              @"a date"),
-                                            DateText(summary.nextRename)];
-      } else {
-        detail = NSLocalizedString(@"Tap to change", @"Account screen: row detail");
-      }
-      content.secondaryText = detail;
-      content.secondaryTextProperties.color = detail_color;
-      content.image = Glyph(@"person.text.rectangle.fill");
-      break;
+  if (row >= XEPageRowDevice) {
+    XeniaLiveDevice* device = _devices[(NSUInteger)(row - XEPageRowDevice)];
+    content = [UIListContentConfiguration subtitleCellConfiguration];
+    content.text = device.thisDevice
+                       ? [NSString stringWithFormat:NSLocalizedString(
+                                                        @"%@ (This Device)",
+                                                        @"Profile page: device row; %@ is its name"),
+                                                    device.name]
+                       : device.name;
+    if (!device.lastSeen || device.thisDevice) {
+      content.secondaryText = NSLocalizedString(@"Active now", @"Profile page: device detail");
+    } else {
+      NSRelativeDateTimeFormatter* relative = [[[NSRelativeDateTimeFormatter alloc] init] autorelease];
+      relative.dateTimeStyle = NSRelativeDateTimeFormatterStyleNamed;
+      content.secondaryText = [NSString
+          stringWithFormat:NSLocalizedString(@"Last seen %@",
+                                             @"Profile page: device detail; %@ is like “yesterday”"),
+                           [relative localizedStringForDate:device.lastSeen relativeToDate:[NSDate date]]];
     }
-    case XEAccountRowDevices:
-      content = [UIListContentConfiguration valueCellConfiguration];
-      content.text = NSLocalizedString(@"Devices", @"Account screen: row");
-      content.secondaryText = _deviceCount >= 0 ? [NSString stringWithFormat:@"%ld", (long)_deviceCount] : nil;
-      content.image = Glyph(@"laptopcomputer.and.iphone");
+    content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+    content.image = Glyph([device.kind isEqualToString:@"ipad"]  ? @"ipad"
+                          : [device.kind isEqualToString:@"mac"] ? @"laptopcomputer"
+                                                                 : @"iphone");
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.selectionStyle = device.thisDevice ? UITableViewCellSelectionStyleNone
+                                            : UITableViewCellSelectionStyleDefault;
+    cell.contentConfiguration = content;
+    return cell;
+  }
+  switch (row) {
+    case XEPageRowSharedSaves:
+      content.text = NSLocalizedString(@"Shared Saves", @"Profile page: row");
+      content.secondaryText = _sharedText;
+      content.image = Glyph(@"person.2");
       break;
-    case XEAccountRowLink:
-      content.text = NSLocalizedString(@"Link Another Device", @"Account screen: row");
-      content.image = Glyph(@"link");
-      break;
-    case XEAccountRowScan:
-      content.text = NSLocalizedString(@"Scan QR Code", @"Account screen: row");
-      content.image = Glyph(@"qrcode.viewfinder");
-      break;
-    case XEAccountRowRecovery:
-      content.text = NSLocalizedString(@"New Recovery Code", @"Account screen: row");
-      content.image = Glyph(@"key.fill");
-      break;
-    case XEAccountRowExport:
-      content.text = NSLocalizedString(@"Move Profile", @"Account screen: row");
+    case XEPageRowCopyProfile:
+      content.text = NSLocalizedString(@"Copy Profile…", @"Profile page: row");
       content.image = Glyph(@"square.and.arrow.up");
       break;
-    case XEAccountRowImport:
-      content.text = NSLocalizedString(@"Import Profile", @"Account screen: row");
-      content.image = Glyph(@"square.and.arrow.down");
+    case XEPageRowRecovery:
+      content.image = Glyph(@"key");
+      if ([self wantsRecovery]) {
+        content.text = NSLocalizedString(@"Set Up Account Recovery", @"Profile page: row");
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.accessoryView = AttentionAccessory();
+      } else {
+        content.text = NSLocalizedString(@"Account Recovery", @"Profile page: row");
+        content.secondaryText = RecoverySaved()
+                                    ? NSLocalizedString(@"On", @"Profile page: row detail")
+                                    : NSLocalizedString(@"Off", @"Profile page: row detail");
+      }
       break;
-    case XEAccountRowUseExisting:
-      content.text = NSLocalizedString(@"Use an Existing Account", @"Account screen: row");
-      content.image = Glyph(@"iphone.and.arrow.forward");
+    case XEPageRowGamertag:
+      content.text = NSLocalizedString(@"Change Gamertag", @"Profile page: row");
+      content.image = Glyph(@"person.text.rectangle");
+      if (summary.renameFlagged) {
+        content.secondaryText = NSLocalizedString(@"Needed", @"Profile page: row detail");
+        content.secondaryTextProperties.color = [UIColor systemOrangeColor];
+      } else if (summary.nextRename.timeIntervalSinceNow > 0) {
+        content.secondaryText = [NSString
+            stringWithFormat:NSLocalizedString(@"After %@", @"Profile page: row detail; %@ is a date"),
+                             DateText(summary.nextRename)];
+      }
       break;
-    case XEAccountRowGoOnline:
+    default:
       break;
   }
   cell.contentConfiguration = content;
   return cell;
 }
 
+- (UISwipeActionsConfiguration*)tableView:(UITableView* __unused)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  const NSInteger row = [self rowAt:indexPath];
+  if (row < XEPageRowDevice) {
+    return nil;
+  }
+  XeniaLiveDevice* device = _devices[(NSUInteger)(row - XEPageRowDevice)];
+  if (device.thisDevice) {
+    return nil;
+  }
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
+  UIContextualAction* remove = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleDestructive
+                          title:NSLocalizedString(@"Remove", @"Profile page: swipe action")
+                        handler:^(UIContextualAction* __unused action, UIView* __unused view,
+                                  void (^done)(BOOL)) {
+                          [unsafe_self confirmRemove:device];
+                          done(YES);
+                        }];
+  return [UISwipeActionsConfiguration configurationWithActions:@[ remove ]];
+}
+
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  switch ([self rowAt:indexPath]) {
-    case XEAccountRowGoOnline:
-      [self goOnline];
-      break;
-    case XEAccountRowUseExisting:
-      PresentForm(self, [[[XEExistingForm alloc] init] autorelease], NO);
-      break;
-    case XEAccountRowScan: {
-      UINavigationController* navigation = [[[UINavigationController alloc]
-          initWithRootViewController:[[[XEScanViewController alloc] init] autorelease]] autorelease];
-      navigation.modalPresentationStyle = UIModalPresentationFullScreen;
-      [self presentViewController:navigation animated:YES completion:nil];
-      break;
+  const NSInteger row = [self rowAt:indexPath];
+  if (row >= XEPageRowDevice) {
+    XeniaLiveDevice* device = _devices[(NSUInteger)(row - XEPageRowDevice)];
+    if (!device.thisDevice) {
+      [self confirmRemove:device];
     }
-    case XEAccountRowGamertag:
-      [self presentRename];
-      break;
-    case XEAccountRowDevices:
-      [self.navigationController pushViewController:[[[XEDevicesViewController alloc] init] autorelease]
+    return;
+  }
+  switch (row) {
+    // No field to type in, so these push inside the card, like Shared Saves.
+    case XEPageRowAddDevice:
+      [self.navigationController pushViewController:[[[XEAddDeviceForm alloc] init] autorelease]
                                            animated:YES];
       break;
-    case XEAccountRowLink:
-      PresentForm(self, [[[XELinkCodeForm alloc] init] autorelease], NO);
+    case XEPageRowSharedSaves:
+      [self.navigationController pushViewController:[[[XEShareHubViewController alloc] init] autorelease]
+                                           animated:YES];
       break;
-    case XEAccountRowRecovery:
-      [self confirmNewRecoveryCode];
+    case XEPageRowCopyProfile:
+      [self.navigationController pushViewController:[[[XECopyProfileForm alloc] init] autorelease]
+                                           animated:YES];
       break;
-    case XEAccountRowExport:
-      PresentForm(self, [[[XEExportForm alloc] init] autorelease], NO);
+    case XEPageRowRecovery:
+      if ([self wantsRecovery] || !RecoverySaved()) {
+        [self makeRecoveryCodeFirstTime:YES];
+      } else {
+        [self confirmNewRecoveryCode];
+      }
       break;
-    case XEAccountRowImport:
-      [self pickImportFile];
+    case XEPageRowGamertag:
+      [self presentRename];
+      break;
+    default:
       break;
   }
 }
 
-- (void)goOnline {
-  __unsafe_unretained XEAccountViewController* unsafe_self = self;
-  xe_ios_present_go_online(self, _profile, ^{
+- (void)switchTapped {
+  if (_switchTo && _switchTo()) {
+    _active = YES;
+    [self reload];
+    [self refreshDevices];
+    [self refreshShared];
+  }
+}
+
+- (void)getGamertagTapped {
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
+  xe_ios_present_go_online(self, _gamertag, ^{
+    // A new account starts without a recovery code saved; the page asks for one.
+    SetRecoverySaved(NO);
     [unsafe_self reload];
     [unsafe_self refreshDevices];
   });
@@ -3165,7 +3210,7 @@ typedef NS_ENUM(NSInteger, XEAccountRow) {
 
 - (void)presentRename {
   XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
-  __unsafe_unretained XEAccountViewController* unsafe_self = self;
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
   XEGamertagForm* form = [[[XEGamertagForm alloc]
       initWithMode:summary.renameFlagged ? XEGamertagModeFlagged : XEGamertagModeRename
        currentName:summary.gamertag
@@ -3175,96 +3220,134 @@ typedef NS_ENUM(NSInteger, XEAccountRow) {
   PresentForm(self, form, NO);
 }
 
+- (void)makeRecoveryCodeFirstTime:(BOOL)first {
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
+  [xe_ios_live_account_service()
+      createRecoveryCodeWithCompletion:^(NSString* code, NSError* error) {
+        if (!code.length) {
+          ShowAlert(unsafe_self,
+                    NSLocalizedString(@"Couldn’t Make a Code", @"Profile page: alert title"),
+                    error.localizedDescription
+                        ?: NSLocalizedString(@"Check your connection and try again.",
+                                             @"Profile page: alert message"));
+          return;
+        }
+        PresentForm(unsafe_self,
+                    [[[XERecoveryForm alloc] initWithCode:code
+                                                firstTime:first
+                                                     done:^{
+                                                       SetRecoverySaved(YES);
+                                                       [unsafe_self reload];
+                                                     }] autorelease],
+                    YES);
+      }];
+}
+
 - (void)confirmNewRecoveryCode {
   UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:NSLocalizedString(@"Create a New Recovery Code?",
-                                                 @"Account screen: alert title")
-                       message:NSLocalizedString(@"Your old code stops working. We show the new "
-                                                 @"one once.",
-                                                 @"Account screen: alert message")
+      alertControllerWithTitle:NSLocalizedString(@"Make a New Recovery Code?",
+                                                 @"Profile page: alert title")
+                       message:NSLocalizedString(@"Your old code stops working. The new one is "
+                                                 @"shown once.",
+                                                 @"Profile page: alert message")
                 preferredStyle:UIAlertControllerStyleAlert];
-  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Account screen: alert button")
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Profile page: alert button")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
-  __unsafe_unretained XEAccountViewController* unsafe_self = self;
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Make Code",
+                                                                    @"Profile page: alert button")
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [unsafe_self makeRecoveryCodeFirstTime:NO];
+                                          }]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmRemove:(XeniaLiveDevice*)device {
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(
+                                                              @"Remove %@?",
+                                                              @"Profile page: alert title; %@ is "
+                                                              @"the device name"),
+                                                          device.name]
+                       message:NSLocalizedString(@"It’s signed out, and needs a new code from Add a "
+                                                 @"Device to come back.",
+                                                 @"Profile page: alert message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Profile page: alert button")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  __unsafe_unretained XEProfilePageViewController* unsafe_self = self;
   [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Create", @"Account screen: alert button")
-                                 style:UIAlertActionStyleDefault
+                       actionWithTitle:NSLocalizedString(@"Remove", @"Profile page: alert button")
+                                 style:UIAlertActionStyleDestructive
                                handler:^(UIAlertAction* __unused action) {
                                  [xe_ios_live_account_service()
-                                     createRecoveryCodeWithCompletion:^(NSString* code, NSError* error) {
-                                       if (!code.length) {
-                                         ShowAlert(unsafe_self,
-                                                   NSLocalizedString(@"Couldn’t Create a Code",
-                                                                     @"Account screen: alert title"),
-                                                   error.localizedDescription
-                                                       ?: NSLocalizedString(@"Check your connection and try again.",
-                                                                            @"Account screen: alert message"));
-                                         return;
-                                       }
-                                       PresentForm(unsafe_self,
-                                                   [[[XERecoveryForm alloc] initWithCode:code
-                                                                               firstTime:NO
-                                                                                    done:nil] autorelease],
-                                                   YES);
-                                     }];
+                                     removeDevice:device
+                                       completion:^(NSError* error) {
+                                         if (error) {
+                                           ShowAlert(unsafe_self,
+                                                     NSLocalizedString(@"Couldn’t Remove",
+                                                                       @"Profile page: alert title"),
+                                                     error.localizedDescription);
+                                         }
+                                         [unsafe_self refreshDevices];
+                                       }];
                                }]];
   [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)pickImportFile {
-  UTType* profile_type = [UTType typeWithIdentifier:@"jp.xenios.xenios.profile"];
-  UIDocumentPickerViewController* picker =
-      [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ profile_type ?: UTTypeItem ]
-                                                                   asCopy:YES] autorelease];
-  picker.delegate = self;
-  [self presentViewController:picker animated:YES completion:nil];
-}
-
-- (void)documentPicker:(UIDocumentPickerViewController* __unused)controller
-    didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-  if (!urls.firstObject) {
-    return;
-  }
-  __unsafe_unretained XEAccountViewController* unsafe_self = self;
-  [xe_ios_live_account_service()
-      importProfileFromURL:urls.firstObject
-                completion:^(NSError* error) {
-                  ShowAlert(unsafe_self,
-                            error ? NSLocalizedString(@"Couldn’t Import", @"Import: alert title")
-                                  : NSLocalizedString(@"Profile Imported", @"Import: alert title"),
-                            error ? error.localizedDescription
-                                  : NSLocalizedString(@"Saves, achievements and settings are in "
-                                                      @"place.",
-                                                      @"Import: alert message"));
-                  [unsafe_self reload];
-                }];
-}
-
 @end
+
 
 // ---- Entry points ----------------------------------------------------------------------------
 
-UIViewController* xe_ios_new_account_view_controller(NSString* profile_gamertag) {
-  return [[[XEAccountViewController alloc] initWithProfileGamertag:profile_gamertag] autorelease];
+UIViewController* xe_ios_new_profile_page(NSString* gamertag, BOOL active,
+                                          BOOL (^_Nullable switch_to)(void)) {
+  return [[[XEProfilePageViewController alloc] initWithGamertag:gamertag
+                                                          active:active
+                                                        switchTo:switch_to] autorelease];
+}
+
+void xe_ios_present_sign_in(UIViewController* presenter, NSString* _Nullable code) {
+  PresentForm(presenter, [[[XESignInForm alloc] initWithCode:code] autorelease], NO);
+}
+
+BOOL xe_ios_handle_link_url(NSURL* url, UIViewController* presenter) {
+  NSString* code = CodeFromLinkURL(url.absoluteString);
+  if (!code.length) {
+    return NO;
+  }
+  if (!xe_ios_live_account_ui_enabled()) {
+    return YES;
+  }
+  // The sign-in page sends a code from a link at once, so an online device would re-link
+  // without a word. Say what's true instead.
+  XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
+  if (summary.online) {
+    ShowAlert(TopOf(presenter),
+              NSLocalizedString(@"Already Signed In", @"Device link opened while online: title"),
+              [NSString stringWithFormat:NSLocalizedString(
+                                             @"This device is already signed in as %@.",
+                                             @"Device link opened while online; %@ is the gamertag"),
+                                         summary.gamertag]);
+    return YES;
+  }
+  xe_ios_present_sign_in(presenter, code);
+  return YES;
 }
 
 void xe_ios_present_go_online(UIViewController* presenter, NSString* profile_gamertag,
                               void (^done)(void)) {
+  // The recovery code waits: the profile page asks for it (Set Up Account Recovery) rather than
+  // putting it between the player and the game.
   void (^finished)(void) = [[done copy] autorelease];
-  __unsafe_unretained UIViewController* unsafe_presenter = presenter;
   XEGamertagForm* form = [[[XEGamertagForm alloc]
       initWithMode:XEGamertagModeGoOnline
        currentName:profile_gamertag
-              done:^(XeniaLiveNameResult* result) {
-                if (result.recoveryCode.length) {
-                  // A new account: the recovery code, once, before anything else.
-                  PresentForm(unsafe_presenter,
-                              [[[XERecoveryForm alloc] initWithCode:result.recoveryCode
-                                                          firstTime:YES
-                                                               done:finished] autorelease],
-                              YES);
-                } else if (finished) {
+              done:^(XeniaLiveNameResult* __unused result) {
+                if (finished) {
                   finished();
                 }
               }] autorelease];
@@ -3374,6 +3457,16 @@ BOOL xe_ios_handle_opened_profile_file(NSURL* url, UIViewController* presenter) 
   return YES;
 }
 
-void xe_ios_present_move_profile(UIViewController* presenter) {
-  PresentForm(presenter, [[[XEExportForm alloc] init] autorelease], NO);
+void xe_ios_present_copy_profile(UIViewController* presenter) {
+  PresentForm(presenter, [[[XECopyProfileForm alloc] init] autorelease], NO);
+}
+
+UIImage* xe_ios_qr_image(NSString* text, CGFloat side) { return QRImage(text, side); }
+
+void xe_ios_present_code_scanner(UIViewController* presenter, NSString* title, NSString* hint,
+                                 NSString* _Nullable test_text, BOOL (^on_text)(NSString* text)) {
+  PresentForm(presenter,
+              [[[XEScanForm alloc] initWithTitle:title hint:hint testText:test_text onText:on_text]
+                  autorelease],
+              NO);
 }

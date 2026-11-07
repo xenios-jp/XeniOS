@@ -41,8 +41,9 @@ needs something else changes this document first.
    column for the groups. Never a narrow centred column of portrait UI.
 7. **One page, two handles.** Tap a tile, or press A, to play. ⋯ on the library hero opens
    that game into its game page, in place. Hold a tile, or press X, to make it the hero and
-   open its game page the same way. There is no long-press menu. Patches, Updates & Add-ons,
-   System Link and Convert to ZAR live only on the game page and push inside it.
+   open its game page the same way. There is no long-press menu. Compatibility (its status as
+   the row's dot and words), Patches, Updates & Add-ons, System Link and Convert to ZAR live
+   only on the game page, as its rows; nothing about the game sits as small text over the art.
 8. **People and rooms.** The Friends pill opens **people**: online friends, invites and
    parties. The globe opens **Public Games**: a browser of open rooms, and its mint count is
    the number of players on XeniOS. Two jobs, two doors, one card design.
@@ -137,9 +138,10 @@ tabular digits so they don't jitter.
 
 ## Headers and controls
 
-- **Header line.** 44 pt high, 16 pt from the sides (14 inside a card). Leading: ‹ on a
-  pushed page, or the title on a card. Trailing: extra actions, then ✕ last. A page with
-  a large title puts it below the header line; a card puts its title on the line.
+- **Header line.** 44 pt high, 16 pt from the sides, in a card too (where a card's bar
+  puts it). Leading: ‹ on a pushed page, or the title on a card. Trailing: extra actions,
+  12 apart, then ✕ last. A page with a large title puts it below the header line; a card
+  puts its title on the line.
 - **Round control.** SF Symbol (19 pt, weight 2.2) in a 44-pt glass circle, with an
   accessibility label always ("Close", "Back", "More", "Public Games").
 - **White capsule.** The one main action in a place: Play (50 high), Join (34), or a wide
@@ -203,7 +205,7 @@ Public Games has to stay calm at 1,000+ players and hundreds of rooms changing e
 | Card opens | Grows from the control that opened it. Spring 0.55 s, damping 0.82. Radius animates from a pill to 34 over 0.45 s. Contents fade in after 0.14 s over 0.25 s. The dim fades in with the spring |
 | Card closes | Shrinks evenly to 50% while moving 60% of the way back to the control, and fades out, on a 0.3 s critically damped spring. Contents go first, in 0.12 s. The blur fades by animating its effect to nil, because a blur ignores its parent's alpha. Never a non-uniform squash |
 | Game page opens | The hero expands in place into the page; a held tile first becomes the hero, then expands the same way |
-| Push inside a page or card | Slides in from the trailing edge; the art and wash stay still |
+| Push inside a page or card | Slides in from the trailing edge; the art and wash stay still. From the game page (Game Settings, Compatibility, Disc, Content) the page's text and rows drift 48 pt and fade while the art blurs under a 42% page dim (never sharp art behind text); ‹ or an edge swipe brings them back, ✕ closes both (`XEPreparePagePush`, `ios_page_push.h`) |
 | Live list change | New rows wait behind the pill; nothing reorders under a finger |
 
 ## Migration
@@ -214,11 +216,12 @@ What the code still does differently from this document:
   hairline 14%. The `sectionIcon*` palette is gone; rows draw `XERowSymbolImage`, a bare
   symbol in white 85%, coloured only for a state. Still to do: hairlines that start at the
   text, and the 0.5-pt width.
-- **Long-press menu** on library tiles (`contextMenuConfigurationForItemAtIndexPath` in
-  `ios_launcher_overlay_view.mm`): remove it; hold and X open the game page instead.
-- **Sheets on `glassSheet`** (Online Account, Move Profile): move to the wash.
-  ~~Profiles~~ (done 2026-11-06): a card from the avatar (`XEPrepareGlassCard`,
-  `ios_glass_card.h`), + then ✕, "On this iPhone" and "Online" groups. ~~Settings~~ (done 2026-11-06): on the wash
+- ~~**Long-press menu**~~ (done 2026-11-06): gone. Holding a tile does what X does: the tile
+  becomes the hero and opens its game page (the Dashboard opens System Software).
+- ~~**Sheets on `glassSheet`**~~ (done 2026-11-06): forms (Copy Profile, the account forms)
+  are pages on the wash, full screen on iPhone; the profile page is pushed in the Profiles
+  card. Nothing sets `glassSheet` any more. ~~Profiles~~ (done 2026-11-06): a card from the avatar (`XEPrepareGlassCard`,
+  `ios_glass_card.h`), + then ✕, one "On this iPhone" group (see Account flow). ~~Settings~~ (done 2026-11-06): on the wash
   (`XEUseArtWash`, `ios_art_wash.h`), large leading title, profile row first, Community last.
 - ~~**Friends card**~~ (done 2026-11-06): people only. One "Online now" group, "Play together"
   below it, no Public Games row; empty states use the one shape (symbol, bold line, plain
@@ -234,6 +237,31 @@ What the code still does differently from this document:
   extra actions with `XESetSheetActions` (`ios_view_helpers.h`); pages pushed inside a sheet
   pick up the root's ✕. Forms commit with `XESetFormCommit`, the white bottom button above the
   keyboard (New Profile, Add Friend, the gamertag, code, recovery and approval forms).
+- ~~**Game page screens**~~ (done 2026-11-06): Game Settings, Compatibility, Disc and Content
+  push over the game's art instead of opening a sheet. Compatibility, the first row under Play,
+  opens a page with the status headline,
+  "Latest reports" rows that open a report page, All Reports, and Submit a Report at the
+  bottom. Still to do: System Link from the game page still opens its own sheet.
+- ~~**Account flow**~~ (done 2026-11-07): sixteen account screens are now four. In the
+  Profiles card a tap switches profile and ⓘ opens the **profile page** (avatar, name, one
+  status line: "On this iPhone only", "Online", "On 3 devices"); + is a menu, New Profile or
+  I Have a Gamertag. Offline, the page has one white button, Get a Gamertag, and the
+  gamertag sheet goes straight back to the page (no recovery code in the way). Online, one
+  list: Devices with Add a Device…, Profile Data (Shared Saves, Copy Profile…), then
+  Account Recovery (Set Up, with an orange dot, while there is one device and no code kept)
+  and Change Gamertag. **Add a Device** shows the link code as a QR code
+  (`xenios://link?c=`, which the system Camera opens) and as text, with Also Copy Profile….
+  **I Have a Gamertag** is the camera, the code field and "Use a Recovery Code Instead".
+  **Copy Profile** is What (Game Saves, Achievements, Controls and Profile Settings on; Game
+  Settings off, tuned per device) and To (AirDrop or Files, Another Profile on This Device).
+  **Shared Saves** is Share With Every Profile, or per profile per game. Words: "Get a
+  Gamertag", not "Go Online"; "Copy", not "Export"; "save" only means game saves.
+- ~~**Friend sharing**~~ (done 2026-11-07): Add Friend leads with your own code as a QR code
+  of the friend link (`xenios://friend?c=`), the code in monospace, Share… (text plus the link
+  with its own preview) and Copy. The code field has a scan button beside it. Under it, one
+  status line says what happened ("Request sent to …", or the lobby's error in red). Opening
+  a friend link asks "Add Friend?" with Send Request. Still to do: an https link that works
+  for people who don't have XeniOS yet.
 - **iPad**: the library uses the phone layout scaled up today (four ~330-pt covers, the globe
   in the search row). Settings already uses `UISplitViewController`.
 - **Reduce Transparency and Increase Contrast** have no handling under `src/xenia/ui/ios`

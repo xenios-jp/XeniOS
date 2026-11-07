@@ -25,8 +25,6 @@
 
 namespace {
 
-// Wide enough for a list on iPad; on a phone the card spans the screen less its insets.
-constexpr CGFloat kMaxCardWidth = 440.0;
 // Below the card's last group.
 constexpr CGFloat kCardBottomPadding = 10.0;
 // How much of a grouped table's first header margin hides under the card's bar.
@@ -69,6 +67,7 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
 
 @implementation XEGlassCardPresentationController {
   UIView* _dim;
+  CGSize _laidOutContainerSize;
 }
 
 - (void)dealloc {
@@ -89,7 +88,7 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
   const UIEdgeInsets safe = container.safeAreaInsets;
   const CGFloat inset = [XeniaTheme glassCardInset];
   const CGFloat available_width = bounds.size.width - safe.left - safe.right - 2.0 * inset;
-  const CGFloat width = MIN(available_width, kMaxCardWidth);
+  const CGFloat width = MIN(available_width, kXEGlassCardMaxWidth);
   const CGFloat top = safe.top + 4.0;
   const CGFloat max_height = bounds.size.height - top - MAX(safe.bottom, inset);
   CGFloat height = max_height;
@@ -114,7 +113,23 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
     return;
   }
   UIView* card = self.presentedView;
-  if (!animated || UIAccessibilityIsReduceMotionEnabled()) {
+  if (UIAccessibilityIsReduceMotionEnabled()) {
+    card.frame = frame;
+    return;
+  }
+  // A push or pop resizes the card with the slide itself (and follows an edge swipe), rather
+  // than snapping to the new page's height before it slides in.
+  id<UIViewControllerTransitionCoordinator> coordinator = [self navigation].transitionCoordinator;
+  if (coordinator.isAnimated &&
+      [coordinator
+          animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> __unused c) {
+            card.frame = frame;
+            [card layoutIfNeeded];
+          }
+                          completion:nil]) {
+    return;
+  }
+  if (!animated) {
     card.frame = frame;
     return;
   }
@@ -134,9 +149,14 @@ UIBarButtonItem* LeadingTitleItem(NSString* title) {
 - (void)containerViewWillLayoutSubviews {
   [super containerViewWillLayoutSubviews];
   _dim.frame = self.containerView.bounds;
-  if (!self.presentedViewController.isBeingPresented) {
+  // Only a new container size (rotation, split view) moves the card here; page changes resize
+  // it through fitAnimated:, animated.
+  const CGSize size = self.containerView.bounds.size;
+  if (!self.presentedViewController.isBeingPresented &&
+      !CGSizeEqualToSize(size, _laidOutContainerSize)) {
     self.presentedView.frame = [self frameOfPresentedViewInContainerView];
   }
+  _laidOutContainerSize = size;
 }
 
 - (void)preferredContentSizeDidChangeForChildContentContainer:(id<UIContentContainer>)container {
@@ -319,7 +339,9 @@ void XEFitGlassCardToTable(UITableViewController* page) {
   if (@available(iOS 26.0, *)) {
     table.topEdgeEffect.hidden = YES;
   }
-  XEFitGlassCardToHeight(page, table.contentSize.height - kFirstHeaderTuck);
+  // A form's commit button sits under the rows, in the bottom safe-area inset it adds.
+  XEFitGlassCardToHeight(page, table.contentSize.height - kFirstHeaderTuck +
+                                   page.additionalSafeAreaInsets.bottom);
 }
 
 void XEFitGlassCardToHeight(UIViewController* page, CGFloat content_height) {

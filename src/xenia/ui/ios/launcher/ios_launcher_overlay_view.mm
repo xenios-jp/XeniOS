@@ -773,12 +773,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
                 forControlEvents:UIControlEventTouchUpInside];
   _heroSettingsButton.hidden = YES;
   _heroCompatButton = [xe_new_compat_capsule() retain];
-  [_heroCompatButton.heightAnchor constraintGreaterThanOrEqualToConstant:kMinTapTarget].active = YES;
   _heroCompatButton.hidden = YES;
 
   UIStackView* heroButtons = [[[UIStackView alloc]
       initWithArrangedSubviews:@[ _heroPlayButton, _heroMoreButton, _heroTouchButton,
-                                  _heroSettingsButton, _heroCompatButton ]] autorelease];
+                                  _heroSettingsButton ]] autorelease];
   heroButtons.spacing = 10.0;
   heroButtons.alignment = UIStackViewAlignmentCenter;
   _heroButtons = heroButtons;
@@ -952,7 +951,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _headerActions.spacing = 8.0;
   [_headerView addSubview:_headerActions];
 
-  // The game page's ✕ and ⋯, where Library and the header's actions were.
+  // The game page's ✕, where the header's actions were, and its ⋯, beside Play.
   _detailCloseButton = [[self newGlassCircle:@"xmark"
                                        label:NSLocalizedString(@"Close", @"sheet close button")]
       retain];
@@ -968,8 +967,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _detailMoreButton.showsMenuAsPrimaryAction = YES;
   _detailMoreButton.alpha = 0.0;
   _detailMoreButton.hidden = YES;
+  // ✕ top right, as on every page (docs/ios_design_language.md, rule 4).
   [NSLayoutConstraint activateConstraints:@[
-    [_detailCloseButton.leadingAnchor constraintEqualToAnchor:_libraryLabel.leadingAnchor],
+    [_detailCloseButton.trailingAnchor constraintEqualToAnchor:_headerActions.trailingAnchor],
     [_detailCloseButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
   ]];
   [self placeDetailMoreButton];
@@ -1088,6 +1088,11 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _gamesCollectionView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
   [_gamesCollectionView registerClass:[XeniaGameTileCell class]
            forCellWithReuseIdentifier:@"ImportedGameCell"];
+  UILongPressGestureRecognizer* hold =
+      [[[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                     action:@selector(tileHeld:)] autorelease];
+  hold.minimumPressDuration = 0.45;
+  [_gamesCollectionView addGestureRecognizer:hold];
   [self insertSubview:_gamesCollectionView belowSubview:_headerBackdrop];
   // The art, the notices and search scroll with the games, in the grid's top inset.
   [_gamesCollectionView addSubview:_topInfoStack];
@@ -1165,6 +1170,16 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 
 - (void)libraryBackgroundChanged:(NSNotification*)__unused notification {
   [self applyLibraryBackground];
+  [self publishArtWash];
+}
+
+// Every sheet opened from here sits on the Library's backdrop. The game's art only when the
+// Library shows the game's colours: with the green background or none, sheets are the plain dim
+// page, never art the Library itself doesn't show.
+- (void)publishArtWash {
+  const BOOL game_colours =
+      XeniaLibraryBackgroundSetting() == XeniaLibraryBackgroundGameColours;
+  XESetArtWashImage(game_colours ? _ambientArt.image : nil);
 }
 
 - (void)setHidden:(BOOL)hidden {
@@ -1261,72 +1276,30 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroCover.hidden = !show;
 }
 
-// Whether Play, the round buttons and the capsule fit across the page in one row.
-- (BOOL)heroButtonRowFits {
-  if (_heroCompatButton.hidden) {
-    return YES;
-  }
-  CGFloat width = 0.0;
-  NSUInteger count = 0;
-  for (UIView* view in @[ _heroPlayButton, _heroMoreButton, _heroTouchButton, _heroSettingsButton,
-                          _heroCompatButton ]) {
-    if (view.hidden) {
-      continue;
-    }
-    width += [view systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].width;
-    ++count;
-  }
-  width += _heroButtons.spacing * (count > 0 ? count - 1 : 0);
-  return width <= CGRectGetWidth(self.bounds) - 2.0 * _heroTextLeading.constant;
-}
-
-// Upright, the compatibility capsule ends the row of buttons. Beside the art, or when larger text
-// leaves no room for it, it sits on its own line above them.
+// The status line sits under the title on its own line, a tap away from Compatibility.
 - (void)placeHeroCompatButton {
-  const BOOL own_line = _sideLayout || ![self heroButtonRowFits];
-  UIView* row = own_line ? _heroText : _heroButtons;
-  if (_heroCompatButton.superview == row) {
+  if (_heroCompatButton.superview == _heroText) {
     return;
   }
   // A stack builds its constraints from the hidden state it last saw for a view, which a move
-  // between stacks can leave stale: the capsule then stays unplaced, on top of the title. Moving
-  // it hidden and showing it again makes the new stack lay it out.
+  // between stacks can leave stale. Moving it hidden and showing it again makes the stack lay
+  // it out.
   const BOOL hidden = _heroCompatButton.hidden;
   [_heroCompatButton removeFromSuperview];
   _heroCompatButton.hidden = YES;
-  if (own_line) {
-    [_heroText insertArrangedSubview:_heroCompatButton
-                             atIndex:[_heroText.arrangedSubviews indexOfObject:_heroButtons]];
-    [_heroText setCustomSpacing:12.0 afterView:_heroCompatButton];
-  } else {
-    [_heroButtons addArrangedSubview:_heroCompatButton];
-  }
+  [_heroText insertArrangedSubview:_heroCompatButton
+                           atIndex:[_heroText.arrangedSubviews indexOfObject:_heroTitle] + 1];
+  [_heroText setCustomSpacing:14.0 afterView:_heroCompatButton];
   _heroCompatButton.hidden = hidden;
 }
 
-// Upright, the game page's ⋯ sits in the header's corner, across from ✕. Beside the art it joins
-// Play and the round buttons, and the rows start at the top, level with ✕, where it was.
+// The game page's ⋯ joins Play and the round buttons, after them.
 - (void)placeDetailMoreButton {
-  if (_sideLayout) {
-    if (_detailMoreButton.superview == _heroButtons) {
-      return;
-    }
-    [_detailMoreButton removeFromSuperview];
-    const NSUInteger after = [_heroButtons.arrangedSubviews indexOfObject:_heroSettingsButton];
-    [_heroButtons insertArrangedSubview:_detailMoreButton
-                                atIndex:after == NSNotFound ? _heroButtons.arrangedSubviews.count
-                                                            : after + 1];
-    return;
-  }
-  if (_detailMoreButton.superview == _headerView) {
+  if (_detailMoreButton.superview == _heroButtons) {
     return;
   }
   [_detailMoreButton removeFromSuperview];
-  [_headerView addSubview:_detailMoreButton];
-  [NSLayoutConstraint activateConstraints:@[
-    [_detailMoreButton.trailingAnchor constraintEqualToAnchor:_headerActions.trailingAnchor],
-    [_detailMoreButton.centerYAnchor constraintEqualToAnchor:_headerView.centerYAnchor],
-  ]];
+  [_heroButtons addArrangedSubview:_detailMoreButton];
 }
 
 - (void)layoutSubviews {
@@ -1660,7 +1633,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroArt.image = _heroArtIsCover ? blurred : image;
   _heroCover.image = _heroArtIsCover ? image : nil;
   _ambientArt.image = blurred;
-  XESetArtWashImage(blurred);  // Every sheet opened from here sits on the same wash.
+  [self publishArtWash];
   [_ambientField setGameImage:image
                           key:image ? [NSString stringWithFormat:@"%08X-%d", _heroArtTitleId,
                                                                  _heroArtIsCover]
@@ -1757,6 +1730,15 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return _detailGame != nil;
 }
 
+- (NSArray<UIView*>*)gameDetailForegroundViews {
+  NSMutableArray<UIView*>* views = [NSMutableArray arrayWithObject:_heroText];
+  if (_detailRows) {
+    [views addObject:_detailRows];
+  }
+  [views addObject:_detailCloseButton];
+  return views;
+}
+
 // What changes between the Library and a game's page; everything else stays where it is.
 - (void)applyDetailState:(BOOL)detail {
   _heroCaption.hidden = detail || !_heroGame;
@@ -1770,12 +1752,14 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   _heroSettingsButton.hidden = !game_buttons;
   _heroTouchButton.alpha = game_buttons ? 1.0 : 0.0;
   _heroSettingsButton.alpha = game_buttons ? 1.0 : 0.0;
-  const BOOL compat = game_buttons && _detailGame.supportsCompatibility;
-  _heroCompatButton.hidden = !compat;
-  _heroCompatButton.alpha = compat ? 1.0 : 0.0;
+  // Compatibility is the first row under Play, where it reads as what it is; a line over the
+  // art was neither legible nor recognisable.
+  _heroCompatButton.hidden = YES;
+  _heroCompatButton.alpha = 0.0;
   [self placeHeroCompatButton];
   // Title straight onto the buttons once the lines between them have gone.
-  [_heroText setCustomSpacing:detail ? 16.0 : UIStackViewSpacingUseDefault afterView:_heroTitle];
+  [_heroText setCustomSpacing:detail ? 16.0 : UIStackViewSpacingUseDefault
+                    afterView:_heroTitle];
 
   _libraryLabel.alpha = detail ? 0.0 : 1.0;
   _headerActions.alpha = detail ? 0.0 : 1.0;
@@ -2187,14 +2171,9 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_importHandler release];
   [_addMenu release];
   [_gameLaunchedHandler release];
-  [_copyLaunchURLHandler release];
   [_gameSettingsHandler release];
   [_touchLayoutHandler release];
   [_compatibilityHandler release];
-  [_manageContentHandler release];
-  [_discSelectionHandler release];
-  [_patchesHandler release];
-  [_zarConversionHandler release];
   [_headerView release];
   [_headerBackdrop release];
   [_headerActions release];
@@ -3362,252 +3341,33 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
-- (UITargetedPreview*)contextMenuPreviewForConfiguration:(UIContextMenuConfiguration*)configuration
-                                          collectionView:(UICollectionView*)collectionView {
-  id identifier = configuration.identifier;
+// Holding a tile does what X does on a controller: it opens the game's page (the tile becomes
+// the hero, which expands into the page), or System Software for the Dashboard. There is no
+// long-press menu; everything it held lives on the game page.
+- (void)tileHeld:(UILongPressGestureRecognizer*)hold {
+  if (hold.state != UIGestureRecognizerStateBegan) {
+    return;
+  }
   NSIndexPath* indexPath =
-      [identifier isKindOfClass:[NSIndexPath class]] ? (NSIndexPath*)identifier : nil;
-  if (!indexPath) {
-    return nil;
+      [_gamesCollectionView indexPathForItemAtPoint:[hold locationInView:_gamesCollectionView]];
+  if (!indexPath || indexPath.item >= [self libraryItemCount]) {
+    return;
   }
-  XeniaGameTileCell* cell = (XeniaGameTileCell*)[collectionView cellForItemAtIndexPath:indexPath];
-  if (![cell isKindOfClass:[XeniaGameTileCell class]]) {
-    return nil;
-  }
-  UIPreviewParameters* parameters = [[[UIPreviewParameters alloc] init] autorelease];
-  parameters.backgroundColor = [UIColor clearColor];
-  parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:cell.cardView.bounds
-                                                      cornerRadius:cell.cardView.layer.cornerRadius];
-  return [[[UITargetedPreview alloc] initWithView:cell.cardView parameters:parameters] autorelease];
-}
-
-- (void)resetContextMenuCellTransforms {
-  for (UICollectionViewCell* visibleCell in _gamesCollectionView.visibleCells) {
-    if (![visibleCell isKindOfClass:[XeniaGameTileCell class]]) {
-      continue;
-    }
-    XeniaGameTileCell* gameCell = (XeniaGameTileCell*)visibleCell;
-    gameCell.transform = CGAffineTransformIdentity;
-    gameCell.contentView.transform = CGAffineTransformIdentity;
-    gameCell.cardView.transform = CGAffineTransformIdentity;
-    gameCell.layer.zPosition = gameCell.controllerFocused ? 1.0f : 0.0f;
-    [gameCell setNeedsLayout];
-  }
-  [_gamesCollectionView.collectionViewLayout invalidateLayout];
-}
-
-- (UIContextMenuConfiguration*)dashboardContextMenuForIndexPath:(NSIndexPath*)indexPath {
-  return [UIContextMenuConfiguration
-      configurationWithIdentifier:indexPath
-                  previewProvider:nil
-                   actionProvider:^UIMenu*(NSArray<UIMenuElement*>* __unused suggestedActions) {
-                     // The block retains the overlay for as long as the menu lives.
-                     XeniaIOSLauncherOverlayView* owner = self;
-                     UIAction* open = [UIAction
-                         actionWithTitle:owner->_dashboardInstalled
-                                             ? NSLocalizedString(
-                                                   @"Start Dashboard",
-                                                   @"launcher overlay view: menu action")
-                                             : NSLocalizedString(
-                                                   @"Set Up Dashboard",
-                                                   @"launcher overlay view: menu action")
-                                   image:[UIImage systemImageNamed:owner->_dashboardInstalled
-                                                                       ? @"play.fill"
-                                                                       : @"arrow.down.circle"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   [owner dashboardTapped:nil];
-                                 }];
-                     UIAction* system_software = [UIAction
-                         actionWithTitle:NSLocalizedString(@"System Software",
-                                                           @"launcher overlay view: menu action")
-                                   image:[UIImage systemImageNamed:@"gearshape"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (owner->_dashboardSystemSoftwareHandler) {
-                                     owner->_dashboardSystemSoftwareHandler();
-                                   }
-                                 }];
-                     return [UIMenu menuWithChildren:@[ open, system_software ]];
-                   }];
-}
-
-- (UIContextMenuConfiguration*)collectionView:(UICollectionView*)collectionView
-    contextMenuConfigurationForItemAtIndexPath:(NSIndexPath*)indexPath
-                                         point:(CGPoint)point {
-  (void)collectionView;
-  (void)point;
+  [self setFocusedGameIndex:indexPath.item scroll:NO];
+  UIImpactFeedbackGenerator* haptic = [[[UIImpactFeedbackGenerator alloc]
+      initWithStyle:UIImpactFeedbackStyleMedium] autorelease];
   if ([self isDashboardItem:indexPath.item]) {
-    return [self dashboardContextMenuForIndexPath:indexPath];
+    if (_dashboardSystemSoftwareHandler) {
+      [haptic impactOccurredAtLocation:[hold locationInView:self]];
+      _dashboardSystemSoftwareHandler();
+    }
+    return;
   }
-  if (![self gameAtItem:indexPath.item]) {
-    return nil;
+  const NSInteger gameIndex = [self gameIndexForItem:indexPath.item];
+  if (gameIndex >= 0 && _gameActionsHandler) {
+    [haptic impactOccurredAtLocation:[hold locationInView:self]];
+    _gameActionsHandler(static_cast<NSUInteger>(gameIndex));
   }
-
-  NSUInteger gameIndex = static_cast<NSUInteger>([self gameIndexForItem:indexPath.item]);
-  return [UIContextMenuConfiguration
-      configurationWithIdentifier:indexPath
-                  previewProvider:nil
-                   actionProvider:^UIMenu*(NSArray<UIMenuElement*>* __unused suggestedActions) {
-                     // The block retains the overlay for as long as the menu lives.
-                     XeniaIOSLauncherOverlayView* unsafeSelf = self;
-                     if (gameIndex >= unsafeSelf->_games.count) {
-                       return nil;
-                     }
-                     XeniaIOSLauncherGameSnapshot* game = unsafeSelf->_games[gameIndex];
-
-                     UIAction* playAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Play", @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"play.fill"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_gameLaunchedHandler) {
-                                     unsafeSelf->_gameLaunchedHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* gameSettingsAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Game Settings",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"slider.horizontal.3"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_gameSettingsHandler) {
-                                     unsafeSelf->_gameSettingsHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* touchLayoutAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Touch Layout",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"hand.tap"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_touchLayoutHandler) {
-                                     unsafeSelf->_touchLayoutHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* compatAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Compatibility",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"checkmark.shield"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_compatibilityHandler) {
-                                     unsafeSelf->_compatibilityHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* contentAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Manage Content",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"square.stack.3d.up"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_manageContentHandler) {
-                                     unsafeSelf->_manageContentHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* discAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Launch Disc",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"opticaldisc"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_discSelectionHandler) {
-                                     unsafeSelf->_discSelectionHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* patchesAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Patches",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"puzzlepiece.extension"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_patchesHandler) {
-                                     unsafeSelf->_patchesHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* zarConversionAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Convert to ZAR",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"opticaldisc"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_zarConversionHandler) {
-                                     unsafeSelf->_zarConversionHandler(gameIndex);
-                                   }
-                                 }];
-                     UIAction* copyURLAction = [UIAction
-                         actionWithTitle:NSLocalizedString(@"Copy Launch URL",
-                                                           @"launcher overlay view: title")
-                                   image:[UIImage systemImageNamed:@"link"]
-                              identifier:nil
-                                 handler:^(__unused UIAction* action) {
-                                   if (unsafeSelf->_copyLaunchURLHandler) {
-                                     unsafeSelf->_copyLaunchURLHandler(gameIndex);
-                                   }
-                                 }];
-                     // Grouped like a system menu, divided by section, with only the actions
-                     // that apply to this game.
-                     auto group = ^UIMenu*(NSArray<UIAction*>* actions) {
-                       return [UIMenu menuWithTitle:@""
-                                              image:nil
-                                         identifier:nil
-                                            options:UIMenuOptionsDisplayInline
-                                           children:actions];
-                     };
-                     NSMutableArray<UIAction*>* setup = [NSMutableArray array];
-                     NSMutableArray<UIAction*>* content = [NSMutableArray array];
-                     NSMutableArray<UIAction*>* info = [NSMutableArray array];
-                     if (game.titleId) {
-                       [setup addObject:gameSettingsAction];
-                       [setup addObject:touchLayoutAction];
-                     }
-                     if (game.supportsPatches) {
-                       [setup addObject:patchesAction];
-                     }
-                     if (game.supportsDiscSelection) {
-                       [content addObject:discAction];
-                     }
-                     if (game.supportsManageContent) {
-                       [content addObject:contentAction];
-                     }
-                     if (game.supportsZarConversion) {
-                       [content addObject:zarConversionAction];
-                     }
-                     if (game.supportsCompatibility) {
-                       [info addObject:compatAction];
-                     }
-                     if (game.titleId) {
-                       [info addObject:copyURLAction];
-                     }
-                     NSMutableArray<UIMenuElement*>* children =
-                         [NSMutableArray arrayWithObject:group(@[ playAction ])];
-                     for (NSArray<UIAction*>* actions in @[ setup, content, info ]) {
-                       if (actions.count) {
-                         [children addObject:group(actions)];
-                       }
-                     }
-                     return [UIMenu menuWithTitle:@"" children:children];
-                   }];
-}
-
-- (UITargetedPreview*)collectionView:(UICollectionView*)collectionView
-    previewForHighlightingContextMenuWithConfiguration:(UIContextMenuConfiguration*)configuration {
-  return [self contextMenuPreviewForConfiguration:configuration collectionView:collectionView];
-}
-
-- (UITargetedPreview*)collectionView:(UICollectionView*)collectionView
-    previewForDismissingContextMenuWithConfiguration:(UIContextMenuConfiguration*)configuration {
-  return [self contextMenuPreviewForConfiguration:configuration collectionView:collectionView];
-}
-
-- (void)collectionView:(UICollectionView*)collectionView
-    willEndContextMenuInteractionWithConfiguration:(UIContextMenuConfiguration*)configuration
-                                          animator:(id<UIContextMenuInteractionAnimating>)animator {
-  (void)collectionView;
-  (void)configuration;
-  [animator addCompletion:^{
-    [self resetContextMenuCellTransforms];
-  }];
 }
 
 #pragma mark - UICollectionViewDelegateFlowLayout

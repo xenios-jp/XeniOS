@@ -48,8 +48,8 @@ NSArray<NSString*>* xe_compat_status_labels(void);
 NSArray<NSString*>* xe_compat_perfs(void);
 NSArray<NSString*>* xe_compat_perf_labels(void);
 
-// The capsule beside Play on a game's page: a dot in the status's colour, the verdict, and how
-// well it runs under it. Tapping it shows what the reports say and opens them all.
+// The status line under a game's title: "● Playable · Runs Great ›", the dot in the status's
+// colour. A tap opens Compatibility (|reports|); the latest notes are its VoiceOver hint.
 UIButton* xe_new_compat_capsule(void);
 void xe_update_compat_capsule(UIButton* capsule, NSString* _Nullable status,
                               NSString* _Nullable perf, NSString* _Nullable notes,
