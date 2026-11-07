@@ -25,7 +25,6 @@
 - (void)updateHeader;
 - (NSString*)pauseEmulatorTitle;
 - (NSString*)pauseEmulatorHint;
-- (NSString*)exitTitle;
 - (NSString*)exitAccessibilityHint;
 @end
 
@@ -37,7 +36,6 @@ constexpr CGFloat kTileHeight = 70.0;
 constexpr CGFloat kTileHeightCompact = 54.0;
 constexpr CGFloat kTileRadius = 20.0;
 constexpr CGFloat kPanelRadius = 34.0;
-constexpr CGFloat kOnlinePanelWidth = 300.0;
 constexpr CGFloat kOnlinePanelGap = 12.0;
 // The narrowest the menu gets to keep the Online panel beside it.
 constexpr CGFloat kMenuWidthBesidePanel = 340.0;
@@ -188,10 +186,13 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
                                    imageName:@"slider.horizontal.3"
                                   menuAction:XeniaIOSInGameMenuActionSettings
                                       action:@selector(settingsPressed:)];
-  _exitButton = [self newButtonWithTitle:[self exitTitle]
-                               imageName:@"power"
-                              menuAction:XeniaIOSInGameMenuActionExit
-                                  action:@selector(exitPressed:)];
+  // Quit Game either way; in a game the dashboard started it opens a choice: back to the
+  // dashboard, as the game's own exit does, or to the library.
+  _exitButton = [self
+      newButtonWithTitle:NSLocalizedString(@"Quit Game", @"In-game menu button, leaves the game")
+               imageName:@"power"
+              menuAction:XeniaIOSInGameMenuActionExit
+                  action:@selector(exitPressed:)];
   [self updateExitMenu];
   _graphicsButton = [self newButtonWithTitle:NSLocalizedString(@"Graphics", @"In-game menu button")
                                    imageName:@"cpu"
@@ -712,11 +713,59 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   if (!button || !button.enabled || button.hidden) {
     return;
   }
+  if (button == _exitButton && _exitsToDashboard) {
+    // A controller can't move through a menu; it answers alerts.
+    [self presentExitChoiceAlert];
+    return;
+  }
   if (button.showsMenuAsPrimaryAction) {
     [button performPrimaryAction];
     return;
   }
   [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+}
+
+- (void)presentExitChoiceAlert {
+  UIResponder* responder = self;
+  while (responder && ![responder isKindOfClass:[UIViewController class]]) {
+    responder = responder.nextResponder;
+  }
+  UIViewController* presenter = (UIViewController*)responder;
+  while (presenter.presentedViewController) {
+    presenter = presenter.presentedViewController;
+  }
+  if (!presenter) {
+    return;
+  }
+  __unsafe_unretained XeniaIOSInGameMenuOverlay* unsafe_self = self;
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Quit Game", @"In-game menu: exit choice title")
+                       message:nil
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Quit to Dashboard",
+                                                                    @"In-game menu: leaves a game "
+                                                                    @"the Xbox 360 Dashboard "
+                                                                    @"started for the dashboard")
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction* __unused action) {
+                                            if (unsafe_self->_exitToDashboardHandler) {
+                                              unsafe_self->_exitToDashboardHandler();
+                                            }
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Quit to Library",
+                                                                    @"In-game menu: leaves a game "
+                                                                    @"the Xbox 360 Dashboard "
+                                                                    @"started for the XeniOS "
+                                                                    @"library")
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [unsafe_self exitPressed:nil];
+                                          }]];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"In-game menu: exit choice")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)setButton:(UIButton*)button controllerFocused:(BOOL)focused {
@@ -857,15 +906,17 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   CGFloat menu_width = MIN(regularWidth ? 480.0 : 440.0, MAX(300.0, safeFrame.size.width - 24.0));
   // With the Online panel beside it, the menu gives up the room the panel needs.
   if (_onlinePanelOpen && [self onlinePanelFitsBeside]) {
-    menu_width = MIN(menu_width, safeFrame.size.width - 24.0 - kOnlinePanelGap - kOnlinePanelWidth);
+    menu_width =
+        MIN(menu_width, safeFrame.size.width - 24.0 - kOnlinePanelGap - kXeniaOnlinePanelWidth);
   }
   _panelWidthConstraint.constant = menu_width;
-  [self fitTileTitles];
   if (!_hasAppliedMenuLayout || _appliedCompactLandscape != compactLandscape) {
     _hasAppliedMenuLayout = YES;
     _appliedCompactLandscape = compactLandscape;
     [self applyMenuLayoutForCompactLandscape:compactLandscape];
   }
+  // After the layout: the compact one changes the tiles' insets.
+  [self fitTileTitles];
   if (_onlinePanelOpen && [self onlinePanelFitsBeside] != _onlinePanelBeside) {
     [self placeOnlinePanel];
   }
@@ -880,7 +931,7 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   if (CGRectIsEmpty(safe)) {
     safe = self.bounds;
   }
-  return safe.size.width - 24.0 - kOnlinePanelGap - kOnlinePanelWidth >= kMenuWidthBesidePanel;
+  return safe.size.width - 24.0 - kOnlinePanelGap - kXeniaOnlinePanelWidth >= kMenuWidthBesidePanel;
 }
 
 - (void)placeOnlinePanel {
@@ -891,17 +942,18 @@ constexpr CGFloat kMenuWidthBesidePanel = 340.0;
   NSMutableArray<NSLayoutConstraint*>* constraints = [NSMutableArray array];
   if (_onlinePanelBeside) {
     // The pair is centred: the menu moves left by half the panel.
-    _panelCenterXConstraint.constant = -(kOnlinePanelWidth + kOnlinePanelGap) / 2.0;
+    _panelCenterXConstraint.constant = -(kXeniaOnlinePanelWidth + kOnlinePanelGap) / 2.0;
     [constraints addObjectsFromArray:@[
       [_onlinePanel.leadingAnchor constraintEqualToAnchor:_panel.trailingAnchor
                                                  constant:kOnlinePanelGap],
-      [_onlinePanel.widthAnchor constraintEqualToConstant:kOnlinePanelWidth],
+      [_onlinePanel.widthAnchor constraintEqualToConstant:kXeniaOnlinePanelWidth],
       [_onlinePanel.topAnchor constraintEqualToAnchor:_panel.topAnchor],
       [_onlinePanel.bottomAnchor constraintLessThanOrEqualToAnchor:_panel.bottomAnchor],
     ]];
   } else {
     _panelCenterXConstraint.constant = 0.0;
-    NSLayoutConstraint* width = [_onlinePanel.widthAnchor constraintEqualToConstant:300.0];
+    NSLayoutConstraint* width =
+        [_onlinePanel.widthAnchor constraintEqualToConstant:kXeniaOnlinePanelWidth];
     width.priority = UILayoutPriorityDefaultHigh;
     [constraints addObjectsFromArray:@[
       [_onlinePanel.topAnchor constraintEqualToAnchor:_systemLinkLabel.bottomAnchor constant:8.0],
@@ -1086,12 +1138,6 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
   }
 }
 
-// Quit Game either way; in a game the dashboard started it opens a menu: back to the dashboard,
-// as the game's own exit does, or to the library.
-- (NSString*)exitTitle {
-  return NSLocalizedString(@"Quit Game", @"In-game menu button, leaves the game");
-}
-
 - (NSString*)exitAccessibilityHint {
   return _exitsToDashboard
              ? NSLocalizedString(@"Stops the game. Choose the Xbox 360 Dashboard or the library.",
@@ -1103,9 +1149,16 @@ static NSString* const kOnlinePanelClosedKey = @"XeniaOnlinePanelClosedByPlayer"
 
 - (void)updateExitMenu {
   _exitButton.accessibilityHint = [self exitAccessibilityHint];
+  // One or the other: a tap quits to the library, or opens the choice.
+  [_exitButton removeTarget:self
+                     action:@selector(exitPressed:)
+           forControlEvents:UIControlEventTouchUpInside];
   if (!_exitsToDashboard) {
     _exitButton.showsMenuAsPrimaryAction = NO;
     _exitButton.menu = nil;
+    [_exitButton addTarget:self
+                    action:@selector(exitPressed:)
+          forControlEvents:UIControlEventTouchUpInside];
     return;
   }
   __unsafe_unretained XeniaIOSInGameMenuOverlay* unsafe_self = self;

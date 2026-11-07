@@ -14,6 +14,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/ui/ios/app/ios_lifecycle_audio_session.h"
 #include "xenia/ui/ios/app/windowed_app_context_ios.h"
+#import "xenia/ui/ios/shared/ios_background_refresh.h"
 
 namespace {
 
@@ -129,6 +130,7 @@ constexpr int64_t kSettleTimeoutNs = 4 * NSEC_PER_SEC;
     return;
   }
   XELOGI("iOS lifecycle: scene entered background");
+  xe_ios_background_refresh_schedule();
   xe::ui::IOSAudioSessionNoteBackgrounded();
   _context->SetEmulationPaused(Reason::kBackground, true);
   [self holdBackgroundTaskUntilSettled];

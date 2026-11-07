@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 
+#import "xenia/ui/ios/shared/ios_background_refresh.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/ui/windowed_app.h"
@@ -50,6 +51,8 @@ DECLARE_bool(log_to_stdout);
 - (BOOL)application:(UIApplication*)application
     didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
   (void)application;
+  // Before launching ends, as iOS requires: a closed app may be woken for it.
+  xe_ios_background_refresh_register();
   NSURL* launch_url = nil;
   if (launchOptions) {
     launch_url = [launchOptions objectForKey:UIApplicationLaunchOptionsURLKey];

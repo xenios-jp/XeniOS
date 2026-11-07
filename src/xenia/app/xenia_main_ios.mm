@@ -53,6 +53,7 @@
 #include "xenia/ui/ios/shared/ios_diagnostics.h"
 #include "xenia/ui/ios/shared/ios_idle_timer.h"
 #include "xenia/ui/ios/shared/ios_live_social_bridge.h"
+#include "xenia/ui/ios/shared/ios_profile_data.h"
 #include "xenia/ui/ios/shared/ios_session_stats.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_theme_controls.h"
@@ -1510,6 +1511,51 @@ bool EmulatorAppIOS::OnInitialize() {
       return profiles->GetProfile(xuid) ? xuid : 0;
     };
     xe_ios_live_social_install(std::move(live_host));
+  }
+
+  // Profile files (.xeniosprofile) for the account screens: export, and import of one
+  // opened from AirDrop or Files.
+  {
+    XeniaIOSProfileDataHost data_host;
+    data_host.content_root = [this]() {
+      return emulator_ ? emulator_->content_root() : std::filesystem::path();
+    };
+    // Asked from the import's own thread too: launches change the title under launch_mutex_.
+    data_host.profile_in_game = [this](uint64_t xuid) {
+      std::lock_guard<std::mutex> lock(launch_mutex_);
+      if (!emulator_ || !emulator_->is_title_open() || !emulator_->kernel_state() ||
+          !emulator_->kernel_state()->xam_state()) {
+        return false;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      return profiles && profiles->GetProfile(xuid) != nullptr;
+    };
+    data_host.profile_imported = [this](uint64_t xuid, bool created) {
+      std::lock_guard<std::mutex> lock(launch_mutex_);
+      // Not up yet: the profile manager finds the files when it starts.
+      if (!emulator_ || !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+        return;
+      }
+      auto* profiles = emulator_->kernel_state()->xam_state()->profile_manager();
+      if (!profiles) {
+        return;
+      }
+      // Reading the account mounts and dismounts the profile, so a signed-in one leaves its
+      // slot for that and comes back with the imported account and GPDs.
+      const uint8_t slot = profiles->GetUserIndexAssignedToProfile(xuid);
+      const bool signed_in = slot < XUserMaxUserCount && profiles->GetProfile(slot) &&
+                             profiles->GetProfile(slot)->xuid() == xuid;
+      if (signed_in) {
+        profiles->Logout(slot, false);
+      }
+      profiles->ReloadProfile(xuid);
+      if (signed_in) {
+        profiles->Login(xuid, slot, true);
+      } else if (created && !profiles->IsAnyProfileSignedIn()) {
+        profiles->Login(xuid, 0, true);
+      }
+    };
+    xe_ios_profile_data_install(std::move(data_host));
   }
 
   ios_context.set_achievements_snapshot_callback([this](uint32_t user_index, uint32_t title_id) {

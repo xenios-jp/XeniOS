@@ -12,6 +12,8 @@
 #import <GameController/GameController.h>
 #import <PhotosUI/PhotosUI.h>
 
+#import "xenia/ui/ios/settings/ios_profile_import.h"
+#import "xenia/ui/ios/shared/ios_background_refresh.h"
 #include "xenia/ui/ios/shared/ios_edge_adapter.h"
 
 #include <algorithm>
@@ -358,6 +360,7 @@ struct LaunchPreparation {
 - (void)finishTouchLayoutEditMode;
 - (void)updateTouchControlsOverlayVisibilityAnimated:(BOOL)animated;
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
+- (void)showSignedOut:(NSString*)message removed:(BOOL)removed;
 - (void)showPersistentStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
 - (void)updateStatusToast:(NSString*)message;
 - (void)dismissStatusToast;
@@ -3495,12 +3498,80 @@ static bool XeJITUsable() {
                                                          live.attentionCount);
                     xe_ios_system_link_live_game_changed();
                     unsafe_self.inGameMenuOverlay.friendsAttentionCount = live.attentionCount;
+                    // Online at last: friend requests and invites are now worth notifying
+                    // while XeniOS is closed. Asks once.
+                    if (live.state == XeniaLiveSocialStateOnline &&
+                        [UIApplication sharedApplication].applicationState ==
+                            UIApplicationStateActive) {
+                      xe_ios_request_notification_permission();
+                    }
                   }];
   [center addObserverForName:XeniaLiveSocialInviteReceivedNotification
                       object:nil
                        queue:[NSOperationQueue mainQueue]
                   usingBlock:^(NSNotification* note) {
                     [unsafe_self showLiveInviteBanner:note.object];
+                  }];
+  [center addObserverForName:XeniaLiveSocialSystemLinkJoinNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* text = note.userInfo[XeniaLiveSocialMessageKey];
+                    if (text.length) {
+                      [unsafe_self showStatusToast:text style:XeniaIOSStatusToastStyleInfo];
+                    }
+                  }];
+  [center addObserverForName:XeniaLiveSocialJoinFailedNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* text = note.userInfo[XeniaLiveSocialMessageKey];
+                    if (text.length) {
+                      [unsafe_self showStatusToast:text style:XeniaIOSStatusToastStyleWarning];
+                    }
+                  }];
+  // A report's answer comes after its form closed, wherever the player is by then: a toast.
+  [center addObserverForName:XeniaLiveSocialNoticeNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
+                    if (message.length) {
+                      [unsafe_self showStatusToast:message style:XeniaIOSStatusToastStyleSuccess];
+                    }
+                  }];
+  // Signed out by the lobby (signed in elsewhere, or removed): offline here now, wherever the
+  // player is, told what happened and how to come back.
+  [center addObserverForName:XeniaLiveSocialSignedOutNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
+                    if (message.length) {
+                      [unsafe_self showSignedOut:message
+                                         removed:[note.userInfo[XeniaLiveSocialSignedOutReasonKey]
+                                                     isEqualToString:@"removed"]];
+                    }
+                  }];
+  [center addObserverForName:XeniaLiveSocialRequestFailedNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
+                    // A friend request a player refused (they take requests by code only)
+                    // comes after the button that sent it, from any list.
+                    if (note.userInfo[XeniaLiveSocialPlayerKey] && message.length) {
+                      [unsafe_self showStatusToast:message style:XeniaIOSStatusToastStyleError];
+                    }
+                  }];
+  [center addObserverForName:XeniaLiveSocialReportFailedNotification
+                      object:nil
+                       queue:[NSOperationQueue mainQueue]
+                  usingBlock:^(NSNotification* note) {
+                    NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
+                    if (message.length) {
+                      [unsafe_self showStatusToast:message style:XeniaIOSStatusToastStyleError];
+                    }
                   }];
 }
 
@@ -3778,7 +3849,7 @@ static bool XeJITUsable() {
 
 // A file opened from Files or AirDrop. Not a launch: route it through the import flow.
 - (BOOL)handleOpenedFileURL:(NSURL*)url {
-  if (xe_ios_handle_opened_profile_file(url, self)) {
+  if (xe_ios_profile_import_handle_url(url, self)) {
     return YES;
   }
   if ([self handleExternalTouchLayoutFileURL:url]) {
@@ -5871,6 +5942,70 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 }
 
 #pragma mark - Touch layout UI coordinator host
+
+// What signed this device out, and the way back. Signed in elsewhere: signing in here again,
+// which signs the other device out. Removed: signing in with a code from another device. A game
+// keeps playing without Live, so over one it's a toast that says where to sign in.
+- (void)showSignedOut:(NSString*)message removed:(BOOL)removed {
+  if (self.gameRunning) {
+    // The removed notice says its way back (a code) already.
+    [self
+        showStatusToast:removed ? message
+                                : [NSString stringWithFormat:NSLocalizedString(
+                                                                 @"%@ Sign in again from Friends.",
+                                                                 @"Toast during a game, after "
+                                                                 @"the signed-in-elsewhere "
+                                                                 @"notice (%@)"),
+                                                             message]
+                  style:XeniaIOSStatusToastStyleInfo];
+    return;
+  }
+  // A sheet on its way in or out can't present: UIKit drops the alert. Wait for it to settle.
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation];
+  if (presenter.isBeingDismissed || presenter.isBeingPresented) {
+    NSString* held = [[message copy] autorelease];
+    __unsafe_unretained XeniaViewController* unsafe_retry = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                     [unsafe_retry showSignedOut:held removed:removed];
+                   });
+    return;
+  }
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:removed ? NSLocalizedString(@"Removed from the Account",
+                                                           @"Alert title: another device removed "
+                                                           @"this one")
+                                       : NSLocalizedString(@"Signed In on Another Device",
+                                                           @"Alert title: the account signed in "
+                                                           @"elsewhere")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Not Now", @"Alert button")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  UIAlertAction* back = [UIAlertAction
+      actionWithTitle:removed ? NSLocalizedString(@"Sign In…", @"Removed from the account: "
+                                                               @"open sign-in")
+                              : NSLocalizedString(@"Sign In Here",
+                                                  @"Signed in elsewhere: take the account back "
+                                                  @"on this device")
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction* __unused action) {
+                if (removed) {
+                  xe_ios_present_sign_in([unsafe_self topPresentedControllerForModalPresentation],
+                                         nil);
+                } else if (![[XeniaLiveSocial shared] turnOnOnlineForProfile]) {
+                  [unsafe_self showStatusToast:NSLocalizedString(
+                                                   @"Couldn’t sign in. Try again from Friends.",
+                                                   @"Toast: Sign In Here failed")
+                                         style:XeniaIOSStatusToastStyleError];
+                }
+              }];
+  [alert addAction:back];
+  alert.preferredAction = back;
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
 
 - (UIViewController*)topPresentedControllerForModalPresentation {
   UIViewController* presenter = self;

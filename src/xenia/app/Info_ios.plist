@@ -173,6 +173,11 @@
   <array>
     <string>iPhoneOS</string>
   </array>
+  <key>BGTaskSchedulerPermittedIdentifiers</key>
+  <array>
+    <!-- Background App Refresh: updates, friend requests and invites (ios_background_refresh). -->
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}.refresh</string>
+  </array>
   <key>CADisableMinimumFrameDurationOnPhone</key>
   <true/>
   <key>CFBundleShortVersionString</key>
@@ -251,6 +256,10 @@
   <array>
     <integer>1</integer>
     <integer>2</integer>
+  </array>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>fetch</string>
   </array>
   <key>UIRequiredDeviceCapabilities</key>
   <array>

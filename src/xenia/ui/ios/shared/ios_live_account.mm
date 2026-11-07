@@ -173,6 +173,13 @@ BOOL xe_ios_live_account_supports_profile_data(void) {
          service.supportsProfileData;
 }
 
+BOOL xe_ios_live_account_supports_shared_saves(void) {
+  id<XeniaLiveAccountService> service = xe_ios_live_account_service();
+  return xe_ios_live_account_supports_profile_data() &&
+         (![service respondsToSelector:@selector(supportsSharedSaves)] ||
+          service.supportsSharedSaves);
+}
+
 BOOL xe_ios_live_account_ui_enabled(void) {
 #if TARGET_OS_SIMULATOR
   return g_service != nil ||

@@ -139,6 +139,8 @@ target_sources(xenia-ui-ios PRIVATE
   settings/ios_live_account_view_controllers.mm
   settings/ios_gamer_picture_view_controller.h
   settings/ios_gamer_picture_view_controller.mm
+  settings/ios_profile_import.h
+  settings/ios_profile_import.mm
   settings/ios_profile_view_controller.h
   settings/ios_profile_view_controller.mm
   settings/ios_settings_hub_view_controller.h
@@ -163,6 +165,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_system_utils.mm
   shared/ios_status_toast.h
   shared/ios_status_toast.mm
+  shared/ios_background_refresh.h
+  shared/ios_background_refresh.mm
   shared/ios_live_invite_banner.h
   shared/ios_live_invite_banner.mm
   shared/ios_live_account.h
@@ -197,6 +201,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_state_reporting.mm
   shared/ios_online_features.h
   shared/ios_online_features.mm
+  shared/ios_profile_data.h
+  shared/ios_profile_data.mm
   shared/ios_theme.h
   shared/ios_theme.mm
   shared/ios_theme_controls.h
@@ -250,6 +256,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   xenia-ui
   "-framework AVFoundation"
   "-framework AudioToolbox"
+  "-framework BackgroundTasks"
   "-framework CoreImage"
   "-framework Foundation"
   "-framework GameController"
@@ -263,6 +270,7 @@ target_link_libraries(xenia-ui-ios PUBLIC
   "-framework QuartzCore"
   "-framework UIKit"
   "-framework UniformTypeIdentifiers"
+  "-framework UserNotifications"
   z
 )
 target_link_libraries(xenia-ui-ios PRIVATE zarchive zstd)

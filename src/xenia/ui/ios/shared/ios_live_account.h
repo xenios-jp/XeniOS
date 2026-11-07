@@ -234,9 +234,12 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 // ---- Saves between profiles on this device ----------------------------------------------
 
 @optional
-// Whether the export, import and save-sharing calls below do anything (missing: YES). The real
-// service doesn't move profile data yet, and the screens hide those rows.
+// Whether export and import (above) and the calls below do anything (missing: YES); the
+// screens hide the Profile Data group when not.
 @property(nonatomic, readonly) BOOL supportsProfileData;
+// Whether the save-sharing calls below do anything (missing: YES); the screens hide Shared
+// Saves when not.
+@property(nonatomic, readonly) BOOL supportsSharedSaves;
 @required
 
 // The profiles on this device, the signed-in one first.
@@ -273,8 +276,9 @@ id<XeniaLiveAccountService> xe_ios_live_account_preview_service(void);
 void xe_ios_live_account_set_service(id<XeniaLiveAccountService> _Nullable service);
 // YES for the preview service (Simulator, nothing installed).
 BOOL xe_ios_live_account_service_is_stub(void);
-// The service's supportsProfileData.
+// The service's supportsProfileData and supportsSharedSaves.
 BOOL xe_ios_live_account_supports_profile_data(void);
+BOOL xe_ios_live_account_supports_shared_saves(void);
 
 // Whether Profile shows Online Account. On when a real service is installed, or in a
 // preview build of the screens (defaults write ... XeniaLiveAccountPreview -bool YES, or

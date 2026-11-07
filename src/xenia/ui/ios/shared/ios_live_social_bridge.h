@@ -87,6 +87,9 @@ typedef NS_ENUM(NSInteger, XeniaLiveFriendState) {
 @property(nonatomic, readonly) BOOL joinable;
 // The game session they're in and others may join (16 hex digits), or nil.
 @property(nonatomic, readonly, copy) NSString* sessionId;
+// In a System Link game: joinable, but from the game's own System Link screen
+// (no Live session), once in their room.
+@property(nonatomic, readonly) BOOL systemLink;
 @end
 
 @interface XeniaLiveInvite : NSObject
@@ -123,7 +126,45 @@ typedef NS_ENUM(NSInteger, XeniaLiveGamePlayerRelation) {
 // names them.
 @property(nonatomic, readonly, copy) NSString* gamertag;
 @property(nonatomic, readonly) XeniaLiveGamePlayerRelation relation;
+// This profile's friend request to them was refused because they take requests by friend code
+// only. Known once a request was tried, until XeniOS quits.
+@property(nonatomic, readonly) BOOL takesRequestsByCodeOnly;
 @end
+
+// Someone this profile played an online game with on this device (Recent Players).
+@interface XeniaLiveRecentPlayer : XeniaLiveGamePlayer
+// The game they were last seen in.
+@property(nonatomic, readonly) uint32_t titleId;
+@property(nonatomic, readonly, copy) NSDate* lastSeen;
+@end
+
+// Who may send this profile friend requests (the service keeps it, for all its devices).
+typedef NS_ENUM(NSInteger, XeniaLiveFriendRequestsSetting) {
+  // Not online, or the service doesn't have the setting yet.
+  XeniaLiveFriendRequestsSettingUnknown = 0,
+  XeniaLiveFriendRequestsSettingAnyone,
+  // Only players who have the profile's friend code, link or QR code.
+  XeniaLiveFriendRequestsSettingCode,
+};
+
+// Someone this profile blocked.
+@interface XeniaLiveBlockedPlayer : NSObject
+@property(nonatomic, readonly) uint64_t xuid;
+// Nil when this device never knew it (blocked on another device, say).
+@property(nonatomic, readonly, copy) NSString* gamertag;
+@end
+
+// Why a player is reported; the service's reasons.
+typedef NS_ENUM(NSInteger, XeniaLiveReportReason) {
+  XeniaLiveReportReasonCheating = 0,
+  XeniaLiveReportReasonHarassment,
+  XeniaLiveReportReasonOffensiveName,
+  XeniaLiveReportReasonOffensiveContent,
+  XeniaLiveReportReasonSpam,
+  XeniaLiveReportReasonOther,
+};
+// The most a report's note holds, in NSString length (UTF-16 units, as the service counts).
+extern const NSUInteger XeniaLiveReportNoteLimit;
 
 // Posted on the main thread when anything a screen shows may have changed:
 // the state, friends, presence or invites.
@@ -134,7 +175,32 @@ extern NSNotificationName const XeniaLiveSocialInviteReceivedNotification;
 // Posted on the main thread when the service couldn't do something asked of
 // it; userInfo[XeniaLiveSocialMessageKey] says what, for a toast.
 extern NSNotificationName const XeniaLiveSocialRequestFailedNotification;
+// Posted on the main thread when the running game couldn't join the game an
+// invite (or the party's leader) led to; userInfo[XeniaLiveSocialMessageKey]
+// says why, for a toast over the game.
+extern NSNotificationName const XeniaLiveSocialJoinFailedNotification;
+// Posted on the main thread when an invite accepted (or a friend joined) leads
+// to a System Link game, which the player joins from the game's own System
+// Link screen; userInfo[XeniaLiveSocialMessageKey] says so, for a toast.
+extern NSNotificationName const XeniaLiveSocialSystemLinkJoinNotification;
 extern NSString* const XeniaLiveSocialMessageKey;
+// In a RequestFailed userInfo: the request the service refused ("friend_add", ...).
+extern NSString* const XeniaLiveSocialRequestKey;
+// In a RequestFailed userInfo for a friend request a player refused: their XUID (NSNumber).
+extern NSString* const XeniaLiveSocialPlayerKey;
+// Posted on the main thread when something asked of the service worked and the player should
+// hear so (a report was stored); userInfo[XeniaLiveSocialMessageKey] says it, for a toast.
+extern NSNotificationName const XeniaLiveSocialNoticeNotification;
+// Posted on the main thread when the service didn't take a report; userInfo[
+// XeniaLiveSocialMessageKey] says why, for a toast.
+extern NSNotificationName const XeniaLiveSocialReportFailedNotification;
+// Posted on the main thread when the lobby signed this device out of the account, so the profile
+// is offline now: userInfo[XeniaLiveSocialMessageKey] says what happened and where, and
+// userInfo[XeniaLiveSocialSignedOutReasonKey] why: "elsewhere" (the account signed in on another
+// device; signing in here again takes it back) or "removed" (another device removed this one; a
+// code from it signs in again).
+extern NSNotificationName const XeniaLiveSocialSignedOutNotification;
+extern NSString* const XeniaLiveSocialSignedOutReasonKey;
 
 @interface XeniaLiveSocial : NSObject
 
@@ -149,9 +215,22 @@ extern NSString* const XeniaLiveSocialMessageKey;
 @property(nonatomic, readonly) XeniaLiveSocialState state;
 // One sentence for the Problem, Off and ProfileOffline states.
 @property(nonatomic, readonly, copy) NSString* statusText;
+// ProfileOffline because the account signed in on another device: statusText says where, and
+// turnOnOnlineForProfile signs in here again.
+@property(nonatomic, readonly) BOOL signedInElsewhere;
 @property(nonatomic, readonly, copy) NSString* gamertag;
 // The code friends add this profile with, once online.
 @property(nonatomic, readonly, copy) NSString* friendCode;
+// The lobby's web pages (https://host for wss://host), for links that open in any browser and
+// show a card in chats; nil while offline or when the lobby has none (an older one).
+@property(nonatomic, readonly, copy) NSURL* shareWebRoot;
+// What sharing the friend code sends: the lobby's page for it (https://…/f/CODE), which shows a
+// card in chats and opens XeniOS from its button, or xenios://friend?c=CODE from a lobby without
+// pages. Nil while offline.
+@property(nonatomic, readonly, copy) NSURL* friendShareURL;
+// The lobby's page for joining this profile in the running game's System Link room
+// (https://…/j/TITLE/ROOM): nil when the game isn't in a room, or the lobby has no pages.
+@property(nonatomic, readonly, copy) NSURL* joinShareURL;
 
 @property(nonatomic, readonly) NSArray<XeniaLiveFriend*>* friends;
 @property(nonatomic, readonly) NSArray<XeniaLiveFriend*>* incomingRequests;
@@ -168,6 +247,13 @@ extern NSString* const XeniaLiveSocialMessageKey;
 // The other players in the running game with an account on this service: the players the game
 // put in its sessions. Named ones by name, then the rest. Empty at the library or offline.
 @property(nonatomic, readonly) NSArray<XeniaLiveGamePlayer*>* gamePlayers;
+// The players this profile was in online games with on this device, newest first: at most 50,
+// kept per profile, blocked ones left out. Names come as the service gives them.
+@property(nonatomic, readonly) NSArray<XeniaLiveRecentPlayer*>* recentPlayers;
+// Who may send this profile friend requests, as the service says it (Unknown when it doesn't).
+// Setting it asks the service; the value changes when the service answers, here and on the
+// profile's other devices. Setting does nothing while it's Unknown.
+@property(nonatomic) XeniaLiveFriendRequestsSetting friendRequestsSetting;
 // Whether creating, leaving and inviting to a party can be asked now (signed
 // in).
 @property(nonatomic, readonly) BOOL partyActionsAvailable;
@@ -177,14 +263,44 @@ extern NSString* const XeniaLiveSocialMessageKey;
 // when the app becomes active.
 - (void)refresh;
 - (BOOL)turnOnOnlineForProfile;
+// The lobby ended this profile's session for one on another device; |message| says where. Kept
+// until the profile goes online again.
+- (void)noteSignedInElsewhere:(NSString*)message profile:(uint64_t)profile_xuid;
 
 - (void)addFriendWithCode:(NSString*)code;
 - (void)acceptFriendRequest:(uint64_t)xuid;
-// Asks a player to be friends (someone in the game), or accepts their request.
+// Asks a player to be friends (someone in the game, or a recent player). Their request to this
+// profile, if they sent one, is accepted instead.
 - (void)sendFriendRequestTo:(uint64_t)xuid;
 - (void)declineFriendRequest:(uint64_t)xuid;
 // Removes a friend, or cancels a request this profile sent.
 - (void)removeFriend:(uint64_t)xuid;
+
+// YES for another account's online XUID while online: the only players a friend request, block
+// or report can name (the service drops the connection over any other).
+- (BOOL)canActOnPlayer:(uint64_t)xuid;
+// YES once the service refused this profile's request to |xuid|: they take requests only by
+// their friend code.
+- (BOOL)playerTakesRequestsByCodeOnly:(uint64_t)xuid;
+
+// Blocking: a blocked player can't send this profile friend requests or invites, and is left out
+// of every list here. Blocking also ends a friendship or request. |gamertag| (when known) is kept
+// on this device so the blocked list can name them.
+- (void)blockPlayer:(uint64_t)xuid gamertag:(NSString*)gamertag;
+- (void)unblockPlayer:(uint64_t)xuid;
+- (BOOL)isBlocked:(uint64_t)xuid;
+// Everyone this profile blocked, by name (unnamed ones last).
+@property(nonatomic, readonly) NSArray<XeniaLiveBlockedPlayer*>* blockedPlayers;
+// How many there are, without naming them.
+@property(nonatomic, readonly) NSUInteger blockedPlayerCount;
+// Reports a player to the people who run the service, with the running game and its session
+// when there is one. The answer comes as a Notice (stored) or a ReportFailed. NO when not online.
+// |note| may be nil.
+- (BOOL)reportPlayer:(uint64_t)xuid reason:(XeniaLiveReportReason)reason note:(NSString*)note;
+
+// Appear offline: friends see this profile as offline while it still signs in, joins games and
+// gets invites. Kept per profile on this device, and applied whenever the profile connects.
+@property(nonatomic) BOOL appearOffline;
 
 - (void)declineInvite:(XeniaLiveInvite*)invite;
 // Answers yes and leaves the invite for the title to read, before the app
@@ -233,7 +349,8 @@ NSString* xe_ios_format_friend_code(NSString* code);
 NSString* xe_ios_normalize_friend_code(NSString* text);
 // "xenios://friend?c=K7Q2M9XD": what Add Friend's QR code and shared link hold.
 NSString* xe_ios_friend_link(NSString* code);
-// The code in a friend link, or in text that is just a code; nil otherwise.
+// The code in a friend link (xenios://friend?c=CODE or a lobby page, https://…/f/CODE), or in
+// text that is just a code; nil otherwise.
 NSString* xe_ios_friend_code_from_text(NSString* text);
 
 #endif  // XENIA_UI_IOS_SHARED_IOS_LIVE_SOCIAL_BRIDGE_H_

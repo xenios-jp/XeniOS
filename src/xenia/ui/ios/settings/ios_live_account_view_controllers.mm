@@ -16,7 +16,10 @@
 
 #include <vector>
 
+#import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
 #import "xenia/ui/ios/shared/ios_live_account.h"
+#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
+#import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -1467,6 +1470,10 @@ NSString* ApproveTitle() {
 - (instancetype)initWithApproval:(XeniaLiveIncomingApproval*)approval {
   if ((self = [super init])) {
     _approval = [approval retain];
+    // A request that was scanned has no number to pick: the scan was the check.
+    if (!approval.choices.count) {
+      _chosen = [@"" copy];
+    }
   }
   return self;
 }
@@ -1521,16 +1528,18 @@ NSString* ApproveTitle() {
   return 4;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  return section == 1 && !_approval.choices.count ? 0 : 1;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  return section == 1 ? [NSString stringWithFormat:NSLocalizedString(@"Pick the number on %@",
-                                                                      @"Incoming approval: header over the "
-                                                                      @"numbers; %@ is the new device’s name"),
-                                                    _approval.deviceName]
-                      : nil;
+  return section == 1 && _approval.choices.count
+             ? [NSString
+                   stringWithFormat:NSLocalizedString(@"Pick the number on %@",
+                                                      @"Incoming approval: header over the "
+                                                      @"numbers; %@ is the new device’s name"),
+                                    _approval.deviceName]
+             : nil;
 }
 
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
@@ -2073,11 +2082,20 @@ UIView* AttentionAccessory() {
 
 - (void)exportFrom:(NSIndexPath*)row {
   _busy = YES;
+  // Kept until the export ends, which can take a while: the sheet may be closed meanwhile.
   __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  [self retain];
   [xe_ios_live_account_service()
       exportProfileWithOptions:_options
                     completion:^(NSURL* file, NSError* error) {
+                      [unsafe_self autorelease];
                       unsafe_self->_busy = NO;
+                      if (!unsafe_self.view.window) {
+                        if (file) {
+                          [[NSFileManager defaultManager] removeItemAtURL:file error:nil];
+                        }
+                        return;
+                      }
                       [unsafe_self.tableView reloadData];
                       if (!file) {
                         ShowAlert(unsafe_self,
@@ -2128,11 +2146,16 @@ UIView* AttentionAccessory() {
   _busy = YES;
   [self.tableView reloadData];
   __unsafe_unretained XECopyProfileForm* unsafe_self = self;
+  [self retain];  // Until the copy ends: the sheet may be closed meanwhile.
   NSString* name = [[profile.gamertag copy] autorelease];
   [xe_ios_live_account_service()
       copySavesToProfile:profile.profileId
               completion:^(NSUInteger copied, NSUInteger kept, NSError* error) {
+                [unsafe_self autorelease];
                 unsafe_self->_busy = NO;
+                if (!unsafe_self.view.window) {
+                  return;
+                }
                 [unsafe_self.tableView reloadData];
                 if (error) {
                   ShowAlert(unsafe_self, NSLocalizedString(@"Couldn’t Copy", @"Copy profile sheet: alert title"),
@@ -2613,7 +2636,13 @@ UIView* AttentionAccessory() {
 
 @end
 
-// ---- I Have a Gamertag: the camera, or the code typed, or a recovery code ----------------------
+// ---- I Have a Gamertag: the camera, the code typed, a recovery code, or asking the other device
+
+typedef NS_ENUM(NSInteger, XESignInMode) {
+  XESignInModeCode = 0,  // Add a Device's QR code or its code, typed.
+  XESignInModeAsk,       // The gamertag; a signed-in device approves.
+  XESignInModeRecovery,  // The recovery code kept.
+};
 
 @interface XESignInForm : XEForm <UITextFieldDelegate>
 - (instancetype)initWithCode:(nullable NSString*)code;
@@ -2621,11 +2650,13 @@ UIView* AttentionAccessory() {
 
 @implementation XESignInForm {
   NSString* _initialCode;
-  BOOL _recovering;
+  XESignInMode _mode;
   XECodeScannerView* _scanner;
   UITextField* _field;
   UIButton* _doneItem;
   BOOL _busy;
+  // While asking the other device: the request it answers.
+  XeniaLiveApprovalRequest* _request;
 }
 
 - (instancetype)initWithCode:(NSString*)code {
@@ -2637,6 +2668,7 @@ UIView* AttentionAccessory() {
 
 - (void)dealloc {
   _scanner.onCode = nil;
+  [_request release];
   [_scanner release];
   [_initialCode release];
   [_field release];
@@ -2654,8 +2686,6 @@ UIView* AttentionAccessory() {
   _field.delegate = self;
   _field.textAlignment = NSTextAlignmentCenter;
   _field.textColor = [XeniaTheme textPrimary];
-  _field.font = [UIFont monospacedSystemFontOfSize:24 weight:UIFontWeightBold];
-  _field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
   _field.autocorrectionType = UITextAutocorrectionTypeNo;
   _field.spellCheckingType = UITextSpellCheckingTypeNo;
   _field.returnKeyType = UIReturnKeyGo;
@@ -2677,40 +2707,98 @@ UIView* AttentionAccessory() {
   }
 }
 
+// Off screen for good, not under something presented over it.
+- (BOOL)isClosed {
+  UIViewController* top = self.navigationController ?: self;
+  return !self.view.window && !top.presentedViewController;
+}
+
+// Closing the sheet while the other device is asked takes the request back.
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (_request && [self isClosed]) {
+    [xe_ios_live_account_service() cancelApproval:_request];
+  }
+}
+
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
-  if (!_recovering) {
+  if (_mode == XESignInModeCode) {
     FitTableHeader(_scanner, self.tableView);
   }
 }
 
 - (NSUInteger)limit {
   // NormalizeRecoveryCode and NormalizeLinkCode.
-  return _recovering ? 20 : 8;
+  return _mode == XESignInModeRecovery ? 20 : 8;
+}
+
+// The other two ways in, as rows under the field.
+- (NSArray<NSNumber*>*)otherModes {
+  switch (_mode) {
+    case XESignInModeCode:
+      return @[ @(XESignInModeAsk), @(XESignInModeRecovery) ];
+    case XESignInModeAsk:
+      return @[ @(XESignInModeCode), @(XESignInModeRecovery) ];
+    case XESignInModeRecovery:
+      return @[ @(XESignInModeCode), @(XESignInModeAsk) ];
+  }
+  return @[];
+}
+
+- (NSString*)titleForMode:(XESignInMode)mode {
+  switch (mode) {
+    case XESignInModeCode:
+      return NSLocalizedString(@"Use a Code From My Other Device", @"Sign in sheet: row");
+    case XESignInModeAsk:
+      return NSLocalizedString(@"Approve on My Other Device", @"Sign in sheet: row");
+    case XESignInModeRecovery:
+      return NSLocalizedString(@"Use a Recovery Code Instead", @"Sign in sheet: row");
+  }
+  return nil;
 }
 
 - (void)applyMode {
-  [self setHeaderText:_recovering
-                          ? NSLocalizedString(@"Type the recovery code you kept. Your gamertag, "
-                                              @"friends and blocks come back to this device.",
-                                              @"Sign in sheet: text above the field")
-                          : NSLocalizedString(@"Or type the code from Add a Device on your other "
-                                              @"device.",
-                                              @"Sign in sheet: text above the field")];
+  switch (_mode) {
+    case XESignInModeCode:
+      [self setHeaderText:NSLocalizedString(@"Or type the code from Add a Device on your other "
+                                            @"device.",
+                                            @"Sign in sheet: text above the field")];
+      break;
+    case XESignInModeAsk:
+      [self setHeaderText:NSLocalizedString(@"Type your gamertag. Your other device, signed in "
+                                            @"to it and open, asks you to let this one in.",
+                                            @"Sign in sheet: text above the gamertag field")];
+      break;
+    case XESignInModeRecovery:
+      [self setHeaderText:NSLocalizedString(@"Type the recovery code you kept. Your gamertag, "
+                                            @"friends and blocks come back to this device.",
+                                            @"Sign in sheet: text above the field")];
+      break;
+  }
+  const BOOL asking = _mode == XESignInModeAsk;
+  NSString* placeholder = asking ? NSLocalizedString(@"Gamertag", @"Sign in sheet: field")
+                          : _mode == XESignInModeRecovery ? @"XXXX-XXXX-XXXX-XXXX-XXXX"
+                                                          : @"XXXX-XXXX";
   _field.attributedPlaceholder = [[[NSAttributedString alloc]
-      initWithString:_recovering ? @"XXXX-XXXX-XXXX-XXXX-XXXX" : @"XXXX-XXXX"
+      initWithString:placeholder
           attributes:@{NSForegroundColorAttributeName : [XeniaTheme textMuted]}] autorelease];
+  _field.font = asking ? [UIFont systemFontOfSize:22 weight:UIFontWeightSemibold]
+                       : [UIFont monospacedSystemFontOfSize:24 weight:UIFontWeightBold];
+  _field.autocapitalizationType =
+      asking ? UITextAutocapitalizationTypeWords : UITextAutocapitalizationTypeAllCharacters;
   _field.text = @"";
-  _field.accessibilityLabel = _recovering
+  _field.accessibilityLabel = asking ? NSLocalizedString(@"Gamertag", @"Sign in sheet: field")
+                              : _mode == XESignInModeRecovery
                                   ? NSLocalizedString(@"Recovery code", @"Sign in sheet: field")
                                   : NSLocalizedString(@"Code", @"Sign in sheet: field");
   [self setFooterText:nil color:nil];
   _doneItem.enabled = NO;
-  if (_recovering) {
+  if (_mode == XESignInModeCode) {
+    [self.view setNeedsLayout];
+  } else {
     self.tableView.tableHeaderView = nil;
     [_field becomeFirstResponder];
-  } else {
-    [self.view setNeedsLayout];
   }
   [self.tableView reloadData];
 }
@@ -2719,23 +2807,21 @@ UIView* AttentionAccessory() {
   return 2;
 }
 
-- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
-  return 1;
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  return section == 1 ? (NSInteger)[self otherModes].count : 1;
 }
 
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   if (indexPath.section == 1) {
-    return ActionCell(_recovering ? NSLocalizedString(@"Use a Code From My Other Device",
-                                                      @"Sign in sheet: row")
-                                  : NSLocalizedString(@"Use a Recovery Code Instead",
-                                                      @"Sign in sheet: row"));
+    return ActionCell([self
+        titleForMode:(XESignInMode)[self otherModes][(NSUInteger)indexPath.row].integerValue]);
   }
   return FieldCell(_field);
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
-  return section == 1 && _recovering
+  return section == 1 && _mode == XESignInModeRecovery
              ? NSLocalizedString(@"Lost the recovery code too? Nothing can bring the account back.",
                                  @"Sign in sheet: footer")
              : nil;
@@ -2744,7 +2830,7 @@ UIView* AttentionAccessory() {
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   if (indexPath.section == 1 && !_busy) {
-    _recovering = !_recovering;
+    _mode = (XESignInMode)[self otherModes][(NSUInteger)indexPath.row].integerValue;
     [self applyMode];
   }
 }
@@ -2766,12 +2852,28 @@ UIView* AttentionAccessory() {
   [self doneTapped];
 }
 
+- (NSString*)typedGamertag {
+  return [_field.text
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
 - (BOOL)textField:(UITextField*)field
     shouldChangeCharactersInRange:(NSRange)range
                 replacementString:(NSString*)string {
   NSString* next = [field.text stringByReplacingCharactersInRange:range withString:string];
-  field.text = FormattedCode(next, [self limit]);
   [self setFooterText:nil color:nil];
+  if (_mode == XESignInModeAsk) {
+    // Gamertags are 15 characters at most.
+    if (next.length > 15) {
+      return NO;
+    }
+    _doneItem.enabled =
+        !_busy &&
+        [[next stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            length] > 0;
+    return YES;
+  }
+  field.text = FormattedCode(next, [self limit]);
   _doneItem.enabled = !_busy && CodeLength(field.text) == [self limit];
   return NO;
 }
@@ -2779,6 +2881,25 @@ UIView* AttentionAccessory() {
 - (BOOL)textFieldShouldReturn:(UITextField* __unused)field {
   [self doneTapped];
   return NO;
+}
+
+- (void)finishWithStatus:(XeniaLiveLinkStatus)status {
+  _busy = NO;
+  XESetFormCommitBusy(self, NO);
+  if (status == XeniaLiveLinkStatusLinked) {
+    // A second device has a way back in already. Recovering killed the old code, and the new
+    // one isn't shown here: the profile page asks to set one up again.
+    SetRecoverySaved(_mode != XESignInModeRecovery);
+    [self dismissViewControllerAnimated:YES completion:nil];
+    return;
+  }
+  [self showProblem:LinkMessage(status)];
+  [_scanner resume];
+}
+
+- (void)showProblem:(NSString*)message {
+  [self setFooterText:message color:[UIColor systemRedColor]];
+  UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
 }
 
 - (void)doneTapped {
@@ -2789,25 +2910,490 @@ UIView* AttentionAccessory() {
   XESetFormCommitBusy(self, YES);
   __unsafe_unretained XESignInForm* unsafe_self = self;
   void (^finish)(XeniaLiveLinkStatus) = ^(XeniaLiveLinkStatus status) {
-    unsafe_self->_busy = NO;
-    XESetFormCommitBusy(unsafe_self, NO);
-    if (status == XeniaLiveLinkStatusLinked) {
-      // A second device has a way back in already. Recovering killed the old code, and the new
-      // one isn't shown here: the profile page asks to set one up again.
-      SetRecoverySaved(!unsafe_self->_recovering);
-      [unsafe_self dismissViewControllerAnimated:YES completion:nil];
-      return;
-    }
-    NSString* message = LinkMessage(status);
-    [unsafe_self setFooterText:message color:[UIColor systemRedColor]];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, message);
-    [unsafe_self->_scanner resume];
+    [unsafe_self finishWithStatus:status];
   };
-  if (_recovering) {
-    [xe_ios_live_account_service() recoverWithCode:_field.text completion:finish];
-  } else {
-    [xe_ios_live_account_service() linkWithCode:_field.text completion:finish];
+  switch (_mode) {
+    case XESignInModeCode:
+      [xe_ios_live_account_service() linkWithCode:_field.text completion:finish];
+      break;
+    case XESignInModeRecovery:
+      [xe_ios_live_account_service() recoverWithCode:_field.text completion:finish];
+      break;
+    case XESignInModeAsk:
+      [self askOtherDevice];
+      break;
   }
+}
+
+// Asks the account's signed-in devices, then shows the number to pick there and waits. The
+// answers hold the form (the service lets go of them once they're called), so a closed sheet
+// still gets them.
+- (void)askOtherDevice {
+  [_field resignFirstResponder];
+  XESignInForm* form = self;
+  id<XeniaLiveAccountService> service = xe_ios_live_account_service();
+  [service
+      requestApprovalForGamertag:[self typedGamertag]
+                      completion:^(XeniaLiveApprovalRequest* request,
+                                   XeniaLiveApprovalStatus status) {
+                        if (!request) {
+                          [form approvalEnded:status];
+                          return;
+                        }
+                        // Closed while it was still being sent: nobody waits for the answer.
+                        if ([form isClosed]) {
+                          [service cancelApproval:request];
+                          return;
+                        }
+                        [form->_request release];
+                        form->_request = [request retain];
+                        [form
+                            setFooterText:[NSString stringWithFormat:
+                                                        NSLocalizedString(
+                                                            @"On your other device, choose %@.",
+                                                            @"Sign in sheet: while waiting for the "
+                                                            @"other device; %@ is two digits"),
+                                                        request.matchNumber ?: @""]
+                                    color:[XeniaTheme accent]];
+                        [service waitForApproval:request
+                                      completion:^(XeniaLiveApprovalStatus result) {
+                                        [form->_request release];
+                                        form->_request = nil;
+                                        [form approvalEnded:result];
+                                      }];
+                      }];
+}
+
+- (void)approvalEnded:(XeniaLiveApprovalStatus)status {
+  _busy = NO;
+  XESetFormCommitBusy(self, NO);
+  switch (status) {
+    case XeniaLiveApprovalStatusApproved:
+      // The other device has the account already: this one is its second way back in.
+      SetRecoverySaved(YES);
+      [self dismissViewControllerAnimated:YES completion:nil];
+      return;
+    case XeniaLiveApprovalStatusDenied:
+      [self showProblem:NSLocalizedString(@"Your other device said no, or the number didn’t "
+                                          @"match. Try again, and choose the number shown here.",
+                                          @"Sign in sheet: approval refused")];
+      return;
+    case XeniaLiveApprovalStatusTimedOut:
+      [self showProblem:NSLocalizedString(@"No answer. Check the gamertag, open XeniOS on your "
+                                          @"other device and try again.",
+                                          @"Sign in sheet: approval timed out")];
+      return;
+    case XeniaLiveApprovalStatusUnreachable:
+      [self showProblem:LinkMessage(XeniaLiveLinkStatusUnreachable)];
+      return;
+    case XeniaLiveApprovalStatusCancelled:
+      [self setFooterText:nil color:nil];
+      return;
+  }
+}
+
+@end
+
+// ---- Report a player: why, an optional note, and whether to block them too -------------------
+
+@interface XEReportForm : XEForm <UITextViewDelegate>
+- (instancetype)initWithXuid:(uint64_t)xuid gamertag:(nullable NSString*)gamertag;
+@end
+
+@implementation XEReportForm {
+  uint64_t _xuid;
+  NSString* _gamertag;
+  // The name to show: the gamertag, or "this player".
+  NSString* _name;
+  NSInteger _reason;  // A XeniaLiveReportReason, or -1 before one is picked.
+  UITextView* _note;
+  XEFormText* _counter;
+  UISwitch* _block;
+  UIButton* _send;
+}
+
+- (instancetype)initWithXuid:(uint64_t)xuid gamertag:(NSString*)gamertag {
+  if ((self = [super init])) {
+    _xuid = xuid;
+    _gamertag = [gamertag copy];
+    _name = [(gamertag.length ? gamertag
+                              : NSLocalizedString(@"this player", @"Report form: a player whose "
+                                                                  @"gamertag isn't known")) copy];
+    _reason = -1;
+  }
+  return self;
+}
+
+- (void)dealloc {
+  _note.delegate = nil;
+  [_gamertag release];
+  [_name release];
+  [_note release];
+  [_counter release];
+  [_block release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = [NSString
+      stringWithFormat:NSLocalizedString(@"Report %@", @"Report form title; %@ is a gamertag"),
+                       _name];
+  [self addCloseButton];
+  _send = [self addDoneButtonWithTitle:NSLocalizedString(@"Send", @"Report form: commit button")];
+  _send.enabled = NO;  // Until a reason is picked.
+  [self setHeaderText:[NSString
+                          stringWithFormat:NSLocalizedString(
+                                               @"Reports go to the people who run XeniOS online, "
+                                               @"with the game you’re in. %@ isn’t told who "
+                                               @"reported them.",
+                                               @"Report form: text above the reasons; %@ is a "
+                                               @"gamertag"),
+                                           _name]];
+
+  _note = [[UITextView alloc] init];
+  _note.translatesAutoresizingMaskIntoConstraints = NO;
+  [_note.heightAnchor constraintEqualToConstant:112.0].active = YES;
+  _note.backgroundColor = [UIColor clearColor];
+  _note.textColor = [XeniaTheme textPrimary];
+  _note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+  _note.adjustsFontForContentSizeCategory = YES;
+  _note.textContainerInset = UIEdgeInsetsMake(10, 0, 10, 0);
+  _note.textContainer.lineFragmentPadding = 0;
+  _note.delegate = self;
+  _note.accessibilityLabel = NSLocalizedString(@"Note", @"Report form: VoiceOver for the note");
+  _note.accessibilityHint =
+      NSLocalizedString(@"Optional. Up to 500 characters.", @"Report form: VoiceOver hint");
+  _counter = [[XEFormText alloc] init];
+  _counter.label.textAlignment = NSTextAlignmentNatural;
+  [self updateCounter];
+
+  _block = [[UISwitch alloc] init];
+  _block.on = YES;
+  _block.onTintColor = [XeniaTheme accent];
+}
+
+- (void)updateCounter {
+  _counter.label.text = [NSString
+      stringWithFormat:NSLocalizedString(@"%lu/%lu", @"Report form: characters in the note, of "
+                                                     @"the most it holds"),
+                       (unsigned long)_note.text.length, (unsigned long)XeniaLiveReportNoteLimit];
+}
+
+- (NSString*)reasonTitle:(NSInteger)reason {
+  switch ((XeniaLiveReportReason)reason) {
+    case XeniaLiveReportReasonCheating:
+      return NSLocalizedString(@"Cheating", @"Report reason");
+    case XeniaLiveReportReasonHarassment:
+      return NSLocalizedString(@"Harassment", @"Report reason");
+    case XeniaLiveReportReasonOffensiveName:
+      return NSLocalizedString(@"Offensive gamertag", @"Report reason");
+    case XeniaLiveReportReasonOffensiveContent:
+      return NSLocalizedString(@"Offensive content", @"Report reason");
+    case XeniaLiveReportReasonSpam:
+      return NSLocalizedString(@"Spam", @"Report reason");
+    case XeniaLiveReportReasonOther:
+      return NSLocalizedString(@"Something else", @"Report reason");
+  }
+  return @"";
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 3;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  return section == 0 ? XeniaLiveReportReasonOther + 1 : 1;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  return section == 1 ? NSLocalizedString(@"Note (Optional)", @"Report form: section header")
+                      : nil;
+}
+
+- (UIView*)tableView:(UITableView*)tableView viewForFooterInSection:(NSInteger)section {
+  // The counter is a view of its own, so typing updates it without reloading the note's row.
+  return section == 1 ? _counter : [super tableView:tableView viewForFooterInSection:section];
+}
+
+- (CGFloat)tableView:(UITableView*)tableView heightForFooterInSection:(NSInteger)section {
+  return section == 1 ? [_counter heightForWidth:TextWidth(tableView)]
+                      : [super tableView:tableView heightForFooterInSection:section];
+}
+
+- (UITableViewCell*)tableView:(UITableView* __unused)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:nil] autorelease];
+  UIListContentConfiguration* content = [UIListContentConfiguration cellConfiguration];
+  if (indexPath.section == 0) {
+    content.text = [self reasonTitle:indexPath.row];
+    cell.contentConfiguration = content;
+    cell.tintColor = [XeniaTheme accent];
+    cell.accessoryType = indexPath.row == _reason ? UITableViewCellAccessoryCheckmark
+                                                  : UITableViewCellAccessoryNone;
+    cell.accessibilityTraits = indexPath.row == _reason ? UIAccessibilityTraitSelected
+                                                        : UIAccessibilityTraitNone;
+    return cell;
+  }
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  if (indexPath.section == 1) {
+    [cell.contentView addSubview:_note];
+    [NSLayoutConstraint activateConstraints:@[
+      [_note.leadingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.leadingAnchor],
+      [_note.trailingAnchor
+          constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
+      [_note.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+      [_note.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+    ]];
+    return cell;
+  }
+  content.text = [NSString
+      stringWithFormat:NSLocalizedString(@"Also Block %@", @"Report form: switch; %@ is a "
+                                                           @"gamertag"),
+                       _name];
+  cell.contentConfiguration = content;
+  _block.accessibilityLabel = content.text;
+  cell.accessoryView = _block;
+  return cell;
+}
+
+- (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section != 0) {
+    return;
+  }
+  _reason = indexPath.row;
+  _send.enabled = YES;
+  [tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+           withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (BOOL)textView:(UITextView*)textView
+    shouldChangeTextInRange:(NSRange)range
+            replacementText:(NSString*)text {
+  const NSUInteger limit = XeniaLiveReportNoteLimit;
+  const NSUInteger kept = textView.text.length - range.length;
+  if (kept + text.length <= limit) {
+    return YES;
+  }
+  // A paste that's too long goes in as far as it fits, without cutting a character in two.
+  const NSUInteger room = kept < limit ? limit - kept : 0;
+  NSUInteger cut = room;
+  while (cut > 0) {
+    const NSRange last = [text rangeOfComposedCharacterSequenceAtIndex:cut - 1];
+    if (NSMaxRange(last) <= room) {
+      cut = NSMaxRange(last);
+      break;
+    }
+    cut = last.location;
+  }
+  if (cut) {
+    [textView replaceRange:[self textRangeIn:textView for:range]
+                  withText:[text substringToIndex:cut]];
+    [self updateCounter];
+  }
+  return NO;
+}
+
+- (UITextRange*)textRangeIn:(UITextView*)textView for:(NSRange)range {
+  UITextPosition* start = [textView positionFromPosition:textView.beginningOfDocument
+                                                  offset:(NSInteger)range.location];
+  UITextPosition* end = [textView positionFromPosition:start offset:(NSInteger)range.length];
+  return [textView textRangeFromPosition:start toPosition:end];
+}
+
+- (void)textViewDidChange:(UITextView* __unused)textView {
+  [self updateCounter];
+}
+
+// The whole note and its counter above the Send button, once the keyboard is up.
+- (void)textViewDidBeginEditing:(UITextView* __unused)textView {
+  XEReportForm* form = [self retain];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (form.isViewLoaded && form.view.window) {
+                     [form.tableView scrollRectToVisible:[form.tableView rectForFooterInSection:1]
+                                                animated:YES];
+                   }
+                   [form release];
+                 });
+}
+
+- (void)doneTapped {
+  if (_reason < 0) {
+    return;
+  }
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  if (![social reportPlayer:_xuid reason:(XeniaLiveReportReason)_reason note:_note.text]) {
+    ShowAlert(self, NSLocalizedString(@"Couldn’t Send Report", @"Report form: alert title"),
+              NSLocalizedString(@"You need to be online to report a player. Try again once "
+                                @"you’re connected.",
+                                @"Report form: alert message when offline"));
+    return;
+  }
+  // After the report, so it's sent first; the answer comes as a toast once this has closed.
+  if (_block.on) {
+    [social blockPlayer:_xuid gamertag:_gamertag];
+  }
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
+// ---- Blocked players: who this profile blocked, with Unblock for each ----------------------
+
+@interface XEBlockedPlayersViewController : XESheetTableViewController
+@end
+
+@implementation XEBlockedPlayersViewController {
+  NSArray<XeniaLiveBlockedPlayer*>* _players;
+  // The empty state, as the table's footer: the glass card fits the table's content, so the
+  // message has to be part of it (a contentUnavailableConfiguration overlays a zero-height card).
+  UIContentUnavailableView* _empty;
+}
+
+- (instancetype)init {
+  if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+    self.glassStyle = YES;
+  }
+  return self;
+}
+
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_players release];
+  [_empty release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.title = NSLocalizedString(@"Blocked Players", @"Blocked players page title");
+  self.tableView.backgroundColor = [UIColor clearColor];
+  self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(reload)
+                                               name:XeniaLiveSocialDidChangeNotification
+                                             object:nil];
+  [self reload];
+}
+
+- (void)viewDidLayoutSubviews {
+  // Size the footer first, so the card fits the table with the message in it. A table picks up
+  // a footer's new size only when the footer is set again; doing that only on a change keeps
+  // this to one pass.
+  UITableView* table = self.tableView;
+  if (_empty && table.tableFooterView == _empty) {
+    const CGFloat width = CGRectGetWidth(table.bounds);
+    const CGFloat height =
+        std::ceil([_empty systemLayoutSizeFittingSize:CGSizeMake(width, 0.0)
+                        withHorizontalFittingPriority:UILayoutPriorityRequired
+                              verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+                      .height);
+    if (width > 0.0 && (std::fabs(CGRectGetWidth(_empty.frame) - width) >= 0.5 ||
+                        std::fabs(CGRectGetHeight(_empty.frame) - height) >= 0.5)) {
+      _empty.frame = CGRectMake(0.0, 0.0, width, height);
+      table.tableFooterView = _empty;
+    }
+  }
+  [super viewDidLayoutSubviews];
+}
+
+- (void)reload {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  NSArray<XeniaLiveBlockedPlayer*>* players = social.blockedPlayers;
+  const BOOL online = social.state == XeniaLiveSocialStateOnline;
+  BOOL same = players.count == _players.count;
+  for (NSUInteger i = 0; same && i < players.count; ++i) {
+    same = players[i].xuid == _players[i].xuid &&
+           (players[i].gamertag == _players[i].gamertag ||
+            [players[i].gamertag isEqualToString:_players[i].gamertag]);
+  }
+  if (!same) {
+    [_players release];
+    _players = [players copy];
+    [self.tableView reloadData];
+  }
+  if (_players.count) {
+    if (self.tableView.tableFooterView == _empty) {
+      self.tableView.tableFooterView = nil;
+    }
+    return;
+  }
+  UIContentUnavailableConfiguration* empty = [UIContentUnavailableConfiguration emptyConfiguration];
+  empty.image = [UIImage systemImageNamed:online ? @"hand.raised" : @"wifi.slash"];
+  empty.text = online ? NSLocalizedString(@"No Blocked Players", @"Blocked players: empty title")
+                      : NSLocalizedString(@"Not Online", @"Blocked players: offline title");
+  empty.secondaryText =
+      online ? NSLocalizedString(@"To block a player, open their gamer card and choose Block from "
+                                 @"the ⋯ menu.",
+                                 @"Blocked players: empty text")
+             : NSLocalizedString(@"Your blocked players show here while you’re online.",
+                                 @"Blocked players: offline text");
+  if (!_empty) {
+    _empty = [[UIContentUnavailableView alloc] initWithConfiguration:empty];
+  } else {
+    _empty.configuration = empty;
+  }
+  // The next layout measures it at the table's width.
+  if (self.tableView.tableFooterView != _empty) {
+    self.tableView.tableFooterView = _empty;
+  }
+  [self.view setNeedsLayout];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return _players.count ? 1 : 0;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger __unused)section {
+  return (NSInteger)_players.count;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger __unused)section {
+  return NSLocalizedString(@"Blocked players can’t send you friend requests or invites, and don’t "
+                           @"show in your lists.",
+                           @"Blocked players: text under the list");
+}
+
+- (UITableViewCell*)tableView:(UITableView* __unused)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  XeniaLiveBlockedPlayer* player = _players[(NSUInteger)indexPath.row];
+  UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:nil] autorelease];
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  if (player.gamertag.length) {
+    content.text = player.gamertag;
+  } else {
+    content.text = NSLocalizedString(@"Unknown Player", @"Blocked players: a row with no name");
+    content.secondaryText = NSLocalizedString(@"Blocked on another device",
+                                              @"Blocked players: why a row has no name");
+    content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  }
+  content.image = [UIImage systemImageNamed:@"person.crop.circle.badge.xmark"];
+  content.imageProperties.tintColor = [XeniaTheme textSecondary];
+  cell.contentConfiguration = content;
+  UIButtonConfiguration* config = [UIButtonConfiguration grayButtonConfiguration];
+  config.title = NSLocalizedString(@"Unblock", @"Blocked players: row button");
+  config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+  config.buttonSize = UIButtonConfigurationSizeSmall;
+  config.baseForegroundColor = [XeniaTheme accent];
+  UIButton* unblock = [UIButton buttonWithConfiguration:config primaryAction:nil];
+  unblock.accessibilityLabel = [NSString
+      stringWithFormat:NSLocalizedString(@"Unblock %@", @"Blocked players: VoiceOver for a row's "
+                                                        @"button; %@ is a gamertag"),
+                       content.text];
+  const uint64_t xuid = player.xuid;
+  [unblock addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+             ((UIButton*)action.sender).enabled = NO;
+             [[XeniaLiveSocial shared] unblockPlayer:xuid];
+           }]
+    forControlEvents:UIControlEventTouchUpInside];
+  [unblock sizeToFit];
+  cell.accessoryView = unblock;
+  return cell;
 }
 
 @end
@@ -2820,6 +3406,10 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   XEPageRowCopyProfile,
   XEPageRowRecovery,
   XEPageRowGamertag,
+  XEPageRowBlocked,
+  XEPageRowAppearOffline,
+  XEPageRowRequestsAnyone,
+  XEPageRowRequestsCode,
   XEPageRowDevice = 1000,  // + index into the device list.
 };
 
@@ -2840,6 +3430,14 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   NSArray<NSString*>* _sectionTitles;
   NSArray<XeniaLiveDevice*>* _devices;
   NSString* _sharedText;
+  // The Privacy group's index (its footer explains Appear Offline), or -1, and the blocked count
+  // its row shows.
+  NSInteger _privacySection;
+  NSUInteger _blockedCount;
+  // The Friend Requests group's index, or -1 (offline, or the service hasn't the setting), and
+  // the choice it shows.
+  NSInteger _requestsSection;
+  XeniaLiveFriendRequestsSetting _friendRequests;
 }
 
 - (instancetype)initWithGamertag:(NSString*)gamertag
@@ -2885,7 +3483,25 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                                            selector:@selector(accountChanged)
                                                name:XeniaLiveAccountDidChangeNotification
                                              object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(socialChanged)
+                                               name:XeniaLiveSocialDidChangeNotification
+                                             object:nil];
   [self reload];
+}
+
+// Friends' presence changes often; only the blocked count and who may send friend requests show
+// here.
+- (void)socialChanged {
+  XeniaLiveSocial* social = [XeniaLiveSocial shared];
+  if ((_privacySection >= 0 && social.blockedPlayerCount != _blockedCount) ||
+      (_active && social.friendRequestsSetting != _friendRequests)) {
+    [self reload];
+  }
+}
+
+- (void)appearOfflineToggled:(UISwitch*)toggle {
+  [XeniaLiveSocial shared].appearOffline = toggle.on;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -2928,7 +3544,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
 // "With Kid", "With 2 Profiles", "Every Profile" or "Off".
 - (void)refreshShared {
-  if (!_active) {
+  if (!_active || !xe_ios_live_account_supports_shared_saves()) {
     return;
   }
   id<XeniaLiveAccountService> service = xe_ios_live_account_service();
@@ -3041,6 +3657,9 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
   NSMutableArray* sections = [NSMutableArray array];
   NSMutableArray* titles = [NSMutableArray array];
+  _privacySection = -1;
+  _requestsSection = -1;
+  _friendRequests = XeniaLiveFriendRequestsSettingUnknown;
   if (_active) {
     if (online) {
       NSMutableArray* devices = [NSMutableArray array];
@@ -3052,10 +3671,26 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
       [titles addObject:NSLocalizedString(@"Devices", @"Profile page: header")];
     }
     if (xe_ios_live_account_supports_profile_data()) {
-      [sections addObject:@[ @(XEPageRowSharedSaves), @(XEPageRowCopyProfile) ]];
+      [sections addObject:xe_ios_live_account_supports_shared_saves()
+                              ? @[ @(XEPageRowSharedSaves), @(XEPageRowCopyProfile) ]
+                              : @[ @(XEPageRowCopyProfile) ]];
       [titles addObject:NSLocalizedString(@"Profile Data", @"Profile page: header")];
     }
     if (online) {
+      _privacySection = (NSInteger)sections.count;
+      _blockedCount = [XeniaLiveSocial shared].blockedPlayerCount;
+      // Appear Offline last, so the group's footer sits under it.
+      [sections addObject:@[ @(XEPageRowBlocked), @(XEPageRowAppearOffline) ]];
+      [titles addObject:NSLocalizedString(@"Privacy", @"Profile page: header")];
+      // Under Privacy, as its own choice of two with its own footer; left out while the service
+      // doesn't say it (one without the setting).
+      _friendRequests = [XeniaLiveSocial shared].friendRequestsSetting;
+      if (_friendRequests != XeniaLiveFriendRequestsSettingUnknown) {
+        _requestsSection = (NSInteger)sections.count;
+        [sections addObject:@[ @(XEPageRowRequestsAnyone), @(XEPageRowRequestsCode) ]];
+        [titles addObject:NSLocalizedString(@"Friend Requests", @"Profile page: header over who "
+                                                                @"may send friend requests")];
+      }
       [sections addObject:@[ @(XEPageRowRecovery), @(XEPageRowGamertag) ]];
       [titles addObject:@""];
     }
@@ -3079,6 +3714,19 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
   NSString* title = _sectionTitles[(NSUInteger)section];
   return title.length ? title : nil;
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForFooterInSection:(NSInteger)section {
+  if (section == _requestsSection) {
+    return NSLocalizedString(@"With My Code, players can add you only with your friend code, link "
+                             @"or QR code.",
+                             @"Profile page: footer under Friend Requests");
+  }
+  return section == _privacySection
+             ? NSLocalizedString(@"Friends see you as offline. You can still join games and get "
+                                 @"invites.",
+                                 @"Profile page: footer under Appear Offline")
+             : nil;
 }
 
 - (NSInteger)rowAt:(NSIndexPath*)indexPath {
@@ -3153,6 +3801,46 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                                     : NSLocalizedString(@"Off", @"Profile page: row detail");
       }
       break;
+    case XEPageRowBlocked:
+      content.text = NSLocalizedString(@"Blocked Players", @"Profile page: row");
+      content.image = Glyph(@"hand.raised");
+      if (_blockedCount) {
+        content.secondaryText = [NSString stringWithFormat:@"%lu", (unsigned long)_blockedCount];
+      }
+      break;
+    case XEPageRowAppearOffline: {
+      content = [UIListContentConfiguration cellConfiguration];
+      content.text = NSLocalizedString(@"Appear Offline", @"Profile page: switch");
+      content.image = Glyph(@"eye.slash");
+      cell.accessoryType = UITableViewCellAccessoryNone;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      UISwitch* toggle = [[[UISwitch alloc] init] autorelease];
+      toggle.on = [XeniaLiveSocial shared].appearOffline;
+      toggle.onTintColor = [XeniaTheme accent];
+      toggle.accessibilityLabel = content.text;
+      [toggle addTarget:self
+                    action:@selector(appearOfflineToggled:)
+          forControlEvents:UIControlEventValueChanged];
+      cell.accessoryView = toggle;
+      break;
+    }
+    case XEPageRowRequestsAnyone:
+    case XEPageRowRequestsCode: {
+      // A choice: a checkmark on the one the service has.
+      content = [UIListContentConfiguration cellConfiguration];
+      const BOOL code = row == XEPageRowRequestsCode;
+      content.text = code ? NSLocalizedString(@"Only with My Code",
+                                              @"Profile page: friend requests only by friend code")
+                          : NSLocalizedString(@"Anyone",
+                                              @"Profile page: friend requests from anyone");
+      const BOOL chosen = _friendRequests == (code ? XeniaLiveFriendRequestsSettingCode
+                                                   : XeniaLiveFriendRequestsSettingAnyone);
+      cell.accessoryType =
+          chosen ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+      cell.tintColor = [XeniaTheme accent];
+      cell.accessibilityTraits = chosen ? UIAccessibilityTraitSelected : UIAccessibilityTraitNone;
+      break;
+    }
     case XEPageRowGamertag:
       content.text = NSLocalizedString(@"Change Gamertag", @"Profile page: row");
       content.image = Glyph(@"person.text.rectangle");
@@ -3227,6 +3915,18 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
       break;
     case XEPageRowGamertag:
       [self presentRename];
+      break;
+    case XEPageRowBlocked:
+      [self.navigationController
+          pushViewController:[[[XEBlockedPlayersViewController alloc] init] autorelease]
+                    animated:YES];
+      break;
+    // The checkmark moves when the service answers (socialChanged), here and on other devices.
+    case XEPageRowRequestsAnyone:
+      [XeniaLiveSocial shared].friendRequestsSetting = XeniaLiveFriendRequestsSettingAnyone;
+      break;
+    case XEPageRowRequestsCode:
+      [XeniaLiveSocial shared].friendRequestsSetting = XeniaLiveFriendRequestsSettingCode;
       break;
     default:
       break;
@@ -3356,8 +4056,23 @@ UIViewController* xe_ios_new_profile_page(
                                                    changePicture:change_picture] autorelease];
 }
 
+void xe_ios_present_report_player(UIViewController* presenter, uint64_t xuid,
+                                  NSString* _Nullable gamertag) {
+  PresentForm(presenter, [[[XEReportForm alloc] initWithXuid:xuid gamertag:gamertag] autorelease],
+              NO);
+}
+
 void xe_ios_present_sign_in(UIViewController* presenter, NSString* _Nullable code) {
-  PresentForm(presenter, [[[XESignInForm alloc] initWithCode:code] autorelease], NO);
+  if (xe_ios_online_features_enabled()) {
+    PresentForm(presenter, [[[XESignInForm alloc] initWithCode:code] autorelease], NO);
+    return;
+  }
+  // Signing in goes online, so with Online Features off the sheet could only fail; ask first.
+  NSString* kept = [[code copy] autorelease];
+  xe_ios_confirm_turn_on_online_features(presenter, ^{
+    xe_ios_set_online_features_enabled(YES);
+    PresentForm(presenter, [[[XESignInForm alloc] initWithCode:kept] autorelease], NO);
+  });
 }
 
 BOOL xe_ios_handle_link_url(NSURL* url, UIViewController* presenter) {
@@ -3444,63 +4159,6 @@ void xe_ios_observe_incoming_approvals(UIViewController* (^presenter)(void)) {
                 }
               }];
   [observer retain];
-}
-
-// A .xeniosprofile opened from AirDrop or Files: confirm, then import it. Handles the file whether
-// or not the account screens are open.
-BOOL xe_ios_handle_opened_profile_file(NSURL* url, UIViewController* presenter) {
-  if (![url.pathExtension.lowercaseString isEqualToString:@"xeniosprofile"]) {
-    return NO;
-  }
-  if (!xe_ios_live_account_ui_enabled()) {
-    ShowAlert(presenter, NSLocalizedString(@"Can’t Import Yet", @"Profile file: alert title"),
-              NSLocalizedString(@"Profile files aren’t supported in this build.", @"Profile file: alert message"));
-    return YES;
-  }
-  NSString* name = url.lastPathComponent.stringByDeletingPathExtension;
-  UIAlertController* alert = [UIAlertController
-      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(@"Import “%@”?",
-                                                                            @"Profile file: alert title; %@ "
-                                                                            @"is the file name"),
-                                                          name]
-                       message:NSLocalizedString(@"Its saves, achievements and settings are added to this "
-                                                 @"device.",
-                                                 @"Profile file: alert message")
-                preferredStyle:UIAlertControllerStyleAlert];
-  NSURL* file = [[url retain] autorelease];
-  void (^cleanup)(void) = ^{
-    // An Inbox copy is ours to remove; a file in Files stays.
-    if ([file.path containsString:@"/Documents/Inbox/"]) {
-      [[NSFileManager defaultManager] removeItemAtURL:file error:nil];
-    }
-  };
-  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Profile file: alert button")
-                                            style:UIAlertActionStyleCancel
-                                          handler:^(UIAlertAction* __unused a) {
-                                            cleanup();
-                                          }]];
-  [alert addAction:[UIAlertAction
-                       actionWithTitle:NSLocalizedString(@"Import", @"Profile file: alert button")
-                                 style:UIAlertActionStyleDefault
-                               handler:^(UIAlertAction* __unused a) {
-                                 const BOOL scoped = [file startAccessingSecurityScopedResource];
-                                 [xe_ios_live_account_service()
-                                     importProfileFromURL:file
-                                               completion:^(NSError* error) {
-                                                 if (scoped) {
-                                                   [file stopAccessingSecurityScopedResource];
-                                                 }
-                                                 cleanup();
-                                                 ShowAlert(presenter,
-                                                           error ? NSLocalizedString(@"Couldn’t Import", @"Import: alert title")
-                                                                 : NSLocalizedString(@"Profile Imported", @"Import: alert title"),
-                                                           error ? error.localizedDescription
-                                                                 : NSLocalizedString(@"Saves, achievements and settings are in place.",
-                                                                                     @"Import: alert message"));
-                                               }];
-                               }]];
-  [TopOf(presenter) presentViewController:alert animated:YES completion:nil];
-  return YES;
 }
 
 void xe_ios_present_copy_profile(UIViewController* presenter) {
