@@ -15,7 +15,6 @@
 #include <memory>
 
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
-#import "xenia/ui/ios/launcher/ios_system_update_page_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
@@ -194,12 +193,12 @@ constexpr CGFloat kContentWidth = 440.0;
       title_label_.text =
           NSLocalizedString(@"Set Up the Xbox 360 Dashboard", @"dashboard setup: title");
       body_label_.text = NSLocalizedString(
-          @"The dashboard comes with Microsoft's free Xbox 360 system update. Download it from "
-          @"Microsoft's support page, and XeniOS installs it.",
+          @"The dashboard comes with Microsoft's free Xbox 360 system update. XeniOS downloads "
+          @"it from Microsoft and installs it.",
           @"dashboard setup: message");
       [self
           setButton:primary_button_
-              title:NSLocalizedString(@"Get the Update from Microsoft", @"dashboard setup: button")
+              title:NSLocalizedString(@"Download & Install", @"dashboard setup: button")
              symbol:@"arrow.down.circle.fill"];
       [self setButton:secondary_button_
                 title:NSLocalizedString(@"Choose a Downloaded Update",
@@ -255,13 +254,7 @@ constexpr CGFloat kContentWidth = 440.0;
     return;
   }
   if (stage_ == SetupStage::kGetUpdate) {
-    __unsafe_unretained XeniaDashboardSetupViewController* unsafe_self = self;
-    XeniaSystemUpdatePageViewController* page =
-        [[[XeniaSystemUpdatePageViewController alloc] initWithDownloadHandler:^(NSURL* file) {
-          [unsafe_self.navigationController popToViewController:unsafe_self animated:YES];
-          [unsafe_self installFromURL:file];
-        }] autorelease];
-    [self.navigationController pushViewController:page animated:YES];
+    [self downloadAndInstall];
   }
 }
 
@@ -300,6 +293,50 @@ constexpr CGFloat kContentWidth = 440.0;
                                          @"system software view controller: install progress"),
                        percent];
   footnote_label_.hidden = NO;
+}
+
+- (void)downloadAndInstall {
+  if (stage_ == SetupStage::kInstalling) {
+    return;
+  }
+  stage_ = SetupStage::kInstalling;
+  progress_view_.progress = 0.0f;
+  [self showStage];
+  title_label_.text =
+      NSLocalizedString(@"Downloading the System Update", @"dashboard setup: title");
+  [self setProgressPercent:0];
+
+  auto cancel = std::make_shared<std::atomic<bool>>(false);
+  cancel_ = cancel;
+  [self retain];
+  xe::ui::DownloadAndInstallIOSSystemUpdateAsync(
+      cancel,
+      ^(int percent, BOOL installing) {
+        if (stage_ != SetupStage::kInstalling) {
+          return;
+        }
+        if (installing) {
+          title_label_.text =
+              NSLocalizedString(@"Installing the System Software", @"dashboard setup: title");
+        }
+        [self setProgressPercent:percent];
+      },
+      ^(xe::ui::SystemUpdateDownload download, xe::ui::SystemFilesResult install) {
+        if (download == xe::ui::SystemUpdateDownload::kDownloaded) {
+          [self finishInstallWithResult:install source:nil];
+        } else {
+          cancel_.reset();
+          stage_ = SetupStage::kGetUpdate;
+          [self showStage];
+          if (NSString* message = xe::ui::IOSSystemUpdateDownloadFailureMessage(download)) {
+            XEPresentOKAlert(self,
+                             NSLocalizedString(@"Couldn't Download the System Update",
+                                               @"system software view controller: title"),
+                             message);
+          }
+        }
+        [self release];
+      });
 }
 
 - (void)installFromURL:(NSURL*)url {

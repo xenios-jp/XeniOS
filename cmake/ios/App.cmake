@@ -29,6 +29,19 @@ set_target_properties(xenia-app PROPERTIES
   XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
     "${_xe_ios_entitlements}")
 target_sources(xenia-app PRIVATE "${_xe_ios_entitlements}")
+# Edge's title databases, for the library's cover art (GetBoxArtUrls): x360db
+# for the 360 and its indie games, xdb for the original Xbox.
+target_sources(xenia-app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/game_title_db.cc)
+xe_embed_compressed_bundle(xenia-app
+    "${XENIA_DATA_REPOS_DIR}/x360db/games.json"
+    game_db)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/assets/xdb/games.json")
+xe_embed_compressed_bundle(xenia-app
+    "${PROJECT_SOURCE_DIR}/assets/xdb/games.json"
+    xbox_db)
+target_include_directories(xenia-app PRIVATE
+    "${PROJECT_SOURCE_DIR}/third_party/rapidjson/include")
 target_compile_definitions(xenia-app PRIVATE
   XBYAK_NO_OP_NAMES
   XBYAK_ENABLE_OMITTED_OPERAND
@@ -77,7 +90,6 @@ target_link_libraries(xenia-app PRIVATE
   "-framework Security"
   "-framework UIKit"
   "-framework UniformTypeIdentifiers"
-  "-framework WebKit"
 )
 target_link_options(xenia-app PRIVATE
   "-Wl,-u,___clear_cache"

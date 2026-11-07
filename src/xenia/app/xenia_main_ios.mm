@@ -171,7 +171,7 @@ void EnsureIOSPatchesDirectoryExposed(const std::filesystem::path& storage_root,
   size_t existing_files = 0;
   size_t failed_files = 0;
   for (const patcher::PatchSourceFile& bundled :
-       patcher::EnumerateBundledPatchesForTitle(title_id)) {
+       patcher::EnumeratePatchesForTitle({}, title_id)) {
     const std::filesystem::path storage_path = IOSPatchStoragePath(storage_root, bundled);
     ec.clear();
     if (std::filesystem::exists(storage_path, ec)) {
@@ -209,8 +209,9 @@ std::vector<patcher::PatchSourceFile> EnumerateIOSPatchFilesForTitle(
     const std::filesystem::path& storage_root, uint32_t title_id,
     ui::IOSPatchDiscoverySummary* summary_out = nullptr) {
   EnsureIOSPatchesDirectoryExposed(storage_root, title_id);
+  // No folder: the bundled files only. The Documents folder is read below.
   std::vector<patcher::PatchSourceFile> patch_files =
-      patcher::EnumerateBundledPatchesForTitle(title_id);
+      patcher::EnumeratePatchesForTitle({}, title_id);
   if (summary_out) {
     summary_out->directory_path =
         xe::path_to_utf8(IOSPatchesDirectory(storage_root).lexically_normal());
@@ -741,9 +742,10 @@ bool EmulatorAppIOS::OnInitialize() {
   emulator_ = std::make_unique<Emulator>("", storage_root, content_root, cache_root);
 
   emulator_->set_on_exit_to_dashboard([this]() {
-    // A game the dashboard started goes back to it, as on a console, unless the
-    // app is already stopping it.
-    if (dashboard_session_.load(std::memory_order_acquire) &&
+    // A game the dashboard started goes back to it, as on a console, and so
+    // does every game when the dashboard is home, unless the app is already
+    // stopping it.
+    if ((dashboard_session_.load(std::memory_order_acquire) || xe::ui::IsIOSDashboardHome()) &&
         !game_stop_requested_.load(std::memory_order_acquire) &&
         xe::ui::IsIOSDashboardInstalled()) {
       std::lock_guard<std::mutex> lock(launch_mutex_);
