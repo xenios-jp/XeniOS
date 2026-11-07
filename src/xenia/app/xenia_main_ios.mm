@@ -802,16 +802,19 @@ bool EmulatorAppIOS::OnInitialize() {
       std::filesystem::path launch_module_path(launch_module);
       const std::string relaunch_extension = relaunch_target.extension().string();
       const bool relaunch_target_is_xex = xe_strcasecmp(relaunch_extension.c_str(), ".xex") == 0;
-      const bool relaunch_target_is_disc_container =
-          xe_strcasecmp(relaunch_extension.c_str(), ".iso") == 0 ||
-          xe_strcasecmp(relaunch_extension.c_str(), ".zar") == 0;
+      std::error_code relaunch_target_error;
+      const bool relaunch_target_is_directory =
+          std::filesystem::is_directory(relaunch_target, relaunch_target_error);
       if (relaunch_target.empty()) {
         relaunch_target = launch_module_path;
       } else if (relaunch_target_is_xex) {
         relaunch_target = relaunch_target.parent_path() / launch_module_path;
-      } else if (!relaunch_target_is_disc_container) {
+      } else if (relaunch_target_is_directory) {
         relaunch_target = relaunch_target / launch_module_path;
       }
+      // Otherwise the target is a container (a GoD or STFS package, .iso or
+      // .zar) with the module inside it: launch the container, and its launch
+      // finds the module from cvars::launch_module, set below.
     }
     relaunch_target = relaunch_target.lexically_normal();
     if (relaunch_target.empty()) {
@@ -2040,7 +2043,10 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
     }
     {
       std::lock_guard<std::mutex> lock(launch_mutex_);
-      if (queued_launch_path_.has_value()) {
+      // An empty path asked for the emulator without a game, and the queue
+      // starts nothing for it: the UI would wait on "Stopping game..." for a
+      // launch that never comes.
+      if (queued_launch_path_.has_value() && !queued_launch_path_->empty()) {
         XELOGI("iOS: keeping game UI active for queued launch");
         return;
       }
