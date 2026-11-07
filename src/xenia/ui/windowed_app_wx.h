@@ -39,6 +39,11 @@ class XeniaWxApp : public wxApp {
   wxLayoutDirection GetLayoutDirection() const override {
     return wxLayout_LeftToRight;
   }
+#if XE_PLATFORM_MAC
+  // A document opened from the Finder (double-click, Open With, the Dock),
+  // handed to the app's OnOpenFiles.
+  void MacOpenFiles(const wxArrayString& file_names) override;
+#endif
 
  private:
   std::unique_ptr<WxWindowedAppContext> app_context_;

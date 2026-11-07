@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <vector>
 
 #include <wx/image.h>
 
@@ -103,6 +105,19 @@ bool XeniaWxApp::OnInit() {
 
   return true;
 }
+
+#if XE_PLATFORM_MAC
+void XeniaWxApp::MacOpenFiles(const wxArrayString& file_names) {
+  if (!app_) {
+    return;
+  }
+  std::vector<std::filesystem::path> paths;
+  for (size_t i = 0; i < file_names.GetCount(); ++i) {
+    paths.emplace_back(file_names[i].utf8_string());
+  }
+  app_->OnOpenFiles(paths);
+}
+#endif
 
 int XeniaWxApp::OnExit() {
   if (app_) {

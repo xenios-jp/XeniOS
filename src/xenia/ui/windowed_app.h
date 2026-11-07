@@ -11,6 +11,7 @@
 #define XENIA_UI_WINDOWED_APP_H_
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -64,6 +65,9 @@ class WindowedApp {
   // been initialized successfully (otherwise platform-specific code must call
   // OnDestroy and refuse to continue running the app).
   virtual bool OnInitialize() = 0;
+  // Files the system asked the app to open, such as a document double-clicked
+  // in the Finder. On the UI thread, after OnInitialize.
+  virtual void OnOpenFiles(const std::vector<std::filesystem::path>& paths) {}
   // See OnDestroy for more info.
   void InvokeOnDestroy() {
     // For safety and convenience of referencing objects owned by the app in

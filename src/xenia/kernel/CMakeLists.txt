@@ -20,6 +20,8 @@ target_link_libraries(xenia-kernel PUBLIC
   asio fmt mbedtls zlib-ng pugixml xenia-apu xenia-apu-voice xenia-base xenia-cpu
   xenia-hid xenia-net xenia-vfs
 )
+# Profile packages (xam/profile_package.cc) are zstd streams.
+target_link_libraries(xenia-kernel PRIVATE zstd)
 if(WIN32)
   target_link_libraries(xenia-kernel PUBLIC winhttp)
 elseif(APPLE)
