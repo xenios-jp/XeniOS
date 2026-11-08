@@ -103,6 +103,12 @@ void xe_remove_linked_content_marker(const IOSInstalledContentEntry& entry);
 bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
                                  std::string* error_message_out);
 
+// Deletes a title's installed updates and add-ons. Linked ones keep their source.
+bool xe_remove_title_content(uint32_t title_id, std::string* error_message_out);
+// A title's saves on every profile on this device. Achievements stay with the profile.
+bool xe_title_has_saves(uint32_t title_id);
+bool xe_remove_title_saves(uint32_t title_id, std::string* error_message_out);
+
 // Enumerators.
 void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalledContentKind kind,
                                   std::vector<IOSInstalledContentEntry>* content_out);

@@ -2211,6 +2211,10 @@ bool XEZarCleanupOriginalAfterConversion(const std::filesystem::path& source_pat
 
 }  // namespace
 
+bool XeniaDeleteGameFiles(const std::filesystem::path& source_path, std::string* message_out) {
+  return XEZarDeleteSourceFiles(source_path, message_out);
+}
+
 @interface XeniaIOSZarConversionCoordinator ()
 - (UIViewController*)topPresentedControllerForModalPresentation;
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;

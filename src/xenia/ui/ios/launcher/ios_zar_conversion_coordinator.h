@@ -37,6 +37,10 @@
 @property(nonatomic, copy) void (^handler)(void);
 @end
 
+// Deletes a game's files in the library: its folder for an extracted game, or the file with its
+// sidecar. Refuses paths holding anything else. Blocking: call it off the main thread.
+bool XeniaDeleteGameFiles(const std::filesystem::path& source_path, std::string* message_out);
+
 @interface XeniaIOSZarConversionCoordinator : NSObject
 
 - (instancetype)initWithHost:(id<XeniaIOSZarConversionCoordinatorHost>)host;
