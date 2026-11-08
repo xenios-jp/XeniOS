@@ -202,9 +202,15 @@ bool RelayAllowed() { return relay_allowed.load(std::memory_order_relaxed); }
 // Whether System Link was on when SystemLinkAllowedChanged last looked.
 std::atomic<bool> link_enabled_seen{false};
 
+// The policy's callbacks are the app's, and may change settings that call back
+// into System Link, so they're copied out and called without the lock held.
 void RefreshRelayAllowed() {
-  std::lock_guard lock(relay_policy_mutex);
-  relay_allowed = !relay_policy.allowed || relay_policy.allowed();
+  std::function<bool()> allowed;
+  {
+    std::lock_guard lock(relay_policy_mutex);
+    allowed = relay_policy.allowed;
+  }
+  relay_allowed = !allowed || allowed();
 }
 
 // The room the running title's relay transport last moved to, for presence.
@@ -239,13 +245,15 @@ void NoteRoom(uint32_t title_id, const std::string& code) {
 
 std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
   std::string code;
+  std::function<std::string(uint32_t)> room;
   {
     // JoinSystemLinkRoom may set it meanwhile.
     std::lock_guard lock(relay_policy_mutex);
     code = cvars::systemlink_room;
-    if (relay_policy.room) {
-      code = relay_policy.room(title_id);
-    }
+    room = relay_policy.room;
+  }
+  if (room) {
+    code = room(title_id);
   }
   if (code.empty()) {
     NoteRoom(title_id, {});
@@ -283,11 +291,13 @@ std::unique_ptr<net::secure::PacketTransport> OpenTransport(
       config.nat_override.reset();
     }
     config.allowed = [] { return RelayAllowed(); };
+    std::function<std::string()> app_id;
     {
       std::lock_guard lock(relay_policy_mutex);
-      if (relay_policy.app_id) {
-        config.app_id = relay_policy.app_id();
-      }
+      app_id = relay_policy.app_id;
+    }
+    if (app_id) {
+      config.app_id = app_id();
     }
     // The room is only asked for again once it may have changed.
     config.current_room = [title_id = uint32_t(execution.title_id),
