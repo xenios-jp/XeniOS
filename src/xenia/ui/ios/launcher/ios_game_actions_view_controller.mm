@@ -1415,7 +1415,9 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 
 // What's open under a heading changed: the rows follow, in place when there are as many.
 - (void)refreshChildrenForAction:(XeniaIOSGameAction)action {
-  NSArray<XeniaGameRowChild*>* shown = [self shownChildrenForAction:action];
+  // Held past the swap below: the old rows (and a handler that may be running this refresh)
+  // stay alive until the event ends.
+  NSArray<XeniaGameRowChild*>* shown = [[[self shownChildrenForAction:action] retain] autorelease];
   if (shown && table_view_) {
     NSArray<XeniaGameRowChild*>* children = [self childrenForAction:action];
     const NSInteger heading_row = [self tableRowForAction:action];
