@@ -34,14 +34,10 @@ X_STATUS PHASEAudioSystem::CreateDriver(size_t index,
                                         xe::threading::Semaphore* semaphore,
                                         AudioDriver** out_driver) {
   assert_not_null(out_driver);
-  // Only guest client 0 drives the single shared PHASE engine. Additional
-  // clients use a silent fallback: there is one physical output, and standing
-  // up multiple engines would contend and waste CPU on a mobile device.
-  if (index > 0) {
-    *out_driver = new SilentAudioDriver(semaphore);
-    return X_STATUS_SUCCESS;
-  }
-
+  // Every guest client gets a sound event on the one shared PHASE engine,
+  // which mixes them. Titles such as Left 4 Dead 2 play through a client other
+  // than the first.
+  (void)index;
   auto driver = std::make_unique<PHASEAudioDriver>(semaphore);
   if (!driver->Initialize()) {
     driver->Shutdown();
