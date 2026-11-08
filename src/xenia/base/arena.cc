@@ -128,15 +128,13 @@ void Arena::CloneContents(void* buffer, size_t buffer_length) {
 
 Arena::Chunk::Chunk(size_t chunk_size)
     : next(nullptr), capacity(chunk_size), buffer(0), offset(0) {
-  buffer = reinterpret_cast<uint8_t*>(malloc(capacity));
+  // operator new, not malloc: running out of memory goes through the new
+  // handler instead of returning null to callers that never check.
+  buffer = static_cast<uint8_t*>(::operator new(capacity));
   assert_true((reinterpret_cast<size_t>(buffer) & size_t(15)) == 0,
               "16 byte alignment required");
 }
 
-Arena::Chunk::~Chunk() {
-  if (buffer) {
-    free(buffer);
-  }
-}
+Arena::Chunk::~Chunk() { ::operator delete(buffer); }
 
 }  // namespace xe
