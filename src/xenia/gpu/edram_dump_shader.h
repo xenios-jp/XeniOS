@@ -118,14 +118,17 @@ constexpr uint32_t kEdramDumpShaderResolvePixelsPerThreadAt32bpp =
 // as many of them. A resolve averaging samples reads and converts every sample
 // of every pixel of its run, and with runs of eight pixels so many of them
 // were in flight that the kernel spilled; those take one pixel per thread and
-// store dwords. Every other resolve reads one sample per pixel and keeps the
-// longer runs, where dword stores were slower.
+// store dwords. Every other resolve reads one sample per pixel and keeps runs
+// of whole stores, where dword stores were slower: two stores by default, or
+// one with single_store (EdramDumpShaderOptions::resolve_single_store_runs).
 constexpr uint32_t GetEdramDumpShaderResolvePixelsPerThread(
-    bool is_64bpp, bool average = false) {
+    bool is_64bpp, bool average = false, bool single_store = false) {
   if (average) {
     return 1;
   }
-  return kEdramDumpShaderResolvePixelsPerThreadAt32bpp >> uint32_t(is_64bpp);
+  return (single_store ? kEdramDumpShaderResolvePixelsPerStore
+                       : kEdramDumpShaderResolvePixelsPerThreadAt32bpp) >>
+         uint32_t(is_64bpp);
 }
 // 64 threads per group, like the resolve copy shaders.
 constexpr uint32_t kEdramDumpShaderResolveThreadsPerGroupX = 8;
@@ -241,6 +244,12 @@ struct EdramDumpShaderOptions {
   // rather than emulating them on 4-sample ones, which decides where guest 2x
   // samples live.
   bool msaa_2x_attachments_supported = false;
+
+  // Whether a direct resolve that doesn't average samples has each thread do
+  // one 16-byte store rather than two, which was faster on Apple GPUs. The
+  // backend sizes its dispatch with GetEdramDumpShaderResolvePixelsPerThread
+  // and the same choice.
+  bool resolve_single_store_runs = false;
 
   // Whether the backend stores this color format's ownership-transfer view as
   // an integer texture, so the source is sampled as uint rather than float.
