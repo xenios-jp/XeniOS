@@ -553,15 +553,15 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
 
 - (void)runCheck {
   const NSUInteger generation = _generation;
-  __unsafe_unretained XEGamertagForm* unsafe_self = self;
   NSString* text = [[_field.text copy] autorelease];
+  // The answer can come after the sheet is closed, so the block keeps the form.
   [xe_ios_live_account_service()
       checkGamertag:text
          completion:^(XeniaLiveNameResult* result) {
-           if (generation != unsafe_self->_generation) {
+           if (generation != self->_generation) {
              return;
            }
-           [unsafe_self applyCheck:result forName:text];
+           [self applyCheck:result forName:text];
          }];
 }
 
@@ -615,9 +615,9 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
   _claiming = YES;
   [_field resignFirstResponder];
   XESetFormCommitBusy(self, YES);
-  __unsafe_unretained XEGamertagForm* unsafe_self = self;
+  // Going online can finish after the sheet is closed, so the block keeps the form.
   void (^finish)(XeniaLiveNameResult*) = ^(XeniaLiveNameResult* result) {
-    [unsafe_self claimFinished:result name:name];
+    [self claimFinished:result name:name];
   };
   if (_mode == XEGamertagModeGoOnline) {
     [xe_ios_live_account_service() goOnlineWithGamertag:name completion:finish];
