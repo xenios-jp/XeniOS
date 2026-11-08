@@ -39,6 +39,7 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
   XeniaIOSGameActionConvertToZar,
   XeniaIOSGameActionCopyLaunchURL,
   XeniaIOSGameActionSystemLink,
+  XeniaIOSGameActionDeleteGame,
 };
 
 // The game page: the game's art, its cover and status, Play with touch layout and
@@ -69,7 +70,10 @@ typedef NS_ENUM(NSInteger, XeniaIOSGameAction) {
 @property(nonatomic, copy) void (^conversionChoicesLoader)
     (void (^update)(NSString* summary, BOOL estimating,
                     NSArray<XeniaIOSZarConversionChoice*>* choices));
-// What ⋯ offers: copy the launch link, reset the game's settings.
+// ⋯'s destructive entry for the game ("Delete Game", or "Remove from Library" for a linked game);
+// no entry when nil. Set before the view loads.
+@property(nonatomic, copy) NSString* deleteTitle;
+// What ⋯ offers: copy the launch link, reset the game's settings, delete the game.
 - (UIMenu*)moreMenu;
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle

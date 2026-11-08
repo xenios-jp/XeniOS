@@ -162,6 +162,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   NSString* conversion_summary_;
   NSArray<XeniaIOSZarConversionChoice*>* conversion_choices_;
   BOOL conversion_loading_;
+  NSString* delete_title_;
 }
 
 @synthesize actionHandler = action_handler_;
@@ -177,6 +178,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 @synthesize compatibilityPerformance = compatibility_performance_;
 @synthesize compatibilityNotes = compatibility_notes_;
 @synthesize conversionChoicesLoader = conversion_choices_loader_;
+@synthesize deleteTitle = delete_title_;
 
 - (instancetype)initWithGameTitle:(NSString*)gameTitle
                           titleID:(uint32_t)titleID
@@ -364,10 +366,21 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 }
 
 - (UIMenu*)moreMenu {
-  if (!title_id_) {
-    return [UIMenu menuWithChildren:@[]];
-  }
   __block XeniaIOSGameActionsViewController* owner = self;  // MRC: not retained.
+  NSMutableArray<UIMenuElement*>* destructive = [NSMutableArray array];
+  if (delete_title_) {
+    UIAction* remove = [UIAction actionWithTitle:delete_title_
+                                           image:[UIImage systemImageNamed:@"trash"]
+                                      identifier:nil
+                                         handler:^(__unused UIAction* action) {
+                                           [owner perform:XeniaIOSGameActionDeleteGame];
+                                         }];
+    remove.attributes = UIMenuElementAttributesDestructive;
+    [destructive addObject:remove];
+  }
+  if (!title_id_) {
+    return [UIMenu menuWithChildren:destructive];
+  }
   UIAction* copy_url = [UIAction
       actionWithTitle:NSLocalizedString(@"Copy Launch URL", @"game page: more menu")
                 image:[UIImage systemImageNamed:@"link"]
@@ -383,12 +396,13 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
                 [owner perform:XeniaIOSGameActionResetGameSettings];
               }];
   reset.attributes = UIMenuElementAttributesDestructive;
+  [destructive insertObject:reset atIndex:0];
   return [UIMenu menuWithChildren:@[
     copy_url, [UIMenu menuWithTitle:@""
                               image:nil
                          identifier:nil
                             options:UIMenuOptionsDisplayInline
-                           children:@[ reset ]]
+                           children:destructive]
   ]];
 }
 

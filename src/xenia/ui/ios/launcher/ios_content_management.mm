@@ -606,6 +606,52 @@ bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
   return true;
 }
 
+bool xe_remove_title_content(uint32_t title_id, std::string* error_message_out) {
+  for (const IOSInstalledContentEntry& entry : xe_list_installed_content(title_id)) {
+    if (!xe_remove_installed_content(entry, error_message_out)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// {content}/{xuid}/{title_id}/00000001: every profile, and the shared folder a title may use.
+static std::vector<std::filesystem::path> TitleSaveRoots(uint32_t title_id) {
+  std::vector<std::filesystem::path> roots;
+  char title[9] = {};
+  std::snprintf(title, sizeof(title), "%08X", title_id);
+  char type[9] = {};
+  std::snprintf(type, sizeof(type), "%08X", static_cast<uint32_t>(xe::XContentType::kSavedGame));
+  std::error_code ec;
+  for (const auto& owner :
+       std::filesystem::directory_iterator(xe_get_ios_documents_path() / "content", ec)) {
+    if (owner.path().filename().string().size() == 16) {
+      const std::filesystem::path root = owner.path() / title / type;
+      std::error_code exists_ec;
+      if (std::filesystem::is_directory(root, exists_ec)) {
+        roots.push_back(root);
+      }
+    }
+  }
+  return roots;
+}
+
+bool xe_title_has_saves(uint32_t title_id) { return !TitleSaveRoots(title_id).empty(); }
+
+bool xe_remove_title_saves(uint32_t title_id, std::string* error_message_out) {
+  for (const std::filesystem::path& root : TitleSaveRoots(title_id)) {
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    if (ec) {
+      if (error_message_out) {
+        *error_message_out = ec.message();
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
 void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalledContentKind kind,
                                   std::vector<IOSInstalledContentEntry>* content_out) {
   if (!content_out) {
