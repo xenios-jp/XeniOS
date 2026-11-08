@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "xenia/app/game_title_db.h"
 #include "xenia/base/cvar.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
@@ -113,7 +114,13 @@ NSDictionary<NSString*, NSString*>* LoadGameNames() {
   return names;
 }
 
+// A game the compatibility data doesn't list: the bundled title database, then its title ID.
 NSString* UnnamedGame(uint32_t title_id) {
+  if (const xe::app::GameTitleInfo* info = xe::app::GetGameTitleInfo(title_id)) {
+    if (!info->name.empty()) {
+      return [NSString stringWithUTF8String:info->name.c_str()];
+    }
+  }
   return [NSString
       stringWithFormat:NSLocalizedString(@"Game %@", @"system link view controller: a game with "
                                                      @"no name; %@ is its title ID"),
