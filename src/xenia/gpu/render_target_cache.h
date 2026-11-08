@@ -281,6 +281,11 @@ class RenderTargetCache {
   }
 
   const RegisterFile& register_file() const { return register_file_; }
+  // The CPU-evaluated positions and extent of the draw being updated, for
+  // recognizing full-target clear quads.
+  DrawExtentEstimator& draw_extent_estimator() {
+    return draw_extent_estimator_;
+  }
 
   virtual bool IsGammaFormatHostStorageSeparate() const = 0;
 

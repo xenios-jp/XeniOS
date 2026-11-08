@@ -40,6 +40,24 @@ class DrawExtentEstimator {
                         const Shader& vertex_shader,
                         bool window_offset_in_edram);
 
+  // For the clear quad rule: the exported positions of the last draw whose
+  // vertex shader ran on the CPU, when it had at most kMaxLastVertices
+  // vertices and every one of them exported x, y and z without being killed.
+  static constexpr uint32_t kMaxLastVertices = 4;
+  struct LastVertexPositions {
+    bool valid = false;
+    uint32_t count = 0;
+    float x[kMaxLastVertices] = {};
+    float y[kMaxLastVertices] = {};
+    float z[kMaxLastVertices] = {};
+    // NaN if not exported.
+    float w[kMaxLastVertices] = {};
+  };
+  const LastVertexPositions& last_vertex_positions() const {
+    return last_vertex_positions_;
+  }
+  void ResetLastDraw() { last_vertex_positions_ = LastVertexPositions(); }
+
  private:
   class PositionYExportSink : public ShaderInterpreter::ExportSink {
    public:
@@ -47,18 +65,24 @@ class DrawExtentEstimator {
                 uint32_t value_mask) override;
 
     void Reset() {
+      position_x_.reset();
+      position_z_.reset();
       position_y_.reset();
       position_w_.reset();
       point_size_.reset();
       vertex_kill_.reset();
     }
 
+    const std::optional<float>& position_x() const { return position_x_; }
     const std::optional<float>& position_y() const { return position_y_; }
+    const std::optional<float>& position_z() const { return position_z_; }
     const std::optional<float>& position_w() const { return position_w_; }
     const std::optional<float>& point_size() const { return point_size_; }
     const std::optional<uint32_t>& vertex_kill() const { return vertex_kill_; }
 
    private:
+    std::optional<float> position_x_;
+    std::optional<float> position_z_;
     std::optional<float> position_y_;
     std::optional<float> position_w_;
     std::optional<float> point_size_;
@@ -70,6 +94,8 @@ class DrawExtentEstimator {
   TraceWriter* trace_writer_;
 
   ShaderInterpreter shader_interpreter_;
+
+  LastVertexPositions last_vertex_positions_;
 };
 
 }  // namespace gpu
