@@ -1220,6 +1220,7 @@ static std::vector<IOSDiscoveredGame> ScanIOSGameLibraryImpl(NSDictionary* title
   XeniaIOSSweepStalePartFiles(library_root);
   XeniaIOSExcludeFromBackup(ToNSString(library_root.string()));
   xe_exclude_installed_content_from_backup();
+  xe_migrate_nested_dlc_packages();
   scan_roots.push_back({library_root});
   if (documents_root != library_root) {
     scan_roots.push_back({documents_root});

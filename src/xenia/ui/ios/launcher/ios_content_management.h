@@ -23,10 +23,12 @@
 // Title-update / DLC discovery and installation utilities.
 //
 // On disk content lives under
-//   {documents}/content/0000000000000000/{title_id_hex_upper}/{type_id}/{pkg}/
-// where type_id is "000B0000" for title updates and "00000002" for DLC. This
-// module enumerates installed content packages, copies new ones into place
-// (preserving headers + .data sidecar dirs) and reads top-level metadata.
+//   {documents}/content/0000000000000000/{title_id_hex_upper}/{type_id}/{pkg}
+// where type_id is "000B0000" for title updates and "00000002" for DLC. A title
+// update {pkg} is an extracted folder; a DLC {pkg} is the package file itself
+// (with its {pkg}.data sidecar folder, if any), or a link to it. This module
+// enumerates installed content packages, copies new ones into place and reads
+// top-level metadata.
 
 enum class IOSInstalledContentKind {
   kTitleUpdate,
@@ -84,6 +86,10 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
 // of every title from iCloud backup; saves and profiles stay in backup.
 // Idempotent and thread-safe.
 void xe_exclude_installed_content_from_backup();
+// Moves DLC that XeniOS 2.3.1 and older installed in a folder of its own
+// ({pkg}/{pkg}) up into the DLC folder, where titles find it. Blocking and
+// idempotent; call before titles run.
+void xe_migrate_nested_dlc_packages();
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        const std::filesystem::path& source_relative_path,
@@ -92,6 +98,10 @@ bool xe_refresh_linked_content_entry(const IOSInstalledContentEntry& entry,
                                      const std::filesystem::path& current_source_path,
                                      std::string* error_message_out);
 void xe_remove_linked_content_marker(const IOSInstalledContentEntry& entry);
+// Deletes an installed entry: a title update folder, a DLC package file with its
+// ".data" sidecar, or a linked DLC's links and marker (its source stays).
+bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
+                                 std::string* error_message_out);
 
 // Enumerators.
 void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalledContentKind kind,
