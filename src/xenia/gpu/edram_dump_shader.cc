@@ -833,7 +833,8 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     // rather than one scattered dword per invocation.
     uint32_t pixels_per_store =
         kEdramDumpShaderResolvePixelsPerStore >> uint32_t(format_is_64bpp);
-    uint32_t pixels_per_thread = pixels_per_store * 2;
+    uint32_t pixels_per_thread = GetEdramDumpShaderResolvePixelsPerThread(
+        format_is_64bpp, bool(key.direct_resolve_average));
 
     spv::Id resolve_edram_info =
         load_push_constant(kEdramDumpShaderPushConstantResolveEdramInfo);
@@ -1521,7 +1522,27 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
               load_push_constant(kEdramDumpShaderPushConstantResolveDestBase));
     }
 
-    for (uint32_t block = 0; block < 2; ++block) {
+    uint32_t run_dwords = pixels_per_thread * dwords_per_pixel;
+    // A run shorter than one 16-byte block stays inside one: it starts on a
+    // multiple of its own length, within four adjacent 32bpp pixels (or two
+    // 64bpp ones).
+    for (uint32_t dword = 0; run_dwords < 4 && dword < run_dwords; ++dword) {
+      spv::Id dword_address =
+          dword ? add(dest_address, builder.makeUintConstant(dword * 4))
+                : dest_address;
+      id_vector_temp.clear();
+      // The only SSBO structure member.
+      id_vector_temp.push_back(builder.makeIntConstant(0));
+      id_vector_temp.push_back(builder.createUnaryOp(
+          spv::OpBitcast, type_int, shift_right(dword_address, 4)));
+      id_vector_temp.push_back(
+          builder.createUnaryOp(spv::OpBitcast, type_int,
+                                bitwise_and(shift_right(dword_address, 2), 3)));
+      builder.createStore(run_packed[dword], builder.createAccessChain(
+                                                 spv::StorageClassUniform,
+                                                 dest_buffer, id_vector_temp));
+    }
+    for (uint32_t block = 0; block < run_dwords / 4; ++block) {
       spv::Id block_address =
           block ? add(dest_address,
                       builder.makeUintConstant(
