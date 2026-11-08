@@ -3406,6 +3406,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   XEPageRowAppearOffline,
   XEPageRowRequestsAnyone,
   XEPageRowRequestsCode,
+  XEPageRowDeleteProfile,
   XEPageRowDevice = 1000,  // + index into the device list.
 };
 
@@ -3413,7 +3414,9 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 - (instancetype)initWithGamertag:(NSString*)gamertag
                           active:(BOOL)active
                         switchTo:(nullable BOOL (^)(void))switch_to
-                   changePicture:(nullable void (^)(UIViewController* page))change_picture;
+                   changePicture:(nullable void (^)(UIViewController* page))change_picture
+                   deleteProfile:
+                       (nullable void (^)(UIViewController* page, UIView* source))delete_profile;
 @end
 
 @implementation XEProfilePageViewController {
@@ -3421,6 +3424,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   BOOL _active;
   BOOL (^_switchTo)(void);
   void (^_changePicture)(UIViewController*);
+  void (^_deleteProfile)(UIViewController*, UIView*);
   XEProfileHeader* _header;
   NSArray<NSArray<NSNumber*>*>* _sections;
   NSArray<NSString*>* _sectionTitles;
@@ -3439,13 +3443,15 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 - (instancetype)initWithGamertag:(NSString*)gamertag
                           active:(BOOL)active
                         switchTo:(BOOL (^)(void))switch_to
-                   changePicture:(void (^)(UIViewController*))change_picture {
+                   changePicture:(void (^)(UIViewController*))change_picture
+                   deleteProfile:(void (^)(UIViewController*, UIView*))delete_profile {
   if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
     self.glassStyle = YES;
     _gamertag = [gamertag copy];
     _active = active;
     _switchTo = [switch_to copy];
     _changePicture = [change_picture copy];
+    _deleteProfile = [delete_profile copy];
   }
   return self;
 }
@@ -3455,6 +3461,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   [_gamertag release];
   [_switchTo release];
   [_changePicture release];
+  [_deleteProfile release];
   [_header release];
   [_sections release];
   [_sectionTitles release];
@@ -3691,6 +3698,10 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
       [titles addObject:@""];
     }
   }
+  if (_deleteProfile) {
+    [sections addObject:@[ @(XEPageRowDeleteProfile) ]];
+    [titles addObject:@""];
+  }
   [_sections release];
   _sections = [sections copy];
   [_sectionTitles release];
@@ -3739,6 +3750,13 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   XeniaLiveAccountSummary* summary = xe_ios_live_account_service().summary;
   if (row == XEPageRowAddDevice) {
     return ActionCell(NSLocalizedString(@"Add a Device…", @"Profile page: row"));
+  }
+  if (row == XEPageRowDeleteProfile) {
+    UITableViewCell* cell = ActionCell(NSLocalizedString(@"Delete Profile…", @"Profile page: row"));
+    UIListContentConfiguration* content = (UIListContentConfiguration*)cell.contentConfiguration;
+    content.textProperties.color = [UIColor systemRedColor];
+    cell.contentConfiguration = content;
+    return cell;
   }
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:nil] autorelease];
@@ -3889,6 +3907,9 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
     return;
   }
   switch (row) {
+    case XEPageRowDeleteProfile:
+      _deleteProfile(self, [tableView cellForRowAtIndexPath:indexPath] ?: self.view);
+      break;
     // No field to type in, so these push inside the card, like Shared Saves.
     case XEPageRowAddDevice:
       [self.navigationController pushViewController:[[[XEAddDeviceForm alloc] init] autorelease]
@@ -4045,11 +4066,13 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
 UIViewController* xe_ios_new_profile_page(
     NSString* gamertag, BOOL active, BOOL (^_Nullable switch_to)(void),
-    void (^_Nullable change_picture)(UIViewController* page)) {
+    void (^_Nullable change_picture)(UIViewController* page),
+    void (^_Nullable delete_profile)(UIViewController* page, UIView* source)) {
   return [[[XEProfilePageViewController alloc] initWithGamertag:gamertag
                                                           active:active
                                                         switchTo:switch_to
-                                                   changePicture:change_picture] autorelease];
+                                                   changePicture:change_picture
+                                                   deleteProfile:delete_profile] autorelease];
 }
 
 void xe_ios_present_report_player(UIViewController* presenter, uint64_t xuid,

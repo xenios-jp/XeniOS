@@ -137,6 +137,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   using ProfileCreateCallback = std::function<uint64_t(const std::string&)>;
   // |user_index| is the player a game's sign-in prompt asked for, or kSignInFromMenu.
   using ProfileSignInCallback = std::function<bool(uint64_t xuid, uint32_t user_index)>;
+  using ProfileDeleteCallback = std::function<bool(uint64_t xuid)>;
+  using TitleOpenCallback = std::function<bool()>;
   using GamerPicturesListCallback = std::function<std::vector<IOSGamerPicture>()>;
   using GamerPictureSetCallback = std::function<bool(uint64_t xuid, const std::string& key)>;
   static constexpr uint32_t kSignInFromMenu = UINT32_MAX;
@@ -206,6 +208,19 @@ class IOSWindowedAppContext final : public WindowedAppContext {
     }
     return profile_sign_in_callback_(xuid, user_index);
   }
+
+  // Signs the profile out if it needs to and deletes it and its data. Fails while a title is open.
+  void set_profile_delete_callback(ProfileDeleteCallback callback) {
+    profile_delete_callback_ = std::move(callback);
+  }
+  bool DeleteProfile(uint64_t xuid) const {
+    return profile_delete_callback_ && profile_delete_callback_(xuid);
+  }
+
+  void set_title_open_callback(TitleOpenCallback callback) {
+    title_open_callback_ = std::move(callback);
+  }
+  bool IsTitleOpen() const { return title_open_callback_ && title_open_callback_(); }
 
   // Empty when the system software isn't installed.
   void set_gamer_pictures_list_callback(GamerPicturesListCallback callback) {
@@ -572,6 +587,8 @@ class IOSWindowedAppContext final : public WindowedAppContext {
   ProfilesListCallback profiles_list_callback_;
   ProfileCreateCallback profile_create_callback_;
   ProfileSignInCallback profile_sign_in_callback_;
+  ProfileDeleteCallback profile_delete_callback_;
+  TitleOpenCallback title_open_callback_;
   GamerPicturesListCallback gamer_pictures_list_callback_;
   GamerPictureSetCallback gamer_picture_set_callback_;
   GameTerminateCallback game_terminate_callback_;
