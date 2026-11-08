@@ -13,8 +13,10 @@
 #include <signal.h>
 #include <unistd.h>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/host_thread_context.h"
@@ -77,7 +79,31 @@ static void RestoreOriginalSignalHandlers() {
   sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
 }
 
+#if XE_PLATFORM_IOS
 static std::atomic<uint32_t> unanswered_jit_breakpoints{0};
+
+// "brk #0xf00d" is how the iOS JIT asks its debugger tool for memory. With the
+// tool attached the debugger consumes it and never gets here; if it detached or
+// doesn't answer, skip the instruction so the caller can say so instead of the
+// process dying on the trap.
+static bool StepOverJitRequest(void* signal_context) {
+  // The context pointer may be unaligned; uc_mcontext points at kernel storage.
+  mcontext_t mcontext;
+  std::memcpy(
+      &mcontext,
+      static_cast<uint8_t*>(signal_context) + offsetof(ucontext_t, uc_mcontext),
+      sizeof(mcontext));
+  constexpr uint32_t kJitRequestBrk = 0xD4200000u | (0xF00Du << 5);
+  const uint64_t pc = mcontext->__ss.__pc;
+  if (!pc || (pc & 3) != 0 ||
+      *reinterpret_cast<const uint32_t*>(pc) != kJitRequestBrk) {
+    return false;
+  }
+  unanswered_jit_breakpoints.fetch_add(1, std::memory_order_relaxed);
+  mcontext->__ss.__pc = pc + 4;
+  return true;
+}
+#endif
 
 static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                                      void* signal_context) {
@@ -112,6 +138,20 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   // The faulting thread may hold the guest's FP control. Returning from the
   // signal restores the interrupted value from the signal context.
   SetHostDefaultFpControl();
+#if XE_PLATFORM_IOS
+  // Darwin reports a brk with si_code 0, the same as raise(), so this goes
+  // before the raise() check below.
+  if (signal_number == SIGTRAP && StepOverJitRequest(signal_context)) {
+    return;
+  }
+#endif
+  if (signal_number == SIGTRAP && signal_info->si_code <= 0) {
+    // raise()/kill(), not a trap instruction - xenia_assert uses this. Nothing
+    // here can claim it, and the handlers below would swallow it.
+    sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
+    raise(SIGTRAP);
+    return;
+  }
   if (signal_number == SIGSEGV &&
       xe::threading::Fiber::IsStackOverflowFault(signal_info->si_addr)) {
     // Crash-safe diagnostic, the process is going down on the default action.
@@ -136,32 +176,6 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   mcontext_t& mcontext =
       reinterpret_cast<ucontext_t*>(signal_context)->uc_mcontext;
 #endif
-
-#if XE_PLATFORM_APPLE && XE_ARCH_ARM64
-  if (signal_number == SIGTRAP) {
-    // "brk #0xf00d" is how the iOS JIT asks its debugger tool for memory. With
-    // the tool attached the debugger consumes it and never gets here; if it
-    // detached or doesn't answer, skip the instruction so the caller can say
-    // so instead of the process dying on the trap.
-    constexpr uint32_t kJitRequestBrk = 0xD4200000u | (0xF00Du << 5);
-    const uint64_t pc = mcontext->__ss.__pc;
-    if (pc && (pc & 3) == 0 &&
-        *reinterpret_cast<const uint32_t*>(pc) == kJitRequestBrk) {
-      unanswered_jit_breakpoints.fetch_add(1, std::memory_order_relaxed);
-      mcontext->__ss.__pc = pc + 4;
-      return;
-    }
-  }
-#endif
-
-  if (signal_number == SIGTRAP && signal_info->si_code <= 0) {
-    // raise()/kill(), not a trap instruction - xenia_assert uses this. Nothing
-    // here can claim it, and the handlers below would swallow it. Darwin also
-    // reports brk with si_code 0, so the JIT request check above goes first.
-    sigaction(SIGTRAP, &original_sigtrap_handler_, nullptr);
-    raise(SIGTRAP);
-    return;
-  }
 
   HostThreadContext thread_context;
 
@@ -583,9 +597,11 @@ void ExceptionHandler::SetUnhandledObserver(UnhandledObserver observer) {
   unhandled_observer_.store(observer, std::memory_order_release);
 }
 
+#if XE_PLATFORM_IOS
 uint32_t ExceptionHandler::UnansweredJitBreakpoints() {
   return unanswered_jit_breakpoints.load(std::memory_order_relaxed);
 }
+#endif
 
 void ExceptionHandler::Install(Handler fn, void* data) {
   if (!signal_handlers_installed_) {
