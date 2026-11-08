@@ -126,13 +126,15 @@ UIImage* ImageForAchievement(const xe::ui::IOSAchievementEntry& entry, BOOL reve
   CGSize size = [header systemLayoutSizeFittingSize:CGSizeMake(width, 0)
                       withHorizontalFittingPriority:UILayoutPriorityRequired
                             verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+  // Compare against the rounded height that gets set, or a fractional height
+  // resets the header on every layout pass and layout never settles.
+  const CGFloat height = ceil(size.height);
   CGRect frame = header.frame;
-  if (fabs(frame.size.height - size.height) <= 0.5 &&
-      fabs(frame.size.width - width) <= 0.5) {
+  if (fabs(frame.size.height - height) <= 0.5 && fabs(frame.size.width - width) <= 0.5) {
     return;
   }
   frame.size.width = width;
-  frame.size.height = ceil(size.height);
+  frame.size.height = height;
   header.frame = frame;
   self.tableView.tableHeaderView = header;
 }
