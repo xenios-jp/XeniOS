@@ -1328,6 +1328,18 @@ bool EmulatorAppIOS::OnInitialize() {
     return uint64_t(0);
   });
 
+  ios_context.set_title_open_callback([this]() { return emulator_ && emulator_->is_title_open(); });
+
+  ios_context.set_profile_delete_callback([this](uint64_t xuid) {
+    if (!EnsureProfileServicesReady() || !emulator_ || emulator_->is_title_open() ||
+        !emulator_->kernel_state() || !emulator_->kernel_state()->xam_state()) {
+      return false;
+    }
+    auto* profile_manager = emulator_->kernel_state()->xam_state()->profile_manager();
+    return profile_manager && profile_manager->GetAccount(xuid) &&
+           profile_manager->DeleteProfile(xuid);
+  });
+
   ios_context.set_gamer_pictures_list_callback([this]() {
     std::vector<ui::IOSGamerPicture> list;
     for (const auto& picture : BuiltInGamerPictures()) {

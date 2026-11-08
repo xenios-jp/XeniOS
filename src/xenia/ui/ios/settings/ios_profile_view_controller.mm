@@ -220,6 +220,7 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   BOOL profile_reload_scheduled_;
   std::vector<xe::ui::IOSProfileSummary> profiles_;
   NSSet<NSString*>* online_names_;  // Profiles here with an online account, by gamertag.
+  NSSet<NSString*>* linked_names_;  // The same, with those whose online play is off.
 }
 
 @synthesize showsDismissButton = shows_dismiss_button_;
@@ -240,6 +241,7 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [online_names_ release];
+  [linked_names_ release];
   [super dealloc];
 }
 
@@ -339,11 +341,17 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   [xe_ios_live_account_service()
       localProfilesWithCompletion:^(NSArray<XeniaLiveLocalProfile*>* profiles) {
         NSMutableSet* names = [NSMutableSet set];
+        NSMutableSet* linked = [NSMutableSet set];
         for (XeniaLiveLocalProfile* profile in profiles) {
           if (profile.online) {
             [names addObject:profile.gamertag];
           }
+          if (profile.linked) {
+            [linked addObject:profile.gamertag];
+          }
         }
+        [unsafe_self->linked_names_ release];
+        unsafe_self->linked_names_ = [linked copy];
         if ([names isEqualToSet:unsafe_self->online_names_ ?: [NSSet set]]) {
           return;
         }
@@ -570,10 +578,242 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   void (^change_picture)(UIViewController*) = ^(UIViewController* page) {
     [unsafe_self pushPictureChooserForXuid:xuid from:page];
   };
+  void (^delete_profile)(UIViewController*, UIView*) = ^(UIViewController* page, UIView* source) {
+    [unsafe_self confirmDeleteXuid:xuid from:page source:source];
+  };
   [self.navigationController
       pushViewController:xe_ios_new_profile_page(gamertag, profile.signed_in, switch_to,
-                                                 change_picture)
+                                                 change_picture, delete_profile)
                 animated:YES];
+}
+
+- (UISwipeActionsConfiguration*)tableView:(UITableView*)__unused tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.row < 0 || indexPath.row >= static_cast<NSInteger>(profiles_.size())) {
+    return nil;
+  }
+  const uint64_t xuid = profiles_[indexPath.row].xuid;
+  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  UIContextualAction* remove = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleDestructive
+                          title:NSLocalizedString(@"Delete", @"profile view controller: swipe action")
+                        handler:^(UIContextualAction* __unused action, UIView* source,
+                                  void (^done)(BOOL)) {
+                          [unsafe_self confirmDeleteXuid:xuid from:unsafe_self source:source];
+                          done(YES);
+                        }];
+  return [UISwipeActionsConfiguration configurationWithActions:@[ remove ]];
+}
+
+- (BOOL)isOnlineProfile:(const xe::ui::IOSProfileSummary&)profile {
+  if (!xe_ios_live_account_ui_enabled()) {
+    return NO;
+  }
+  return profile.signed_in ? xe_ios_live_account_service().summary.online
+                           : [online_names_ containsObject:ToNSString(profile.gamertag)];
+}
+
+- (void)showDeleteFailure:(NSString*)message from:(UIViewController*)presenter {
+  XEPresentOKAlert(presenter,
+                   NSLocalizedString(@"Couldn’t Delete Profile",
+                                     @"profile view controller: alert title"),
+                   message);
+}
+
+- (void)confirmDeleteXuid:(uint64_t)xuid
+                     from:(UIViewController*)presenter
+                   source:(UIView*)source {
+  const xe::ui::IOSProfileSummary* found = nullptr;
+  for (const auto& profile : profiles_) {
+    if (profile.xuid == xuid) {
+      found = &profile;
+    }
+  }
+  if (!found || !app_context_) {
+    return;
+  }
+  if (app_context_->IsTitleOpen()) {
+    [self showDeleteFailure:NSLocalizedString(@"Close the game first.",
+                                              @"profile view controller: alert message")
+                       from:presenter];
+    return;
+  }
+  NSString* gamertag = ToNSString(found->gamertag);
+  const BOOL online = [self isOnlineProfile:*found];
+  NSString* message = [NSString
+      stringWithFormat:NSLocalizedString(@"Its saves, achievements and settings are deleted from "
+                                         @"this %@. This can’t be undone.",
+                                         @"Delete profile: message; %@ is the device's kind"),
+                       UIDevice.currentDevice.model];
+  if (online || [linked_names_ containsObject:gamertag]) {
+    message = [message
+        stringByAppendingFormat:@"\n\n%@",
+                                NSLocalizedString(@"The online account isn’t deleted. Its gamertag "
+                                                  @"stays taken. A recovery code, if it has one, "
+                                                  @"brings it back on a new profile.",
+                                                  @"Delete profile: message")];
+    // Connecting to leave would take the account from the device using it, or undo Online Play
+    // being turned off, so this device stays on the account.
+    if (!online) {
+      message = [message
+          stringByAppendingFormat:
+              @" %@",
+              [NSString
+                  stringWithFormat:NSLocalizedString(
+                                       @"Online play is off for it, so this %@ may stay listed "
+                                       @"on the account.",
+                                       @"Delete profile: message; %@ is the device's kind"),
+                                   UIDevice.currentDevice.model]];
+    }
+  }
+  // Destructive confirmations are action sheets, anchored to the row on iPad.
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(
+                                                              @"Delete %@?",
+                                                              @"Delete profile: title; %@ is the "
+                                                              @"gamertag"),
+                                                          gamertag]
+                       message:message
+                preferredStyle:UIAlertControllerStyleActionSheet];
+  confirm.popoverPresentationController.sourceView = source ?: presenter.view;
+  confirm.popoverPresentationController.sourceRect = (source ?: presenter.view).bounds;
+  [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel",
+                                                                      @"Delete profile: button")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  [confirm addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Delete Profile",
+                                                                      @"Delete profile: button")
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction* __unused action) {
+                                              [unsafe_self deleteXuid:xuid
+                                                             gamertag:gamertag
+                                                               online:online
+                                                                 from:presenter];
+                                            }]];
+  [presenter presentViewController:confirm animated:YES completion:nil];
+}
+
+// An online profile leaves its account first. Only the signed-in profile has a connection to the
+// service, so another one is signed in for that and the previous one comes back afterwards.
+- (void)deleteXuid:(uint64_t)xuid
+          gamertag:(NSString*)gamertag
+            online:(BOOL)online
+              from:(UIViewController*)presenter {
+  uint64_t signed_in_xuid = 0;
+  for (const auto& profile : profiles_) {
+    if (profile.signed_in) {
+      signed_in_xuid = profile.xuid;
+    }
+  }
+  const uint64_t restore_xuid = signed_in_xuid == xuid ? 0 : signed_in_xuid;
+  if (!online) {
+    [self finishDeleteXuid:xuid gamertag:gamertag restore:restore_xuid from:presenter];
+    return;
+  }
+  if (signed_in_xuid != xuid && !app_context_->SignInProfile(xuid)) {
+    [self showDeleteFailure:NSLocalizedString(@"The profile couldn’t be signed in to leave its "
+                                              @"online account.",
+                                              @"profile view controller: alert message")
+                       from:presenter];
+    return;
+  }
+  UIAlertController* busy =
+      [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Leaving the Account…",
+                                                                    @"Delete profile: progress")
+                                          message:nil
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  [presenter
+      presentViewController:busy
+                   animated:YES
+                 completion:^{
+                   [xe_ios_live_account_service()
+                       leaveAccountOfProfile:xuid
+                                  completion:^(NSError* error) {
+                                    [busy
+                                        dismissViewControllerAnimated:YES
+                                                           completion:^{
+                                                             if (error) {
+                                                               [unsafe_self
+                                                                   askDeleteOfflineXuid:xuid
+                                                                               gamertag:gamertag
+                                                                                restore:restore_xuid
+                                                                                   from:presenter];
+                                                             } else {
+                                                               [unsafe_self
+                                                                   finishDeleteXuid:xuid
+                                                                           gamertag:gamertag
+                                                                            restore:restore_xuid
+                                                                               from:presenter];
+                                                             }
+                                                           }];
+                                  }];
+                 }];
+}
+
+- (void)askDeleteOfflineXuid:(uint64_t)xuid
+                    gamertag:(NSString*)gamertag
+                     restore:(uint64_t)restore_xuid
+                        from:(UIViewController*)presenter {
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Couldn’t Reach the Online Service",
+                                                 @"Delete profile: title")
+                       message:[NSString
+                                   stringWithFormat:
+                                       NSLocalizedString(
+                                           @"Delete %1$@ from this %2$@ anyway? This %2$@ stays "
+                                           @"listed on its online account until another device "
+                                           @"removes it.",
+                                           @"Delete profile: message; %1$@ is the gamertag, %2$@ "
+                                           @"the device's kind"),
+                                       gamertag, UIDevice.currentDevice.model]
+                preferredStyle:UIAlertControllerStyleAlert];
+  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel",
+                                                                    @"Delete profile: button")
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [unsafe_self restoreSignIn:restore_xuid];
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Delete Anyway",
+                                                                    @"Delete profile: button")
+                                            style:UIAlertActionStyleDestructive
+                                          handler:^(UIAlertAction* __unused action) {
+                                            [unsafe_self finishDeleteXuid:xuid
+                                                                 gamertag:gamertag
+                                                                  restore:restore_xuid
+                                                                     from:presenter];
+                                          }]];
+  [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)restoreSignIn:(uint64_t)xuid {
+  if (xuid && app_context_) {
+    app_context_->SignInProfile(xuid);
+  }
+  [self reloadProfiles];
+}
+
+- (void)finishDeleteXuid:(uint64_t)xuid
+                gamertag:(NSString*)gamertag
+                 restore:(uint64_t)restore_xuid
+                    from:(UIViewController*)presenter {
+  if (!app_context_ || !app_context_->DeleteProfile(xuid)) {
+    [self showDeleteFailure:NSLocalizedString(@"Its files couldn’t be removed.",
+                                              @"profile view controller: alert message")
+                       from:presenter];
+    [self restoreSignIn:restore_xuid];
+    return;
+  }
+  [self.navigationController popToViewController:self animated:YES];
+  [self restoreSignIn:restore_xuid];
+  if (on_status_) {
+    on_status_([NSString stringWithFormat:NSLocalizedString(
+                                              @"Deleted %@.",
+                                              @"profile view controller: user-visible text"),
+                                          gamertag]);
+  }
 }
 
 - (void)pushPictureChooserForXuid:(uint64_t)xuid from:(UIViewController*)page {

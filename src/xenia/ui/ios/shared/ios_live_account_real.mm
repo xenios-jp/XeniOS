@@ -287,6 +287,10 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
   // The profile whose device was removed from its account; offline until it joins one again.
   uint64_t _removedProfile;
+  // Leaving the account before the profile is deleted (leaveAccountOfProfile:).
+  void (^_leaveDone)(NSError*);
+  uint64_t _leaveProfile;
+  BOOL _leaveAsked;
 
   // What the screens last saw, to post a change only when there is one.
   NSString* _lastSignature;
@@ -322,6 +326,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   [_devices release];
   [_recoveryCodes release];
   [_removals release];
+  [_leaveDone release];
   [_goOnline release];
   [_goOnlineName release];
   [_goOnlineOldName release];
@@ -383,6 +388,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 - (void)signedIn {
   [self syncGamertag];
+  [self continueLeave];
   if (_goOnline) {
     // The welcome's recovery code comes as the next event: finish after it.
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -526,6 +532,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   for (NSArray* removal in removals) {
     ((void (^)(NSError*))removal[1])(error);
   }
+  [self finishLeave:error];
 }
 
 - (void)requestFailed:(const std::string&)request reason:(const std::string&)reason {
@@ -578,6 +585,8 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                                     : XeniaLiveLinkStatusUnreachable);
   } else if (request == "remove_device") {
     NSError* error = RefusedError(request, reason);
+    // The lobby keeps an account's last device: nothing more to do for leaving.
+    [self finishLeave:reason == "last_device" ? nil : error];
     NSArray* removals = [[_removals copy] autorelease];
     [_removals removeAllObjects];
     for (NSArray* removal in removals) {
@@ -588,6 +597,11 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 // Another device removed this one: the profile isn't on the account any more.
 - (void)removedFromAccount {
+  // This app asked for it, to delete the profile: nothing to tell the player.
+  if (_leaveDone && _leaveAsked) {
+    [self finishLeave:nil];
+    return;
+  }
   auto profile = ActiveProfile();
   if (profile && g_real_host->disable_online) {
     XELOGW("Live account (app): this device was removed from {}'s account", profile->gamertag);
@@ -956,6 +970,66 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                  });
 }
 
+- (void)leaveAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError*))completion {
+  void (^done)(NSError*) = [[completion copy] autorelease];
+  if (_leaveDone || !xe_ios_online_features_enabled()) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done(UnreachableError());
+    });
+    return;
+  }
+  _leaveDone = [done retain];
+  _leaveProfile = xuid;
+  _leaveAsked = NO;
+  // A profile that was just switched to connects now; signedIn continues from there.
+  xe_ios_live_social_refresh_now();
+  [self continueLeave];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_leaveDone == done) {
+                     [self finishLeave:UnreachableError()];
+                   }
+                 });
+}
+
+// Removes this device once the connection is the profile's own: just after a switch it can still
+// be the previous profile's, whose account must not be touched.
+- (void)continueLeave {
+  auto profile = ActiveProfile();
+  auto share = SignedInShare();
+  if (!_leaveDone || _leaveAsked || !profile || profile->xuid != _leaveProfile || !share ||
+      !profile->online_xuid || (*share)->xuid() != profile->online_xuid) {
+    return;
+  }
+  _leaveAsked = YES;
+  [self loadDevicesWithCompletion:^(NSArray<XeniaLiveDevice*>* devices, NSError* error) {
+    XeniaLiveDevice* here = nil;
+    for (XeniaLiveDevice* device in devices) {
+      if (device.thisDevice) {
+        here = device;
+      }
+    }
+    auto now = SignedInShare();
+    if (error || !now) {
+      [self finishLeave:error ?: UnreachableError()];
+    } else if (!here || devices.count < 2) {
+      [self finishLeave:nil];
+    } else {
+      // The lobby closes this connection, so removedFromAccount finishes it.
+      (*now)->RemoveDevice(ToStd(here.deviceId));
+    }
+  }];
+}
+
+- (void)finishLeave:(NSError*)error {
+  if (!_leaveDone) {
+    return;
+  }
+  void (^done)(NSError*) = [_leaveDone autorelease];
+  _leaveDone = nil;
+  done(error);
+}
+
 - (void)createRecoveryCodeWithCompletion:(void (^)(NSString*, NSError*))completion {
   if (_recoveredCode.length) {
     // A recovery just made this account's new code; it is shown once, here, instead of making
@@ -1302,6 +1376,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
       entry.profileId = [NSString stringWithFormat:@"%016llX", (unsigned long long)profile.xuid];
       entry.gamertag = ToNS(profile.gamertag);
       entry.online = profile.live_enabled && profile.online_xuid;
+      entry.linked = profile.online_xuid != 0;
       entry.thisProfile = active && active->xuid == profile.xuid;
       if (entry.thisProfile) {
         [result insertObject:entry atIndex:0];

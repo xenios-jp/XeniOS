@@ -102,6 +102,7 @@ typedef NS_ENUM(NSInteger, XeniaLiveLinkStatus) {
 @property(nonatomic, copy) NSString* profileId;
 @property(nonatomic, copy) NSString* gamertag;
 @property(nonatomic) BOOL online;       // Has an online account.
+@property(nonatomic) BOOL linked;       // Has one even if online play is off for it now.
 @property(nonatomic) BOOL thisProfile;  // The signed-in one.
 @end
 
@@ -179,6 +180,11 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 - (void)loadDevicesWithCompletion:(void (^)(NSArray<XeniaLiveDevice*>* _Nullable devices,
                                             NSError* _Nullable error))completion;
 - (void)removeDevice:(XeniaLiveDevice*)device completion:(void (^)(NSError* _Nullable error))completion;
+// Takes this device off the account of |xuid|, which has to be the signed-in profile, before the
+// profile is deleted; it waits for that profile's connection if it just signed in. An account's
+// last device can't be removed, so then nothing changes and error is nil too: the lobby keeps the
+// account either way. error is set if the lobby can't be reached.
+- (void)leaveAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError* _Nullable error))completion;
 
 // A new recovery code, R7K2-9QMD-4XTW. The old one stops working. (The first one comes
 // with goOnline.)
