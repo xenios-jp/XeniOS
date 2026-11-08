@@ -110,8 +110,16 @@ constexpr uint32_t kEdramDumpShaderResolvePixelsPerStore = 4;
 constexpr uint32_t kEdramDumpShaderResolvePixelsPerThreadAt32bpp =
     kEdramDumpShaderResolvePixelsPerStore * 2;
 // Pixels per thread, which is halved for 64bpp - a 16-byte store covers half
-// as many of them.
-constexpr uint32_t GetEdramDumpShaderResolvePixelsPerThread(bool is_64bpp) {
+// as many of them. A resolve averaging samples reads and converts every sample
+// of every pixel of its run, and with runs of eight pixels so many of them
+// were in flight that the kernel spilled; those take one pixel per thread and
+// store dwords. Every other resolve reads one sample per pixel and keeps the
+// longer runs, where dword stores were slower.
+constexpr uint32_t GetEdramDumpShaderResolvePixelsPerThread(
+    bool is_64bpp, bool average = false) {
+  if (average) {
+    return 1;
+  }
   return kEdramDumpShaderResolvePixelsPerThreadAt32bpp >> uint32_t(is_64bpp);
 }
 // 64 threads per group, like the resolve copy shaders.

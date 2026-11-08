@@ -4402,6 +4402,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   // Every pipeline and source has to resolve before anything is encoded -
   // skipping a rectangle partway through would leave its part of the
   // destination stale, with nothing to say so.
+  const bool resolve_average =
+      IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants) ||
+      IsFull32RGBA8TwoSampleAverage(copy_shader, copy_shader_constants);
   struct Source {
     MTL::ComputePipelineState* pipeline;
     MTL::Texture* texture;
@@ -4429,9 +4432,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         rt_key.is_depth != uint32_t(resolve_info.IsCopyingDepth());
     shader_key.direct_resolve_texture_depth_float =
         refresh_texture && resolve_info.IsCopyingDepth() && refresh_depth_float;
-    shader_key.direct_resolve_average =
-        IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants) ||
-        IsFull32RGBA8TwoSampleAverage(copy_shader, copy_shader_constants);
+    shader_key.direct_resolve_average = resolve_average;
     shader_key.direct_resolve_samples_as_pixels =
         rt_key.msaa_samples != resolve_msaa_samples;
     Source source;
@@ -4657,8 +4658,8 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     uint32_t tile_pixels_y =
         xenos::kEdramTileHeightSamples >>
         uint32_t(resolve_msaa_samples >= xenos::MsaaSamples::k2X);
-    uint32_t pixels_per_thread =
-        GetEdramDumpShaderResolvePixelsPerThread(rt_key.Is64bpp());
+    uint32_t pixels_per_thread = GetEdramDumpShaderResolvePixelsPerThread(
+        rt_key.Is64bpp(), resolve_average);
 
     ResolveCopyDumpRectangle::Dispatch
         dispatches[ResolveCopyDumpRectangle::kMaxDispatches];
