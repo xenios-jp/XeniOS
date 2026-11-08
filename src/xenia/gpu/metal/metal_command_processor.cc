@@ -5029,11 +5029,14 @@ bool MetalCommandProcessor::IssueDrawMsl(
     assert_not_zero(pixel_shader_modification.pixel.color_targets_used);
   }
 
-  // A counted draw needs the guest's own shaders. The placeholder has no pixel
-  // kills or alpha test and overcounts, and a skipped draw counts nothing.
+  // Memory exports are guest-visible writes, which a skipped draw or the
+  // placeholder (no pixel shader) loses, so a memexport draw waits for its own
+  // shaders and pipeline, as in IssueDrawDxil. Counted draws also require the
+  // guest's exact kills and alpha test.
   const bool exact_shaders_required =
-      GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
-      zpd_current_report_.handle != kInvalidReportHandle;
+      memexport_used ||
+      (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
+       zpd_current_report_.handle != kInvalidReportHandle);
 
   // Get or create shader translations. Both are asked for before either is
   // waited on, so their compiles overlap instead of taking a frame each.
