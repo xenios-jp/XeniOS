@@ -1678,29 +1678,37 @@ bool UnionIsRectangle(const Rectangle& a, const Rectangle& b,
 
 void MetalRenderTargetCache::ApplyClearQuadRule(
     RenderTarget* const* render_targets,
-    reg::RB_DEPTHCONTROL normalized_depth_control) {
+    reg::RB_DEPTHCONTROL normalized_depth_control,
+    const Shader& vertex_shader) {
   const ClearQuadDraw draw = clear_quad_draw_;
   if (!draw.candidate) {
     return;
   }
   const RegisterFile& regs = register_file();
   const reg::RB_DEPTHCONTROL dc = normalized_depth_control;
+  std::vector<Transfer>* transfer_lists = last_update_transfers();
   // Window-space positions, nothing scaled or offset by a viewport, depth
-  // clamped (not clipped) to the host viewport range, every sample covered.
-  if (!regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable) {
-    return;
-  }
+  // clamped (not clipped) to the host viewport range.
+  auto clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
   auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
-  if (vte.vport_x_scale_ena || vte.vport_x_offset_ena ||
-      vte.vport_y_scale_ena || vte.vport_y_offset_ena ||
-      vte.vport_z_scale_ena || vte.vport_z_offset_ena || !vte.vtx_xy_fmt ||
-      !vte.vtx_z_fmt) {
+  const bool window_space = clip_cntl.clip_disable && !vte.vport_x_scale_ena &&
+                            !vte.vport_x_offset_ena && !vte.vport_y_scale_ena &&
+                            !vte.vport_y_offset_ena && !vte.vport_z_scale_ena &&
+                            !vte.vport_z_offset_ena && vte.vtx_xy_fmt &&
+                            vte.vtx_z_fmt;
+  // A quad that writes only color may also come from clip space through the
+  // viewport. It can only drop transfers it overwrites whole.
+  const bool through_viewport =
+      !window_space && draw_color_write_mask_ && !clip_cntl.ucp_ena &&
+      draw_resolution_scale_x() == 1 && draw_resolution_scale_y() == 1;
+  if (!window_space && !through_viewport) {
     return;
   }
   auto sc_mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
   if (sc_mode.poly_offset_para_enable) {
     return;
   }
+  // Every sample covered.
   auto color_control = regs.Get<reg::RB_COLORCONTROL>();
   if ((regs[XE_GPU_REG_PA_SC_AA_MASK] & 0xF) != 0xF ||
       color_control.alpha_to_mask_enable ||
@@ -1708,10 +1716,55 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
        color_control.alpha_func != xenos::CompareFunction::kAlways)) {
     return;
   }
-  const DrawExtentEstimator::LastVertexPositions& positions =
+  DrawExtentEstimator::LastVertexPositions positions =
       draw_extent_estimator().last_vertex_positions();
+  if (!positions.valid && through_viewport &&
+      regs.Get<reg::VGT_DRAW_INITIATOR>().num_indices <=
+          DrawExtentEstimator::kMaxLastVertices) {
+    // The extent estimate only runs the vertex shader for unclipped draws.
+    // Run it for a quad that has transfers it may overwrite.
+    bool color_transfers = false;
+    for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+      color_transfers |= ((draw_color_write_mask_ >> (i * 4)) & 0xF) &&
+                         !transfer_lists[1 + i].empty();
+    }
+    if (color_transfers) {
+      draw_extent_estimator().EstimateVertexMaxY(vertex_shader, false);
+      positions = draw_extent_estimator().last_vertex_positions();
+    }
+  }
   if (!positions.valid || positions.count != 3) {
     return;
+  }
+  // The guest viewport, applied to quads that come through it.
+  const float viewport_x_scale =
+      vte.vport_x_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE)
+                            : 1.0f;
+  const float viewport_x_offset =
+      vte.vport_x_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET)
+                             : 0.0f;
+  const float viewport_y_scale =
+      vte.vport_y_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE)
+                            : 1.0f;
+  const float viewport_y_offset =
+      vte.vport_y_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET)
+                             : 0.0f;
+  if (through_viewport) {
+    // W 1 leaves the perspective divide, in either W format, out of it. With
+    // clipping, Z must be inside the clip volume; X and Y are clipped at the
+    // host viewport, which the covered rectangle is cut to below.
+    const float z_near = clip_cntl.dx_clip_space_def ? 0.0f : -1.0f;
+    for (uint32_t i = 0; i < 3; ++i) {
+      const float z = positions.z[i];
+      if (!(positions.w[i] == 1.0f)) {
+        return;
+      }
+      if (!clip_cntl.clip_disable && !(z >= z_near && z <= 1.0f)) {
+        return;
+      }
+      positions.x[i] = positions.x[i] * viewport_x_scale + viewport_x_offset;
+      positions.y[i] = positions.y[i] * viewport_y_scale + viewport_y_offset;
+    }
   }
   const float x_lo = std::min({positions.x[0], positions.x[1], positions.x[2]});
   const float x_hi = std::max({positions.x[0], positions.x[1], positions.x[2]});
@@ -1734,8 +1787,10 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     corners[corner] = true;
   }
 
-  // The one render target the quad writes, all of every sample it covers.
+  // The render targets the quad writes, all of every sample it covers. More
+  // than one only drop transfers they overwrite whole.
   uint32_t slot = UINT32_MAX;
+  uint32_t written_slots = 0;
   if (draw_color_write_mask_) {
     if (!draw.has_pixel_shader || draw.pixel_shader_kills) {
       return;
@@ -1754,7 +1809,7 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
       if (!mask) {
         continue;
       }
-      if (mask != 0xF || !render_targets[1 + i] || slot != UINT32_MAX) {
+      if (mask != 0xF || !render_targets[1 + i]) {
         return;
       }
       auto blend = regs.Get<reg::RB_BLENDCONTROL>(
@@ -1768,6 +1823,7 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
         return;
       }
       slot = 1 + i;
+      written_slots |= uint32_t(1) << slot;
     }
   } else {
     if (!render_targets[0] || draw.has_pixel_shader) {
@@ -1790,19 +1846,6 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     }
     slot = 0;
   }
-  std::vector<Transfer>* transfer_lists = last_update_transfers();
-  for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
-    if (i != slot && !transfer_lists[i].empty()) {
-      return;
-    }
-  }
-  std::vector<Transfer>& transfers = transfer_lists[slot];
-  const bool constant_depth_candidate = slot == 0;
-  const bool hold = quad_hold_slot_ != UINT32_MAX;
-  if (transfers.empty() && !constant_depth_candidate && !hold) {
-    return;
-  }
-
   // The pixels every sample of which lies in the closed box (sample positions
   // are inside the pixel), clipped to the scissor.
   float offset_x = 0.0f, offset_y = 0.0f;
@@ -1819,18 +1862,41 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   }
   draw_util::Scissor scissor;
   draw_util::GetScissor(regs, scissor, true, false);
-  const float box_left = std::max(std::ceil(x_lo + offset_x), 0.0f);
-  const float box_top = std::max(std::ceil(y_lo + offset_y), 0.0f);
-  const float box_right = std::floor(x_hi + offset_x);
-  const float box_bottom = std::floor(y_hi + offset_y);
-  const int64_t left = std::max(int64_t(box_left), int64_t(scissor.offset[0]));
-  const int64_t top = std::max(int64_t(box_top), int64_t(scissor.offset[1]));
-  const int64_t right =
-      std::min(int64_t(box_right),
-               int64_t(scissor.offset[0]) + int64_t(scissor.extent[0]));
-  const int64_t bottom =
+  // Through the viewport, the corners carry its float rounding. Every sample
+  // is at least 1/8 of a pixel inside it, so a pixel whose edges are within
+  // 1/16 of the box still has all of its samples in it.
+  const float box_margin = through_viewport ? 1.0f / 16.0f : 0.0f;
+  const float box_left =
+      std::max(std::ceil(x_lo + offset_x - box_margin), 0.0f);
+  const float box_top = std::max(std::ceil(y_lo + offset_y - box_margin), 0.0f);
+  const float box_right = std::floor(x_hi + offset_x + box_margin);
+  const float box_bottom = std::floor(y_hi + offset_y + box_margin);
+  int64_t left = std::max(int64_t(box_left), int64_t(scissor.offset[0]));
+  int64_t top = std::max(int64_t(box_top), int64_t(scissor.offset[1]));
+  int64_t right = std::min(int64_t(box_right), int64_t(scissor.offset[0]) +
+                                                   int64_t(scissor.extent[0]));
+  int64_t bottom =
       std::min(int64_t(box_bottom),
                int64_t(scissor.offset[1]) + int64_t(scissor.extent[1]));
+  if (through_viewport && !clip_cntl.clip_disable) {
+    // The host viewport is the guest one with the window and half-pixel
+    // offsets, snapped to whole pixels (draw_util::GetHostViewportInfo, with
+    // the 32767 bounds Metal passes).
+    const float viewport_x = viewport_x_offset + offset_x;
+    const float viewport_y = viewport_y_offset + offset_y;
+    const float viewport_x_extent = std::abs(viewport_x_scale);
+    const float viewport_y_extent = std::abs(viewport_y_scale);
+    if (!(viewport_x_extent < 8192.0f && viewport_y_extent < 8192.0f &&
+          std::abs(viewport_x) < 8192.0f && std::abs(viewport_y) < 8192.0f)) {
+      return;
+    }
+    left = std::max(left, int64_t(std::floor(viewport_x - viewport_x_extent)));
+    top = std::max(top, int64_t(std::floor(viewport_y - viewport_y_extent)));
+    right =
+        std::min(right, int64_t(std::floor(viewport_x + viewport_x_extent)));
+    bottom =
+        std::min(bottom, int64_t(std::floor(viewport_y + viewport_y_extent)));
+  }
   if (right <= left || bottom <= top || right > 16384 || bottom > 16384) {
     return;
   }
@@ -1839,6 +1905,65 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   covered.y_pixels = uint32_t(top);
   covered.width_pixels = uint32_t(right - left);
   covered.height_pixels = uint32_t(bottom - top);
+
+  if (through_viewport || (written_slots & (written_slots - 1))) {
+    // What the transfers would write inside the quad it overwrites: drop the
+    // transfers it covers whole, and leave it out of the rest, which, as the
+    // cutout applies to every target, may only go to targets it writes.
+    if (quad_hold_slot_ != UINT32_MAX) {
+      return;
+    }
+    bool any = false;
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+      if (transfer_lists[i].empty()) {
+        continue;
+      }
+      if (!(written_slots & (uint32_t(1) << i))) {
+        return;
+      }
+      any = true;
+    }
+    if (!any) {
+      return;
+    }
+    uint32_t cutout_slot = UINT32_MAX;
+    for (uint32_t i = 1; i <= xenos::kMaxColorRenderTargets; ++i) {
+      std::vector<Transfer>& slot_transfers = transfer_lists[i];
+      if (slot_transfers.empty()) {
+        continue;
+      }
+      const RenderTargetKey key = render_targets[i]->key();
+      Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
+      slot_transfers.erase(
+          std::remove_if(slot_transfers.begin(), slot_transfers.end(),
+                         [&](const Transfer& transfer) {
+                           return !transfer.GetRectangles(key, key.Is64bpp(),
+                                                          rectangles, &covered);
+                         }),
+          slot_transfers.end());
+      if (!slot_transfers.empty() && cutout_slot == UINT32_MAX) {
+        cutout_slot = i;
+      }
+    }
+    if (cutout_slot != UINT32_MAX) {
+      update_cutout_slot_ = cutout_slot;
+      update_cutout_ = covered;
+      update_cutout_from_quad_ = false;
+      update_cutout_full_overwrite_ = false;
+    }
+    return;
+  }
+  for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+    if (i != slot && !transfer_lists[i].empty()) {
+      return;
+    }
+  }
+  std::vector<Transfer>& transfers = transfer_lists[slot];
+  const bool constant_depth_candidate = slot == 0;
+  const bool hold = quad_hold_slot_ != UINT32_MAX;
+  if (transfers.empty() && !constant_depth_candidate && !hold) {
+    return;
+  }
 
   auto* rt = static_cast<MetalRenderTarget*>(render_targets[slot]);
   const RenderTargetKey key = rt->key();
@@ -2337,7 +2462,8 @@ bool MetalRenderTargetCache::Update(
   update_cutout_slot_ = UINT32_MAX;
   update_cutout_from_quad_ = false;
   update_cutout_full_overwrite_ = false;
-  ApplyClearQuadRule(accumulated_targets, normalized_depth_control);
+  ApplyClearQuadRule(accumulated_targets, normalized_depth_control,
+                     vertex_shader);
   // Not another quad of the held clear. A quad whose transfers read the held
   // destination also kills what they leave out of it.
   if (quad_hold_slot_ != UINT32_MAX && !quad_hold_candidate_valid_) {
