@@ -842,7 +842,8 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
     uint32_t pixels_per_store =
         kEdramDumpShaderResolvePixelsPerStore >> uint32_t(format_is_64bpp);
     uint32_t pixels_per_thread = GetEdramDumpShaderResolvePixelsPerThread(
-        format_is_64bpp, bool(key.direct_resolve_average));
+        format_is_64bpp, bool(key.direct_resolve_average),
+        options.resolve_single_store_runs);
 
     spv::Id resolve_edram_info =
         load_push_constant(kEdramDumpShaderPushConstantResolveEdramInfo);

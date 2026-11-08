@@ -4541,6 +4541,7 @@ MTL::ComputePipelineState* MetalRenderTargetCache::GetOrCreateDumpPipeline(
   shader_options.resolution_scale_x = draw_resolution_scale_x();
   shader_options.resolution_scale_y = draw_resolution_scale_y();
   shader_options.msaa_2x_attachments_supported = msaa_2x_supported_;
+  shader_options.resolve_single_store_runs = true;
   if (!key.is_depth) {
     GetColorOwnershipTransferPixelFormat(key.GetColorFormat(),
                                          &shader_options.source_is_uint);
@@ -5068,7 +5069,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         xenos::kEdramTileHeightSamples >>
         uint32_t(resolve_msaa_samples >= xenos::MsaaSamples::k2X);
     uint32_t pixels_per_thread = GetEdramDumpShaderResolvePixelsPerThread(
-        rt_key.Is64bpp(), resolve_average);
+        rt_key.Is64bpp(), resolve_average, true);
 
     ResolveCopyDumpRectangle::Dispatch
         dispatches[ResolveCopyDumpRectangle::kMaxDispatches];
