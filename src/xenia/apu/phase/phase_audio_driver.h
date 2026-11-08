@@ -33,6 +33,10 @@ namespace phase {
 // The driver submits the guest 5.1 bed as deinterleaved float PCM into a PHASE
 // ambient mixer. PHASE then spatializes the bed for the active output route,
 // such as binaural rendering over supported headphones.
+//
+// All drivers share one PHASE engine. Each owns a sound event with its own push
+// stream, so every guest audio client plays and is paced by its own buffer
+// completions.
 class PHASEAudioDriver final : public AudioDriver {
  public:
   explicit PHASEAudioDriver(xe::threading::Semaphore* semaphore,

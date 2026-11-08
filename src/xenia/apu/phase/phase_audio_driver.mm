@@ -83,6 +83,8 @@ constexpr const char* kAudioSessionRestoredNotification = "XeniaAudioSessionRest
 const char* NSErrorCStr(NSError* error) {
   return error ? [[error localizedDescription] UTF8String] : "unknown error";
 }
+
+std::atomic<uint32_t> next_driver_id{0};
 }  // namespace
 
 // State shared with the scheduleBuffer completion blocks. Held by a shared_ptr
@@ -117,10 +119,313 @@ struct PHASEAudioDriverShared {
   std::atomic<bool> logged_first_complete{false};
 };
 
-struct PHASEAudioDriver::Impl {
+// A driver's sound event on the shared engine.
+class PHASEStreamClient {
+ public:
+  virtual ~PHASEStreamClient() = default;
+  // Stops the sound event and gives up on its scheduled buffers.
+  virtual void DetachEvent() = 0;
+  // Starts a sound event, with its own push stream, on a running engine.
+  virtual bool AttachEvent(PHASEEngine* engine, PHASEListener* listener, NSString* mixer_identifier,
+                           AVAudioFormat* format) = 0;
+  virtual int64_t LastCompletionNs() const = 0;
+};
+
+// One PHASE engine for every guest audio client. Titles such as Left 4 Dead 2
+// register more than one XAudio render client and play through any of them,
+// so each client gets its own sound event from one registered asset, each with
+// its own push stream node and buffer completions, and the engine mixes them
+// (PHASEMixerDefinition). Apple: "You can create multiple engine instances,
+// but normally, apps create only one" (PHASEEngine).
+class PHASESharedEngine {
+ public:
+  // The running engine, built on first use. Null if it can't be built or runs
+  // at another rate.
+  static std::shared_ptr<PHASESharedEngine> Acquire(uint32_t frequency);
+
+  explicit PHASESharedEngine(uint32_t frequency) : frequency_(frequency) {}
+  ~PHASESharedEngine();
+
+  // Attaches the client's sound event, rebuilding the engine if a restart
+  // failed. False leaves the client detached.
+  bool AddClient(PHASEStreamClient* client);
+  // No restart touches the client once this returns.
+  void RemoveClient(PHASEStreamClient* client);
+
+ private:
+  bool Build();
+  void Teardown();
+  void Restart();
+  void InstallSessionObserver();
+  void RemoveSessionObserver();
+
+  static std::mutex instance_mutex_;
+  static std::weak_ptr<PHASESharedEngine> instance_;
+
+  const uint32_t frequency_;
+  // Guards the graph and |clients_|. Taken before a client's graph_mutex.
+  std::mutex mutex_;
+  std::vector<PHASEStreamClient*> clients_;
+  PHASEEngine* engine_ = nil;
+  PHASEListener* listener_ = nil;
+  AVAudioFormat* format_ = nil;
+  NSString* mixer_identifier_ = nil;
+  // Audio session recovery (see xenia/ui/ios/app/ios_lifecycle_audio_session).
+  id session_observer_ = nil;
+  NSOperationQueue* session_queue_ = nil;
+};
+
+std::mutex PHASESharedEngine::instance_mutex_;
+std::weak_ptr<PHASESharedEngine> PHASESharedEngine::instance_;
+
+std::shared_ptr<PHASESharedEngine> PHASESharedEngine::Acquire(uint32_t frequency) {
+  std::lock_guard<std::mutex> lock(instance_mutex_);
+  if (std::shared_ptr<PHASESharedEngine> engine = instance_.lock()) {
+    if (engine->frequency_ != frequency) {
+      XELOGE("PHASEAudioDriver: engine runs at {} Hz, a client asked for {} Hz", engine->frequency_,
+             frequency);
+      return nullptr;
+    }
+    return engine;
+  }
+  auto engine = std::make_shared<PHASESharedEngine>(frequency);
+  {
+    std::lock_guard<std::mutex> graph_lock(engine->mutex_);
+    bool built = false;
+    @try {
+      built = engine->Build();
+    } @catch (NSException* ex) {
+      XELOGE("PHASEAudioDriver: ObjC exception building the engine: {} — {}",
+             ex.name ? [ex.name UTF8String] : "(no name)",
+             ex.reason ? [ex.reason UTF8String] : "(no reason)");
+    }
+    if (!built) {
+      engine->Teardown();
+      return nullptr;
+    }
+  }
+  engine->InstallSessionObserver();
+  instance_ = engine;
+  return engine;
+}
+
+PHASESharedEngine::~PHASESharedEngine() {
+  @autoreleasepool {
+    RemoveSessionObserver();
+    std::lock_guard<std::mutex> lock(mutex_);
+    Teardown();
+    XELOGI("PHASEAudioDriver: engine stopped");
+  }
+}
+
+bool PHASESharedEngine::Build() {
+  NSError* error = nil;
+  XELOGI("PHASEAudioDriver: building engine (freq={}, channels={}, samples={})", frequency_,
+         AudioDriver::kFrameChannelsDefault, kChannelSamples);
+
+  engine_ = [[PHASEEngine alloc] initWithUpdateMode:PHASEUpdateModeAutomatic];
+  if (!engine_) {
+    XELOGE("PHASEAudioDriver: PHASEEngine creation returned nil");
+    return false;
+  }
+  // Binaural over headphones, channel-based panning on speakers.
+  engine_.outputSpatializationMode = PHASESpatializationModeAutomatic;
+  XELOGI("PHASEAudioDriver: engine created, spatialization=automatic");
+
+  // 5.1 source layout (L R C LFE Ls Rs) matching the guest channel order.
+  AVAudioChannelLayout* layout =
+      [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_MPEG_5_1_A];
+  if (!layout) {
+    XELOGE("PHASEAudioDriver: failed to build 5.1 channel layout");
+    return false;
+  }
+
+  // Deinterleaved float32 stream format; same planar shape the guest delivers.
+  format_ = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+                                             sampleRate:static_cast<double>(frequency_)
+                                            interleaved:NO
+                                          channelLayout:layout];
+  if (!format_) {
+    XELOGE("PHASEAudioDriver: failed to build stream AVAudioFormat");
+    return false;
+  }
+  XELOGI("PHASEAudioDriver: stream format ch={}, rate={}, interleaved=no",
+         static_cast<uint32_t>(format_.channelCount), format_.sampleRate);
+
+  // Identity orientation: speakers in their canonical directions.
+  simd_quatf identity = simd_quaternion(0.0f, 0.0f, 0.0f, 1.0f);
+  PHASEAmbientMixerDefinition* mixer =
+      [[PHASEAmbientMixerDefinition alloc] initWithChannelLayout:layout orientation:identity];
+  if (!mixer) {
+    XELOGE("PHASEAudioDriver: ambient mixer creation returned nil");
+    return false;
+  }
+  mixer_identifier_ = mixer.identifier;
+
+  PHASEPushStreamNodeDefinition* stream_def =
+      [[PHASEPushStreamNodeDefinition alloc] initWithMixerDefinition:mixer
+                                                              format:format_
+                                                          identifier:@"xe"];
+
+  // A template: every client creates its own sound event from it.
+  PHASESoundEventNodeAsset* asset =
+      [engine_.assetRegistry registerSoundEventAssetWithRootNode:stream_def
+                                                      identifier:@"xeAsset"
+                                                           error:&error];
+  if (!asset) {
+    XELOGE("PHASEAudioDriver: registerSoundEventAsset failed: {}", NSErrorCStr(error));
+    return false;
+  }
+  XELOGI("PHASEAudioDriver: sound event asset registered");
+
+  listener_ = [[PHASEListener alloc] initWithEngine:engine_];
+  listener_.transform = matrix_identity_float4x4;
+  // Apple-recommended head tracking updates the listener orientation from
+  // compatible AirPods, but it requires the restricted
+  // com.apple.developer.coremotion.head-pose entitlement. Without a
+  // provisioning profile that grants it, enabling this makes engine start
+  // raise an exception. Off by default; opt in via apu_phase_head_tracking
+  // only once the entitlement is provisioned.
+  if (cvars::apu_phase_head_tracking) {
+    listener_.automaticHeadTrackingFlags = PHASEAutomaticHeadTrackingFlagOrientation;
+    XELOGI("PHASEAudioDriver: automatic head tracking ENABLED");
+  } else {
+    XELOGI("PHASEAudioDriver: head tracking disabled (fixed listener)");
+  }
+  if (![engine_.rootObject addChild:listener_ error:&error]) {
+    XELOGE("PHASEAudioDriver: addChild(listener) failed: {}", NSErrorCStr(error));
+    return false;
+  }
+  XELOGI("PHASEAudioDriver: listener added");
+
+  if (![engine_ startAndReturnError:&error]) {
+    XELOGE("PHASEAudioDriver: engine start failed: {}", NSErrorCStr(error));
+    return false;
+  }
+  XELOGI("PHASEAudioDriver: engine started");
+  return true;
+}
+
+void PHASESharedEngine::Teardown() {
+  @try {
+    if (engine_) {
+      [engine_ stop];
+    }
+  } @catch (NSException* ex) {
+    XELOGE("PHASEAudioDriver: exception during PHASE teardown: {} — {}",
+           ex.name ? [ex.name UTF8String] : "(no name)",
+           ex.reason ? [ex.reason UTF8String] : "(no reason)");
+  }
+  mixer_identifier_ = nil;
+  listener_ = nil;
+  format_ = nil;
+  engine_ = nil;
+}
+
+bool PHASESharedEngine::AddClient(PHASEStreamClient* client) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!engine_) {
+    XELOGW("PHASEAudioDriver: engine is down; rebuilding it for a new client");
+    if (!Build()) {
+      Teardown();
+      return false;
+    }
+  }
+  if (!client->AttachEvent(engine_, listener_, mixer_identifier_, format_)) {
+    return false;
+  }
+  clients_.push_back(client);
+  XELOGI("PHASEAudioDriver: {} client(s) on the engine", clients_.size());
+  return true;
+}
+
+void PHASESharedEngine::RemoveClient(PHASEStreamClient* client) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  clients_.erase(std::remove(clients_.begin(), clients_.end(), client), clients_.end());
+}
+
+void PHASESharedEngine::Restart() {
+  @autoreleasepool {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (clients_.empty()) {
+      return;
+    }
+    // A foreground return or a category change does not always stop the engine. Rebuilding it
+    // then only drops queued audio, so leave a graph alone that is still rendering.
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+    if (engine_) {
+      for (PHASEStreamClient* client : clients_) {
+        const int64_t last_ns = client->LastCompletionNs();
+        if (last_ns != 0 && now_ns - last_ns < 300 * 1000 * 1000) {
+          XELOGI("PHASEAudioDriver: engine is still rendering; restart skipped");
+          return;
+        }
+      }
+    }
+    XELOGI("PHASEAudioDriver: restarting the engine after an audio session loss "
+           "({} client(s))",
+           clients_.size());
+    @try {
+      for (PHASEStreamClient* client : clients_) {
+        client->DetachEvent();
+      }
+      Teardown();
+      if (!Build()) {
+        // Frames are dropped (and their permits released) until the next restart.
+        Teardown();
+        XELOGE("PHASEAudioDriver: restart failed, audio stays silent");
+        return;
+      }
+      for (PHASEStreamClient* client : clients_) {
+        if (!client->AttachEvent(engine_, listener_, mixer_identifier_, format_)) {
+          XELOGE("PHASEAudioDriver: a client's sound event did not restart; "
+                 "it stays silent");
+        }
+      }
+    } @catch (NSException* ex) {
+      XELOGE("PHASEAudioDriver: ObjC exception during restart: {} — {}",
+             ex.name ? [ex.name UTF8String] : "(no name)",
+             ex.reason ? [ex.reason UTF8String] : "(no reason)");
+      return;
+    }
+    XELOGI("PHASEAudioDriver: engine restarted");
+  }
+}
+
+void PHASESharedEngine::InstallSessionObserver() {
+  session_queue_ = [[NSOperationQueue alloc] init];
+  session_queue_.maxConcurrentOperationCount = 1;
+  session_queue_.name = @"xenia.phase.session";
+  PHASESharedEngine* engine = this;
+  session_observer_ = [[NSNotificationCenter defaultCenter]
+      addObserverForName:[NSString stringWithUTF8String:kAudioSessionRestoredNotification]
+                  object:nil
+                   queue:session_queue_
+              usingBlock:^(NSNotification*) {
+                engine->Restart();
+              }];
+}
+
+void PHASESharedEngine::RemoveSessionObserver() {
+  if (session_observer_) {
+    [[NSNotificationCenter defaultCenter] removeObserver:session_observer_];
+    session_observer_ = nil;
+  }
+  if (session_queue_) {
+    // A restart that is already running finishes before teardown goes on.
+    [session_queue_ waitUntilAllOperationsAreFinished];
+    session_queue_ = nil;
+  }
+}
+
+struct PHASEAudioDriver::Impl final : public PHASEStreamClient {
   std::shared_ptr<PHASEAudioDriverShared> shared =
       std::make_shared<PHASEAudioDriverShared>();
 
+  // Tells this driver's log lines apart from other clients'.
+  const uint32_t id = next_driver_id.fetch_add(1, std::memory_order_relaxed);
   uint32_t frequency = 0;
   uint32_t channels = 0;
   uint32_t channel_samples = kChannelSamples;
@@ -128,24 +433,30 @@ struct PHASEAudioDriver::Impl {
   std::atomic<bool> shutting_down{false};
   std::atomic<bool> paused{false};
 
-  // PHASE graph (strong refs under ARC).
-  PHASEEngine* engine = nil;
+  std::shared_ptr<PHASESharedEngine> engine;
+
+  // This client's sound event (strong refs under ARC). Under |graph_mutex|.
   PHASESoundEvent* sound_event = nil;
   PHASEPushStreamNode* stream_node = nil;
-  PHASEListener* listener = nil;
   AVAudioFormat* format = nil;
+  // Buffers to add to the pool at the next attach: all of it at first, then
+  // those given up on at a restart.
+  size_t pool_refill = kBufferPoolSize;
 
-  // Serializes SubmitFrame against a graph restart.
+  // Serializes SubmitFrame against attaching and detaching the sound event.
   std::mutex graph_mutex;
-  // Audio session recovery (see xenia/ui/ios/app/ios_lifecycle_audio_session).
-  id session_observer = nil;
-  NSOperationQueue* session_queue = nil;
 
-  bool BuildGraph();
-  void TeardownGraph();
-  void Restart();
-  void InstallSessionObserver();
-  void RemoveSessionObserver();
+  void DetachEvent() override;
+  bool AttachEvent(PHASEEngine* engine, PHASEListener* listener, NSString* mixer_identifier,
+                   AVAudioFormat* format) override;
+  int64_t LastCompletionNs() const override {
+    return shared->last_completion_ns.load(std::memory_order_acquire);
+  }
+
+  void StopEvent();
+  // Gives up on buffers that may never report back so the audio worker's
+  // permits aren't lost. Returns how many there were.
+  int GiveUpOutstanding();
 
   void ReleaseSemaphore() {
     std::lock_guard<std::mutex> lock(shared->mutex);
@@ -164,276 +475,140 @@ PHASEAudioDriver::PHASEAudioDriver(xe::threading::Semaphore* semaphore,
 }
 
 PHASEAudioDriver::~PHASEAudioDriver() = default;
-bool PHASEAudioDriver::Impl::BuildGraph() {
-  Impl* d = this;
+
+bool PHASEAudioDriver::Impl::AttachEvent(PHASEEngine* engine, PHASEListener* listener,
+                                         NSString* mixer_identifier, AVAudioFormat* stream_format) {
+  std::lock_guard<std::mutex> graph_lock(graph_mutex);
+  if (shutting_down.load(std::memory_order_acquire)) {
+    return false;
+  }
   NSError* error = nil;
-    XELOGI("PHASEAudioDriver::Initialize begin (freq={}, channels={}, samples={})",
-           d->frequency, d->channels, d->channel_samples);
+  const int permitless_max = OutputCycleBuffers(frequency, channel_samples);
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    shared->permitless_max = permitless_max;
+  }
 
-    d->engine = [[PHASEEngine alloc] initWithUpdateMode:PHASEUpdateModeAutomatic];
-    if (!d->engine) {
-      XELOGE("PHASEAudioDriver: PHASEEngine creation returned nil");
+  PHASEMixerParameters* mixer_params = [[PHASEMixerParameters alloc] init];
+  [mixer_params addAmbientMixerParametersWithIdentifier:mixer_identifier listener:listener];
+  PHASESoundEvent* event = [[PHASESoundEvent alloc] initWithEngine:engine
+                                                   assetIdentifier:@"xeAsset"
+                                                   mixerParameters:mixer_params
+                                                             error:&error];
+  if (!event) {
+    XELOGE("PHASEAudioDriver[{}]: PHASESoundEvent init failed: {}", id, NSErrorCStr(error));
+    return false;
+  }
+  // PHASESoundEvent uses start(completion:) — NOT startAndReturnError: (that
+  // selector only exists on PHASEEngine). The completion block fires when the
+  // event later stops or terminates.
+  [event startWithCompletion:nil];
+  // Each sound event fills its own pushStreamNodes, so every client has a
+  // stream of its own.
+  PHASEPushStreamNode* node = event.pushStreamNodes[@"xe"];
+  if (!node) {
+    XELOGE("PHASEAudioDriver[{}]: push stream node missing after start "
+           "(pushStreamNodes count={})",
+           id, static_cast<uint32_t>(event.pushStreamNodes.count));
+    [event stopAndInvalidate];
+    return false;
+  }
+
+  // Pre-allocate the recycled buffer pool (no allocation on the guest thread
+  // in steady state). Late completions of buffers given up on also return to
+  // the pool, so fill only up to its size.
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    shared->free_pool.reserve(kBufferPoolSize);
+    for (; pool_refill > 0 && shared->free_pool.size() < kBufferPoolSize; --pool_refill) {
+      AVAudioPCMBuffer* buf = [[AVAudioPCMBuffer alloc] initWithPCMFormat:stream_format
+                                                            frameCapacity:channel_samples];
+      if (!buf) {
+        XELOGE("PHASEAudioDriver[{}]: failed to allocate a PCM buffer ({} in "
+               "the pool)",
+               id, shared->free_pool.size());
+        break;
+      }
+      shared->free_pool.push_back(buf);
+    }
+    pool_refill = 0;
+    if (shared->free_pool.empty()) {
+      [event stopAndInvalidate];
       return false;
     }
-    // Binaural over headphones, channel-based panning on speakers.
-    d->engine.outputSpatializationMode = PHASESpatializationModeAutomatic;
-    XELOGI("PHASEAudioDriver: engine created, spatialization=automatic");
+  }
 
-    // 5.1 source layout (L R C LFE Ls Rs) matching the guest channel order.
-    AVAudioChannelLayout* layout = [[AVAudioChannelLayout alloc]
-        initWithLayoutTag:kAudioChannelLayoutTag_MPEG_5_1_A];
-    if (!layout) {
-      XELOGE("PHASEAudioDriver: failed to build 5.1 channel layout");
-      return false;
-    }
-
-    // Deinterleaved float32 stream format; same planar shape the guest delivers.
-    d->format = [[AVAudioFormat alloc]
-        initWithCommonFormat:AVAudioPCMFormatFloat32
-                  sampleRate:static_cast<double>(d->frequency)
-                 interleaved:NO
-               channelLayout:layout];
-    if (!d->format) {
-      XELOGE("PHASEAudioDriver: failed to build stream AVAudioFormat");
-      return false;
-    }
-    XELOGI("PHASEAudioDriver: stream format ch={}, rate={}, interleaved=no",
-           static_cast<uint32_t>(d->format.channelCount), d->format.sampleRate);
-    const int permitless_max = OutputCycleBuffers(d->frequency, d->channel_samples);
-    {
-      std::lock_guard<std::mutex> lock(d->shared->mutex);
-      d->shared->permitless_max = permitless_max;
-    }
-    XELOGI("PHASEAudioDriver: {} buffers per output cycle schedule without a permit",
-           permitless_max);
-
-    // Identity orientation: speakers in their canonical directions.
-    simd_quatf identity = simd_quaternion(0.0f, 0.0f, 0.0f, 1.0f);
-    PHASEAmbientMixerDefinition* mixer = [[PHASEAmbientMixerDefinition alloc]
-        initWithChannelLayout:layout
-                  orientation:identity];
-    if (!mixer) {
-      XELOGE("PHASEAudioDriver: ambient mixer creation returned nil");
-      return false;
-    }
-
-    PHASEPushStreamNodeDefinition* stream_def =
-        [[PHASEPushStreamNodeDefinition alloc] initWithMixerDefinition:mixer
-                                                                format:d->format
-                                                            identifier:@"xe"];
-
-    PHASESoundEventNodeAsset* asset = [d->engine.assetRegistry
-        registerSoundEventAssetWithRootNode:stream_def
-                                 identifier:@"xeAsset"
-                                      error:&error];
-    if (!asset) {
-      XELOGE("PHASEAudioDriver: registerSoundEventAsset failed: {}",
-             NSErrorCStr(error));
-      return false;
-    }
-    XELOGI("PHASEAudioDriver: sound event asset registered");
-
-    d->listener = [[PHASEListener alloc] initWithEngine:d->engine];
-    d->listener.transform = matrix_identity_float4x4;
-    // Apple-recommended head tracking updates the listener orientation from
-    // compatible AirPods, but it requires the restricted
-    // com.apple.developer.coremotion.head-pose entitlement. Without a
-    // provisioning profile that grants it, enabling this makes engine start
-    // raise an exception. Off by default; opt in via apu_phase_head_tracking
-    // only once the entitlement is provisioned.
-    if (cvars::apu_phase_head_tracking) {
-      d->listener.automaticHeadTrackingFlags =
-          PHASEAutomaticHeadTrackingFlagOrientation;
-      XELOGI("PHASEAudioDriver: automatic head tracking ENABLED");
-    } else {
-      XELOGI("PHASEAudioDriver: head tracking disabled (fixed listener)");
-    }
-    if (![d->engine.rootObject addChild:d->listener error:&error]) {
-      XELOGE("PHASEAudioDriver: addChild(listener) failed: {}",
-             NSErrorCStr(error));
-      return false;
-    }
-    XELOGI("PHASEAudioDriver: listener added");
-
-    PHASEMixerParameters* mixer_params = [[PHASEMixerParameters alloc] init];
-    [mixer_params addAmbientMixerParametersWithIdentifier:mixer.identifier
-                                                 listener:d->listener];
-
-    d->sound_event = [[PHASESoundEvent alloc] initWithEngine:d->engine
-                                             assetIdentifier:@"xeAsset"
-                                             mixerParameters:mixer_params
-                                                       error:&error];
-    if (!d->sound_event) {
-      XELOGE("PHASEAudioDriver: PHASESoundEvent init failed: {}",
-             NSErrorCStr(error));
-      return false;
-    }
-
-    if (![d->engine startAndReturnError:&error]) {
-      XELOGE("PHASEAudioDriver: engine start failed: {}", NSErrorCStr(error));
-      return false;
-    }
-    XELOGI("PHASEAudioDriver: engine started");
-
-    // PHASESoundEvent uses start(completion:) — NOT startAndReturnError: (that
-    // selector only exists on PHASEEngine). The completion block fires when the
-    // event later stops or terminates.
-    [d->sound_event startWithCompletion:nil];
-    XELOGI("PHASEAudioDriver: sound event started");
-
-    d->stream_node = d->sound_event.pushStreamNodes[@"xe"];
-    if (!d->stream_node) {
-      XELOGE("PHASEAudioDriver: push stream node missing after start "
-             "(pushStreamNodes count={})",
-             static_cast<uint32_t>(d->sound_event.pushStreamNodes.count));
-      return false;
-    }
-
+  sound_event = event;
+  stream_node = node;
+  format = stream_format;
+  XELOGI("PHASEAudioDriver[{}]: sound event started, {} buffers per output "
+         "cycle schedule without a permit",
+         id, permitless_max);
   return true;
 }
 
-void PHASEAudioDriver::Impl::TeardownGraph() {
+void PHASEAudioDriver::Impl::StopEvent() {
   @try {
     if (sound_event) {
       [sound_event stopAndInvalidate];
     }
-    if (engine) {
-      [engine stop];
-    }
   } @catch (NSException* ex) {
-    XELOGE("PHASEAudioDriver: exception during PHASE teardown: {} — {}",
+    XELOGE("PHASEAudioDriver[{}]: exception stopping the sound event: {} — {}", id,
            ex.name ? [ex.name UTF8String] : "(no name)",
            ex.reason ? [ex.reason UTF8String] : "(no reason)");
   }
   stream_node = nil;
   sound_event = nil;
-  listener = nil;
-  format = nil;
-  engine = nil;
 }
 
-void PHASEAudioDriver::Impl::Restart() {
-  @autoreleasepool {
-    std::lock_guard<std::mutex> graph_lock(graph_mutex);
-    if (shutting_down.load(std::memory_order_acquire)) {
-      return;
-    }
-    // A foreground return or a category change does not always stop the engine. Rebuilding it
-    // then only drops queued audio, so leave a graph alone that is still rendering.
-    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now().time_since_epoch())
-                               .count();
-    const int64_t last_ns = shared->last_completion_ns.load(std::memory_order_acquire);
-    if (stream_node && last_ns != 0 && now_ns - last_ns < 300 * 1000 * 1000) {
-      XELOGI("PHASEAudioDriver: engine is still rendering; restart skipped");
-      return;
-    }
-    XELOGI("PHASEAudioDriver: restarting the engine after an audio session loss");
-    TeardownGraph();
-
-    // Buffers scheduled on the old graph may never report back. Give up on
-    // them so the audio worker's permits aren't lost, and replace them in the
-    // pool.
-    int leaked = 0;
-    int permits = 0;
-    {
-      std::lock_guard<std::mutex> lock(shared->mutex);
-      ++shared->epoch;
-      leaked = shared->outstanding.exchange(0, std::memory_order_acq_rel);
-      permits = leaked - shared->permitless;
-      shared->permitless = 0;
-    }
-    for (int i = 0; i < permits; ++i) {
-      ReleaseSemaphore();
-    }
-
-    bool built = false;
-    @try {
-      built = BuildGraph();
-    } @catch (NSException* ex) {
-      XELOGE("PHASEAudioDriver: ObjC exception during restart: {} — {}",
-             ex.name ? [ex.name UTF8String] : "(no name)",
-             ex.reason ? [ex.reason UTF8String] : "(no reason)");
-    }
-    if (!built) {
-      // Frames are dropped (and their permits released) until the next restart.
-      TeardownGraph();
-      XELOGE("PHASEAudioDriver: restart failed, audio stays silent");
-      return;
-    }
-    if (leaked > 0) {
-      std::lock_guard<std::mutex> lock(shared->mutex);
-      // Late completions of the old graph's buffers also return to the pool, so refill only up
-      // to its size.
-      for (int i = 0; i < leaked && shared->free_pool.size() < kBufferPoolSize; ++i) {
-        AVAudioPCMBuffer* buf = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
-                                                              frameCapacity:channel_samples];
-        if (buf) {
-          shared->free_pool.push_back(buf);
-        }
-      }
-    }
-    XELOGI("PHASEAudioDriver: engine restarted");
+int PHASEAudioDriver::Impl::GiveUpOutstanding() {
+  int leaked = 0;
+  int permits = 0;
+  {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    // A buffer that completes after this only returns to the pool.
+    ++shared->epoch;
+    leaked = shared->outstanding.exchange(0, std::memory_order_acq_rel);
+    permits = leaked - shared->permitless;
+    shared->permitless = 0;
   }
+  for (int i = 0; i < permits; ++i) {
+    ReleaseSemaphore();
+  }
+  return leaked;
 }
 
-void PHASEAudioDriver::Impl::InstallSessionObserver() {
-  session_queue = [[NSOperationQueue alloc] init];
-  session_queue.maxConcurrentOperationCount = 1;
-  session_queue.name = @"xenia.phase.session";
-  Impl* d = this;
-  session_observer = [[NSNotificationCenter defaultCenter]
-      addObserverForName:[NSString stringWithUTF8String:kAudioSessionRestoredNotification]
-                  object:nil
-                   queue:session_queue
-              usingBlock:^(NSNotification*) {
-                d->Restart();
-              }];
-}
-
-void PHASEAudioDriver::Impl::RemoveSessionObserver() {
-  if (session_observer) {
-    [[NSNotificationCenter defaultCenter] removeObserver:session_observer];
-    session_observer = nil;
-  }
-  if (session_queue) {
-    // A restart that is already running finishes before teardown goes on.
-    [session_queue waitUntilAllOperationsAreFinished];
-    session_queue = nil;
-  }
+void PHASEAudioDriver::Impl::DetachEvent() {
+  std::lock_guard<std::mutex> graph_lock(graph_mutex);
+  StopEvent();
+  // Buffers scheduled on the old graph may never report back; replace them in
+  // the pool at the next attach.
+  pool_refill += GiveUpOutstanding();
 }
 
 bool PHASEAudioDriver::Initialize() {
   @autoreleasepool {
    @try {
     Impl* d = impl_.get();
-    if (!d->BuildGraph()) {
+    XELOGI("PHASEAudioDriver[{}]::Initialize begin (freq={}, channels={}, "
+           "samples={})",
+           d->id, d->frequency, d->channels, d->channel_samples);
+    if (d->channels != AudioDriver::kFrameChannelsDefault) {
+      XELOGE("PHASEAudioDriver[{}]: {} channels unsupported, the stream is 5.1", d->id,
+             d->channels);
       return false;
     }
-
-    // Pre-allocate the recycled buffer pool (no allocation on the guest thread
-    // in steady state).
-    {
-      std::lock_guard<std::mutex> lock(d->shared->mutex);
-      d->shared->free_pool.reserve(kBufferPoolSize);
-      for (size_t i = 0; i < kBufferPoolSize; ++i) {
-        AVAudioPCMBuffer* buf =
-            [[AVAudioPCMBuffer alloc] initWithPCMFormat:d->format
-                                          frameCapacity:d->channel_samples];
-        if (!buf) {
-          XELOGE("PHASEAudioDriver: failed to allocate PCM buffer {} of {}", i,
-                 kBufferPoolSize);
-          return false;
-        }
-        d->shared->free_pool.push_back(buf);
-      }
+    d->engine = PHASESharedEngine::Acquire(d->frequency);
+    if (!d->engine) {
+      return false;
     }
-    XELOGI("PHASEAudioDriver: allocated {} pooled PCM buffers", kBufferPoolSize);
-
-    d->InstallSessionObserver();
-
-    XELOGI("PHASEAudioDriver: INITIALIZED OK — spatial 5.1 over PHASE, "
-           "waiting for frames");
+    if (!d->engine->AddClient(d)) {
+      d->engine.reset();
+      return false;
+    }
+    XELOGI("PHASEAudioDriver[{}]: INITIALIZED OK — spatial 5.1 over PHASE, "
+           "waiting for frames",
+           d->id);
     return true;
    } @catch (NSException* ex) {
      // Never let a PHASE/ObjC exception crash the title — fail the driver so
@@ -450,29 +625,21 @@ void PHASEAudioDriver::Shutdown() {
   @autoreleasepool {
     Impl* d = impl_.get();
     auto s = d->shared;
-    XELOGI("PHASEAudioDriver::Shutdown begin (submitted={}, completed={}, "
+    XELOGI("PHASEAudioDriver[{}]::Shutdown begin (submitted={}, completed={}, "
            "underruns={}, stream_dry={}, dropped_inactive={}, outstanding={})",
-           s->frames_submitted.load(), s->frames_completed.load(),
-           s->underruns.load(), s->stream_dry.load(), s->dropped_inactive.load(),
-           s->outstanding.load());
+           d->id, s->frames_submitted.load(), s->frames_completed.load(), s->underruns.load(),
+           s->stream_dry.load(), s->dropped_inactive.load(), s->outstanding.load());
 
     d->shutting_down.store(true, std::memory_order_release);
-    d->RemoveSessionObserver();
-
-    // PHASESoundEvent stops via stopAndInvalidate(); the engine via stop().
-    // Guard against any selector/state surprises so teardown can't crash.
-    @try {
-      if (d->sound_event) {
-        [d->sound_event stopAndInvalidate];
-      }
-      if (d->engine) {
-        [d->engine stop];
-      }
-    } @catch (NSException* ex) {
-      XELOGE("PHASEAudioDriver: exception during PHASE teardown: {} — {}",
-             ex.name ? [ex.name UTF8String] : "(no name)",
-             ex.reason ? [ex.reason UTF8String] : "(no reason)");
+    if (d->engine) {
+      d->engine->RemoveClient(d);
     }
+    {
+      std::lock_guard<std::mutex> graph_lock(d->graph_mutex);
+      d->StopEvent();
+    }
+    // The last client stops the engine.
+    d->engine.reset();
 
     // Wait (bounded) for outstanding completion callbacks so no late block runs
     // after teardown; then flush any permits they would have released so the
@@ -483,23 +650,11 @@ void PHASEAudioDriver::Shutdown() {
       std::this_thread::sleep_for(
           std::chrono::milliseconds(kShutdownDrainPollMs));
     }
-    int leaked = 0;
-    int permits = 0;
-    {
-      std::lock_guard<std::mutex> lock(s->mutex);
-      // A buffer that completes after this only returns to the pool.
-      ++s->epoch;
-      leaked = s->outstanding.exchange(0, std::memory_order_acq_rel);
-      permits = leaked - s->permitless;
-      s->permitless = 0;
-    }
+    const int leaked = d->GiveUpOutstanding();
     if (leaked > 0) {
-      XELOGW("PHASEAudioDriver: {} buffer(s) never completed; flushing permits "
-             "after {}ms wait",
-             leaked, polls * kShutdownDrainPollMs);
-    }
-    for (int i = 0; i < permits; ++i) {
-      d->ReleaseSemaphore();
+      XELOGW("PHASEAudioDriver[{}]: {} buffer(s) never completed; flushing "
+             "permits after {}ms wait",
+             d->id, leaked, polls * kShutdownDrainPollMs);
     }
 
     {
@@ -508,12 +663,8 @@ void PHASEAudioDriver::Shutdown() {
       s->free_pool.clear();
     }
 
-    d->stream_node = nil;
-    d->sound_event = nil;
-    d->listener = nil;
     d->format = nil;
-    d->engine = nil;
-    XELOGI("PHASEAudioDriver::Shutdown complete");
+    XELOGI("PHASEAudioDriver[{}]::Shutdown complete", d->id);
   }
 }
 
@@ -545,8 +696,8 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
     // Pool exhausted (underrun): drop this frame but keep the worker advancing.
     uint64_t n = s.underruns.fetch_add(1, std::memory_order_relaxed) + 1;
     if (n == 1 || (n % 100) == 0) {
-      XELOGW("PHASEAudioDriver: buffer pool underrun (count={}, outstanding={})",
-             n, s.outstanding.load());
+      XELOGW("PHASEAudioDriver[{}]: buffer pool underrun (count={}, outstanding={})", d->id, n,
+             s.outstanding.load());
     }
     d->ReleaseSemaphore();
     return;
@@ -570,17 +721,18 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
     s.stream_dry.fetch_add(1, std::memory_order_relaxed);
   }
   if (!s.logged_first_submit.exchange(true, std::memory_order_relaxed)) {
-    XELOGI("PHASEAudioDriver: first frame submitted to PHASE (vol={})", vol);
+    XELOGI("PHASEAudioDriver[{}]: first frame submitted to PHASE (vol={})", d->id, vol);
   }
   if ((submitted % kHeartbeatFrames) == 0) {
-    XELOGI("PHASEAudioDriver: heartbeat submitted={}, completed={}, "
+    XELOGD("PHASEAudioDriver[{}]: heartbeat submitted={}, completed={}, "
            "underruns={}, stream_dry={}, pool_free={}, outstanding={}",
-           submitted, s.frames_completed.load(), s.underruns.load(),
-           s.stream_dry.load(), pool_free, s.outstanding.load());
+           d->id, submitted, s.frames_completed.load(), s.underruns.load(), s.stream_dry.load(),
+           pool_free, s.outstanding.load());
   }
 
   s.outstanding.fetch_add(1, std::memory_order_relaxed);
   std::shared_ptr<PHASEAudioDriverShared> shared = d->shared;
+  const uint32_t driver_id = d->id;
   uint64_t epoch;
   bool holds_permit = true;
   {
@@ -626,24 +778,25 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
                shared->frames_completed.fetch_add(1, std::memory_order_relaxed);
                if (!shared->logged_first_complete.exchange(
                        true, std::memory_order_relaxed)) {
-                 XELOGI("PHASEAudioDriver: first buffer rendered by PHASE "
-                        "(audio path confirmed live)");
+                 XELOGI("PHASEAudioDriver[{}]: first buffer rendered by PHASE "
+                        "(audio path confirmed live)",
+                        driver_id);
                }
              }];
 }
 
 void PHASEAudioDriver::Pause() {
-  XELOGI("PHASEAudioDriver::Pause");
+  XELOGD("PHASEAudioDriver[{}]::Pause", impl_->id);
   impl_->paused.store(true, std::memory_order_release);
 }
 
 void PHASEAudioDriver::Resume() {
-  XELOGI("PHASEAudioDriver::Resume");
+  XELOGD("PHASEAudioDriver[{}]::Resume", impl_->id);
   impl_->paused.store(false, std::memory_order_release);
 }
 
 void PHASEAudioDriver::SetVolume(float volume) {
-  XELOGI("PHASEAudioDriver::SetVolume {}", volume);
+  XELOGD("PHASEAudioDriver[{}]::SetVolume {}", impl_->id, volume);
   impl_->volume.store(volume, std::memory_order_relaxed);
 }
 

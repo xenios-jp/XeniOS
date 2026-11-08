@@ -19,8 +19,7 @@ namespace apu {
 // A driver that produces no audio output but still honors the audio worker
 // backpressure contract: every SubmitFrame releases one semaphore permit so the
 // guest callback flow keeps advancing. Used as a fallback when a real output
-// device can't be created (e.g. secondary clients on platforms that only
-// support a single shared output device).
+// device can't be created (e.g. PHASE fails to start).
 class SilentAudioDriver final : public AudioDriver {
  public:
   explicit SilentAudioDriver(xe::threading::Semaphore* semaphore)
