@@ -183,6 +183,9 @@ class MetalCommandProcessor : public CommandProcessor {
   void DiscardAccountedCommandBuffer(MTL::CommandBuffer* command_buffer,
                                      CommandBufferKind kind);
   void EndRenderEncoder();
+  // Encodes transfers held behind clear quads into the open pass, or runs
+  // them standalone if they don't belong to it.
+  bool EncodeHeldDrawPassTransfers();
   // The guest's open render pass, for a resolve that encodes a tile dispatch
   // into it: its descriptor, the area its tiles cover,
   // and the shared memory hazard tracking of its encoder, null when the buffer

@@ -10,6 +10,7 @@
 #include "xenia/gpu/draw_extent_estimator.h"
 
 #include <cfloat>
+#include <limits>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
@@ -54,6 +55,12 @@ void DrawExtentEstimator::PositionYExportSink::Export(
     ucode::ExportRegister export_register, const float* value,
     uint32_t value_mask) {
   if (export_register == ucode::ExportRegister::kVSPosition) {
+    if (value_mask & 0b0001) {
+      position_x_ = value[0];
+    }
+    if (value_mask & 0b0100) {
+      position_z_ = value[2];
+    }
     if (value_mask & 0b0010) {
       position_y_ = value[1];
     }
@@ -173,6 +180,8 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader,
 
   PositionYExportSink position_y_export_sink;
   shader_interpreter_.SetExportSink(&position_y_export_sink);
+  LastVertexPositions positions;
+  positions.valid = vgt_draw_initiator.num_indices <= kMaxLastVertices;
   for (uint32_t i = 0; i < vgt_draw_initiator.num_indices; ++i) {
     uint32_t vertex_index;
     if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA) {
@@ -188,6 +197,7 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader,
         vertex_index = 0;
       }
       if (pa_su_sc_mode_cntl.multi_prim_ib_ena && vertex_index == reset_index) {
+        positions.valid = false;
         continue;
       }
     } else {
@@ -204,6 +214,28 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader,
     shader_interpreter_.temp_registers()[0] = float(vertex_index);
     shader_interpreter_.Execute();
 
+    if (positions.valid) {
+      if ((position_y_export_sink.vertex_kill().has_value() &&
+           (position_y_export_sink.vertex_kill().value() &
+            ~(UINT32_C(1) << 31))) ||
+          !position_y_export_sink.position_x().has_value() ||
+          !position_y_export_sink.position_y().has_value() ||
+          !position_y_export_sink.position_z().has_value()) {
+        positions.valid = false;
+      } else {
+        positions.x[positions.count] =
+            position_y_export_sink.position_x().value();
+        positions.y[positions.count] =
+            position_y_export_sink.position_y().value();
+        positions.z[positions.count] =
+            position_y_export_sink.position_z().value();
+        positions.w[positions.count] =
+            position_y_export_sink.position_w().has_value()
+                ? position_y_export_sink.position_w().value()
+                : std::numeric_limits<float>::quiet_NaN();
+        ++positions.count;
+      }
+    }
     if (position_y_export_sink.vertex_kill().has_value() &&
         (position_y_export_sink.vertex_kill().value() & ~(UINT32_C(1) << 31))) {
       continue;
@@ -246,6 +278,9 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader,
     max_y = std::max(max_y, vertex_y);
   }
   shader_interpreter_.SetExportSink(nullptr);
+  if (positions.valid) {
+    last_vertex_positions_ = positions;
+  }
 
   int32_t max_y_24p8 = ui::FloatToD3D11Fixed16p8(max_y);
   // 16p8 range is -32768 to 32767+255/256, but it's stored as uint32_t here,
@@ -274,6 +309,7 @@ uint32_t DrawExtentEstimator::EstimateMaxY(bool try_to_estimate_vertex_max_y,
                                            bool window_offset_in_edram) {
   SCOPE_profile_cpu_f("gpu");
 
+  ResetLastDraw();
   const RegisterFile& regs = register_file_;
 
   auto pa_sc_window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();

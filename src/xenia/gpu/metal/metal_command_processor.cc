@@ -4377,6 +4377,17 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     normalized_color_mask = pixel_shader ? draw_util::GetNormalizedColorMask(
                                                regs, ps_writes_color_targets)
                                          : 0;
+    {
+      MetalRenderTargetCache::ClearQuadDraw clear_quad_draw;
+      clear_quad_draw.candidate =
+          is_rasterization_done && !memexport_used &&
+          primitive_type == xenos::PrimitiveType::kRectangleList &&
+          !primitive_processing_result.IsTessellated();
+      clear_quad_draw.has_pixel_shader = pixel_shader != nullptr;
+      clear_quad_draw.pixel_shader_kills =
+          pixel_shader && pixel_shader->kills_pixels();
+      render_target_cache_->SetClearQuadDraw(clear_quad_draw);
+    }
     // The window offset stays in the viewport on Metal.
     if (!render_target_cache_->Update(
             is_rasterization_done, normalized_depth_control,
@@ -7172,8 +7183,41 @@ void MetalCommandProcessor::EndSharedComputeEncoder() {
   shared_compute_command_buffer_ = nullptr;
 }
 
+bool MetalCommandProcessor::EncodeHeldDrawPassTransfers() {
+  if (!render_target_cache_) {
+    return true;
+  }
+  const bool in_pass = render_target_cache_->ReleaseHeldDrawPassTransfers();
+  if (!render_target_cache_->HasPendingDrawPassTransfers()) {
+    return true;
+  }
+  if (!in_pass || !current_render_encoder_) {
+    return render_target_cache_->FlushPendingDrawPassTransfers();
+  }
+  // As at the head of the pass, after the clear quads that ran ahead of them.
+  CloseQuerySegment();
+  MetalRenderTargetCache::DrawPassTransferEncoderMutationMask mutations =
+      MetalRenderTargetCache::kDrawPassTransferEncoderMutationNone;
+  bool transfers_encoded = render_target_cache_->EncodePendingDrawPassTransfers(
+      current_render_encoder_, current_render_pass_descriptor_, &mutations);
+  InvalidateRenderEncoderStateAfterDrawPassTransfers(mutations);
+  if (!transfers_encoded) {
+    EndRenderEncoder();
+    return render_target_cache_->FlushPendingDrawPassTransfers();
+  }
+  return true;
+}
+
 void MetalCommandProcessor::EndRenderEncoder() {
   SCOPE_profile_cpu_f("gpu");
+  // Transfers held behind clear quads in this pass belong to it.
+  if (current_render_encoder_ && render_target_cache_ &&
+      render_target_cache_->DrawPassTransfersHeldInPass()) {
+    EncodeHeldDrawPassTransfers();
+    if (!current_render_encoder_) {
+      return;
+    }
+  }
   EndSharedComputeEncoder();
   render_encoder_memexport_ranges_.clear();
   render_encoder_tile_resolve_ranges_.clear();
@@ -7519,7 +7563,8 @@ void MetalCommandProcessor::BeginCommandBuffer() {
   }
 
   if (render_target_cache_ &&
-      render_target_cache_->HasPendingDrawPassTransfers()) {
+      render_target_cache_->HasPendingDrawPassTransfers() &&
+      !render_target_cache_->HoldDrawPassTransfersForQuad()) {
     // An occlusion query already counting on this encoder would count the
     // transfer draws too. Closing the segment makes the next draw reopen it on
     // a fresh pool slot, the only legal way to resume counting mid-encoder.

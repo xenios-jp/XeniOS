@@ -304,6 +304,28 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool HasPendingDrawPassTransfers() const {
     return pending_draw_pass_transfer_mask_ != 0;
   }
+  // What the command processor knows about the draw being updated that the
+  // clear quad rule needs: whether it is a rasterized rectangle list with no
+  // memexport or tessellation, and its pixel shader.
+  struct ClearQuadDraw {
+    bool candidate = false;
+    bool has_pixel_shader = false;
+    bool pixel_shader_kills = false;
+  };
+  // For the next Update only.
+  void SetClearQuadDraw(const ClearQuadDraw& draw) { clear_quad_draw_ = draw; }
+  // Clear quads drawn ahead of the transfers queued for their pass, so the
+  // transfers leave out every quad of a split clear. Called where the pass
+  // would encode the queue: true holds it back for the quad about to be drawn.
+  bool HoldDrawPassTransfersForQuad();
+  // Whether held transfers belong to the open encoder and have to be encoded
+  // into it before it ends.
+  bool DrawPassTransfersHeldInPass() const {
+    return quad_hold_slot_ != UINT32_MAX && quad_hold_in_encoder_;
+  }
+  // Ends the hold, cutting out what the drawn quads covered. Returns whether
+  // the queue has to be encoded into the open encoder.
+  bool ReleaseHeldDrawPassTransfers();
   // Whether a draw may prepare its uploads before ending a changed pass with
   // these transfers queued for the next one: nothing queued, only transfers
   // into depth, or only color-to-color transfers. Depth-to-color and mixed
@@ -608,6 +630,75 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Drops the transfers of the last update whose result the destination's
   // backing already holds.
   void ElideRedundantTransfers();
+
+  ClearQuadDraw clear_quad_draw_;
+  // A render target every sample of `rectangle` (in its pixels) of which has
+  // held the guest EDRAM dword `value` since content generation `generation`.
+  struct ConstantContent {
+    MetalRenderTarget* render_target;
+    uint32_t value;
+    uint64_t generation;
+    Transfer::Rectangle rectangle;
+  };
+  // Set by a constant depth clear quad's update, kept once the quad is drawn.
+  struct PendingConstant {
+    MetalRenderTarget* render_target = nullptr;
+    uint32_t value = 0;
+    Transfer::Rectangle rectangle = {};
+  };
+  PendingConstant pending_constant_;
+  // The rectangle of the update's transfers into one slot that a draw or a
+  // clear writes instead, for the transfers to leave out. With it, the
+  // transfers may be the only ones of the update.
+  uint32_t update_cutout_slot_ = UINT32_MAX;
+  Transfer::Rectangle update_cutout_ = {};
+  bool update_cutout_full_overwrite_ = false;
+  // Whether the cutout is a clear quad's, which the queued transfers wait for.
+  bool update_cutout_from_quad_ = false;
+  // The same for the transfers queued for the draw's pass.
+  bool pending_draw_pass_cutout_valid_ = false;
+  Transfer::Rectangle pending_draw_pass_cutout_ = {};
+  // Transfers held back behind clear quads: the slot they write, the quad of
+  // the draw being encoded, the union (a rectangle) of the quads drawn, and the
+  // registers that bind the targets, which a continuing quad keeps.
+  uint32_t quad_hold_slot_ = UINT32_MAX;
+  bool quad_hold_in_encoder_ = false;
+  bool quad_hold_candidate_valid_ = false;
+  Transfer::Rectangle quad_hold_candidate_ = {};
+  bool quad_hold_drawn_valid_ = false;
+  Transfer::Rectangle quad_hold_drawn_ = {};
+  std::array<uint32_t, 9> quad_hold_state_ = {};
+  // The update rebinds the targets for a quad whose own transfers read the
+  // held destination: what they leave out of it is dead in it too.
+  bool quad_hold_chain_update_ = false;
+  bool quad_hold_chain_valid_ = false;
+  Transfer::Rectangle quad_hold_chain_ = {};
+  // Set by the release when quads were drawn: they wrote the destination
+  // before the transfers in the GPU's order but after them in the content
+  // bookkeeping, so the transfers' record must not look like its newest write.
+  MetalRenderTarget* released_quad_dest_ = nullptr;
+  bool released_quad_constant_valid_ = false;
+  uint32_t released_quad_constant_value_ = 0;
+  Transfer::Rectangle released_quad_constant_rectangle_ = {};
+  void NoteReleasedQuadWrites();
+  std::array<uint32_t, 9> GetQuadHoldState(
+      bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t normalized_color_mask) const;
+  void ResetQuadHold();
+  std::vector<ConstantContent> constant_contents_;
+  const ConstantContent* FindConstantContent(const RenderTarget* rt) const;
+  void SetConstantContent(MetalRenderTarget* rt, uint32_t value,
+                          const Transfer::Rectangle& rectangle);
+  void ForgetConstantContent(const RenderTarget* rt);
+  // A clear quad overwrites every sample it covers: the transfers into its
+  // render target leave its rectangle out, waiting in the pass for the quads
+  // that continue the clear. A constant depth and stencil quad also records
+  // its value for ReplaceConstantSourceTransfers.
+  void ApplyClearQuadRule(RenderTarget* const* render_targets,
+                          reg::RB_DEPTHCONTROL normalized_depth_control);
+  // Transfers out of constant render targets become deferred clears of the
+  // destination when that gives the same bits.
+  void ReplaceConstantSourceTransfers(RenderTarget* const* render_targets);
   // Drops color transfers into dest between two keys backed by one
   // allocation.
   void ElideAliasedStorageTransfers(MetalRenderTarget* dest,
