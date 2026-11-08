@@ -693,9 +693,12 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // A clear quad overwrites every sample it covers: the transfers into its
   // render target leave its rectangle out, waiting in the pass for the quads
   // that continue the clear. A constant depth and stencil quad also records
-  // its value for ReplaceConstantSourceTransfers.
+  // its value for ReplaceConstantSourceTransfers. A quad through the viewport
+  // or into several targets drops the transfers it covers whole and leaves
+  // its rectangle out of the rest.
   void ApplyClearQuadRule(RenderTarget* const* render_targets,
-                          reg::RB_DEPTHCONTROL normalized_depth_control);
+                          reg::RB_DEPTHCONTROL normalized_depth_control,
+                          const Shader& vertex_shader);
   // Transfers out of constant render targets become deferred clears of the
   // destination when that gives the same bits.
   void ReplaceConstantSourceTransfers(RenderTarget* const* render_targets);
