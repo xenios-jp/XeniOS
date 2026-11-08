@@ -14,9 +14,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <string_view>
 #include <system_error>
 
+#include "xenia/base/logging.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/vfs/stfs_metadata.h"
 
@@ -27,13 +29,24 @@ constexpr const char* kLinkedContentMarkerVersion = "version=1";
 constexpr std::string_view kLinkedContentSourcePrefix = "source_path=";
 constexpr std::string_view kLinkedContentRelativePrefix = "relative_path=";
 
-std::filesystem::path LinkedContentMarkerPathForPackageDirectory(
-    const std::filesystem::path& package_directory) {
-  return package_directory.parent_path() /
-         (package_directory.filename().string() + kLinkedContentMarkerSuffix);
+// The marker sits beside the package, named after it.
+std::filesystem::path LinkedContentMarkerPathForPackage(const std::filesystem::path& package_path) {
+  return package_path.parent_path() /
+         (package_path.filename().string() + kLinkedContentMarkerSuffix);
 }
 
-bool ReadLinkedContentMarker(const std::filesystem::path& package_directory,
+std::filesystem::path ContentSidecarPath(const std::filesystem::path& package_path) {
+  std::filesystem::path sidecar_path = package_path;
+  sidecar_path += ".data";
+  return sidecar_path;
+}
+
+bool EndsWith(std::string_view text, std::string_view suffix) {
+  return text.size() >= suffix.size() &&
+         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool ReadLinkedContentMarker(const std::filesystem::path& package_path,
                              std::filesystem::path* source_path_out,
                              std::filesystem::path* relative_path_out) {
   if (source_path_out) {
@@ -43,8 +56,7 @@ bool ReadLinkedContentMarker(const std::filesystem::path& package_directory,
     relative_path_out->clear();
   }
 
-  std::ifstream marker(LinkedContentMarkerPathForPackageDirectory(package_directory),
-                       std::ios::binary);
+  std::ifstream marker(LinkedContentMarkerPathForPackage(package_path), std::ios::binary);
   if (!marker) {
     return false;
   }
@@ -72,11 +84,11 @@ bool ReadLinkedContentMarker(const std::filesystem::path& package_directory,
   return true;
 }
 
-bool WriteLinkedContentMarker(const std::filesystem::path& package_directory,
+bool WriteLinkedContentMarker(const std::filesystem::path& package_path,
                               const std::filesystem::path& source_path,
                               const std::filesystem::path& relative_path,
                               std::string* error_message_out) {
-  std::ofstream marker(LinkedContentMarkerPathForPackageDirectory(package_directory),
+  std::ofstream marker(LinkedContentMarkerPathForPackage(package_path),
                        std::ios::binary | std::ios::trunc);
   if (!marker) {
     if (error_message_out) {
@@ -192,7 +204,9 @@ bool LinkDirectoryFilesRecursive(const std::filesystem::path& source,
   return true;
 }
 
-bool RebuildLinkedContentProjection(const std::filesystem::path& package_directory,
+// Links the package file itself at |package_path| (and its ".data" sidecar
+// beside it), which is how the content manager finds a package kept as a file.
+bool RebuildLinkedContentProjection(const std::filesystem::path& package_path,
                                     const std::filesystem::path& source_package_path,
                                     std::string* error_message_out) {
   if (error_message_out) {
@@ -200,32 +214,114 @@ bool RebuildLinkedContentProjection(const std::filesystem::path& package_directo
   }
 
   std::error_code ec;
-  std::filesystem::remove_all(package_directory, ec);
+  std::filesystem::remove_all(package_path, ec);
   ec.clear();
-  std::filesystem::create_directories(package_directory, ec);
-  if (ec) {
-    if (error_message_out) {
-      *error_message_out = "Failed creating linked content folder: " + ec.message();
-    }
-    return false;
-  }
+  std::filesystem::remove_all(ContentSidecarPath(package_path), ec);
 
-  const std::filesystem::path destination_file = package_directory / source_package_path.filename();
-  if (!LinkFileReplacing(source_package_path, destination_file, error_message_out)) {
+  if (!LinkFileReplacing(source_package_path, package_path, error_message_out)) {
     return false;
   }
 
   if (HasContentSidecarDataDirectory(source_package_path)) {
-    std::filesystem::path source_sidecar = source_package_path;
-    source_sidecar += ".data";
-    std::filesystem::path destination_sidecar = destination_file;
-    destination_sidecar += ".data";
-    if (!LinkDirectoryFilesRecursive(source_sidecar, destination_sidecar, error_message_out)) {
+    if (!LinkDirectoryFilesRecursive(ContentSidecarPath(source_package_path),
+                                     ContentSidecarPath(package_path), error_message_out)) {
       return false;
     }
   }
 
   return true;
+}
+
+// XeniOS 2.3.1 and older installed DLC as {root}/{stem}/{file} (plus
+// {file}.data). The content manager mounts that folder as an extracted package
+// holding one file, so titles found no DLC in it. Moves such a package up to
+// {root}/{file}. Only touches a folder holding exactly that one package file
+// and its sidecar.
+void MigrateNestedDlcPackage(const std::filesystem::path& root,
+                             const std::filesystem::path& folder) {
+  std::error_code ec;
+  std::filesystem::path package_name;
+  bool has_sidecar = false;
+  size_t child_count = 0;
+  std::filesystem::directory_iterator it(folder, ec);
+  std::filesystem::directory_iterator end;
+  for (; !ec && it != end; it.increment(ec)) {
+    ++child_count;
+    std::error_code type_ec;
+    const auto status = it->symlink_status(type_ec);
+    if (type_ec) {
+      return;
+    }
+    const std::string name = it->path().filename().string();
+    if (std::filesystem::is_directory(status) && EndsWith(name, ".data")) {
+      has_sidecar = true;
+    } else if (std::filesystem::is_regular_file(status) || std::filesystem::is_symlink(status)) {
+      if (!package_name.empty()) {
+        return;
+      }
+      package_name = it->path().filename();
+    } else {
+      return;
+    }
+  }
+  if (ec || package_name.empty() || child_count != (has_sidecar ? 2u : 1u) ||
+      EndsWith(package_name.string(), ".part") ||
+      xe_content_package_directory_name(package_name) != folder.filename().string()) {
+    return;
+  }
+  if (has_sidecar &&
+      !std::filesystem::is_directory(ContentSidecarPath(folder / package_name), ec)) {
+    return;
+  }
+  const std::filesystem::path old_marker = LinkedContentMarkerPathForPackage(folder);
+  const bool linked = std::filesystem::exists(old_marker, ec);
+  // A linked package's source can be outside the sandbox scope during the
+  // scan, so trust the marker for it.
+  if (!linked && !xe::vfs::ExtractStfsMetadata(folder / package_name).has_value()) {
+    return;
+  }
+
+  const std::filesystem::path target = root / package_name;
+  std::filesystem::path source_folder = folder;
+  if (target == folder) {
+    // The usual case: package files have no extension, so the folder already
+    // has the package's name.
+    source_folder = root / (folder.filename().string() + ".xenios-migrate");
+    std::filesystem::rename(folder, source_folder, ec);
+    if (ec) {
+      XELOGW("DLC layout migration: could not move aside {}: {}", xe::strip_pii(folder.string()),
+             ec.message());
+      return;
+    }
+  } else if (std::filesystem::exists(std::filesystem::symlink_status(target, ec))) {
+    return;
+  }
+
+  std::filesystem::rename(source_folder / package_name, target, ec);
+  if (ec) {
+    XELOGW("DLC layout migration: could not move {}: {}",
+           xe::strip_pii((source_folder / package_name).string()), ec.message());
+    if (source_folder != folder) {
+      std::error_code undo_ec;
+      std::filesystem::rename(source_folder, folder, undo_ec);
+    }
+    return;
+  }
+  if (has_sidecar) {
+    std::filesystem::rename(ContentSidecarPath(source_folder / package_name),
+                            ContentSidecarPath(target), ec);
+    if (ec) {
+      XELOGW("DLC layout migration: could not move the data of {}: {}",
+             xe::strip_pii(target.string()), ec.message());
+    }
+  }
+  if (linked) {
+    std::error_code marker_ec;
+    std::filesystem::rename(old_marker, LinkedContentMarkerPathForPackage(target), marker_ec);
+  }
+  std::error_code remove_ec;
+  std::filesystem::remove(source_folder, remove_ec);
+  XELOGI("DLC layout migration: moved {} out of its folder", xe::strip_pii(target.string()));
 }
 
 }  // namespace
@@ -330,11 +426,8 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
     *error_message_out = "";
   }
 
-  const std::filesystem::path package_directory =
-      destination_root / xe_content_package_directory_name(package_info.path);
   std::error_code ec;
-  const bool package_directory_existed = std::filesystem::exists(package_directory, ec);
-  std::filesystem::create_directories(package_directory, ec);
+  std::filesystem::create_directories(destination_root, ec);
   if (ec) {
     if (error_message_out) {
       *error_message_out = "Failed creating content folder: " + ec.message();
@@ -343,7 +436,10 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
   }
   XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:destination_root.c_str()]);
 
-  const std::filesystem::path destination_file = package_directory / package_info.path.filename();
+  // The package file goes straight into the content type folder: the content
+  // manager mounts a file there as the package and a folder as its extracted
+  // contents.
+  const std::filesystem::path destination_file = destination_root / package_info.path.filename();
   // The package file is first so it is renamed into place last, after its
   // ".data" sidecar folder.
   NSMutableArray<NSArray<NSString*>*>* pairs = [NSMutableArray
@@ -365,9 +461,6 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
   transfer.replacesExisting = YES;
   NSError* copy_error = nil;
   if (![transfer copyPairs:pairs progress:progress error:&copy_error]) {
-    if (!package_directory_existed) {
-      std::filesystem::remove_all(package_directory, ec);
-    }
     if (error_message_out) {
       *error_message_out = copy_error.localizedDescription
                                ? std::string([copy_error.localizedDescription UTF8String])
@@ -400,6 +493,7 @@ void xe_exclude_installed_content_from_backup() {
           XeniaIOSExcludeFromBackup([NSString stringWithUTF8String:root.c_str()]);
           if (std::string(type_directory) == "00000002") {
             // Partial DLC copies left by a killed app; live ones are registered and skipped.
+            XeniaIOSSweepStalePartFiles(root);
             std::error_code package_ec;
             std::filesystem::directory_iterator package_it(root, package_ec);
             for (; !package_ec && package_it != end; package_it.increment(package_ec)) {
@@ -415,6 +509,32 @@ void xe_exclude_installed_content_from_backup() {
   }
 }
 
+void xe_migrate_nested_dlc_packages() {
+  static std::mutex migration_mutex;
+  std::lock_guard<std::mutex> lock(migration_mutex);
+  const std::filesystem::path user_root =
+      xe_get_ios_documents_path() / "content" / "0000000000000000";
+  std::error_code ec;
+  std::filesystem::directory_iterator it(user_root, ec);
+  std::filesystem::directory_iterator end;
+  for (; !ec && it != end; it.increment(ec)) {
+    const std::filesystem::path root = it->path() / "00000002";
+    std::vector<std::filesystem::path> folders;
+    std::error_code root_ec;
+    std::filesystem::directory_iterator package_it(root, root_ec);
+    for (; !root_ec && package_it != end; package_it.increment(root_ec)) {
+      std::error_code type_ec;
+      if (package_it->symlink_status(type_ec).type() == std::filesystem::file_type::directory &&
+          !EndsWith(package_it->path().filename().string(), ".data")) {
+        folders.push_back(package_it->path());
+      }
+    }
+    for (const auto& folder : folders) {
+      MigrateNestedDlcPackage(root, folder);
+    }
+  }
+}
+
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        const std::filesystem::path& source_relative_path,
@@ -423,21 +543,21 @@ bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_
     *error_message_out = "";
   }
 
-  const std::filesystem::path package_directory =
-      destination_root / xe_content_package_directory_name(package_info.path);
-  const std::filesystem::path marker_path =
-      LinkedContentMarkerPathForPackageDirectory(package_directory);
+  const std::filesystem::path package_path = destination_root / package_info.path.filename();
+  const std::filesystem::path marker_path = LinkedContentMarkerPathForPackage(package_path);
   std::error_code ec;
   std::filesystem::remove(marker_path, ec);
 
-  if (!RebuildLinkedContentProjection(package_directory, package_info.path, error_message_out)) {
-    std::filesystem::remove_all(package_directory, ec);
+  if (!RebuildLinkedContentProjection(package_path, package_info.path, error_message_out)) {
+    std::filesystem::remove_all(package_path, ec);
+    std::filesystem::remove_all(ContentSidecarPath(package_path), ec);
     return false;
   }
 
-  if (!WriteLinkedContentMarker(package_directory, package_info.path, source_relative_path,
+  if (!WriteLinkedContentMarker(package_path, package_info.path, source_relative_path,
                                 error_message_out)) {
-    std::filesystem::remove_all(package_directory, ec);
+    std::filesystem::remove_all(package_path, ec);
+    std::filesystem::remove_all(ContentSidecarPath(package_path), ec);
     std::filesystem::remove(marker_path, ec);
     return false;
   }
@@ -466,7 +586,24 @@ bool xe_refresh_linked_content_entry(const IOSInstalledContentEntry& entry,
 
 void xe_remove_linked_content_marker(const IOSInstalledContentEntry& entry) {
   std::error_code ec;
-  std::filesystem::remove(LinkedContentMarkerPathForPackageDirectory(entry.path), ec);
+  std::filesystem::remove(LinkedContentMarkerPathForPackage(entry.path), ec);
+}
+
+bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
+                                 std::string* error_message_out) {
+  std::error_code ec;
+  std::filesystem::remove_all(entry.path, ec);
+  if (!ec) {
+    std::filesystem::remove_all(ContentSidecarPath(entry.path), ec);
+  }
+  if (ec) {
+    if (error_message_out) {
+      *error_message_out = ec.message();
+    }
+    return false;
+  }
+  xe_remove_linked_content_marker(entry);
+  return true;
 }
 
 void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalledContentKind kind,
@@ -482,9 +619,33 @@ void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalle
 
   std::filesystem::directory_iterator it(root, ec);
   std::filesystem::directory_iterator end;
-  for (; !ec && it != end; ++it) {
-    if (!it->is_directory(ec) || ec) {
-      ec.clear();
+  for (; !ec && it != end; it.increment(ec)) {
+    const std::filesystem::path path = it->path();
+    const std::string name = path.filename().string();
+    if (EndsWith(name, kLinkedContentMarkerSuffix) || EndsWith(name, ".part")) {
+      continue;
+    }
+    std::error_code type_ec;
+    const auto link_status = it->symlink_status(type_ec);
+    if (type_ec) {
+      continue;
+    }
+    if (std::filesystem::is_directory(link_status)) {
+      // A package file's ".data" sidecar is part of that package.
+      if (EndsWith(name, ".data")) {
+        std::filesystem::path package_path = path;
+        package_path.replace_extension();
+        std::error_code package_ec;
+        if (std::filesystem::exists(std::filesystem::symlink_status(package_path, package_ec)) &&
+            !std::filesystem::is_directory(package_path, package_ec)) {
+          continue;
+        }
+      }
+    } else if (kind != IOSInstalledContentKind::kDlc ||
+               !(std::filesystem::is_regular_file(link_status) ||
+                 std::filesystem::is_symlink(link_status))) {
+      // DLC is a package file (or a link to one, which stays listed while its
+      // external folder is away); title updates are installed extracted.
       continue;
     }
 

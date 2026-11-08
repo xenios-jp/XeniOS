@@ -29,7 +29,6 @@ NSNotificationName const XeniaGameContentDidChangeNotification =
 void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
                                         const IOSInstalledContentEntry& entry, UIView* source,
                                         void (^removed)(void), void (^cancelled)(void)) {
-  const std::filesystem::path entry_path = entry.path;
   const IOSInstalledContentEntry entry_copy = entry;
   void (^removed_copy)(void) = [[removed copy] autorelease];
   void (^cancelled_copy)(void) = [[cancelled copy] autorelease];
@@ -76,9 +75,8 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
                     actionWithTitle:action_title
                               style:UIAlertActionStyleDestructive
                             handler:^(__unused UIAlertAction* action) {
-                              std::error_code ec;
-                              std::filesystem::remove_all(entry_path, ec);
-                              if (ec) {
+                              std::string remove_error;
+                              if (!xe_remove_installed_content(entry_copy, &remove_error)) {
                                 XEPresentOKAlert(
                                     presenter,
                                     NSLocalizedString(
@@ -89,10 +87,9 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
                                             NSLocalizedString(
                                                 @"Failed deleting %1$@: %2$s",
                                                 @"game content view controller: user-visible text"),
-                                            display_name, ec.message().c_str()]);
+                                            display_name, remove_error.c_str()]);
                                 return;
                               }
-                              xe_remove_linked_content_marker(entry_copy);
                               [[NSNotificationCenter defaultCenter]
                                   postNotificationName:XeniaGameContentDidChangeNotification
                                                 object:nil];
