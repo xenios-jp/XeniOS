@@ -2431,6 +2431,49 @@ bool MetalRenderTargetCache::AcquireSpareDepthBacking(
   return true;
 }
 
+bool MetalRenderTargetCache::RotateHostDepthForDrawPass(
+    RenderTarget* const* render_targets,
+    const std::vector<Transfer>* render_target_transfers) {
+  if (pending_draw_pass_rotated_depth_ || !render_targets ||
+      !render_targets[0] || !render_target_transfers) {
+    return false;
+  }
+  auto* dest = static_cast<MetalRenderTarget*>(render_targets[0]);
+  // A deferred clear has to land in the previous backing first, which the
+  // standalone path encodes before it rotates.
+  if (AnyDeferredClear(dest) ||
+      !CanRotateHostDepth(1 + xenos::kMaxColorRenderTargets, render_targets,
+                          render_target_transfers, false)) {
+    return false;
+  }
+  // A pass still open with the current backing attached would go on writing
+  // what the transfers are to read.
+  MTL::RenderPassDescriptor* open_descriptor = nullptr;
+  uint32_t open_width = 0, open_height = 0;
+  MetalBufferHazards::Encoder* open_hazards = nullptr;
+  if (command_processor_.GetOpenRenderPass(open_descriptor, open_width,
+                                           open_height, open_hazards)) {
+    MTL::RenderPassDepthAttachmentDescriptor* depth_attachment =
+        open_descriptor->depthAttachment();
+    MTL::RenderPassStencilAttachmentDescriptor* stencil_attachment =
+        open_descriptor->stencilAttachment();
+    if ((depth_attachment && depth_attachment->texture() &&
+         depth_attachment->texture() == dest->texture()) ||
+        (stencil_attachment && stencil_attachment->texture() &&
+         stencil_attachment->texture() == dest->stencil_attachment_texture())) {
+      return false;
+    }
+  }
+  if (!AcquireSpareDepthBacking(dest, render_target_transfers[0])) {
+    return false;
+  }
+  dest->SwapDepthBackings();
+  MarkContentChanged(dest);
+  render_pass_descriptor_dirty_ = true;
+  pending_draw_pass_rotated_depth_ = dest;
+  return true;
+}
+
 bool MetalRenderTargetCache::Update(
     bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask, const Shader& vertex_shader,
@@ -2598,7 +2641,16 @@ bool MetalRenderTargetCache::Update(
       if (transfers.empty()) {
         continue;
       }
-      if (!CanQueueDrawPassTransfers(i, accumulated_targets, transfers)) {
+      bool queue_rotated = false;
+      bool can_queue =
+          CanQueueDrawPassTransfers(i, accumulated_targets, transfers);
+      if (!can_queue && !i &&
+          CanQueueDrawPassTransfers(i, accumulated_targets, transfers, true) &&
+          RotateHostDepthForDrawPass(accumulated_targets, update_transfers)) {
+        can_queue = true;
+        queue_rotated = true;
+      }
+      if (!can_queue) {
         fallback_transfers[i] = transfers;
         fallback_transfer_work = true;
         continue;
@@ -2627,6 +2679,11 @@ bool MetalRenderTargetCache::Update(
         }
       } else if (PendingDrawPassTransfersFullyOverwriteTarget(
                      i, accumulated_targets[i], transfers)) {
+        pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
+      }
+      // A rotated-in backing holds nothing: the transfers reach every tile
+      // the destination owns (CanRotateHostDepth).
+      if (queue_rotated) {
         pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
       }
       // The transfer draws supersede the clear the descriptor would have done,
@@ -2743,6 +2800,7 @@ void MetalRenderTargetCache::ClearPendingDrawPassTransfers() {
   pending_draw_pass_render_targets_.fill(nullptr);
   pending_draw_pass_transfer_mask_ = 0;
   pending_draw_pass_full_overwrite_mask_ = 0;
+  pending_draw_pass_rotated_depth_ = nullptr;
   pending_draw_pass_load_dontcare_mask_ = 0;
   pending_draw_pass_cutout_mask_ = 0;
   ResetQuadHold();
@@ -2798,7 +2856,7 @@ bool IsColorTransferFloatBitsExact(xenos::ColorRenderTargetFormat format) {
 
 bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
     uint32_t render_target_index, RenderTarget* const* render_targets,
-    const std::vector<Transfer>& transfers) const {
+    const std::vector<Transfer>& transfers, bool dest_rotated) const {
   if (!render_targets || transfers.empty() ||
       render_target_index > xenos::kMaxColorRenderTargets) {
     return false;
@@ -2881,18 +2939,31 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
       }
       auto* host_depth_rt =
           static_cast<MetalRenderTarget*>(transfer.host_depth_source);
+      if (!host_depth_rt) {
+        return false;
+      }
       // A host depth source that is the destination itself goes through the
-      // EDRAM round trip, which needs a compute pass of its own.
-      if (!host_depth_rt || host_depth_rt == dest_metal_rt) {
+      // EDRAM round trip, which needs a compute pass of its own, unless the
+      // destination is rotated to its spare backing first, leaving the
+      // previous one to read as an ordinary texture no pass binds.
+      if (host_depth_rt == dest_metal_rt && !dest_rotated) {
         return false;
       }
       RenderTargetKey host_depth_key = host_depth_rt->key();
-      MTL::Texture* host_depth_texture = host_depth_rt->texture();
-      if (!host_depth_key.is_depth || !host_depth_texture ||
-          host_depth_texture->pixelFormat() !=
-              GetDepthPixelFormat(host_depth_key.GetDepthFormat()) ||
-          is_active_draw_pass_texture(host_depth_rt, host_depth_texture)) {
-        return false;
+      // The destination's texture() is the backing the pass will bind; the
+      // previous one, read as host depth, is checked when rotated.
+      if (host_depth_rt == dest_metal_rt) {
+        if (!host_depth_key.is_depth) {
+          return false;
+        }
+      } else {
+        MTL::Texture* host_depth_texture = host_depth_rt->texture();
+        if (!host_depth_key.is_depth || !host_depth_texture ||
+            host_depth_texture->pixelFormat() !=
+                GetDepthPixelFormat(host_depth_key.GetDepthFormat()) ||
+            is_active_draw_pass_texture(host_depth_rt, host_depth_texture)) {
+          return false;
+        }
       }
     }
 
@@ -3109,7 +3180,8 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
             static_cast<MetalRenderTarget*>(transfer.host_depth_source)->key();
       }
       // CanQueueDrawPassTransfers rejected a host depth source that is the
-      // destination, so the copy-through-EDRAM mode never appears here.
+      // destination unless rotated, which reads its previous backing as a
+      // texture, so the copy-through-EDRAM mode never appears here.
       // Mirror the encode side: with the stencil folded into the depth draw
       // there is no stencil-bit pass to build pipelines for.
       bool native_stencil_output =
@@ -8381,6 +8453,11 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     if (!dest_rt->key().is_depth) {
       continue;
     }
+    // Rotated when queued: the previous backing is the host depth.
+    if (dest_rt == pending_draw_pass_rotated_depth_ &&
+        render_target_transfers == pending_draw_pass_transfers_.data()) {
+      continue;
+    }
     for (const Transfer& transfer : transfers) {
       if (transfer.host_depth_source == dest_rt) {
         host_depth_store_needed = true;
@@ -8443,7 +8520,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
   // depth source and render the transfer into a spare backing that becomes
   // the active one. The generic transfer pass below then targets the new
   // backing with a don't-care load.
-  MetalRenderTarget* renamed_depth_dest = nullptr;
+  MetalRenderTarget* renamed_depth_dest =
+      render_target_transfers == pending_draw_pass_transfers_.data()
+          ? pending_draw_pass_rotated_depth_
+          : nullptr;
   if (host_depth_store_needed && !use_active_render_encoder) {
     auto* dest = static_cast<MetalRenderTarget*>(render_targets[0]);
     if (CanRotateHostDepth(render_target_count, render_targets,
