@@ -892,6 +892,14 @@ uint64_t StripMerge::HashDrawState() {
   exclude(XE_GPU_REG_RB_COPY_DEST_BASE);
   // Written by events, not read by draws.
   exclude(XE_GPU_REG_VGT_EVENT_INITIATOR);
+  // The index buffer of the last indexed draw: a draw packet sets it when it
+  // has indices in memory, and other draws don't read it (Halo 3's first draw
+  // in every strip is auto-indexed after the previous strip's indexed ones).
+  if (register_file_.Get<reg::VGT_DRAW_INITIATOR>().source_select !=
+      xenos::SourceSelect::kDMA) {
+    exclude(XE_GPU_REG_VGT_DMA_BASE);
+    exclude(XE_GPU_REG_VGT_DMA_SIZE);
+  }
   for (uint32_t reg : strips_[strip_index_].own_float_registers) {
     exclude(reg);
   }
