@@ -7541,17 +7541,13 @@ bool MetalRenderTargetCache::MakeTransferAddressConstant(
   constant_out.source_pitch = source_key.GetPitchTiles();
   if (source_key.strip_merged) {
     // Strip merge, a source with rows past the EDRAM: the source tile index is
-    // the destination one plus the offset between the range's tile in each,
-    // plus the band shift, not wrapped. The destination's tile index already
-    // includes the band it writes.
+    // the destination one plus the offset, not wrapped, biased by
+    // kEdramTileCount, or, far (the shader key bits), not biased.
     int32_t offset =
-        int32_t(source_key.GetNonWrappedTileIndex(transfer.start_tiles) -
-                source_key.base_tiles) -
-        int32_t(dest_key.GetNonWrappedTileIndex(transfer.start_tiles) -
-                dest_key.base_tiles) +
-        int32_t(transfer.source_band_shift) *
-            int32_t(GetStripMergeBandTiles(source_key));
-    int32_t biased = offset + int32_t(xenos::kEdramTileCount);
+        GetStripMergeTransferOffset(source_key, dest_key, transfer);
+    int32_t biased =
+        offset + (IsStripMergeTransferFar(offset) ? 0
+                                                  : int32_t(xenos::kEdramTileCount));
     if (biased < 0 || biased >= int32_t(2 * xenos::kEdramTileCount)) {
       XELOGE("Strip merge: transfer offset {} out of range", offset);
       return false;
@@ -7579,6 +7575,19 @@ bool MetalRenderTargetCache::MakeTransferAddressConstant(
       kTileMask;
   constant_out.source_next_period = source_key.next_period;
   return true;
+}
+
+int32_t MetalRenderTargetCache::GetStripMergeTransferOffset(
+    RenderTargetKey source_key, RenderTargetKey dest_key,
+    const Transfer& transfer) const {
+  // The offset between the range's tile in each, plus the band shift. The
+  // destination's tile index already includes the band it writes.
+  return int32_t(source_key.GetNonWrappedTileIndex(transfer.start_tiles) -
+                 source_key.base_tiles) -
+         int32_t(dest_key.GetNonWrappedTileIndex(transfer.start_tiles) -
+                 dest_key.base_tiles) +
+         int32_t(transfer.source_band_shift) *
+             int32_t(GetStripMergeBandTiles(source_key));
 }
 
 bool MetalRenderTargetCache::IsStripMergeAddressingSame(
@@ -7679,6 +7688,14 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
   shader_key.host_depth_source_unwrapped =
       host_depth_source_key && !host_depth_source_is_copy &&
       host_depth_source_key->strip_merged;
+  shader_key.source_unwrapped_far =
+      shader_key.source_unwrapped &&
+      IsStripMergeTransferFar(
+          GetStripMergeTransferOffset(source_key, dest_key, transfer));
+  shader_key.host_depth_source_unwrapped_far =
+      shader_key.host_depth_source_unwrapped &&
+      IsStripMergeTransferFar(GetStripMergeTransferOffset(
+          *host_depth_source_key, dest_key, transfer));
   // The identity layouts don't divide by the source pitch.
   shader_key.source_pitch_16 = !shader_key.depth_identity_layout &&
                                !shader_key.color_identity_layout &&
@@ -7772,6 +7789,7 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   if (full_clear && ::cvars::metal_defer_resolve_clears) {
     depth->DeferDepthClear(clear_depth, stencil_value);
     color->DeferColorClear(color_constants.color);
+    depth->NoteDeferredClearRows(GetRenderTargetOwnedHeight(depth_key));
     deferred_clear_targets_.push_back(depth_key);
     deferred_clear_targets_.push_back(color_key);
     MarkContentChanged(depth);

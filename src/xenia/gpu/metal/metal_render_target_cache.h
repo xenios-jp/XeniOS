@@ -1122,6 +1122,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       RenderTargetKey source_key, RenderTargetKey dest_key,
       const Transfer& transfer,
       EdramTransferAddressConstant& constant_out) const;
+  // A strip-merged source's tile index minus the destination's, and whether
+  // it's past the 12-bit offset's reach below kEdramTileCount (the far shader
+  // key bits).
+  int32_t GetStripMergeTransferOffset(RenderTargetKey source_key,
+                                      RenderTargetKey dest_key,
+                                      const Transfer& transfer) const;
+  static bool IsStripMergeTransferFar(int32_t offset) {
+    return offset >= int32_t(xenos::kEdramTileCount);
+  }
   // Whether two transfers with the same sources can be drawn with one address
   // constant (strip-merged sources address relative to the range).
   bool IsStripMergeAddressingSame(const Transfer& transfer,
