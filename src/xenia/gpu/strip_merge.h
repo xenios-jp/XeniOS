@@ -145,6 +145,11 @@ class StripMerge {
     xenos::MsaaSamples msaa_samples = xenos::MsaaSamples::k1X;
     bool is_64bpp = false;
     bool clears = false;
+    // The values it clears with (0 where it doesn't clear): the merged
+    // resolve clears every clearing strip's band with the first strip's.
+    uint32_t clear_color = 0;
+    uint32_t clear_color_lo = 0;
+    uint32_t clear_depth = 0;
   };
 
   StripMerge(RegisterFile& register_file, const Memory* memory)
@@ -244,22 +249,46 @@ class StripMerge {
     uint32_t reg;
     uint32_t value;
     // Into own_writes.
-    uint32_t write_index;
     // Written by something other than the strip's own packets since.
     bool stale = false;
   };
+  struct OwnValue {
+    uint32_t reg;
+    uint32_t value;
+    bool operator==(const OwnValue& other) const {
+      return reg == other.reg && value == other.value;
+    }
+  };
+  // What kind of draw a draw packet is, as far as the strips' own registers
+  // are concerned.
+  enum DrawKind : uint8_t {
+    kDrawKindOwn = 1 << 0,
+    kDrawKindResolve = 1 << 1,
+  };
+  // RB_HIZCONTROL hiz_enable, the only bit of it Xenia reads.
+  static constexpr uint32_t kHiZEnableBit = 1 << 1;
   struct Strip {
     uint64_t bits = 0;
     std::vector<Record> records;
     std::vector<uint32_t> own_opcodes;
-    std::vector<OwnWrite> own_writes;
     std::vector<ResolveRecord> own_resolves;
     std::vector<uint64_t> draw_states;
     // Per draw: HashDrawOwnState.
     std::vector<uint64_t> draw_own_states;
+    // Per draw: DrawKind bits.
+    std::vector<uint8_t> draw_kinds;
+    // Per draw: which of own_snapshot_starts holds the strip-own values the
+    // draw sees (the registers still holding the strip's own latest value).
+    std::vector<uint32_t> draw_own_snapshots;
+    // Snapshot i is own_snapshot_values [starts[i], starts[i + 1]), sorted by
+    // register; a draw seeing what the previous one saw reuses its snapshot.
+    std::vector<uint32_t> own_snapshot_starts;
+    std::vector<OwnValue> own_snapshot_values;
     // Per strip-own draw (learning): CheckDraw's hash of its vertices.
     std::vector<uint64_t> own_draw_vertices;
     // The strip's latest own value of every register it wrote itself.
+    // The strip's latest own value of every register it wrote itself, sorted
+    // by register.
     std::vector<OwnLatest> own_shadow;
     std::vector<uint32_t> own_float_registers;
     uint32_t draws = 0;
@@ -275,25 +304,25 @@ class StripMerge {
   // Derives the layout from the session's records. False if it isn't one.
   // Merged sessions skip the later strips' resolves, so they don't check them.
   bool DeriveLayout(Layout& layout_out, bool check_resolves);
-  bool IsRedundantOwnSetConstant(const Strip& strip,
-                                 const RingBuffer::ReadRange& payload) const;
-  uint64_t HashDrawOwnState(Strip& strip);
-  // The registers a SET_CONSTANT of float constants or registers writes
-  // (count_out may be 0); false for an empty payload or other constants.
-  static bool SetConstantRange(const RingBuffer::ReadRange& payload,
-                               uint32_t& base_out, uint32_t& count_out);
+  // Checks the values strip-own register `reg` has in every strip at a draw
+  // of kind `kind` that sees them. False (and the session failed) if merging
+  // can't reproduce them.
+  bool CheckOwnValues(uint32_t reg, const uint32_t* values, uint8_t kind,
+  uint64_t HashDrawOwnState(Strip& strip, uint8_t kind);
   void MarkOwnStale(uint32_t base, uint32_t count);
   void MarkOwnStale(uint32_t opcode, const RingBuffer::ReadRange& payload);
   void MarkOwnRestored(Strip& strip, const RingBuffer::ReadRange& payload);
   void RecordOwnSetConstant(const RingBuffer::ReadRange& payload);
   bool ReadsOwnConstants(const Shader* shader, bool is_pixel_shader) const;
-  uint64_t HashDrawState();
+  // With the draw's shaders, only the float constants they read.
+  uint64_t HashDrawState(const DrawInfo* draw = nullptr);
+  // HashDrawState of a resolve: the registers it reads.
+  uint64_t HashResolveState() const;
   void RestoreWindowScissor();
 
   RegisterFile& register_file_;
   const Memory* memory_;
   std::vector<uint32_t> draw_own_scratch_;
-  // Per strip-own write of the last verified learning session: whether a draw
   // saw it.
   std::vector<bool> learned_own_used_;
   Backend* backend_ = nullptr;
