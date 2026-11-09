@@ -1914,6 +1914,24 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   covered.y_pixels = uint32_t(top);
   covered.width_pixels = uint32_t(right - left);
   covered.height_pixels = uint32_t(bottom - top);
+  // Unless culled, the quad overwrites every sample of `covered` in the
+  // targets it writes, so a pass it begins needn't load them if it covers the
+  // pass's whole render area.
+  if (!sc_mode.cull_front && !sc_mode.cull_back) {
+    const uint32_t written_mask = slot == 0 ? uint32_t(1) : written_slots;
+    bool textures_valid = true;
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+      if (written_mask & (uint32_t(1) << i)) {
+        clear_quad_textures_[i] =
+            static_cast<MetalRenderTarget*>(render_targets[i])->texture();
+        textures_valid &= clear_quad_textures_[i] != nullptr;
+      }
+    }
+    if (textures_valid) {
+      clear_quad_written_mask_ = written_mask;
+      clear_quad_rectangle_ = covered;
+    }
+  }
 
   if (through_viewport || (written_slots & (written_slots - 1))) {
     // What the transfers would write inside the quad it overwrites: drop the
@@ -2350,6 +2368,7 @@ bool MetalRenderTargetCache::Update(
         regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF)
             .stencilwritemask));
   draw_color_write_mask_ = normalized_color_mask;
+  clear_quad_written_mask_ = 0;
   // Transfers held behind a clear quad wait for this draw only if it may be
   // another quad of the same clear into the same targets. Otherwise they go
   // into the open pass now, after the quads, leaving out what those covered.
@@ -3986,6 +4005,127 @@ void MetalRenderTargetCache::RestrictRenderArea(
   }
   pass_descriptor->setRenderTargetWidth(width);
   pass_descriptor->setRenderTargetHeight(height);
+}
+
+uint32_t MetalRenderTargetCache::SetClearQuadLoadActions(
+    MTL::RenderPassDescriptor* pass_descriptor) {
+  const uint32_t written_mask = clear_quad_written_mask_;
+  // Queued transfers encoded into the pass may fail and drop it before the
+  // quad is drawn.
+  if (!clear_quad_pass_begin_ || !written_mask || !pass_descriptor ||
+      pass_descriptor != cached_render_pass_descriptor_ ||
+      HasPendingDrawPassTransfers()) {
+    return 0;
+  }
+  const Transfer::Rectangle& rectangle = clear_quad_rectangle_;
+  if (rectangle.x_pixels || rectangle.y_pixels) {
+    return 0;
+  }
+  // Load and store actions apply to the whole render area.
+  uint32_t area_width = uint32_t(pass_descriptor->renderTargetWidth());
+  uint32_t area_height = uint32_t(pass_descriptor->renderTargetHeight());
+  auto constrain = [&](MTL::RenderPassAttachmentDescriptor* attachment) {
+    if (MTL::Texture* texture = attachment->texture()) {
+      area_width = area_width ? std::min(area_width, uint32_t(texture->width()))
+                              : uint32_t(texture->width());
+      area_height = area_height
+                        ? std::min(area_height, uint32_t(texture->height()))
+                        : uint32_t(texture->height());
+    }
+  };
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    constrain(pass_descriptor->colorAttachments()->object(i));
+  }
+  constrain(pass_descriptor->depthAttachment());
+  constrain(pass_descriptor->stencilAttachment());
+  const uint64_t covered_width =
+      uint64_t(rectangle.width_pixels) * draw_resolution_scale_x();
+  const uint64_t covered_height =
+      uint64_t(rectangle.height_pixels) * draw_resolution_scale_y();
+  if (!area_width || !area_height) {
+    return 0;
+  }
+  // The pass may only skip the load when the rectangle covers the whole
+  // render area: an attachment that is not loaded may be discarded whole
+  // (MTLLoadActionDontCare), and constraining the render target to the
+  // rectangle keeps nothing, as the GPU stores the tiles the rectangle
+  // touches with arbitrary data in their pixels outside it.
+  if (covered_width < area_width || covered_height < area_height) {
+    return 0;
+  }
+  // Apple GPUs load and store whole tiles. Where the render area ends inside a
+  // tile, a DontCare load leaves the tile's samples beyond the area undefined,
+  // and the store writes them over what the attachment held there. So the
+  // area has to end on tile boundaries, multiples of 32 pixels (the largest
+  // tile edge), or at the edges of the attachments.
+  const uint64_t pass_width = area_width;
+  const uint64_t pass_height = area_height;
+  uint64_t attachments_width = 0, attachments_height = 0;
+  auto extend = [&](MTL::RenderPassAttachmentDescriptor* attachment) {
+    if (MTL::Texture* texture = attachment->texture()) {
+      attachments_width =
+          std::max<uint64_t>(attachments_width, texture->width());
+      attachments_height =
+          std::max<uint64_t>(attachments_height, texture->height());
+    }
+  };
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    extend(pass_descriptor->colorAttachments()->object(i));
+  }
+  extend(pass_descriptor->depthAttachment());
+  extend(pass_descriptor->stencilAttachment());
+  constexpr uint64_t kTileEdgeAlignment = 32;
+  if ((pass_width % kTileEdgeAlignment && pass_width < attachments_width) ||
+      (pass_height % kTileEdgeAlignment && pass_height < attachments_height)) {
+    return 0;
+  }
+  uint32_t mask = 0;
+  for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+    if (!(written_mask & (uint32_t(1) << i))) {
+      continue;
+    }
+    MTL::RenderPassAttachmentDescriptor* attachment =
+        i ? static_cast<MTL::RenderPassAttachmentDescriptor*>(
+                pass_descriptor->colorAttachments()->object(i - 1))
+          : pass_descriptor->depthAttachment();
+    MTL::Texture* texture = attachment ? attachment->texture() : nullptr;
+    if (!texture || texture != clear_quad_textures_[i] ||
+        attachment->loadAction() != MTL::LoadActionLoad) {
+      continue;
+    }
+    if (!i) {
+      // Stencil, in the same texture, has to be written in full too, which the
+      // rule demands of a depth quad.
+      MTL::RenderPassStencilAttachmentDescriptor* stencil_attachment =
+          pass_descriptor->stencilAttachment();
+      if (stencil_attachment->texture() &&
+          (stencil_attachment->texture() != texture ||
+           stencil_attachment->loadAction() != MTL::LoadActionLoad)) {
+        continue;
+      }
+    }
+    mask |= uint32_t(1) << i;
+  }
+  if (!mask) {
+    return 0;
+  }
+  clear_quad_saved_area_width_ = uint32_t(pass_descriptor->renderTargetWidth());
+  clear_quad_saved_area_height_ =
+      uint32_t(pass_descriptor->renderTargetHeight());
+  SetCachedRenderPassLoadActions(mask, MTL::LoadActionDontCare);
+  return mask;
+}
+
+void MetalRenderTargetCache::RestoreClearQuadLoadActions(
+    uint32_t attachment_mask) {
+  if (!attachment_mask || !cached_render_pass_descriptor_) {
+    return;
+  }
+  SetCachedRenderPassLoadActions(attachment_mask, MTL::LoadActionLoad);
+  cached_render_pass_descriptor_->setRenderTargetWidth(
+      clear_quad_saved_area_width_);
+  cached_render_pass_descriptor_->setRenderTargetHeight(
+      clear_quad_saved_area_height_);
 }
 
 bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
