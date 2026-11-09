@@ -7836,6 +7836,7 @@ bool MetalRenderTargetCache::LeaveResolveClearToPassEnd(
     return false;
   }
   queued.resolve_info = resolve_info;
+  queued.strip_merge_resolve_bottom = strip_merge_resolve_bottom();
   // What the clear makes dead joins the store plan of the work already left to
   // the pass end. Each clear is planned before those ahead of it change
   // ownership, which moves data only into the tiles they rewrite.
@@ -7894,6 +7895,7 @@ bool MetalRenderTargetCache::LeaveDepthResolveToPassEnd(
     return false;
   }
   queued.resolve_info = resolve_info;
+  queued.strip_merge_resolve_bottom = strip_merge_resolve_bottom();
   queued.copy = true;
   queued.dest_start = resolve_info.copy_dest_extent_start;
   queued.dest_length = resolve_info.copy_dest_extent_length;
@@ -7963,7 +7965,9 @@ void MetalRenderTargetCache::FlushPostPassResolves(
   // Running the depth resolves resets what the last resolve, the one before
   // the pass end, did.
   const bool kept_pass = last_resolve_kept_pass_;
+  const uint32_t strip_merge_bottom = strip_merge_resolve_bottom();
   for (const PostPassResolve& resolve : resolves) {
+    SetStripMergeResolveBottom(resolve.strip_merge_resolve_bottom);
     if (resolve.copy) {
       uint32_t written_address, written_length;
       if (!ResolveWithInfo(resolve.resolve_info, true, written_address,
@@ -7980,6 +7984,7 @@ void MetalRenderTargetCache::FlushPostPassResolves(
           "pass failed");
     }
   }
+  SetStripMergeResolveBottom(strip_merge_bottom);
   last_resolve_kept_pass_ = kept_pass;
   flushing_post_pass_resolves_ = false;
 }

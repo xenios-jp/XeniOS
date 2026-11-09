@@ -991,6 +991,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     uint32_t dest_length = 0;
     // The render targets the copy reads, whose stores have to stay.
     std::vector<MetalRenderTarget*> read_targets;
+    // The strip merge resolve bottom it was queued with: a resolve of every
+    // strip of a merged session reads the strip-merged render target's bands
+    // (GetStripMergedResolveRectangle) when it runs too.
+    uint32_t strip_merge_resolve_bottom = 0;
   };
   std::vector<PostPassResolve> post_pass_resolves_;
   bool flushing_post_pass_resolves_ = false;
