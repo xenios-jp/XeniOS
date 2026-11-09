@@ -241,16 +241,20 @@ class StripMerge {
     uint64_t hash;
     uint32_t opcode;
   };
-  struct OwnWrite {
-    uint32_t reg;
-    uint32_t value;
-    // Whether a draw saw this write (it was still in the register then).
-    bool used = false;
+  // The registers a register or constant write packet sets.
+  struct RegisterWrites {
+    uint32_t base = 0;
+    uint32_t count = 0;
+    // From the payload, starting at dword payload_first, or big-endian from
+    // guest memory.
+    const RingBuffer::ReadRange* payload = nullptr;
+    uint32_t payload_first = 0;
+    const uint32_t* memory = nullptr;
+    uint32_t value(uint32_t index) const;
   };
   struct OwnLatest {
     uint32_t reg;
     uint32_t value;
-    // Into own_writes.
     // Written by something other than the strip's own packets since.
     bool stale = false;
   };
@@ -311,10 +315,13 @@ class StripMerge {
   // can't reproduce them.
   bool CheckOwnValues(uint32_t reg, const uint32_t* values, uint8_t kind,
   uint64_t HashDrawOwnState(Strip& strip, uint8_t kind);
+  // SET_CONSTANT, SET_CONSTANT2, SET_SHADER_CONSTANTS and LOAD_ALU_CONSTANT.
+  // False for other packets.
+  bool GetRegisterWrites(uint32_t opcode, const RingBuffer::ReadRange& payload,
+                         RegisterWrites& writes_out) const;
   void MarkOwnStale(uint32_t base, uint32_t count);
   void MarkOwnStale(uint32_t opcode, const RingBuffer::ReadRange& payload);
-  void MarkOwnRestored(Strip& strip, const RingBuffer::ReadRange& payload);
-  void RecordOwnSetConstant(const RingBuffer::ReadRange& payload);
+  void RecordOwnWrites(const RegisterWrites& writes);
   bool ReadsOwnConstants(const Shader* shader, bool is_pixel_shader) const;
   // With the draw's shaders, only the float constants they read.
   uint64_t HashDrawState(const DrawInfo* draw = nullptr);

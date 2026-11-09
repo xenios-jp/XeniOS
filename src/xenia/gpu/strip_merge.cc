@@ -16,6 +16,7 @@
 #include "xenia/base/byte_order.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/memory.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/registers.h"
@@ -23,9 +24,8 @@
 #include "xenia/gpu/texture_info.h"
 #include "xenia/memory.h"
 
-// TODO(xenios-jp): on by default; a title whose sessions fail verification
-// stays unmerged. Open: coverage (only Halo 3 merges), exactness (merged Halo 3
-// frames aren't bit-identical to unmerged ones) and side-by-side tile layouts.
+// TODO(xenios-jp): sessions that fail verification (Learning, strip_merge.h)
+// run
 DEFINE_bool(strip_merge, true,
             "Render the strips of predicated tiling (Halo 3) as one "
             "full-height pass sequence when every strip is verified to draw "
@@ -116,7 +116,35 @@ bool IsLinear(const int32_t* values, uint32_t count, int32_t& slope_out) {
 int32_t WindowOffsetX(uint32_t value) { return int32_t(value << 17) >> 17; }
 int32_t WindowOffsetY(uint32_t value) { return int32_t(value << 1) >> 17; }
 
+// The first register of a SET_CONSTANT or LOAD_ALU_CONSTANT constant type.
+bool ConstantTypeBase(uint32_t type, uint32_t index, uint32_t& base_out) {
+  switch (type) {
+    case 0:  // ALU
+      base_out = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
+      return true;
+    case 1:  // Fetch
+      base_out = XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + index;
+      return true;
+    case 2:  // Bool
+      base_out = XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 + index;
+      return true;
+    case 3:  // Loop
+      base_out = XE_GPU_REG_SHADER_CONSTANT_LOOP_00 + index;
+      return true;
+    case 4:  // Registers
+      base_out = 0x2000 + index;
+      return true;
+    default:
+      return false;
+  }
+}
+
 }  // namespace
+
+uint32_t StripMerge::RegisterWrites::value(uint32_t index) const {
+  return memory ? xe::load_and_swap<uint32_t>(memory + index)
+                : PayloadDword(*payload, payload_first + index);
+}
 
 bool StripMerge::Layout::operator==(const Layout& other) const {
   if (strip_count != other.strip_count || band_rows != other.band_rows ||
@@ -869,42 +897,72 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
   // own writes may come in a different order or number in each strip (Halo 3
   // sets RB_COPY_DEST_BASE to the first strip's value, then writes every
   // strip's own value, before each strip's resolve).
+  RegisterWrites writes;
+  if (GetRegisterWrites(opcode, payload, writes)) {
+    // SET_CONSTANT, SET_CONSTANT2 and SET_SHADER_CONSTANTS from the packet,
+    // LOAD_ALU_CONSTANT from memory (5553083B loads its own pixel constants
+    // per strip).
+    RecordOwnWrites(writes);
     return;
   }
-  strip.own_opcodes.push_back(opcode);
   switch (opcode) {
-    case xenos::PM4_SET_CONSTANT:
-      RecordOwnSetConstant(payload);
-      break;
     case xenos::PM4_DRAW_INDX:
     case xenos::PM4_DRAW_INDX_2:
       break;
     default:
-      Fail("a strip-own packet other than SET_CONSTANT or a draw");
+      Fail("a strip-own packet other than a register write or a draw");
       break;
   }
 }
 
-bool StripMerge::SetConstantRange(const RingBuffer::ReadRange& payload,
-                                  uint32_t& base_out, uint32_t& count_out) {
-  uint32_t count = PayloadDwordCount(payload);
-  if (!count) {
-    return false;
-  }
-  uint32_t offset_type = PayloadDword(payload, 0);
-  uint32_t index = offset_type & 0x7FF;
-  switch ((offset_type >> 16) & 0xFF) {
-    case 0:
-      base_out = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
-      break;
-    case 4:
-      base_out = 0x2000 + index;
-      break;
+bool StripMerge::GetRegisterWrites(uint32_t opcode,
+                                   const RingBuffer::ReadRange& payload,
+                                   RegisterWrites& writes_out) const {
+  writes_out = RegisterWrites();
+  uint32_t dwords = PayloadDwordCount(payload);
+  switch (opcode) {
+    case xenos::PM4_SET_CONSTANT: {
+      if (dwords < 2) {
+        return false;
+      }
+      uint32_t offset_type = PayloadDword(payload, 0);
+      if (!ConstantTypeBase((offset_type >> 16) & 0xFF, offset_type & 0x7FF,
+                            writes_out.base)) {
+        return false;
+      }
+      writes_out.count = dwords - 1;
+      writes_out.payload = &payload;
+      writes_out.payload_first = 1;
+      return true;
+    }
+    case xenos::PM4_SET_CONSTANT2:
+    case xenos::PM4_SET_SHADER_CONSTANTS:
+      // Register indices.
+      if (dwords < 2) {
+        return false;
+      }
+      writes_out.base = PayloadDword(payload, 0) & 0xFFFF;
+      writes_out.count = dwords - 1;
+      writes_out.payload = &payload;
+      writes_out.payload_first = 1;
+      return true;
+    case xenos::PM4_LOAD_ALU_CONSTANT: {
+      if (dwords < 3 || !memory_) {
+        return false;
+      }
+      uint32_t offset_type = PayloadDword(payload, 1);
+      if (!ConstantTypeBase((offset_type >> 16) & 0xFF, offset_type & 0x7FF,
+                            writes_out.base)) {
+        return false;
+      }
+      writes_out.count = PayloadDword(payload, 2) & 0xFFF;
+      writes_out.memory = memory_->TranslatePhysical<const uint32_t*>(
+          PayloadDword(payload, 0) & 0x3FFFFFFF);
+      return writes_out.memory != nullptr;
+    }
     default:
       return false;
   }
-  count_out = count - 1;
-  return true;
 }
 
 void StripMerge::MarkOwnStale(uint32_t base, uint32_t count) {
@@ -917,23 +975,9 @@ void StripMerge::MarkOwnStale(uint32_t base, uint32_t count) {
 
 void StripMerge::MarkOwnStale(uint32_t opcode,
                               const RingBuffer::ReadRange& payload) {
-  uint32_t base, count;
-  if (opcode == xenos::PM4_SET_CONSTANT &&
-      SetConstantRange(payload, base, count)) {
-    MarkOwnStale(base, count);
-  }
-}
-
-void StripMerge::MarkOwnRestored(Strip& strip,
-                                 const RingBuffer::ReadRange& payload) {
-  uint32_t base, count;
-  if (!SetConstantRange(payload, base, count)) {
-    return;
-  }
-  for (OwnLatest& own : strip.own_shadow) {
-    if (own.reg >= base && own.reg - base < count) {
-      own.stale = false;
-    }
+  RegisterWrites writes;
+  if (GetRegisterWrites(opcode, payload, writes)) {
+    MarkOwnStale(writes.base, writes.count);
   }
 }
 
@@ -994,23 +1038,22 @@ uint64_t StripMerge::HashDrawOwnState(Strip& strip, uint8_t kind) {
   return XXH3_64bits(data.data(), data.size() * sizeof(uint32_t));
 }
 
-void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
-  uint32_t base, count;
-  if (!SetConstantRange(payload, base, count)) {
-    if (PayloadDwordCount(payload)) {
-      Fail("strip-own fetch, bool or loop constants");
-    }
-    return;
-  }
+void StripMerge::RecordOwnWrites(const RegisterWrites& writes) {
   Strip& strip = strips_[strip_index_];
-  for (uint32_t i = 0; i < count; ++i) {
-    uint32_t reg = base + i;
-    uint32_t value = PayloadDword(payload, 1 + i);
-    uint32_t write_index = uint32_t(strip.own_writes.size());
-    strip.own_writes.push_back({reg, value});
-    auto it = std::find_if(strip.own_shadow.begin(), strip.own_shadow.end(),
-                           [reg](const OwnLatest& own) { return own.reg == reg; });
-    if (it != strip.own_shadow.end()) {
+  for (uint32_t i = 0; i < writes.count; ++i) {
+    uint32_t reg = writes.base + i;
+    bool is_float = reg >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
+                    reg < XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
+    if (reg >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+        reg <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {
+      Fail("strip-own fetch, bool or loop constants");
+      return;
+    }
+    if (!is_float && (reg < 0x2000 || reg >= 0x2800)) {
+      Fail("a strip-own write outside the rendering registers");
+      return;
+    }
+    uint32_t value = writes.value(i);
     auto it = std::lower_bound(
         strip.own_shadow.begin(), strip.own_shadow.end(), reg,
         [](const OwnLatest& own, uint32_t reg) { return own.reg < reg; });
@@ -1020,6 +1063,7 @@ void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
       continue;
     }
     strip.own_shadow.insert(it, {reg, value});
+    if (is_float) {
       strip.own_float_registers.push_back(reg);
       uint32_t vector_index = (reg - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
       if (std::find(own_float_constants_.cbegin(), own_float_constants_.cend(),
@@ -1032,6 +1076,7 @@ void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
 
 void StripMerge::OnPacketType01(uint32_t header,
                                 const RingBuffer::ReadRange& payload) {
+  RestoreWindowScissor();
   // Writes below the rendering context (CP, scratch and handshake registers)
   // aren't rendering state.
   if (!(header >> 30) && (header & 0x7FFF) < 0x2000) {
