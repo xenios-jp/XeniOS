@@ -275,13 +275,14 @@ class RenderTargetCache {
   // fixed by the first merged session, false for another one.
   void SetStripMerge(StripMerge* strip_merge) { strip_merge_ = strip_merge; }
   bool BeginStripMerge(uint32_t band_count, uint32_t band_tile_rows);
-  // Every strip-merged render target referenced in the EDRAM ownership moves
-  // band `band` into its ordinary twin, which takes its place, so the EDRAM is
-  // what that strip leaves. With carry, the next session's strip-merged render
-  // targets start their bands 1 to N-1 with bands 0 to N-2 of the owners of
-  // the tiles they first take, read in place: those keys alternate between
-  // two render targets (strip_merge_alt), so nothing writes the owner's
-  // before then. The backend has ended its passes.
+  // Every strip-merged render target referenced in the EDRAM ownership stays
+  // there, its band `band` being the EDRAM that strip leaves: transfers out of
+  // it read that band, and it moves into its ordinary twin only for what
+  // can't (MaterializeStripMergeTwin). With carry, the next session's
+  // strip-merged render targets start their bands 1 to N-1 with bands 0 to
+  // N-2 of the owners of the tiles they first take, read in place: those keys
+  // alternate between two render targets (strip_merge_alt), so nothing writes
+  // the owner's before then. The backend has ended its passes.
   void EndStripMerge(uint32_t band, bool carry);
   // A strip-own resolve of the merged first strip, which covers the rows of
   // every strip down to this frame row; 0 otherwise.
@@ -743,13 +744,21 @@ class RenderTargetCache {
     are_accumulated_render_targets_valid_ = false;
   }
 
-  // Strip merge: performs transfers into one render target for EndStripMerge,
-  // outside any pass. Backends without strip merging never get called.
+  // Strip merge: performs transfers into one render target for
+  // MaterializeStripMergeTwin, outside any pass. Backends without strip
+  // merging never get called.
   virtual bool PerformStripMergeTransfers(RenderTarget* dest,
                                           const std::vector<Transfer>& transfers) {
     return false;
   }
   StripMerge* strip_merge() const { return strip_merge_; }
+  // Strip merge: a resolve reads the owners of its tiles in the EDRAM's rows,
+  // so the render targets an ended session left owning some move into their
+  // twins first, outside any pass.
+  bool IsStripMergeTwinPendingInResolve(uint32_t base, uint32_t row_length,
+                                        uint32_t rows, uint32_t pitch) const;
+  void MaterializeStripMergeTwinsInResolve(uint32_t base, uint32_t row_length,
+                                           uint32_t rows, uint32_t pitch);
   uint32_t strip_merge_resolve_bottom() const {
     return strip_merge_resolve_bottom_;
   }
@@ -1035,7 +1044,10 @@ class RenderTargetCache {
     return xenos::GetStorageColorFormat(format);
   }
 
-  RenderTarget* GetOrCreateRenderTarget(RenderTargetKey key);
+  // Without allow_reuse, never another key's render target: for one made while
+  // gathered transfers may still read such.
+  RenderTarget* GetOrCreateRenderTarget(RenderTargetKey key,
+                                        bool allow_reuse = true);
   // Every key gets a render target as tall as the EDRAM, and some titles place
   // the same surfaces at changing EDRAM bases, so rather than creating one per
   // base, gives the key to the least recently used render target of the same
@@ -1224,6 +1236,26 @@ class RenderTargetCache {
   // The strip-merged key an active session draws to, strip_merge_alt set for
   // the carried keys.
   RenderTargetKey GetStripMergeSessionKey(RenderTargetKey key) const;
+  // Strip-merged render targets of ended sessions still in the EDRAM
+  // ownership, and the band holding what the EDRAM has (EndStripMerge). Never
+  // a key an active session draws to.
+  struct StripMergePending {
+    RenderTargetKey key;
+    uint32_t band;
+  };
+  std::vector<StripMergePending> strip_merge_pending_;
+  // The band an ended session left the key's EDRAM in, -1 if it's not one.
+  int32_t GetStripMergePendingBand(RenderTargetKey key) const;
+  // Drops the keys no longer in the ownership.
+  void PruneStripMergePending();
+  // Copies the band into the twin, which takes the key's place in the
+  // ownership.
+  void MaterializeStripMergeTwin(RenderTargetKey key, const char* reason);
+  // Puts replacement wherever the key is an owner of an EDRAM range, without
+  // merging the ranges; whether there was any.
+  bool ReplaceOwnershipKey(RenderTargetKey key, RenderTargetKey replacement);
+  // Merges the adjacent ranges with the same owners.
+  void MergeSameOwnershipRanges();
 };
 
 }  // namespace gpu

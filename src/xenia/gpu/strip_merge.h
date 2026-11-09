@@ -58,9 +58,9 @@ class TraceWriter;
 //   destination. Later strips: draws and resolves are skipped, every other
 //   packet runs, so the register state and the guest-visible handshake
 //   (interrupts, waits, memory writes, events) are those of normal execution.
-// - At the end, each merged render target's last band moves into its ordinary
-//   twin, so the EDRAM is what the last strip leaves (RenderTargetCache::
-//   EndStripMerge).
+// - At the end, the merged render targets stay in the EDRAM ownership, their
+//   last band holding what the last strip leaves; one moves into its ordinary
+//   twin only for what can't read the band (RenderTargetCache::EndStripMerge).
 // - EDRAM carried across strips: a strip starts with the previous strip's
 //   EDRAM contents (Halo 3: the base-0 stencil and the 608 GAMMA color are
 //   loaded before being overwritten). One pass sequence can't feed band k+1

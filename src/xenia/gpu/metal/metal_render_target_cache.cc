@@ -1418,7 +1418,12 @@ void MetalRenderTargetCache::RenderTargetReused(RenderTarget& render_target,
 
 bool MetalRenderTargetCache::PerformStripMergeTransfers(
     RenderTarget* dest, const std::vector<Transfer>& transfers) {
-  // Outside any pass: the command processor ended the merged one.
+  // Outside any pass, after what is queued for one: a twin may be made in the
+  // middle of an update.
+  command_processor_.EndRenderEncoder();
+  if (!FlushPendingDrawPassTransfers()) {
+    return false;
+  }
   RenderTarget* render_targets[] = {dest};
   bool result = PerformTransfersAndResolveClears(1, render_targets, &transfers);
   render_pass_descriptor_dirty_ = true;
@@ -1524,9 +1529,11 @@ void MetalRenderTargetCache::ElideRedundantTransfers() {
       // The host depth must be the destination's own, which is what its
       // backing already holds; a third render target's host depth is another
       // result.
+      // The records don't tell the bands of a strip-merged source.
       if (!source || dest->needs_initial_clear() ||
           source->needs_initial_clear() ||
-          (transfer.host_depth_source && transfer.host_depth_source != dest)) {
+          (transfer.host_depth_source && transfer.host_depth_source != dest) ||
+          (source->key().strip_merged && !dest_key.strip_merged)) {
         return false;
       }
       for (uint32_t tile = transfer.start_tiles; tile < transfer.end_tiles;
@@ -1583,7 +1590,9 @@ void MetalRenderTargetCache::KeepDepthOfStencilRoundTrips() {
       return;
     }
     const RenderTargetKey source_key = source->key();
+    // The records don't tell the bands of a strip-merged source.
     if (source_key.is_depth ||
+        (source_key.strip_merged && !dest_key.strip_merged) ||
         source_key.GetColorFormat() !=
             xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
         source_key.base_tiles != dest_key.base_tiles ||
@@ -6777,6 +6786,19 @@ bool MetalRenderTargetCache::ResolveWithInfo(
       end_tile_pass(conflict);
     }
   }
+  // Strip-merged render targets an ended session left owning tiles it reads
+  // move into their twins first.
+  {
+    uint32_t span_base, span_row_length, span_rows, span_pitch;
+    resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows,
+                                      span_pitch);
+    if (IsStripMergeTwinPendingInResolve(span_base, span_row_length, span_rows,
+                                         span_pitch)) {
+      end_tile_pass("strip_merge_twin");
+      MaterializeStripMergeTwinsInResolve(span_base, span_row_length,
+                                          span_rows, span_pitch);
+    }
+  }
 
   // Nothing to do.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
@@ -8520,10 +8542,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         }
         RenderTargetKey source_key = source_rt->key();
         // Strip merge: a band of a strip-merged render target into one laid
-        // out like it with the EDRAM's rows (EndStripMerge's twin), by the
-        // band shift, every sample, and a depth with its stencil. Its own
-        // host depth is the depth it holds. Nothing into a strip-merged
-        // destination, whose bands this doesn't place.
+        // out like it with the EDRAM's rows (its twin), by the band shift,
+        // every sample, and a depth with its stencil. Its own host depth is
+        // the depth it holds. Nothing into a strip-merged destination, whose
+        // bands this doesn't place.
         const bool strip_merge_source = source_key.strip_merged != 0;
         if (dest_key.strip_merged) {
           return false;
