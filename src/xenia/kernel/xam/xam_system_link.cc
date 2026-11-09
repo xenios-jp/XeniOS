@@ -247,7 +247,7 @@ std::optional<net::relay::Room> RelayRoom(uint32_t title_id) {
   std::string code;
   std::function<std::string(uint32_t)> room;
   {
-    // JoinSystemLinkRoom may set it meanwhile.
+    // JoinSystemLinkRoom writes the cvar under this lock.
     std::lock_guard lock(relay_policy_mutex);
     code = cvars::systemlink_room;
     room = relay_policy.room;

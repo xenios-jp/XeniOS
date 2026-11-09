@@ -117,8 +117,8 @@ NSDictionary<NSString*, NSString*>* LoadGameNames() {
 // A game the compatibility data doesn't list: the bundled title database, then its title ID.
 NSString* UnnamedGame(uint32_t title_id) {
   if (const xe::app::GameTitleInfo* info = xe::app::GetGameTitleInfo(title_id)) {
-    if (!info->name.empty()) {
-      return [NSString stringWithUTF8String:info->name.c_str()];
+    if (NSString* name = [NSString stringWithUTF8String:info->name.c_str()]; name.length) {
+      return name;
     }
   }
   return [NSString
