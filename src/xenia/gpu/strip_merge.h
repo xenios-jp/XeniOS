@@ -132,9 +132,9 @@ class StripMerge {
   class Backend {
    public:
     virtual ~Backend() = default;
-    // A merged session's first strip is about to run. False to run the
-    // session normally.
-    virtual bool StripMergeBegin(const Layout& layout) = 0;
+    // A merged session's first strip is about to run. Null to merge it, else
+    // why it can't be (the session runs normally and isn't verified).
+    virtual const char* StripMergeBegin(const Layout& layout) = 0;
     // Merged rendering ends. Band `band` of every merged render target becomes
     // the EDRAM; with carry, the bands are kept for the next session's later
     // strips (see the carry above).

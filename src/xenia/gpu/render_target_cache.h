@@ -272,9 +272,9 @@ class RenderTargetCache {
   // Strip merge (strip_merge.h). The controller decides; the backend calls
   // these. Begin: render targets at the strip surface become strip-merged
   // ones, band_count bands of band_tile_rows tile rows. The band shape is
-  // fixed by the first merged session, false for another one.
+  // fixed by the first merged session. Null if merging, else why not.
   void SetStripMerge(StripMerge* strip_merge) { strip_merge_ = strip_merge; }
-  bool BeginStripMerge(uint32_t band_count, uint32_t band_tile_rows);
+  const char* BeginStripMerge(uint32_t band_count, uint32_t band_tile_rows);
   // Every strip-merged render target referenced in the EDRAM ownership stays
   // there, its band `band` being the EDRAM that strip leaves: transfers out of
   // it read that band, and it moves into its ordinary twin only for what

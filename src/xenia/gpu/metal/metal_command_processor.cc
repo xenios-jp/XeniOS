@@ -7067,11 +7067,12 @@ bool MetalCommandProcessor::IssueDrawDxil(
   return true;
 }
 
-bool MetalCommandProcessor::StripMergeBegin(const StripMerge::Layout& layout) {
+const char* MetalCommandProcessor::StripMergeBegin(
+    const StripMerge::Layout& layout) {
   if (!render_target_cache_ ||
       render_target_cache_->GetPath() !=
           RenderTargetCache::Path::kHostRenderTargets) {
-    return false;
+    return "the render targets aren't host ones";
   }
   // Transfers address a band up to strip_count - 1 bands away with a 12-bit
   // offset (MakeTransferAddressConstant).
@@ -7079,12 +7080,13 @@ bool MetalCommandProcessor::StripMergeBegin(const StripMerge::Layout& layout) {
           layout.pitch_tiles_at_32bpp >=
       xenos::kEdramTileCount) {
     return false;
+    return "the last band is farther from the first than transfers address";
   }
   // The merged render targets start in a pass of their own, with nothing
   // queued for the render targets before.
   EndRenderEncoder();
   if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
-    return false;
+    return "the queued render target transfers failed";
   }
   return render_target_cache_->BeginStripMerge(layout.strip_count,
                                                layout.band_tile_rows());
