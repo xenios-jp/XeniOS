@@ -573,9 +573,11 @@ void SendNextLocked(NSArray<NSDictionary*>* batches, NSUInteger index, NSURL* ur
                 SendNextLocked(batches, index + 1, url);
                 return;
               }
+            } else if (!status && !xe_ios_network_available()) {
+              // No network: not a failure, the batch goes when one returns.
             } else {
-              // No network, a 429, another 5xx, or something else answering
-              // (a proxy or captive portal's 200 or redirect).
+              // A 429, another 5xx, or something else answering (a proxy or
+              // captive portal's 200 or redirect), or a network that dropped.
               NoteUploadFailedLocked(status);
             }
             g_uploading = NO;
@@ -944,6 +946,21 @@ void xe_ios_diagnostics_create_directory(NSString* path) {
 }
 
 void xe_ios_diagnostics_upload_pending(void) {
+  // Tries again when the network returns; UploadLocked skips it if an upload
+  // is running or none is due.
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    [[NSNotificationCenter defaultCenter] addObserverForName:XeniaNetworkStatusDidChangeNotification
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification* __unused note) {
+                                                    if (xe_ios_network_available()) {
+                                                      dispatch_async(Queue(), ^{
+                                                        UploadLocked();
+                                                      });
+                                                    }
+                                                  }];
+  });
   dispatch_async(Queue(), ^{
     UploadLocked();
   });
