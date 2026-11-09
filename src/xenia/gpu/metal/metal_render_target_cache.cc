@@ -6520,6 +6520,16 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                 draw_resolution_scale_x(),
                                 draw_resolution_scale_y(), fixed_rg16_trunc,
                                 fixed_rgba16_trunc, resolve_info);
+  return ResolveWithInfo(resolve_info, resolve_info_valid, written_address,
+                         written_length, command_buffer);
+}
+
+bool MetalRenderTargetCache::ResolveWithInfo(
+    draw_util::ResolveInfo resolve_info, bool resolve_info_valid,
+    uint32_t& written_address, uint32_t& written_length,
+    MTL::CommandBuffer* command_buffer) {
+  written_address = 0;
+  written_length = 0;
   // Transfers held behind clear quads go into the pass that drew the quads,
   // before the resolve plans its stores.
   if (DrawPassTransfersHeldInPass() &&
@@ -6634,6 +6644,20 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   draw_util::ResolveCopyShaderIndex copy_shader = resolve_info.GetCopyShader(
       draw_resolution_scale_x(), draw_resolution_scale_y(), copy_constants,
       group_count_x, group_count_y);
+
+  // A depth resolve can't read the pass's tiles, so it would end the pass
+  // that the color resolves after it could read their tiles from. All of it,
+  // refresh and clear included, runs when the pass ends instead. The resolves
+  // in the pass meanwhile neither write its destination nor read what it
+  // clears (GetPostPassResolveConflict), and nothing else runs in the pass.
+  if (tile_pass_open && is_depth && !draw_resolution_scaled &&
+      LeaveDepthResolveToPassEnd(resolve_info, dump_base, dump_row_length_used,
+                                 dump_rows, dump_pitch)) {
+    written_address = resolve_info.copy_dest_extent_start;
+    written_length = resolve_info.copy_dest_extent_length;
+    last_resolve_kept_pass_ = true;
+    return true;
+  }
 
   // Read the render targets straight into shared memory where the copy
   // wouldn't have converted anything. Otherwise match D3D12/Vulkan: dump host
@@ -7514,15 +7538,20 @@ bool MetalRenderTargetCache::GetResolveClearTileRanges(
 
 const char* MetalRenderTargetCache::GetPostPassResolveConflict(
     const draw_util::ResolveInfo& resolve_info) const {
-  // The tiles the copy reads.
+  // The tiles the copy reads, and the guest memory it writes.
+  const bool copies = resolve_info.copy_dest_extent_length &&
+                      resolve_info.rb_copy_control.copy_command !=
+                          xenos::CopyCommand::kConvertTo1111;
   uint32_t read_start = 0, read_length = 0;
-  if (resolve_info.copy_dest_extent_length &&
-      resolve_info.rb_copy_control.copy_command !=
-          xenos::CopyCommand::kConvertTo1111) {
+  if (copies) {
     uint32_t row_length_used, rows, pitch;
     resolve_info.GetCopyEdramTileSpan(read_start, row_length_used, rows,
                                       pitch);
     read_length = rows ? (rows - 1) * pitch + row_length_used : 0;
+  }
+  if (copies && PostPassResolvesWrite(resolve_info.copy_dest_extent_start,
+                                      resolve_info.copy_dest_extent_length)) {
+    return "queued_dest";
   }
   for (const PostPassResolve& queued : post_pass_resolves_) {
     for (uint32_t i = 0; i < 2; ++i) {
@@ -7554,13 +7583,85 @@ bool MetalRenderTargetCache::LeaveResolveClearToPassEnd(
   }
   PlanResolveStoreActions(resolve_info);
   for (MetalRenderTarget* rt : dead_store_render_targets_) {
-    if (std::find(dead.begin(), dead.end(), rt) == dead.end()) {
+    if (std::find(dead.begin(), dead.end(), rt) != dead.end()) {
+      continue;
+    }
+    // A depth resolve left to the pass end, ahead of the clear, reads it.
+    bool read = false;
+    for (const PostPassResolve& queued : post_pass_resolves_) {
+      if (std::find(queued.read_targets.begin(), queued.read_targets.end(),
+                    rt) != queued.read_targets.end()) {
+        read = true;
+        break;
+      }
+    }
+    if (!read) {
       dead.push_back(rt);
     }
   }
   dead_store_render_targets_.swap(dead);
   post_pass_resolves_.push_back(queued);
   return true;
+}
+
+bool MetalRenderTargetCache::LeaveDepthResolveToPassEnd(
+    const draw_util::ResolveInfo& resolve_info, uint32_t dump_base,
+    uint32_t dump_row_length_used, uint32_t dump_rows, uint32_t dump_pitch) {
+  if (!CanLeaveResolveToPassEnd() ||
+      !command_processor_.CanKeepRenderPassAfterTileResolve()) {
+    return false;
+  }
+  // Only worth it with color resolves to follow in the pass's tiles.
+  bool color_attached = false;
+  for (MetalRenderTarget* color : current_color_targets_) {
+    color_attached |= color != nullptr;
+  }
+  if (!color_attached) {
+    return false;
+  }
+  // When unsure, end the pass: not after a clear left to the pass end, which
+  // would change what the resolve reads by the time it runs.
+  for (const PostPassResolve& queued : post_pass_resolves_) {
+    if (queued.clear_length_tiles[0] || queued.clear_length_tiles[1]) {
+      return false;
+    }
+  }
+  PostPassResolve queued;
+  if (!GetResolveClearTileRanges(resolve_info, queued.clear_start_tiles,
+                                 queued.clear_length_tiles)) {
+    return false;
+  }
+  queued.resolve_info = resolve_info;
+  queued.copy = true;
+  queued.dest_start = resolve_info.copy_dest_extent_start;
+  queued.dest_length = resolve_info.copy_dest_extent_length;
+  std::vector<ResolveCopyDumpRectangle> read_rectangles;
+  GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
+                                 dump_pitch, read_rectangles);
+  for (const ResolveCopyDumpRectangle& read : read_rectangles) {
+    auto* rt = static_cast<MetalRenderTarget*>(read.render_target);
+    if (rt && std::find(queued.read_targets.begin(), queued.read_targets.end(),
+                        rt) == queued.read_targets.end()) {
+      queued.read_targets.push_back(rt);
+    }
+  }
+  // The pass has to store what it reads.
+  KeepStoresOfResolveReads(resolve_info);
+  post_pass_resolves_.push_back(std::move(queued));
+  command_processor_.SetRenderEncoderResolveOnly();
+  return true;
+}
+
+bool MetalRenderTargetCache::PostPassResolvesWrite(uint32_t start,
+                                                   uint32_t length) const {
+  for (const PostPassResolve& queued : post_pass_resolves_) {
+    if (queued.copy && queued.dest_length && length &&
+        uint64_t(start) < uint64_t(queued.dest_start) + queued.dest_length &&
+        uint64_t(queued.dest_start) < uint64_t(start) + length) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void MetalRenderTargetCache::KeepStoresOfResolveReads(
@@ -7597,13 +7698,27 @@ void MetalRenderTargetCache::FlushPostPassResolves(
   if (!command_buffer) {
     command_buffer = command_processor_.EnsureCommandBuffer();
   }
+  // Running the depth resolves resets what the last resolve, the one before
+  // the pass end, did.
+  const bool kept_pass = last_resolve_kept_pass_;
   for (const PostPassResolve& resolve : resolves) {
+    if (resolve.copy) {
+      uint32_t written_address, written_length;
+      if (!ResolveWithInfo(resolve.resolve_info, true, written_address,
+                           written_length, command_buffer)) {
+        XELOGE(
+            "MetalRenderTargetCache: a depth resolve left to the end of the "
+            "pass failed");
+      }
+      continue;
+    }
     if (!PerformResolveClear(resolve.resolve_info, command_buffer)) {
       XELOGE(
           "MetalRenderTargetCache: a resolve clear left to the end of the "
           "pass failed");
     }
   }
+  last_resolve_kept_pass_ = kept_pass;
   flushing_post_pass_resolves_ = false;
 }
 
