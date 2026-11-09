@@ -844,6 +844,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       pending_draw_pass_render_targets_ = {};
   uint32_t pending_draw_pass_transfer_mask_ = 0;
   uint32_t pending_draw_pass_full_overwrite_mask_ = 0;
+  // The depth destination of the pending transfers already rotated to its
+  // spare backing (RotateHostDepthForDrawPass): its host depth is read from
+  // the previous backing, now spare_depth_texture().
+  MetalRenderTarget* pending_draw_pass_rotated_depth_ = nullptr;
   // Subset of the above that the current render pass descriptor was built with
   // a DontCare load action for.
   uint32_t pending_draw_pass_load_dontcare_mask_ = 0;
@@ -1134,7 +1138,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       TransferAttachmentFormats& attachment_formats_out) const;
   bool CanQueueDrawPassTransfers(uint32_t render_target_index,
                                  RenderTarget* const* render_targets,
-                                 const std::vector<Transfer>& transfers) const;
+                                 const std::vector<Transfer>& transfers,
+                                 bool dest_rotated = false) const;
+  // Rotates a depth destination that is a host depth source of its own
+  // transfers to its spare backing now, so the transfers can be drawn in the
+  // guest's pass reading the previous backing. False if anything prevents it,
+  // with nothing changed.
+  bool RotateHostDepthForDrawPass(
+      RenderTarget* const* render_targets,
+      const std::vector<Transfer>* render_target_transfers);
   bool PendingDrawPassTransfersFullyOverwriteTarget(
       uint32_t render_target_index, RenderTarget* render_target,
       const std::vector<Transfer>& transfers) const;
