@@ -79,6 +79,55 @@ inline const char* GetEventName(uint32_t event) {
       return "UNKNOWN";
   }
 }
+// The guest's big-endian type-2 NOP packet, 0x80000000, as it is in memory.
+// ExecutePacket only steps over its one dword.
+static constexpr uint32_t kType2NopInMemory =
+    std::endian::native == std::endian::little ? UINT32_C(0x00000080)
+                                               : UINT32_C(0x80000000);
+
+// Whether the dword at the read position, always within the buffer, is a
+// type-2 NOP. A single load, so packets of other types pay little for the
+// check.
+XE_FORCEINLINE static bool IsType2NopNext(const xe::RingBuffer& reader) {
+  return xe::load<uint32_t>(reader.buffer() + reader.read_offset()) ==
+         kType2NopInMemory;
+}
+
+// Consumes up to max_nops type-2 NOP packets at the read position, and returns
+// how many. The reader must hold at least max_nops dwords.
+XE_FORCEINLINE static uint32_t SkipType2NopRun(xe::RingBuffer& reader,
+                                               uint32_t max_nops) {
+  const uint8_t* buffer = reader.buffer();
+  const uint32_t capacity = reader.capacity();
+  uint32_t offset = reader.read_offset();
+  uint32_t nops = 0;
+  while (nops < max_nops &&
+         xe::load<uint32_t>(buffer + offset) == kType2NopInMemory) {
+    ++nops;
+    offset += uint32_t(sizeof(uint32_t));
+    if (offset == capacity) {
+      offset = 0;
+    }
+  }
+  if (nops) {
+    reader.set_read_offset(offset);
+  }
+  return nops;
+}
+
+// Whether runs of type-2 NOPs can be consumed in one step: nothing records or
+// logs the packets one by one. Checked before every packet, as a trace can
+// start in the middle of a buffer.
+XE_FORCEINLINE static bool CanSkipType2NopRuns(
+    const TraceWriter& trace_writer) {
+#if XE_ENABLE_PM4_DISASM == 1
+  if (cvars::disassemble_pm4 && logging::ShouldLog(LogLevel::Debug)) {
+    return false;
+  }
+#endif
+  return !trace_writer.is_open();
+}
+
 void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
                                               uint32_t count) XE_RESTRICT {
   SCOPE_profile_cpu_f("gpu");
@@ -97,6 +146,13 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
     reader_.BeginPrefetchedRead<swcache::PrefetchTag::Level2>(
         COMMAND_PROCESSOR::GetCurrentRingReadCount());
     do {
+      // The read count is 0 before the first packet, which then executes
+      // normally.
+      if (IsType2NopNext(reader_) && CanSkipType2NopRuns(trace_writer_) &&
+          SkipType2NopRun(reader_,
+                          reader_.read_count() / uint32_t(sizeof(uint32_t)))) {
+        continue;
+      }
       if (COMMAND_PROCESSOR::ExecutePacket()) {
         continue;
       } else {
@@ -1881,7 +1937,26 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
       read_ptr_update_freq_ * uint32_t(sizeof(uint32_t));
   uint32_t remaining_at_writeback = remaining;
   do {
-    if (!COMMAND_PROCESSOR::ExecutePacket()) {
+    uint32_t nops = 0;
+    if (IsType2NopNext(reader_) && CanSkipType2NopRuns(trace_writer_)) {
+      uint32_t max_nops = remaining / uint32_t(sizeof(uint32_t));
+      if (writeback_stride && remaining_at_writeback >= writeback_stride) {
+        // End the run at the NOP after which the check below publishes, as it
+        // would after that NOP alone. The check hasn't passed before this
+        // packet, so remaining is above remaining_publish.
+        const uint32_t remaining_publish =
+            remaining_at_writeback - writeback_stride;
+        const uint32_t nops_to_publish =
+            remaining > remaining_publish
+                ? (remaining - remaining_publish) / uint32_t(sizeof(uint32_t))
+                : 1;
+        if (max_nops > nops_to_publish) {
+          max_nops = nops_to_publish;
+        }
+      }
+      nops = SkipType2NopRun(reader_, max_nops);
+    }
+    if (!nops && !COMMAND_PROCESSOR::ExecutePacket()) {
       // This probably should be fatal - but we're going to continue anyways.
       XELOGE("**** PRIMARY RINGBUFFER: Failed to execute packet.");
       assert_always();
