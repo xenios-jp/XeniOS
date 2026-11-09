@@ -14,6 +14,9 @@
 
 // Whether the device has a network at all (xe::net::NetworkPathAvailable), for the screens.
 BOOL xe_ios_network_available(void);
+// Starts watching at launch, off the main thread, so the notification below
+// is posted even before a screen asks.
+void xe_ios_network_status_start(void);
 
 // Posted on the main queue when that changes.
 extern NSNotificationName const XeniaNetworkStatusDidChangeNotification;

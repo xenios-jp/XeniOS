@@ -28,6 +28,12 @@ BOOL xe_ios_network_available(void) {
   return xe::net::NetworkPathAvailable();
 }
 
+void xe_ios_network_status_start(void) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    xe_ios_network_available();
+  });
+}
+
 NSString* xe_ios_no_network_title(void) {
   return NSLocalizedString(@"No Internet Connection", @"No network: title");
 }
