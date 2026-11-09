@@ -3436,7 +3436,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                         switchTo:(nullable BOOL (^)(void))switch_to
                    changePicture:(nullable void (^)(UIViewController* page))change_picture
                    deleteProfile:
-                       (nullable void (^)(UIViewController* page, UIView* source))delete_profile;
+                       (nullable void (^)(UIViewController* page))delete_profile;
 @end
 
 @implementation XEProfilePageViewController {
@@ -3444,7 +3444,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   BOOL _active;
   BOOL (^_switchTo)(void);
   void (^_changePicture)(UIViewController*);
-  void (^_deleteProfile)(UIViewController*, UIView*);
+  void (^_deleteProfile)(UIViewController*);
   XEProfileHeader* _header;
   NSArray<NSArray<NSNumber*>*>* _sections;
   NSArray<NSString*>* _sectionTitles;
@@ -3464,7 +3464,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                           active:(BOOL)active
                         switchTo:(BOOL (^)(void))switch_to
                    changePicture:(void (^)(UIViewController*))change_picture
-                   deleteProfile:(void (^)(UIViewController*, UIView*))delete_profile {
+                   deleteProfile:(void (^)(UIViewController*))delete_profile {
   if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
     self.glassStyle = YES;
     _gamertag = [gamertag copy];
@@ -3751,7 +3751,9 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 // Tighter than UIKit's grouped defaults: the page is one column of short groups, and the default
 // gaps pushed most of it off the sheet.
 - (CGFloat)tableView:(UITableView*)tableView heightForHeaderInSection:(NSInteger)section {
-  return [self tableView:tableView titleForHeaderInSection:section].length ? 30.0 : 8.0;
+  return [self tableView:tableView titleForHeaderInSection:section].length
+             ? UITableViewAutomaticDimension
+             : 8.0;
 }
 
 - (CGFloat)tableView:(UITableView*)tableView heightForFooterInSection:(NSInteger)section {
@@ -3950,7 +3952,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
   }
   switch (row) {
     case XEPageRowDeleteProfile:
-      _deleteProfile(self, [tableView cellForRowAtIndexPath:indexPath] ?: self.view);
+      _deleteProfile(self);
       break;
     // No field to type in, so these push inside the card, like Shared Saves.
     case XEPageRowAddDevice:
@@ -4109,7 +4111,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 UIViewController* xe_ios_new_profile_page(
     NSString* gamertag, BOOL active, BOOL (^_Nullable switch_to)(void),
     void (^_Nullable change_picture)(UIViewController* page),
-    void (^_Nullable delete_profile)(UIViewController* page, UIView* source)) {
+    void (^_Nullable delete_profile)(UIViewController* page)) {
   return [[[XEProfilePageViewController alloc] initWithGamertag:gamertag
                                                           active:active
                                                         switchTo:switch_to

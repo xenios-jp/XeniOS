@@ -215,6 +215,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
   [conversion_summary_ release];
   [conversion_choices_ release];
   [game_title_ release];
+  [delete_title_ release];
   [rows_ release];
   [action_handler_ release];
   [status_text_ release];

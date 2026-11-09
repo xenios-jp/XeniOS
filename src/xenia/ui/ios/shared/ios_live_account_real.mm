@@ -82,6 +82,16 @@ NSError* UnreachableError() {
                         @"Online account: the lobby didn't answer")));
 }
 
+NSError* DeleteResultUnknownError() {
+  return [NSError errorWithDomain:@"XeniaLiveAccount"
+                             code:XeniaLiveAccountErrorResultUnknown
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               NSLocalizedString(@"The online service didn’t answer.",
+                                                 @"Online account: delete account got no answer")
+                         }];
+}
+
 NSError* NotYetError() {
   return Error(NSLocalizedString(@"Moving profile data isn’t available yet.",
                                  @"Online account: a profile data feature that isn't built"));
@@ -297,11 +307,14 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   void (^_deleteDone)(NSError*);
   uint64_t _deleteProfile;
   BOOL _deleteAsked;
+  // The profile whose delete got no answer: the lobby may have done it, which it says next time.
+  uint64_t _deleteUnansweredProfile;
   // Taking this device off the account as its profile is deleted (removeThisDeviceOfProfile:).
   void (^_removeThisDeviceDone)(void);
   // The lobby's answer to that is expected, even after the wait for it ended: the profile may be
   // gone by then, and no "removed" notice is due for whichever one is active.
   BOOL _removeThisDeviceAsked;
+  NSUInteger _removeThisDeviceRequest;
 
   // What the screens last saw, to post a change only when there is one.
   NSString* _lastSignature;
@@ -653,13 +666,14 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 // The account was deleted, here or on another device.
 - (void)accountDeleted {
-  // This app asked for it, to delete the profile: nothing to tell the player.
-  if (_deleteDone && _deleteAsked) {
-    [self finishDelete:nil];
-    return;
-  }
   auto profile = ActiveProfile();
+  // This app asked for it, to delete the profile: nothing to tell the player. If a sign-in found
+  // it already deleted, that was the answer to an earlier try.
+  const BOOL own = _deleteDone && (_deleteAsked || (profile && profile->xuid == _deleteProfile));
   if (!profile) {
+    if (own) {
+      [self finishDelete:nil];
+    }
     return;
   }
   XELOGW("Live account (app): {}'s account was deleted", profile->gamertag);
@@ -673,11 +687,27 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   _removedProfile = profile->xuid;
   xe_ios_live_social_refresh_now();
   [self postChange];
+  // Kept offline first, in case the profile's files then can't be removed.
+  if (own) {
+    [self finishDelete:nil];
+    return;
+  }
+  const BOOL asked_here = profile->xuid == _deleteUnansweredProfile;
+  if (asked_here) {
+    _deleteUnansweredProfile = 0;
+  }
   NSString* message = [NSString
-      stringWithFormat:NSLocalizedString(@"%1$@’s online account was deleted on another device. "
-                                         @"The profile and its saves stay on this %2$@, offline.",
-                                         @"Account deleted; %1$@ is the gamertag, %2$@ this "
-                                         @"device's kind (iPhone, iPad)"),
+      stringWithFormat:asked_here
+                           ? NSLocalizedString(
+                                 @"%1$@’s online account was deleted, as you asked from this "
+                                 @"%2$@. The profile and its saves stay here, offline.",
+                                 @"Account deleted by an earlier request from this device; %1$@ "
+                                 @"is the gamertag, %2$@ this device's kind (iPhone, iPad)")
+                           : NSLocalizedString(
+                                 @"%1$@’s online account was deleted on another device. "
+                                 @"The profile and its saves stay on this %2$@, offline.",
+                                 @"Account deleted; %1$@ is the gamertag, %2$@ this "
+                                 @"device's kind (iPhone, iPad)"),
                        ToNS(profile->gamertag), [UIDevice currentDevice].model];
   [[NSNotificationCenter defaultCenter]
       postNotificationName:XeniaLiveSocialSignedOutNotification
@@ -1039,6 +1069,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   }
   _removeThisDeviceDone = [done retain];
   _removeThisDeviceAsked = YES;
+  const NSUInteger request = ++_removeThisDeviceRequest;
   (*share)->RemoveThisDevice();
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                (int64_t)(kRemoveThisDeviceTimeout * NSEC_PER_SEC)),
@@ -1049,7 +1080,9 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                  });
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
-                   _removeThisDeviceAsked = NO;
+                   if (_removeThisDeviceRequest == request) {
+                     _removeThisDeviceAsked = NO;
+                   }
                  });
 }
 
@@ -1072,6 +1105,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   }
   _deleteDone = [done retain];
   _deleteProfile = xuid;
+  _deleteUnansweredProfile = 0;
   _deleteAsked = NO;
   // A profile that was just switched to connects now; signedIn continues from there.
   xe_ios_live_social_refresh_now();
@@ -1085,7 +1119,11 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
                    if (_deleteDone == done) {
-                     [self finishDelete:UnreachableError()];
+                     if (_deleteAsked) {
+                       _deleteUnansweredProfile = _deleteProfile;
+                     }
+                     [self finishDelete:_deleteAsked ? DeleteResultUnknownError()
+                                                     : UnreachableError()];
                    }
                  });
 }

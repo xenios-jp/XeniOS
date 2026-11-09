@@ -16,6 +16,7 @@
 #import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
 #import "xenia/ui/ios/shared/ios_glass_card.h"
 #import "xenia/ui/ios/shared/ios_live_account.h"
+#import "xenia/ui/ios/shared/ios_live_account_real.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
@@ -579,7 +580,7 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   void (^change_picture)(UIViewController*) = ^(UIViewController* page) {
     [unsafe_self pushPictureChooserForXuid:xuid from:page];
   };
-  void (^delete_profile)(UIViewController*, UIView*) = ^(UIViewController* page, UIView* __unused source) {
+  void (^delete_profile)(UIViewController*) = ^(UIViewController* page) {
     [unsafe_self confirmDeleteXuid:xuid from:page];
   };
   [self.navigationController
@@ -657,6 +658,17 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                              @"Delete profile: message for an online profile; %@ is the device's "
                              @"kind"),
                          device];
+    if (!found->signed_in || !xe_ios_network_available()) {
+      // Only a connected profile can take the device off (removeThisDeviceOfProfile:).
+      message = [message
+          stringByAppendingFormat:
+              @"\n\n%@",
+              [NSString stringWithFormat:NSLocalizedString(
+                                             @"This %@ may stay listed on the account, as this "
+                                             @"profile isn’t connected to it right now.",
+                                             @"Delete profile: message; %@ is the device's kind"),
+                                         device]];
+    }
   } else if ([linked_names_ containsObject:gamertag]) {
     // Connecting to leave would take the account from the device using it, or undo Online Play
     // being turned off, so this device stays on the account.
@@ -671,7 +683,7 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                               @"Delete profile: message; %@ is the device's kind"),
                           device]];
   }
-  // Destructive confirmations are action sheets, anchored to the row on iPad.
+  // An alert: this much text doesn't fit an action sheet.
   UIAlertController* confirm = [UIAlertController
       alertControllerWithTitle:[NSString stringWithFormat:NSLocalizedString(
                                                               @"Delete %@?",
@@ -684,7 +696,7 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                                       @"Delete profile: button")
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
-  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  // The handlers below hold self: these run once, and a delete can outlive the settings sheet.
   [confirm addAction:[UIAlertAction
                          actionWithTitle:online
                                              ? NSLocalizedString(@"Delete from This Device",
@@ -693,9 +705,9 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                                  @"Delete profile: button")
                                    style:UIAlertActionStyleDestructive
                                  handler:^(UIAlertAction* __unused action) {
-                                   [unsafe_self deleteXuid:xuid
-                                                  gamertag:gamertag
-                                                   account:NO
+                                   [self deleteXuid:xuid
+                                           gamertag:gamertag
+                                            account:NO
                                                       from:presenter];
                                  }]];
   if (online) {
@@ -703,9 +715,9 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                                         @"Delete profile: button")
                                                 style:UIAlertActionStyleDestructive
                                               handler:^(UIAlertAction* __unused action) {
-                                                [unsafe_self confirmDeleteAccountOfXuid:xuid
-                                                                               gamertag:gamertag
-                                                                                   from:presenter];
+                                                [self confirmDeleteAccountOfXuid:xuid
+                                                                        gamertag:gamertag
+                                                                            from:presenter];
                                               }]];
   }
   [presenter presentViewController:confirm animated:YES completion:nil];
@@ -734,14 +746,13 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                                     @"Delete account: button")
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
-  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
   [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Delete Account",
                                                                     @"Delete account: button")
                                             style:UIAlertActionStyleDestructive
                                           handler:^(UIAlertAction* __unused action) {
-                                            [unsafe_self deleteXuid:xuid
-                                                           gamertag:gamertag
-                                                            account:YES
+                                            [self deleteXuid:xuid
+                                                    gamertag:gamertag
+                                                     account:YES
                                                                from:presenter];
                                           }]];
   [presenter presentViewController:alert animated:YES completion:nil];
@@ -761,22 +772,24 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   }
   const uint64_t restore_xuid = signed_in_xuid == xuid ? 0 : signed_in_xuid;
   if (!delete_account) {
-    __unsafe_unretained XeniaProfileViewController* local_self = self;
     [xe_ios_live_account_service() removeThisDeviceOfProfile:xuid
                                                   completion:^{
-                                                    [local_self finishDeleteXuid:xuid
-                                                                        gamertag:gamertag
-                                                                         restore:restore_xuid
-                                                                            from:presenter];
+                                                    [self finishDeleteXuid:xuid
+                                                                  gamertag:gamertag
+                                                                   restore:restore_xuid
+                                                            accountDeleted:NO
+                                                                      from:presenter];
                                                   }];
     return;
   }
   if (!xe_ios_network_available()) {
-    [self showDeleteFailure:[xe_ios_connection_failure_text(nil)
-                                stringByAppendingString:
-                                    NSLocalizedString(@" The profile was kept.",
-                                                      @"Delete account: no network, after the "
-                                                      @"advice")]
+    // Not xe_ios_connection_failure_text(nil): the network may be back by now, which answers nil.
+    [self showDeleteFailure:[NSString stringWithFormat:@"%@. %@ %@", xe_ios_no_network_title(),
+                                                       xe_ios_no_network_message(),
+                                                       NSLocalizedString(
+                                                           @"The profile was kept.",
+                                                           @"Delete account: no network, after the "
+                                                           @"advice")]
                        from:presenter];
     return;
   }
@@ -792,26 +805,32 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                                     @"Delete profile: progress")
                                           message:nil
                                    preferredStyle:UIAlertControllerStyleAlert];
-  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
   void (^finished)(NSError*) = ^(NSError* error) {
     [busy dismissViewControllerAnimated:YES
                              completion:^{
                                if (!error) {
-                                 [unsafe_self finishDeleteXuid:xuid
-                                                      gamertag:gamertag
-                                                       restore:restore_xuid
-                                                          from:presenter];
+                                 [self finishDeleteXuid:xuid
+                                               gamertag:gamertag
+                                                restore:restore_xuid
+                                         accountDeleted:YES
+                                                   from:presenter];
                                  return;
                                }
-                               // The answer may only have been lost, so nothing more is claimed.
-                               [unsafe_self
-                                   showDeleteFailure:xe_ios_connection_failure_text(NSLocalizedString(
-                                                         @"You have to be online to delete the "
-                                                         @"account, and the online service didn’t "
-                                                         @"answer. The profile was kept.",
-                                                         @"profile view controller: alert message"))
-                                                from:presenter];
-                               [unsafe_self restoreSignIn:restore_xuid];
+                               // Asked but not answered: the lobby may have done it.
+                               NSString* failure =
+                                   error.code == XeniaLiveAccountErrorResultUnknown
+                                       ? NSLocalizedString(
+                                             @"The online service didn’t answer, so the account "
+                                             @"may or may not have been deleted. The profile is "
+                                             @"still here.",
+                                             @"profile view controller: alert message")
+                                       : xe_ios_connection_failure_text(NSLocalizedString(
+                                             @"You have to be online to delete the account, and "
+                                             @"the online service didn’t answer. The profile was "
+                                             @"kept.",
+                                             @"profile view controller: alert message"));
+                               [self showDeleteFailure:failure from:presenter];
+                               [self restoreSignIn:restore_xuid];
                              }];
   };
   [presenter presentViewController:busy
@@ -832,16 +851,25 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
 - (void)finishDeleteXuid:(uint64_t)xuid
                 gamertag:(NSString*)gamertag
                  restore:(uint64_t)restore_xuid
+          accountDeleted:(BOOL)account_deleted
                     from:(UIViewController*)presenter {
   if (!app_context_ || !app_context_->DeleteProfile(xuid)) {
-    [self showDeleteFailure:NSLocalizedString(@"Its files couldn’t be removed.",
-                                              @"profile view controller: alert message")
+    [self showDeleteFailure:account_deleted
+                                ? NSLocalizedString(@"The online account was deleted, but the "
+                                                    @"profile’s files couldn’t be removed. Delete "
+                                                    @"the profile again to remove them.",
+                                                    @"profile view controller: alert message")
+                                : NSLocalizedString(@"Its files couldn’t be removed.",
+                                                    @"profile view controller: alert message")
                        from:presenter];
     [self restoreSignIn:restore_xuid];
     return;
   }
   [self.navigationController popToViewController:self animated:YES];
   [self restoreSignIn:restore_xuid];
+  if (!restore_xuid) {
+    xe_ios_live_social_refresh_now();  // no profile is signed in now
+  }
   if (on_status_) {
     on_status_([NSString stringWithFormat:NSLocalizedString(
                                               @"Deleted %@.",
