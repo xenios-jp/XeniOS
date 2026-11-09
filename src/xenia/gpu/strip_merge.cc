@@ -17,8 +17,11 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/xxhash.h"
+#include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/shader.h"
+#include "xenia/gpu/texture_info.h"
+#include "xenia/memory.h"
 
 // TODO(xenios-jp): on by default; a title whose sessions fail verification
 // stays unmerged. Open: coverage (only Halo 3 merges), exactness (merged Halo 3
@@ -903,6 +906,35 @@ uint64_t StripMerge::HashDrawState() {
   for (uint32_t reg : strips_[strip_index_].own_float_registers) {
     exclude(reg);
   }
+  if (current_packet_own_ && memory_) {
+    // A strip's own draw may take its vertices from its own copy of the same
+    // data (Halo 3's clear quads: one 84-byte copy per strip): compare the
+    // vertices rather than where they are. A 6-dword fetch constant is a
+    // texture or three vertex fetches.
+    constexpr uint32_t kMaxHashedBytes = 64 * 1024;
+    uint32_t* fetch = scratch + kContextCount +
+                      (XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 - kConstantsFirst);
+    for (uint32_t group = 0; group < 32; ++group) {
+      uint32_t* words = fetch + group * 6;
+      if ((words[0] & 3) == uint32_t(xenos::FetchConstantType::kTexture)) {
+        continue;
+      }
+      for (uint32_t pair = 0; pair < 3; ++pair) {
+        uint32_t& dword_0 = words[pair * 2];
+        uint32_t dword_1 = words[pair * 2 + 1];
+        if ((dword_0 & 3) != uint32_t(xenos::FetchConstantType::kVertex)) {
+          continue;
+        }
+        uint32_t bytes = ((dword_1 >> 2) & 0xFFFFFF) * 4;
+        if (!bytes || bytes > kMaxHashedBytes) {
+          continue;
+        }
+        const uint8_t* data =
+            memory_->TranslatePhysical<const uint8_t*>(dword_0 & ~uint32_t(3));
+        dword_0 = uint32_t(XXH3_64bits(data, bytes)) | 3;
+      }
+    }
+  }
   return XXH3_64bits(scratch, draw_state_scratch_.size() * sizeof(uint32_t));
 }
 
@@ -912,6 +944,16 @@ bool StripMerge::IsBanded(uint32_t pitch_tiles_at_32bpp,
   return checked.IsValid() && checked.pitch_tiles_at_32bpp &&
          pitch_tiles_at_32bpp == checked.pitch_tiles_at_32bpp &&
          msaa_samples == checked.msaa_samples;
+}
+
+bool StripMerge::IsSurfaceBanded() const {
+  auto rb_surface_info = register_file_.Get<reg::RB_SURFACE_INFO>();
+  uint32_t pitch_tiles_at_32bpp =
+      ((rb_surface_info.surface_pitch
+        << uint32_t(rb_surface_info.msaa_samples >= xenos::MsaaSamples::k4X)) +
+       (xenos::kEdramTileWidthSamples - 1)) /
+      xenos::kEdramTileWidthSamples;
+  return IsBanded(pitch_tiles_at_32bpp, rb_surface_info.msaa_samples);
 }
 
 bool StripMerge::IsFrameSpace() const {
@@ -967,11 +1009,73 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
   }
 }
 
-void StripMerge::NoteOwnResolve(const ResolveRecord& resolve) {
-  if (!learning()) {
-    return;
+uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer) {
+  bool banded = IsSurfaceBanded();
+  bool own = current_packet_own();
+  if (merging()) {
+    if (failed()) {
+      return 0;
+    }
+    if (banded && own) {
+      return layout().frame_bottom();
+    }
+    if (banded) {
+      // Every strip resolving its band: the later strips' resolves are
+      // skipped, so their rows would be missing.
+      Fail("a resolve of the strip's band in every strip");
+    }
+    return 0;
   }
-  strips_[strip_index_].own_resolves.push_back(resolve);
+  if (!learning()) {
+    return 0;
+  }
+  if (!own) {
+    if (banded) {
+      Fail("a resolve of the strip's band in every strip");
+    }
+    return 0;
+  }
+  // Learning: what DeriveLayout compares across the strips. No trace is being
+  // written while recording, so this logs no memory reads.
+  draw_util::ResolveInfo resolve_info;
+  if (!draw_util::GetResolveInfo(register_file_, *memory_, trace_writer, 1, 1,
+                                 false, false, resolve_info)) {
+    Fail("a strip-own resolve that can't be decoded");
+    return 0;
+  }
+  const draw_util::ResolveEdramInfo& edram_info =
+      resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
+                                    : resolve_info.color_edram_info;
+  ResolveRecord record;
+  record.edram_info = edram_info.packed;
+  record.coordinate_info = resolve_info.coordinate_info.packed;
+  record.height_div_8 = resolve_info.height_div_8;
+  record.copy_dest_info = resolve_info.copy_dest_info.value;
+  draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
+      resolve_info.copy_dest_coordinate_info;
+  record.dest_height_aligned = dest_coordinates.height_aligned_div_32 << 5;
+  dest_coordinates.height_aligned_div_32 = 0;
+  record.copy_dest_coordinate_info = dest_coordinates.packed;
+  record.copy_dest_base = resolve_info.copy_dest_base;
+  record.copy_control = resolve_info.rb_copy_control.value;
+  record.dest_pitch_aligned =
+      resolve_info.copy_dest_coordinate_info.pitch_aligned_div_32 << 5;
+  record.dest_offset_y =
+      resolve_info.copy_dest_coordinate_info.offset_y_div_8 << 3;
+  record.dest_bytes_per_pixel =
+      FormatInfo::Get(
+          xenos::TextureFormat(resolve_info.copy_dest_info.copy_dest_format))
+          ->bits_per_pixel >>
+      3;
+  record.edram_offset_y = resolve_info.coordinate_info.edram_offset_y_div_8
+                          << 3;
+  record.pitch_tiles_at_32bpp = edram_info.pitch_tiles;
+  record.msaa_samples = edram_info.msaa_samples;
+  record.is_64bpp = edram_info.format_is_64bpp != 0;
+  record.clears =
+      resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
+  strips_[strip_index_].own_resolves.push_back(record);
+  return 0;
 }
 
 void StripMerge::Fail(const char* reason) {
