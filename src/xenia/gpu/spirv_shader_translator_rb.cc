@@ -1574,6 +1574,12 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
 
         if_rt_write_mask_not_empty.makeEndIf();
         if_fsi_color_written.makeEndIf();
+      } else if (features_.host_render_target_feedback) {
+        // 8_8_8_8_GAMMA is stored as the console's 8-bit gamma, encoded (and
+        // if needed blended) as the console's render backend does it.
+        builder_->createStore(
+            CompleteFragmentShader_HostGamma(color, color_target_index),
+            color_variable);
       } else {
         // Convert to gamma space - this is incorrect, since it must be done
         // after blending on the Xbox 360, but this is just one of many blending
@@ -4435,6 +4441,125 @@ spv::Id SpirvShaderTranslator::FSI_PackUnitColor(
       break;
   }
   return FSI_PackUnitFields(rgb, alpha, format);
+}
+
+spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
+    spv::Id color, uint32_t color_target_index) {
+  const xenos::ColorRenderTargetFormat gamma_format =
+      xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA;
+  spv::Id is_gamma = builder_->createBinOp(
+      spv::OpINotEqual, type_bool_,
+      builder_->createBinOp(
+          spv::OpBitwiseAnd, type_uint_, main_system_constant_flags_,
+          builder_->makeUintConstant(kSysFlag_ConvertColor0ToGamma
+                                     << color_target_index)),
+      const_uint_0_);
+  SpirvBuilder::IfBuilder if_gamma(is_gamma, spv::SelectionControlDontFlattenMask,
+                                   *builder_);
+  spv::Id result_packed;
+  spv::Id input_attachment = input_feedback_color_[color_target_index];
+  if (input_attachment != spv::NoResult) {
+    // The target's RB_BLENDCONTROL, or 1 * source + 0 * destination if the
+    // fixed-function stage blends it or nothing does. A function constant
+    // where the pipeline specializes it, so the blending code is only what
+    // the pipeline's blend needs.
+    spv::Id blend_factors_equations;
+    if (main_fetch_state_[kFetchStateColorBlendBinding] != spv::NoResult) {
+      blend_factors_equations = builder_->createCompositeExtract(
+          main_fetch_state_[kFetchStateColorBlendBinding], type_uint_,
+          color_target_index);
+    } else {
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(kSystemConstantEdramRTBlendFactorsOps));
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(int32_t(color_target_index)));
+      blend_factors_equations = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassUniform,
+                                      uniform_system_constants_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
+    }
+    SpirvBuilder::IfBuilder if_blend(
+        builder_->createBinOp(spv::OpINotEqual, type_bool_,
+                              blend_factors_equations,
+                              builder_->makeUintConstant(0x00010001)),
+        spv::SelectionControlDontFlattenMask, *builder_);
+    spv::Id blended_packed;
+    {
+      // The destination's bytes. unorm8 to float is exact enough to round
+      // back.
+      std::unique_ptr<spv::Instruction> read_op =
+          std::make_unique<spv::Instruction>(builder_->getUniqueId(),
+                                             type_float4_, spv::OpImageRead);
+      read_op->addIdOperand(
+          builder_->createLoad(input_attachment, spv::NoPrecision));
+      read_op->addIdOperand(builder_->makeNullConstant(type_int2_));
+      spv::Id dest = read_op->getResultId();
+      builder_->getBuildPoint()->addInstruction(std::move(read_op));
+      spv::Id dest_bytes = builder_->createUnaryOp(
+          spv::OpConvertFToU, type_uint4_,
+          builder_->createNoContractionBinOp(
+              spv::OpFAdd, type_float4_,
+              builder_->createNoContractionBinOp(
+                  spv::OpVectorTimesScalar, type_float4_, dest,
+                  builder_->makeFloatConstant(255.0f)),
+              builder_->smearFloatConstant(0.5f, type_float4_)));
+      spv::Id dest_packed =
+          builder_->createCompositeExtract(dest_bytes, type_uint_, 0);
+      for (uint32_t i = 1; i < 4; ++i) {
+        dest_packed = builder_->createQuadOp(
+            spv::OpBitFieldInsert, type_uint_, dest_packed,
+            builder_->createCompositeExtract(dest_bytes, type_uint_, i),
+            builder_->makeUintConstant(8 * i), builder_->makeUintConstant(8));
+      }
+
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(kSystemConstantEdramBlendConstant));
+      spv::Id blend_constant = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassUniform,
+                                      uniform_system_constants_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
+      spv::Id blend_factor_width = builder_->makeUintConstant(5);
+      spv::Id blend_equation_width = builder_->makeUintConstant(3);
+      auto field = [&](uint32_t offset, spv::Id width) {
+        return builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
+                                     blend_factors_equations,
+                                     builder_->makeUintConstant(offset), width);
+      };
+      blended_packed = FSI_BlendFixed10(
+          gamma_format, FSI_SourceToFixed10(color, gamma_format),
+          FSI_UnpackToFixed10(dest_packed, gamma_format),
+          FSI_FloatToUnorm(blend_constant, 10), field(5, blend_equation_width),
+          field(0, blend_factor_width), field(8, blend_factor_width),
+          field(21, blend_equation_width), field(16, blend_factor_width),
+          field(24, blend_factor_width));
+    }
+    if_blend.makeBeginElse();
+    spv::Id unblended_packed = FSI_PackUnitColor(color, gamma_format);
+    if_blend.makeEndIf();
+    result_packed = if_blend.createMergePhi(blended_packed, unblended_packed);
+  } else {
+    result_packed = FSI_PackUnitColor(color, gamma_format);
+  }
+  // The stored bytes as the unorm8 values the attachment converts back to
+  // them exactly.
+  id_vector_temp_.clear();
+  for (uint32_t i = 0; i < 4; ++i) {
+    id_vector_temp_.push_back(builder_->createTriOp(
+        spv::OpBitFieldUExtract, type_uint_, result_packed,
+        builder_->makeUintConstant(8 * i), builder_->makeUintConstant(8)));
+  }
+  spv::Id result_gamma = builder_->createNoContractionBinOp(
+      spv::OpVectorTimesScalar, type_float4_,
+      builder_->createUnaryOp(
+          spv::OpConvertUToF, type_float4_,
+          builder_->createCompositeConstruct(type_uint4_, id_vector_temp_)),
+      builder_->makeFloatConstant(1.0f / 255.0f));
+  if_gamma.makeEndIf();
+  return if_gamma.createMergePhi(result_gamma, color);
 }
 
 void SpirvShaderTranslator::FSI_AlphaToMaskSample(

@@ -95,6 +95,9 @@ class MetalCommandProcessor : public CommandProcessor,
 
   // Get the Metal device and command queue
   MTL::Device* GetMetalDevice() const { return device_; }
+  // Whether guest pixel shaders can read their host render targets in raster
+  // order: Metal framebuffer fetch, through spirv2air.
+  bool SupportsHostRenderTargetFeedback() const;
   MTL::CommandQueue* GetMetalCommandQueue() const { return command_queue_; }
   MTL::CommandBuffer* GetCurrentCommandBuffer() const {
     return current_command_buffer_;
@@ -1014,10 +1017,13 @@ class MetalCommandProcessor : public CommandProcessor,
     uint32_t vertex_fetch_states_specialized : 1;
     uint32_t fragment_fetch_states_specialized : 1;
     uint32_t finite_multiply_enabled : 1;
-    uint32_t padding : 21;  // 32
+    // 8_8_8_8_GAMMA color targets the pixel shader blends itself, with
+    // fixed-function blending off.
+    uint32_t gamma_shader_blend_mask : 4;
+    uint32_t padding : 17;  // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20261029;
+    static constexpr uint32_t kVersion = 0x20261109;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }

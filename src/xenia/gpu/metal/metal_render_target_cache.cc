@@ -104,6 +104,16 @@ DEFINE_bool(metal_resolve_store_dontcare, true,
             "Don't store the attachments of a render pass ended by a resolve "
             "that clears them whole without reading them",
             "Metal");
+DEFINE_bool(
+    metal_gamma_fetch_blend, true,
+    "Store 8_8_8_8_GAMMA render targets as 8-bit piecewise linear gamma, as "
+    "the console's EDRAM holds them, in the same resources as 8_8_8_8, and "
+    "blend draws into them in the pixel shader: read the target through "
+    "framebuffer fetch, convert both colors to 10-bit linear, blend with the "
+    "draw's factors and encode, as the console's render backend does. Needs "
+    "programmable blending (Apple GPUs) and the spirv2air shader compiler; "
+    "replaces gamma_render_target_as_unorm16 where it applies.",
+    "Metal");
 DEFINE_int32(metal_memory_log_rate, 0,
              "Log Metal render target/pipeline/instance buffer sizes every N "
              "frames (0 to disable)",
@@ -824,7 +834,16 @@ bool MetalRenderTargetCache::Initialize() {
         "transfers will use eight masked draws per rectangle");
   }
 
-  gamma_render_target_as_unorm16_ = ::cvars::gamma_render_target_as_unorm16;
+  gamma_fetch_blend_ = ::cvars::metal_gamma_fetch_blend &&
+                       command_processor_.SupportsHostRenderTargetFeedback();
+  // 8-bit storage blends correctly when the shader blends, so the 16-bit
+  // linear storage is only for when it can't.
+  gamma_render_target_as_unorm16_ =
+      ::cvars::gamma_render_target_as_unorm16 && !gamma_fetch_blend_;
+  XELOGI("MetalRenderTargetCache: 8_8_8_8_GAMMA as {}",
+         gamma_fetch_blend_ ? "8-bit gamma with shader blending"
+         : gamma_render_target_as_unorm16_ ? "16-bit linear"
+                                           : "8-bit gamma");
 
   // Create the EDRAM buffer.
   //

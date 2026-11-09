@@ -347,6 +347,7 @@ void SpirvShaderTranslator::Reset() {
   input_fragment_coordinates_ = spv::NoResult;
   input_front_facing_ = spv::NoResult;
   input_sample_mask_ = spv::NoResult;
+  std::ranges::fill(input_feedback_color_, spv::NoResult);
   // Barycentric interpolation inputs.
   input_barycentric_coord_ = spv::NoResult;
   input_barycentric_coord_no_persp_ = spv::NoResult;
@@ -767,6 +768,13 @@ void SpirvShaderTranslator::StartTranslation() {
                            (binding.fetch_constant >> 2))) |
           (UINT64_C(1) << (kFetchStateTextureDecodeBinding +
                            (binding.fetch_constant >> 2)));
+    }
+    // The blend state of the targets blended in the shader, so its factor and
+    // equation selection folds away for each pipeline.
+    if (is_pixel_shader() && !edram_fragment_shader_interlock_ &&
+        features_.host_render_target_feedback &&
+        GetSpirvShaderModification().pixel.host_render_target_feedback) {
+      fetch_state_bindings |= UINT64_C(1) << kFetchStateColorBlendBinding;
     }
     if (fetch_state_bindings) {
       id_vector_temp_.clear();
@@ -3748,6 +3756,12 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
           "xe_out_fragment_data_2",
           "xe_out_fragment_data_3",
       };
+      static const char* const kFeedbackColorNames[] = {
+          "xe_feedback_color_0",
+          "xe_feedback_color_1",
+          "xe_feedback_color_2",
+          "xe_feedback_color_3",
+      };
       // Only create outputs for color targets that are both written by the
       // shader and actually bound in the render pass.
       Modification shader_modification = GetHostRtShaderModification();
@@ -3770,6 +3784,32 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
         builder_->addDecoration(output_fragment_data_rt,
                                 spv::DecorationInvariant);
         main_interface_.push_back(output_fragment_data_rt);
+        if (features_.host_render_target_feedback &&
+            shader_modification.pixel.host_render_target_feedback) {
+          // The target as a single-sample input attachment even with MSAA:
+          // reading the current sample doesn't need SampleId, which would run
+          // the whole shader per sample. Metal runs only the part that
+          // depends on the read per sample.
+          builder_->addCapability(spv::Capability::InputAttachment);
+          spv::Id input_attachment = builder_->createVariable(
+              spv::NoPrecision, spv::StorageClassUniformConstant,
+              builder_->makeImageType(type_float_, spv::Dim::SubpassData, false,
+                                      false, false, 2,
+                                      spv::ImageFormatUnknown),
+              kFeedbackColorNames[color_target_index]);
+          builder_->addDecoration(input_attachment,
+                                  spv::DecorationDescriptorSet,
+                                  int(kDescriptorSetTexturesPixel));
+          builder_->addDecoration(input_attachment, spv::DecorationBinding,
+                                  int(color_target_index));
+          builder_->addDecoration(input_attachment,
+                                  spv::DecorationInputAttachmentIndex,
+                                  int(color_target_index));
+          if (features_.spirv_version >= spv::Spv_1_4) {
+            main_interface_.push_back(input_attachment);
+          }
+          input_feedback_color_[color_target_index] = input_attachment;
+        }
       }
     }
   }

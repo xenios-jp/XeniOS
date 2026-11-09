@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "xenia/gpu/spirv_shader.h"
+#include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/ui/metal/metal_api.h"
 
 namespace xe {
@@ -59,6 +60,13 @@ class DxilShader : public SpirvShader {
     const std::string& entry_point_name() const { return entry_point_name_; }
 
    private:
+    // A pixel shader that reads its render targets
+    // (host_render_target_feedback), which only spirv2air can compile.
+    bool ReadsRenderTargets() const {
+      return shader().type() == xenos::ShaderType::kPixel &&
+             SpirvShaderTranslator::Modification(modification())
+                 .pixel.host_render_target_feedback;
+    }
     // SPIR-V -> AIR directly (spirv2air). False if this build lacks spirv2air
     // or the shader uses something it doesn't support (logged).
     bool CompileToAirWithSpirv2air(

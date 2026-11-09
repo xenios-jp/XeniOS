@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 27;
+    static constexpr uint32_t kVersion = 28;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -127,9 +127,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // For host render targets with MIN/MAX blend op - the source blend factor
       // to pre-multiply the shader output by (since Vulkan/D3D12 MIN/MAX
       // ignores blend factors, but Xbox 360 applies them). kOne means no
-      // pre-multiply. Only RT0 is supported for now.
+      // pre-multiply. Only RT0 is supported for now. For alpha,
+      // kSrcAlphaSaturate is kOne, so 4 bits hold every distinct factor: store
+      // kOne for it.
       xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
-      xenos::BlendFactor rt0_blend_a_factor_for_premult : 5;
+      xenos::BlendFactor rt0_blend_a_factor_for_premult : 4;
       // For host render targets - which color render targets are actually
       // bound.
       uint32_t color_targets_used : xenos::kMaxColorRenderTargets;
@@ -146,6 +148,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // from the draw. This is only set when the draw is native because of a
       // set scale threshold (FBO only).
       uint32_t resolution_scale_native : 1;
+      // Host render target path with host_render_target_feedback - the shader
+      // reads every color target it writes and that is bound, in raster
+      // order, so it can blend the ones the system constants mark itself.
+      uint32_t host_render_target_feedback : 1;
 
       // The host render target path's fields, assembled into one value so
       // the FSI path can carve them up without its own uses colliding. Safe
@@ -165,16 +171,18 @@ class SpirvShaderTranslator : public ShaderTranslator {
         return uint32_t(depth_stencil_mode) |
                (uint32_t(rt0_blend_rgb_factor_for_premult) << 3) |
                (uint32_t(rt0_blend_a_factor_for_premult) << 8) |
-               (color_targets_used << 13) | (resolution_scale_native << 17);
+               (color_targets_used << 12) | (resolution_scale_native << 16) |
+               (host_render_target_feedback << 17);
       }
       void set_fsi_bits(uint32_t bits) {
         assert_zero(bits >> kFsiBitCount);
         depth_stencil_mode = DepthStencilMode(bits & 0x7);
         rt0_blend_rgb_factor_for_premult =
             xenos::BlendFactor((bits >> 3) & 0x1F);
-        rt0_blend_a_factor_for_premult = xenos::BlendFactor((bits >> 8) & 0x1F);
-        color_targets_used = (bits >> 13) & 0xF;
-        resolution_scale_native = (bits >> 17) & 1;
+        rt0_blend_a_factor_for_premult = xenos::BlendFactor((bits >> 8) & 0xF);
+        color_targets_used = (bits >> 12) & 0xF;
+        resolution_scale_native = (bits >> 16) & 1;
+        host_render_target_feedback = (bits >> 17) & 1;
         // Catches a field having been narrowed under the shifts above.
         assert_true(fsi_bits() == bits);
       }
@@ -529,7 +537,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
   // Vertex endianness uses bindings 0-1; bool and loop constants use 8-17;
-  // texture fetch constant decoding uses 19-34. Leave the rest of texture
+  // texture fetch constant decoding uses 19-34; pixel shader blending uses 35.
+  // Leave the rest of texture
   // arithmetic and system flags in runtime uniform buffers.
   static constexpr uint32_t kDescriptorSetFetchState = 9;
   static constexpr uint32_t kVertexFetchEndianBindingCount = 2;
@@ -541,7 +550,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // The swizzled signs (bits 0:7) and exponent bias (bits 8:13) of 4 texture
   // fetch constants each.
   static constexpr uint32_t kFetchStateTextureDecodeBinding = 27;
-  static constexpr uint32_t kFetchStateBindingCount = 35;
+  // host_render_target_feedback: the RB_BLENDCONTROL (masked with 0x1FFF1FFF)
+  // of each color target the pixel shader blends itself, 0x00010001 for the
+  // others.
+  static constexpr uint32_t kFetchStateColorBlendBinding = 35;
+  static constexpr uint32_t kFetchStateBindingCount = 36;
   // Unknown includes computed overflow, interpolation, vertex data and
   // dynamically addressed inputs. Only explicit finite proofs can clear it.
   static constexpr uint64_t kFiniteMultiplyUnknown = UINT64_C(1);
@@ -623,6 +636,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // so a later draw covering a sample would move an earlier fragment's
     // centroid.
     bool centroid_from_raster_coverage = false;
+    // Host render targets can be read in the pixel shader in raster order
+    // (Metal framebuffer fetch through spirv2air), so 8_8_8_8_GAMMA targets
+    // are stored as the console's 8-bit piecewise linear gamma and blended in
+    // the shader in linear space, as the console's render backend does.
+    bool host_render_target_feedback = false;
   };
 
   SpirvShaderTranslator(const Features& features,
@@ -1242,6 +1260,14 @@ class SpirvShaderTranslator : public ShaderTranslator {
                            spv::Id color_dest_factor, spv::Id alpha_equation,
                            spv::Id alpha_source_factor,
                            spv::Id alpha_dest_factor);
+  // host_render_target_feedback: the value to write to an 8_8_8_8_GAMMA host
+  // render target stored as 8-bit gamma - the color encoded as the console's
+  // render backend encodes it, or, if the system constants give the target a
+  // blend and the shader reads it back, blended with the target's sample in
+  // 10-bit linear and encoded. As float4 unorm8 values the attachment stores
+  // exactly.
+  spv::Id CompleteFragmentShader_HostGamma(spv::Id color,
+                                           uint32_t color_target_index);
 
   Features features_;
   bool native_2x_msaa_with_attachments_;
@@ -1449,6 +1475,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id input_front_facing_;
   // PS, only when needed - int[1].
   spv::Id input_sample_mask_;
+  // PS, host_render_target_feedback - the input attachments of the color
+  // targets the shader reads back, or NoResult.
+  spv::Id input_feedback_color_[xenos::kMaxColorRenderTargets];
 
   // PS, barycentric coordinate inputs (when fragment_shader_barycentric is
   // enabled) - float3.

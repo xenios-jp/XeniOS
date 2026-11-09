@@ -191,6 +191,28 @@ void AddPendingWrite(std::vector<draw_util::MemExportRange>& writes,
 // MSL. Guest compilation may use native AIR or the Mesa/DXIL converter path.
 bool UseDxilPath() { return cvars::metal_use_dxil; }
 
+// RB_BLENDCONTROL fields that blend, and their value that doesn't: 1 * source
+// + 0 * destination for color and alpha.
+constexpr uint32_t kBlendControlMask = 0x1FFF1FFF;
+constexpr uint32_t kBlendControlNoBlending = 0x00010001;
+
+// The blend control of an 8_8_8_8_GAMMA color target that the pixel shader
+// blends itself when the render target cache stores it as 8-bit gamma
+// (metal_gamma_fetch_blend), or kBlendControlNoBlending if the target isn't
+// one, isn't written, or doesn't blend.
+uint32_t GetGammaShaderBlendControl(const RegisterFile& regs, uint32_t rt,
+                                    uint32_t normalized_color_mask) {
+  if (!((normalized_color_mask >> (rt * 4)) & 0xF) ||
+      regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[rt])
+              .color_format != xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
+    return kBlendControlNoBlending;
+  }
+  return regs.Get<reg::RB_BLENDCONTROL>(
+                 reg::RB_BLENDCONTROL::rt_register_indices[rt])
+             .value &
+         kBlendControlMask;
+}
+
 // function_name_suffix is appended to the entry point name of the converted
 // shader, for functions MSC emits under a derived name.
 bool CreateMetalFunction(MTL::Device* device,
@@ -1215,6 +1237,10 @@ void MetalCommandProcessor::ApplyColorAttachmentState(
         src_rgb != MTL::BlendFactorOne || dst_rgb != MTL::BlendFactorZero ||
         op_rgb != MTL::BlendOperationAdd || src_alpha != MTL::BlendFactorOne ||
         dst_alpha != MTL::BlendFactorZero || op_alpha != MTL::BlendOperationAdd;
+    // The pixel shader blends it.
+    if (request.description.gamma_shader_blend_mask & (1u << i)) {
+      blending_enabled = false;
+    }
     color_attachment->setBlendingEnabled(blending_enabled);
     if (blending_enabled) {
       color_attachment->setSourceRGBBlendFactor(src_rgb);
@@ -1347,6 +1373,12 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
       &states[SpirvShaderTranslator::kFetchStateTextureDecodeBinding * 4],
       request.description.pixel_texture_decode_bits,
       sizeof(request.description.pixel_texture_decode_bits));
+  for (uint32_t i = 0; i < 4; ++i) {
+    states[SpirvShaderTranslator::kFetchStateColorBlendBinding * 4 + i] =
+        (request.description.gamma_shader_blend_mask & (1u << i))
+            ? request.description.blendcontrol[i] & kBlendControlMask
+            : kBlendControlNoBlending;
+  }
   return GetSpecializedFunction(
       request.fragment_library, request.fragment_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
@@ -1370,7 +1402,9 @@ bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
     return false;
   }
   const auto& constants = translation->shader().constant_register_map();
-  return (spirv_translator_features_.optimize_finite_multiplication &&
+  return SpirvShaderTranslator::Modification(translation->modification())
+             .pixel.host_render_target_feedback ||
+         (spirv_translator_features_.optimize_finite_multiplication &&
           GetFiniteMultiplyRequirements(translation->shader())) ||
          !translation->shader().texture_bindings().empty() ||
          constants.loop_bitmap ||
@@ -2685,6 +2719,15 @@ MetalCommandProcessor::CreateSpirvShaderTranslator() const {
       spirv_translator_resolution_scale_y_);
 }
 
+bool MetalCommandProcessor::SupportsHostRenderTargetFeedback() const {
+  // spirv2air reads input attachments as color attachments in raster order
+  // group 0. Metal Shader Converter's DXIL path has no equivalent, and the
+  // fetch-state function constants specialize the shader's blending.
+  return device_ && UseDxilPath() && cvars::metal_shader_compiler == "spirv2air" &&
+         device_->supportsFamily(MTL::GPUFamilyApple4) &&
+         device_->areRasterOrderGroupsSupported();
+}
+
 bool MetalCommandProcessor::InitializeShaderTranslation() {
   // RGBA8 targets need shader gamma encoding. RGBA16 targets store linear
   // values and encode them when packing the render target into EDRAM.
@@ -2702,6 +2745,9 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   SpirvShaderTranslator::Features spirv_features(true);
   spirv_features.structured_vertex_control_flow = UseDxilPath();
   spirv_features.fetch_state_function_constants = UseDxilPath();
+  // 8_8_8_8_GAMMA as 8-bit gamma, blended in the shader.
+  spirv_features.host_render_target_feedback =
+      render_target_cache_->gamma_fetch_blend();
   spirv_features.optimize_finite_multiplication =
       cvars::metal_finite_multiply &&
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
@@ -6570,6 +6616,19 @@ bool MetalCommandProcessor::IssueDrawDxil(
             !exact_shaders_required &&
                 (!is_tessellated || cvars::async_shader_skip_draws),
             &pixel_status));
+    // Only spirv2air reads render targets. If it can't translate the shader,
+    // blend the gamma targets with fixed-function blending, in gamma space,
+    // rather than dropping the draw.
+    if (pixel_status == ShaderCompileStatus::kFailed &&
+        pixel_shader_modification.pixel.host_render_target_feedback) {
+      pixel_shader_modification.pixel.host_render_target_feedback = 0;
+      pixel_translation =
+          static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
+              *dxil_pixel_shader, pixel_shader_modification.value,
+              !exact_shaders_required &&
+                  (!is_tessellated || cvars::async_shader_skip_draws),
+              &pixel_status));
+    }
     if (pixel_status == ShaderCompileStatus::kFailed) {
       return false;
     }
@@ -9004,7 +9063,12 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
 
   bool rt0_minmax_premult_rgb_expected = false;
   bool rt0_minmax_premult_a_expected = false;
-  if (shader.writes_color_target(0)) {
+  // A gamma target is encoded by the shader, and if it blends, blended there
+  // with the factors applied before MIN and MAX.
+  if (shader.writes_color_target(0) &&
+      !(spirv_translator_features_.host_render_target_feedback &&
+        regs.Get<reg::RB_COLOR_INFO>().color_format ==
+            xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
     auto blend_control = regs.Get<reg::RB_BLENDCONTROL>(
         reg::RB_BLENDCONTROL::rt_register_indices[0]);
     rt0_minmax_premult_rgb_expected =
@@ -9044,6 +9108,22 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
       (((normalized_color_mask >> 4) & 0xF) ? 2 : 0) |
       (((normalized_color_mask >> 8) & 0xF) ? 4 : 0) |
       (((normalized_color_mask >> 12) & 0xF) ? 8 : 0);
+
+  // Only draws blending into a gamma target read their targets back: a pixel
+  // shader that reads a target can't have its fragments removed as hidden.
+  if (spirv_translator_features_.host_render_target_feedback) {
+    uint32_t rts =
+        shader.writes_color_targets() & modification.pixel.color_targets_used;
+    uint32_t rt;
+    while (xe::bit_scan_forward(rts, &rt)) {
+      rts &= ~(UINT32_C(1) << rt);
+      if (GetGammaShaderBlendControl(regs, rt, normalized_color_mask) !=
+          kBlendControlNoBlending) {
+        modification.pixel.host_render_target_feedback = 1;
+        break;
+      }
+    }
+  }
 
   return modification;
 }
@@ -9163,6 +9243,16 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
                       reg::RB_BLENDCONTROL::rt_register_indices[i])
                   .value
             : 0u;
+    // Gamma targets the pixel shader reads back and blends itself.
+    if (pixel_translation && rt_write_mask &&
+        color_formats[i] != MTL::PixelFormatInvalid &&
+        SpirvShaderTranslator::Modification(pixel_translation->modification())
+            .pixel.host_render_target_feedback &&
+        GetGammaShaderBlendControl(regs, i,
+                                   description.normalized_color_mask) !=
+            kBlendControlNoBlending) {
+      description.gamma_shader_blend_mask |= 1u << i;
+    }
   }
   SetPipelineFunctionConstants(request, vertex_translation, pixel_translation);
   description.vertex_fetch_states_specialized =
@@ -9659,6 +9749,27 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
       color_exp_bias_scale *= 1024.0f / 32767.0f;
     }
     consts.color_exp_bias[i] = color_exp_bias_scale;
+  }
+
+  // Gamma targets blended in the pixel shader. The pipeline specializes the
+  // blend controls; these are for shaders without fetch-state constants.
+  if (spirv_translator_features_.host_render_target_feedback) {
+    bool shader_blends = false;
+    for (uint32_t i = 0; i < 4; ++i) {
+      consts.edram_rt_blend_factors_ops[i] =
+          GetGammaShaderBlendControl(regs, i, normalized_color_mask);
+      shader_blends |=
+          consts.edram_rt_blend_factors_ops[i] != kBlendControlNoBlending;
+    }
+    if (shader_blends) {
+      consts.edram_blend_constant[0] = regs.Get<float>(XE_GPU_REG_RB_BLEND_RED);
+      consts.edram_blend_constant[1] =
+          regs.Get<float>(XE_GPU_REG_RB_BLEND_GREEN);
+      consts.edram_blend_constant[2] =
+          regs.Get<float>(XE_GPU_REG_RB_BLEND_BLUE);
+      consts.edram_blend_constant[3] =
+          regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA);
+    }
   }
 
   // User clip planes and tessellation constants in the system constants.
