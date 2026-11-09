@@ -1974,49 +1974,37 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   }
 
   if (through_viewport || (written_slots & (written_slots - 1))) {
-    // What the transfers would write inside the quad it overwrites: drop the
-    // transfers it covers whole, and leave it out of the rest, which, as the
-    // cutout applies to every target, may only go to targets it writes.
+    // What the transfers into the targets it writes would write inside the
+    // quad it overwrites: drop the transfers it covers whole, and leave it out
+    // of the rest. The transfers into other targets stay whole.
     if (quad_hold_slot_ != UINT32_MAX) {
       return;
     }
-    bool any = false;
-    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
-      if (transfer_lists[i].empty()) {
-        continue;
-      }
-      if (!(written_slots & (uint32_t(1) << i))) {
-        return;
-      }
-      any = true;
-    }
-    if (!any) {
-      return;
-    }
-    uint32_t cutout_slot = UINT32_MAX;
     for (uint32_t i = 1; i <= xenos::kMaxColorRenderTargets; ++i) {
       std::vector<Transfer>& slot_transfers = transfer_lists[i];
-      if (slot_transfers.empty()) {
+      if (slot_transfers.empty() || !(written_slots & (uint32_t(1) << i))) {
         continue;
       }
       const RenderTargetKey key = render_targets[i]->key();
-      Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
+      Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
       slot_transfers.erase(
           std::remove_if(slot_transfers.begin(), slot_transfers.end(),
                          [&](const Transfer& transfer) {
-                           return !transfer.GetRectangles(key, key.Is64bpp(),
-                                                          rectangles, &covered);
+                           return !GetTransferRectangles(transfer, key,
+                                                         key.Is64bpp(),
+                                                         rectangles, &covered);
                          }),
           slot_transfers.end());
-      if (!slot_transfers.empty() && cutout_slot == UINT32_MAX) {
-        cutout_slot = i;
+      if (!slot_transfers.empty()) {
+        update_cutout_mask_ |= uint32_t(1) << i;
+        update_cutouts_[i] = covered;
+        // The quad is the pass's draw after the transfers.
+        if (::cvars::metal_transfer_in_draw_pass &&
+            PendingDrawPassTransfersFullyOverwriteTarget(i, render_targets[i],
+                                                         slot_transfers)) {
+          update_cutout_full_overwrite_mask_ |= uint32_t(1) << i;
+        }
       }
-    }
-    if (cutout_slot != UINT32_MAX) {
-      update_cutout_slot_ = cutout_slot;
-      update_cutout_ = covered;
-      update_cutout_from_quad_ = false;
-      update_cutout_full_overwrite_ = false;
     }
     return;
   }
@@ -2083,12 +2071,13 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     // they only fill the rest. Whether the pass may skip loading the target
     // is as if they covered all of it, since the quad is the pass's first
     // draw.
-    update_cutout_slot_ = slot;
-    update_cutout_ = covered;
-    update_cutout_from_quad_ = true;
-    update_cutout_full_overwrite_ =
-        ::cvars::metal_transfer_in_draw_pass &&
-        PendingDrawPassTransfersFullyOverwriteTarget(slot, rt, transfers);
+    update_cutout_mask_ |= uint32_t(1) << slot;
+    update_cutouts_[slot] = covered;
+    update_cutout_quad_slot_ = slot;
+    if (::cvars::metal_transfer_in_draw_pass &&
+        PendingDrawPassTransfersFullyOverwriteTarget(slot, rt, transfers)) {
+      update_cutout_full_overwrite_mask_ |= uint32_t(1) << slot;
+    }
   }
   // Depth 0 and 1 are exact in both depth formats, and kept by every
   // transfer conversion.
@@ -2127,28 +2116,25 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
 
 void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
     RenderTarget* const* render_targets) {
-  if (constant_contents_.empty() || update_cutout_slot_ != UINT32_MAX ||
-      draw_resolution_scale_x() != 1 || draw_resolution_scale_y() != 1) {
+  if (constant_contents_.empty() || draw_resolution_scale_x() != 1 ||
+      draw_resolution_scale_y() != 1) {
     return;
   }
-  std::vector<Transfer>* transfer_lists = last_update_transfers();
-  uint32_t slot = UINT32_MAX;
-  for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
-    if (!transfer_lists[i].empty()) {
-      if (slot != UINT32_MAX) {
-        return;
-      }
-      slot = i;
+  // Each attachment's transfers on their own: the clear and the cutout are the
+  // destination's.
+  const std::vector<Transfer>* transfer_lists = last_update_transfers();
+  for (uint32_t i = 1; i <= xenos::kMaxColorRenderTargets; ++i) {
+    if (!transfer_lists[i].empty() && render_targets[i] &&
+        !(update_cutout_mask_ & (uint32_t(1) << i))) {
+      ReplaceConstantSourceTransfers(
+          i, static_cast<MetalRenderTarget*>(render_targets[i]));
     }
   }
-  if (slot == UINT32_MAX || !slot) {
-    return;
-  }
-  auto* dest = static_cast<MetalRenderTarget*>(render_targets[slot]);
-  std::vector<Transfer>& transfers = transfer_lists[slot];
-  if (!dest) {
-    return;
-  }
+}
+
+void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
+    uint32_t slot, MetalRenderTarget* dest) {
+  const std::vector<Transfer>& transfers = last_update_transfers()[slot];
   const RenderTargetKey dest_key = dest->key();
   const xenos::ColorRenderTargetFormat format = dest_key.GetColorFormat();
   bool is_uint = false;
@@ -2241,9 +2227,8 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
   dest->DeferColorClear(color);
   deferred_clear_targets_.push_back(dest_key);
   render_pass_descriptor_dirty_ = true;
-  update_cutout_slot_ = slot;
-  update_cutout_ = constant->rectangle;
-  update_cutout_full_overwrite_ = false;
+  update_cutout_mask_ |= uint32_t(1) << slot;
+  update_cutouts_[slot] = constant->rectangle;
 }
 
 void MetalRenderTargetCache::NoteDrawWrites() {
@@ -2546,9 +2531,9 @@ bool MetalRenderTargetCache::Update(
   }
   // Full-target clear quads, and transfers that would only copy a constant.
   pending_constant_ = PendingConstant();
-  update_cutout_slot_ = UINT32_MAX;
-  update_cutout_from_quad_ = false;
-  update_cutout_full_overwrite_ = false;
+  update_cutout_mask_ = 0;
+  update_cutout_full_overwrite_mask_ = 0;
+  update_cutout_quad_slot_ = UINT32_MAX;
   ApplyClearQuadRule(accumulated_targets, normalized_depth_control,
                      vertex_shader);
   // Not another quad of the held clear. A quad whose transfers read the held
@@ -2566,6 +2551,8 @@ bool MetalRenderTargetCache::Update(
   ReplaceConstantSourceTransfers(accumulated_targets);
   clear_quad_draw_ = ClearQuadDraw();
   const std::vector<Transfer>* update_transfers = last_update_transfers();
+  const auto update_cutouts =
+      GetTransferCutouts(update_cutout_mask_, update_cutouts_);
   if (::cvars::metal_transfer_in_draw_pass) {
     std::array<std::vector<Transfer>, 1 + xenos::kMaxColorRenderTargets>
         fallback_transfers;
@@ -2583,23 +2570,23 @@ bool MetalRenderTargetCache::Update(
       pending_draw_pass_render_targets_[i] = accumulated_targets[i];
       pending_draw_pass_transfers_[i] = transfers;
       pending_draw_pass_transfer_mask_ |= uint32_t(1) << i;
-      if (i == update_cutout_slot_) {
-        if (update_cutout_from_quad_) {
+      if (update_cutout_mask_ & (uint32_t(1) << i)) {
+        if (i == update_cutout_quad_slot_) {
           // Held until the quad is drawn, and the quads after it that
           // continue the clear, then encoded with all of them left out.
           quad_hold_slot_ = i;
           quad_hold_in_encoder_ = false;
-          quad_hold_candidate_ = update_cutout_;
+          quad_hold_candidate_ = update_cutouts_[i];
           quad_hold_candidate_valid_ = true;
           quad_hold_drawn_valid_ = false;
           quad_hold_state_ =
               GetQuadHoldState(is_rasterization_done, normalized_depth_control,
                                normalized_color_mask);
         } else {
-          pending_draw_pass_cutout_valid_ = true;
-          pending_draw_pass_cutout_ = update_cutout_;
+          pending_draw_pass_cutout_mask_ |= uint32_t(1) << i;
+          pending_draw_pass_cutouts_[i] = update_cutouts_[i];
         }
-        if (update_cutout_full_overwrite_) {
+        if (update_cutout_full_overwrite_mask_ & (uint32_t(1) << i)) {
           pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
         }
       } else if (PendingDrawPassTransfersFullyOverwriteTarget(
@@ -2621,8 +2608,7 @@ bool MetalRenderTargetCache::Update(
     if (fallback_transfer_work) {
       PerformTransfersAndResolveClears(
           1 + xenos::kMaxColorRenderTargets, accumulated_targets,
-          fallback_transfers.data(), nullptr,
-          update_cutout_slot_ != UINT32_MAX ? &update_cutout_ : nullptr);
+          fallback_transfers.data(), update_cutouts.data());
     }
     // Queue only what the pass the descriptor will describe can actually
     // encode, so eligibility is not re-decided at encode time.
@@ -2636,10 +2622,9 @@ bool MetalRenderTargetCache::Update(
       }
     }
   } else {
-    PerformTransfersAndResolveClears(
-        1 + xenos::kMaxColorRenderTargets, accumulated_targets,
-        update_transfers, nullptr,
-        update_cutout_slot_ != UINT32_MAX ? &update_cutout_ : nullptr);
+    PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                     accumulated_targets, update_transfers,
+                                     update_cutouts.data());
   }
 
   // Only mark render pass descriptor as dirty if targets actually changed
@@ -2723,7 +2708,7 @@ void MetalRenderTargetCache::ClearPendingDrawPassTransfers() {
   pending_draw_pass_transfer_mask_ = 0;
   pending_draw_pass_full_overwrite_mask_ = 0;
   pending_draw_pass_load_dontcare_mask_ = 0;
-  pending_draw_pass_cutout_valid_ = false;
+  pending_draw_pass_cutout_mask_ = 0;
   ResetQuadHold();
   released_quad_dest_ = nullptr;
   released_quad_constant_valid_ = false;
@@ -2740,8 +2725,8 @@ bool MetalRenderTargetCache::BuildTransferRectanglePlans(
     const Transfer& transfer = transfers[transfer_index];
     TransferRectanglePlan plan;
     plan.transfer_index = transfer_index;
-    plan.rectangle_count = transfer.GetRectangles(
-        dest_key, dest_key.Is64bpp(), plan.rectangles.data(), cutout);
+    plan.rectangle_count = GetTransferRectangles(
+        transfer, dest_key, dest_key.Is64bpp(), plan.rectangles.data(), cutout);
     if (!plan.rectangle_count) {
       if (require_all_rectangles) {
         transfer_rectangles_out.clear();
@@ -3169,10 +3154,11 @@ bool MetalRenderTargetCache::EncodePendingDrawPassTransfers(
   if (!PerformTransfersAndResolveClears(
           1 + xenos::kMaxColorRenderTargets,
           pending_draw_pass_render_targets_.data(),
-          pending_draw_pass_transfers_.data(), nullptr,
-          pending_draw_pass_cutout_valid_ ? &pending_draw_pass_cutout_
-                                          : nullptr,
-          nullptr, encoder, pass_descriptor, mutations_out)) {
+          pending_draw_pass_transfers_.data(),
+          GetTransferCutouts(pending_draw_pass_cutout_mask_,
+                             pending_draw_pass_cutouts_)
+              .data(),
+          nullptr, nullptr, nullptr, encoder, pass_descriptor, mutations_out)) {
     return false;
   }
   NoteReleasedQuadWrites();
@@ -3189,9 +3175,10 @@ bool MetalRenderTargetCache::FlushPendingDrawPassTransfers() {
   if (!PerformTransfersAndResolveClears(
           1 + xenos::kMaxColorRenderTargets,
           pending_draw_pass_render_targets_.data(),
-          pending_draw_pass_transfers_.data(), nullptr,
-          pending_draw_pass_cutout_valid_ ? &pending_draw_pass_cutout_
-                                          : nullptr)) {
+          pending_draw_pass_transfers_.data(),
+          GetTransferCutouts(pending_draw_pass_cutout_mask_,
+                             pending_draw_pass_cutouts_)
+              .data())) {
     return false;
   }
   NoteReleasedQuadWrites();
@@ -3213,8 +3200,14 @@ bool MetalRenderTargetCache::ReleaseHeldDrawPassTransfers() {
     return false;
   }
   const bool in_encoder = quad_hold_in_encoder_;
-  pending_draw_pass_cutout_valid_ = quad_hold_drawn_valid_;
-  pending_draw_pass_cutout_ = quad_hold_drawn_;
+  // The quads leave their union out of the held target's transfers.
+  const uint32_t hold_bit = uint32_t(1) << quad_hold_slot_;
+  if (quad_hold_drawn_valid_) {
+    pending_draw_pass_cutout_mask_ |= hold_bit;
+    pending_draw_pass_cutouts_[quad_hold_slot_] = quad_hold_drawn_;
+  } else {
+    pending_draw_pass_cutout_mask_ &= ~hold_bit;
+  }
   released_quad_dest_ = nullptr;
   released_quad_constant_valid_ = false;
   if (quad_hold_drawn_valid_) {
@@ -7242,7 +7235,8 @@ bool MetalRenderTargetCache::ResolveWithInfo(
 
 bool MetalRenderTargetCache::MakeTransferAddressConstant(
     RenderTargetKey source_key, RenderTargetKey dest_key,
-    const Transfer& transfer, EdramTransferAddressConstant& constant_out) {
+    const Transfer& transfer,
+    EdramTransferAddressConstant& constant_out) const {
   constexpr uint32_t kTileMask = xenos::kEdramTileCount - 1;
   constant_out = EdramTransferAddressConstant();
   constant_out.dest_pitch = dest_key.GetPitchTiles();
@@ -7291,7 +7285,7 @@ bool MetalRenderTargetCache::MakeTransferAddressConstant(
 
 bool MetalRenderTargetCache::IsStripMergeAddressingSame(
     const Transfer& transfer, const Transfer& other_transfer,
-    RenderTargetKey dest_key) {
+    RenderTargetKey dest_key) const {
   // Only strip-merged sources have an address depending on the range.
   auto same = [&](const RenderTarget* source) {
     if (!source || !source->key().strip_merged) {
@@ -7666,7 +7660,7 @@ void MetalRenderTargetCache::PlanResolveStoreActions(
       return;
     }
     // The cleared range, split where the EDRAM addressing wraps.
-    Transfer::Rectangle outside[Transfer::kMaxRectanglesWithCutout];
+    Transfer::Rectangle outside[kMaxBandedRectanglesWithCutout];
     const uint32_t start_tiles =
         cleared_key.base_tiles + cleared_start_tiles_base_relative;
     const uint32_t first_start_tiles = start_tiles % xenos::kEdramTileCount;
@@ -7675,11 +7669,11 @@ void MetalRenderTargetCache::PlanResolveStoreActions(
                  xenos::kEdramTileCount);
     const uint32_t wrapped_length_tiles =
         cleared_length_tiles - (first_end_tiles - first_start_tiles);
-    if (Transfer::GetRangeRectangles(first_start_tiles, first_end_tiles,
-                                     cleared_key, is_64bpp, outside, &rect) ||
+    if (GetRangeRectangles(first_start_tiles, first_end_tiles, cleared_key,
+                           is_64bpp, outside, &rect) ||
         (wrapped_length_tiles &&
-         Transfer::GetRangeRectangles(0, wrapped_length_tiles, cleared_key,
-                                      is_64bpp, outside, &rect))) {
+         GetRangeRectangles(0, wrapped_length_tiles, cleared_key, is_64bpp,
+                            outside, &rect))) {
       return;
     }
     for (const ResolveCopyDumpRectangle& read : read_rectangles) {
@@ -7718,8 +7712,8 @@ bool MetalRenderTargetCache::PerformResolveClear(
     clear_values[1] = resolve_info.rb_color_clear |
                       (uint64_t(resolve_info.rb_color_clear_lo) << 32);
     return PerformTransfersAndResolveClears(2, clear_targets, clear_transfers,
-                                            clear_values, &clear_rectangle,
-                                            command_buffer);
+                                            nullptr, clear_values,
+                                            &clear_rectangle, command_buffer);
   }
   return true;
 }
@@ -8122,6 +8116,7 @@ void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
 bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     uint32_t render_target_count, RenderTarget* const* render_targets,
     const std::vector<Transfer>* render_target_transfers,
+    const Transfer::Rectangle* const* transfer_cutouts,
     const uint64_t* render_target_resolve_clear_values,
     const Transfer::Rectangle* resolve_clear_rectangle,
     MTL::CommandBuffer* command_buffer,
@@ -8138,6 +8133,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
   bool resolve_clear_needed =
       render_target_resolve_clear_values && resolve_clear_rectangle;
+  assert_false(resolve_clear_needed && transfer_cutouts);
+  // What the transfers into each render target leave out.
+  auto get_transfer_cutout =
+      [&](uint32_t render_target_index) -> const Transfer::Rectangle* {
+    return transfer_cutouts ? transfer_cutouts[render_target_index]
+                            : resolve_clear_rectangle;
+  };
   // Resolve clears build a pass of their own around a clear load action, which
   // the guest's already-started pass cannot provide.
   bool use_active_render_encoder = active_render_encoder != nullptr;
@@ -8289,9 +8291,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               uint32_t(dest_key.msaa_samples));
           continue;
         }
-        Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-        uint32_t rectangle_count = transfer.GetRectangles(
-            dest_key, rectangles, resolve_clear_rectangle);
+        Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
+        uint32_t rectangle_count =
+            GetTransferRectangles(transfer, dest_key, dest_key.Is64bpp(),
+                                  rectangles, get_transfer_cutout(i));
         if (!rectangle_count) {
           continue;
         }
@@ -8353,6 +8356,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
     auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
     RecordPerformedTransfers(dest_metal_rt, transfers);
+    const Transfer::Rectangle* const transfer_cutout = get_transfer_cutout(i);
     // What draws change from here on is tracked against what the transfers
     // wrote. A resolve clear writes more than the records say.
     if (!resolve_clear_needed && !transfers.empty() &&
@@ -8617,9 +8621,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
 
-        Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-        uint32_t rectangle_count = transfer.GetRectangles(
-            dest_key, dest_key.Is64bpp(), rectangles, resolve_clear_rectangle);
+        Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
+        uint32_t rectangle_count =
+            GetTransferRectangles(transfer, dest_key, dest_key.Is64bpp(),
+                                  rectangles, transfer_cutout);
         if (!rectangle_count) {
           return false;
         }
@@ -8627,7 +8632,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         struct BlitRegion {
           uint32_t x, y, width, height;
         };
-        BlitRegion regions[Transfer::kMaxRectanglesWithCutout];
+        BlitRegion regions[kMaxBandedRectanglesWithCutout];
         uint32_t region_count = 0;
         for (uint32_t rect_index = 0; rect_index < rectangle_count;
              ++rect_index) {
@@ -8707,9 +8712,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         if (transfer.keep_dest_depth) {
           return false;
         }
-        Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-        uint32_t rectangle_count = transfer.GetRectangles(
-            dest_key, dest_key.Is64bpp(), rectangles, resolve_clear_rectangle);
+        Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
+        uint32_t rectangle_count =
+            GetTransferRectangles(transfer, dest_key, dest_key.Is64bpp(),
+                                  rectangles, transfer_cutout);
         if (rectangle_count != 1 || !is_full_target_rectangle(rectangles[0])) {
           return false;
         }
@@ -9040,11 +9046,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                 kDrawPassTransferEncoderMutationStencilReference |
                 kDrawPassTransferEncoderMutationFragmentSlot0);
             for (const Transfer& transfer : transfers_for_shaders) {
-              Transfer::Rectangle
-                  rectangles[Transfer::kMaxRectanglesWithCutout];
+              Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
               uint32_t rectangle_count =
-                  transfer.GetRectangles(dest_key, dest_key.Is64bpp(),
-                                         rectangles, resolve_clear_rectangle);
+                  GetTransferRectangles(transfer, dest_key, dest_key.Is64bpp(),
+                                        rectangles, transfer_cutout);
               for (uint32_t rect_index = 0; rect_index < rectangle_count;
                    ++rect_index) {
                 if (!set_rect_viewport(encoder, rectangles[rect_index])) {
@@ -9431,14 +9436,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           merged_transfer_rectangles.clear();
           merged_transfer_rectangles.reserve(
               (merged_invocation_end - invocation_index) *
-              Transfer::kMaxRectanglesWithCutout);
+              kMaxBandedRectanglesWithCutout);
           for (size_t merged_index = invocation_index;
                merged_index < merged_invocation_end; ++merged_index) {
-            Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
-            uint32_t rectangle_count =
-                transfer_invocations_[merged_index].transfer.GetRectangles(
-                    dest_key, dest_key.Is64bpp(), rectangles,
-                    resolve_clear_rectangle);
+            Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
+            uint32_t rectangle_count = GetTransferRectangles(
+                transfer_invocations_[merged_index].transfer, dest_key,
+                dest_key.Is64bpp(), rectangles, transfer_cutout);
             for (uint32_t rect_index = 0; rect_index < rectangle_count;
                  ++rect_index) {
               merged_transfer_rectangles.push_back(rectangles[rect_index]);
