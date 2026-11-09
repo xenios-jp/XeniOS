@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 
 #include <vector>
@@ -770,6 +771,15 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                                   }];
     return;
   }
+  if (!xe_ios_network_available()) {
+    [self showDeleteFailure:[xe_ios_connection_failure_text(nil)
+                                stringByAppendingString:
+                                    NSLocalizedString(@" The profile was kept.",
+                                                      @"Delete account: no network, after the "
+                                                      @"advice")]
+                       from:presenter];
+    return;
+  }
   if (signed_in_xuid != xuid && !app_context_->SignInProfile(xuid)) {
     [self showDeleteFailure:NSLocalizedString(@"The profile couldn’t be signed in to delete its "
                                               @"online account.",
@@ -795,11 +805,11 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                }
                                // The answer may only have been lost, so nothing more is claimed.
                                [unsafe_self
-                                   showDeleteFailure:NSLocalizedString(
+                                   showDeleteFailure:xe_ios_connection_failure_text(NSLocalizedString(
                                                          @"You have to be online to delete the "
                                                          @"account, and the online service didn’t "
                                                          @"answer. The profile was kept.",
-                                                         @"profile view controller: alert message")
+                                                         @"profile view controller: alert message"))
                                                 from:presenter];
                                [unsafe_self restoreSignIn:restore_xuid];
                              }];

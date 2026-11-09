@@ -68,6 +68,8 @@ typedef NS_ENUM(NSInteger, XeniaLiveSocialState) {
   XeniaLiveSocialStateOnline,
   // The service refused the profile, or can't be reached (problemText says).
   XeniaLiveSocialStateProblem,
+  // The device has no network (statusText says what to do); it connects when one comes back.
+  XeniaLiveSocialStateNoNetwork,
 };
 
 typedef NS_ENUM(NSInteger, XeniaLiveFriendState) {

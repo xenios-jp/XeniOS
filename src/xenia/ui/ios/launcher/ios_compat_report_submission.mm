@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_submission.h"
 
 #include "xenia/base/logging.h"
@@ -139,9 +140,10 @@ UIImage* xe_sanitized_report_screenshot(UIImage* image) {
                   completion, nil, nil, nil,
                   NSLocalizedString(@"Couldn't Send Report",
                                     @"compat report submission: user-visible text"),
-                  NSLocalizedString(@"XeniOS couldn't reach the report server. Check your "
-                                    @"connection and try again.",
-                                    @"compat report submission: user-visible text"));
+                  xe_ios_connection_failure_text(NSLocalizedString(
+                      @"XeniOS couldn't reach the report server. Check your "
+                      @"connection and try again.",
+                      @"compat report submission: user-visible text")));
               return;
             }
 

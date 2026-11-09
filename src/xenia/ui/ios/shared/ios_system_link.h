@@ -79,7 +79,7 @@ NSString* xe_ios_system_link_unreachable_message(size_t count, XeniaIOSNatType n
 // What System Link is doing in the running game.
 struct XeniaIOSSystemLinkSnapshot {
   // Off until the game starts System Link over the internet.
-  enum class State { kOff, kConnecting, kReconnecting, kOnline, kOffline, kRejected };
+  enum class State { kOff, kConnecting, kReconnecting, kOnline, kOffline, kNoNetwork, kRejected };
   State state = State::kOff;
   // Why the server turned the player away, while rejected.
   NSString* problem = nil;

@@ -8,6 +8,7 @@
  */
 
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/launcher/ios_compat_fetch.h"
 
 #import "xenia/ui/ios/launcher/ios_compat_cache.h"
@@ -166,6 +167,10 @@ void xe_fetch_compat_data(void (^completion)(NSDictionary* _Nullable data)) {
   NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - last_check;
   if (cached_result && age >= 0 && age < kXeCompatMinCheckInterval) {
     return;
+  }
+
+  if (!xe_ios_network_available()) {
+    return;  // Without stamping the check: the next launch asks.
   }
 
   xe_fetch_compat_data_from_urls(

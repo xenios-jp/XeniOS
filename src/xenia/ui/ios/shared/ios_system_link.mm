@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 
 #include <algorithm>
@@ -279,8 +280,9 @@ void OnStatus(const RelayStatus& status) {
     case State::kOffline:
       if (chose_room && !g_told_offline) {
         g_told_offline = true;
-        Toast(NSLocalizedString(@"System Link can't reach its server. Still trying.",
-                                @"System Link toast: the relay doesn't answer"),
+        Toast(xe_ios_connection_failure_text(
+                  NSLocalizedString(@"System Link can't reach its server. Still trying.",
+                                    @"System Link toast: the relay doesn't answer")),
               XeniaIOSStatusToastStyleWarning);
       }
       return;
@@ -369,6 +371,10 @@ XeniaIOSSystemLinkSnapshot xe_ios_system_link_snapshot(void) {
     case State::kStopped:
       return snapshot;
   }
+  if (snapshot.state != Snapshot::State::kOnline && snapshot.state != Snapshot::State::kRejected &&
+      !xe_ios_network_available()) {
+    snapshot.state = Snapshot::State::kNoNetwork;
+  }
   snapshot.title_id = g_title_id;
   snapshot.room_code = g_room_code;
   snapshot.nat = ToIOS(status.nat);
@@ -407,6 +413,8 @@ NSString* CardTitle(const Snapshot& s) {
     case Snapshot::State::kOffline:
       return NSLocalizedString(@"System Link · Can't Reach the Server",
                                @"In-game menu: System Link card");
+    case Snapshot::State::kNoNetwork:
+      return NSLocalizedString(@"System Link · No Internet", @"In-game menu: System Link card");
     case Snapshot::State::kRejected:
       return NSLocalizedString(@"System Link · Turned Away", @"In-game menu: System Link card");
     case Snapshot::State::kOff:
@@ -588,6 +596,10 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
                                                object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(statusChanged:)
+                                                 name:XeniaNetworkStatusDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(statusChanged:)
                                                  name:XeniaIOSSystemLinkLiveGameDidChangeNotification
                                                object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -678,6 +690,7 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
   }
   const Snapshot snapshot = xe_ios_system_link_snapshot();
   const bool problem = snapshot.state == Snapshot::State::kOffline ||
+                       snapshot.state == Snapshot::State::kNoNetwork ||
                        snapshot.state == Snapshot::State::kRejected || snapshot.other_version ||
                        (snapshot.others && snapshot.direct + snapshot.relayed < snapshot.others);
   NSString* system_link = NSLocalizedString(@"System Link", @"In-game menu: System Link pill");
@@ -692,6 +705,11 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
           stringWithFormat:@"%@ · %@", system_link,
                            NSLocalizedString(@"Offline", @"In-game menu: System Link pill, the "
                                                          @"server doesn't answer")];
+      break;
+    case Snapshot::State::kNoNetwork:
+      line = [NSString
+          stringWithFormat:@"%@ · %@", system_link,
+                           NSLocalizedString(@"No Internet", @"In-game menu: System Link pill")];
       break;
     case Snapshot::State::kRejected:
       line = [NSString
@@ -717,6 +735,9 @@ UIConfigurationTextAttributesTransformer CardText(UIFont* font, UIColor* color) 
 
   // VoiceOver hears all of it: the room, the players, what's wrong.
   NSString* detail = snapshot.problem;
+  if (snapshot.state == Snapshot::State::kNoNetwork) {
+    detail = xe_ios_no_network_message();
+  }
   if (snapshot.state == Snapshot::State::kOffline) {
     detail = NSLocalizedString(@"Still trying.",
                                @"In-game menu: System Link card, the server doesn't answer");
@@ -1127,7 +1148,7 @@ NSTimeInterval Uptime() { return [NSProcessInfo processInfo].systemUptime; }
 
 bool OnlineAllowed() {
   return xe_ios_online_features_enabled() && !xe_ios_online_features_notice_pending() &&
-         xe_ios_system_link_uses_relay();
+         xe_ios_system_link_uses_relay() && xe_ios_network_available();
 }
 
 // GET /v1/online on the lobby, over https:// for a wss:// lobby. Never logged, like the lobby.
@@ -1585,6 +1606,12 @@ void xe_ios_system_link_watch_online(BOOL (^wanted)(void), void (^changed)(void)
                 usingBlock:^(NSNotification* __unused note) {
                   AskOnline();
                 }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:XeniaNetworkStatusDidChangeNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification* __unused note) {
+                                                    AskOnline();
+                                                  }];
     for (NSNotificationName name in
          @[ UIApplicationDidEnterBackgroundNotification, UIApplicationWillTerminateNotification ]) {
       [[NSNotificationCenter defaultCenter] addObserverForName:name

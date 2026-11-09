@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -74,8 +75,8 @@ NSString* LinkMessage(XeniaLiveLinkStatus status) {
       return NSLocalizedString(@"Too many tries. Wait a minute and try again.",
                                @"Account: code entry error");
     case XeniaLiveLinkStatusUnreachable:
-      return NSLocalizedString(@"Can’t reach XeniOS. Check your connection.",
-                               @"Account: code entry error");
+      return xe_ios_connection_failure_text(NSLocalizedString(
+          @"Can’t reach XeniOS. Check your connection.", @"Account: code entry error"));
     case XeniaLiveLinkStatusLinked:
       break;
   }
@@ -391,11 +392,24 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
     _current = [current copy];
     _done = [done copy];
     _suggestions = [@[] retain];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(networkChanged)
+                                                 name:XeniaNetworkStatusDidChangeNotification
+                                               object:nil];
   }
   return self;
 }
 
+// A name that couldn't be checked or claimed for want of a network is asked about again.
+- (void)networkChanged {
+  if (xe_ios_network_available() &&
+      (_state == XEGamertagStateUnreachable || _state == XEGamertagStateLocal)) {
+    [self textChanged];
+  }
+}
+
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [NSObject cancelPreviousPerformRequestsWithTarget:self];
   [_current release];
   [_done release];
@@ -668,8 +682,9 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
       [self setState:XEGamertagStateLocal];
       break;
     case XeniaLiveNameStatusUnreachable:
-      [self setMessage:NSLocalizedString(@"Can’t reach XeniOS. Check your connection and try again.",
-                                         @"Gamertag sheet: message")];
+      [self setMessage:xe_ios_connection_failure_text(NSLocalizedString(
+                           @"Can’t reach XeniOS. Check your connection and try again.",
+                           @"Gamertag sheet: message"))];
       [self setState:XEGamertagStateLocal];
       break;
     default:
@@ -730,10 +745,14 @@ typedef NS_ENUM(NSInteger, XEGamertagState) {
     case XEGamertagStateUnreachable:
       symbol = @"wifi.slash";
       symbol_color = [XeniaTheme textSecondary];
-      message = NSLocalizedString(@"Can’t check right now. You can still claim it; the name is "
-                                  @"checked then.",
-                                  @"Gamertag field: message");
-      can_claim = YES;  // The lobby decides when it claims.
+      if (xe_ios_network_available()) {
+        message = NSLocalizedString(@"Can’t check right now. You can still claim it; the name is "
+                                    @"checked then.",
+                                    @"Gamertag field: message");
+        can_claim = YES;  // The lobby decides when it claims.
+      } else {
+        message = xe_ios_connection_failure_text(nil);
+      }
       break;
     case XEGamertagStateLimit:
       spin = YES;
@@ -2238,7 +2257,8 @@ UIView* AttentionAccessory() {
         if (!code.length) {
           unsafe_self->_failed = YES;
           unsafe_self->_hero.refresh.text =
-              NSLocalizedString(@"Can’t reach XeniOS. Try again.", @"Add a device sheet: error");
+              xe_ios_connection_failure_text(NSLocalizedString(@"Can’t reach XeniOS. Try again.",
+                                                               @"Add a device sheet: error"));
           [unsafe_self.tableView reloadData];
           return;
         }
@@ -3488,6 +3508,10 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                                                name:XeniaLiveAccountDidChangeNotification
                                              object:nil];
   [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(accountChanged)
+                                               name:XeniaNetworkStatusDidChangeNotification
+                                             object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(socialChanged)
                                                name:XeniaLiveSocialDidChangeNotification
                                              object:nil];
@@ -3654,6 +3678,11 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
                            (unsigned long)_devices.count];
     } else {
       _header.status.text = NSLocalizedString(@"Online", @"Profile page: status");
+    }
+    if (!xe_ios_network_available()) {
+      _header.status.text = xe_ios_no_network_title();
+      _header.status.textColor = [UIColor systemOrangeColor];
+      _header.caption.text = xe_ios_no_network_message();
     }
   }
   _header.isAccessibilityElement = NO;
