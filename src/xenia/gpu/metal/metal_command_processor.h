@@ -214,6 +214,15 @@ class MetalCommandProcessor : public CommandProcessor {
   bool CanKeepRenderPassAfterTileResolve() const;
   void NoteTileResolveWrite(uint32_t start, uint32_t length);
   bool TileResolveWritesOverlap(uint32_t start, uint32_t length) const;
+  // A pass kept open after a tile resolve that would have ended it takes
+  // further resolves only: a draw, or anything else that would use the pass,
+  // ends it first.
+  void SetRenderEncoderResolveOnly() {
+    render_encoder_resolve_only_ = current_render_encoder_ != nullptr;
+  }
+  bool RenderEncoderResolveOnly() const {
+    return current_render_encoder_ && render_encoder_resolve_only_;
+  }
   // The imageblock member type every tile dispatch of the open pass declares,
   // which Metal requires to be the same: 0 before the first one.
   uint32_t GetRenderEncoderTileMemberClass() const {
@@ -1443,6 +1452,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // Guest indices drawn in the open pass, for the tile resolve pass budget.
   uint64_t render_encoder_index_count_ = 0;
   uint32_t render_encoder_tile_member_class_ = 0;
+  // The open pass takes further resolves only (SetRenderEncoderResolveOnly).
+  bool render_encoder_resolve_only_ = false;
+  // Runs the resolve work left to the end of the pass that has just ended.
+  void FlushPostPassResolves();
   // Whether every draw in the current render encoder was a pure vertex
   // memexport draw, so a later one in the chain may use a barrier instead of
   // ending the pass.

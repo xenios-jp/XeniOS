@@ -320,6 +320,14 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                uint32_t& written_length,
                MTL::CommandBuffer* command_buffer = nullptr);
 
+  // Resolve work left to the end of the guest's pass, which stays open for
+  // further tile resolves only: the clear of a resolve whose copy ran in the
+  // pass's tiles. EndRenderEncoder runs it once the pass has ended, before
+  // anything else is encoded after the pass.
+  bool HasPostPassResolves() const { return !post_pass_resolves_.empty(); }
+  // Runs it, in guest order.
+  void FlushPostPassResolves(MTL::CommandBuffer* command_buffer);
+
   // Render encoder state the transfer draws overwrite when they are encoded
   // into the guest's own render pass.
   using DrawPassTransferEncoderMutationMask = uint32_t;
@@ -917,6 +925,36 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // resolve clears whole and doesn't read, for FinalizeRenderPassStoreActions.
   void PlanResolveStoreActions(const draw_util::ResolveInfo& resolve_info);
   std::vector<MetalRenderTarget*> dead_store_render_targets_;
+
+  // The resolve's clear, after its copy.
+  bool PerformResolveClear(const draw_util::ResolveInfo& resolve_info,
+                           MTL::CommandBuffer* command_buffer);
+  struct PostPassResolve {
+    draw_util::ResolveInfo resolve_info;
+    // The EDRAM tiles the clear writes, depth then color, from a start that
+    // may be past kEdramTileCount (the range wraps).
+    uint32_t clear_start_tiles[2];
+    uint32_t clear_length_tiles[2];
+  };
+  std::vector<PostPassResolve> post_pass_resolves_;
+  bool flushing_post_pass_resolves_ = false;
+  // Whether resolve work may be left to the end of the open pass at all.
+  bool CanLeaveResolveToPassEnd() const;
+  // The EDRAM tiles the resolve's clear writes, as
+  // GetHostRenderTargetsResolveClearPlan plans them. False if it clears but
+  // that can't be planned.
+  bool GetResolveClearTileRanges(const draw_util::ResolveInfo& resolve_info,
+                                 uint32_t start_tiles_out[2],
+                                 uint32_t length_tiles_out[2]) const;
+  // Why the resolve can't run in the open pass ahead of the work left to its
+  // end, or null: it reads tiles that work clears.
+  const char* GetPostPassResolveConflict(
+      const draw_util::ResolveInfo& resolve_info) const;
+  // Leaves the clear of a resolve whose copy ran in the open pass to the pass
+  // end, adding what it makes dead to the pass's store plan.
+  bool LeaveResolveClearToPassEnd(const draw_util::ResolveInfo& resolve_info);
+  // Drops the render targets the resolve reads from the store plan.
+  void KeepStoresOfResolveReads(const draw_util::ResolveInfo& resolve_info);
   bool AnyDeferredClear(const RenderTarget* render_target) const {
     return render_target &&
            static_cast<const MetalRenderTarget*>(render_target)

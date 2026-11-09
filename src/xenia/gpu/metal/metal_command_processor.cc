@@ -1992,6 +1992,11 @@ void MetalCommandProcessor::InitializeTrace() {
     trace_frame_file_path_.clear();
   };
 
+  // The resolve work left to the end of an open pass changes ownership too,
+  // and comes first.
+  if (RenderEncoderResolveOnly()) {
+    EndRenderEncoder();
+  }
   // Ownership may already name destinations whose transfers were deferred by
   // an abandoned draw. Materialize them before the standalone snapshot reads.
   if (render_target_cache_ &&
@@ -2028,6 +2033,11 @@ bool MetalCommandProcessor::DumpEdramSnapshotToFile(
     const std::filesystem::path& path) {
   if (!render_target_cache_) {
     return false;
+  }
+  // The resolve work left to the end of an open pass changes ownership too,
+  // and comes first.
+  if (RenderEncoderResolveOnly()) {
+    EndRenderEncoder();
   }
   // Ownership already names the destinations of transfers queued for the next
   // draw's pass, which a replay stopped mid-frame never encodes.
@@ -4221,6 +4231,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       return true;
     }
     return IssueCopy();
+  }
+  // A pass kept open for resolves only ends before anything draws, with the
+  // resolve work left to its end.
+  if (RenderEncoderResolveOnly()) {
+    EndRenderEncoder();
   }
 
   // Vertex shader analysis — use Shader* base type so both draw paths share
@@ -7228,6 +7243,7 @@ void MetalCommandProcessor::EndRenderEncoder() {
       return;
     }
   }
+  render_encoder_resolve_only_ = false;
   EndSharedComputeEncoder();
   render_encoder_memexport_ranges_.clear();
   render_encoder_tile_resolve_ranges_.clear();
@@ -7240,6 +7256,8 @@ void MetalCommandProcessor::EndRenderEncoder() {
       current_render_pass_descriptor_ = nullptr;
     }
     render_encoder_has_zpd_visibility_ = false;
+    // Left only by a pass that ended without EndRenderEncoder.
+    FlushPostPassResolves();
     return;
   }
   // Visibility results are scoped to the render encoder and an offset can't be
@@ -7266,7 +7284,19 @@ void MetalCommandProcessor::EndRenderEncoder() {
   }
   render_encoder_has_zpd_visibility_ = false;
   ResetMslRenderEncoderStateCache();
+  // The resolve work left to the pass end comes before anything else after
+  // the pass, including the shader-done fences of commands that followed it.
+  FlushPostPassResolves();
   EncodeDeferredShaderDoneFences();
+}
+
+void MetalCommandProcessor::FlushPostPassResolves() {
+  if (!render_target_cache_ || !render_target_cache_->HasPostPassResolves()) {
+    return;
+  }
+  render_target_cache_->FlushPostPassResolves(current_command_buffer_);
+  // Whoever ended the pass expects no encoder open.
+  EndSharedComputeEncoder();
 }
 
 void MetalCommandProcessor::ResetRenderEncoderResourceUsage() {

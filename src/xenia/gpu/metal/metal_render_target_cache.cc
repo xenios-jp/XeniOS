@@ -888,6 +888,7 @@ bool MetalRenderTargetCache::Initialize() {
 
 void MetalRenderTargetCache::Shutdown(bool from_destructor) {
   ClearPendingDrawPassTransfers();
+  post_pass_resolves_.clear();
   if (!from_destructor) {
     ClearCache();
   }
@@ -1371,6 +1372,9 @@ void MetalRenderTargetCache::ShutdownEdramComputeShaders() {
 
 void MetalRenderTargetCache::ClearCache() {
   ClearPendingDrawPassTransfers();
+  // It names render targets about to be destroyed.
+  post_pass_resolves_.clear();
+  dead_store_render_targets_.clear();
   constant_contents_.clear();
 
   // Clear current bindings
@@ -6531,7 +6535,13 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   last_resolve_kept_pass_ = false;
   auto end_pass = [&]() {
     if (resolve_info_valid) {
-      PlanResolveStoreActions(resolve_info);
+      if (post_pass_resolves_.empty()) {
+        PlanResolveStoreActions(resolve_info);
+      } else {
+        // The store plan of the work left to the pass end stands, as the
+        // work runs first, except for what this resolve reads after it.
+        KeepStoresOfResolveReads(resolve_info);
+      }
     }
     command_processor_.EndRenderEncoder();
     // With no pass open, the plan applies to none.
@@ -6578,40 +6588,19 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   if (!tile_pass_open) {
     PerformDeferredClears(command_buffer);
   }
+  // A resolve may run in the open pass ahead of the work left to its end only
+  // if it reads nothing that work changes.
+  if (tile_pass_open && !post_pass_resolves_.empty()) {
+    if (const char* conflict = GetPostPassResolveConflict(resolve_info)) {
+      end_tile_pass(conflict);
+    }
+  }
 
   // Nothing to do.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
     end_tile_pass("empty");
     return true;
   }
-
-  auto perform_resolve_clear = [&]() {
-    bool clear_depth = resolve_info.IsClearingDepth();
-    bool clear_color = resolve_info.IsClearingColor();
-    if (!clear_depth && !clear_color) {
-      return true;
-    }
-    Transfer::Rectangle clear_rectangle;
-    RenderTarget* clear_targets[2] = {};
-    std::vector<Transfer> clear_transfers[2];
-    if (PrepareHostRenderTargetsResolveClear(
-            resolve_info, clear_rectangle, clear_targets[0], clear_transfers[0],
-            clear_targets[1], clear_transfers[1])) {
-      if (clear_targets[1] && !clear_transfers[1].empty()) {
-        ElideAliasedStorageTransfers(
-            static_cast<MetalRenderTarget*>(clear_targets[1]),
-            clear_transfers[1]);
-      }
-      uint64_t clear_values[2];
-      clear_values[0] = resolve_info.rb_depth_clear;
-      clear_values[1] = resolve_info.rb_color_clear |
-                        (uint64_t(resolve_info.rb_color_clear_lo) << 32);
-      return PerformTransfersAndResolveClears(2, clear_targets, clear_transfers,
-                                              clear_values, &clear_rectangle,
-                                              command_buffer);
-    }
-    return true;
-  };
 
   if (resolve_info.copy_dest_extent_length &&
       resolve_info.rb_copy_control.copy_command ==
@@ -6624,7 +6613,7 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
     // A malformed or entirely clipped copy destination drops only the copy.
     // The guest's post-resolve EDRAM clear is independent and must still run.
     end_tile_pass("no_copy");
-    return perform_resolve_clear();
+    return PerformResolveClear(resolve_info, command_buffer);
   }
 
   bool is_depth = resolve_info.IsCopyingDepth();
@@ -6655,6 +6644,9 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
   // native 1x1 copy nor a binding of the resolution-scaled resolve buffer, so
   // anything under scaling takes the EDRAM round trip.
   bool resolved_directly = false;
+  // The resolve ran in the open pass, which stays open, and its clear waits
+  // for the pass end.
+  bool clear_left_to_pass_end = false;
   MetalTextureCache::ResolveTextureRefreshTarget refresh_target;
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
@@ -6713,21 +6705,23 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       } else {
         tile_pass_open = false;
         // Later draws of the pass would sample refreshed textures without a
-        // pass end between, and a resolve clear ends the pass for a clear
-        // load action of its own.
+        // pass end between, and a resolve clear needs a pass of its own after
+        // this one, so the pass stays open for further resolves only, and the
+        // clear waits for its end.
         const bool clears =
             resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
-        if (!refresh_target && !clears &&
-            command_processor_.CanKeepRenderPassAfterTileResolve()) {
+        if (!command_processor_.CanKeepRenderPassAfterTileResolve() ||
+            (clears && !LeaveResolveClearToPassEnd(resolve_info))) {
+          end_pass();
+        } else {
           command_processor_.NoteTileResolveWrite(
               resolve_info.copy_dest_extent_start,
               resolve_info.copy_dest_extent_length);
           last_resolve_kept_pass_ = true;
-        } else {
-          XELOGD("tresolve: end {}", refresh_target ? "refresh"
-                                     : clears       ? "clear"
-                                                    : "budget");
-          end_pass();
+          if (refresh_target || clears) {
+            command_processor_.SetRenderEncoderResolveOnly();
+            clear_left_to_pass_end = clears;
+          }
         }
         resolved_directly = true;
       }
@@ -6784,7 +6778,10 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       }
     }
 
-    return perform_resolve_clear();
+    if (clear_left_to_pass_end) {
+      return true;
+    }
+    return PerformResolveClear(resolve_info, command_buffer);
   };
 
   if (resolved_directly) {
@@ -7428,6 +7425,186 @@ void MetalRenderTargetCache::PlanResolveStoreActions(
               plan.color_clear_start_tiles_base_relative,
               plan.color_clear_length_tiles);
   }
+}
+
+bool MetalRenderTargetCache::PerformResolveClear(
+    const draw_util::ResolveInfo& resolve_info,
+    MTL::CommandBuffer* command_buffer) {
+  bool clear_depth = resolve_info.IsClearingDepth();
+  bool clear_color = resolve_info.IsClearingColor();
+  if (!clear_depth && !clear_color) {
+    return true;
+  }
+  Transfer::Rectangle clear_rectangle;
+  RenderTarget* clear_targets[2] = {};
+  std::vector<Transfer> clear_transfers[2];
+  if (PrepareHostRenderTargetsResolveClear(
+          resolve_info, clear_rectangle, clear_targets[0], clear_transfers[0],
+          clear_targets[1], clear_transfers[1])) {
+    if (clear_targets[1] && !clear_transfers[1].empty()) {
+      ElideAliasedStorageTransfers(
+          static_cast<MetalRenderTarget*>(clear_targets[1]),
+          clear_transfers[1]);
+    }
+    uint64_t clear_values[2];
+    clear_values[0] = resolve_info.rb_depth_clear;
+    clear_values[1] = resolve_info.rb_color_clear |
+                      (uint64_t(resolve_info.rb_color_clear_lo) << 32);
+    return PerformTransfersAndResolveClears(2, clear_targets, clear_transfers,
+                                            clear_values, &clear_rectangle,
+                                            command_buffer);
+  }
+  return true;
+}
+
+namespace {
+
+// Whether two ranges of EDRAM tiles overlap, either of them wrapping at
+// kEdramTileCount.
+bool EdramTileRangesOverlap(uint32_t a_start, uint32_t a_length,
+                            uint32_t b_start, uint32_t b_length) {
+  static_assert(!(xenos::kEdramTileCount & (xenos::kEdramTileCount - 1)));
+  if (!a_length || !b_length) {
+    return false;
+  }
+  if (a_length >= xenos::kEdramTileCount ||
+      b_length >= xenos::kEdramTileCount) {
+    return true;
+  }
+  // Two arcs of a circle overlap where either starts inside the other.
+  constexpr uint32_t kTileMask = xenos::kEdramTileCount - 1;
+  return ((b_start - a_start) & kTileMask) < a_length ||
+         ((a_start - b_start) & kTileMask) < b_length;
+}
+
+}  // namespace
+
+bool MetalRenderTargetCache::CanLeaveResolveToPassEnd() const {
+  // Without zero-copy, an upload into shared memory ends the pass, possibly
+  // in the middle of a later resolve. A trace being recorded reads guest
+  // memory right away.
+  auto* shared = command_processor_.shared_memory();
+  return !flushing_post_pass_resolves_ &&
+         command_processor_.HasActiveRenderEncoder() && shared &&
+         shared->is_zero_copy() && !(trace_writer_ && trace_writer_->is_open());
+}
+
+bool MetalRenderTargetCache::GetResolveClearTileRanges(
+    const draw_util::ResolveInfo& resolve_info, uint32_t start_tiles_out[2],
+    uint32_t length_tiles_out[2]) const {
+  for (uint32_t i = 0; i < 2; ++i) {
+    start_tiles_out[i] = 0;
+    length_tiles_out[i] = 0;
+  }
+  if (!resolve_info.IsClearingDepth() && !resolve_info.IsClearingColor()) {
+    return true;
+  }
+  ResolveClearPlan plan;
+  if (!GetHostRenderTargetsResolveClearPlan(resolve_info, plan)) {
+    return false;
+  }
+  start_tiles_out[0] = uint32_t(plan.depth_render_target_key.base_tiles) +
+                       plan.depth_clear_start_tiles_base_relative;
+  length_tiles_out[0] = plan.depth_clear_length_tiles;
+  start_tiles_out[1] = uint32_t(plan.color_render_target_key.base_tiles) +
+                       plan.color_clear_start_tiles_base_relative;
+  length_tiles_out[1] = plan.color_clear_length_tiles;
+  return true;
+}
+
+const char* MetalRenderTargetCache::GetPostPassResolveConflict(
+    const draw_util::ResolveInfo& resolve_info) const {
+  // The tiles the copy reads.
+  uint32_t read_start = 0, read_length = 0;
+  if (resolve_info.copy_dest_extent_length &&
+      resolve_info.rb_copy_control.copy_command !=
+          xenos::CopyCommand::kConvertTo1111) {
+    uint32_t row_length_used, rows, pitch;
+    resolve_info.GetCopyEdramTileSpan(read_start, row_length_used, rows,
+                                      pitch);
+    read_length = rows ? (rows - 1) * pitch + row_length_used : 0;
+  }
+  for (const PostPassResolve& queued : post_pass_resolves_) {
+    for (uint32_t i = 0; i < 2; ++i) {
+      if (EdramTileRangesOverlap(read_start, read_length,
+                                 queued.clear_start_tiles[i],
+                                 queued.clear_length_tiles[i])) {
+        return "queued_clear";
+      }
+    }
+  }
+  return nullptr;
+}
+
+bool MetalRenderTargetCache::LeaveResolveClearToPassEnd(
+    const draw_util::ResolveInfo& resolve_info) {
+  PostPassResolve queued;
+  if (!CanLeaveResolveToPassEnd() ||
+      !GetResolveClearTileRanges(resolve_info, queued.clear_start_tiles,
+                                 queued.clear_length_tiles)) {
+    return false;
+  }
+  queued.resolve_info = resolve_info;
+  // What the clear makes dead joins the store plan of the work already left to
+  // the pass end. Each clear is planned before those ahead of it change
+  // ownership, which moves data only into the tiles they rewrite.
+  std::vector<MetalRenderTarget*> dead;
+  if (!post_pass_resolves_.empty()) {
+    dead.swap(dead_store_render_targets_);
+  }
+  PlanResolveStoreActions(resolve_info);
+  for (MetalRenderTarget* rt : dead_store_render_targets_) {
+    if (std::find(dead.begin(), dead.end(), rt) == dead.end()) {
+      dead.push_back(rt);
+    }
+  }
+  dead_store_render_targets_.swap(dead);
+  post_pass_resolves_.push_back(queued);
+  return true;
+}
+
+void MetalRenderTargetCache::KeepStoresOfResolveReads(
+    const draw_util::ResolveInfo& resolve_info) {
+  if (dead_store_render_targets_.empty() ||
+      !resolve_info.copy_dest_extent_length ||
+      resolve_info.rb_copy_control.copy_command ==
+          xenos::CopyCommand::kConvertTo1111) {
+    return;
+  }
+  uint32_t base, row_length_used, rows, pitch;
+  resolve_info.GetCopyEdramTileSpan(base, row_length_used, rows, pitch);
+  std::vector<ResolveCopyDumpRectangle> read_rectangles;
+  GetResolveCopyRectanglesToDump(base, row_length_used, rows, pitch,
+                                 read_rectangles);
+  for (const ResolveCopyDumpRectangle& read : read_rectangles) {
+    dead_store_render_targets_.erase(
+        std::remove(dead_store_render_targets_.begin(),
+                    dead_store_render_targets_.end(),
+                    static_cast<MetalRenderTarget*>(read.render_target)),
+        dead_store_render_targets_.end());
+  }
+}
+
+void MetalRenderTargetCache::FlushPostPassResolves(
+    MTL::CommandBuffer* command_buffer) {
+  if (post_pass_resolves_.empty() || flushing_post_pass_resolves_) {
+    return;
+  }
+  assert_false(command_processor_.HasActiveRenderEncoder());
+  flushing_post_pass_resolves_ = true;
+  std::vector<PostPassResolve> resolves;
+  resolves.swap(post_pass_resolves_);
+  if (!command_buffer) {
+    command_buffer = command_processor_.EnsureCommandBuffer();
+  }
+  for (const PostPassResolve& resolve : resolves) {
+    if (!PerformResolveClear(resolve.resolve_info, command_buffer)) {
+      XELOGE(
+          "MetalRenderTargetCache: a resolve clear left to the end of the "
+          "pass failed");
+    }
+  }
+  flushing_post_pass_resolves_ = false;
 }
 
 void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
