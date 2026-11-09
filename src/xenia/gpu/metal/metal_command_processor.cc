@@ -6845,17 +6845,11 @@ bool MetalCommandProcessor::IssueCopy() {
   uint32_t written_length = 0;
 
   // Strip merge (strip_merge.h): a strip-own resolve of the merged first strip
-  // resolves every strip's rows, from a pass of its own (the tile resolve
-  // path reads one EDRAM band).
+  // resolves every strip's rows. Its source is the strip-merged render target
+  // as one rectangle (GetStripMergedResolveRectangle), so the tile resolve
+  // can read every band from the open merged pass.
   uint32_t strip_merge_resolve_bottom =
       strip_merge_.recording() ? strip_merge_.NoteResolve(trace_writer_) : 0;
-  if (strip_merge_resolve_bottom) {
-    EndRenderEncoder();
-    copy_command_buffer = EnsureCommandBuffer();
-    if (!copy_command_buffer) {
-      return false;
-    }
-  }
   render_target_cache_->SetStripMergeResolveBottom(strip_merge_resolve_bottom);
   bool resolved = render_target_cache_->Resolve(
       *memory_, written_address, written_length, copy_command_buffer);
