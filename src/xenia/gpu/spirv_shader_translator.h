@@ -1255,10 +1255,17 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id FSI_FloatToUnorm(spv::Id value, uint32_t bits);
   // A uint or uint3 8-bit unorm widened to 10 bits by bit replication.
   spv::Id FSI_Widen8To10(spv::Id value);
+  // uint3: how many of the three thresholds value reaches, the extra shift
+  // of the gamma curve's segment.
+  spv::Id FSI_Gamma8Shift(spv::Id value, uint32_t threshold_1,
+                          uint32_t threshold_2, uint32_t threshold_3);
   // uint3 10-bit linear to 8-bit gamma, the render target's curve.
   spv::Id FSI_LinearToGamma8(spv::Id linear);
   // uint3 8-bit gamma to 10-bit linear, the exact inverse of the curve.
   spv::Id FSI_Gamma8ToLinear10(spv::Id gamma);
+  // uint3 10-bit linear quantized to 8-bit gamma and back:
+  // FSI_Gamma8ToLinear10(FSI_LinearToGamma8(linear)) in one step.
+  spv::Id FSI_Linear10ThroughGamma8(spv::Id linear);
   // The blending operands (uint4, 10 bits) of the exported color, quantized
   // to what the format stores first.
   spv::Id FSI_SourceToFixed10(spv::Id color,
@@ -1277,6 +1284,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Converts and packs a color into one of the FSI_BlendsInFixed10 formats.
   spv::Id FSI_PackUnitColor(spv::Id color,
                             xenos::ColorRenderTargetFormat format);
+  // FSI_PackUnitColor's fields before packing: uint3 color, uint alpha.
+  std::pair<spv::Id, spv::Id> FSI_UnitColorFields(
+      spv::Id color, xenos::ColorRenderTargetFormat format);
   // Blends 10-bit operands and packs the result into the format.
   spv::Id FSI_BlendFixed10(xenos::ColorRenderTargetFormat format,
                            spv::Id source, spv::Id dest, spv::Id constant,
@@ -1284,6 +1294,28 @@ class SpirvShaderTranslator : public ShaderTranslator {
                            spv::Id color_dest_factor, spv::Id alpha_equation,
                            spv::Id alpha_source_factor,
                            spv::Id alpha_dest_factor);
+  // A blend term, the source's or the destination's 10-bit operand times its
+  // factor, for the color (int3) or the alpha (int), before the shift by 10.
+  spv::Id FSI_BlendTermFixed10(bool is_alpha, bool of_dest, spv::Id factor,
+                               spv::Id source, spv::Id dest, spv::Id constant);
+  // Whether a blend factor (uint) depends on the destination, bool.
+  spv::Id FSI_BlendFactorUsesDest(spv::Id factor);
+  // FSI_BlendFixed10's fields before packing: uint3 color, uint alpha. The
+  // source terms may be given as computed with a zero destination, used where
+  // their factors don't depend on it, so that they can be computed before the
+  // destination is read.
+  std::pair<spv::Id, spv::Id> FSI_BlendFixed10Fields(
+      xenos::ColorRenderTargetFormat format, spv::Id source, spv::Id dest,
+      spv::Id constant, spv::Id color_equation, spv::Id color_source_factor,
+      spv::Id color_dest_factor, spv::Id alpha_equation,
+      spv::Id alpha_source_factor, spv::Id alpha_dest_factor,
+      spv::Id color_source_term_without_dest = spv::NoResult,
+      spv::Id alpha_source_term_without_dest = spv::NoResult,
+      bool gamma8_tables = false);
+  // uint3 through the 8_8_8_8_GAMMA curve by table, 10-bit linear to 8-bit
+  // gamma (encode) or back: the same values as FSI_LinearToGamma8 and
+  // FSI_Gamma8ToLinear10, in fewer dependent steps.
+  spv::Id Gamma8TableLookup(bool encode, spv::Id value);
   // host_render_target_feedback: the target's blend control, the fetch-state
   // function constant the pipeline specializes (kFetchStateColorBlendBinding):
   // its RB_BLENDCONTROL, or 1 * source + 0 * destination if the
@@ -1527,6 +1559,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // PS, host_render_target_feedback - the input attachments of the color
   // targets the shader reads back, or NoResult.
   spv::Id input_feedback_color_[xenos::kMaxColorRenderTargets];
+  // Gamma8TableLookup's constant tables, or NoResult - uint[1024] and
+  // uint[256] function variables.
+  spv::Id gamma8_encode_table_;
+  spv::Id gamma8_decode_table_;
 
   // PS, barycentric coordinate inputs (when fragment_shader_barycentric is
   // enabled) - float3.

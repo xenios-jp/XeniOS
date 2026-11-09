@@ -348,6 +348,8 @@ void SpirvShaderTranslator::Reset() {
   input_front_facing_ = spv::NoResult;
   input_sample_mask_ = spv::NoResult;
   std::ranges::fill(input_feedback_color_, spv::NoResult);
+  gamma8_encode_table_ = spv::NoResult;
+  gamma8_decode_table_ = spv::NoResult;
   // Barycentric interpolation inputs.
   input_barycentric_coord_ = spv::NoResult;
   input_barycentric_coord_no_persp_ = spv::NoResult;
