@@ -142,6 +142,7 @@ void StripMerge::Strip::Clear() {
   own_resolves.clear();
   draw_states.clear();
   draw_own_states.clear();
+  own_draw_vertices.clear();
   own_shadow.clear();
   own_float_registers.clear();
   draws = 0;
@@ -579,6 +580,12 @@ bool StripMerge::CompareStrip(uint32_t index) {
     ++i;
     ++j;
   }
+  if (first.own_draw_vertices != strip.own_draw_vertices) {
+    failure_strip_ = index;
+    failure_strip_ = index;
+    Fail("a strip-own draw's vertices differ between strips");
+    return false;
+  }
   if (strip.draws != first.draws) {
     failure_strip_ = index;
     Fail("strips with different draw counts");
@@ -906,12 +913,12 @@ uint64_t StripMerge::HashDrawState() {
   for (uint32_t reg : strips_[strip_index_].own_float_registers) {
     exclude(reg);
   }
-  if (current_packet_own_ && memory_) {
+  if (current_packet_own_) {
     // A strip's own draw may take its vertices from its own copy of the same
-    // data (Halo 3's clear quads: one 84-byte copy per strip): compare the
-    // vertices rather than where they are. A 6-dword fetch constant is a
-    // texture or three vertex fetches.
-    constexpr uint32_t kMaxHashedBytes = 64 * 1024;
+    // data (Halo 3's clear quads: one 84-byte copy per strip): CheckDraw
+    // compares the vertices the shader fetches, so the vertex fetch addresses
+    // are left out here. A 6-dword fetch constant is a texture or three
+    // vertex fetches.
     uint32_t* fetch = scratch + kContextCount +
                       (XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 - kConstantsFirst);
     for (uint32_t group = 0; group < 32; ++group) {
@@ -921,17 +928,9 @@ uint64_t StripMerge::HashDrawState() {
       }
       for (uint32_t pair = 0; pair < 3; ++pair) {
         uint32_t& dword_0 = words[pair * 2];
-        uint32_t dword_1 = words[pair * 2 + 1];
-        if ((dword_0 & 3) != uint32_t(xenos::FetchConstantType::kVertex)) {
-          continue;
+        if ((dword_0 & 3) == uint32_t(xenos::FetchConstantType::kVertex)) {
+          dword_0 = 3;
         }
-        uint32_t bytes = ((dword_1 >> 2) & 0xFFFFFF) * 4;
-        if (!bytes || bytes > kMaxHashedBytes) {
-          continue;
-        }
-        const uint8_t* data =
-            memory_->TranslatePhysical<const uint8_t*>(dword_0 & ~uint32_t(3));
-        dword_0 = uint32_t(XXH3_64bits(data, bytes)) | 3;
       }
     }
   }
@@ -984,6 +983,32 @@ bool StripMerge::ReadsOwnConstants(const Shader* shader,
 }
 
 void StripMerge::CheckDraw(const DrawInfo& draw) {
+  if (mode_ == Mode::kLearn && current_packet_own_ && session_open_) {
+    // The vertices of a strip-own draw (HashDrawState leaves out where they
+    // are): the contents of every vertex fetch range the vertex shader uses.
+    uint64_t vertices = 0;
+    if (draw.vertex_shader) {
+      constexpr uint32_t kMaxHashedBytes = 64 * 1024;
+      for (const Shader::VertexBinding& binding :
+           draw.vertex_shader->vertex_bindings()) {
+        uint32_t reg = XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
+                       binding.fetch_constant * 2;
+        uint32_t dword_0 = register_file_[reg];
+        uint32_t dword_1 = register_file_[reg + 1];
+        uint32_t bytes = ((dword_1 >> 2) & 0xFFFFFF) * 4;
+        uint64_t range[3] = {binding.fetch_constant, dword_1, 0};
+        if (bytes && bytes <= kMaxHashedBytes) {
+          range[2] = XXH3_64bits(memory_->TranslatePhysical<const uint8_t*>(
+                                     dword_0 & ~uint32_t(3)),
+                                 bytes);
+        } else {
+          range[2] = dword_0;
+        }
+        vertices = XXH3_64bits_withSeed(range, sizeof(range), vertices);
+      }
+    }
+    strips_[strip_index_].own_draw_vertices.push_back(vertices);
+  }
   if (!checking_draws()) {
     return;
   }
