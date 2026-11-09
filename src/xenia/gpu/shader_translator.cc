@@ -412,6 +412,9 @@ uint32_t Shader::GetInterpolatorInputMask(reg::SQ_PROGRAM_CNTL sq_program_cntl,
   } else {
     param_gen_pos_out = UINT32_MAX;
   }
+  // TODO(xenios-jp): the register count also covers registers the shader only
+  // uses as temporaries. Leaving those out needs a stored description migration
+  // and multiplies the vertex variants.
   return interpolator_mask;
 }
 
@@ -908,6 +911,23 @@ void Shader::GatherAluInstructionInformation(
   }
   for (size_t i = 0; i < instr.scalar_operand_count; ++i) {
     GatherOperandInformation(instr.scalar_operands[i]);
+  }
+  auto note_with_effect = [this](const InstructionOperand& operand) {
+    if (operand.storage_source == InstructionStorageSource::kConstantFloat &&
+        operand.storage_addressing_mode ==
+            InstructionStorageAddressingMode::kAbsolute) {
+      float_constants_with_effect_[operand.storage_index >> 6] |=
+          uint64_t(1) << (operand.storage_index & 63);
+    }
+  };
+  if (instr.vector_and_constant_result.GetUsedWriteMask() ||
+      ucode::GetAluVectorOpcodeInfo(op.vector_opcode()).changed_state) {
+    for (size_t i = 0; i < instr.vector_operand_count; ++i) {
+      note_with_effect(instr.vector_operands[i]);
+    }
+  }
+  for (size_t i = 0; i < instr.scalar_operand_count; ++i) {
+    note_with_effect(instr.scalar_operands[i]);
   }
 
   // Store used memexport constants because CPU code needs addresses and sizes.

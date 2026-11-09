@@ -955,6 +955,13 @@ class Shader {
   const ConstantRegisterMap& constant_register_map() const {
     return constant_register_map_;
   }
+  // The float constants (as ConstantRegisterMap::float_bitmap) that
+  // instructions with an effect read: not those only a vector operation
+  // writing no component and changing no state reads (D3D ends shaders with
+  // `max r0._, c0, c0`). Scalar operations always count, they write ps.
+  const uint64_t* float_constants_with_effect() const {
+    return float_constants_with_effect_;
+  }
 
   // Information about memory export state at each control flow instruction. May
   // be empty if there are no eM# writes.
@@ -1237,6 +1244,7 @@ class Shader {
   std::vector<VertexBinding> vertex_bindings_;
   std::vector<TextureBinding> texture_bindings_;
   ConstantRegisterMap constant_register_map_ = {0};
+  uint64_t float_constants_with_effect_[256 / 64] = {};
   std::set<uint32_t> label_addresses_;
   // Per control flow instruction index.
   std::vector<uint64_t> cf_register_components_written_;
