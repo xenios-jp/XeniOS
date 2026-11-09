@@ -21,6 +21,7 @@
 
 #include "xenia/gpu/edram_dump_shader.h"
 #include "xenia/gpu/edram_transfer_shader.h"
+#include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/render_target_cache.h"
 #include "xenia/gpu/trace_writer.h"
@@ -1015,6 +1016,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     uint32_t origin_y = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    // Instead of the scratch texture, when the dispatch wrote every texel of
+    // the sampled textures: images of their own, which they take when the
+    // pass ends.
+    struct Swap {
+      // The texture's refresh write view, by which it is found.
+      NS::SharedPtr<MTL::Texture> write_view;
+      std::unique_ptr<MetalTextureCache::ResolveRefreshStorage> storage;
+    };
+    std::vector<Swap> swaps;
     // The resolves left to the pass end before it, which run first.
     size_t post_pass_resolves_before = 0;
   };

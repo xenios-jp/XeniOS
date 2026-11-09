@@ -762,6 +762,131 @@ void MetalTextureCache::PublishDirectResolveTextureRefresh(
   }
 }
 
+MetalTextureCache::ResolveRefreshStorage::~ResolveRefreshStorage() {
+  for (auto& view : views) {
+    if (view.second) {
+      view.second->release();
+    }
+  }
+  if (write_view) {
+    write_view->release();
+  }
+  if (texture) {
+    texture->release();
+  }
+}
+
+std::unique_ptr<MetalTextureCache::ResolveRefreshStorage>
+MetalTextureCache::AcquireResolveRefreshStorage(MTL::Texture* write_view) {
+  MTL::Texture* like = write_view ? write_view->parentTexture() : nullptr;
+  if (!like) {
+    return nullptr;
+  }
+  FreeResolveRefreshStorage(false);
+  for (auto it = resolve_refresh_storage_pool_.begin();
+       it != resolve_refresh_storage_pool_.end(); ++it) {
+    const MTL::Texture* texture = (*it)->texture;
+    const MTL::TextureSwizzleChannels swizzle = texture->swizzle();
+    const MTL::TextureSwizzleChannels like_swizzle = like->swizzle();
+    if (texture->pixelFormat() == like->pixelFormat() &&
+        texture->textureType() == like->textureType() &&
+        texture->width() == like->width() &&
+        texture->height() == like->height() &&
+        texture->arrayLength() == like->arrayLength() &&
+        texture->mipmapLevelCount() == like->mipmapLevelCount() &&
+        texture->usage() == like->usage() &&
+        texture->storageMode() == like->storageMode() &&
+        swizzle.red == like_swizzle.red &&
+        swizzle.green == like_swizzle.green &&
+        swizzle.blue == like_swizzle.blue &&
+        swizzle.alpha == like_swizzle.alpha &&
+        (*it)->write_view->pixelFormat() == write_view->pixelFormat()) {
+      std::unique_ptr<ResolveRefreshStorage> storage = std::move(*it);
+      resolve_refresh_storage_pool_.erase(it);
+      return storage;
+    }
+  }
+  // As the texture was created.
+  if (like->textureType() != MTL::TextureType2DArray ||
+      !(like->usage() & MTL::TextureUsageShaderWrite) ||
+      like->storageMode() != GetCacheTextureStorageMode()) {
+    return nullptr;
+  }
+  MTL::Texture* texture = CreateTexture2D(
+      uint32_t(like->width()), uint32_t(like->height()),
+      uint32_t(like->arrayLength()), like->pixelFormat(), like->swizzle(),
+      uint32_t(like->mipmapLevelCount()), true,
+      (like->usage() & MTL::TextureUsagePixelFormatView) != 0);
+  if (!texture) {
+    return nullptr;
+  }
+  if (texture->usage() != like->usage()) {
+    texture->release();
+    return nullptr;
+  }
+  auto storage = std::make_unique<ResolveRefreshStorage>();
+  storage->texture = texture;
+  storage->write_view = texture->newTextureView(write_view->pixelFormat());
+  if (!storage->write_view) {
+    return nullptr;
+  }
+  return storage;
+}
+
+bool MetalTextureCache::SwapResolveRefreshStorage(
+    MTL::Texture* write_view,
+    std::unique_ptr<ResolveRefreshStorage>& storage) {
+  if (!write_view || !storage) {
+    return false;
+  }
+  // The caller holds write_view, so a texture created since can't have it.
+  MetalTexture* texture = resolve_refresh_first_;
+  while (texture && texture->resolve_write_view_ != write_view) {
+    texture = texture->resolve_refresh_next_;
+  }
+  if (!texture || texture->texture_3d_as_2d_) {
+    return false;
+  }
+  std::swap(texture->metal_texture_, storage->texture);
+  std::swap(texture->resolve_write_view_, storage->write_view);
+  // A view is of the image, and keyed by everything it's created from, so
+  // the views move along with it.
+  std::swap(texture->swizzled_view_cache_, storage->views);
+  // The draws after this bind the new image.
+  OnGatherInputsChanged();
+  return true;
+}
+
+void MetalTextureCache::ReleaseResolveRefreshStorage(
+    std::unique_ptr<ResolveRefreshStorage> storage) {
+  if (!storage) {
+    return;
+  }
+  constexpr size_t kMaxFreeStorage = 16;
+  if (resolve_refresh_storage_pool_.size() < kMaxFreeStorage) {
+    resolve_refresh_storage_pool_.push_back(std::move(storage));
+    return;
+  }
+  resolve_refresh_storage_retired_.emplace_back(
+      command_processor_ ? command_processor_->GetCurrentSubmission() : 0,
+      std::move(storage));
+}
+
+void MetalTextureCache::FreeResolveRefreshStorage(bool all) {
+  if (all) {
+    resolve_refresh_storage_pool_.clear();
+    resolve_refresh_storage_retired_.clear();
+    return;
+  }
+  if (resolve_refresh_storage_retired_.empty() || !command_processor_) {
+    return;
+  }
+  const uint64_t completed = command_processor_->GetCompletedSubmission();
+  std::erase_if(resolve_refresh_storage_retired_, [&](const auto& retired) {
+    return retired.first <= completed;
+  });
+}
+
 void MetalTextureCache::BeginUploadCommandBufferBatch() {
   ++upload_batch_depth_;
 }
@@ -2641,6 +2766,7 @@ void MetalTextureCache::Shutdown() {
   AbortUploadCommandBufferBatch(false);
 
   ClearCache();
+  FreeResolveRefreshStorage(true);
 
   for (size_t i = 0; i < kLoadShaderCount; ++i) {
     if (load_pipelines_[i]) {
