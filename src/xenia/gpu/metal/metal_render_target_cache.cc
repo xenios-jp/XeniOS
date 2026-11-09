@@ -2439,6 +2439,11 @@ bool MetalRenderTargetCache::RotateHostDepthForDrawPass(
     return false;
   }
   auto* dest = static_cast<MetalRenderTarget*>(render_targets[0]);
+  // Not for strip-merged destinations: drawn at the head of a merged pass,
+  // they slowed the vertex stage on a tile GPU, so they keep their own pass.
+  if (dest->key().strip_merged) {
+    return false;
+  }
   // A deferred clear has to land in the previous backing first, which the
   // standalone path encodes before it rotates.
   if (AnyDeferredClear(dest) ||
