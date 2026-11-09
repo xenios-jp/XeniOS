@@ -257,6 +257,8 @@ class StripMerge {
     std::vector<uint64_t> draw_states;
     // Per draw: HashDrawOwnState.
     std::vector<uint64_t> draw_own_states;
+    // Per strip-own draw (learning): CheckDraw's hash of its vertices.
+    std::vector<uint64_t> own_draw_vertices;
     // The strip's latest own value of every register it wrote itself.
     std::vector<OwnLatest> own_shadow;
     std::vector<uint32_t> own_float_registers;
