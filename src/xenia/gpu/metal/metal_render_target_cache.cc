@@ -5274,6 +5274,89 @@ static uint2 XeTileResolvePack_16_16_16_16(float4 color,
   return n.xz | (n.yw << 16u);
 }
 
+// The dump shader's 8_8_8_8 four-sample average (load_average_rgba8), in its
+// operation order: the samples' sum in sample order, times 1/4, each component
+// converted with OpConvertFToU(c * 255 + 0.5). An 8_8_8_8 render target's
+// samples are summed as read.
+static uint XeTileResolveAverage4Pack(float4 sum) {
+  float4 average = sum * 0.25f;
+  return uint(average.x * 255.0f + 0.5f) |
+         (uint(average.y * 255.0f + 0.5f) << 8u) |
+         (uint(average.z * 255.0f + 0.5f) << 16u) |
+         (uint(average.w * 255.0f + 0.5f) << 24u);
+}
+static uint XeTileResolvePack_8888Average4(float4 s0, float4 s1, float4 s2,
+                                           float4 s3,
+                                           constant XeTileResolveConstants& c) {
+  float4 sum = s0;
+  sum = sum + s1;
+  sum = sum + s2;
+  sum = sum + s3;
+  return XeTileResolveAverage4Pack(sum);
+}
+// SPIRV-Cross's NoContraction helpers, inlined as CompileFunctionMsl inlines
+// them.
+static float XeTileResolveNoContractionMul(float l, float r) {
+  return fma(l, r, 0.0f);
+}
+static float XeTileResolveNoContractionAdd(float l, float r) {
+  return fma(1.0f, l, r);
+}
+// SpirvShaderTranslator::LinearToPWLGamma of a pre-saturated value, with its
+// float constants' exact bits.
+static float XeTileResolveLinearToPWLGamma(float linear) {
+  bool is_piece_at_least_3 = linear >= as_type<float>(0x3F002008u);
+  float scale_3_or_2 = is_piece_at_least_3 ? as_type<float>(0x42FFC000u)
+                                           : as_type<float>(0x437FC000u);
+  float offset_3_or_2 = is_piece_at_least_3 ? as_type<float>(0x3F008081u)
+                                            : as_type<float>(0x3E808081u);
+  bool is_piece_at_least_1 = linear >= as_type<float>(0x3D802008u);
+  float scale_1_or_0 = is_piece_at_least_1 ? as_type<float>(0x43FFC000u)
+                                           : 1023.0f;
+  float offset_1_or_0 =
+      is_piece_at_least_1 ? as_type<float>(0x3E008081u) : 0.0f;
+  bool is_piece_at_least_2 = linear >= as_type<float>(0x3E002008u);
+  float scale = is_piece_at_least_2 ? scale_3_or_2 : scale_1_or_0;
+  float offset = is_piece_at_least_2 ? offset_3_or_2 : offset_1_or_0;
+  return XeTileResolveNoContractionAdd(
+      XeTileResolveNoContractionMul(
+          trunc(XeTileResolveNoContractionMul(linear, scale)),
+          as_type<float>(0x3B808081u)),
+      offset);
+}
+// An 8_8_8_8_GAMMA render target's sample (linear, in RGBA16Unorm) as the
+// dump shader's load_and_pack packs it, unpacked with UnpackUnorm4x8.
+static float4 XeTileResolveGammaSample(float4 linear) {
+  uint packed = uint(XeTileResolveLinearToPWLGamma(linear.x) * 255.0f + 0.5f);
+  packed |= uint(XeTileResolveLinearToPWLGamma(linear.y) * 255.0f + 0.5f)
+            << 8u;
+  packed |= uint(XeTileResolveLinearToPWLGamma(linear.z) * 255.0f + 0.5f)
+            << 16u;
+  packed |= uint(linear.w * 255.0f + 0.5f) << 24u;
+  return unpack_unorm4x8_to_float(packed);
+}
+static uint XeTileResolvePack_8888GammaAverage4(
+    float4 s0, float4 s1, float4 s2, float4 s3,
+    constant XeTileResolveConstants& c) {
+  float4 sum = XeTileResolveGammaSample(s0);
+  sum = sum + XeTileResolveGammaSample(s1);
+  sum = sum + XeTileResolveGammaSample(s2);
+  sum = sum + XeTileResolveGammaSample(s3);
+  return XeTileResolveAverage4Pack(sum);
+}
+
+// The pixel's one value, or its four samples (the guest 4x sample numbering
+// matches the host one).
+#define XE_TILE_RESOLVE_READ_PIXEL(kernel_name)                               \
+  XeTileResolvePack_##kernel_name(pixels.read(pixel_in_tile).color, constants)
+#define XE_TILE_RESOLVE_READ_4_SAMPLES(kernel_name)                           \
+  XeTileResolvePack_##kernel_name(                                            \
+      pixels.read(pixel_in_tile, 0, imageblock_data_rate::sample).color,      \
+      pixels.read(pixel_in_tile, 1, imageblock_data_rate::sample).color,      \
+      pixels.read(pixel_in_tile, 2, imageblock_data_rate::sample).color,      \
+      pixels.read(pixel_in_tile, 3, imageblock_data_rate::sample).color,      \
+      constants)
+
 // How many texture-cache textures the resolve refreshes, 0 to 4: the first
 // and its aliases, R32Uint (32bpp) or RG32Uint (64bpp) 2D array views.
 constant uint xe_tile_resolve_refresh_count [[function_constant(0)]];
@@ -5282,7 +5365,7 @@ constant bool xe_tile_resolve_refresh_1 = xe_tile_resolve_refresh_count > 1u;
 constant bool xe_tile_resolve_refresh_2 = xe_tile_resolve_refresh_count > 2u;
 constant bool xe_tile_resolve_refresh_3 = xe_tile_resolve_refresh_count > 3u;
 
-#define XE_TILE_RESOLVE(kernel_name, member_type, index)                      \
+#define XE_TILE_RESOLVE(kernel_name, member_type, read, index)                \
   struct XeTileResolvePixel_##kernel_name##_##index {                         \
     member_type color [[color(index)]];                                       \
   };                                                                          \
@@ -5305,10 +5388,8 @@ constant bool xe_tile_resolve_refresh_3 = xe_tile_resolve_refresh_count > 3u;
     if (p.x >= constants.size.x || p.y >= constants.size.y) {                 \
       return;                                                                 \
     }                                                                         \
-    auto value = XeTileResolveSwapRedBlue(                                    \
-        constants,                                                            \
-        XeTileResolvePack_##kernel_name(pixels.read(pixel_in_tile).color,     \
-                                        constants));                          \
+    auto value =                                                              \
+        XeTileResolveSwapRedBlue(constants, read(kernel_name));               \
     if (xe_tile_resolve_refresh_0) {                                          \
       uint2 texel = uint2(p.x, p.y + constants.refresh_offset_y);             \
       if (texel.x < constants.refresh_size.x &&                               \
@@ -5328,22 +5409,28 @@ constant bool xe_tile_resolve_refresh_3 = xe_tile_resolve_refresh_count > 3u;
     }                                                                         \
     XeTileResolveStore(constants, dest, p, value);                            \
   }
-#define XE_TILE_RESOLVE_ALL_INDICES(kernel_name, member_type)                 \
-  XE_TILE_RESOLVE(kernel_name, member_type, 0)                                \
-  XE_TILE_RESOLVE(kernel_name, member_type, 1)                                \
-  XE_TILE_RESOLVE(kernel_name, member_type, 2)                                \
-  XE_TILE_RESOLVE(kernel_name, member_type, 3)
-XE_TILE_RESOLVE_ALL_INDICES(8888, float4)
-XE_TILE_RESOLVE_ALL_INDICES(16_16Float, half4)
-XE_TILE_RESOLVE_ALL_INDICES(32Float, float4)
-XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16Float, half4)
-XE_TILE_RESOLVE_ALL_INDICES(32_32Float, float4)
-XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16, float4)
+#define XE_TILE_RESOLVE_ALL_INDICES(kernel_name, member_type, read)           \
+  XE_TILE_RESOLVE(kernel_name, member_type, read, 0)                          \
+  XE_TILE_RESOLVE(kernel_name, member_type, read, 1)                          \
+  XE_TILE_RESOLVE(kernel_name, member_type, read, 2)                          \
+  XE_TILE_RESOLVE(kernel_name, member_type, read, 3)
+XE_TILE_RESOLVE_ALL_INDICES(8888, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(16_16Float, half4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(32Float, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16Float, half4,
+                            XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(32_32Float, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(16_16_16_16, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(8888Average4, float4,
+                            XE_TILE_RESOLVE_READ_4_SAMPLES)
+XE_TILE_RESOLVE_ALL_INDICES(8888GammaAverage4, float4,
+                            XE_TILE_RESOLVE_READ_4_SAMPLES)
 )METAL";
 
 const char* const kTileResolveKernelNames[] = {
-    "8888",       "16_16Float",  "32Float", "16_16_16_16Float",
-    "32_32Float", "16_16_16_16"};
+    "8888",        "16_16Float",  "32Float",
+    "16_16_16_16Float", "32_32Float", "16_16_16_16",
+    "8888Average4", "8888GammaAverage4"};
 
 // The largest tile area Metal allows at each sample count (Metal feature set
 // tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
@@ -5469,10 +5556,12 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   if (copy_shader_constants.dest_relative.edram_info.fill_half_pixel_offset) {
     return "half_pixel_fill";
   }
-  // The dump shader's bit copies, and the 16_16_16_16 conversion, have tile
-  // variants.
+  // The dump shader's bit copies and 8_8_8_8 four-sample average, and the
+  // 16_16_16_16 conversion, have tile variants.
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
+  const bool average_4x =
+      IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
   switch (copy_shader) {
     case draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA:
     case draw_util::ResolveCopyShaderIndex::kFast32bpp4xMSAA:
@@ -5480,7 +5569,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     case draw_util::ResolveCopyShaderIndex::kFast64bpp4xMSAA:
       break;
     default:
-      if (!rgba16_1x) {
+      if (!rgba16_1x && !average_4x) {
         return "kernel";
       }
       break;
@@ -5504,15 +5593,27 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   if (rt_key.is_depth) {
     return "depth";
   }
-  if (rt_key.msaa_samples != xenos::MsaaSamples::k1X) {
+  const xenos::MsaaSamples msaa_samples =
+      average_4x ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
+  if (rt_key.msaa_samples != msaa_samples) {
     return "msaa";
   }
   TileResolveKernel kernel;
   MTL::PixelFormat source_format;
   switch (rt_key.GetColorFormat()) {
     case xenos::ColorRenderTargetFormat::k_8_8_8_8:
-      kernel = TileResolveKernel::k8888;
+      kernel = average_4x ? TileResolveKernel::k8888Average4
+                          : TileResolveKernel::k8888;
       source_format = MTL::PixelFormatRGBA8Unorm;
+      break;
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+      // Linear in RGBA16Unorm (gamma_render_target_as_unorm16), which the
+      // average's PWL encoding expects. Only the average is ported.
+      if (!average_4x) {
+        return "format";
+      }
+      kernel = TileResolveKernel::k8888GammaAverage4;
+      source_format = MTL::PixelFormatRGBA16Unorm;
       break;
     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
       kernel = TileResolveKernel::k16_16Float;
@@ -5541,13 +5642,16 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     default:
       return "format";
   }
-  if (rgba16_1x && kernel != TileResolveKernel::k16_16_16_16) {
+  if ((rgba16_1x && kernel != TileResolveKernel::k16_16_16_16) ||
+      (average_4x && kernel != TileResolveKernel::k8888Average4 &&
+       kernel != TileResolveKernel::k8888GammaAverage4)) {
     return "kernel";
   }
   const bool is_64bpp = rt_key.Is64bpp();
+  const uint32_t sample_count = MsaaSamplesToCount(msaa_samples);
   MTL::Texture* source = rt->texture();
   if (!source || source->pixelFormat() != source_format ||
-      source->sampleCount() != 1) {
+      source->sampleCount() != sample_count) {
     return "host_format";
   }
 
@@ -5569,14 +5673,18 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     return "format";
   }
   const uint32_t base_delta = edram_info.base_tiles - rt_key.base_tiles;
-  // 64bpp tiles are half as wide in pixels.
+  // 64bpp tiles are half as wide in pixels, and 4x ones half as wide and half
+  // as tall.
   const uint32_t edram_tile_width =
-      xenos::kEdramTileWidthSamples >> uint32_t(is_64bpp);
+      xenos::kEdramTileWidthSamples >>
+      (uint32_t(is_64bpp) + uint32_t(average_4x));
+  const uint32_t edram_tile_height =
+      xenos::kEdramTileHeightSamples >> uint32_t(average_4x);
   TileResolveConstants constants = {};
   constants.origin[0] = base_delta % edram_info.pitch_tiles * edram_tile_width +
                         coordinate_info.edram_offset_x_div_8 * 8;
   constants.origin[1] =
-      base_delta / edram_info.pitch_tiles * xenos::kEdramTileHeightSamples +
+      base_delta / edram_info.pitch_tiles * edram_tile_height +
       coordinate_info.edram_offset_y_div_8 * 8;
   constants.size[0] = coordinate_info.width_div_8 * 8;
   constants.size[1] = resolve_info.height_div_8 * 8;
@@ -5698,7 +5806,6 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
 
   // The tile size is the pass's own, checked against the limits rather than
   // assumed.
-  const uint32_t sample_count = 1;
   const uint32_t tile_width = uint32_t(encoder->tileWidth());
   const uint32_t tile_height = uint32_t(encoder->tileHeight());
   if (!tile_width || !tile_height ||
