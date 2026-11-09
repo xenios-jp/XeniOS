@@ -157,6 +157,8 @@ uint32_t StripMerge::RegisterWrites::value(uint32_t index) const {
 
 bool StripMerge::Layout::operator==(const Layout& other) const {
   if (strip_count != other.strip_count || band_rows != other.band_rows ||
+      frame_rows != other.frame_rows ||
+      resolve_bottoms != other.resolve_bottoms ||
       resolve_clear_bottoms != other.resolve_clear_bottoms ||
       first_strip_draws != other.first_strip_draws ||
       pitch_tiles_at_32bpp != other.pitch_tiles_at_32bpp ||
@@ -231,6 +233,7 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   strip_count_ = 0;
   strip_bits_union_ = 0;
   failed_ = false;
+  merged_resolves_ = 0;
   failure_reason_.clear();
   failure_strip_ = 0;
   window_br_extended_ = false;
@@ -441,6 +444,9 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     return false;
   }
   const Strip& first = strips_[0];
+  int32_t band_rows = 0;
+  uint32_t window_br_first = 0;
+  uint32_t frame_rows = 0;
   // The strips are compared draw by draw: every strip draws as many times
   // (CompareStrip), and what matters of the strips' own register writes is
   // what each draw sees of them. D3D's predicated tiling sets every strip's
@@ -582,6 +588,7 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
           return false;
         }
       } break;
+                          window_br_first, frame_rows)) {
         return false;
       }
     }
@@ -591,9 +598,16 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     return false;
   }
   for (size_t d = 0; d < draw_count; ++d) {
+  // The last strip's window: its band, or clipped to the frame.
+  if (frame_rows <= (strip_count_ - 1) * uint32_t(band_rows) ||
+      frame_rows > strip_count_ * uint32_t(band_rows)) {
+    Fail("the last strip's window isn't in its band");
+    return false;
+  }
   layout_out = Layout();
   layout_out.strip_count = strip_count_;
   layout_out.band_rows = uint32_t(band_rows);
+  layout_out.frame_rows = frame_rows;
   layout_out.window_br_first = window_br_first;
   for (uint32_t k = 0; k < strip_count_; ++k) {
     layout_out.strip_bits[k] = strips_[k].bits;
@@ -604,6 +618,7 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     // verified one.
     layout_out.pitch_tiles_at_32bpp = layout_.pitch_tiles_at_32bpp;
     layout_out.msaa_samples = layout_.msaa_samples;
+    layout_out.resolve_bottoms = layout_.resolve_bottoms;
     layout_out.resolve_clear_bottoms = layout_.resolve_clear_bottoms;
     return true;
   }
@@ -631,9 +646,15 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
       layout_out.msaa_samples = resolve.msaa_samples;
     }
     // The merged first strip resolves every strip's rows into its
-    // destination, which has to reach the frame bottom.
-    if (resolve.is_64bpp || resolve.clears || resolve.edram_offset_y ||
-        resolve.dest_offset_y ||
+    // destination. Its height only places the slices of 3D textures (2D
+    // texture rows follow each other at the pitch), D3D gives it as the rows
+    // left below the strip (Halo 3, 434307D2) or the texture's (575207D7).
+    reg::RB_COPY_DEST_INFO dest_info;
+    dest_info.value = resolve.copy_dest_info;
+    if (dest_info.copy_dest_array) {
+      Fail("a strip-own resolve to a 3D texture");
+      return false;
+    }
     // D3D clears the next tile's EDRAM with each tile's resolve (545407F2,
     // 575207D7, 434307D2; 425307D5 and 4D530805 in every strip but the last).
     // The merged resolve clears the bands of the first strips_clearing
@@ -662,7 +683,6 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     }
     if (resolve.is_64bpp || resolve.edram_offset_y || resolve.dest_offset_y ||
         resolve.height_div_8 * 8 != uint32_t(band_rows) ||
-        resolve.dest_height_aligned < strip_count_ * uint32_t(band_rows) ||
         resolve.pitch_tiles_at_32bpp != layout_out.pitch_tiles_at_32bpp ||
         resolve.msaa_samples != layout_out.msaa_samples) {
       Fail("a strip-own resolve that isn't the strip's rows");
@@ -672,23 +692,30 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
                       resolve.dest_bytes_per_pixel;
     for (uint32_t k = 1; k < strip_count_; ++k) {
       const ResolveRecord& other = strips_[k].own_resolves[j];
+      // Every strip but the last resolves its whole band; the last one may
+      // stop short of its band's bottom, where its window or the frame ends.
+      bool rows_match = k + 1 < strip_count_
+                            ? other.height_div_8 == resolve.height_div_8
+                            : other.height_div_8 &&
+                                  other.height_div_8 <= resolve.height_div_8;
       if (other.edram_info != resolve.edram_info ||
-          other.coordinate_info != resolve.coordinate_info ||
-          other.height_div_8 != resolve.height_div_8 ||
+          other.coordinate_info != resolve.coordinate_info || !rows_match ||
           other.copy_dest_info != resolve.copy_dest_info ||
           other.copy_dest_coordinate_info !=
               resolve.copy_dest_coordinate_info ||
           (other.copy_control & ~kClearBits) !=
               (resolve.copy_control & ~kClearBits) ||
           other.copy_dest_base != resolve.copy_dest_base + k * stride ||
-          other.dest_height_aligned + k * uint32_t(band_rows) !=
-              resolve.dest_height_aligned) {
+          (other.dest_height_aligned != resolve.dest_height_aligned &&
+           other.dest_height_aligned + k * uint32_t(band_rows) !=
+               resolve.dest_height_aligned)) {
         failure_strip_ = k;
         Fail("strip-own resolve destinations don't follow each other");
         return false;
       }
     }
     uint32_t resolve_bottom =
+        (strip_count_ - 1) * uint32_t(band_rows) +
         strips_[strip_count_ - 1].own_resolves[j].height_div_8 * 8;
     layout_out.resolve_bottoms.push_back(resolve_bottom);
     layout_out.resolve_clear_bottoms.push_back(
@@ -704,6 +731,8 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
 
 bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
                                 uint8_t kind, int32_t& band_rows,
+                                uint32_t& window_br_first,
+                                uint32_t& frame_rows) {
   // What's read of hi-Z control is the enable bit, by draws (HashDrawState):
   // 4D5307D5 sets other hi-Z bases per tile.
   uint32_t mask = UINT32_MAX;
@@ -768,24 +797,44 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
       }
       return true;
     case XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL:
+    case XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR: {
       for (uint32_t k = 0; k < strip_count_; ++k) {
         // The window offset disable bit of TL goes with x.
         values_x[k] = int32_t(values[k] & 0x8000FFFF);
         values_y[k] = int32_t((values[k] >> 16) & 0x3FFF);
       }
+      // Strip k's window is rows [k, k + 1) * band_rows, the last strip's
+      // bottom may be clipped to the frame (checked in DeriveLayout once
+      // band_rows is known).
+      bool br = reg == XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR;
+      int32_t rows = br ? values_y[0] : values_y[1];
       if (!IsLinear(values_x, strip_count_, slope_x) || slope_x) {
         Fail("tiles side by side (the window scissor x varies)");
         return false;
       }
       bool rows_ok = set_band_rows(rows);
+      for (uint32_t k = 0; rows_ok && k < strip_count_; ++k) {
+        if (br && k + 1 == strip_count_) {
+          break;
+        }
+        rows_ok = values_y[k] == int32_t(br ? k + 1 : k) * rows;
+      }
+      if (!rows_ok) {
         Fail("the window scissor isn't the strip's rows");
         return false;
       }
+      if (br) {
+        if ((window_br_first && window_br_first != values[0]) ||
+            (frame_rows &&
+             frame_rows != uint32_t(values_y[strip_count_ - 1]))) {
+          Fail("strips with more than one frame size");
           return false;
         }
         window_br_first = values[0];
+        frame_rows = uint32_t(values_y[strip_count_ - 1]);
       }
       return true;
+    }
     default:
       break;
   }
@@ -1835,7 +1884,13 @@ uint32_t StripMerge::TakeMergedResolveBottom(uint32_t& clear_bottom_out) {
   clear_bottom_out = 0;
   if (merged_resolves_ >= layout_.resolve_bottoms.size() ||
       merged_resolves_ >= layout_.resolve_clear_bottoms.size()) {
+    Fail("more strip-own resolves than the verified sessions had");
+    return 0;
+  }
   clear_bottom_out = layout_.resolve_clear_bottoms[merged_resolves_];
+  return layout_.resolve_bottoms[merged_resolves_++];
+}
+
 void StripMerge::Fail(const char* reason) {
   if (!session_open_ || failed_) {
     return;

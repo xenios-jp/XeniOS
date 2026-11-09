@@ -1420,9 +1420,6 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
     y1 += pa_sc_window_offset.window_y_offset;
   }
 
-    y1 = std::max(y1, int32_t(strip_merge_bottom));
-  }
-
   // Apply the scissor and prevent negative origin (behind the EDRAM base).
   Scissor scissor;
   // False because clamping to the surface pitch will be done later (it will be
@@ -1435,6 +1432,13 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
   y0 = std::clamp(y0, int32_t(scissor.offset[1]), scissor_bottom);
   x1 = std::clamp(x1, int32_t(scissor.offset[0]), scissor_right);
   y1 = std::clamp(y1, int32_t(scissor.offset[1]), scissor_bottom);
+
+  // A strip-own resolve of a merged tiling session's first strip resolves
+  // every strip's rows at once: the first strip's band and the rows the later
+  // strips' own resolves reached below it (strip_merge.h, resolve_bottoms).
+  if (strip_merge_bottom && y1 > y0) {
+    y1 = std::max(y1, int32_t(strip_merge_bottom));
+  }
 
   assert_true(x0 <= x1 && y0 <= y1);
 
