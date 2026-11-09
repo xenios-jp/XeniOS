@@ -4088,13 +4088,13 @@ uint32_t MetalRenderTargetCache::SetClearQuadLoadActions(
       continue;
     }
     if (!i) {
-      // Stencil, in the same texture, has to be written in full too, which the
-      // rule demands of a depth quad.
+      // Stencil, attached along with depth (in its own texture), has to be
+      // written in full too, which the rule demands of a depth quad, and is
+      // switched along with depth.
       MTL::RenderPassStencilAttachmentDescriptor* stencil_attachment =
           pass_descriptor->stencilAttachment();
       if (stencil_attachment->texture() &&
-          (stencil_attachment->texture() != texture ||
-           stencil_attachment->loadAction() != MTL::LoadActionLoad)) {
+          stencil_attachment->loadAction() != MTL::LoadActionLoad) {
         continue;
       }
     }
