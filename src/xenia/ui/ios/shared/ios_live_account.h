@@ -150,6 +150,9 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 @property(nonatomic, strong) NSDate* expires;
 @end
 
+// An NSError code: the request was sent but no answer came, so it may or may not have happened.
+static const NSInteger XeniaLiveAccountErrorResultUnknown = 2;
+
 @protocol XeniaLiveAccountService <NSObject>
 
 // The active profile's account, now. Posts XeniaLiveAccountDidChangeNotification when
@@ -187,7 +190,8 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 - (void)removeThisDeviceOfProfile:(uint64_t)xuid completion:(void (^)(void))completion;
 // Deletes the online account of |xuid|, which has to be the signed-in profile, for good; it waits
 // briefly for that profile's connection if it just signed in. error is set if the lobby can't be
-// reached or doesn't answer.
+// reached or doesn't answer; if it was asked and didn't answer, with the code
+// XeniaLiveAccountErrorResultUnknown.
 - (void)deleteAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError* _Nullable error))completion;
 
 // A new recovery code, R7K2-9QMD-4XTW. The old one stops working. (The first one comes

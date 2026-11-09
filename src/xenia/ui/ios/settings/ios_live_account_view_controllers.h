@@ -21,12 +21,11 @@
 // offline profile; devices, Shared Saves, Copy Profile, recovery and the gamertag once online.
 // |active| is the signed-in profile; any other gets "Switch to …", which calls |switch_to|
 // (YES when it signed in). The signed-in profile's avatar has an Edit button, which calls
-// |change_picture| with the page. Its Delete Profile row calls |delete_profile| with the page and
-// the row.
+// |change_picture| with the page. Its Delete Profile row calls |delete_profile| with the page.
 UIViewController* xe_ios_new_profile_page(
     NSString* gamertag, BOOL active, BOOL (^_Nullable switch_to)(void),
     void (^_Nullable change_picture)(UIViewController* page),
-    void (^_Nullable delete_profile)(UIViewController* page, UIView* source));
+    void (^_Nullable delete_profile)(UIViewController* page));
 
 // Report a player: the reason, an optional note and "Also block", then Send. The answer comes
 // as XeniaLiveSocial's notice or failure, after the form closed.

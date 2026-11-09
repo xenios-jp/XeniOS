@@ -4313,8 +4313,16 @@ static bool XeJITUsable() {
   }
   const IOSDiscoveredGame game = discovered_games_[game_index];
   const BOOL imported = XeniaGameHasImportedDisc(game);
-  const BOOL has_content = game.title_id != 0 && game.has_installed_content;
-  const BOOL has_saves = game.title_id != 0 && xe_title_has_saves(game.title_id);
+  // Updates, add-ons and saves belong to the title, so another copy of it in the library is using
+  // them: they're only offered with the last one.
+  const BOOL last_copy = std::count_if(discovered_games_.begin(), discovered_games_.end(),
+                                       [&game](const IOSDiscoveredGame& other) {
+                                         return other.title_id == game.title_id;
+                                       }) <= 1;
+  const BOOL title_has_content = game.title_id != 0 && game.has_installed_content;
+  const BOOL title_has_saves = game.title_id != 0 && xe_title_has_saves(game.title_id);
+  const BOOL has_content = last_copy && title_has_content;
+  const BOOL has_saves = last_copy && title_has_saves;
   NSString* game_title =
       game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
   NSString* title =
@@ -4337,6 +4345,12 @@ static bool XeJITUsable() {
         stringByAppendingFormat:
             @" %@", NSLocalizedString(@"Updates, add-ons and saves are kept unless you choose "
                                       @"otherwise. Achievements stay on their profile.",
+                                      @"Delete game: message")];
+  } else if (title_has_content || title_has_saves) {
+    message = [message
+        stringByAppendingFormat:
+            @" %@", NSLocalizedString(@"Updates, add-ons and saves stay, because another copy of "
+                                      @"this game in the library uses them.",
                                       @"Delete game: message")];
   }
   UIAlertController* confirm =
@@ -4366,7 +4380,7 @@ static bool XeJITUsable() {
     add(NSLocalizedString(@"Also Delete Updates & Add-ons", @"Delete game: button"), YES, NO);
   }
   if (has_saves) {
-    add(has_content ? NSLocalizedString(@"Also Delete Add-ons & Saves", @"Delete game: button")
+    add(has_content ? NSLocalizedString(@"Also Delete Updates, Add-ons & Saves", @"Delete game: button")
                     : NSLocalizedString(@"Also Delete Saves", @"Delete game: button"),
         has_content, YES);
   }
@@ -4415,10 +4429,14 @@ static bool XeJITUsable() {
       std::error_code cache_error;
       xe_clear_shader_cache_for_title(game_copy.title_id, &removed, &cache_error);
     }
-    NSString* failure = ok ? nil : ToNSString(error);
-    [failure retain];
+    NSString* failure = nil;
+    if (!ok) {
+      failure = error.empty() ? NSLocalizedString(@"The game couldn’t be removed.",
+                                                  @"Delete game: alert message")
+                              : ToNSString(error);
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
-      [unsafe_self finishDeleteGameWithBusy:busy failure:[failure autorelease] from:presenter];
+      [unsafe_self finishDeleteGameWithBusy:busy failure:failure from:presenter];
     });
   });
 }
