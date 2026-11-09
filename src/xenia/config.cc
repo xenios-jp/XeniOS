@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -88,6 +90,42 @@ struct ConfigParseError {
   uint32_t column = 0;
 };
 
+// The toml++ message as one plain sentence fragment: "Error while parsing
+// key-value pair: cannot redefine existing boolean 'x'" -> "'x' is set twice".
+// Messages that aren't recognized keep the parser's own words (shortened).
+static std::string PlainParseError(std::string text) {
+  if (text.starts_with("Error while parsing")) {
+    if (auto colon = text.find(": "); colon != std::string::npos) {
+      text.erase(0, colon + 2);
+    }
+  }
+  constexpr std::string_view kRedefine = "cannot redefine existing ";
+  if (text.starts_with(kRedefine) && text.find("' as ") == std::string::npos) {
+    auto open = text.find('\'');
+    auto close = text.rfind('\'');
+    if (open != std::string::npos && close > open) {
+      const bool is_table = text.compare(kRedefine.size(), 5, "table") == 0;
+      return text.substr(open, close - open + 1) +
+             (is_table ? " is defined twice" : " is set twice");
+    }
+  }
+  if (text.find("end-of-file") != std::string::npos ||
+      text.find("end-of-line") != std::string::npos) {
+    return "a value is cut off";
+  }
+  if (text.starts_with("expected ")) {
+    if (auto saw = text.rfind(", saw "); saw != std::string::npos) {
+      return "unexpected " + text.substr(saw + 6);
+    }
+  }
+  constexpr size_t kMaxChars = 90;
+  if (text.size() > kMaxChars) {
+    text.resize(kMaxChars - 3);
+    text += "...";
+  }
+  return text;
+}
+
 bool ParseConfig(const std::filesystem::path& config_path, toml::table& out,
                  ConfigParseError& error) {
   try {
@@ -95,6 +133,7 @@ bool ParseConfig(const std::filesystem::path& config_path, toml::table& out,
     return true;
   } catch (const toml::parse_error& e) {
     error.description = std::string(e.description());
+    error.description = PlainParseError(error.description);
     error.line = e.source().begin.line;
     error.column = e.source().begin.column;
   } catch (const std::exception& e) {
@@ -856,10 +895,42 @@ static void BackupConfig(const std::filesystem::path& path) {
   }
 }
 
+static bool SameContents(const std::filesystem::path& a,
+                         const std::filesystem::path& b) {
+  std::error_code ec;
+  if (std::filesystem::file_size(a, ec) != std::filesystem::file_size(b, ec) ||
+      ec) {
+    return false;
+  }
+  std::ifstream file_a(a, std::ios::binary);
+  std::ifstream file_b(b, std::ios::binary);
+  return file_a && file_b &&
+         std::equal(std::istreambuf_iterator<char>(file_a),
+                    std::istreambuf_iterator<char>(),
+                    std::istreambuf_iterator<char>(file_b));
+}
+
 // Copies a file that doesn't parse to <name>.invalid-<yyyymmdd-HHMMSS>, so
-// nothing the user wrote is lost. Empty if the copy failed.
+// nothing the user wrote is lost. Launching again with the same broken file
+// reuses the newest copy. Empty if the copy failed.
 static std::filesystem::path KeepInvalidConfig(
     const std::filesystem::path& path) {
+  {
+    const std::string prefix = xe::path_to_utf8(path.filename()) + ".invalid-";
+    std::filesystem::path newest;
+    std::error_code ec;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(path.parent_path(), ec)) {
+      const auto name = xe::path_to_utf8(entry.path().filename());
+      if (name.starts_with(prefix) &&
+          (newest.empty() || entry.path().filename() > newest.filename())) {
+        newest = entry.path();
+      }
+    }
+    if (!newest.empty() && SameContents(path, newest)) {
+      return newest;
+    }
+  }
   const std::time_t now =
       std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm local_time = {};
