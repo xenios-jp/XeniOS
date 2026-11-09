@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 28;
+    static constexpr uint32_t kVersion = 29;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -133,7 +133,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
       xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
       xenos::BlendFactor rt0_blend_a_factor_for_premult : 4;
       // For host render targets - which color render targets are actually
-      // bound.
+      // bound. With host_render_target_feedback, the ones the shader reads
+      // back instead.
       uint32_t color_targets_used : xenos::kMaxColorRenderTargets;
       // Shared bit, two meanings, one per render target path - a device is on
       // one path or the other, and neither reads the other's meaning.
@@ -149,8 +150,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // set scale threshold (FBO only).
       uint32_t resolution_scale_native : 1;
       // Host render target path with host_render_target_feedback - the shader
-      // reads every color target it writes and that is bound, in raster
-      // order, so it can blend the ones the system constants mark itself.
+      // reads the color targets in color_targets_used back in raster order
+      // and blends them itself; they are written and bound. Its other color
+      // outputs are written without being read, and the host drops the
+      // writes to targets that aren't bound. Only targets that fixed-function
+      // blending leaves alone may be read: Metal blending a target the shader
+      // declares for reading lost some samples' blends, or blended them over
+      // zero, at 4x MSAA.
       uint32_t host_render_target_feedback : 1;
 
       // The host render target path's fields, assembled into one value so

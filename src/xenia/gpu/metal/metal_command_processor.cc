@@ -199,18 +199,43 @@ constexpr uint32_t kBlendControlNoBlending = 0x00010001;
 // The blend control of an 8_8_8_8_GAMMA color target that the pixel shader
 // blends itself when the render target cache stores it as 8-bit gamma
 // (metal_gamma_fetch_blend), or kBlendControlNoBlending if the target isn't
-// one, isn't written, or doesn't blend.
+// one, isn't written, or fixed-function blending gives the exact result. Alpha
+// isn't gamma-encoded, so only blended color needs the shader: not when the
+// draw writes no color, or when color is the source (1 * source +/- 0 *
+// destination) or the destination (0 * source + 1 * destination, or
+// 1 * destination - 0 * source), which blending the encoded bytes reproduces.
 uint32_t GetGammaShaderBlendControl(const RegisterFile& regs, uint32_t rt,
                                     uint32_t normalized_color_mask) {
-  if (!((normalized_color_mask >> (rt * 4)) & 0xF) ||
+  uint32_t write_mask = (normalized_color_mask >> (rt * 4)) & 0xF;
+  if (!(write_mask & 0x7) ||
       regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[rt])
               .color_format != xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
     return kBlendControlNoBlending;
   }
-  return regs.Get<reg::RB_BLENDCONTROL>(
-                 reg::RB_BLENDCONTROL::rt_register_indices[rt])
-             .value &
-         kBlendControlMask;
+  auto blendcontrol = regs.Get<reg::RB_BLENDCONTROL>(
+      reg::RB_BLENDCONTROL::rt_register_indices[rt]);
+  xenos::BlendFactor src = blendcontrol.color_srcblend;
+  xenos::BlendFactor dest = blendcontrol.color_destblend;
+  xenos::BlendOp op = blendcontrol.color_comb_fcn;
+  if ((src == xenos::BlendFactor::kOne && dest == xenos::BlendFactor::kZero &&
+       (op == xenos::BlendOp::kAdd || op == xenos::BlendOp::kSubtract)) ||
+      (src == xenos::BlendFactor::kZero && dest == xenos::BlendFactor::kOne &&
+       (op == xenos::BlendOp::kAdd || op == xenos::BlendOp::kRevSubtract))) {
+    return kBlendControlNoBlending;
+  }
+  return blendcontrol.value & kBlendControlMask;
+}
+
+// The color targets with a non-empty write mask, a bit each: a pixel shader's
+// color_targets_used unless it reads its targets back.
+uint32_t GetColorTargetsWritten(uint32_t normalized_color_mask) {
+  uint32_t color_targets = 0;
+  for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+    if ((normalized_color_mask >> (i * 4)) & 0xF) {
+      color_targets |= UINT32_C(1) << i;
+    }
+  }
+  return color_targets;
 }
 
 // function_name_suffix is appended to the entry point name of the converted
@@ -6622,6 +6647,8 @@ bool MetalCommandProcessor::IssueDrawDxil(
     if (pixel_status == ShaderCompileStatus::kFailed &&
         pixel_shader_modification.pixel.host_render_target_feedback) {
       pixel_shader_modification.pixel.host_render_target_feedback = 0;
+      pixel_shader_modification.pixel.color_targets_used =
+          GetColorTargetsWritten(normalized_color_mask);
       pixel_translation =
           static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
               *dxil_pixel_shader, pixel_shader_modification.value,
@@ -9104,31 +9131,34 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
   // Without this, color_targets_used defaults to 0 and the SPIR-V translator
   // declares NO fragment color outputs, producing black/transparent rendering.
   modification.pixel.color_targets_used =
-      (((normalized_color_mask >> 0) & 0xF) ? 1 : 0) |
-      (((normalized_color_mask >> 4) & 0xF) ? 2 : 0) |
-      (((normalized_color_mask >> 8) & 0xF) ? 4 : 0) |
-      (((normalized_color_mask >> 12) & 0xF) ? 8 : 0);
+      GetColorTargetsWritten(normalized_color_mask);
 
   // Only draws blending into a gamma target read their targets back: a pixel
   // shader that reads a target can't have its fragments removed as hidden.
-  // Such a shader reads every target it writes, and Metal rejects a pipeline
-  // reading an attachment the pass doesn't have, so it writes only the bound
-  // ones (a write to an unbound attachment is dropped anyway).
+  // The shader reads back only the gamma targets it blends, which
+  // color_targets_used then holds. Metal rejects a pipeline reading an
+  // attachment the pass doesn't have, so those must be bound. A target that
+  // fixed-function blending writes must not be declared for reading either:
+  // with RT0 read and RT1 blended at 4x MSAA, some samples of RT1 lost their
+  // blend or were blended over zero, varying run to run.
   if (spirv_translator_features_.host_render_target_feedback) {
     uint32_t bound_color_targets =
         (render_target_cache_->GetLastUpdateBoundRenderTargets() >> 1) &
         ((UINT32_C(1) << xenos::kMaxColorRenderTargets) - 1);
     uint32_t rts = shader.writes_color_targets() &
                    modification.pixel.color_targets_used & bound_color_targets;
+    uint32_t shader_blended_rts = 0;
     uint32_t rt;
     while (xe::bit_scan_forward(rts, &rt)) {
       rts &= ~(UINT32_C(1) << rt);
       if (GetGammaShaderBlendControl(regs, rt, normalized_color_mask) !=
           kBlendControlNoBlending) {
-        modification.pixel.host_render_target_feedback = 1;
-        modification.pixel.color_targets_used &= bound_color_targets;
-        break;
+        shader_blended_rts |= UINT32_C(1) << rt;
       }
+    }
+    if (shader_blended_rts) {
+      modification.pixel.host_render_target_feedback = 1;
+      modification.pixel.color_targets_used = shader_blended_rts;
     }
   }
 
@@ -9252,13 +9282,13 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
             : 0u;
     // Gamma targets the pixel shader reads back and blends itself.
     if (pixel_translation && rt_write_mask &&
-        color_formats[i] != MTL::PixelFormatInvalid &&
-        SpirvShaderTranslator::Modification(pixel_translation->modification())
-            .pixel.host_render_target_feedback &&
-        GetGammaShaderBlendControl(regs, i,
-                                   description.normalized_color_mask) !=
-            kBlendControlNoBlending) {
-      description.gamma_shader_blend_mask |= 1u << i;
+        color_formats[i] != MTL::PixelFormatInvalid) {
+      SpirvShaderTranslator::Modification pixel_modification(
+          pixel_translation->modification());
+      if (pixel_modification.pixel.host_render_target_feedback &&
+          (pixel_modification.pixel.color_targets_used & (1u << i))) {
+        description.gamma_shader_blend_mask |= 1u << i;
+      }
     }
   }
   SetPipelineFunctionConstants(request, vertex_translation, pixel_translation);

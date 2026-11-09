@@ -3763,11 +3763,19 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
           "xe_feedback_color_3",
       };
       // Only create outputs for color targets that are both written by the
-      // shader and actually bound in the render pass.
+      // shader and actually bound in the render pass. A shader reading its
+      // targets back has outputs for every target it writes, and reads only
+      // the ones in color_targets_used.
       Modification shader_modification = GetHostRtShaderModification();
+      const bool render_target_feedback =
+          features_.host_render_target_feedback &&
+          shader_modification.pixel.host_render_target_feedback;
       uint32_t color_targets_remaining =
-          current_shader().writes_color_targets() &
-          shader_modification.pixel.color_targets_used;
+          current_shader().writes_color_targets();
+      if (!render_target_feedback) {
+        color_targets_remaining &=
+            shader_modification.pixel.color_targets_used;
+      }
       uint32_t color_target_index;
       while (
           xe::bit_scan_forward(color_targets_remaining, &color_target_index)) {
@@ -3784,8 +3792,9 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
         builder_->addDecoration(output_fragment_data_rt,
                                 spv::DecorationInvariant);
         main_interface_.push_back(output_fragment_data_rt);
-        if (features_.host_render_target_feedback &&
-            shader_modification.pixel.host_render_target_feedback) {
+        if (render_target_feedback &&
+            (shader_modification.pixel.color_targets_used &
+             (UINT32_C(1) << color_target_index))) {
           // The target as a single-sample input attachment even with MSAA:
           // reading the current sample doesn't need SampleId, which would run
           // the whole shader per sample. Metal runs only the part that
