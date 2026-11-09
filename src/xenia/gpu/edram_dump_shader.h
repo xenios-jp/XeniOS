@@ -54,7 +54,9 @@ union EdramDumpShaderKey {
     // destination base push constant is unused there.
     uint32_t direct_resolve : 1;
     // Average all samples of an RGBA8 2x or 4x source while resolving
-    // directly. Only meaningful with direct_resolve.
+    // directly, as the console does (ResolveEdramInfo exact_unorm8_average):
+    // each byte widened to 10 bits by replication, the sum divided truncating,
+    // then truncated to 8 bits. Only meaningful with direct_resolve.
     uint32_t direct_resolve_average : 1;
     // Also store the logical texels - after the resolve's red/blue swap,
     // before its endian transform - as raw dwords in an existing,

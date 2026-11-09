@@ -5317,25 +5317,30 @@ static uint2 XeTileResolvePack_16_16_16_16(float4 color,
   return n.xz | (n.yw << 16u);
 }
 
-// The dump shader's 8_8_8_8 four-sample average (load_average_rgba8), in its
-// operation order: the samples' sum in sample order, times 1/4, each component
-// converted with OpConvertFToU(c * 255 + 0.5). An 8_8_8_8 render target's
-// samples are summed as read.
-static uint XeTileResolveAverage4Pack(float4 sum) {
-  float4 average = sum * 0.25f;
-  return uint(average.x * 255.0f + 0.5f) |
-         (uint(average.y * 255.0f + 0.5f) << 8u) |
-         (uint(average.z * 255.0f + 0.5f) << 16u) |
-         (uint(average.w * 255.0f + 0.5f) << 24u);
+// The console's average of 8-bit unorm samples, as the dump shader's
+// load_average_rgba8 does it: each byte widened to 10 bits by replication,
+// the sum divided by 4 truncating, then truncated to 8 bits.
+static uint4 XeTileResolveWiden8(uint4 bytes) {
+  return (bytes << 2u) | (bytes >> 6u);
+}
+static uint4 XeTileResolveBytes(float4 unorm) {
+  return uint4(unorm * 255.0f + 0.5f);
+}
+static uint4 XeTileResolveBytes(uint packed) {
+  return (uint4(packed) >> uint4(0u, 8u, 16u, 24u)) & 0xFFu;
+}
+static uint XeTileResolveAverage4Exact(uint4 sum10) {
+  uint4 n = sum10 >> 4u;
+  return n.x | (n.y << 8u) | (n.z << 16u) | (n.w << 24u);
 }
 static uint XeTileResolvePack_8888Average4(float4 s0, float4 s1, float4 s2,
                                            float4 s3,
                                            constant XeTileResolveConstants& c) {
-  float4 sum = s0;
-  sum = sum + s1;
-  sum = sum + s2;
-  sum = sum + s3;
-  return XeTileResolveAverage4Pack(sum);
+  return XeTileResolveAverage4Exact(
+      XeTileResolveWiden8(XeTileResolveBytes(s0)) +
+      XeTileResolveWiden8(XeTileResolveBytes(s1)) +
+      XeTileResolveWiden8(XeTileResolveBytes(s2)) +
+      XeTileResolveWiden8(XeTileResolveBytes(s3)));
 }
 // SPIRV-Cross's NoContraction helpers, inlined as CompileFunctionMsl inlines
 // them.
@@ -5377,10 +5382,6 @@ static uint XeTileResolveGammaPack(float4 linear) {
             << 16u;
   packed |= uint(linear.w * 255.0f + 0.5f) << 24u;
   return packed;
-}
-// The same, unpacked with UnpackUnorm4x8.
-static float4 XeTileResolveGammaSample(float4 linear) {
-  return unpack_unorm4x8_to_float(XeTileResolveGammaPack(linear));
 }
 // The bit copy of a one-sample 8_8_8_8_GAMMA render target.
 static uint XeTileResolvePack_8888Gamma(float4 color,
@@ -5467,11 +5468,11 @@ static uint XeTileResolvePack_RGB10FloatToRGB10(
 static uint XeTileResolvePack_8888GammaAverage4(
     float4 s0, float4 s1, float4 s2, float4 s3,
     constant XeTileResolveConstants& c) {
-  float4 sum = XeTileResolveGammaSample(s0);
-  sum = sum + XeTileResolveGammaSample(s1);
-  sum = sum + XeTileResolveGammaSample(s2);
-  sum = sum + XeTileResolveGammaSample(s3);
-  return XeTileResolveAverage4Pack(sum);
+  return XeTileResolveAverage4Exact(
+      XeTileResolveWiden8(XeTileResolveBytes(XeTileResolveGammaPack(s0))) +
+      XeTileResolveWiden8(XeTileResolveBytes(XeTileResolveGammaPack(s1))) +
+      XeTileResolveWiden8(XeTileResolveBytes(XeTileResolveGammaPack(s2))) +
+      XeTileResolveWiden8(XeTileResolveBytes(XeTileResolveGammaPack(s3))));
 }
 
 // resolve_full_32bpp_rgb10_4x_direct's average of a 2_10_10_10 render target
@@ -6983,6 +6984,11 @@ bool MetalRenderTargetCache::ResolveWithInfo(
   draw_util::ResolveCopyShaderIndex copy_shader = resolve_info.GetCopyShader(
       draw_resolution_scale_x(), draw_resolution_scale_y(), copy_constants,
       group_count_x, group_count_y);
+  // The compute resolve averages 8-bit unorm samples into 8_8_8_8 as the
+  // console does, like the direct and tile resolves.
+  if (!is_depth) {
+    copy_constants.dest_relative.edram_info.exact_unorm8_average = 1;
+  }
 
   // A depth resolve can't read the pass's tiles, so it would end the pass
   // that the color resolves after it could read their tiles from. All of it,
