@@ -442,6 +442,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool IsHostDepthEncodingDifferent(
       xenos::DepthRenderTargetFormat format) const override;
 
+  bool PerformStripMergeTransfers(
+      RenderTarget* dest, const std::vector<Transfer>& transfers) override;
+
  private:
   // Sets the render area of a pass on the render targets with the keys, as
   // SetRenderPassArea does for the draw pass.
@@ -1053,6 +1056,16 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       const RenderTargetKey* host_depth_source_key,
       bool host_depth_source_is_copy, bool stencil_bit,
       uint32_t dest_color_rt_index, const Transfer& transfer) const;
+  // The address constant of a transfer's source or host depth source, with
+  // the strip merge band addressing. False if it can't be expressed.
+  static bool MakeTransferAddressConstant(
+      RenderTargetKey source_key, RenderTargetKey dest_key,
+      const Transfer& transfer, EdramTransferAddressConstant& constant_out);
+  // Whether two transfers with the same sources can be drawn with one address
+  // constant (strip-merged sources address relative to the range).
+  static bool IsStripMergeAddressingSame(const Transfer& transfer,
+                                         const Transfer& other_transfer,
+                                         RenderTargetKey dest_key);
   bool BuildTransferRectanglePlans(
       RenderTargetKey dest_key, const std::vector<Transfer>& transfers,
       const Transfer::Rectangle* cutout, bool require_all_rectangles,

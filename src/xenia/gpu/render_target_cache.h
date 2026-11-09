@@ -42,6 +42,8 @@ DECLARE_bool(snorm16_render_target_full_range);
 namespace xe {
 namespace gpu {
 
+class StripMerge;
+
 class RenderTargetCache {
  public:
   // High-level emulation logic implementation path.
@@ -267,6 +269,26 @@ class RenderTargetCache {
   // Writes the trace EDRAM readback to a raw file.
   bool WriteEdramSnapshotToFile(const std::filesystem::path& path);
 
+  // Strip merge (strip_merge.h). The controller decides; the backend calls
+  // these. Begin: render targets at the strip surface become strip-merged
+  // ones, band_count bands of band_tile_rows tile rows. The band shape is
+  // fixed by the first merged session, false for another one.
+  void SetStripMerge(StripMerge* strip_merge) { strip_merge_ = strip_merge; }
+  bool BeginStripMerge(uint32_t band_count, uint32_t band_tile_rows);
+  // Every strip-merged render target referenced in the EDRAM ownership moves
+  // band `band` into its ordinary twin, which takes its place, so the EDRAM is
+  // what that strip leaves. With carry, bands 0 to N-2 are kept as bands 1 to
+  // N-1 of a carry render target, which the next session's strip-merged render
+  // targets start their later bands with where they first take the tiles. The
+  // backend has ended its passes.
+  void EndStripMerge(uint32_t band, bool carry);
+  bool IsStripMergeActive() const { return strip_merge_active_; }
+  // A strip-own resolve of the merged first strip, which covers the rows of
+  // every strip down to this frame row; 0 otherwise.
+  void SetStripMergeResolveBottom(uint32_t bottom) {
+    strip_merge_resolve_bottom_ = bottom;
+  }
+
  protected:
   RenderTargetCache(const RegisterFile& register_file, const Memory& memory,
                     TraceWriter* trace_writer, uint32_t draw_resolution_scale_x,
@@ -337,6 +359,14 @@ class RenderTargetCache {
       // its base, 64bpp color rows span two. The rows in the first period at
       // the same base are another render target.
       uint32_t next_period : 1;  // 28
+      // Strip merge (strip_merge.h): the render target holds every strip of
+      // a merged predicated tiling session, a band of rows per strip, in the
+      // EDRAM ownership of the first strip's tiles. Only while merging.
+      uint32_t strip_merged : 1;  // 29
+      // With strip_merged: a strip-merged render target's bands as the next
+      // session's later strips start, band k holding the previous session's
+      // band k - 1. Never owns EDRAM (RenderTargetCache::EndStripMerge).
+      uint32_t strip_merge_carry : 1;  // 30
     };
 
     RenderTargetKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -400,10 +430,13 @@ class RenderTargetCache {
     }
 
     std::string GetDebugName() const {
-      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}{}{}", base_tiles,
+      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}{}{}{}", base_tiles,
                          GetPitchTiles(), uint32_t(1) << uint32_t(msaa_samples),
                          GetFormatName(), scale_native ? ", native" : "",
-                         next_period ? ", next period" : "");
+                         next_period ? ", next period" : "",
+                         strip_merge_carry ? ", strip carry"
+                         : strip_merged    ? ", strip merged"
+                                           : "");
     }
   };
 
@@ -456,13 +489,23 @@ class RenderTargetCache {
           host_depth_source(host_depth_source) {
       assert_true(start_tiles < end_tiles);
     }
+    // Strip merge: the bands of a strip-merged destination the transfer
+    // writes, band_count 0 for all of them. A source that isn't strip-merged
+    // fills one band per transfer.
+    uint8_t band_first = 0;
+    uint8_t band_count = 0;
+    // For strip-merged sources, the band read minus the band written.
+    int8_t source_band_shift = 0;
     struct Rectangle {
       uint32_t x_pixels;
       uint32_t y_pixels;
       uint32_t width_pixels;
       uint32_t height_pixels;
     };
-    static constexpr uint32_t kMaxRectanglesWithoutCutout = 3;
+    // Also StripMerge::kMaxStrips.
+    static constexpr uint32_t kMaxStripMergeBands = 4;
+    static constexpr uint32_t kMaxRectanglesWithoutCutout =
+        3 * kMaxStripMergeBands;
     static constexpr uint32_t kMaxCutoutBorderRectangles = 4;
     static constexpr uint32_t kMaxRectanglesWithCutout =
         kMaxRectanglesWithoutCutout * kMaxCutoutBorderRectangles;
@@ -476,27 +519,44 @@ class RenderTargetCache {
                                 rectangles_out, cutout);
     }
     // is_64bpp is the host layout, which Metal widens for k_8_8_8_8_GAMMA.
+    // A strip-merged key gets the rectangles in each of the bands from
+    // band_first, band_count of them (0 for all).
     static uint32_t GetRangeRectangles(uint32_t start_tiles, uint32_t end_tiles,
                                        RenderTargetKey key, bool is_64bpp,
                                        Rectangle* rectangles_out,
-                                       const Rectangle* cutout = nullptr);
+                                       const Rectangle* cutout = nullptr,
+                                       uint32_t band_first = 0,
+                                       uint32_t band_count = 0);
     uint32_t GetRectangles(RenderTargetKey key, Rectangle* rectangles_out,
                            const Rectangle* cutout = nullptr) const {
-      return GetRangeRectangles(start_tiles, end_tiles, key, rectangles_out,
-                                cutout);
+      return GetRangeRectangles(start_tiles, end_tiles, key, key.Is64bpp(),
+                                rectangles_out, cutout, band_first,
+                                band_count);
     }
     uint32_t GetRectangles(RenderTargetKey key, bool is_64bpp,
                            Rectangle* rectangles_out,
                            const Rectangle* cutout = nullptr) const {
       return GetRangeRectangles(start_tiles, end_tiles, key, is_64bpp,
-                                rectangles_out, cutout);
+                                rectangles_out, cutout, band_first,
+                                band_count);
     }
     bool AreSourcesSame(const Transfer& other_transfer) const {
       return source == other_transfer.source &&
-             host_depth_source == other_transfer.host_depth_source;
+             host_depth_source == other_transfer.host_depth_source &&
+             band_first == other_transfer.band_first &&
+             band_count == other_transfer.band_count &&
+             source_band_shift == other_transfer.source_band_shift;
     }
 
    private:
+    // The rectangles of the range in the render target's rows, without
+    // strip-merge bands.
+    static uint32_t GetUnbandedRangeRectangles(uint32_t start_tiles,
+                                               uint32_t end_tiles,
+                                               RenderTargetKey key,
+                                               bool is_64bpp,
+                                               Rectangle* rectangles_out,
+                                               const Rectangle* cutout);
     static uint32_t AddRectangle(const Rectangle& rectangle,
                                  Rectangle* rectangles_out,
                                  const Rectangle* cutout = nullptr);
@@ -680,6 +740,32 @@ class RenderTargetCache {
 
   void ResetAccumulatedRenderTargets() {
     are_accumulated_render_targets_valid_ = false;
+  }
+
+  // Strip merge: performs transfers into one render target for EndStripMerge,
+  // outside any pass. Backends without strip merging never get called.
+  virtual bool PerformStripMergeTransfers(RenderTarget* dest,
+                                          const std::vector<Transfer>& transfers) {
+    return false;
+  }
+  StripMerge* strip_merge() const { return strip_merge_; }
+  uint32_t strip_merge_resolve_bottom() const {
+    return strip_merge_resolve_bottom_;
+  }
+  // The band shape of strip-merged render targets, count 0 before any. Static
+  // for the rectangle helpers of Transfer.
+  struct StripMergeBands {
+    uint32_t count = 0;
+    uint32_t tile_rows = 0;
+  };
+  static StripMergeBands strip_merge_bands_;
+  static uint32_t GetStripMergeBandRows(RenderTargetKey key) {
+    return strip_merge_bands_.tile_rows *
+           (xenos::kEdramTileHeightSamples >>
+            uint32_t(key.msaa_samples >= xenos::MsaaSamples::k2X));
+  }
+  static uint32_t GetStripMergeBandTiles(RenderTargetKey key) {
+    return strip_merge_bands_.tile_rows * key.GetPitchTiles();
   }
   RenderTarget* const* last_update_accumulated_render_targets() const {
     assert_true(GetPath() == Path::kHostRenderTargets);
@@ -1082,6 +1168,52 @@ class RenderTargetCache {
   // consecutive in the array.
   std::vector<Transfer>
       last_update_transfers_[1 + xenos::kMaxColorRenderTargets];
+
+  // Strip merge.
+  // Appends the transfers into a strip-merged destination for one range.
+  void AppendStripMergeTransfers(std::vector<Transfer>& transfers,
+                                 uint32_t start_tiles, uint32_t end_tiles,
+                                 RenderTargetKey dest, RenderTarget* source,
+                                 RenderTarget* host_depth_source);
+  // The ranges an active session claimed no longer start from the previous
+  // session's carry.
+  void ConsumeStripMergeCarries(uint32_t start_tiles, uint32_t end_tiles);
+  // A strip-own resolve of the merged first strip (strip_merge_resolve_bottom_):
+  // one rectangle, rows past the first band reading the strip-merged render
+  // target's later bands. False if the first band's part of the resolve area
+  // isn't owned by one strip-merged render target.
+  bool GetStripMergedResolveRectangle(
+      uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
+      std::vector<ResolveCopyDumpRectangle>& rectangles_out) const;
+  // Calls function(start_tiles, range) for every ownership range overlapping
+  // [extent_start, extent_end), which doesn't wrap, in order while it returns
+  // true. False if it stopped the walk.
+  template <typename Function>
+  bool ForEachOwnershipRangeInExtent(uint32_t extent_start,
+                                     uint32_t extent_end,
+                                     Function function) const {
+    auto it = ownership_ranges_.upper_bound(extent_start);
+    if (it != ownership_ranges_.cbegin()) {
+      --it;
+    }
+    for (; it != ownership_ranges_.cend() && it->first < extent_end; ++it) {
+      if (it->second.end_tiles > extent_start &&
+          !function(it->first, it->second)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  StripMerge* strip_merge_ = nullptr;
+  bool strip_merge_active_ = false;
+  uint32_t strip_merge_resolve_bottom_ = 0;
+  struct StripMergeCarry {
+    uint32_t start_tiles;
+    uint32_t end_tiles;
+    RenderTargetKey carry;
+  };
+  // Not yet claimed in this session, never wrapping around the EDRAM end.
+  std::vector<StripMergeCarry> strip_merge_carries_;
 };
 
 }  // namespace gpu

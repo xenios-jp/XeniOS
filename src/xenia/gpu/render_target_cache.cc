@@ -24,6 +24,7 @@
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/registers.h"
+#include "xenia/gpu/strip_merge.h"
 #include "xenia/gpu/trace_writer.h"
 #include "xenia/gpu/xenos.h"
 
@@ -392,7 +393,39 @@ bool RenderTargetCache::ColorOverlapsDepthStencil(
   return (color_written_bits & depth_stencil_used_bits) != 0;
 }
 
+RenderTargetCache::StripMergeBands RenderTargetCache::strip_merge_bands_;
+
 uint32_t RenderTargetCache::Transfer::GetRangeRectangles(
+    uint32_t start_tiles, uint32_t end_tiles, RenderTargetKey key,
+    bool is_64bpp, Rectangle* rectangles_out, const Rectangle* cutout,
+    uint32_t band_first, uint32_t band_count) {
+  if (!key.strip_merged || strip_merge_bands_.count < 2) {
+    return GetUnbandedRangeRectangles(start_tiles, end_tiles, key, is_64bpp,
+                                      rectangles_out, cutout);
+  }
+  // A strip-merged render target owns the first band's tiles, the same tiles
+  // in each band, the cutout being in the whole render target.
+  Rectangle band_rectangles[kMaxRectanglesWithoutCutout];
+  uint32_t band_rectangle_count = GetUnbandedRangeRectangles(
+      start_tiles, end_tiles, key, is_64bpp, band_rectangles, nullptr);
+  uint32_t band_end = band_count ? std::min(band_first + band_count,
+                                            strip_merge_bands_.count)
+                                 : strip_merge_bands_.count;
+  uint32_t band_rows = GetStripMergeBandRows(key);
+  uint32_t rectangle_count = 0;
+  for (uint32_t band = band_first; band < band_end; ++band) {
+    for (uint32_t i = 0; i < band_rectangle_count; ++i) {
+      Rectangle rectangle = band_rectangles[i];
+      rectangle.y_pixels += band * band_rows;
+      rectangle_count += AddRectangle(
+          rectangle, rectangles_out ? rectangles_out + rectangle_count : nullptr,
+          cutout);
+    }
+  }
+  return rectangle_count;
+}
+
+uint32_t RenderTargetCache::Transfer::GetUnbandedRangeRectangles(
     uint32_t start_tiles, uint32_t end_tiles, RenderTargetKey key,
     bool is_64bpp, Rectangle* rectangles_out, const Rectangle* cutout) {
   uint32_t base_tiles = key.base_tiles;
@@ -472,8 +505,9 @@ uint32_t RenderTargetCache::Transfer::GetRangeRectangles(
         rectangle_last,
         rectangles_out ? rectangles_out + rectangle_count : nullptr, cutout);
   }
-  assert_true(rectangle_count <= (cutout ? kMaxRectanglesWithCutout
-                                         : kMaxRectanglesWithoutCutout));
+  assert_true(rectangle_count <=
+              (cutout ? kMaxRectanglesWithCutout / kMaxStripMergeBands
+                      : kMaxRectanglesWithoutCutout / kMaxStripMergeBands));
   return rectangle_count;
 }
 
@@ -989,6 +1023,27 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
         height_used, GetRenderTargetHeight(pitch_tiles_at_32bpp, msaa_samples));
   }
 
+  // Strip merge (strip_merge.h): render targets at the strip surface own the
+  // first strip's rows, holding each strip in a band of their own.
+  bool strip_merged = false;
+  if (strip_merge_ && !interlock_barrier_only && !window_offset_tiles &&
+      (strip_merge_active_ || strip_merge_->learning()) &&
+      strip_merge_->IsBanded(pitch_tiles_at_32bpp, msaa_samples)) {
+    uint32_t band_rows = strip_merge_->layout().band_rows;
+    if (strip_merge_active_) {
+      // Also for a render target that can't be strip-merged, so the frame
+      // rows it gets drawn don't take the EDRAM of other surfaces.
+      height_used = std::min(height_used, band_rows);
+      if (rts_are_64bpp & depth_and_color_rts_used_bits) {
+        strip_merge_->Fail("a 64bpp render target at the strip surface");
+      } else {
+        strip_merged = true;
+      }
+    } else if (height_used > band_rows) {
+      strip_merge_->Fail("a draw reaching past the strip's rows");
+    }
+  }
+
   RenderTargetKey rt_keys[1 + xenos::kMaxColorRenderTargets] = {};
   RenderTarget* rts[1 + xenos::kMaxColorRenderTargets] = {};
 
@@ -1003,6 +1058,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     depth_key.is_depth = 1;
     depth_key.resource_format = resource_formats[0];
     depth_key.scale_native = uint32_t(scale_native);
+    depth_key.strip_merged = uint32_t(strip_merged);
   }
 
   // Sorted by EDRAM base and then by index in the pipeline - for simplicity,
@@ -1100,6 +1156,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     rt_key.is_depth = rt_bit_index == 0;
     rt_key.resource_format = resource_formats[rt_bit_index];
     rt_key.scale_native = uint32_t(scale_native);
+    rt_key.strip_merged = uint32_t(strip_merged);
     uint32_t rt_is_64bpp = (rts_are_64bpp >> rt_bit_index) & 1;
     uint32_t range_start_tiles = 0;
     uint32_t range_end_tiles = 0;
@@ -1475,6 +1532,19 @@ void RenderTargetCache::GetResolveCopyRectanglesToDump(
   if (!row_length || !rows) {
     return;
   }
+  if (strip_merge_resolve_bottom_ && strip_merge_bands_.count >= 2) {
+    // A strip-own resolve of the merged first strip, every strip's rows: the
+    // bands of the strip-merged render target owning the first strip's tiles,
+    // past the EDRAM size.
+    if (GetStripMergedResolveRectangle(base, row_length, rows, pitch,
+                                       rectangles_out)) {
+      return;
+    }
+    if (strip_merge_) {
+      strip_merge_->Fail(
+          "a strip-own resolve not from one strip-merged render target");
+    }
+  }
   auto get_rectangles_in_extent = [&](uint32_t extent_start,
                                       uint32_t extent_end,
                                       uint32_t range_local_offset) {
@@ -1550,6 +1620,61 @@ void RenderTargetCache::GetResolveCopyRectanglesToDump(
         0, std::min(resolve_area_end & (xenos::kEdramTileCount - 1), base),
         xenos::kEdramTileCount);
   }
+}
+
+bool RenderTargetCache::GetStripMergedResolveRectangle(
+    uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch,
+    std::vector<ResolveCopyDumpRectangle>& rectangles_out) const {
+  // The owner of the first tile has to be a strip-merged render target owning
+  // every tile of the resolve area in its first band, which is the one in the
+  // EDRAM model; its other bands are past the EDRAM size.
+  base &= xenos::kEdramTileCount - 1;
+  auto it = ownership_ranges_.upper_bound(base);
+  if (it == ownership_ranges_.cbegin()) {
+    return false;
+  }
+  --it;
+  if (it->second.end_tiles <= base) {
+    return false;
+  }
+  RenderTargetKey key = it->second.render_target;
+  if (!key.strip_merged || pitch != key.GetPitchTiles()) {
+    return false;
+  }
+  uint32_t band_tile_rows = strip_merge_bands_.tile_rows;
+  uint32_t row_first = ((base - key.base_tiles) & (xenos::kEdramTileCount - 1)) /
+                       pitch;
+  if (row_first >= band_tile_rows ||
+      row_first + rows > strip_merge_bands_.count * band_tile_rows) {
+    return false;
+  }
+  // The first band's part of the resolve area.
+  uint32_t band_rows_used = std::min(rows, band_tile_rows - row_first);
+  uint32_t check_end = base + (band_rows_used - 1) * pitch + row_length;
+  auto owned = [&](uint32_t extent_start, uint32_t extent_end) {
+    uint32_t position = extent_start;
+    return ForEachOwnershipRangeInExtent(
+               extent_start, extent_end,
+               [&](uint32_t start_tiles, const OwnershipRange& range) {
+                 if (start_tiles > position || range.render_target != key) {
+                   return false;
+                 }
+                 position = range.end_tiles;
+                 return true;
+               }) &&
+           position >= extent_end;
+  };
+  if (!owned(base, std::min(check_end, xenos::kEdramTileCount)) ||
+      (check_end > xenos::kEdramTileCount &&
+       !owned(0, check_end - xenos::kEdramTileCount))) {
+    return false;
+  }
+  auto rt_it = render_targets_.find(key);
+  if (rt_it == render_targets_.cend() || !rt_it->second) {
+    return false;
+  }
+  rectangles_out.emplace_back(rt_it->second, 0, rows, 0, row_length);
+  return true;
 }
 
 bool RenderTargetCache::IsResolveSourceNativeOnly(uint32_t base,
@@ -2555,7 +2680,7 @@ void RenderTargetCache::ChangeOwnership(
               // Same render target, don't provide a separate host depth source.
               transfer_host_depth_source = RenderTargetKey();
             }
-            if (!transfers_append_out->empty() &&
+            if (!dest.strip_merged && !transfers_append_out->empty() &&
                 transfers_append_out->back().end_tiles == it->first &&
                 transfers_append_out->back().source->key() == transfer_source &&
                 ((transfers_append_out->back().host_depth_source == nullptr) ==
@@ -2580,12 +2705,21 @@ void RenderTargetCache::ChangeOwnership(
                   assert_false(transfer_host_depth_source_rt_it !=
                                    render_targets_.end() &&
                                !transfer_host_depth_source_rt_it->second);
-                  transfers_append_out->emplace_back(
-                      it->first, transfer_end_tiles,
-                      transfer_source_rt_it->second,
+                  RenderTarget* transfer_host_depth_source_rt =
                       transfer_host_depth_source_rt_it != render_targets_.end()
                           ? transfer_host_depth_source_rt_it->second
-                          : nullptr);
+                          : nullptr;
+                  if (dest.strip_merged) {
+                    AppendStripMergeTransfers(
+                        *transfers_append_out, it->first, transfer_end_tiles,
+                        dest, transfer_source_rt_it->second,
+                        transfer_host_depth_source_rt);
+                  } else {
+                    transfers_append_out->emplace_back(
+                        it->first, transfer_end_tiles,
+                        transfer_source_rt_it->second,
+                        transfer_host_depth_source_rt);
+                  }
                 }
               }
             }
@@ -2639,6 +2773,234 @@ void RenderTargetCache::ChangeOwnership(
     change_ownership_in_extent(
         0, std::min(end_tiles & (xenos::kEdramTileCount - 1), start_tiles));
   }
+  if (strip_merge_active_ && !strip_merge_carries_.empty()) {
+    ConsumeStripMergeCarries(start_tiles,
+                             std::min(end_tiles, xenos::kEdramTileCount));
+    if (end_tiles > xenos::kEdramTileCount) {
+      ConsumeStripMergeCarries(
+          0, std::min(end_tiles & (xenos::kEdramTileCount - 1), start_tiles));
+    }
+  }
+}
+
+void RenderTargetCache::AppendStripMergeTransfers(
+    std::vector<Transfer>& transfers, uint32_t start_tiles,
+    uint32_t end_tiles, RenderTargetKey dest, RenderTarget* source,
+    RenderTarget* host_depth_source) {
+  uint32_t band_count = strip_merge_bands_.count;
+  bool source_merged = source->key().strip_merged != 0;
+  if (source_merged &&
+      (!host_depth_source || host_depth_source->key().strip_merged)) {
+    // Each band from the same band.
+    transfers.emplace_back(start_tiles, end_tiles, source, host_depth_source);
+    return;
+  }
+  // Anything not strip-merged is the same for every strip, but its addressing
+  // wraps around the EDRAM, so it fills one band per transfer.
+  auto append_bands = [&](uint32_t band_start_tiles, uint32_t band_end_tiles) {
+    for (uint32_t band = 0; band < band_count; ++band) {
+      Transfer& transfer = transfers.emplace_back(
+          band_start_tiles, band_end_tiles, source, host_depth_source);
+      transfer.band_first = uint8_t(band);
+      transfer.band_count = 1;
+    }
+  };
+  if (source_merged) {
+    append_bands(start_tiles, end_tiles);
+    return;
+  }
+  // The first claim of the tiles in a merged session takes the EDRAM as it
+  // was before the session, which is what the first strip starts with. The
+  // later strips start with what the strip before leaves: the carry of the
+  // previous merged session, where there is one.
+  uint32_t position = start_tiles;
+  for (const StripMergeCarry& carry : strip_merge_carries_) {
+    if (carry.end_tiles <= position || carry.start_tiles >= end_tiles) {
+      continue;
+    }
+    if (carry.start_tiles > position) {
+      append_bands(position, carry.start_tiles);
+      position = carry.start_tiles;
+    }
+    uint32_t piece_end_tiles = std::min(carry.end_tiles, end_tiles);
+    auto carry_it = render_targets_.find(carry.carry);
+    if (carry_it != render_targets_.end() && carry_it->second) {
+      Transfer& first_band = transfers.emplace_back(
+          position, piece_end_tiles, source, host_depth_source);
+      first_band.band_first = 0;
+      first_band.band_count = 1;
+      // A depth carry is its own host depth, not to lose the host precision.
+      RenderTarget* carry_rt = carry_it->second;
+      Transfer& later_bands = transfers.emplace_back(
+          position, piece_end_tiles, carry_rt,
+          carry.carry.is_depth ? carry_rt : nullptr);
+      later_bands.band_first = 1;
+      later_bands.band_count = uint8_t(band_count - 1);
+    } else {
+      append_bands(position, piece_end_tiles);
+    }
+    position = piece_end_tiles;
+  }
+  if (position < end_tiles) {
+    append_bands(position, end_tiles);
+  }
+}
+
+void RenderTargetCache::ConsumeStripMergeCarries(uint32_t start_tiles,
+                                                 uint32_t end_tiles) {
+  if (start_tiles >= end_tiles) {
+    return;
+  }
+  std::vector<StripMergeCarry> remaining;
+  remaining.reserve(strip_merge_carries_.size() + 1);
+  for (const StripMergeCarry& carry : strip_merge_carries_) {
+    if (carry.end_tiles <= start_tiles || carry.start_tiles >= end_tiles) {
+      remaining.push_back(carry);
+      continue;
+    }
+    if (carry.start_tiles < start_tiles) {
+      remaining.push_back({carry.start_tiles, start_tiles, carry.carry});
+    }
+    if (carry.end_tiles > end_tiles) {
+      remaining.push_back({end_tiles, carry.end_tiles, carry.carry});
+    }
+  }
+  strip_merge_carries_ = std::move(remaining);
+}
+
+bool RenderTargetCache::BeginStripMerge(uint32_t band_count,
+                                        uint32_t band_tile_rows) {
+  if (GetPath() != Path::kHostRenderTargets || IsDrawResolutionScaled() ||
+      band_count < 2 || band_count > Transfer::kMaxStripMergeBands ||
+      !band_tile_rows) {
+    return false;
+  }
+  // Strip-merged render targets are created with the band shape.
+  if (strip_merge_bands_.count &&
+      (strip_merge_bands_.count != band_count ||
+       strip_merge_bands_.tile_rows != band_tile_rows)) {
+    return false;
+  }
+  strip_merge_bands_.count = band_count;
+  strip_merge_bands_.tile_rows = band_tile_rows;
+  strip_merge_active_ = true;
+  are_accumulated_render_targets_valid_ = false;
+  return true;
+}
+
+void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
+  if (!strip_merge_active_) {
+    return;
+  }
+  strip_merge_active_ = false;
+  uint32_t band_count = strip_merge_bands_.count;
+  carry = carry && band + 1 == band_count;
+  std::vector<RenderTargetKey> merged_keys;
+  auto note_key = [&](RenderTargetKey key) {
+    if (key.strip_merged &&
+        std::find(merged_keys.cbegin(), merged_keys.cend(), key) ==
+            merged_keys.cend()) {
+      merged_keys.push_back(key);
+    }
+  };
+  ForEachEdramOwner(note_key);
+  std::vector<StripMergeCarry> carries;
+  for (RenderTargetKey key : merged_keys) {
+    auto source_it = render_targets_.find(key);
+    RenderTarget* source =
+        source_it != render_targets_.end() ? source_it->second : nullptr;
+    RenderTargetKey twin_key = key;
+    twin_key.strip_merged = 0;
+    RenderTarget* twin = source ? GetOrCreateRenderTarget(twin_key) : nullptr;
+    // Depth copies take the host depth from the same render target, so it
+    // keeps its host precision.
+    RenderTarget* host_depth_source = key.is_depth ? source : nullptr;
+    // Every range the strip-merged render target is in, as the owner or as
+    // the holder of depth, moves to the twin, from band `band`.
+    std::vector<Transfer> transfers, carry_transfers;
+    for (const auto& range_pair : ownership_ranges_) {
+      const OwnershipRange& range = range_pair.second;
+      bool owner = range.render_target == key;
+      if (!source ||
+          (!owner && range.depth_bits_target != key &&
+           range.host_depth_render_target_unorm24 != key &&
+           range.host_depth_render_target_float24 != key)) {
+        continue;
+      }
+      if (!transfers.empty() &&
+          transfers.back().end_tiles == range_pair.first) {
+        transfers.back().end_tiles = range.end_tiles;
+      } else {
+        Transfer& transfer = transfers.emplace_back(
+            range_pair.first, range.end_tiles, source, host_depth_source);
+        transfer.source_band_shift = int8_t(band);
+      }
+      if (carry && owner) {
+        if (!carry_transfers.empty() &&
+            carry_transfers.back().end_tiles == range_pair.first) {
+          carry_transfers.back().end_tiles = range.end_tiles;
+        } else {
+          Transfer& transfer = carry_transfers.emplace_back(
+              range_pair.first, range.end_tiles, source, host_depth_source);
+          transfer.band_first = 1;
+          transfer.band_count = uint8_t(band_count - 1);
+          transfer.source_band_shift = -1;
+        }
+      }
+    }
+    if (twin && !transfers.empty() &&
+        !PerformStripMergeTransfers(twin, transfers)) {
+      XELOGE("Strip merge: failed to move {} into its twin",
+             key.GetDebugName());
+    }
+    if (!carry_transfers.empty()) {
+      RenderTargetKey carry_key = key;
+      carry_key.strip_merge_carry = 1;
+      RenderTarget* carry_rt = GetOrCreateRenderTarget(carry_key);
+      if (carry_rt && PerformStripMergeTransfers(carry_rt, carry_transfers)) {
+        for (const Transfer& transfer : carry_transfers) {
+          carries.push_back(
+              {transfer.start_tiles, transfer.end_tiles, carry_key});
+        }
+      }
+    }
+    // The twin takes the strip-merged render target's place.
+    RenderTargetKey replacement = twin ? twin_key : RenderTargetKey();
+    for (auto& range_pair : ownership_ranges_) {
+      OwnershipRange& range = range_pair.second;
+      for (RenderTargetKey* range_key :
+           {&range.render_target, &range.depth_bits_target,
+            &range.host_depth_render_target_unorm24,
+            &range.host_depth_render_target_float24}) {
+        if (*range_key == key) {
+          *range_key = replacement;
+        }
+      }
+    }
+  }
+  // Merge the ranges that now have the same owners.
+  for (auto it = ownership_ranges_.begin(); it != ownership_ranges_.end();) {
+    auto it_next = std::next(it);
+    if (it_next != ownership_ranges_.end() &&
+        it->second.end_tiles == it_next->first &&
+        it_next->second.AreOwnersSame(it->second)) {
+      it->second.end_tiles = it_next->second.end_tiles;
+      ownership_ranges_.erase(it_next);
+      continue;
+    }
+    it = it_next;
+  }
+  std::sort(carries.begin(), carries.end(),
+            [](const StripMergeCarry& a, const StripMergeCarry& b) {
+              return a.start_tiles < b.start_tiles;
+            });
+  strip_merge_carries_ = std::move(carries);
+  // Nothing bound may still refer to a strip-merged render target.
+  are_accumulated_render_targets_valid_ = false;
+  std::memset(last_update_accumulated_render_targets_, 0,
+              sizeof(last_update_accumulated_render_targets_));
+  std::memset(last_update_used_render_targets_, 0,
+              sizeof(last_update_used_render_targets_));
 }
 
 }  // namespace gpu

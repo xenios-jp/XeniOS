@@ -51,6 +51,7 @@
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/metal/metal_compile_activity.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
+#include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/metal/metal_tessellation_shaders.h"
 #include "xenia/gpu/packet_disassembler.h"
 #include "xenia/gpu/registers.h"
@@ -2480,6 +2481,8 @@ bool MetalCommandProcessor::SetupContext() {
     XELOGE("Failed to initialize Metal render target cache");
     return false;
   }
+  render_target_cache_->SetStripMerge(&strip_merge_);
+  strip_merge_.SetBackend(this);
 
   // Fallback for query segment normalization when no draw pinned a scale.
   zpd_draw_resolution_scale_x_ = texture_cache_->draw_resolution_scale_x();
@@ -2775,6 +2778,7 @@ void MetalCommandProcessor::WaitForPendingCompletionHandlers() {
 }
 
 void MetalCommandProcessor::ShutdownContext() {
+  strip_merge_.SetBackend(nullptr);
   render_encoder_memexport_ranges_.clear();
   pending_shader_done_fence_ranges_.clear();
   pending_shader_done_fence_values_.clear();
@@ -4397,12 +4401,47 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     normalized_color_mask = pixel_shader ? draw_util::GetNormalizedColorMask(
                                                regs, ps_writes_color_targets)
                                          : 0;
+    // Strip merge (strip_merge.h): draws on the strip surface either address
+    // the frame (the strip's window, extended to the frame when merging) or
+    // the strip's band itself, which the merged first strip replicates into
+    // every band.
+    bool strip_merge_banded = false;
+    strip_merge_replicate_draw_ = false;
+    if (strip_merge_.recording()) {
+      auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+      uint32_t pitch_tiles_at_32bpp =
+          ((rb_surface_info.surface_pitch
+            << uint32_t(rb_surface_info.msaa_samples >=
+                        xenos::MsaaSamples::k4X)) +
+           (xenos::kEdramTileWidthSamples - 1)) /
+          xenos::kEdramTileWidthSamples;
+      StripMerge::DrawInfo strip_merge_draw;
+      strip_merge_draw.vertex_shader = vertex_shader;
+      strip_merge_draw.pixel_shader = pixel_shader;
+      strip_merge_draw.banded =
+          is_rasterization_done &&
+          strip_merge_.IsBanded(pitch_tiles_at_32bpp,
+                                rb_surface_info.msaa_samples);
+      strip_merge_draw.frame_space = strip_merge_.IsFrameSpace();
+      strip_merge_draw.memexport = memexport_used;
+      strip_merge_draw.pixel_position =
+          pixel_shader && regs.Get<reg::SQ_PROGRAM_CNTL>().param_gen;
+      strip_merge_draw.tessellated =
+          primitive_processing_result.IsTessellated();
+      strip_merge_.CheckDraw(strip_merge_draw);
+      if (strip_merge_.merging() && !strip_merge_.failed()) {
+        strip_merge_banded = strip_merge_draw.banded;
+        strip_merge_replicate_draw_ =
+            strip_merge_draw.banded && !strip_merge_draw.frame_space;
+      }
+    }
     {
       MetalRenderTargetCache::ClearQuadDraw clear_quad_draw;
+      // Clear quads on merged surfaces aren't the whole pass's.
       clear_quad_draw.candidate =
           is_rasterization_done && !memexport_used &&
           primitive_type == xenos::PrimitiveType::kRectangleList &&
-          !primitive_processing_result.IsTessellated();
+          !primitive_processing_result.IsTessellated() && !strip_merge_banded;
       clear_quad_draw.has_pixel_shader = pixel_shader != nullptr;
       clear_quad_draw.pixel_shader_kills =
           pixel_shader && pixel_shader->kills_pixels();
@@ -6028,16 +6067,20 @@ bool MetalCommandProcessor::IssueDrawMsl(
     if (draw_index_buffer.indexed) {
       UseRenderEncoderResource(draw_index_buffer.buffer,
                                MTL::ResourceUsageRead);
-      current_render_encoder_->drawIndexedPrimitives(
-          draw_index_buffer.primitive_type,
-          NS::UInteger(draw_index_buffer.index_count),
-          draw_index_buffer.index_type, draw_index_buffer.buffer,
-          NS::UInteger(draw_index_buffer.offset));
-    } else {
-      current_render_encoder_->drawPrimitives(
-          draw_index_buffer.primitive_type, NS::UInteger(0),
-          NS::UInteger(draw_index_buffer.index_count));
     }
+    DrawStripMergeBands([&]() {
+      if (draw_index_buffer.indexed) {
+        current_render_encoder_->drawIndexedPrimitives(
+            draw_index_buffer.primitive_type,
+            NS::UInteger(draw_index_buffer.index_count),
+            draw_index_buffer.index_type, draw_index_buffer.buffer,
+            NS::UInteger(draw_index_buffer.offset));
+      } else {
+        current_render_encoder_->drawPrimitives(
+            draw_index_buffer.primitive_type, NS::UInteger(0),
+            NS::UInteger(draw_index_buffer.index_count));
+      }
+    });
   }
 
   if (render_target_cache_) {
@@ -6678,18 +6721,25 @@ bool MetalCommandProcessor::IssueDrawDxil(
           current_render_encoder_, IRRuntimePrimitiveTypeTriangle, config, 1,
           draw_index_buffer.index_count, 0, 0);
     }
-  } else if (draw_index_buffer.indexed) {
+  } else {
     // The converter's draw helpers also push the draw arguments the compiled
     // vertex function reads for SV_VertexID and SV_InstanceID.
-    UseRenderEncoderResource(draw_index_buffer.buffer, MTL::ResourceUsageRead);
-    IRRuntimeDrawIndexedPrimitives(
-        current_render_encoder_, draw_index_buffer.primitive_type,
-        draw_index_buffer.index_count, draw_index_buffer.index_type,
-        draw_index_buffer.buffer, draw_index_buffer.offset);
-  } else {
-    IRRuntimeDrawPrimitives(current_render_encoder_,
-                            draw_index_buffer.primitive_type, uint64_t(0),
-                            uint64_t(draw_index_buffer.index_count));
+    if (draw_index_buffer.indexed) {
+      UseRenderEncoderResource(draw_index_buffer.buffer,
+                               MTL::ResourceUsageRead);
+    }
+    DrawStripMergeBands([&]() {
+      if (draw_index_buffer.indexed) {
+        IRRuntimeDrawIndexedPrimitives(
+            current_render_encoder_, draw_index_buffer.primitive_type,
+            draw_index_buffer.index_count, draw_index_buffer.index_type,
+            draw_index_buffer.buffer, draw_index_buffer.offset);
+      } else {
+        IRRuntimeDrawPrimitives(current_render_encoder_,
+                                draw_index_buffer.primitive_type, uint64_t(0),
+                                uint64_t(draw_index_buffer.index_count));
+      }
+    });
   }
 
   if (memexport_used) {
@@ -6705,6 +6755,154 @@ bool MetalCommandProcessor::IssueDrawDxil(
   }
   ++current_draw_index_;
   return true;
+}
+
+bool MetalCommandProcessor::StripMergeBegin(const StripMerge::Layout& layout) {
+  if (!render_target_cache_ ||
+      render_target_cache_->GetPath() !=
+          RenderTargetCache::Path::kHostRenderTargets) {
+    return false;
+  }
+  // Transfers address a band up to strip_count - 1 bands away with a 12-bit
+  // offset (MakeTransferAddressConstant).
+  if (uint64_t(layout.strip_count - 1) * layout.band_tile_rows() *
+          layout.pitch_tiles_at_32bpp >=
+      xenos::kEdramTileCount) {
+    return false;
+  }
+  // The merged render targets start in a pass of their own, with nothing
+  // queued for the render targets before.
+  EndRenderEncoder();
+  if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+    return false;
+  }
+  return render_target_cache_->BeginStripMerge(layout.strip_count,
+                                               layout.band_tile_rows());
+}
+
+void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
+  strip_merge_replicate_draw_ = false;
+  if (!render_target_cache_) {
+    return;
+  }
+  // The transfers out of the merged render targets read what the pass and
+  // the transfers queued for it wrote.
+  EndRenderEncoder();
+  render_target_cache_->FlushPendingDrawPassTransfers();
+  render_target_cache_->EndStripMerge(band, carry);
+}
+
+bool MetalCommandProcessor::StripMergeNoteResolve(uint32_t& bottom_out) {
+  bottom_out = 0;
+  const RegisterFile& regs = *register_file_;
+  auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  uint32_t pitch_tiles_at_32bpp =
+      ((rb_surface_info.surface_pitch
+        << uint32_t(rb_surface_info.msaa_samples >= xenos::MsaaSamples::k4X)) +
+       (xenos::kEdramTileWidthSamples - 1)) /
+      xenos::kEdramTileWidthSamples;
+  bool banded =
+      strip_merge_.IsBanded(pitch_tiles_at_32bpp, rb_surface_info.msaa_samples);
+  bool own = strip_merge_.current_packet_own();
+  if (strip_merge_.merging()) {
+    if (strip_merge_.failed()) {
+      return true;
+    }
+    if (banded && own) {
+      bottom_out = strip_merge_.layout().frame_bottom();
+    } else if (banded) {
+      // Every strip resolving its band: the later strips' resolves are
+      // skipped, so their rows would be missing.
+      strip_merge_.Fail("a resolve of the strip's band in every strip");
+    }
+    return true;
+  }
+  if (!strip_merge_.learning()) {
+    return true;
+  }
+  if (!own) {
+    if (banded) {
+      strip_merge_.Fail("a resolve of the strip's band in every strip");
+    }
+    return true;
+  }
+  // Learning: what DeriveLayout compares across the strips. No trace is being
+  // written while recording, so this logs no memory reads.
+  draw_util::ResolveInfo resolve_info;
+  if (!draw_util::GetResolveInfo(regs, *memory_, trace_writer_, 1, 1, false,
+                                 false, resolve_info)) {
+    strip_merge_.Fail("a strip-own resolve that can't be decoded");
+    return true;
+  }
+  const draw_util::ResolveEdramInfo& edram_info =
+      resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
+                                    : resolve_info.color_edram_info;
+  StripMerge::ResolveRecord record;
+  record.edram_info = edram_info.packed;
+  record.coordinate_info = resolve_info.coordinate_info.packed;
+  record.height_div_8 = resolve_info.height_div_8;
+  record.copy_dest_info = resolve_info.copy_dest_info.value;
+  draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
+      resolve_info.copy_dest_coordinate_info;
+  record.dest_height_aligned = dest_coordinates.height_aligned_div_32 << 5;
+  dest_coordinates.height_aligned_div_32 = 0;
+  record.copy_dest_coordinate_info = dest_coordinates.packed;
+  record.copy_dest_base = resolve_info.copy_dest_base;
+  record.copy_control = resolve_info.rb_copy_control.value;
+  record.dest_pitch_aligned =
+      resolve_info.copy_dest_coordinate_info.pitch_aligned_div_32 << 5;
+  record.dest_offset_y =
+      resolve_info.copy_dest_coordinate_info.offset_y_div_8 << 3;
+  record.dest_bytes_per_pixel =
+      FormatInfo::Get(
+          xenos::TextureFormat(resolve_info.copy_dest_info.copy_dest_format))
+          ->bits_per_pixel >>
+      3;
+  record.edram_offset_y = resolve_info.coordinate_info.edram_offset_y_div_8
+                          << 3;
+  record.pitch_tiles_at_32bpp = edram_info.pitch_tiles;
+  record.msaa_samples = edram_info.msaa_samples;
+  record.is_64bpp = edram_info.format_is_64bpp != 0;
+  record.clears =
+      resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
+  strip_merge_.NoteOwnResolve(record);
+  return true;
+}
+
+void MetalCommandProcessor::DrawStripMergeBands(
+    const std::function<void()>& draw) {
+  if (!strip_merge_replicate_draw_) {
+    draw();
+    return;
+  }
+  // A draw addressing the strip's band (window offset 0, a window scissor
+  // other than the strip's), in each band of the merged render targets: the
+  // viewport moved down by the band's top and the scissor clamped to the band.
+  // Drawing resolution scaling is off while merging.
+  const StripMerge::Layout& layout = strip_merge_.layout();
+  MTL::Viewport viewport = msl_viewport_;
+  MTL::ScissorRect scissor = msl_scissor_;
+  for (uint32_t band = 0; band < layout.strip_count; ++band) {
+    uint64_t band_top = uint64_t(band) * layout.band_rows;
+    uint64_t band_bottom =
+        std::min(band_top + layout.band_rows, uint64_t(render_encoder_height_));
+    uint64_t top = std::max(uint64_t(scissor.y) + band_top, band_top);
+    uint64_t bottom = std::min(
+        uint64_t(scissor.y) + uint64_t(scissor.height) + band_top, band_bottom);
+    if (bottom <= top) {
+      continue;
+    }
+    MTL::Viewport band_viewport = viewport;
+    band_viewport.originY += double(band_top);
+    MTL::ScissorRect band_scissor = scissor;
+    band_scissor.y = NS::UInteger(top);
+    band_scissor.height = NS::UInteger(bottom - top);
+    current_render_encoder_->setViewport(band_viewport);
+    current_render_encoder_->setScissorRect(band_scissor);
+    draw();
+  }
+  current_render_encoder_->setViewport(viewport);
+  current_render_encoder_->setScissorRect(scissor);
 }
 
 bool MetalCommandProcessor::IssueCopy() {
@@ -6732,8 +6930,26 @@ bool MetalCommandProcessor::IssueCopy() {
   uint32_t written_address = 0;
   uint32_t written_length = 0;
 
+  // Strip merge (strip_merge.h): a strip-own resolve of the merged first strip
+  // resolves every strip's rows, from a pass of its own (the tile resolve
+  // path reads one EDRAM band).
+  uint32_t strip_merge_resolve_bottom = 0;
+  if (strip_merge_.recording()) {
+    if (!StripMergeNoteResolve(strip_merge_resolve_bottom)) {
+      return false;
+    }
+    if (strip_merge_resolve_bottom) {
+      EndRenderEncoder();
+      copy_command_buffer = EnsureCommandBuffer();
+      if (!copy_command_buffer) {
+        return false;
+      }
+    }
+  }
+  render_target_cache_->SetStripMergeResolveBottom(strip_merge_resolve_bottom);
   bool resolved = render_target_cache_->Resolve(
       *memory_, written_address, written_length, copy_command_buffer);
+  render_target_cache_->SetStripMergeResolveBottom(0);
   // The pass ends at the resolve, unless a tile resolve kept it open,
   // recording what it wrote.
   if (!render_target_cache_->last_resolve_kept_pass()) {
