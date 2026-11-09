@@ -323,6 +323,14 @@ MTL::TextureSwizzleChannels ToMetalTextureSwizzle(uint32_t xenos_swizzle) {
   return swizzle;
 }
 
+// The texture whose image a view (or a view of a view) shares.
+MTL::Texture* GetRootTexture(MTL::Texture* texture) {
+  while (MTL::Texture* parent = texture->parentTexture()) {
+    texture = parent;
+  }
+  return texture;
+}
+
 }  // namespace
 
 class MetalTextureCache::UploadBufferPool
@@ -587,17 +595,11 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
   // The inventory only holds keys that passed IsResolveRefreshKey.
   const uint32_t bytes_per_block =
       depth ? 4 : FormatInfo::Get(format)->bytes_per_block();
-  auto root_texture = [](MTL::Texture* view) {
-    while (auto* parent = view->parentTexture()) {
-      view = parent;
-    }
-    return view;
-  };
   // Do not issue concurrent writes through two views of the same storage.
   auto shares_storage = [&](MTL::Texture* write_view) {
-    auto* root = root_texture(write_view);
+    auto* root = GetRootTexture(write_view);
     for (const auto& destination : target_out.textures()) {
-      if (root == root_texture(destination.write_texture.get())) {
+      if (root == GetRootTexture(destination.write_texture.get())) {
         return true;
       }
     }
@@ -704,6 +706,11 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
       continue;
     }
     if (shares_storage(write_view)) {
+      // An image shared with a destination is written with it.
+      if (target_out.shared_count < target_out.shared.size()) {
+        current.write_texture = NS::RetainPtr(write_view);
+        target_out.shared[target_out.shared_count++] = std::move(current);
+      }
       continue;
     }
     if (target_out.count == target_out.destinations.size()) {
@@ -720,21 +727,35 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
       auto* write_view = candidate.write_texture.get();
       if (candidate.offset_y != primary.offset_y ||
           write_view->width() != primary.write_texture->width() ||
-          write_view->height() != primary.write_texture->height() ||
-          shares_storage(write_view)) {
+          write_view->height() != primary.write_texture->height()) {
+        continue;
+      }
+      if (shares_storage(write_view)) {
+        // Another raw interpretation's image, written through it.
+        bool raw_shared = false;
+        auto* root = GetRootTexture(write_view);
+        for (uint32_t j = target_out.count - target_out.raw_count;
+             j < target_out.count; ++j) {
+          raw_shared |=
+              root ==
+              GetRootTexture(target_out.destinations[j].write_texture.get());
+        }
+        if (raw_shared &&
+            target_out.shared_count < target_out.shared.size()) {
+          target_out.shared[target_out.shared_count++] = std::move(candidate);
+        }
         continue;
       }
       target_out.destinations[target_out.count++] = std::move(candidate);
       ++target_out.raw_count;
     }
   }
-  for (const auto& destination : target_out.textures()) {
-    auto* destination_texture =
-        static_cast<MetalTexture*>(destination.cache_texture);
-    destination_texture->MarkAsUsed();
-    destination_texture->used_submission_ =
-        command_processor_->GetCurrentSubmission();
-  }
+  target_out.ForEachTexture(
+      [&](const ResolveTextureRefreshTarget::Alias& refreshed) {
+        auto* texture = static_cast<MetalTexture*>(refreshed.cache_texture);
+        texture->MarkAsUsed();
+        texture->used_submission_ = command_processor_->GetCurrentSubmission();
+      });
 }
 
 void MetalTextureCache::PublishDirectResolveTextureRefresh(
@@ -742,7 +763,13 @@ void MetalTextureCache::PublishDirectResolveTextureRefresh(
   if (!target) {
     return;
   }
-  for (const auto& refreshed : target.textures()) {
+  for (uint32_t refreshed_index = 0;
+       refreshed_index < target.count + target.shared_count;
+       ++refreshed_index) {
+    const auto& refreshed =
+        refreshed_index < target.count
+            ? target.destinations[refreshed_index]
+            : target.shared[refreshed_index - target.count];
     auto* texture = static_cast<MetalTexture*>(refreshed.cache_texture);
     bool found = false;
     for (MetalTexture* current = resolve_refresh_first_; current;
@@ -867,6 +894,83 @@ MetalTextureCache::AcquireResolveRefreshStorage(MTL::Texture* write_view) {
   return storage;
 }
 
+MetalTextureCache::MetalTexture* MetalTextureCache::FindResolveAliasImageOwner(
+    const TextureKey& key, MTL::PixelFormat pixel_format) {
+  const LoadShaderIndex load_shader = GetLoadShaderIndexForKey(key);
+  if (load_shader != kLoadShaderIndex32bpb &&
+      load_shader != kLoadShaderIndex64bpb) {
+    return nullptr;
+  }
+  for (MetalTexture* texture = resolve_refresh_first_; texture;
+       texture = texture->resolve_refresh_next_) {
+    const TextureKey& other = texture->key();
+    // Everything but the format: IsResolveRefreshKey fixes the rest of the
+    // shape (one tiled 2D level, no mips, unsigned, unscaled).
+    if (!other.is_valid || other.base_page != key.base_page ||
+        other.dimension != key.dimension ||
+        other.width_minus_1 != key.width_minus_1 ||
+        other.height_minus_1 != key.height_minus_1 ||
+        other.depth_or_array_size_minus_1 != key.depth_or_array_size_minus_1 ||
+        other.pitch != key.pitch || other.endianness != key.endianness ||
+        other.format == key.format ||
+        GetLoadShaderIndexForKey(other) != load_shader) {
+      continue;
+    }
+    if (!texture->metal_texture_) {
+      continue;
+    }
+    MTL::Texture* root = GetRootTexture(texture->metal_texture_);
+    if (root->textureType() != MTL::TextureType2DArray ||
+        root->arrayLength() != 1 || root->mipmapLevelCount() != 1 ||
+        root->width() != key.GetWidth() || root->height() != key.GetHeight() ||
+        !(root->usage() & MTL::TextureUsageShaderWrite) ||
+        root->storageMode() != GetCacheTextureStorageMode() ||
+        (root->pixelFormat() != pixel_format &&
+         !(root->usage() & MTL::TextureUsagePixelFormatView))) {
+      continue;
+    }
+    return texture;
+  }
+  return nullptr;
+}
+
+void MetalTextureCache::MoveResolveAliasViews(MTL::Texture* old_root,
+                                              MTL::Texture* new_root,
+                                              const MetalTexture* except) {
+  new_root = GetRootTexture(new_root);
+  for (MetalTexture* texture = resolve_refresh_first_; texture;
+       texture = texture->resolve_refresh_next_) {
+    if (texture == except || !texture->metal_texture_) {
+      continue;
+    }
+    if (GetRootTexture(texture->metal_texture_) != old_root) {
+      continue;
+    }
+    MTL::Texture* view = new_root->newTextureView(
+        texture->metal_pixel_format_, MTL::TextureType2DArray,
+        NS::Range::Make(0, new_root->mipmapLevelCount()),
+        NS::Range::Make(0, new_root->arrayLength()));
+    if (!view) {
+      // newTextureView allocates no image memory, so this isn't expected.
+      XELOGE("Texture 0x{:08X}: no view of its moved shared image",
+             texture->key().base_page << 12);
+      assert_always();
+      continue;
+    }
+    // Commands encoded so far may still use the old view and its views.
+    auto retired = std::make_unique<ResolveRefreshStorage>();
+    retired->texture = texture->metal_texture_;
+    retired->write_view = texture->resolve_write_view_;
+    retired->views = std::move(texture->swizzled_view_cache_);
+    texture->swizzled_view_cache_.clear();
+    resolve_refresh_storage_retired_.emplace_back(
+        command_processor_ ? command_processor_->GetCurrentSubmission() : 0,
+        std::move(retired));
+    texture->metal_texture_ = view;
+    texture->resolve_write_view_ = nullptr;
+  }
+}
+
 bool MetalTextureCache::SwapResolveRefreshStorage(
     MTL::Texture* write_view,
     std::unique_ptr<ResolveRefreshStorage>& storage) {
@@ -886,6 +990,10 @@ bool MetalTextureCache::SwapResolveRefreshStorage(
   // A view is of the image, and keyed by everything it's created from, so
   // the views move along with it.
   std::swap(texture->swizzled_view_cache_, storage->views);
+  // Textures sharing the former image move to the new one, which holds what
+  // the resolve wrote for them.
+  MoveResolveAliasViews(GetRootTexture(storage->texture),
+                        texture->metal_texture_, texture);
   // The draws after this bind the new image.
   OnGatherInputsChanged();
   return true;
@@ -4220,6 +4328,19 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
     }
     case xenos::DataDimension::k2DOrStacked: {
       const bool shader_write = IsResolveRefreshKey(key);
+      if (shader_write) {
+        if (MetalTexture* owner =
+                FindResolveAliasImageOwner(key, metal_format)) {
+          MTL::Texture* root = GetRootTexture(owner->metal_texture_);
+          metal_texture = root->newTextureView(
+              metal_format, MTL::TextureType2DArray,
+              NS::Range::Make(0, root->mipmapLevelCount()),
+              NS::Range::Make(0, root->arrayLength()));
+          if (metal_texture) {
+            break;
+          }
+        }
+      }
       metal_texture = CreateTexture2D(
           width, height, key.GetDepthOrArraySize(), metal_format, metal_swizzle,
           key.mip_max_level + 1, shader_write,

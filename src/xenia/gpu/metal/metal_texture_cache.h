@@ -169,18 +169,33 @@ class MetalTextureCache : public TextureCache {
     // take the packed depth and stencil texels as raw dwords through R32Uint
     // views rather than the converted depth.
     uint32_t raw_count = 0;
+    // Textures whose image is a destination's: the resolve writes them through
+    // that destination, and publishes them with it.
+    std::array<Alias, kMaxAliases + 1> shared{};
+    uint32_t shared_count = 0;
 
     std::span<const Alias> textures() const {
       return {destinations.data(), count};
     }
+    std::span<const Alias> shared_textures() const {
+      return {shared.data(), shared_count};
+    }
+
+    // The destinations, then the textures sharing their images.
+    template <typename Function>
+    void ForEachTexture(Function function) const {
+      for (const Alias& texture : textures()) {
+        function(texture);
+      }
+      for (const Alias& texture : shared_textures()) {
+        function(texture);
+      }
+    }
 
     bool HasPartial() const {
-      for (const Alias& texture : textures()) {
-        if (texture.partial) {
-          return true;
-        }
-      }
-      return false;
+      bool partial = false;
+      ForEachTexture([&](const Alias& texture) { partial |= texture.partial; });
+      return partial;
     }
 
     explicit operator bool() const { return count != 0; }
@@ -495,6 +510,15 @@ class MetalTextureCache : public TextureCache {
   // resolve refresh destination: an enabled format in the exact tiled 2D
   // single-level shape a 1x resolve can write.
   bool IsResolveRefreshKey(const TextureKey& key) const;
+  // A resolve refresh texture whose image a new texture of this key can take
+  // as its own through a view: the same memory and shape, and a loader that
+  // copies the same raw texels.
+  MetalTexture* FindResolveAliasImageOwner(const TextureKey& key,
+                                           MTL::PixelFormat pixel_format);
+  // Points the textures other than except that view old_root at a view of
+  // new_root instead, as their image moved.
+  void MoveResolveAliasViews(MTL::Texture* old_root, MTL::Texture* new_root,
+                             const MetalTexture* except);
   ResolveRefreshWatchLog refresh_fire_log_;
   SharedMemory::GlobalWatchHandle refresh_fire_watch_handle_ = nullptr;
   static void RefreshFireGlobalWatchCallbackThunk(
