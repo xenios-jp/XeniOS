@@ -677,12 +677,13 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     return;
   }
   XELOGW("Live account (app): {}'s account was deleted", profile->gamertag);
+  // Online play off first: a Live profile with no online XUID is given a new one.
+  if (g_real_host->disable_online) {
+    g_real_host->disable_online(profile->xuid);
+  }
   // Its XUID can't be used again: a new gamertag starts from none.
   if (g_real_host->set_online_xuid) {
     g_real_host->set_online_xuid(profile->xuid, 0);
-  }
-  if (g_real_host->disable_online) {
-    g_real_host->disable_online(profile->xuid);
   }
   _removedProfile = profile->xuid;
   xe_ios_live_social_refresh_now();

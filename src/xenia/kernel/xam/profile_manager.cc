@@ -866,16 +866,15 @@ bool ProfileManager::DeleteProfile(const uint64_t xuid) {
 
   DismountProfile(xuid);
 
-  if (accounts_.count(xuid)) {
-    accounts_.erase(xuid);
-  }
-
   std::error_code ec;
   std::filesystem::remove_all(GetProfileContentPath(xuid), ec);
   if (ec) {
+    // Still listed, so that deleting it can be tried again.
     XELOGE("Cannot remove profile: {}", ec.message());
     return false;
   }
+
+  accounts_.erase(xuid);
   return true;
 }
 
