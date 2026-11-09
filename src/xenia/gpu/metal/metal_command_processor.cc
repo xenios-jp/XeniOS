@@ -5033,10 +5033,7 @@ bool MetalCommandProcessor::IssueDrawMsl(
   // placeholder (no pixel shader) loses, so a memexport draw waits for its own
   // shaders and pipeline, as in IssueDrawDxil. Counted draws also require the
   // guest's exact kills and alpha test.
-  const bool exact_shaders_required =
-      memexport_used ||
-      (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
-       zpd_current_report_.handle != kInvalidReportHandle);
+  const bool exact_shaders_required = ExactShadersRequired(memexport_used);
 
   // Get or create shader translations. Both are asked for before either is
   // waited on, so their compiles overlap instead of taking a frame each.
@@ -6345,10 +6342,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
   // Memory exports are guest-visible writes. A pending generic pipeline,
   // including after a profile guard miss, must never skip the export draw.
   // Counted draws also require the guest's exact kills and alpha test.
-  const bool exact_shaders_required =
-      memexport_used ||
-      (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
-       zpd_current_report_.handle != kInvalidReportHandle);
+  const bool exact_shaders_required = ExactShadersRequired(memexport_used);
 
   ShaderCompileStatus compile_status = ShaderCompileStatus::kReady;
   ShaderCompileStatus pixel_status = ShaderCompileStatus::kReady;
@@ -7184,6 +7178,12 @@ void MetalCommandProcessor::EndSharedComputeEncoder() {
   shared_compute_encoder_->release();
   shared_compute_encoder_ = nullptr;
   shared_compute_command_buffer_ = nullptr;
+}
+
+bool MetalCommandProcessor::ExactShadersRequired(bool memexport_used) const {
+  return memexport_used ||
+         (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
+          zpd_current_report_.handle != kInvalidReportHandle);
 }
 
 bool MetalCommandProcessor::EncodeHeldDrawPassTransfers() {
