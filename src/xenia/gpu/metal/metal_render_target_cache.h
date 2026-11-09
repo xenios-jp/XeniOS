@@ -606,8 +606,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
   struct TransferRectanglePlan {
     uint32_t transfer_index = 0;
-    std::array<Transfer::Rectangle, Transfer::kMaxRectanglesWithCutout>
-        rectangles = {};
+    std::array<Transfer::Rectangle, kMaxBandedRectanglesWithCutout> rectangles =
+        {};
     uint32_t rectangle_count = 0;
   };
 
@@ -750,17 +750,36 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     Transfer::Rectangle rectangle = {};
   };
   PendingConstant pending_constant_;
-  // The rectangle of the update's transfers into one slot that a draw or a
-  // clear writes instead, for the transfers to leave out. With it, the
-  // transfers may be the only ones of the update.
-  uint32_t update_cutout_slot_ = UINT32_MAX;
-  Transfer::Rectangle update_cutout_ = {};
-  bool update_cutout_full_overwrite_ = false;
-  // Whether the cutout is a clear quad's, which the queued transfers wait for.
-  bool update_cutout_from_quad_ = false;
+  // Per attachment (bit 0 depth and stencil, bits 1 and up color): the
+  // rectangle of the update's transfers into it that a draw or a clear writes
+  // instead, for them to leave out.
+  using AttachmentRectangles =
+      std::array<Transfer::Rectangle, 1 + xenos::kMaxColorRenderTargets>;
+  uint32_t update_cutout_mask_ = 0;
+  AttachmentRectangles update_cutouts_ = {};
+  // The attachments whose transfers, left out of their cutout, and the draw
+  // together overwrite all of the target.
+  uint32_t update_cutout_full_overwrite_mask_ = 0;
+  // The attachment whose cutout is a clear quad's, which the queued transfers
+  // wait for. The quad's transfers are then the only ones of the update.
+  uint32_t update_cutout_quad_slot_ = UINT32_MAX;
   // The same for the transfers queued for the draw's pass.
-  bool pending_draw_pass_cutout_valid_ = false;
-  Transfer::Rectangle pending_draw_pass_cutout_ = {};
+  uint32_t pending_draw_pass_cutout_mask_ = 0;
+  AttachmentRectangles pending_draw_pass_cutouts_ = {};
+  // The cutout of each of `mask`'s attachments for
+  // PerformTransfersAndResolveClears, null for the others.
+  static std::array<const Transfer::Rectangle*,
+                    1 + xenos::kMaxColorRenderTargets>
+  GetTransferCutouts(uint32_t mask, const AttachmentRectangles& rectangles) {
+    std::array<const Transfer::Rectangle*, 1 + xenos::kMaxColorRenderTargets>
+        cutouts = {};
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+      if (mask & (uint32_t(1) << i)) {
+        cutouts[i] = &rectangles[i];
+      }
+    }
+    return cutouts;
+  }
   // Transfers held back behind clear quads: the slot they write, the quad of
   // the draw being encoded, the union (a rectangle) of the quads drawn, and the
   // registers that bind the targets, which a continuing quad keeps.
@@ -803,8 +822,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                           reg::RB_DEPTHCONTROL normalized_depth_control,
                           const Shader& vertex_shader);
   // Transfers out of constant render targets become deferred clears of the
-  // destination when that gives the same bits.
+  // destination when that gives the same bits, for every color attachment on
+  // its own.
   void ReplaceConstantSourceTransfers(RenderTarget* const* render_targets);
+  void ReplaceConstantSourceTransfers(uint32_t slot, MetalRenderTarget* dest);
   // Accounts for dest being written by these transfers (or a clear).
   void RecordPerformedTransfers(MetalRenderTarget* dest,
                                 const std::vector<Transfer>& transfers);
@@ -1039,6 +1060,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool PerformTransfersAndResolveClears(
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* render_target_transfers,
+      // Per render target, the rectangle its transfers leave out (null for
+      // none), instead of the resolve clear rectangle, which then is only the
+      // clear's.
+      const Transfer::Rectangle* const* transfer_cutouts = nullptr,
       const uint64_t* render_target_resolve_clear_values = nullptr,
       const Transfer::Rectangle* resolve_clear_rectangle = nullptr,
       MTL::CommandBuffer* command_buffer = nullptr,
@@ -1069,14 +1094,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint32_t dest_color_rt_index, const Transfer& transfer) const;
   // The address constant of a transfer's source or host depth source, with
   // the strip merge band addressing. False if it can't be expressed.
-  static bool MakeTransferAddressConstant(
+  bool MakeTransferAddressConstant(
       RenderTargetKey source_key, RenderTargetKey dest_key,
-      const Transfer& transfer, EdramTransferAddressConstant& constant_out);
+      const Transfer& transfer,
+      EdramTransferAddressConstant& constant_out) const;
   // Whether two transfers with the same sources can be drawn with one address
   // constant (strip-merged sources address relative to the range).
-  static bool IsStripMergeAddressingSame(const Transfer& transfer,
-                                         const Transfer& other_transfer,
-                                         RenderTargetKey dest_key);
+  bool IsStripMergeAddressingSame(const Transfer& transfer,
+                                  const Transfer& other_transfer,
+                                  RenderTargetKey dest_key) const;
   bool BuildTransferRectanglePlans(
       RenderTargetKey dest_key, const std::vector<Transfer>& transfers,
       const Transfer::Rectangle* cutout, bool require_all_rectangles,

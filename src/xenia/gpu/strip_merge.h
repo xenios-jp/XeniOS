@@ -74,7 +74,7 @@ class TraceWriter;
 //   strips) may leave that frame wrong, and pauses merging.
 class StripMerge {
  public:
-  // Also RenderTargetCache::Transfer::kMaxStripMergeBands.
+  // Also the most bands a strip-merged render target has.
   static constexpr uint32_t kMaxStrips = 4;
   static constexpr uint64_t kFirstTileBit = uint64_t(1) << 31;
 

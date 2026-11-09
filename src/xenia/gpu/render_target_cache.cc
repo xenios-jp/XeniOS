@@ -395,39 +395,7 @@ bool RenderTargetCache::ColorOverlapsDepthStencil(
   return (color_written_bits & depth_stencil_used_bits) != 0;
 }
 
-RenderTargetCache::StripMergeBands RenderTargetCache::strip_merge_bands_;
-
 uint32_t RenderTargetCache::Transfer::GetRangeRectangles(
-    uint32_t start_tiles, uint32_t end_tiles, RenderTargetKey key,
-    bool is_64bpp, Rectangle* rectangles_out, const Rectangle* cutout,
-    uint32_t band_first, uint32_t band_count) {
-  if (!key.strip_merged || strip_merge_bands_.count < 2) {
-    return GetUnbandedRangeRectangles(start_tiles, end_tiles, key, is_64bpp,
-                                      rectangles_out, cutout);
-  }
-  // A strip-merged render target owns the first band's tiles, the same tiles
-  // in each band, the cutout being in the whole render target.
-  Rectangle band_rectangles[kMaxRectanglesWithoutCutout];
-  uint32_t band_rectangle_count = GetUnbandedRangeRectangles(
-      start_tiles, end_tiles, key, is_64bpp, band_rectangles, nullptr);
-  uint32_t band_end = band_count ? std::min(band_first + band_count,
-                                            strip_merge_bands_.count)
-                                 : strip_merge_bands_.count;
-  uint32_t band_rows = GetStripMergeBandRows(key);
-  uint32_t rectangle_count = 0;
-  for (uint32_t band = band_first; band < band_end; ++band) {
-    for (uint32_t i = 0; i < band_rectangle_count; ++i) {
-      Rectangle rectangle = band_rectangles[i];
-      rectangle.y_pixels += band * band_rows;
-      rectangle_count += AddRectangle(
-          rectangle, rectangles_out ? rectangles_out + rectangle_count : nullptr,
-          cutout);
-    }
-  }
-  return rectangle_count;
-}
-
-uint32_t RenderTargetCache::Transfer::GetUnbandedRangeRectangles(
     uint32_t start_tiles, uint32_t end_tiles, RenderTargetKey key,
     bool is_64bpp, Rectangle* rectangles_out, const Rectangle* cutout) {
   uint32_t base_tiles = key.base_tiles;
@@ -507,9 +475,8 @@ uint32_t RenderTargetCache::Transfer::GetUnbandedRangeRectangles(
         rectangle_last,
         rectangles_out ? rectangles_out + rectangle_count : nullptr, cutout);
   }
-  assert_true(rectangle_count <=
-              (cutout ? kMaxRectanglesWithCutout / kMaxStripMergeBands
-                      : kMaxRectanglesWithoutCutout / kMaxStripMergeBands));
+  assert_true(rectangle_count <= (cutout ? kMaxRectanglesWithCutout
+                                         : kMaxRectanglesWithoutCutout));
   return rectangle_count;
 }
 
@@ -1899,7 +1866,7 @@ RenderTargetCache::GetDirectResolveEligibility(
 bool RenderTargetCache::IsRenderTargetDataOnlyInRectangle(
     RenderTargetKey key, bool is_64bpp,
     const Transfer::Rectangle& rectangle) const {
-  Transfer::Rectangle outside[Transfer::kMaxRectanglesWithCutout];
+  Transfer::Rectangle outside[kMaxBandedRectanglesWithCutout];
   for (const auto& range_pair : ownership_ranges_) {
     const OwnershipRange& range = range_pair.second;
     if (range.render_target != key && range.depth_bits_target != key &&
@@ -1915,11 +1882,11 @@ bool RenderTargetCache::IsRenderTargetDataOnlyInRectangle(
         start_tiles < key.base_tiles && end_tiles > key.base_tiles
             ? key.base_tiles
             : end_tiles;
-    if (Transfer::GetRangeRectangles(start_tiles, split_tiles, key, is_64bpp,
-                                     outside, &rectangle) ||
+    if (GetRangeRectangles(start_tiles, split_tiles, key, is_64bpp, outside,
+                           &rectangle) ||
         (split_tiles < end_tiles &&
-         Transfer::GetRangeRectangles(split_tiles, end_tiles, key, is_64bpp,
-                                      outside, &rectangle))) {
+         GetRangeRectangles(split_tiles, end_tiles, key, is_64bpp, outside,
+                            &rectangle))) {
       return false;
     }
   }
@@ -1929,10 +1896,10 @@ bool RenderTargetCache::IsRenderTargetDataOnlyInRectangle(
 uint32_t RenderTargetCache::GetRenderTargetOwnedHeight(
     RenderTargetKey key) const {
   uint32_t height = 0;
-  Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithoutCutout];
+  Transfer::Rectangle rectangles[kMaxBandedRectanglesWithoutCutout];
   auto add_range = [&](uint32_t start_tiles, uint32_t end_tiles) {
-    uint32_t rectangle_count = Transfer::GetRangeRectangles(
-        start_tiles, end_tiles, key, key.Is64bpp(), rectangles);
+    uint32_t rectangle_count = GetRangeRectangles(start_tiles, end_tiles, key,
+                                                  key.Is64bpp(), rectangles);
     for (uint32_t i = 0; i < rectangle_count; ++i) {
       height = std::max(height, rectangles[i].y_pixels +
                                     rectangles[i].height_pixels);
@@ -2707,8 +2674,9 @@ void RenderTargetCache::ChangeOwnership(
           uint32_t transfer_end_tiles =
               std::min(it->second.end_tiles, extent_end);
           if (!resolve_clear_cutout ||
-              Transfer::GetRangeRectangles(it->first, transfer_end_tiles, dest,
-                                           nullptr, resolve_clear_cutout)) {
+              GetRangeRectangles(it->first, transfer_end_tiles, dest,
+                                 dest.Is64bpp(), nullptr,
+                                 resolve_clear_cutout)) {
             RenderTargetKey transfer_host_depth_source =
                 host_depth_encoding_different
                     ? it->second.GetHostDepthRenderTarget(dest.GetDepthFormat())
@@ -3002,7 +2970,7 @@ void RenderTargetCache::ConsumeStripMergeCarries(uint32_t start_tiles,
 bool RenderTargetCache::BeginStripMerge(uint32_t band_count,
                                         uint32_t band_tile_rows) {
   if (GetPath() != Path::kHostRenderTargets || IsDrawResolutionScaled() ||
-      band_count < 2 || band_count > Transfer::kMaxStripMergeBands ||
+      band_count < 2 || band_count > StripMerge::kMaxStrips ||
       !band_tile_rows) {
     return false;
   }
@@ -3221,6 +3189,37 @@ bool RenderTargetCache::ReplaceOwnershipKey(RenderTargetKey key,
     }
   }
   return replaced;
+}
+
+uint32_t RenderTargetCache::GetRangeRectangles(
+    uint32_t start_tiles, uint32_t end_tiles, RenderTargetKey key,
+    bool is_64bpp, Transfer::Rectangle* rectangles_out,
+    const Transfer::Rectangle* cutout, uint32_t band_first,
+    uint32_t band_count) const {
+  if (!key.strip_merged || strip_merge_bands_.count < 2) {
+    return Transfer::GetRangeRectangles(start_tiles, end_tiles, key, is_64bpp,
+                                        rectangles_out, cutout);
+  }
+  // A strip-merged render target owns the first band's tiles, the same tiles
+  // in each band, the cutout being in the whole render target.
+  Transfer::Rectangle band_rectangles[Transfer::kMaxRectanglesWithoutCutout];
+  uint32_t band_rectangle_count = Transfer::GetRangeRectangles(
+      start_tiles, end_tiles, key, is_64bpp, band_rectangles);
+  uint32_t band_end =
+      band_count ? std::min(band_first + band_count, strip_merge_bands_.count)
+                 : strip_merge_bands_.count;
+  uint32_t band_rows = GetStripMergeBandRows(key);
+  uint32_t rectangle_count = 0;
+  for (uint32_t band = band_first; band < band_end; ++band) {
+    for (uint32_t i = 0; i < band_rectangle_count; ++i) {
+      Transfer::Rectangle rectangle = band_rectangles[i];
+      rectangle.y_pixels += band * band_rows;
+      rectangle_count += Transfer::AddRectangle(
+          rectangle,
+          rectangles_out ? rectangles_out + rectangle_count : nullptr, cutout);
+    }
+  }
+  return rectangle_count;
 }
 
 void RenderTargetCache::MergeSameOwnershipRanges() {

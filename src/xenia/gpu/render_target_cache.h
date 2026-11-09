@@ -27,6 +27,7 @@
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/shader.h"
+#include "xenia/gpu/strip_merge.h"
 #include "xenia/gpu/xenos.h"
 
 DECLARE_bool(debug_msaa_2x_as_4x);
@@ -42,7 +43,6 @@ DECLARE_bool(snorm16_render_target_full_range);
 namespace xe {
 namespace gpu {
 
-class StripMerge;
 
 class RenderTargetCache {
  public:
@@ -504,10 +504,7 @@ class RenderTargetCache {
       uint32_t width_pixels;
       uint32_t height_pixels;
     };
-    // Also StripMerge::kMaxStrips.
-    static constexpr uint32_t kMaxStripMergeBands = 4;
-    static constexpr uint32_t kMaxRectanglesWithoutCutout =
-        3 * kMaxStripMergeBands;
+    static constexpr uint32_t kMaxRectanglesWithoutCutout = 3;
     static constexpr uint32_t kMaxCutoutBorderRectangles = 4;
     static constexpr uint32_t kMaxRectanglesWithCutout =
         kMaxRectanglesWithoutCutout * kMaxCutoutBorderRectangles;
@@ -521,26 +518,20 @@ class RenderTargetCache {
                                 rectangles_out, cutout);
     }
     // is_64bpp is the host layout, which Metal widens for k_8_8_8_8_GAMMA.
-    // A strip-merged key gets the rectangles in each of the bands from
-    // band_first, band_count of them (0 for all).
     static uint32_t GetRangeRectangles(uint32_t start_tiles, uint32_t end_tiles,
                                        RenderTargetKey key, bool is_64bpp,
                                        Rectangle* rectangles_out,
-                                       const Rectangle* cutout = nullptr,
-                                       uint32_t band_first = 0,
-                                       uint32_t band_count = 0);
+                                       const Rectangle* cutout = nullptr);
     uint32_t GetRectangles(RenderTargetKey key, Rectangle* rectangles_out,
                            const Rectangle* cutout = nullptr) const {
-      return GetRangeRectangles(start_tiles, end_tiles, key, key.Is64bpp(),
-                                rectangles_out, cutout, band_first,
-                                band_count);
+      return GetRangeRectangles(start_tiles, end_tiles, key, rectangles_out,
+                                cutout);
     }
     uint32_t GetRectangles(RenderTargetKey key, bool is_64bpp,
                            Rectangle* rectangles_out,
                            const Rectangle* cutout = nullptr) const {
       return GetRangeRectangles(start_tiles, end_tiles, key, is_64bpp,
-                                rectangles_out, cutout, band_first,
-                                band_count);
+                                rectangles_out, cutout);
     }
     bool AreSourcesSame(const Transfer& other_transfer) const {
       return source == other_transfer.source &&
@@ -551,14 +542,8 @@ class RenderTargetCache {
     }
 
    private:
-    // The rectangles of the range in the render target's rows, without
-    // strip-merge bands.
-    static uint32_t GetUnbandedRangeRectangles(uint32_t start_tiles,
-                                               uint32_t end_tiles,
-                                               RenderTargetKey key,
-                                               bool is_64bpp,
-                                               Rectangle* rectangles_out,
-                                               const Rectangle* cutout);
+    // For its banded GetRangeRectangles.
+    friend class RenderTargetCache;
     static uint32_t AddRectangle(const Rectangle& rectangle,
                                  Rectangle* rectangles_out,
                                  const Rectangle* cutout = nullptr);
@@ -762,20 +747,40 @@ class RenderTargetCache {
   uint32_t strip_merge_resolve_bottom() const {
     return strip_merge_resolve_bottom_;
   }
-  // The band shape of strip-merged render targets, count 0 before any. Static
-  // for the rectangle helpers of Transfer.
+  // The band shape of strip-merged render targets, count 0 before any.
   struct StripMergeBands {
     uint32_t count = 0;
     uint32_t tile_rows = 0;
   };
-  static StripMergeBands strip_merge_bands_;
-  static uint32_t GetStripMergeBandRows(RenderTargetKey key) {
+  StripMergeBands strip_merge_bands_;
+  uint32_t GetStripMergeBandRows(RenderTargetKey key) const {
     return strip_merge_bands_.tile_rows *
            (xenos::kEdramTileHeightSamples >>
             uint32_t(key.msaa_samples >= xenos::MsaaSamples::k2X));
   }
-  static uint32_t GetStripMergeBandTiles(RenderTargetKey key) {
+  uint32_t GetStripMergeBandTiles(RenderTargetKey key) const {
     return strip_merge_bands_.tile_rows * key.GetPitchTiles();
+  }
+  // Transfer::GetRangeRectangles, but a strip-merged key gets the rectangles
+  // in each of the bands from band_first, band_count of them (0 for all), up
+  // to kMaxBandedRectanglesWith(out)Cutout.
+  static constexpr uint32_t kMaxBandedRectanglesWithoutCutout =
+      Transfer::kMaxRectanglesWithoutCutout * StripMerge::kMaxStrips;
+  static constexpr uint32_t kMaxBandedRectanglesWithCutout =
+      Transfer::kMaxRectanglesWithCutout * StripMerge::kMaxStrips;
+  uint32_t GetRangeRectangles(uint32_t start_tiles, uint32_t end_tiles,
+                              RenderTargetKey key, bool is_64bpp,
+                              Transfer::Rectangle* rectangles_out,
+                              const Transfer::Rectangle* cutout = nullptr,
+                              uint32_t band_first = 0,
+                              uint32_t band_count = 0) const;
+  uint32_t GetTransferRectangles(
+      const Transfer& transfer, RenderTargetKey key, bool is_64bpp,
+      Transfer::Rectangle* rectangles_out,
+      const Transfer::Rectangle* cutout = nullptr) const {
+    return GetRangeRectangles(transfer.start_tiles, transfer.end_tiles, key,
+                              is_64bpp, rectangles_out, cutout,
+                              transfer.band_first, transfer.band_count);
   }
   RenderTarget* const* last_update_accumulated_render_targets() const {
     assert_true(GetPath() == Path::kHostRenderTargets);
