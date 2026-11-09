@@ -8515,11 +8515,28 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
         auto* source_rt = static_cast<MetalRenderTarget*>(transfer.source);
-        if (!source_rt || transfer.host_depth_source) {
+        if (!source_rt) {
           return false;
         }
-
         RenderTargetKey source_key = source_rt->key();
+        // Strip merge: a band of a strip-merged render target into one laid
+        // out like it with the EDRAM's rows (EndStripMerge's twin), by the
+        // band shift, every sample, and a depth with its stencil. Its own
+        // host depth is the depth it holds. Nothing into a strip-merged
+        // destination, whose bands this doesn't place.
+        const bool strip_merge_source = source_key.strip_merged != 0;
+        if (dest_key.strip_merged) {
+          return false;
+        }
+        if (strip_merge_source) {
+          if (transfer.keep_dest_depth || transfer.source_band_shift < 0 ||
+              transfer.host_depth_source !=
+                  (dest_is_depth ? transfer.source : nullptr)) {
+            return false;
+          }
+        } else if (transfer.host_depth_source) {
+          return false;
+        }
         if (dest_is_depth != source_key.is_depth) {
           return false;
         }
@@ -8548,10 +8565,33 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                       "Transfer source must use ownership pixel format");
         }
         if (source_texture->pixelFormat() != dest_texture->pixelFormat() ||
-            source_texture->sampleCount() != dest_texture->sampleCount() ||
-            source_texture->sampleCount() != 1 ||
-            source_texture->width() != dest_width ||
-            source_texture->height() != dest_height) {
+            source_texture->sampleCount() != dest_texture->sampleCount()) {
+          return false;
+        }
+        MTL::Texture* source_stencil = nullptr;
+        MTL::Texture* dest_stencil = nullptr;
+        uint32_t source_y_offset = 0;
+        if (strip_merge_source) {
+          if (dest_is_depth) {
+            source_stencil = source_rt->stencil_view();
+            dest_stencil = dest_metal_rt->stencil_view();
+            if (!source_stencil || !dest_stencil ||
+                source_stencil->pixelFormat() != MTL::PixelFormatStencil8 ||
+                dest_stencil->pixelFormat() != MTL::PixelFormatStencil8 ||
+                source_stencil->sampleCount() != source_texture->sampleCount() ||
+                dest_stencil->sampleCount() != dest_texture->sampleCount() ||
+                source_stencil->width() != source_texture->width() ||
+                source_stencil->height() != source_texture->height() ||
+                dest_stencil->width() != dest_width ||
+                dest_stencil->height() != dest_height) {
+              return false;
+            }
+          }
+          source_y_offset = uint32_t(transfer.source_band_shift) *
+                            GetStripMergeBandRows(source_key) * scale_y;
+        } else if (source_texture->sampleCount() != 1 ||
+                   source_texture->width() != dest_width ||
+                   source_texture->height() != dest_height) {
           return false;
         }
 
@@ -8561,26 +8601,45 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         if (!rectangle_count) {
           return false;
         }
+        // All in the source, or the shaders take the whole transfer.
+        struct BlitRegion {
+          uint32_t x, y, width, height;
+        };
+        BlitRegion regions[Transfer::kMaxRectanglesWithCutout];
+        uint32_t region_count = 0;
+        for (uint32_t rect_index = 0; rect_index < rectangle_count;
+             ++rect_index) {
+          BlitRegion& region = regions[region_count];
+          if (!get_scaled_rect(rectangles[rect_index], region.x, region.y,
+                               region.width, region.height)) {
+            continue;
+          }
+          if (region.x + region.width > source_texture->width() ||
+              region.y + source_y_offset + region.height >
+                  source_texture->height()) {
+            return false;
+          }
+          ++region_count;
+        }
 
         MTL::BlitCommandEncoder* blit = ensure_blit_encoder();
         if (!blit) {
           return false;
         }
 
-        for (uint32_t rect_index = 0; rect_index < rectangle_count;
-             ++rect_index) {
-          uint32_t scaled_x = 0;
-          uint32_t scaled_y = 0;
-          uint32_t scaled_width = 0;
-          uint32_t scaled_height = 0;
-          if (!get_scaled_rect(rectangles[rect_index], scaled_x, scaled_y,
-                               scaled_width, scaled_height)) {
-            continue;
+        for (uint32_t region_index = 0; region_index < region_count;
+             ++region_index) {
+          const BlitRegion& region = regions[region_index];
+          MTL::Origin source_origin =
+              MTL::Origin::Make(region.x, region.y + source_y_offset, 0);
+          MTL::Origin dest_origin = MTL::Origin::Make(region.x, region.y, 0);
+          MTL::Size size = MTL::Size::Make(region.width, region.height, 1);
+          blit->copyFromTexture(source_texture, 0, 0, source_origin, size,
+                                dest_texture, 0, 0, dest_origin);
+          if (source_stencil) {
+            blit->copyFromTexture(source_stencil, 0, 0, source_origin, size,
+                                  dest_stencil, 0, 0, dest_origin);
           }
-          MTL::Origin origin = MTL::Origin::Make(scaled_x, scaled_y, 0);
-          MTL::Size size = MTL::Size::Make(scaled_width, scaled_height, 1);
-          blit->copyFromTexture(source_texture, 0, 0, origin, size,
-                                dest_texture, 0, 0, origin);
         }
 
         used_blit = true;
