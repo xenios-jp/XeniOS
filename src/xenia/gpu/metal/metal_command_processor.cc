@@ -9111,15 +9111,22 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
 
   // Only draws blending into a gamma target read their targets back: a pixel
   // shader that reads a target can't have its fragments removed as hidden.
+  // Such a shader reads every target it writes, and Metal rejects a pipeline
+  // reading an attachment the pass doesn't have, so it writes only the bound
+  // ones (a write to an unbound attachment is dropped anyway).
   if (spirv_translator_features_.host_render_target_feedback) {
-    uint32_t rts =
-        shader.writes_color_targets() & modification.pixel.color_targets_used;
+    uint32_t bound_color_targets =
+        (render_target_cache_->GetLastUpdateBoundRenderTargets() >> 1) &
+        ((UINT32_C(1) << xenos::kMaxColorRenderTargets) - 1);
+    uint32_t rts = shader.writes_color_targets() &
+                   modification.pixel.color_targets_used & bound_color_targets;
     uint32_t rt;
     while (xe::bit_scan_forward(rts, &rt)) {
       rts &= ~(UINT32_C(1) << rt);
       if (GetGammaShaderBlendControl(regs, rt, normalized_color_mask) !=
           kBlendControlNoBlending) {
         modification.pixel.host_render_target_feedback = 1;
+        modification.pixel.color_targets_used &= bound_color_targets;
         break;
       }
     }
