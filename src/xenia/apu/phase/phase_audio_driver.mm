@@ -330,6 +330,13 @@ bool PHASESharedEngine::AddClient(PHASEStreamClient* client) {
       Teardown();
       return false;
     }
+    // A failed restart left the other clients without events: they come back
+    // with the engine.
+    for (PHASEStreamClient* other : clients_) {
+      if (!other->AttachEvent(engine_, listener_, mixer_identifier_, format_)) {
+        XELOGE("PHASEAudioDriver: a client's sound event did not restart; it stays silent");
+      }
+    }
   }
   if (!client->AttachEvent(engine_, listener_, mixer_identifier_, format_)) {
     return false;
@@ -358,7 +365,8 @@ void PHASESharedEngine::Restart() {
     if (engine_) {
       for (PHASEStreamClient* client : clients_) {
         const int64_t last_ns = client->LastCompletionNs();
-        if (last_ns != 0 && now_ns - last_ns < 300 * 1000 * 1000) {
+        constexpr int64_t kStillRenderingNs = 300'000'000;  // 300 ms
+        if (last_ns != 0 && now_ns - last_ns < kStillRenderingNs) {
           XELOGI("PHASEAudioDriver: engine is still rendering; restart skipped");
           return;
         }
