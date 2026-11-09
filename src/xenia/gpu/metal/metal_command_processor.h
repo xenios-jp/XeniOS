@@ -186,6 +186,10 @@ class MetalCommandProcessor : public CommandProcessor {
   // Encodes transfers held behind clear quads into the open pass, or runs
   // them standalone if they don't belong to it.
   bool EncodeHeldDrawPassTransfers();
+  // Memory exports are guest-visible writes, which a skipped draw or the
+  // placeholder loses, and counted draws need the guest's exact kills and
+  // alpha test: such draws wait for their own shaders and pipeline.
+  bool ExactShadersRequired(bool memexport_used) const;
   // The guest's open render pass, for a resolve that encodes a tile dispatch
   // into it: its descriptor, the area its tiles cover,
   // and the shared memory hazard tracking of its encoder, null when the buffer
