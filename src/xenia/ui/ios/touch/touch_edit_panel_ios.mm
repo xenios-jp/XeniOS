@@ -783,10 +783,13 @@ UIButton* CreateQuickIconButton(NSString* symbol, NSString* accessibility_label,
 #pragma mark - Content
 
 - (void)clearRows {
-  for (XeTEPRowBase* row in rows_) {
+  // Removing a slider mid-drag ends the drag, which can rebuild the panel from in here, so this
+  // takes rows off the list one at a time instead of looping over it.
+  while (rows_.count) {
+    XeTEPRowBase* row = [[rows_.lastObject retain] autorelease];
+    [rows_ removeLastObject];
     [row removeFromSuperview];
   }
-  [rows_ removeAllObjects];
 }
 
 - (XeTEPSectionHeader*)addSection:(NSString*)title {
