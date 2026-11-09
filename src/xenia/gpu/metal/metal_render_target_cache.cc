@@ -2329,8 +2329,9 @@ bool MetalRenderTargetCache::AcquireSpareDepthBacking(
         transfer.source->key(), dest_key,
         transfer.host_depth_source ? &host_depth_key : nullptr, false, false, 0,
         transfer);
-    if (!GetOrCreateTransferPipelines(depth_shader, depth_format, false, true,
-                                      0, nullptr, depth_format, depth_format)) {
+    if (!GetOrCreateTransferPipelines(
+            depth_shader, depth_format, false, true, 0, nullptr, depth_format,
+            GetStencilAttachmentPixelFormat(depth_format))) {
       return false;
     }
   }
@@ -2342,13 +2343,15 @@ bool MetalRenderTargetCache::AcquireSpareDepthBacking(
            spare->height() == old_depth->height() &&
            spare->sampleCount() == old_depth->sampleCount();
   }
+  MTL::Texture* spare_stencil = nullptr;
   spare = CreateDepthTexture(
       uint32_t(old_depth->width()), uint32_t(old_depth->height()),
-      dest_key.GetDepthFormat(), MsaaSamplesToCount(dest_key.msaa_samples));
+      dest_key.GetDepthFormat(), MsaaSamplesToCount(dest_key.msaa_samples),
+      &spare_stencil);
   if (!spare) {
     return false;
   }
-  dest->SetSpareDepthTexture(spare);
+  dest->SetSpareDepthTexture(spare, spare_stencil);
   return true;
 }
 
@@ -2939,11 +2942,8 @@ bool MetalRenderTargetCache::GetCurrentTransferAttachmentFormats(
   if (depth_texture) {
     MTL::PixelFormat depth_pixel_format = depth_texture->pixelFormat();
     attachment_formats_out.depth_attachment_format = depth_pixel_format;
-    if (depth_pixel_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-        depth_pixel_format == MTL::PixelFormatDepth24Unorm_Stencil8 ||
-        depth_pixel_format == MTL::PixelFormatX32_Stencil8) {
-      attachment_formats_out.stencil_attachment_format = depth_pixel_format;
-    }
+    attachment_formats_out.stencil_attachment_format =
+        GetStencilAttachmentPixelFormat(depth_pixel_format);
   }
   return true;
 }
@@ -2989,9 +2989,8 @@ bool MetalRenderTargetCache::PreflightPendingDrawPassTransfers(
           return false;
         }
       }
-      if ((dest_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-           dest_format == MTL::PixelFormatDepth24Unorm_Stencil8) &&
-          attachment_formats.stencil_attachment_format != dest_format) {
+      if (attachment_formats.stencil_attachment_format !=
+          GetStencilAttachmentPixelFormat(dest_format)) {
         return false;
       }
     } else {
@@ -3270,10 +3269,11 @@ RenderTargetCache::RenderTarget* MetalRenderTargetCache::CreateRenderTarget(
              key.key, alias_partner->key().key);
     }
   }
+  MTL::Texture* stencil_texture = nullptr;
   if (!texture) {
     if (key.is_depth) {
-      texture =
-          CreateDepthTexture(width, height, key.GetDepthFormat(), samples);
+      texture = CreateDepthTexture(width, height, key.GetDepthFormat(),
+                                   samples, &stencil_texture);
     } else {
       texture =
           CreateColorTexture(width, height, key.GetColorFormat(), samples);
@@ -3286,6 +3286,9 @@ RenderTargetCache::RenderTarget* MetalRenderTargetCache::CreateRenderTarget(
   }
 
   render_target->SetTexture(texture);
+  if (stencil_texture) {
+    render_target->SetStencilView(stencil_texture);
+  }
   if (!key.is_depth) {
     MTL::PixelFormat resource_format =
         GetColorResourcePixelFormat(key.GetColorFormat());
@@ -3436,12 +3439,15 @@ MTL::Texture* MetalRenderTargetCache::CreateColorTexture(
   MTL::PixelFormat resource_format = GetColorResourcePixelFormat(format);
   MTL::PixelFormat transfer_format =
       GetColorOwnershipTransferPixelFormat(format, nullptr);
+  // PixelFormatView turns lossless compression off on Apple5+, so only the
+  // formats with a separate transfer view get it. 4x 8_8_8_8 and 2_10_10_10
+  // targets at the same EDRAM layout no longer share one allocation through
+  // views (FindUnorm32ColorStoragePartner needs a root with PixelFormatView);
+  // switching between them is an ownership transfer again.
+  // TODO(xenios-jp): FindUnorm32ColorStoragePartner and the aliased-storage
+  // paths are inactive now; remove them, or bring the sharing back for
+  // targets that are cheaper shared than compressed.
   bool needs_pixel_format_view = transfer_format != resource_format;
-  // 4x 8_8_8_8 and 2_10_10_10 render targets at the same EDRAM layout may
-  // share one allocation through views (FindUnorm32ColorStoragePartner).
-  needs_pixel_format_view |=
-      samples == 4 && (format == xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
-                       format == xenos::ColorRenderTargetFormat::k_2_10_10_10);
 
   MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
   desc->setWidth(width);
@@ -3508,25 +3514,32 @@ MTL::Texture* MetalRenderTargetCache::CreateDummyColorTexture(
 
 MTL::Texture* MetalRenderTargetCache::CreateDepthTexture(
     uint32_t width, uint32_t height, xenos::DepthRenderTargetFormat format,
-    uint32_t samples) {
+    uint32_t samples, MTL::Texture** stencil_out) {
+  *stencil_out = nullptr;
   MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
   desc->setWidth(width);
   desc->setHeight(height ? height : 720);  // Default height if not specified
-  MTL::PixelFormat pixel_format = GetDepthPixelFormat(format);
-  desc->setPixelFormat(pixel_format);
+  desc->setPixelFormat(GetDepthPixelFormat(format));
   desc->setTextureType(samples > 1 ? MTL::TextureType2DMultisample
                                    : MTL::TextureType2D);
   desc->setSampleCount(samples);
-  MTL::TextureUsage usage =
-      MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead;
-  if (pixel_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-      pixel_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
-    usage |= MTL::TextureUsagePixelFormatView;
-  }
-  desc->setUsage(usage);
+  // No PixelFormatView (or ShaderWrite): on Apple5+ either turns lossless
+  // compression off. Shaders read the stencil from the Stencil8 texture
+  // directly rather than through an X32_Stencil8 view, which would need it.
+  desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
   desc->setStorageMode(MTL::StorageModePrivate);
 
   MTL::Texture* texture = device_->newTexture(desc);
+  if (texture) {
+    desc->setPixelFormat(MTL::PixelFormatStencil8);
+    MTL::Texture* stencil = device_->newTexture(desc);
+    if (stencil) {
+      *stencil_out = stencil;
+    } else {
+      texture->release();
+      texture = nullptr;
+    }
+  }
   desc->release();
   // Initial clear is handled on first bind via load actions; avoid
   // synchronous clears here to keep the host RT path fast.
@@ -3599,37 +3612,21 @@ MTL::PixelFormat MetalRenderTargetCache::GetDepthPixelFormat(
   switch (format) {
     case xenos::DepthRenderTargetFormat::kD24S8:
     case xenos::DepthRenderTargetFormat::kD24FS8:
-      // Metal doesn't have D24S8, use D32Float_S8
-      return MTL::PixelFormatDepth32Float_Stencil8;
+      // Metal doesn't have D24S8. The stencil is a separate Stencil8 texture
+      // (see CreateDepthTexture).
+      return MTL::PixelFormatDepth32Float;
     default:
       XELOGE("MetalRenderTargetCache: Unsupported depth format {}",
              static_cast<uint32_t>(format));
-      return MTL::PixelFormatDepth32Float_Stencil8;
+      return MTL::PixelFormatDepth32Float;
   }
 }
 
 MTL::Texture* MetalRenderTargetCache::GetStencilTextureView(
     MetalRenderTarget* render_target) {
-  if (!render_target) {
-    return nullptr;
-  }
-  if (render_target->stencil_view()) {
-    return render_target->stencil_view();
-  }
-  RenderTargetKey key = render_target->key();
-  if (!key.is_depth) {
-    return nullptr;
-  }
-  MTL::Texture* depth_texture = render_target->texture();
-  if (!depth_texture) {
-    return nullptr;
-  }
-  MTL::Texture* view =
-      depth_texture->newTextureView(MTL::PixelFormatX32_Stencil8);
-  if (view) {
-    render_target->SetStencilView(view);
-  }
-  return view;
+  // Depth targets keep their separate Stencil8 texture there; color targets
+  // have none.
+  return render_target ? render_target->stencil_view() : nullptr;
 }
 
 MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
@@ -3706,17 +3703,14 @@ MTL::RenderPassDescriptor* MetalRenderTargetCache::GetRenderPassDescriptor(
     }
     depth_attachment->setStoreAction(draw_pass_store_action);
 
-    // If the depth texture includes stencil, bind the same texture to the
-    // stencil attachment too (Metal requires explicit stencil attachment
-    // binding to match pipeline state).
-    MTL::PixelFormat depth_pixel_format =
-        current_depth_target_->texture()->pixelFormat();
-    if (depth_pixel_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-        depth_pixel_format == MTL::PixelFormatDepth24Unorm_Stencil8 ||
-        depth_pixel_format == MTL::PixelFormatX32_Stencil8) {
+    // Bind the depth target's stencil texture to the stencil attachment too
+    // (Metal requires explicit stencil attachment binding to match pipeline
+    // state).
+    if (MTL::Texture* stencil_texture =
+            current_depth_target_->stencil_attachment_texture()) {
       auto* stencil_attachment =
           cached_render_pass_descriptor_->stencilAttachment();
-      stencil_attachment->setTexture(current_depth_target_->texture());
+      stencil_attachment->setTexture(stencil_texture);
       if (depth_needs_clear) {
         stencil_attachment->setLoadAction(MTL::LoadActionClear);
         stencil_attachment->setClearStencil(
@@ -4148,14 +4142,11 @@ bool MetalRenderTargetCache::IsRenderPassDescriptorCompatible(
     if (!depth_attachment || depth_attachment->texture() != expected_depth) {
       return false;
     }
-    MTL::PixelFormat depth_format = expected_depth->pixelFormat();
-    bool expects_stencil =
-        depth_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-        depth_format == MTL::PixelFormatDepth24Unorm_Stencil8 ||
-        depth_format == MTL::PixelFormatX32_Stencil8;
-    if (expects_stencil) {
+    MTL::Texture* expected_stencil =
+        current_depth_target_->stencil_attachment_texture();
+    if (expected_stencil) {
       if (!stencil_attachment ||
-          stencil_attachment->texture() != expected_depth) {
+          stencil_attachment->texture() != expected_stencil) {
         return false;
       }
     } else if (stencil_attachment && stencil_attachment->texture()) {
@@ -7140,14 +7131,16 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
     return PairedClearResult::kNotApplicable;
   }
   MTL::Texture* dt = depth->texture();
+  MTL::Texture* st = depth->stencil_attachment_texture();
   MTL::Texture* ct = color->transfer_texture();
   const MTL::TextureType texture_type = MTL::TextureType2DMultisample;
   // A color target sharing another key's allocation through a view keeps the
   // generic clear.
-  if (!dt || !ct || ct != color->texture() || ct->parentTexture() ||
+  if (!dt || !st || !ct || ct != color->texture() || ct->parentTexture() ||
       dt->textureType() != texture_type ||
       ct->textureType() != dt->textureType() ||
-      dt->pixelFormat() != MTL::PixelFormatDepth32Float_Stencil8 ||
+      dt->pixelFormat() != MTL::PixelFormatDepth32Float ||
+      st->pixelFormat() != MTL::PixelFormatStencil8 ||
       ct->pixelFormat() != MTL::PixelFormatRGBA8Unorm ||
       dt->sampleCount() != sample_count || ct->sampleCount() != sample_count ||
       dt->width() != ct->width() || dt->height() != ct->height()) {
@@ -7218,8 +7211,7 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
     formats[0] = MTL::PixelFormatRGBA8Unorm;
     clear_pipeline = GetOrCreateTransferClearPipeline(
         MTL::PixelFormatRGBA8Unorm, false, false, sample_count, 0, &formats,
-        MTL::PixelFormatDepth32Float_Stencil8,
-        MTL::PixelFormatDepth32Float_Stencil8);
+        MTL::PixelFormatDepth32Float, MTL::PixelFormatStencil8);
     depth_state = GetTransferDepthClearState();
     // No work or initial-clear state has been changed, so generic fallback is
     // safe even if the combined-attachment pipeline could not be created.
@@ -7244,7 +7236,7 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   da->setStoreAction(MTL::StoreActionStore);
   da->setClearDepth(clear_depth);
   auto* sa = rp->stencilAttachment();
-  sa->setTexture(dt);
+  sa->setTexture(st);
   sa->setLoadAction(load);
   sa->setStoreAction(MTL::StoreActionStore);
   sa->setClearStencil(stencil_value);
@@ -7324,11 +7316,9 @@ void MetalRenderTargetCache::PerformDeferredClears(MTL::CommandBuffer* cmd) {
       da->setLoadAction(MTL::LoadActionClear);
       da->setStoreAction(MTL::StoreActionStore);
       da->setClearDepth(rt->clear_depth());
-      MTL::PixelFormat format = texture->pixelFormat();
-      if (format == MTL::PixelFormatDepth32Float_Stencil8 ||
-          format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+      if (MTL::Texture* stencil_texture = rt->stencil_attachment_texture()) {
         auto* sa = rp->stencilAttachment();
-        sa->setTexture(texture);
+        sa->setTexture(stencil_texture);
         sa->setLoadAction(MTL::LoadActionClear);
         sa->setStoreAction(MTL::StoreActionStore);
         sa->setClearStencil(rt->clear_stencil());
@@ -7451,7 +7441,8 @@ void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
   // that the backing no longer holds what the round-trip records say.
   auto is_dead = [&](MTL::Texture* texture) {
     for (MetalRenderTarget* rt : dead_store_render_targets_) {
-      if (texture && rt->texture() == texture) {
+      if (texture && (rt->texture() == texture ||
+                      rt->stencil_attachment_texture() == texture)) {
         return true;
       }
     }
@@ -7768,15 +7759,15 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                 dest_pixel_format) {
           return false;
         }
-        if (dest_pixel_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-            dest_pixel_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+        if (MTL::Texture* dest_stencil_texture =
+                dest_metal_rt->stencil_attachment_texture()) {
           auto* stencil_attachment =
               active_render_pass_descriptor->stencilAttachment();
           MTL::Texture* stencil_texture =
               stencil_attachment ? stencil_attachment->texture() : nullptr;
-          if (stencil_texture != depth_texture ||
+          if (stencil_texture != dest_stencil_texture ||
               active_attachment_formats.stencil_attachment_format !=
-                  dest_pixel_format) {
+                  dest_stencil_texture->pixelFormat()) {
             return false;
           }
         }
@@ -8184,10 +8175,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         if (transfer_load_action == MTL::LoadActionClear) {
           da->setClearDepth(resolve_clear_depth);
         }
-        if (dest_pixel_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-            dest_pixel_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+        if (MTL::Texture* dest_stencil_texture =
+                dest_metal_rt->stencil_attachment_texture()) {
           auto* sa = rp->stencilAttachment();
-          sa->setTexture(dest_texture);
+          sa->setTexture(dest_stencil_texture);
           sa->setLoadAction(transfer_load_action);
           sa->setStoreAction(MTL::StoreActionStore);
           if (transfer_load_action == MTL::LoadActionClear) {
@@ -9353,13 +9344,14 @@ MTL::RenderPipelineState* MetalRenderTargetCache::GetOrCreateTransferPipelines(
     if (pipeline_key.depth_attachment_format != dest_format) {
       return nullptr;
     }
-    if (dest_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-        dest_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+    const MTL::PixelFormat dest_stencil_format =
+        GetStencilAttachmentPixelFormat(dest_format);
+    if (dest_stencil_format != MTL::PixelFormatInvalid) {
       pipeline_key.stencil_attachment_format =
           stencil_attachment_format != MTL::PixelFormatInvalid
               ? stencil_attachment_format
-              : dest_format;
-      if (pipeline_key.stencil_attachment_format != dest_format) {
+              : dest_stencil_format;
+      if (pipeline_key.stencil_attachment_format != dest_stencil_format) {
         return nullptr;
       }
     } else {
@@ -9544,13 +9536,14 @@ MetalRenderTargetCache::GetOrCreateTransferClearPipeline(
     if (key.depth_attachment_format != dest_format) {
       return nullptr;
     }
-    if (dest_format == MTL::PixelFormatDepth32Float_Stencil8 ||
-        dest_format == MTL::PixelFormatDepth24Unorm_Stencil8) {
+    const MTL::PixelFormat dest_stencil_format =
+        GetStencilAttachmentPixelFormat(dest_format);
+    if (dest_stencil_format != MTL::PixelFormatInvalid) {
       key.stencil_attachment_format =
           stencil_attachment_format != MTL::PixelFormatInvalid
               ? stencil_attachment_format
-              : dest_format;
-      if (key.stencil_attachment_format != dest_format) {
+              : dest_stencil_format;
+      if (key.stencil_attachment_format != dest_stencil_format) {
         return nullptr;
       }
     } else {
@@ -9653,12 +9646,7 @@ MTL::Texture* MetalRenderTargetCache::GetTransferDummyTexture(
   desc->setTextureType(sample_count > 1 ? MTL::TextureType2DMultisample
                                         : MTL::TextureType2D);
   desc->setSampleCount(sample_count ? sample_count : 1);
-  MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
-  if (format == MTL::PixelFormatDepth32Float_Stencil8 ||
-      format == MTL::PixelFormatDepth24Unorm_Stencil8) {
-    usage |= MTL::TextureUsagePixelFormatView;
-  }
-  desc->setUsage(usage);
+  desc->setUsage(MTL::TextureUsageShaderRead);
   desc->setStorageMode(MTL::StorageModePrivate);
   MTL::Texture* tex = device_->newTexture(desc);
   desc->release();
@@ -9689,8 +9677,8 @@ MTL::Texture* MetalRenderTargetCache::GetTransferDummyDepthTexture(
     uint32_t sample_count) {
   size_t index = sample_count >= 4 ? 2 : (sample_count == 2 ? 1 : 0);
   if (!transfer_dummy_depth_[index]) {
-    transfer_dummy_depth_[index] = GetTransferDummyTexture(
-        MTL::PixelFormatDepth32Float_Stencil8, sample_count);
+    transfer_dummy_depth_[index] =
+        GetTransferDummyTexture(MTL::PixelFormatDepth32Float, sample_count);
   }
   return transfer_dummy_depth_[index];
 }
@@ -9699,12 +9687,8 @@ MTL::Texture* MetalRenderTargetCache::GetTransferDummyStencilTexture(
     uint32_t sample_count) {
   size_t index = sample_count >= 4 ? 2 : (sample_count == 2 ? 1 : 0);
   if (!transfer_dummy_stencil_[index]) {
-    MTL::Texture* depth_tex = GetTransferDummyDepthTexture(sample_count);
-    if (!depth_tex) {
-      return nullptr;
-    }
     transfer_dummy_stencil_[index] =
-        depth_tex->newTextureView(MTL::PixelFormatX32_Stencil8);
+        GetTransferDummyTexture(MTL::PixelFormatStencil8, sample_count);
   }
   return transfer_dummy_stencil_[index];
 }
@@ -9876,7 +9860,8 @@ fragment XeStencilProbeOut xe_stencil_probe_ps() {
     desc->setVertexFunction(vs);
     desc->setFragmentFunction(ps);
     desc->setDepthAttachmentPixelFormat(depth_format);
-    desc->setStencilAttachmentPixelFormat(depth_format);
+    desc->setStencilAttachmentPixelFormat(
+        GetStencilAttachmentPixelFormat(depth_format));
     pipeline = device_->newRenderPipelineState(desc, &error);
     desc->release();
   }

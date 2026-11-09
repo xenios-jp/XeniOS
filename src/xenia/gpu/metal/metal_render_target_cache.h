@@ -39,6 +39,23 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   friend class MetalPairedClearTest;
 
  public:
+  // The stencil attachment format that goes with a depth attachment format.
+  // Guest depth targets are a Depth32Float texture with a separate Stencil8
+  // one; a combined format is its own stencil attachment.
+  static MTL::PixelFormat GetStencilAttachmentPixelFormat(
+      MTL::PixelFormat depth_format) {
+    switch (depth_format) {
+      case MTL::PixelFormatDepth32Float_Stencil8:
+      case MTL::PixelFormatDepth24Unorm_Stencil8:
+      case MTL::PixelFormatX32_Stencil8:
+        return depth_format;
+      case MTL::PixelFormatDepth32Float:
+        return MTL::PixelFormatStencil8;
+      default:
+        return MTL::PixelFormatInvalid;
+    }
+  }
+
   // Metal-specific render target - defined inside cache class to access
   // protected RenderTarget
   class MetalRenderTarget final : public RenderTarget {
@@ -49,12 +66,30 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     MTL::Texture* transfer_texture() const {
       return transfer_texture_ ? transfer_texture_ : texture_;
     }
+    // For a depth target, its separate Stencil8 texture.
     MTL::Texture* stencil_view() const { return stencil_view_; }
     void SetStencilView(MTL::Texture* view) { stencil_view_ = view; }
+    // The texture to bind as the stencil attachment with texture(), if any.
+    MTL::Texture* stencil_attachment_texture() const {
+      if (!texture_) {
+        return nullptr;
+      }
+      MTL::PixelFormat depth_format = texture_->pixelFormat();
+      MTL::PixelFormat stencil_format =
+          GetStencilAttachmentPixelFormat(depth_format);
+      if (stencil_format == depth_format) {
+        return texture_;
+      }
+      return stencil_format != MTL::PixelFormatInvalid ? stencil_view_
+                                                       : nullptr;
+    }
     MTL::Texture* spare_depth_texture() const { return spare_depth_texture_; }
-    void SetSpareDepthTexture(MTL::Texture* texture) {
+    void SetSpareDepthTexture(MTL::Texture* texture,
+                              MTL::Texture* stencil_texture) {
       assert_null(spare_depth_texture_);
+      assert_null(spare_depth_stencil_view_);
       spare_depth_texture_ = texture;
+      spare_depth_stencil_view_ = stencil_texture;
     }
     void SwapDepthBackings() {
       assert_not_null(texture_);
@@ -784,9 +819,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                                    bool transient_render_target_only = false);
   MTL::Texture* CreateDummyColorTexture(uint32_t width, uint32_t height,
                                         uint32_t samples);
+  // Creates the Depth32Float texture and, in stencil_out, its Stencil8
+  // companion. They are separate so neither needs PixelFormatView, which
+  // keeps Metal's lossless compression on for them (Apple5+).
   MTL::Texture* CreateDepthTexture(uint32_t width, uint32_t height,
                                    xenos::DepthRenderTargetFormat format,
-                                   uint32_t samples);
+                                   uint32_t samples,
+                                   MTL::Texture** stencil_out);
   MTL::Texture* GetStencilTextureView(MetalRenderTarget* render_target);
 
   MTL::PixelFormat GetColorResourcePixelFormat(

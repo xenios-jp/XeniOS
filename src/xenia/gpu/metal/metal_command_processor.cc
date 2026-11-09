@@ -8765,16 +8765,8 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     if (MTL::Texture* depth_tex =
             render_target_cache_->GetDepthTargetForDraw()) {
       depth_format = depth_tex->pixelFormat();
-      switch (depth_format) {
-        case MTL::PixelFormatDepth32Float_Stencil8:
-        case MTL::PixelFormatDepth24Unorm_Stencil8:
-        case MTL::PixelFormatX32_Stencil8:
-          stencil_format = depth_format;
-          break;
-        default:
-          stencil_format = MTL::PixelFormatInvalid;
-          break;
-      }
+      stencil_format =
+          MetalRenderTargetCache::GetStencilAttachmentPixelFormat(depth_format);
       if (depth_tex->sampleCount() > 0) {
         sample_count = std::max<uint32_t>(
             sample_count, static_cast<uint32_t>(depth_tex->sampleCount()));
