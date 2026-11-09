@@ -113,6 +113,14 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
   auto custom_res_y = cvars::internal_display_resolution_y;
   if (!custom_res_x || custom_res_x > 1920 || !custom_res_y ||
       custom_res_y > 1080) {
+    // Reset and carry on: the value is only a config edit, and stopping here
+    // ended the launch even when the custom resolution wasn't selected.
+    XELOGW(
+        "Invalid custom resolution {}x{} (width 1-1920, height 1-1080); "
+        "using {}x{}",
+        custom_res_x, custom_res_y,
+        internal_display_resolution_entries[8].first,
+        internal_display_resolution_entries[8].second);
     OVERRIDE_PERSIST_uint32(internal_display_resolution_x,
                             internal_display_resolution_entries[8].first);
     OVERRIDE_PERSIST_uint32(internal_display_resolution_y,
@@ -120,10 +128,6 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
     // Only these changed; a full save would rewrite every other key.
     config::SaveConfigValues(
         {"internal_display_resolution_x", "internal_display_resolution_y"});
-    xe::FatalError(fmt::format(
-        "Invalid custom resolution specified: {}x{}\n"
-        "Width must be between 1-1920.\nHeight must be between 1-1080.",
-        custom_res_x, custom_res_y));
   }
 
   if (with_presentation && provider_) {
