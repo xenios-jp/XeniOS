@@ -69,3 +69,6 @@ Suites:
   each operand swept or held.
 - `clip`: near and far Z clipping across viewport Z ranges, both clip spaces,
   the PA_CL_CLIP_CNTL bits, the PA_CL_VTE_CNTL formats and rectangle lists.
+- `gammaavg`: averaging resolves of 2x and 4x samples written one draw a
+  sample (PA_SC_AA_MASK), read as 8_8_8_8, 8_8_8_8_GAMMA and 2_10_10_10 into
+  k_8_8_8_8 and k_2_10_10_10.
