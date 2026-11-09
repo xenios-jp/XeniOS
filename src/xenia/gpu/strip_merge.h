@@ -239,6 +239,8 @@ class StripMerge {
     uint32_t value;
     // Into own_writes.
     uint32_t write_index;
+    // Written by something other than the strip's own packets since.
+    bool stale = false;
   };
   struct Strip {
     uint64_t bits = 0;
@@ -268,6 +270,13 @@ class StripMerge {
   bool IsRedundantOwnSetConstant(const Strip& strip,
                                  const RingBuffer::ReadRange& payload) const;
   uint64_t HashDrawOwnState(Strip& strip);
+  // The registers a SET_CONSTANT of float constants or registers writes
+  // (count_out may be 0); false for an empty payload or other constants.
+  static bool SetConstantRange(const RingBuffer::ReadRange& payload,
+                               uint32_t& base_out, uint32_t& count_out);
+  void MarkOwnStale(uint32_t base, uint32_t count);
+  void MarkOwnStale(uint32_t opcode, const RingBuffer::ReadRange& payload);
+  void MarkOwnRestored(Strip& strip, const RingBuffer::ReadRange& payload);
   void RecordOwnSetConstant(const RingBuffer::ReadRange& payload);
   bool ReadsOwnConstants(const Shader* shader, bool is_pixel_shader) const;
   uint64_t HashDrawState();
