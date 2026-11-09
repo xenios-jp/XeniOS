@@ -5321,15 +5321,33 @@ static float XeTileResolveLinearToPWLGamma(float linear) {
       offset);
 }
 // An 8_8_8_8_GAMMA render target's sample (linear, in RGBA16Unorm) as the
-// dump shader's load_and_pack packs it, unpacked with UnpackUnorm4x8.
-static float4 XeTileResolveGammaSample(float4 linear) {
+// dump shader's load_and_pack packs it.
+static uint XeTileResolveGammaPack(float4 linear) {
   uint packed = uint(XeTileResolveLinearToPWLGamma(linear.x) * 255.0f + 0.5f);
   packed |= uint(XeTileResolveLinearToPWLGamma(linear.y) * 255.0f + 0.5f)
             << 8u;
   packed |= uint(XeTileResolveLinearToPWLGamma(linear.z) * 255.0f + 0.5f)
             << 16u;
   packed |= uint(linear.w * 255.0f + 0.5f) << 24u;
-  return unpack_unorm4x8_to_float(packed);
+  return packed;
+}
+// The same, unpacked with UnpackUnorm4x8.
+static float4 XeTileResolveGammaSample(float4 linear) {
+  return unpack_unorm4x8_to_float(XeTileResolveGammaPack(linear));
+}
+// The bit copy of a one-sample 8_8_8_8_GAMMA render target.
+static uint XeTileResolvePack_8888Gamma(float4 color,
+                                        constant XeTileResolveConstants& c) {
+  return XeTileResolveGammaPack(color);
+}
+// As the dump shader packs a k_2_10_10_10 render target (RGB10A2Unorm): each
+// component converted with OpConvertFToU(c * 1023 + 0.5), alpha with 3, and
+// inserted 10 (alpha 2) bits wide.
+static uint XeTileResolvePack_RGB10(float4 color,
+                                    constant XeTileResolveConstants& c) {
+  uint4 n = uint4(color * float4(1023.0f, 1023.0f, 1023.0f, 3.0f) + 0.5f) &
+            uint4(1023u, 1023u, 1023u, 3u);
+  return n.x | (n.y << 10u) | (n.z << 20u) | (n.w << 30u);
 }
 static uint XeTileResolvePack_8888GammaAverage4(
     float4 s0, float4 s1, float4 s2, float4 s3,
@@ -5458,12 +5476,15 @@ XE_TILE_RESOLVE_ALL_INDICES(8888GammaAverage4, float4,
                             XE_TILE_RESOLVE_READ_4_SAMPLES)
 XE_TILE_RESOLVE_ALL_INDICES(RGB10Average4, float4,
                             XE_TILE_RESOLVE_READ_4_SAMPLES)
+XE_TILE_RESOLVE_ALL_INDICES(8888Gamma, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(RGB10, float4, XE_TILE_RESOLVE_READ_PIXEL)
 )METAL";
 
 const char* const kTileResolveKernelNames[] = {
     "8888",        "16_16Float",  "32Float",
     "16_16_16_16Float", "32_32Float", "16_16_16_16",
-    "8888Average4", "8888GammaAverage4", "RGB10Average4"};
+    "8888Average4", "8888GammaAverage4", "RGB10Average4",
+    "8888Gamma",    "RGB10"};
 
 // The largest tile area Metal allows at each sample count (Metal feature set
 // tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
@@ -5645,20 +5666,16 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
       break;
     case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
       // Linear in RGBA16Unorm (gamma_render_target_as_unorm16), which the
-      // average's PWL encoding expects. Only the average is ported.
-      if (!average_4x) {
-        return "format";
-      }
-      kernel = TileResolveKernel::k8888GammaAverage4;
+      // PWL encoding expects: the average, or the bit copy of one sample.
+      kernel = average_4x ? TileResolveKernel::k8888GammaAverage4
+                          : TileResolveKernel::k8888Gamma;
       source_format = MTL::PixelFormatRGBA16Unorm;
       break;
     case xenos::ColorRenderTargetFormat::k_2_10_10_10:
     case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
-      // Only the average is ported.
-      if (!rgb10_4x) {
-        return "format";
-      }
-      kernel = TileResolveKernel::kRGB10Average4;
+      // The rgb10-4x average, or the bit copy of one sample.
+      kernel = rgb10_4x ? TileResolveKernel::kRGB10Average4
+                        : TileResolveKernel::kRGB10;
       source_format = MTL::PixelFormatRGB10A2Unorm;
       break;
     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:

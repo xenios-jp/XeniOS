@@ -1133,6 +1133,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     // IsFull32RGB10FourSampleAverage's average, of a 2_10_10_10 render target
     // (RGB10A2Unorm).
     kRGB10Average4,
+    // The bit copies of one-sample 8_8_8_8_GAMMA (RGBA16Unorm) and 2_10_10_10
+    // (RGB10A2Unorm) render targets, as the dump shader packs them.
+    k8888Gamma,
+    kRGB10,
     kCount,
   };
   // For the pass's color formats at every index and its sample count, reading
