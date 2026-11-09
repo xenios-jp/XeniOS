@@ -915,6 +915,9 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 }
 
 - (void)runAppearanceTasks {
+  if ([self presentConfigRecoveryIfNeeded]) {
+    return;
+  }
   [self startHomeDashboardIfNeeded];
   [self startCompatFetchIfNeeded];
   [self startUpdateCheckIfNeeded];
@@ -922,6 +925,69 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [self.zarConversionCoordinator checkPendingConversionOnLaunch];
   xe_ios_offer_previous_session_report_if_needed(self);
   [self runLiveAccountTasks];
+}
+
+// The settings file didn't parse at launch (config::SetupConfig kept it, loaded the backup or
+// the defaults, and wrote nothing). Asks which to keep; each choice writes a valid config.
+// Returns YES if the alert was presented (the remaining appearance tasks run afterwards).
+- (BOOL)presentConfigRecoveryIfNeeded {
+  const config::ConfigLoadProblem* problem = config::GetConfigLoadProblem();
+  if (!problem || !self.view.window || self.presentedViewController) {
+    return NO;
+  }
+  NSString* (^name_of)(const std::filesystem::path&) = ^NSString*(const std::filesystem::path& p) {
+    return [NSString stringWithUTF8String:p.filename().string().c_str()];
+  };
+  NSMutableString* detail = [NSMutableString stringWithString:name_of(problem->file)];
+  if (problem->line) {
+    [detail appendFormat:@", line %u", problem->line];
+  }
+  [detail appendFormat:@": %s", problem->error.c_str()];
+  NSString* using_text = problem->backup_available
+                             ? NSLocalizedString(@"XeniOS is using your last working settings for now.",
+                                                 @"Config recovery alert: backup loaded")
+                             : NSLocalizedString(@"XeniOS is using the default settings for now.",
+                                                 @"Config recovery alert: defaults loaded");
+  NSMutableString* message = [NSMutableString stringWithFormat:@"%@\n\n%@", detail, using_text];
+  if (!problem->kept_copy.empty()) {
+    [message appendFormat:NSLocalizedString(@" The broken file is kept as %@.",
+                                            @"Config recovery alert: name of the kept copy"),
+                          name_of(problem->kept_copy)];
+  }
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Your settings file couldn't be read",
+                                                 @"Config recovery alert title")
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  void (^done)(void) = ^{
+    // The alert doesn't bring this view back, so run what it held up.
+    [unsafe_self runAppearanceTasks];
+  };
+  if (problem->backup_available) {
+    [alert addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Restore Backup",
+                                                           @"Config recovery button: use the backup")
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(UIAlertAction* __unused action) {
+                                   if (!config::RestoreConfigBackup()) {
+                                     config::ResetConfigToDefaults();
+                                   }
+                                   done();
+                                 }]];
+  }
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Reset to Defaults",
+                                                         @"Config recovery button: use the defaults")
+                                 style:problem->backup_available ? UIAlertActionStyleDestructive
+                                                                 : UIAlertActionStyleDefault
+                               handler:^(UIAlertAction* __unused action) {
+                                 config::ResetConfigToDefaults();
+                                 done();
+                               }]];
+  alert.preferredAction = alert.actions.firstObject;
+  [self presentViewController:alert animated:YES completion:nil];
+  return YES;
 }
 
 // Sign-ins another device is waiting on, and "pick a new gamertag" for a flagged account.
