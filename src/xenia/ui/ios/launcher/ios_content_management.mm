@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string_view>
@@ -25,6 +26,8 @@
 namespace {
 
 constexpr const char* kLinkedContentMarkerSuffix = ".xenia-ios-link";
+// Where the DLC layout migration sets a package's old folder while it works.
+constexpr const char* kMigrateAsideSuffix = ".xenios-migrate";
 constexpr const char* kLinkedContentMarkerVersion = "version=1";
 constexpr std::string_view kLinkedContentSourcePrefix = "source_path=";
 constexpr std::string_view kLinkedContentRelativePrefix = "relative_path=";
@@ -273,6 +276,11 @@ void MigrateNestedDlcPackage(const std::filesystem::path& root,
       !std::filesystem::is_directory(ContentSidecarPath(folder / package_name), ec)) {
     return;
   }
+  const std::filesystem::path target = root / package_name;
+  if (has_sidecar &&
+      std::filesystem::exists(std::filesystem::symlink_status(ContentSidecarPath(target), ec))) {
+    return;
+  }
   const std::filesystem::path old_marker = LinkedContentMarkerPathForPackage(folder);
   const bool linked = std::filesystem::exists(old_marker, ec);
   // A linked package's source can be outside the sandbox scope during the
@@ -281,12 +289,11 @@ void MigrateNestedDlcPackage(const std::filesystem::path& root,
     return;
   }
 
-  const std::filesystem::path target = root / package_name;
   std::filesystem::path source_folder = folder;
   if (target == folder) {
     // The usual case: package files have no extension, so the folder already
     // has the package's name.
-    source_folder = root / (folder.filename().string() + ".xenios-migrate");
+    source_folder = root / (folder.filename().string() + kMigrateAsideSuffix);
     std::filesystem::rename(folder, source_folder, ec);
     if (ec) {
       XELOGW("DLC layout migration: could not move aside {}: {}", xe::strip_pii(folder.string()),
@@ -322,6 +329,37 @@ void MigrateNestedDlcPackage(const std::filesystem::path& root,
   std::error_code remove_ec;
   std::filesystem::remove(source_folder, remove_ec);
   XELOGI("DLC layout migration: moved {} out of its folder", xe::strip_pii(target.string()));
+}
+
+// A migration stopped part way (the app was closed) leaves its folder set
+// aside: put it back if the package hadn't moved yet, else move what's left.
+void ResumeNestedDlcMigration(const std::filesystem::path& root,
+                              const std::filesystem::path& aside) {
+  std::string name = aside.filename().string();
+  name.resize(name.size() - std::strlen(kMigrateAsideSuffix));
+  const std::filesystem::path target = root / name;
+  std::error_code ec;
+  const auto target_status = std::filesystem::symlink_status(target, ec);
+  if (!std::filesystem::exists(target_status)) {
+    std::filesystem::rename(aside, target, ec);
+    if (!ec) {
+      MigrateNestedDlcPackage(root, target);
+    }
+    return;
+  }
+  if (std::filesystem::is_directory(target_status)) {
+    return;
+  }
+  const std::filesystem::path sidecar = ContentSidecarPath(aside / name);
+  if (std::filesystem::is_directory(sidecar, ec) &&
+      !std::filesystem::exists(std::filesystem::symlink_status(ContentSidecarPath(target), ec))) {
+    std::filesystem::rename(sidecar, ContentSidecarPath(target), ec);
+  }
+  std::filesystem::remove(aside, ec);
+  if (ec) {
+    XELOGW("DLC layout migration: could not finish {}: {}", xe::strip_pii(target.string()),
+           ec.message());
+  }
 }
 
 }  // namespace
@@ -530,7 +568,11 @@ void xe_migrate_nested_dlc_packages() {
       }
     }
     for (const auto& folder : folders) {
-      MigrateNestedDlcPackage(root, folder);
+      if (EndsWith(folder.filename().string(), kMigrateAsideSuffix)) {
+        ResumeNestedDlcMigration(root, folder);
+      } else {
+        MigrateNestedDlcPackage(root, folder);
+      }
     }
   }
 }
@@ -593,7 +635,8 @@ bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
                                  std::string* error_message_out) {
   std::error_code ec;
   std::filesystem::remove_all(entry.path, ec);
-  if (!ec) {
+  // Only a DLC package file has a {name}.data folder of its own.
+  if (!ec && entry.kind == IOSInstalledContentKind::kDlc) {
     std::filesystem::remove_all(ContentSidecarPath(entry.path), ec);
   }
   if (ec) {
