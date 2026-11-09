@@ -2859,11 +2859,13 @@ void RenderTargetCache::AppendStripMergeTransfers(
           position, piece_end_tiles, source, host_depth_source);
       first_band.band_first = 0;
       first_band.band_count = 1;
-      // A depth carry is its own host depth, not to lose the host precision.
+      // A depth carry into a depth render target is its own host depth, not
+      // to lose the host precision. Into color, the guest bits are the same
+      // without, and the transfer can be drawn in the destination's pass.
       RenderTarget* carry_rt = carry_it->second;
       Transfer& later_bands = transfers.emplace_back(
           position, piece_end_tiles, carry_rt,
-          carry.owner.is_depth ? carry_rt : nullptr);
+          carry.owner.is_depth && dest.is_depth ? carry_rt : nullptr);
       later_bands.band_first = 1;
       later_bands.band_count = uint8_t(band_count - 1);
       later_bands.source_band_shift = -1;
