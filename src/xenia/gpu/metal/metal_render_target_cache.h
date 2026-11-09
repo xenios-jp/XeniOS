@@ -235,6 +235,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // piecewise linear gamma, sharing 8_8_8_8's resources, with blending into
   // them done in the pixel shader (metal_gamma_fetch_blend).
   bool gamma_fetch_blend() const { return gamma_fetch_blend_; }
+  // Whether 16_16 and 16_16_16_16 render targets are written with the
+  // console's fixed point encode and blended in the pixel shader where
+  // fixed-function blending isn't exact (metal_rt16_fetch_blend).
+  bool fixed16_fetch_blend() const { return fixed16_fetch_blend_; }
 
   bool IsGammaFormatHostStorageSeparate() const override;
 
@@ -467,6 +471,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool gamma_render_target_as_srgb_ = false;
   bool gamma_render_target_as_unorm16_ = false;
   bool gamma_fetch_blend_ = false;
+  bool fixed16_fetch_blend_ = false;
 
   // EDRAM buffer (10MB embedded DRAM)
   MTL::Buffer* edram_buffer_ = nullptr;

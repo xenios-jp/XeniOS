@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 29;
+    static constexpr uint32_t kVersion = 30;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -558,8 +558,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kFetchStateTextureDecodeBinding = 27;
   // host_render_target_feedback: the RB_BLENDCONTROL (masked with 0x1FFF1FFF)
   // of each color target the pixel shader blends itself, 0x00010001 for the
-  // others.
+  // others. A 16_16 target the shader blends also has
+  // kColorBlendFixed16TwoChannels.
   static constexpr uint32_t kFetchStateColorBlendBinding = 35;
+  // In a kFetchStateColorBlendBinding value (an unused RB_BLENDCONTROL bit):
+  // the target is 16_16, whose green the console blends under the alpha
+  // control.
+  static constexpr uint32_t kColorBlendFixed16TwoChannels = UINT32_C(1) << 13;
   static constexpr uint32_t kFetchStateBindingCount = 36;
   // Unknown includes computed overflow, interpolation, vertex data and
   // dynamically addressed inputs. Only explicit finite proofs can clear it.
@@ -647,6 +652,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // are stored as the console's 8-bit piecewise linear gamma and blended in
     // the shader in linear space, as the console's render backend does.
     bool host_render_target_feedback = false;
+    // With host_render_target_feedback: 16_16 and 16_16_16_16 targets (snorm
+    // attachments holding the EDRAM's fixed point bits) are written with the
+    // console's fixed point encode, and blended in the shader with the
+    // console's 16-bit blender where fixed-function blending isn't exact. The
+    // host marks those targets with a negative color_exp_bias.
+    bool host_render_target_fixed16 = false;
   };
 
   SpirvShaderTranslator(const Features& features,
@@ -1266,14 +1277,39 @@ class SpirvShaderTranslator : public ShaderTranslator {
                            spv::Id color_dest_factor, spv::Id alpha_equation,
                            spv::Id alpha_source_factor,
                            spv::Id alpha_dest_factor);
+  // host_render_target_feedback: the target's blend control, the fetch-state
+  // function constant the pipeline specializes (kFetchStateColorBlendBinding):
+  // its RB_BLENDCONTROL, or 1 * source + 0 * destination if the
+  // fixed-function stage blends it or nothing does. uint.
+  spv::Id LoadShaderBlendControl(uint32_t color_target_index);
+  // host_render_target_feedback: the target's current sample, float4.
+  spv::Id ReadFeedbackColor(uint32_t color_target_index);
   // host_render_target_feedback: the value to write to an 8_8_8_8_GAMMA host
   // render target stored as 8-bit gamma - the color encoded as the console's
-  // render backend encodes it, or, if the system constants give the target a
-  // blend and the shader reads it back, blended with the target's sample in
-  // 10-bit linear and encoded. As float4 unorm8 values the attachment stores
+  // render backend encodes it, or, if the pipeline gives the target a blend
+  // and the shader reads it back, blended with the target's sample in 10-bit
+  // linear and encoded. As float4 unorm8 values the attachment stores
   // exactly.
   spv::Id CompleteFragmentShader_HostGamma(spv::Id color,
                                            uint32_t color_target_index);
+  // host_render_target_fixed16: the value to write to a 16_16 or 16_16_16_16
+  // host render target (an snorm attachment holding the EDRAM's bits) - the
+  // color (exponent bias applied) as the console's fixed point encode, or, if
+  // the target's blend control isn't 0x00010001 and the shader reads it back,
+  // blended with the target's sample by the console's 16-bit blender. As
+  // float4 n / 32767 the attachment stores n exactly (except -32768).
+  spv::Id CompleteFragmentShader_HostFixed16(spv::Id color,
+                                             uint32_t color_target_index);
+  // The console's fixed point encode of float4 values: v * 1024 rounded half
+  // up, clamped to [-32768, 32767], NaN as infinity of its sign. Returns int4.
+  spv::Id HostFixed16Encode(spv::Id color);
+  // The console's 16-bit blender, lane-wise on int4 Q10 values: per lane the
+  // source and destination factor codes and the equation (uint4), the lane's
+  // source, destination and constant values, and the alpha lanes' (int4).
+  spv::Id HostFixed16Blend(spv::Id source, spv::Id dest, spv::Id constant,
+                           spv::Id source_alpha, spv::Id dest_alpha,
+                           spv::Id constant_alpha, spv::Id source_factor,
+                           spv::Id dest_factor, spv::Id equation);
 
   Features features_;
   bool native_2x_msaa_with_attachments_;

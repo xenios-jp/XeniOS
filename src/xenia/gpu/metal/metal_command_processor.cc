@@ -196,24 +196,80 @@ bool UseDxilPath() { return cvars::metal_use_dxil; }
 constexpr uint32_t kBlendControlMask = 0x1FFF1FFF;
 constexpr uint32_t kBlendControlNoBlending = 0x00010001;
 
-// The blend control of an 8_8_8_8_GAMMA color target that the pixel shader
-// blends itself when the render target cache stores it as 8-bit gamma
-// (metal_gamma_fetch_blend), or kBlendControlNoBlending if the target isn't
-// one, isn't written, or fixed-function blending gives the exact result. Alpha
-// isn't gamma-encoded, so only blended color needs the shader: not when the
-// draw writes no color, or when color is the source (1 * source +/- 0 *
-// destination) or the destination (0 * source + 1 * destination, or
-// 1 * destination - 0 * source), which blending the encoded bytes reproduces.
-uint32_t GetGammaShaderBlendControl(const RegisterFile& regs, uint32_t rt,
-                                    uint32_t normalized_color_mask) {
-  uint32_t write_mask = (normalized_color_mask >> (rt * 4)) & 0xF;
-  if (!(write_mask & 0x7) ||
-      regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[rt])
-              .color_format != xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
-    return kBlendControlNoBlending;
+// Whether fixed-function blending of a 16_16 or 16_16_16_16 target's snorm
+// attachment, holding the EDRAM's fixed point values, gives the console's
+// result: with factors ONE and ZERO only, every ADD and subtraction of the
+// console's blender is the exact sum or difference, and MIN and MAX only
+// compare the values themselves with both factors ONE (the host's MIN and MAX
+// ignore the factors).
+bool IsFixed16BlendExact(xenos::BlendFactor src, xenos::BlendFactor dest,
+                         xenos::BlendOp op) {
+  auto unit = [](xenos::BlendFactor factor) {
+    return factor == xenos::BlendFactor::kZero ||
+           factor == xenos::BlendFactor::kOne;
+  };
+  if (op == xenos::BlendOp::kMin || op == xenos::BlendOp::kMax) {
+    return src == xenos::BlendFactor::kOne && dest == xenos::BlendFactor::kOne;
   }
+  return unit(src) && unit(dest);
+}
+
+// The blend control of a color target that the pixel shader blends itself,
+// or kBlendControlNoBlending if the target isn't one, isn't written, or
+// fixed-function blending gives the exact result. Two kinds:
+// - 8_8_8_8_GAMMA stored as 8-bit gamma (gamma_fetch_blend,
+//   metal_gamma_fetch_blend). Alpha isn't gamma-encoded, so only blended color
+//   needs the shader: not when the draw writes no color, or when color is the
+//   source (1 * source +/- 0 * destination) or the destination (0 * source +
+//   1 * destination, or 1 * destination - 0 * source), which blending the
+//   encoded bytes reproduces.
+// - 16_16 and 16_16_16_16 (fixed16_fetch_blend, metal_rt16_fetch_blend),
+//   unless IsFixed16BlendExact holds for each control a written channel uses.
+//   16_16's green blends under the alpha control on the console but under the
+//   colour control on the host, so the two must also match when green is
+//   written. 16_16 is marked kColorBlendFixed16TwoChannels.
+uint32_t GetShaderBlendControl(const RegisterFile& regs, uint32_t rt,
+                               uint32_t normalized_color_mask,
+                               bool gamma_fetch_blend,
+                               bool fixed16_fetch_blend) {
+  uint32_t write_mask = (normalized_color_mask >> (rt * 4)) & 0xF;
+  xenos::ColorRenderTargetFormat format =
+      regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[rt])
+          .color_format;
   auto blendcontrol = regs.Get<reg::RB_BLENDCONTROL>(
       reg::RB_BLENDCONTROL::rt_register_indices[rt]);
+  if (fixed16_fetch_blend &&
+      (format == xenos::ColorRenderTargetFormat::k_16_16 ||
+       format == xenos::ColorRenderTargetFormat::k_16_16_16_16)) {
+    bool color_exact = IsFixed16BlendExact(blendcontrol.color_srcblend,
+                                           blendcontrol.color_destblend,
+                                           blendcontrol.color_comb_fcn);
+    bool alpha_exact = IsFixed16BlendExact(blendcontrol.alpha_srcblend,
+                                           blendcontrol.alpha_destblend,
+                                           blendcontrol.alpha_comb_fcn);
+    bool exact;
+    uint32_t kind = 0;
+    if (format == xenos::ColorRenderTargetFormat::k_16_16) {
+      kind = SpirvShaderTranslator::kColorBlendFixed16TwoChannels;
+      bool alpha_as_color =
+          blendcontrol.alpha_srcblend == blendcontrol.color_srcblend &&
+          blendcontrol.alpha_destblend == blendcontrol.color_destblend &&
+          blendcontrol.alpha_comb_fcn == blendcontrol.color_comb_fcn;
+      exact = (!(write_mask & 0b0001) || color_exact) &&
+              (!(write_mask & 0b0010) || (alpha_exact && alpha_as_color));
+    } else {
+      exact = (!(write_mask & 0b0111) || color_exact) &&
+              (!(write_mask & 0b1000) || alpha_exact);
+    }
+    if (!write_mask || exact) {
+      return kBlendControlNoBlending;
+    }
+    return (blendcontrol.value & kBlendControlMask) | kind;
+  }
+  if (!gamma_fetch_blend || !(write_mask & 0x7) ||
+      format != xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
+    return kBlendControlNoBlending;
+  }
   xenos::BlendFactor src = blendcontrol.color_srcblend;
   xenos::BlendFactor dest = blendcontrol.color_destblend;
   xenos::BlendOp op = blendcontrol.color_comb_fcn;
@@ -1401,7 +1457,11 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
   for (uint32_t i = 0; i < 4; ++i) {
     states[SpirvShaderTranslator::kFetchStateColorBlendBinding * 4 + i] =
         (request.description.gamma_shader_blend_mask & (1u << i))
-            ? request.description.blendcontrol[i] & kBlendControlMask
+            ? (request.description.blendcontrol[i] & kBlendControlMask) |
+                  (request.description.color_formats[i] ==
+                           uint32_t(MTL::PixelFormatRG16Snorm)
+                       ? SpirvShaderTranslator::kColorBlendFixed16TwoChannels
+                       : 0)
             : kBlendControlNoBlending;
   }
   return GetSpecializedFunction(
@@ -2770,9 +2830,13 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   SpirvShaderTranslator::Features spirv_features(true);
   spirv_features.structured_vertex_control_flow = UseDxilPath();
   spirv_features.fetch_state_function_constants = UseDxilPath();
-  // 8_8_8_8_GAMMA as 8-bit gamma, blended in the shader.
+  // 8_8_8_8_GAMMA as 8-bit gamma, and 16_16 and 16_16_16_16 as the EDRAM's
+  // fixed point, blended in the shader.
   spirv_features.host_render_target_feedback =
-      render_target_cache_->gamma_fetch_blend();
+      render_target_cache_->gamma_fetch_blend() ||
+      render_target_cache_->fixed16_fetch_blend();
+  spirv_features.host_render_target_fixed16 =
+      render_target_cache_->fixed16_fetch_blend();
   spirv_features.optimize_finite_multiplication =
       cvars::metal_finite_multiply &&
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
@@ -9090,12 +9154,16 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
 
   bool rt0_minmax_premult_rgb_expected = false;
   bool rt0_minmax_premult_a_expected = false;
-  // A gamma target is encoded by the shader, and if it blends, blended there
-  // with the factors applied before MIN and MAX.
+  // A gamma or 16-bit fixed point target is encoded by the shader, and if it
+  // blends, blended there with the factors applied before MIN and MAX.
+  xenos::ColorRenderTargetFormat rt0_format =
+      regs.Get<reg::RB_COLOR_INFO>().color_format;
   if (shader.writes_color_target(0) &&
-      !(spirv_translator_features_.host_render_target_feedback &&
-        regs.Get<reg::RB_COLOR_INFO>().color_format ==
-            xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
+      !(render_target_cache_->gamma_fetch_blend() &&
+        rt0_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) &&
+      !(render_target_cache_->fixed16_fetch_blend() &&
+        (rt0_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+         rt0_format == xenos::ColorRenderTargetFormat::k_16_16_16_16))) {
     auto blend_control = regs.Get<reg::RB_BLENDCONTROL>(
         reg::RB_BLENDCONTROL::rt_register_indices[0]);
     rt0_minmax_premult_rgb_expected =
@@ -9133,9 +9201,9 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
   modification.pixel.color_targets_used =
       GetColorTargetsWritten(normalized_color_mask);
 
-  // Only draws blending into a gamma target read their targets back: a pixel
-  // shader that reads a target can't have its fragments removed as hidden.
-  // The shader reads back only the gamma targets it blends, which
+  // Only draws blending into a gamma or 16-bit fixed point target read their
+  // targets back: a pixel shader that reads a target can't have its fragments
+  // removed as hidden. The shader reads back only the targets it blends, which
   // color_targets_used then holds. Metal rejects a pipeline reading an
   // attachment the pass doesn't have, so those must be bound. A target that
   // fixed-function blending writes must not be declared for reading either:
@@ -9151,7 +9219,9 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
     uint32_t rt;
     while (xe::bit_scan_forward(rts, &rt)) {
       rts &= ~(UINT32_C(1) << rt);
-      if (GetGammaShaderBlendControl(regs, rt, normalized_color_mask) !=
+      if (GetShaderBlendControl(regs, rt, normalized_color_mask,
+                                render_target_cache_->gamma_fetch_blend(),
+                                render_target_cache_->fixed16_fetch_blend()) !=
           kBlendControlNoBlending) {
         shader_blended_rts |= UINT32_C(1) << rt;
       }
@@ -9280,7 +9350,8 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
                       reg::RB_BLENDCONTROL::rt_register_indices[i])
                   .value
             : 0u;
-    // Gamma targets the pixel shader reads back and blends itself.
+    // Gamma and 16-bit fixed point targets the pixel shader reads back and
+    // blends itself.
     if (pixel_translation && rt_write_mask &&
         color_formats[i] != MTL::PixelFormatInvalid) {
       SpirvShaderTranslator::Modification pixel_modification(
@@ -9781,22 +9852,30 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
          (color_infos[i].color_format ==
               xenos::ColorRenderTargetFormat::k_16_16_16_16 &&
           !render_target_cache_->IsFixedRGBA16TruncatedToMinus1To1()))) {
-      // Remap to -1...1 by scaling the output values by 1024/32767, so the
-      // SNORM bits are the EDRAM ones apart from -32.
-      color_exp_bias_scale *= 1024.0f / 32767.0f;
+      if (render_target_cache_->fixed16_fetch_blend()) {
+        // The shader encodes the EDRAM's bits itself: a negative scale marks
+        // the target (SpirvShaderTranslator::Features::
+        // host_render_target_fixed16).
+        color_exp_bias_scale = -color_exp_bias_scale;
+      } else {
+        // Remap to -1...1 by scaling the output values by 1024/32767, so the
+        // SNORM bits are the EDRAM ones apart from -32.
+        color_exp_bias_scale *= 1024.0f / 32767.0f;
+      }
     }
     consts.color_exp_bias[i] = color_exp_bias_scale;
   }
 
-  // Gamma targets blended in the pixel shader. The pipeline specializes the
-  // blend controls; these are for shaders without fetch-state constants.
+  // The blend constant of targets blended in the pixel shader. The pipeline
+  // specializes their blend controls.
   if (spirv_translator_features_.host_render_target_feedback) {
     bool shader_blends = false;
     for (uint32_t i = 0; i < 4; ++i) {
-      consts.edram_rt_blend_factors_ops[i] =
-          GetGammaShaderBlendControl(regs, i, normalized_color_mask);
       shader_blends |=
-          consts.edram_rt_blend_factors_ops[i] != kBlendControlNoBlending;
+          GetShaderBlendControl(regs, i, normalized_color_mask,
+                                render_target_cache_->gamma_fetch_blend(),
+                                render_target_cache_->fixed16_fetch_blend()) !=
+          kBlendControlNoBlending;
     }
     if (shader_blends) {
       consts.edram_blend_constant[0] = regs.Get<float>(XE_GPU_REG_RB_BLEND_RED);

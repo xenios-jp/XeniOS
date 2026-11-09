@@ -1100,12 +1100,14 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
           builder_->makeIntConstant(kSystemConstantColorExpBias));
       id_vector_temp_.push_back(
           builder_->makeIntConstant(int32_t(color_target_index)));
+      spv::Id color_unbiased = color;
+      spv::Id color_exp_bias = builder_->createLoad(
+          builder_->createAccessChain(spv::StorageClassUniform,
+                                      uniform_system_constants_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
       color = builder_->createNoContractionBinOp(
-          spv::OpVectorTimesScalar, type_float4_, color,
-          builder_->createLoad(builder_->createAccessChain(
-                                   spv::StorageClassUniform,
-                                   uniform_system_constants_, id_vector_temp_),
-                               spv::NoPrecision));
+          spv::OpVectorTimesScalar, type_float4_, color, color_exp_bias);
 
       if (edram_fragment_shader_interlock_) {
         // Write the color to the target in the EDRAM only it was written on the
@@ -1577,9 +1579,28 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
       } else if (features_.host_render_target_feedback) {
         // 8_8_8_8_GAMMA is stored as the console's 8-bit gamma, encoded (and
         // if needed blended) as the console's render backend does it.
-        builder_->createStore(
-            CompleteFragmentShader_HostGamma(color, color_target_index),
-            color_variable);
+        spv::Id result;
+        if (features_.host_render_target_fixed16) {
+          // A negative exponent bias marks a 16_16 or 16_16_16_16 target.
+          SpirvBuilder::IfBuilder if_fixed16(
+              builder_->createBinOp(spv::OpFOrdLessThan, type_bool_,
+                                    color_exp_bias, const_float_0_),
+              spv::SelectionControlDontFlattenMask, *builder_);
+          spv::Id result_fixed16 = CompleteFragmentShader_HostFixed16(
+              builder_->createNoContractionBinOp(
+                  spv::OpVectorTimesScalar, type_float4_, color_unbiased,
+                  builder_->createUnaryOp(spv::OpFNegate, type_float_,
+                                          color_exp_bias)),
+              color_target_index);
+          if_fixed16.makeBeginElse();
+          spv::Id result_other =
+              CompleteFragmentShader_HostGamma(color, color_target_index);
+          if_fixed16.makeEndIf();
+          result = if_fixed16.createMergePhi(result_fixed16, result_other);
+        } else {
+          result = CompleteFragmentShader_HostGamma(color, color_target_index);
+        }
+        builder_->createStore(result, color_variable);
       } else {
         // Convert to gamma space - this is incorrect, since it must be done
         // after blending on the Xbox 360, but this is just one of many blending
@@ -4443,6 +4464,27 @@ spv::Id SpirvShaderTranslator::FSI_PackUnitColor(
   return FSI_PackUnitFields(rgb, alpha, format);
 }
 
+spv::Id SpirvShaderTranslator::LoadShaderBlendControl(
+    uint32_t color_target_index) {
+  // Feedback is only with fetch-state function constants.
+  assert_true(main_fetch_state_[kFetchStateColorBlendBinding] != spv::NoResult);
+  return builder_->createCompositeExtract(
+      main_fetch_state_[kFetchStateColorBlendBinding], type_uint_,
+      color_target_index);
+}
+
+spv::Id SpirvShaderTranslator::ReadFeedbackColor(uint32_t color_target_index) {
+  std::unique_ptr<spv::Instruction> read_op =
+      std::make_unique<spv::Instruction>(builder_->getUniqueId(), type_float4_,
+                                         spv::OpImageRead);
+  read_op->addIdOperand(builder_->createLoad(
+      input_feedback_color_[color_target_index], spv::NoPrecision));
+  read_op->addIdOperand(builder_->makeNullConstant(type_int2_));
+  spv::Id color = read_op->getResultId();
+  builder_->getBuildPoint()->addInstruction(std::move(read_op));
+  return color;
+}
+
 spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
     spv::Id color, uint32_t color_target_index) {
   const xenos::ColorRenderTargetFormat gamma_format =
@@ -4457,46 +4499,17 @@ spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
   SpirvBuilder::IfBuilder if_gamma(is_gamma, spv::SelectionControlDontFlattenMask,
                                    *builder_);
   spv::Id result_packed;
-  spv::Id input_attachment = input_feedback_color_[color_target_index];
-  if (input_attachment != spv::NoResult) {
-    // The target's RB_BLENDCONTROL, or 1 * source + 0 * destination if the
-    // fixed-function stage blends it or nothing does. A function constant
-    // where the pipeline specializes it, so the blending code is only what
-    // the pipeline's blend needs.
-    spv::Id blend_factors_equations;
-    if (main_fetch_state_[kFetchStateColorBlendBinding] != spv::NoResult) {
-      blend_factors_equations = builder_->createCompositeExtract(
-          main_fetch_state_[kFetchStateColorBlendBinding], type_uint_,
-          color_target_index);
-    } else {
-      id_vector_temp_.clear();
-      id_vector_temp_.push_back(
-          builder_->makeIntConstant(kSystemConstantEdramRTBlendFactorsOps));
-      id_vector_temp_.push_back(
-          builder_->makeIntConstant(int32_t(color_target_index)));
-      blend_factors_equations = builder_->createLoad(
-          builder_->createAccessChain(spv::StorageClassUniform,
-                                      uniform_system_constants_,
-                                      id_vector_temp_),
-          spv::NoPrecision);
-    }
+  if (input_feedback_color_[color_target_index] != spv::NoResult) {
+    spv::Id blend_control = LoadShaderBlendControl(color_target_index);
     SpirvBuilder::IfBuilder if_blend(
-        builder_->createBinOp(spv::OpINotEqual, type_bool_,
-                              blend_factors_equations,
+        builder_->createBinOp(spv::OpINotEqual, type_bool_, blend_control,
                               builder_->makeUintConstant(0x00010001)),
         spv::SelectionControlDontFlattenMask, *builder_);
     spv::Id blended_packed;
     {
       // The destination's bytes. unorm8 to float is exact enough to round
       // back.
-      std::unique_ptr<spv::Instruction> read_op =
-          std::make_unique<spv::Instruction>(builder_->getUniqueId(),
-                                             type_float4_, spv::OpImageRead);
-      read_op->addIdOperand(
-          builder_->createLoad(input_attachment, spv::NoPrecision));
-      read_op->addIdOperand(builder_->makeNullConstant(type_int2_));
-      spv::Id dest = read_op->getResultId();
-      builder_->getBuildPoint()->addInstruction(std::move(read_op));
+      spv::Id dest = ReadFeedbackColor(color_target_index);
       spv::Id dest_bytes = builder_->createUnaryOp(
           spv::OpConvertFToU, type_uint4_,
           builder_->createNoContractionBinOp(
@@ -4526,7 +4539,7 @@ spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
       spv::Id blend_equation_width = builder_->makeUintConstant(3);
       auto field = [&](uint32_t offset, spv::Id width) {
         return builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
-                                     blend_factors_equations,
+                                     blend_control,
                                      builder_->makeUintConstant(offset), width);
       };
       blended_packed = FSI_BlendFixed10(
@@ -4560,6 +4573,259 @@ spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
       builder_->makeFloatConstant(1.0f / 255.0f));
   if_gamma.makeEndIf();
   return if_gamma.createMergePhi(result_gamma, color);
+}
+
+spv::Id SpirvShaderTranslator::HostFixed16Encode(spv::Id color) {
+  // NaN clamps by its sign like infinity, +NaN to 0x7FFF, -NaN to 0x8000.
+  spv::Id color_signed_infinity = builder_->createUnaryOp(
+      spv::OpBitcast, type_float4_,
+      builder_->createBinOp(
+          spv::OpBitwiseOr, type_uint4_,
+          builder_->createBinOp(
+              spv::OpBitwiseAnd, type_uint4_,
+              builder_->createUnaryOp(spv::OpBitcast, type_uint4_, color),
+              builder_->smearUintConstant(UINT32_C(1) << 31, type_uint4_)),
+          builder_->smearUintConstant(0x7F800000, type_uint4_)));
+  spv::Id color_scaled = builder_->createNoContractionBinOp(
+      spv::OpVectorTimesScalar, type_float4_,
+      builder_->createTriBuiltinCall(
+          type_float4_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+          builder_->createTriOp(
+              spv::OpSelect, type_float4_,
+              builder_->createUnaryOp(spv::OpIsNan, type_bool4_, color),
+              color_signed_infinity, color),
+          builder_->smearFloatConstant(-32.0f, type_float4_),
+          builder_->smearFloatConstant(32767.0f / 1024.0f, type_float4_)),
+      builder_->makeFloatConstant(1024.0f));
+  // Rounded half up (-0.5 to 0, -32 to -32768).
+  return builder_->createUnaryOp(
+      spv::OpConvertFToS, type_int4_,
+      builder_->createUnaryBuiltinCall(
+          type_float4_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+          builder_->createNoContractionBinOp(
+              spv::OpFAdd, type_float4_, color_scaled,
+              builder_->smearFloatConstant(0.5f, type_float4_))));
+}
+
+spv::Id SpirvShaderTranslator::HostFixed16Blend(
+    spv::Id source, spv::Id dest, spv::Id constant, spv::Id source_alpha,
+    spv::Id dest_alpha, spv::Id constant_alpha, spv::Id source_factor,
+    spv::Id dest_factor, spv::Id equation) {
+  // Factors are Q10: ONE is 1024, INV is 1024 minus the value, and
+  // SRC_ALPHA_SATURATE min(source alpha, 1024 - destination alpha) in every
+  // lane. Unknown factor codes give 0.
+  auto is = [&](spv::Id code, uint32_t value) {
+    return builder_->createBinOp(
+        spv::OpIEqual, type_bool4_, code,
+        builder_->smearUintConstant(value, type_uint4_));
+  };
+  spv::Id const_int4_1024 = builder_->smearIntConstant(1024, type_int4_);
+  auto inv = [&](spv::Id value) {
+    return builder_->createBinOp(spv::OpISub, type_int4_, const_int4_1024,
+                                 value);
+  };
+  auto factor = [&](spv::Id code) {
+    spv::Id result = builder_->smearIntConstant(0, type_int4_);
+    const std::pair<xenos::BlendFactor, spv::Id> values[] = {
+        {xenos::BlendFactor::kOne, const_int4_1024},
+        {xenos::BlendFactor::kSrcColor, source},
+        {xenos::BlendFactor::kOneMinusSrcColor, inv(source)},
+        {xenos::BlendFactor::kSrcAlpha, source_alpha},
+        {xenos::BlendFactor::kOneMinusSrcAlpha, inv(source_alpha)},
+        {xenos::BlendFactor::kDstColor, dest},
+        {xenos::BlendFactor::kOneMinusDstColor, inv(dest)},
+        {xenos::BlendFactor::kDstAlpha, dest_alpha},
+        {xenos::BlendFactor::kOneMinusDstAlpha, inv(dest_alpha)},
+        {xenos::BlendFactor::kConstantColor, constant},
+        {xenos::BlendFactor::kOneMinusConstantColor, inv(constant)},
+        {xenos::BlendFactor::kConstantAlpha, constant_alpha},
+        {xenos::BlendFactor::kOneMinusConstantAlpha, inv(constant_alpha)},
+        {xenos::BlendFactor::kSrcAlphaSaturate,
+         builder_->createBinBuiltinCall(type_int4_, ext_inst_glsl_std_450_,
+                                        GLSLstd450SMin, source_alpha,
+                                        inv(dest_alpha))},
+    };
+    for (const auto& value : values) {
+      result = builder_->createTriOp(spv::OpSelect, type_int4_,
+                                     is(code, uint32_t(value.first)),
+                                     value.second, result);
+    }
+    return result;
+  };
+  spv::Id source_product = builder_->createBinOp(spv::OpIMul, type_int4_,
+                                                 source, factor(source_factor));
+  spv::Id dest_product =
+      builder_->createBinOp(spv::OpIMul, type_int4_, dest, factor(dest_factor));
+  // ADD and the subtractions floor each product to Q11, a subtracted one
+  // negated first, and give (sum + 1) >> 1.
+  spv::Id const_int4_9 = builder_->smearIntConstant(9, type_int4_);
+  spv::Id source_term = builder_->createBinOp(
+      spv::OpShiftRightArithmetic, type_int4_,
+      builder_->createTriOp(
+          spv::OpSelect, type_int4_,
+          is(equation, uint32_t(xenos::BlendOp::kRevSubtract)),
+          builder_->createUnaryOp(spv::OpSNegate, type_int4_, source_product),
+          source_product),
+      const_int4_9);
+  spv::Id dest_term = builder_->createBinOp(
+      spv::OpShiftRightArithmetic, type_int4_,
+      builder_->createTriOp(
+          spv::OpSelect, type_int4_,
+          is(equation, uint32_t(xenos::BlendOp::kSubtract)),
+          builder_->createUnaryOp(spv::OpSNegate, type_int4_, dest_product),
+          dest_product),
+      const_int4_9);
+  spv::Id const_int4_1 = builder_->smearIntConstant(1, type_int4_);
+  spv::Id sum = builder_->createBinOp(
+      spv::OpShiftRightArithmetic, type_int4_,
+      builder_->createBinOp(
+          spv::OpIAdd, type_int4_,
+          builder_->createBinOp(spv::OpIAdd, type_int4_, source_term,
+                                dest_term),
+          const_int4_1),
+      const_int4_1);
+  // MIN and MAX compare the products and floor the chosen one to Q10.
+  spv::Id is_min = is(equation, uint32_t(xenos::BlendOp::kMin));
+  spv::Id min_max = builder_->createBinOp(
+      spv::OpShiftRightArithmetic, type_int4_,
+      builder_->createTriOp(
+          spv::OpSelect, type_int4_, is_min,
+          builder_->createBinBuiltinCall(type_int4_, ext_inst_glsl_std_450_,
+                                         GLSLstd450SMin, source_product,
+                                         dest_product),
+          builder_->createBinBuiltinCall(type_int4_, ext_inst_glsl_std_450_,
+                                         GLSLstd450SMax, source_product,
+                                         dest_product)),
+      builder_->smearIntConstant(10, type_int4_));
+  spv::Id result = builder_->createTriOp(
+      spv::OpSelect, type_int4_,
+      builder_->createBinOp(spv::OpLogicalOr, type_bool4_, is_min,
+                            is(equation, uint32_t(xenos::BlendOp::kMax))),
+      min_max, sum);
+  return builder_->createTriBuiltinCall(
+      type_int4_, ext_inst_glsl_std_450_, GLSLstd450SClamp, result,
+      builder_->smearIntConstant(-32768, type_int4_),
+      builder_->smearIntConstant(32767, type_int4_));
+}
+
+spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostFixed16(
+    spv::Id color, uint32_t color_target_index) {
+  spv::Id source = HostFixed16Encode(color);
+  spv::Id result = source;
+  if (input_feedback_color_[color_target_index] != spv::NoResult) {
+    spv::Id blend_control = LoadShaderBlendControl(color_target_index);
+    SpirvBuilder::IfBuilder if_blend(
+        builder_->createBinOp(spv::OpINotEqual, type_bool_, blend_control,
+                              builder_->makeUintConstant(0x00010001)),
+        spv::SelectionControlDontFlattenMask, *builder_);
+    spv::Id blended;
+    {
+      // The destination's bits: the snorm attachment reads n / 32767 (0x8000
+      // reads as 0x8001).
+      spv::Id dest_float = ReadFeedbackColor(color_target_index);
+      spv::Id dest = builder_->createUnaryOp(
+          spv::OpConvertFToS, type_int4_,
+          builder_->createUnaryBuiltinCall(
+              type_float4_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+              builder_->createNoContractionBinOp(
+                  spv::OpFAdd, type_float4_,
+                  builder_->createNoContractionBinOp(
+                      spv::OpVectorTimesScalar, type_float4_, dest_float,
+                      builder_->makeFloatConstant(32767.0f)),
+                  builder_->smearFloatConstant(0.5f, type_float4_))));
+      // Constants are their fixed point value, unclamped (kept in int range).
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(
+          builder_->makeIntConstant(kSystemConstantEdramBlendConstant));
+      spv::Id constant = builder_->createUnaryOp(
+          spv::OpConvertFToS, type_int4_,
+          builder_->createTriBuiltinCall(
+              type_float4_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+              builder_->createUnaryBuiltinCall(
+                  type_float4_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+                  builder_->createNoContractionBinOp(
+                      spv::OpFAdd, type_float4_,
+                      builder_->createNoContractionBinOp(
+                          spv::OpVectorTimesScalar, type_float4_,
+                          builder_->createLoad(
+                              builder_->createAccessChain(
+                                  spv::StorageClassUniform,
+                                  uniform_system_constants_, id_vector_temp_),
+                              spv::NoPrecision),
+                          builder_->makeFloatConstant(1024.0f)),
+                      builder_->smearFloatConstant(0.5f, type_float4_))),
+              builder_->smearFloatConstant(-1073741824.0f, type_float4_),
+              builder_->smearFloatConstant(1073741824.0f, type_float4_)));
+
+      auto shuffle = [&](spv::Id vector, uint32_t x, uint32_t y, uint32_t z,
+                         uint32_t w) {
+        uint_vector_temp_.clear();
+        uint_vector_temp_.push_back(x);
+        uint_vector_temp_.push_back(y);
+        uint_vector_temp_.push_back(z);
+        uint_vector_temp_.push_back(w);
+        return builder_->createRvalueSwizzle(
+            spv::NoPrecision, builder_->getTypeId(vector), vector,
+            uint_vector_temp_);
+      };
+      // 16_16: red blends under the colour control and green as the alpha
+      // lane under the alpha control, the alpha factors reading green, red's
+      // constant RB_BLEND_BLUE and green's RB_BLEND_ALPHA. Its lanes go to
+      // (red, red, red, green), and the result's alpha back to green.
+      spv::Id two_channels = builder_->createBinOp(
+          spv::OpINotEqual, type_bool_,
+          builder_->createBinOp(
+              spv::OpBitwiseAnd, type_uint_, blend_control,
+              builder_->makeUintConstant(kColorBlendFixed16TwoChannels)),
+          const_uint_0_);
+      id_vector_temp_.clear();
+      id_vector_temp_.resize(4, two_channels);
+      spv::Id two_channels4 =
+          builder_->createCompositeConstruct(type_bool4_, id_vector_temp_);
+      auto lanes = [&](spv::Id value, uint32_t two_channel_rgb) {
+        return builder_->createTriOp(
+            spv::OpSelect, type_int4_, two_channels4,
+            shuffle(value, two_channel_rgb, two_channel_rgb, two_channel_rgb,
+                    two_channel_rgb == 0 ? 1 : 3),
+            value);
+      };
+      spv::Id source_lanes = lanes(source, 0);
+      spv::Id dest_lanes = lanes(dest, 0);
+      spv::Id constant_lanes = lanes(constant, 2);
+
+      spv::Id blend_factor_width = builder_->makeUintConstant(5);
+      spv::Id blend_equation_width = builder_->makeUintConstant(3);
+      auto field = [&](uint32_t offset, spv::Id width) {
+        return builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
+                                     blend_control,
+                                     builder_->makeUintConstant(offset), width);
+      };
+      auto color_alpha = [&](uint32_t color_offset, spv::Id width) {
+        id_vector_temp_.clear();
+        id_vector_temp_.resize(3, field(color_offset, width));
+        id_vector_temp_.push_back(field(color_offset + 16, width));
+        return builder_->createCompositeConstruct(type_uint4_,
+                                                  id_vector_temp_);
+      };
+      spv::Id result_lanes = HostFixed16Blend(
+          source_lanes, dest_lanes, constant_lanes,
+          shuffle(source_lanes, 3, 3, 3, 3), shuffle(dest_lanes, 3, 3, 3, 3),
+          shuffle(constant_lanes, 3, 3, 3, 3),
+          color_alpha(0, blend_factor_width), color_alpha(8, blend_factor_width),
+          color_alpha(5, blend_equation_width));
+      blended = builder_->createTriOp(spv::OpSelect, type_int4_, two_channels4,
+                                      shuffle(result_lanes, 0, 3, 2, 3),
+                                      result_lanes);
+    }
+    if_blend.makeEndIf();
+    result = if_blend.createMergePhi(blended, source);
+  }
+  // n / 32767, which the snorm attachment stores as n. -32768 becomes
+  // -32767, as the attachment can't hold it.
+  return builder_->createNoContractionBinOp(
+      spv::OpVectorTimesScalar, type_float4_,
+      builder_->createUnaryOp(spv::OpConvertSToF, type_float4_, result),
+      builder_->makeFloatConstant(1.0f / 32767.0f));
 }
 
 void SpirvShaderTranslator::FSI_AlphaToMaskSample(
