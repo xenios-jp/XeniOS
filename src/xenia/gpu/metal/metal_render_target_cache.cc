@@ -5070,6 +5070,7 @@ struct TileResolveConstants {
   // exponent bias factor's float bits, as XeResolveGetInfo decodes them.
   uint32_t num_format;
   uint32_t exp_bias_factor_bits;
+  // To the shader struct's size, a multiple of its uint2 alignment.
   uint32_t padding;
 };
 static_assert(sizeof(TileResolveConstants) == 88);
@@ -5340,6 +5341,41 @@ static uint XeTileResolvePack_8888GammaAverage4(
   return XeTileResolveAverage4Pack(sum);
 }
 
+// resolve_full_32bpp_rgb10_4x_direct's average of a 2_10_10_10 render target
+// (RGB10A2Unorm), in its operation order: each sample packed as
+// XeResolveDirectPackRGB10A2 packs it and unpacked as XeUnpackR10G10B10A2UNorm,
+// with 1/1023 and 1/3's exact bits, summed in sample order, times
+// dest_exp_bias_factor * 0.5 * 0.5 (no bias), and packed as XePackFixed packs
+// unsigned fractions. Each multiply and add is rounded on its own (fma with a
+// zero or unit operand), as the compute shader rounds them, so the output
+// matches it bit for bit.
+static float4 XeTileResolveRGB10Bits(float4 sample) {
+  return float4(uint4(uint(sample.x * 1023.0f + 0.5f),
+                      uint(sample.y * 1023.0f + 0.5f),
+                      uint(sample.z * 1023.0f + 0.5f),
+                      uint(sample.w * 3.0f + 0.5f)) &
+                uint4(1023u, 1023u, 1023u, 3u));
+}
+static uint XeTileResolvePack_RGB10Average4(float4 s0, float4 s1, float4 s2,
+                                            float4 s3,
+                                            constant XeTileResolveConstants& c) {
+  const float4 scale =
+      float4(as_type<float>(0x3A802008u), as_type<float>(0x3A802008u),
+             as_type<float>(0x3A802008u), as_type<float>(0x3EAAAAABu));
+  float4 sum = fma(XeTileResolveRGB10Bits(s0), scale, float4(0.0f));
+  sum = fma(float4(1.0f), sum,
+            fma(XeTileResolveRGB10Bits(s1), scale, float4(0.0f)));
+  sum = fma(float4(1.0f), sum,
+            fma(XeTileResolveRGB10Bits(s2), scale, float4(0.0f)));
+  sum = fma(float4(1.0f), sum,
+            fma(XeTileResolveRGB10Bits(s3), scale, float4(0.0f)));
+  float4 average = sum * 0.25f;
+  uint4 n = uint4(saturate(average) * float4(1023.0f, 1023.0f, 1023.0f, 3.0f) +
+                  0.5f) &
+            uint4(1023u, 1023u, 1023u, 3u);
+  return n.x | (n.y << 10u) | (n.z << 20u) | (n.w << 30u);
+}
+
 // The pixel's one value, or its four samples (the guest 4x sample numbering
 // matches the host one).
 #define XE_TILE_RESOLVE_READ_PIXEL(kernel_name)                               \
@@ -5420,12 +5456,14 @@ XE_TILE_RESOLVE_ALL_INDICES(8888Average4, float4,
                             XE_TILE_RESOLVE_READ_4_SAMPLES)
 XE_TILE_RESOLVE_ALL_INDICES(8888GammaAverage4, float4,
                             XE_TILE_RESOLVE_READ_4_SAMPLES)
+XE_TILE_RESOLVE_ALL_INDICES(RGB10Average4, float4,
+                            XE_TILE_RESOLVE_READ_4_SAMPLES)
 )METAL";
 
 const char* const kTileResolveKernelNames[] = {
     "8888",        "16_16Float",  "32Float",
     "16_16_16_16Float", "32_32Float", "16_16_16_16",
-    "8888Average4", "8888GammaAverage4"};
+    "8888Average4", "8888GammaAverage4", "RGB10Average4"};
 
 // The largest tile area Metal allows at each sample count (Metal feature set
 // tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
@@ -5551,12 +5589,16 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   if (copy_shader_constants.dest_relative.edram_info.fill_half_pixel_offset) {
     return "half_pixel_fill";
   }
-  // The dump shader's bit copies and 8_8_8_8 four-sample average, and the
-  // 16_16_16_16 conversion, have tile variants.
+  // The dump shader's bit copies and 8_8_8_8 four-sample average, the
+  // 16_16_16_16 conversion, and the rgb10-4x direct copy's 2_10_10_10
+  // four-sample average have tile variants.
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
   const bool average_4x =
       IsFull32RGBA8FourSampleAverage(copy_shader, copy_shader_constants);
+  const bool rgb10_4x =
+      IsFull32RGB10FourSampleAverage(copy_shader, copy_shader_constants);
+  const bool four_samples = average_4x || rgb10_4x;
   switch (copy_shader) {
     case draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA:
     case draw_util::ResolveCopyShaderIndex::kFast32bpp4xMSAA:
@@ -5564,7 +5606,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     case draw_util::ResolveCopyShaderIndex::kFast64bpp4xMSAA:
       break;
     default:
-      if (!rgba16_1x && !average_4x) {
+      if (!rgba16_1x && !four_samples) {
         return "kernel";
       }
       break;
@@ -5589,7 +5631,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     return "depth";
   }
   const xenos::MsaaSamples msaa_samples =
-      average_4x ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
+      four_samples ? xenos::MsaaSamples::k4X : xenos::MsaaSamples::k1X;
   if (rt_key.msaa_samples != msaa_samples) {
     return "msaa";
   }
@@ -5609,6 +5651,15 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
       }
       kernel = TileResolveKernel::k8888GammaAverage4;
       source_format = MTL::PixelFormatRGBA16Unorm;
+      break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+      // Only the average is ported.
+      if (!rgb10_4x) {
+        return "format";
+      }
+      kernel = TileResolveKernel::kRGB10Average4;
+      source_format = MTL::PixelFormatRGB10A2Unorm;
       break;
     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
       kernel = TileResolveKernel::k16_16Float;
@@ -5639,7 +5690,8 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   }
   if ((rgba16_1x && kernel != TileResolveKernel::k16_16_16_16) ||
       (average_4x && kernel != TileResolveKernel::k8888Average4 &&
-       kernel != TileResolveKernel::k8888GammaAverage4)) {
+       kernel != TileResolveKernel::k8888GammaAverage4) ||
+      (rgb10_4x && kernel != TileResolveKernel::kRGB10Average4)) {
     return "kernel";
   }
   const bool is_64bpp = rt_key.Is64bpp();
@@ -5672,9 +5724,9 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   // as tall.
   const uint32_t edram_tile_width =
       xenos::kEdramTileWidthSamples >>
-      (uint32_t(is_64bpp) + uint32_t(average_4x));
+      (uint32_t(is_64bpp) + uint32_t(four_samples));
   const uint32_t edram_tile_height =
-      xenos::kEdramTileHeightSamples >> uint32_t(average_4x);
+      xenos::kEdramTileHeightSamples >> uint32_t(four_samples);
   TileResolveConstants constants = {};
   constants.origin[0] = base_delta % edram_info.pitch_tiles * edram_tile_width +
                         coordinate_info.edram_offset_x_div_8 * 8;
@@ -5740,6 +5792,14 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   constants.num_format = (dest_info.value >> 13) & 0x7;
   constants.exp_bias_factor_bits =
       uint32_t((int32_t(dest_info.value << 10) >> 26 << 23) + 0x3F800000);
+  if (kernel == TileResolveKernel::kRGB10Average4) {
+    // The kernel's average is times 1/4 alone, and its pack the unsigned
+    // fraction's.
+    if (constants.exp_bias_factor_bits != 0x3F800000u ||
+        constants.num_format) {
+      return "rgb10_bias";
+    }
+  }
   if (kernel == TileResolveKernel::k16_16_16_16) {
     // An RGBA16Snorm tile no draw of the pass touched may hold 0x8000, which
     // today's compute reads raw (-32768) and the tile read sees as -1.0, like
