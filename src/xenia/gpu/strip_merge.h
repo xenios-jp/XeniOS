@@ -78,6 +78,10 @@ class StripMerge {
   // Also the most bands a strip-merged render target has.
   static constexpr uint32_t kMaxStrips = 4;
   static constexpr uint64_t kFirstTileBit = uint64_t(1) << 31;
+  // The bin bits that name strips. Bits 32-63 are selected or not as a
+  // whole for every strip (4D530919 selects bit 32 partway through the first
+  // strip and for all of the second): they don't name strips.
+  static constexpr uint64_t kStripBitsMask = kFirstTileBit - 1;
 
   struct Layout {
     uint32_t strip_count = 0;
@@ -240,6 +244,7 @@ class StripMerge {
     uint64_t mask;
     uint64_t hash;
     uint32_t opcode;
+    bool executed;
   };
   // The registers a register or constant write packet sets.
   struct RegisterWrites {
@@ -305,8 +310,8 @@ class StripMerge {
   void BeginStrip(uint64_t bin_select);
   void EndStrip();
   void EndSession();
-  // Compares strip `index` with the first one. False if they differ.
-  bool CompareStrip(uint32_t index);
+  // False if a packet is predicated on some strips but not all.
+  bool CheckMasks();
   // Derives the layout from the session's records. False if it isn't one.
   // Merged sessions skip the later strips' resolves, so they don't check them.
   bool DeriveLayout(Layout& layout_out, bool check_resolves);

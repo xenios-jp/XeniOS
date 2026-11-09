@@ -184,7 +184,14 @@ void StripMerge::OnBinSelect(uint64_t bin_select, bool tracing) {
     if (bin_select == current_select_) {
       return;
     }
-    uint64_t strip_bits = bin_select & ~kFirstTileBit;
+    uint64_t strip_bits = bin_select & kStripBitsMask;
+    if (!((bin_select ^ current_select_) & (kStripBitsMask | kFirstTileBit))) {
+      // The same strip, other bits above the strips selected. Packets
+      // predicated on those bits are compared between the strips where they
+      // run (CompareStrip).
+      current_select_ = bin_select;
+      return;
+    }
     if (!(bin_select & kFirstTileBit) && strip_bits &&
         !(strip_bits & strip_bits_union_)) {
       if (strip_count_ < kMaxStrips) {
@@ -199,9 +206,9 @@ void StripMerge::OnBinSelect(uint64_t bin_select, bool tracing) {
   if (!cvars::strip_merge || !backend_ || tracing) {
     return;
   }
-  uint64_t strip_bits = bin_select & ~kFirstTileBit;
-  if ((bin_select & kFirstTileBit) && strip_bits && !(bin_select >> 32) &&
-      strip_bits != (kFirstTileBit - 1)) {
+  uint64_t strip_bits = bin_select & kStripBitsMask;
+  if ((bin_select & kFirstTileBit) && strip_bits &&
+      strip_bits != kStripBitsMask) {
     BeginSession(bin_select);
   }
 }
@@ -229,12 +236,7 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   merged_since_learning_ = slot.merged_since_learning;
   previous_strip_bits_union_ = slot.previous_strip_bits_union;
   draw_checks_ran_ = candidate_.IsValid();
-  uint64_t strip_bits = bin_select & ~kFirstTileBit;
-  bool may_merge = !cooldown_sessions_ && candidate_.IsValid() &&
-                   verified_sessions_ >= kLearnSessions &&
-                   candidate_.strip_bits[0] == strip_bits &&
-                   (!layout_.IsValid() || layout_ == candidate_);
-  if (may_merge && merged_since_learning_ >= kRelearnInterval) {
+  uint64_t strip_bits = bin_select & kStripBitsMask;
       candidate_.strip_bits[0] == strip_bits &&
       (!layout_.IsValid() || layout_ == candidate_) &&
       (carry_session_order_ == kNoCarry ||
@@ -256,7 +258,7 @@ void StripMerge::BeginSession(uint64_t bin_select) {
 void StripMerge::BeginStrip(uint64_t bin_select) {
   Strip& strip = strips_[strip_count_];
   strip.Clear();
-  strip.bits = bin_select & ~kFirstTileBit;
+  strip.bits = bin_select & kStripBitsMask;
   strip_index_ = strip_count_++;
   strip_bits_union_ |= strip.bits;
   current_select_ = bin_select;
@@ -287,6 +289,8 @@ void StripMerge::EndSession() {
   EndStrip();
   Layout derived;
   bool verified = !failed_ && DeriveLayout(derived, mode_ == Mode::kLearn);
+  bool verified = !failed_ && CheckMasks() &&
+                  DeriveLayout(derived, mode_ == Mode::kLearn);
   for (uint32_t k = 1; verified && k < strip_count_; ++k) {
     verified = CompareStrip(k);
   }
@@ -728,6 +732,24 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
   return true;
 }
 
+bool StripMerge::CheckMasks() {
+  for (uint32_t k = 0; k < strip_count_; ++k) {
+    for (const Record& record : strips_[k].records) {
+      uint64_t mask = record.mask & strip_bits_union_;
+      if (!mask || mask == strip_bits_union_) {
+        continue;
+      }
+      }
+        failure_strip_ = k;
+        Fail("bin masks naming some strips but not all (objects culled per "
+             "strip)");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
   // So a vertex is 7 dwords: x, y, z, then the interpolated color.
       first.vertex_shader_hash != kD3DTilingClearVertexShader ||
       last.vertex_shader_hash != kD3DTilingClearVertexShader ||
@@ -742,8 +764,16 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
       return 1;  // Own, compared through own_opcodes and own_writes.
       return 1;  // Own, compared through what the draws see of them.
     }
+    if (!mask) {
+      // Bits outside the strips (above bit 31, 4D530919's bit 32) are
+      // selected the same way for every strip at a point: compared where they
+      // run. First tile only: not compared.
+      return (record.mask & ~kFirstTileBit) && record.executed ? 0 : 1;
+    }
     if (!(mask & bits)) {
-      return 1;  // Another strip's, or first tile only.
+      // Another strip's. One that ran here through bits above the strips'
+      // isn't compared with anything: partial.
+      return record.executed ? 2 : 1;
     }
     return 2;  // Partial.
   };
@@ -864,9 +894,8 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
     return;
   }
   Strip& strip = strips_[strip_index_];
-  strip.records.push_back(
-      {predicated ? bin_mask : ~uint64_t(0), HashPayload(payload, header),
-       opcode});
+  strip.records.push_back({predicated ? bin_mask : ~uint64_t(0),
+                           HashPayload(payload, header), opcode, executed});
   if (!executed) {
     return;
   }
@@ -888,6 +917,7 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
   // checks the masks against the session's actual strip bits.
   uint64_t other_strips = previous_strip_bits_union_
                               ? previous_strip_bits_union_ | strip_bits_union_
+                              : kStripBitsMask;
   if (bin_mask & ~(strip.bits | kFirstTileBit) & other_strips) {
     MarkOwnStale(opcode, payload);
     return;
@@ -1088,7 +1118,7 @@ void StripMerge::OnPacketType01(uint32_t header,
     MarkOwnStale(base, (header & (uint32_t(1) << 15)) ? 1 : count);
   }
   strips_[strip_index_].records.push_back(
-      {~uint64_t(0), HashPayload(payload, header), UINT32_MAX});
+      {~uint64_t(0), HashPayload(payload, header), UINT32_MAX, true});
 }
 
 bool StripMerge::BeforeDraw() {
