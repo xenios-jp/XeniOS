@@ -339,7 +339,8 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   if (!xe_ios_live_account_ui_enabled()) {
     return;
   }
-  __unsafe_unretained XeniaProfileViewController* unsafe_self = self;
+  // Answers later, and a delete that ends after the sheet closed calls this with the last
+  // reference to the controller: the block keeps it alive.
   [xe_ios_live_account_service()
       localProfilesWithCompletion:^(NSArray<XeniaLiveLocalProfile*>* profiles) {
         NSMutableSet* names = [NSMutableSet set];
@@ -352,14 +353,14 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
             [linked addObject:profile.gamertag];
           }
         }
-        [unsafe_self->linked_names_ release];
-        unsafe_self->linked_names_ = [linked copy];
-        if ([names isEqualToSet:unsafe_self->online_names_ ?: [NSSet set]]) {
+        [linked_names_ release];
+        linked_names_ = [linked copy];
+        if ([names isEqualToSet:online_names_ ?: [NSSet set]]) {
           return;
         }
-        [unsafe_self->online_names_ release];
-        unsafe_self->online_names_ = [names copy];
-        [unsafe_self.tableView reloadData];
+        [online_names_ release];
+        online_names_ = [names copy];
+        [self.tableView reloadData];
       }];
 }
 
@@ -820,9 +821,9 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                NSString* failure =
                                    error.code == XeniaLiveAccountErrorResultUnknown
                                        ? NSLocalizedString(
-                                             @"The online service didn’t answer, so the account "
-                                             @"may or may not have been deleted. The profile is "
-                                             @"still here.",
+                                             @"The online service didn’t answer, so the delete "
+                                             @"couldn’t be confirmed. The profile is still here. "
+                                             @"Try again when you’re online.",
                                              @"profile view controller: alert message")
                                        : xe_ios_connection_failure_text(NSLocalizedString(
                                              @"You have to be online to delete the account, and "
