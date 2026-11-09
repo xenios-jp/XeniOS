@@ -5914,6 +5914,22 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   uint32_t kernel_refresh_count = 0;
   std::array<MTL::Texture*, 4> sampled_refresh{};
   uint32_t sampled_refresh_count = 0;
+  bool refresh_swap = false;
+  // Back to the pool on every return before they're handed to the pass end.
+  MetalTextureCache* texture_cache = command_processor_.texture_cache();
+  std::array<std::unique_ptr<MetalTextureCache::ResolveRefreshStorage>, 4>
+      refresh_storage;
+  auto release_refresh_storage = [&]() {
+    for (auto& storage : refresh_storage) {
+      if (storage) {
+        texture_cache->ReleaseResolveRefreshStorage(std::move(storage));
+      }
+    }
+  };
+  struct ReleaseOnReturn {
+    decltype(release_refresh_storage)& release;
+    ~ReleaseOnReturn() { release(); }
+  } release_on_return{release_refresh_storage};
   if (refresh_count) {
     if (refresh_count > 4) {
       return "refresh_count";
@@ -5940,8 +5956,21 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
       }
     }
     if (sampled_refresh_count) {
-      // The scratch texture, bound last.
-      ++kernel_refresh_count;
+      // Where the dispatch writes every texel of them, each gets an image of
+      // its own instead, which it takes as its image when the pass ends.
+      // Otherwise the scratch texture, bound last, is copied into all.
+      refresh_swap = texture_cache && !refresh_offset_y &&
+                     constants.size[0] >= refresh_textures[0]->width() &&
+                     constants.size[1] >= refresh_textures[0]->height();
+      for (uint32_t i = 0; refresh_swap && i < sampled_refresh_count; ++i) {
+        refresh_storage[i] =
+            texture_cache->AcquireResolveRefreshStorage(sampled_refresh[i]);
+        refresh_swap = refresh_storage[i] != nullptr;
+      }
+      if (!refresh_swap) {
+        release_refresh_storage();
+      }
+      kernel_refresh_count += refresh_swap ? sampled_refresh_count : 1;
     }
     constants.refresh_size[0] = uint32_t(refresh_textures[0]->width());
     constants.refresh_size[1] = uint32_t(refresh_textures[0]->height());
@@ -5989,7 +6018,12 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     return "upload_ended_pass";
   }
   MTL::Texture* refresh_scratch = nullptr;
-  if (sampled_refresh_count) {
+  if (refresh_swap) {
+    for (uint32_t i = 0; i < sampled_refresh_count; ++i) {
+      kernel_refresh[kernel_refresh_count - sampled_refresh_count + i] =
+          refresh_storage[i]->write_view;
+    }
+  } else if (sampled_refresh_count) {
     refresh_scratch = AcquireRefreshScratch(refresh_textures[0]);
     if (!refresh_scratch) {
       return "refresh_scratch";
@@ -6020,6 +6054,15 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
             : 0;
     for (uint32_t i = 0; i < sampled_refresh_count; ++i) {
       copy.destinations.push_back(NS::RetainPtr(sampled_refresh[i]));
+    }
+    copy.post_pass_resolves_before = post_pass_resolves_.size();
+    post_pass_refresh_copies_.push_back(std::move(copy));
+  } else if (refresh_swap) {
+    PostPassRefreshCopy copy;
+    for (uint32_t i = 0; i < sampled_refresh_count; ++i) {
+      PostPassRefreshCopy::Swap& swap = copy.swaps.emplace_back();
+      swap.write_view = NS::RetainPtr(sampled_refresh[i]);
+      swap.storage = std::move(refresh_storage[i]);
     }
     copy.post_pass_resolves_before = post_pass_resolves_.size();
     post_pass_refresh_copies_.push_back(std::move(copy));
@@ -7966,8 +8009,16 @@ void MetalRenderTargetCache::ReleaseRefreshScratch(MTL::Texture* scratch) {
 }
 
 void MetalRenderTargetCache::ClearPostPassRefreshCopies() {
+  MetalTextureCache* texture_cache = command_processor_.texture_cache();
   for (PostPassRefreshCopy& copy : post_pass_refresh_copies_) {
-    ReleaseRefreshScratch(copy.scratch);
+    if (copy.scratch) {
+      ReleaseRefreshScratch(copy.scratch);
+    }
+    for (PostPassRefreshCopy::Swap& swap : copy.swaps) {
+      if (texture_cache) {
+        texture_cache->ReleaseResolveRefreshStorage(std::move(swap.storage));
+      }
+    }
   }
   post_pass_refresh_copies_.clear();
 }
@@ -7978,6 +8029,23 @@ void MetalRenderTargetCache::EncodePostPassRefreshCopies(
   if (copies.empty()) {
     return;
   }
+  MetalTextureCache* texture_cache = command_processor_.texture_cache();
+  bool any_scratch = false;
+  for (PostPassRefreshCopy& copy : copies) {
+    any_scratch |= copy.scratch != nullptr;
+    // The commands encoded from here on use the new images. If a texture is
+    // gone, nothing reads what was written for it.
+    for (PostPassRefreshCopy::Swap& swap : copy.swaps) {
+      if (texture_cache) {
+        texture_cache->SwapResolveRefreshStorage(swap.write_view.get(),
+                                                 swap.storage);
+        texture_cache->ReleaseResolveRefreshStorage(std::move(swap.storage));
+      }
+    }
+  }
+  if (!any_scratch) {
+    return;
+  }
   command_processor_.EndSharedComputeEncoder(command_buffer);
   MTL::BlitCommandEncoder* blit = command_buffer->blitCommandEncoder();
   if (!blit) {
@@ -7986,6 +8054,9 @@ void MetalRenderTargetCache::EncodePostPassRefreshCopies(
         "textures left to the pass end");
   }
   for (PostPassRefreshCopy& copy : copies) {
+    if (!copy.scratch) {
+      continue;
+    }
     if (blit && copy.width && copy.height) {
       for (const NS::SharedPtr<MTL::Texture>& destination :
            copy.destinations) {

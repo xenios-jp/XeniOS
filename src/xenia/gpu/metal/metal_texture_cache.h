@@ -190,6 +190,31 @@ class MetalTextureCache : public TextureCache {
   void PublishDirectResolveTextureRefresh(
       const ResolveTextureRefreshTarget& target);
 
+  // Another image of the shape, format, swizzle and usage of a refresh
+  // target's texture, with its views. A tile resolve whose pass samples the
+  // texture writes this in its place, and the texture takes it as its image
+  // when the pass ends, instead of having it copied in - for resolves that
+  // write every texel.
+  struct ResolveRefreshStorage {
+    // Retained.
+    MTL::Texture* texture = nullptr;
+    MTL::Texture* write_view = nullptr;
+    std::unordered_map<uint64_t, MTL::Texture*> views;
+    ~ResolveRefreshStorage();
+  };
+  // For the texture whose refresh write view is write_view, or nullptr.
+  std::unique_ptr<ResolveRefreshStorage> AcquireResolveRefreshStorage(
+      MTL::Texture* write_view);
+  // Exchanges the image of the texture whose refresh write view is
+  // write_view, if it still exists, with storage, which then holds the
+  // texture's former image. False if the texture is gone.
+  bool SwapResolveRefreshStorage(
+      MTL::Texture* write_view,
+      std::unique_ptr<ResolveRefreshStorage>& storage);
+  // Back for reuse. The image may still be in use by commands encoded so far.
+  void ReleaseResolveRefreshStorage(
+      std::unique_ptr<ResolveRefreshStorage> storage);
+
   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
   bool IsScaledResolveSupportedForFormat(TextureKey key) const override;
   bool EnsureScaledResolveMemoryCommitted(
@@ -452,6 +477,13 @@ class MetalTextureCache : public TextureCache {
   // authoritative objects and rejects ambiguous aliases.
   MetalTexture* resolve_refresh_first_ = nullptr;
   MetalTexture* resolve_refresh_last_ = nullptr;
+  // Free ResolveRefreshStorage, and those released beyond the pool's size,
+  // freed once the submission that may use them has completed.
+  std::vector<std::unique_ptr<ResolveRefreshStorage>>
+      resolve_refresh_storage_pool_;
+  std::vector<std::pair<uint64_t, std::unique_ptr<ResolveRefreshStorage>>>
+      resolve_refresh_storage_retired_;
+  void FreeResolveRefreshStorage(bool all);
   // Whether a texture with this key is created writable and inventoried as a
   // resolve refresh destination: an enabled format in the exact tiled 2D
   // single-level shape a 1x resolve can write.
