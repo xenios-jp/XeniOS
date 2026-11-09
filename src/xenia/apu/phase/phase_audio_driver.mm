@@ -140,8 +140,10 @@ class PHASEStreamClient {
 class PHASESharedEngine {
  public:
   // The running engine, built on first use. Null if it can't be built or runs
-  // at another rate.
-  static std::shared_ptr<PHASESharedEngine> Acquire(uint32_t frequency);
+  // at another rate. Each non-null result is paired with one Release.
+  static PHASESharedEngine* Acquire(uint32_t frequency);
+  // The last Release stops the engine, before any Acquire can build a new one.
+  static void Release(PHASESharedEngine* engine);
 
   explicit PHASESharedEngine(uint32_t frequency) : frequency_(frequency) {}
   ~PHASESharedEngine();
@@ -160,7 +162,10 @@ class PHASESharedEngine {
   void RemoveSessionObserver();
 
   static std::mutex instance_mutex_;
-  static std::weak_ptr<PHASESharedEngine> instance_;
+  // Both under |instance_mutex_|, which is held across build and teardown so two engines never
+  // run at once.
+  static std::unique_ptr<PHASESharedEngine> instance_;
+  static size_t instance_users_;
 
   const uint32_t frequency_;
   // Guards the graph and |clients_|. Taken before a client's graph_mutex.
@@ -176,19 +181,21 @@ class PHASESharedEngine {
 };
 
 std::mutex PHASESharedEngine::instance_mutex_;
-std::weak_ptr<PHASESharedEngine> PHASESharedEngine::instance_;
+std::unique_ptr<PHASESharedEngine> PHASESharedEngine::instance_;
+size_t PHASESharedEngine::instance_users_ = 0;
 
-std::shared_ptr<PHASESharedEngine> PHASESharedEngine::Acquire(uint32_t frequency) {
+PHASESharedEngine* PHASESharedEngine::Acquire(uint32_t frequency) {
   std::lock_guard<std::mutex> lock(instance_mutex_);
-  if (std::shared_ptr<PHASESharedEngine> engine = instance_.lock()) {
-    if (engine->frequency_ != frequency) {
-      XELOGE("PHASEAudioDriver: engine runs at {} Hz, a client asked for {} Hz", engine->frequency_,
-             frequency);
+  if (instance_) {
+    if (instance_->frequency_ != frequency) {
+      XELOGE("PHASEAudioDriver: engine runs at {} Hz, a client asked for {} Hz",
+             instance_->frequency_, frequency);
       return nullptr;
     }
-    return engine;
+    ++instance_users_;
+    return instance_.get();
   }
-  auto engine = std::make_shared<PHASESharedEngine>(frequency);
+  auto engine = std::make_unique<PHASESharedEngine>(frequency);
   {
     std::lock_guard<std::mutex> graph_lock(engine->mutex_);
     bool built = false;
@@ -205,8 +212,16 @@ std::shared_ptr<PHASESharedEngine> PHASESharedEngine::Acquire(uint32_t frequency
     }
   }
   engine->InstallSessionObserver();
-  instance_ = engine;
-  return engine;
+  instance_ = std::move(engine);
+  instance_users_ = 1;
+  return instance_.get();
+}
+
+void PHASESharedEngine::Release(PHASESharedEngine* engine) {
+  std::lock_guard<std::mutex> lock(instance_mutex_);
+  if (engine == instance_.get() && --instance_users_ == 0) {
+    instance_.reset();
+  }
 }
 
 PHASESharedEngine::~PHASESharedEngine() {
@@ -441,7 +456,8 @@ struct PHASEAudioDriver::Impl final : public PHASEStreamClient {
   std::atomic<bool> shutting_down{false};
   std::atomic<bool> paused{false};
 
-  std::shared_ptr<PHASESharedEngine> engine;
+  // Set between Acquire and Release.
+  PHASESharedEngine* engine = nullptr;
 
   // This client's sound event (strong refs under ARC). Under |graph_mutex|.
   PHASESoundEvent* sound_event = nil;
@@ -611,7 +627,8 @@ bool PHASEAudioDriver::Initialize() {
       return false;
     }
     if (!d->engine->AddClient(d)) {
-      d->engine.reset();
+      PHASESharedEngine::Release(d->engine);
+      d->engine = nullptr;
       return false;
     }
     XELOGI("PHASEAudioDriver[{}]: INITIALIZED OK — spatial 5.1 over PHASE, "
@@ -647,7 +664,10 @@ void PHASEAudioDriver::Shutdown() {
       d->StopEvent();
     }
     // The last client stops the engine.
-    d->engine.reset();
+    if (d->engine) {
+      PHASESharedEngine::Release(d->engine);
+      d->engine = nullptr;
+    }
 
     // Wait (bounded) for outstanding completion callbacks so no late block runs
     // after teardown; then flush any permits they would have released so the
