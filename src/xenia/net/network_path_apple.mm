@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #include "xenia/base/logging.h"
 
@@ -26,6 +27,10 @@ std::atomic<NetworkPathState> g_state{NetworkPathState::kAvailable};
 std::mutex g_listeners_mutex;
 std::map<uint64_t, std::function<void()>> g_listeners;
 uint64_t g_next_listener = 1;
+// Held while listeners run (not while |g_listeners_mutex| is), so Remove can
+// wait for a call in flight.
+std::mutex g_call_mutex;
+thread_local bool t_in_listener = false;
 
 dispatch_queue_t g_queue = nullptr;
 dispatch_semaphore_t g_first_answer = nullptr;
@@ -71,10 +76,28 @@ void Apply(nw_path_t path) {
   } else {
     XELOGI("Network: {}", Name(state));
   }
-  std::lock_guard lock(g_listeners_mutex);
-  for (const auto& [id, listener] : g_listeners) {
+  std::lock_guard call_lock(g_call_mutex);
+  std::vector<uint64_t> ids;
+  {
+    std::lock_guard lock(g_listeners_mutex);
+    for (const auto& [id, listener] : g_listeners) {
+      ids.push_back(id);
+    }
+  }
+  t_in_listener = true;
+  for (uint64_t id : ids) {
+    std::function<void()> listener;
+    {
+      std::lock_guard lock(g_listeners_mutex);
+      auto it = g_listeners.find(id);
+      if (it == g_listeners.end()) {
+        continue;  // Removed since the snapshot.
+      }
+      listener = it->second;
+    }
     listener();
   }
+  t_in_listener = false;
 }
 
 // Starts on |g_queue|.
@@ -115,8 +138,14 @@ uint64_t AddNetworkPathListener(std::function<void()> listener) {
 }
 
 void RemoveNetworkPathListener(uint64_t id) {
-  std::lock_guard lock(g_listeners_mutex);
-  g_listeners.erase(id);
+  {
+    std::lock_guard lock(g_listeners_mutex);
+    g_listeners.erase(id);
+  }
+  if (!t_in_listener) {
+    // Wait out a call that may have copied the listener already.
+    std::lock_guard call_lock(g_call_mutex);
+  }
 }
 
 }  // namespace xe::net
