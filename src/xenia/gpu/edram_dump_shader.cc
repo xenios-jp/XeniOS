@@ -195,22 +195,30 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
   std::array<spv::Id, 3> resolve_texture_aliases;
   const uint32_t resolve_texture_alias_count =
       key.direct_resolve_texture ? key.direct_resolve_texture_aliases : 0;
+  // The last aliases of a depth refresh may take the raw packed dwords.
+  const uint32_t resolve_texture_first_raw_alias =
+      copy_is_depth && key.direct_resolve_texture_raw_aliases <=
+                           resolve_texture_alias_count
+          ? resolve_texture_alias_count - key.direct_resolve_texture_raw_aliases
+          : resolve_texture_alias_count;
   if (key.direct_resolve_texture) {
+    spv::Id type_resolve_texture_raw = builder.makeImageType(
+        type_uint, spv::Dim2D, false, true, false, 2,
+        format_is_64bpp ? spv::ImageFormat::Rg32ui : spv::ImageFormat::R32ui);
     spv::Id type_resolve_texture =
         copy_is_depth
             ? builder.makeImageType(type_float, spv::Dim2D, false, true, false,
                                     2, spv::ImageFormat::R32f)
-            : builder.makeImageType(type_uint, spv::Dim2D, false, true, false,
-                                    2,
-                                    format_is_64bpp ? spv::ImageFormat::Rg32ui
-                                                    : spv::ImageFormat::R32ui);
+            : type_resolve_texture_raw;
     static const char* const kResolveTextureNames[] = {
         "xe_resolve_texture", "xe_resolve_texture_alias_0",
         "xe_resolve_texture_alias_1", "xe_resolve_texture_alias_2"};
     for (uint32_t i = 0; i <= resolve_texture_alias_count; ++i) {
       spv::Id variable = builder.createVariable(
           spv::NoPrecision, spv::StorageClassUniformConstant,
-          type_resolve_texture, kResolveTextureNames[i]);
+          i > resolve_texture_first_raw_alias ? type_resolve_texture_raw
+                                              : type_resolve_texture,
+          kResolveTextureNames[i]);
       builder.addDecoration(variable, spv::DecorationDescriptorSet,
                             options.descriptor_set_dest);
       builder.addDecoration(variable, spv::DecorationBinding, 1 + i);
@@ -1252,6 +1260,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
     }
     std::vector<spv::Id> refresh_texels(pixels_per_thread, spv::NoResult);
+    std::vector<spv::Id> refresh_raw_texels(pixels_per_thread, spv::NoResult);
     for (uint32_t i = 0; i < pixels_per_thread; ++i) {
       spv::Id* pixel = &run_packed[i * dwords_per_pixel];
       if (!format_is_64bpp) {
@@ -1287,6 +1296,16 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
         // The texture-cache image holds what the ordinary loader would copy
         // from the resolved memory: the swapped, not yet endian-transformed
         // texels, as raw dwords.
+        if (!copy_is_depth ||
+            resolve_texture_first_raw_alias < resolve_texture_alias_count) {
+          id_vector_temp.clear();
+          id_vector_temp.push_back(pixel[0]);
+          id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
+          id_vector_temp.push_back(const_uint_0);
+          id_vector_temp.push_back(const_uint_0);
+          refresh_raw_texels[i] =
+              builder.createCompositeConstruct(type_uint4, id_vector_temp);
+        }
         if (copy_is_depth) {
           auto depth = EmitResolveRefreshDepthTexel(
               builder, pixel[0], key.direct_resolve_texture_depth_float,
@@ -1295,13 +1314,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
           refresh_texels[i] = builder.createCompositeConstruct(
               builder.makeVectorType(type_float, 4), {depth, zero, zero, zero});
         } else {
-          id_vector_temp.clear();
-          id_vector_temp.push_back(pixel[0]);
-          id_vector_temp.push_back(format_is_64bpp ? pixel[1] : const_uint_0);
-          id_vector_temp.push_back(const_uint_0);
-          id_vector_temp.push_back(const_uint_0);
-          refresh_texels[i] =
-              builder.createCompositeConstruct(type_uint4, id_vector_temp);
+          refresh_texels[i] = refresh_raw_texels[i];
         }
       }
       if (format_is_64bpp) {
@@ -1348,7 +1361,8 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
           builder.createNoResultOp(
               spv::OpImageWrite,
               {loaded_resolve_texture_aliases[j], coordinates,
-               refresh_texels[i]});
+               j < resolve_texture_first_raw_alias ? refresh_texels[i]
+                                                   : refresh_raw_texels[i]});
         }
       };
       spv::Id texture_y_inside = builder.createBinOp(

@@ -593,10 +593,25 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     }
     return view;
   };
+  // Do not issue concurrent writes through two views of the same storage.
+  auto shares_storage = [&](MTL::Texture* write_view) {
+    auto* root = root_texture(write_view);
+    for (const auto& destination : target_out.textures()) {
+      if (root == root_texture(destination.write_texture.get())) {
+        return true;
+      }
+    }
+    return false;
+  };
+  using Transform = ResolveTextureRefreshTarget::Transform;
+  // Raw interpretations of a depth resolve, appended after the depth ones.
+  std::array<ResolveTextureRefreshTarget::Alias,
+             ResolveTextureRefreshTarget::kMaxAliases>
+      raw_candidates{};
+  uint32_t raw_candidate_count = 0;
   for (MetalTexture* texture = resolve_refresh_first_; texture;
        texture = texture->resolve_refresh_next_) {
     const TextureKey& key = texture->key();
-    using Transform = ResolveTextureRefreshTarget::Transform;
     Transform transform = Transform::kNone;
     const auto loader = GetLoadShaderIndexForKey(key);
     if (loader == kLoadShaderIndexDepthUnorm) {
@@ -604,9 +619,13 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     } else if (loader == kLoadShaderIndexDepthFloat) {
       transform = Transform::kDepthFloat24;
     }
+    // The resolve stores the packed depth and stencil dwords, which a 32bpb
+    // loader copies unchanged.
+    const bool raw = depth && transform == Transform::kNone &&
+                     loader == kLoadShaderIndex32bpb;
     const uint32_t texture_base = key.base_page << 12;
     const uint32_t aligned_width = xe::align(key.GetWidth(), uint32_t(8));
-    if (!key.is_valid || (transform != Transform::kNone) != depth ||
+    if (!key.is_valid || ((transform != Transform::kNone) != depth && !raw) ||
         FormatInfo::Get(key.format)->bytes_per_block() != bytes_per_block ||
         texture_base > base_address || key.endianness != endianness ||
         (key.pitch << 5) != pitch || width > aligned_width ||
@@ -659,6 +678,14 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
       continue;
     }
     current.cache_texture = texture;
+    if (raw) {
+      if (write_view->pixelFormat() == MTL::PixelFormatR32Uint &&
+          raw_candidate_count < raw_candidates.size()) {
+        current.write_texture = NS::RetainPtr(write_view);
+        raw_candidates[raw_candidate_count++] = std::move(current);
+      }
+      continue;
+    }
     if (!target_out) {
       current.write_texture = NS::RetainPtr(write_view);
       target_out.destinations[target_out.count++] = std::move(current);
@@ -676,16 +703,7 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
         write_view->pixelFormat() != primary.write_texture->pixelFormat()) {
       continue;
     }
-    // Do not issue concurrent writes through two views of the same storage.
-    auto* root = root_texture(write_view);
-    bool duplicate = false;
-    for (const auto& destination : target_out.textures()) {
-      if (root == root_texture(destination.write_texture.get())) {
-        duplicate = true;
-        break;
-      }
-    }
-    if (duplicate) {
+    if (shares_storage(write_view)) {
       continue;
     }
     if (target_out.count == target_out.destinations.size()) {
@@ -693,6 +711,22 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     }
     current.write_texture = NS::RetainPtr(write_view);
     target_out.destinations[target_out.count++] = std::move(current);
+  }
+  if (target_out && target_out.transform != Transform::kNone) {
+    for (uint32_t i = 0; i < raw_candidate_count &&
+                         target_out.count < target_out.destinations.size();
+         ++i) {
+      auto& candidate = raw_candidates[i];
+      auto* write_view = candidate.write_texture.get();
+      if (candidate.offset_y != primary.offset_y ||
+          write_view->width() != primary.write_texture->width() ||
+          write_view->height() != primary.write_texture->height() ||
+          shares_storage(write_view)) {
+        continue;
+      }
+      target_out.destinations[target_out.count++] = std::move(candidate);
+      ++target_out.raw_count;
+    }
   }
   for (const auto& destination : target_out.textures()) {
     auto* destination_texture =

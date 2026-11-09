@@ -73,6 +73,9 @@ union EdramDumpShaderKey {
     // pixel, so a tile holds as many resolve pixels as source samples. Only
     // meaningful with direct_resolve and a 4x msaa_samples.
     uint32_t direct_resolve_samples_as_pixels : 1;
+    // Of a depth refresh's aliases, how many last ones are R32Uint images
+    // taking the packed texels as raw dwords rather than the converted depth.
+    uint32_t direct_resolve_texture_raw_aliases : 2;
   };
 
   EdramDumpShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
