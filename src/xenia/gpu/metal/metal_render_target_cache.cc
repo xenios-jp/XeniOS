@@ -2092,9 +2092,8 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
                          positions.z[0] >= 0.0f && positions.z[0] <= 1.0f &&
                          positions.w[0] == 1.0f && positions.w[1] == 1.0f &&
                          positions.w[2] == 1.0f;
-    // Not yet for strip-merged render targets, read at band offsets.
     if ((z_zero || z_one || z_d24s8) && draw_resolution_scale_x() == 1 &&
-        draw_resolution_scale_y() == 1 && !key.strip_merged) {
+        draw_resolution_scale_y() == 1) {
       uint32_t guest_depth = 0;
       if (z_one) {
         guest_depth = d24s8 ? 0xFFFFFF : xenos::Float32To20e4(1.0f, true);
@@ -2132,8 +2131,7 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
   }
   auto* dest = static_cast<MetalRenderTarget*>(render_targets[slot]);
   std::vector<Transfer>& transfers = transfer_lists[slot];
-  // A strip-merged destination's bands read their sources at band offsets.
-  if (!dest || dest->key().strip_merged) {
+  if (!dest) {
     return;
   }
   const RenderTargetKey dest_key = dest->key();
@@ -2165,6 +2163,13 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
         (!source_key.is_depth && source_key.Is64bpp())) {
       return;
     }
+    // Strip merge: the same pixels only between two strip-merged render
+    // targets, each band from the same band.
+    if ((source_key.strip_merged || dest_key.strip_merged) &&
+        (!source_key.strip_merged || !dest_key.strip_merged ||
+         transfer.band_count || transfer.source_band_shift)) {
+      return;
+    }
     if (constant &&
         (constant->value != source_constant->value ||
          std::memcmp(&constant->rectangle, &source_constant->rectangle,
@@ -2194,6 +2199,14 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
       (start_tiles - dest_key.base_tiles) / pitch_tiles * tile_height;
   rows.width_pixels = pitch_tiles * tile_width;
   rows.height_pixels = (end_tiles - start_tiles) / pitch_tiles * tile_height;
+  if (dest_key.strip_merged) {
+    // Every band's rows, so whole bands only, to be one rectangle.
+    const uint32_t band_rows = GetStripMergeBandRows(dest_key);
+    if (rows.y_pixels || rows.height_pixels != band_rows) {
+      return;
+    }
+    rows.height_pixels = band_rows * strip_merge_bands_.count;
+  }
   if (!IsRenderTargetDataOnlyInRectangle(dest_key, false, rows)) {
     return;
   }
