@@ -7921,6 +7921,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     PerformDeferredClears(cmd);
   }
 
+  // Past every fallback to another path, so each transfer is logged once.
+  LogTransfers(render_target_count, render_targets, render_target_transfers,
+               resolve_clear_needed ? resolve_clear_rectangle : nullptr);
+
   if (resolve_clear_needed && !use_active_render_encoder) {
     const PairedClearResult result = TryPerformPairedResolveClear(
         render_target_count, render_targets, render_target_transfers,
