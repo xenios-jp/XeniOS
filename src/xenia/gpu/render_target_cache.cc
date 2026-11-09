@@ -28,6 +28,8 @@
 #include "xenia/gpu/trace_writer.h"
 #include "xenia/gpu/xenos.h"
 
+DECLARE_bool(strip_merge_log);
+
 DEFINE_bool(log_transfers, false,
             "Log every EDRAM ownership transfer with its source and "
             "destination render target and tile range.",
@@ -1547,6 +1549,26 @@ void RenderTargetCache::GetResolveCopyRectanglesToDump(
       return;
     }
     if (strip_merge_) {
+      if (cvars::strip_merge_log) {
+        // What the resolve reads, to tell the cases apart in logs.
+        uint32_t first_tile = base & (xenos::kEdramTileCount - 1);
+        auto owner_it = ownership_ranges_.upper_bound(first_tile);
+        std::string owner = "nothing";
+        if (owner_it != ownership_ranges_.cbegin()) {
+          --owner_it;
+          if (owner_it->second.end_tiles > first_tile) {
+            RenderTargetKey owner_key = owner_it->second.render_target;
+            owner = fmt::format("{}{} (tiles {}-{})", owner_key.GetDebugName(),
+                                owner_key.strip_merged ? " strip-merged" : "",
+                                owner_it->first, owner_it->second.end_tiles);
+          }
+        }
+        XELOGI(
+            "Strip merge: the resolve reads tiles {} for {} rows of {} (pitch "
+            "{}, band rows {}); its first tile belongs to {}",
+            base, rows, row_length, pitch, strip_merge_bands_.tile_rows,
+            owner);
+      }
       strip_merge_->Fail(
           "a strip-own resolve not from one strip-merged render target");
     }
