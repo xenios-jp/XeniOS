@@ -189,6 +189,17 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   failure_reason_.clear();
   failure_strip_ = 0;
   window_br_extended_ = false;
+  merge_planned_ = false;
+  slot_ = frame_sessions_;
+  if (frame_sessions_ + 1 < kSessionSlots) {
+    ++frame_sessions_;
+  }
+  session_order_ = frame_session_order_++;
+  const SessionSlot& slot = slots_[slot_];
+  candidate_ = slot.candidate;
+  verified_sessions_ = slot.verified_sessions;
+  merged_since_learning_ = slot.merged_since_learning;
+  previous_strip_bits_union_ = slot.previous_strip_bits_union;
   draw_checks_ran_ = candidate_.IsValid();
   uint64_t strip_bits = bin_select & ~kFirstTileBit;
   bool may_merge = !cooldown_sessions_ && candidate_.IsValid() &&
@@ -196,6 +207,10 @@ void StripMerge::BeginSession(uint64_t bin_select) {
                    candidate_.strip_bits[0] == strip_bits &&
                    (!layout_.IsValid() || layout_ == candidate_);
   if (may_merge && merged_since_learning_ >= kRelearnInterval) {
+      candidate_.strip_bits[0] == strip_bits &&
+      (!layout_.IsValid() || layout_ == candidate_) &&
+      (carry_session_order_ == kNoCarry ||
+       carry_session_order_ == session_order_);
     // Verify the game still draws the strips the same way.
     may_merge = false;
     merged_since_learning_ = 0;
@@ -205,6 +220,8 @@ void StripMerge::BeginSession(uint64_t bin_select) {
     layout_ = candidate_;
     ++merged_since_learning_;
   }
+  // Merging begins at the first strip's first draw (BeforeDraw).
+  merge_planned_ = may_merge;
   BeginStrip(bin_select);
 }
 
@@ -220,6 +237,8 @@ void StripMerge::BeginStrip(uint64_t bin_select) {
 
 void StripMerge::EndStrip() {
   current_packet_own_ = false;
+  // A first strip without draws: the session runs unmerged.
+  merge_planned_ = false;
   if (strip_index_ != 0) {
     return;
   }
@@ -228,6 +247,7 @@ void StripMerge::EndStrip() {
     // The later strips run normally from the first strip's band, which is what
     // the first strip leaves in EDRAM.
     backend_->StripMergeEnd(0, false);
+    carry_session_order_ = kNoCarry;
     mode_ = Mode::kRecovered;
   }
 }
@@ -242,9 +262,16 @@ void StripMerge::EndSession() {
   for (uint32_t k = 1; verified && k < strip_count_; ++k) {
     verified = CompareStrip(k);
   }
+  bool empty = true;
+  for (uint32_t k = 0; k < strip_count_; ++k) {
+    empty &= !strips_[k].draws;
+  }
   const char* outcome;
-  if (mode_ == Mode::kMerged) {
-    backend_->StripMergeEnd(strip_count_ - 1, true);
+  if (mode_ == Mode::kLearn && empty) {
+    // Nothing drawn or resolved, unmerged: nothing to learn from, and nothing
+    // that could differ. It doesn't take a slot either.
+    outcome = "empty";
+  } else if (mode_ == Mode::kMerged) {
     if (!verified || derived != layout_) {
       if (!failed_) {
         failed_ = true;
@@ -282,6 +309,7 @@ void StripMerge::EndSession() {
       for (const OwnWrite& write : strips_[0].own_writes) {
         learned_own_used_.push_back(write.used);
       }
+    SessionSlot& slot = slots_[slot_];
     }
   }
   if (cvars::strip_merge_log) {
@@ -297,12 +325,34 @@ void StripMerge::EndSession() {
   if (cooldown_sessions_) {
     --cooldown_sessions_;
   }
+  if (mode_ == Mode::kLearn && empty) {
+    frame_sessions_ = slot_;
+    frame_session_order_ = session_order_;
+  } else {
+    if (strip_count_ >= 2) {
+      previous_strip_bits_union_ = strip_bits_union_;
+    }
+    SessionSlot& slot = slots_[slot_];
+    slot.candidate = candidate_;
+    slot.verified_sessions = verified_sessions_;
+    slot.merged_since_learning = merged_since_learning_;
+    slot.previous_strip_bits_union = previous_strip_bits_union_;
+  }
   session_open_ = false;
   mode_ = Mode::kLearn;
   current_select_ = 0;
   current_packet_own_ = false;
 }
 
+  bool empty = true;
+  for (uint32_t k = 0; k < strip_count_; ++k) {
+    empty &= !strips_[k].draws;
+  }
+  if (cooldown_sessions_) {
+    frame_sessions_ = slot_;
+    frame_session_order_ = session_order_;
+  } else {
+    SessionSlot& slot = slots_[slot_];
   session_open_ = false;
   mode_ = Mode::kLearn;
   current_select_ = 0;
@@ -802,10 +852,14 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
     return;
   }
   // Masks naming another strip are shared (and compared as such at the end).
-  // Without a layout yet, any other bit counts as another strip's.
-  uint64_t other_strips = candidate_.IsValid()
-                              ? candidate_.strip_bits_union
-                              : ~kFirstTileBit;
+  // The other strips' bits are those of the previous tiling session (and of
+  // this one's strips so far); before any, every other bit counts as another
+  // strip's. A tile's mask can have more bits than its select (434307D2
+  // selects bit 1 of tile 0 and masks its own packets with bits 0-1), so the
+  // first session may take own packets for shared ones and fail; CompareStrip
+  // checks the masks against the session's actual strip bits.
+  uint64_t other_strips = previous_strip_bits_union_
+                              ? previous_strip_bits_union_ | strip_bits_union_
   if (bin_mask & ~(strip.bits | kFirstTileBit) & other_strips) {
     MarkOwnStale(opcode, payload);
     return;
@@ -995,6 +1049,20 @@ void StripMerge::OnPacketType01(uint32_t header,
 bool StripMerge::BeforeDraw() {
   Strip& strip = strips_[strip_index_];
   ++strip.draws;
+  if (merge_planned_) {
+    merge_planned_ = false;
+    if (!failed_ && strip_index_ == 0) {
+      const char* refusal = backend_->StripMergeBegin(candidate_);
+      if (!refusal) {
+        mode_ = Mode::kMerged;
+        layout_ = candidate_;
+        ++merged_since_learning_;
+      } else {
+        // Learning would keep verifying a layout the backend never merges.
+        Fail(refusal);
+      }
+    }
+  }
   if (mode_ == Mode::kRecovered) {
     return true;
   }
