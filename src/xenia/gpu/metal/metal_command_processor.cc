@@ -2951,6 +2951,7 @@ void MetalCommandProcessor::ShutdownContext() {
   for (RecentShaderLoad& recent : recent_shader_loads_) {
     recent = RecentShaderLoad();
   }
+  ClearAddressShaderLoads();
   guest_shader_cache_.clear();
   memexport_format_profiles_.Clear();
   spirv_shader_translator_.reset();
@@ -4199,6 +4200,106 @@ Shader* MetalCommandProcessor::LoadShader(xenos::ShaderType shader_type,
   recent.shader = shader;
   recent.ucode.assign(host_address, host_address + dword_count);
   return shader;
+}
+
+Shader* MetalCommandProcessor::LoadShaderAtAddress(
+    xenos::ShaderType shader_type, uint32_t guest_address,
+    uint32_t dword_count) {
+  const uint32_t* host_address =
+      memory_->TranslatePhysical<const uint32_t*>(guest_address);
+  const uint32_t stage = uint32_t(shader_type);
+  if (stage > 1 || !dword_count || !shared_memory_ ||
+      !shared_memory_->is_zero_copy() ||
+      guest_address >= SharedMemory::kBufferSize ||
+      dword_count > (SharedMemory::kBufferSize - guest_address) >> 2) {
+    return LoadShader(shader_type, host_address, dword_count);
+  }
+  const uint32_t length = dword_count * sizeof(uint32_t);
+  AddressShaderLoad* entry;
+  auto& last = last_address_shader_loads_[stage];
+  if (last.second && last.first == guest_address) {
+    entry = last.second;
+  } else {
+    std::unique_ptr<AddressShaderLoad>& slot =
+        address_shader_loads_[guest_address];
+    if (!slot) {
+      slot = std::make_unique<AddressShaderLoad>();
+    }
+    entry = slot.get();
+    last = {guest_address, entry};
+  }
+  // A watch clears valid before the write it reports goes through, and the
+  // guest writes ucode before submitting the packets that load it.
+  if (entry->valid.load(std::memory_order_acquire) &&
+      entry->dword_count == dword_count && entry->shader_type == shader_type) {
+    return entry->shader;
+  }
+
+  if (entry->unwatchable) {
+    return LoadShader(shader_type, host_address, dword_count);
+  }
+  SpirvShader* previous_shader = entry->shader;
+  if (entry->watch_installed) {
+    // Still watched if only the size or the stage differs.
+    auto global_lock = xe::global_critical_region::Acquire();
+    if (entry->watch) {
+      shared_memory_->UnwatchMemoryRange(entry->watch);
+      entry->watch = nullptr;
+    }
+    entry->valid.store(false, std::memory_order_relaxed);
+    entry->watch_installed = false;
+  }
+  // As for textures: make the range valid (protected) first, then read it,
+  // then watch it only if no write came in between.
+  bool requested = shared_memory_->RequestRange(guest_address, length);
+  Shader* shader = LoadShader(shader_type, host_address, dword_count);
+  auto* spirv_shader = static_cast<SpirvShader*>(shader);
+  if (previous_shader && spirv_shader == previous_shader &&
+      entry->dword_count == dword_count && entry->shader_type == shader_type) {
+    if (++entry->same_reloads >= 8) {
+      entry->unwatchable = true;
+      return shader;
+    }
+  } else {
+    entry->same_reloads = 0;
+  }
+  entry->shader = spirv_shader;
+  entry->dword_count = dword_count;
+  entry->shader_type = shader_type;
+  if (requested && spirv_shader) {
+    auto global_lock = xe::global_critical_region::Acquire();
+    if (shared_memory_->IsRangeValid(guest_address, length)) {
+      entry->watch = shared_memory_->WatchMemoryRange(
+          guest_address, length, AddressShaderLoadWatchCallback, this, entry,
+          0);
+      entry->watch_installed = entry->watch != nullptr;
+      entry->valid.store(entry->watch_installed, std::memory_order_relaxed);
+    }
+  }
+  return shader;
+}
+
+void MetalCommandProcessor::AddressShaderLoadWatchCallback(
+    const global_unique_lock_type& global_lock, void* context, void* data,
+    uint64_t argument, bool invalidated_by_gpu) {
+  auto* entry = static_cast<AddressShaderLoad*>(data);
+  // The watch is cancelled after this callback.
+  entry->watch = nullptr;
+  entry->valid.store(false, std::memory_order_release);
+}
+
+void MetalCommandProcessor::ClearAddressShaderLoads() {
+  if (shared_memory_) {
+    auto global_lock = xe::global_critical_region::Acquire();
+    for (auto& [address, entry] : address_shader_loads_) {
+      if (entry->watch) {
+        shared_memory_->UnwatchMemoryRange(entry->watch);
+        entry->watch = nullptr;
+      }
+    }
+  }
+  address_shader_loads_.clear();
+  last_address_shader_loads_ = {};
 }
 
 SpirvShader* MetalCommandProcessor::LoadShader(xenos::ShaderType shader_type,
