@@ -35,6 +35,8 @@ const XeniaIOSLiveSocialHost* g_real_host = nullptr;
 constexpr NSTimeInterval kAnswerTimeout = 15.0;
 // Deleting an account needs a connection already or very soon: the player is waiting on it.
 constexpr NSTimeInterval kDeleteConnectTimeout = 6.0;
+// How long deleting a profile from this device waits for the lobby to take the device off.
+constexpr NSTimeInterval kRemoveThisDeviceTimeout = 1.5;
 // Going online or joining also connects first.
 constexpr NSTimeInterval kConnectTimeout = 25.0;
 
@@ -293,6 +295,11 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   void (^_deleteDone)(NSError*);
   uint64_t _deleteProfile;
   BOOL _deleteAsked;
+  // Taking this device off the account as its profile is deleted (removeThisDeviceOfProfile:).
+  void (^_removeThisDeviceDone)(void);
+  // The lobby's answer to that is expected, even after the wait for it ended: the profile may be
+  // gone by then, and no "removed" notice is due for whichever one is active.
+  BOOL _removeThisDeviceAsked;
 
   // What the screens last saw, to post a change only when there is one.
   NSString* _lastSignature;
@@ -329,6 +336,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   [_recoveryCodes release];
   [_removals release];
   [_deleteDone release];
+  [_removeThisDeviceDone release];
   [_goOnline release];
   [_goOnlineName release];
   [_goOnlineOldName release];
@@ -587,6 +595,10 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                                     : XeniaLiveLinkStatusUnreachable);
   } else if (request == "delete_account") {
     [self finishDelete:RefusedError(request, reason)];
+  } else if (request == "remove_device" && _removeThisDeviceAsked) {
+    // "last_device": the account keeps it.
+    _removeThisDeviceAsked = NO;
+    [self finishRemoveThisDevice];
   } else if (request == "remove_device") {
     NSError* error = RefusedError(request, reason);
     NSArray* removals = [[_removals copy] autorelease];
@@ -599,6 +611,11 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 // Another device removed this one: the profile isn't on the account any more.
 - (void)removedFromAccount {
+  if (_removeThisDeviceAsked) {
+    _removeThisDeviceAsked = NO;
+    [self finishRemoveThisDevice];
+    return;
+  }
   auto profile = ActiveProfile();
   if (profile && g_real_host->disable_online) {
     XELOGW("Live account (app): this device was removed from {}'s account", profile->gamertag);
@@ -1002,6 +1019,42 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                      done(UnreachableError());
                    }
                  });
+}
+
+- (void)removeThisDeviceOfProfile:(uint64_t)xuid completion:(void (^)(void))completion {
+  void (^done)(void) = [[completion copy] autorelease];
+  auto profile = ActiveProfile();
+  auto share = SignedInShare();
+  if (_removeThisDeviceAsked || !profile || profile->xuid != xuid || !profile->online_xuid ||
+      !share || (*share)->xuid() != profile->online_xuid) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      done();
+    });
+    return;
+  }
+  _removeThisDeviceDone = [done retain];
+  _removeThisDeviceAsked = YES;
+  (*share)->RemoveThisDevice();
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(kRemoveThisDeviceTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_removeThisDeviceDone == done) {
+                     [self finishRemoveThisDevice];
+                   }
+                 });
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   _removeThisDeviceAsked = NO;
+                 });
+}
+
+- (void)finishRemoveThisDevice {
+  if (!_removeThisDeviceDone) {
+    return;
+  }
+  void (^done)(void) = [_removeThisDeviceDone autorelease];
+  _removeThisDeviceDone = nil;
+  done();
 }
 
 - (void)deleteAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError*))completion {

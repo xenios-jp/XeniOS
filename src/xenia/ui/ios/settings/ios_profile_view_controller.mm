@@ -648,7 +648,9 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
     message = [NSString
         stringWithFormat:NSLocalizedString(
                              @"Its saves are deleted from this %@ for good.\n\n"
-                             @"Delete from This Device keeps the online account and gamertag.\n\n"
+                             @"Delete from This Device keeps the online account and gamertag. "
+                             @"If no other device is on the account, only a recovery code can "
+                             @"bring it back.\n\n"
                              @"Delete Account also releases the gamertag and signs out other "
                              @"devices.",
                              @"Delete profile: message for an online profile; %@ is the device's "
@@ -758,7 +760,14 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
   }
   const uint64_t restore_xuid = signed_in_xuid == xuid ? 0 : signed_in_xuid;
   if (!delete_account) {
-    [self finishDeleteXuid:xuid gamertag:gamertag restore:restore_xuid from:presenter];
+    __unsafe_unretained XeniaProfileViewController* local_self = self;
+    [xe_ios_live_account_service() removeThisDeviceOfProfile:xuid
+                                                  completion:^{
+                                                    [local_self finishDeleteXuid:xuid
+                                                                        gamertag:gamertag
+                                                                         restore:restore_xuid
+                                                                            from:presenter];
+                                                  }];
     return;
   }
   if (signed_in_xuid != xuid && !app_context_->SignInProfile(xuid)) {

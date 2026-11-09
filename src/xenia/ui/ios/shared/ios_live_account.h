@@ -180,6 +180,11 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 - (void)loadDevicesWithCompletion:(void (^)(NSArray<XeniaLiveDevice*>* _Nullable devices,
                                             NSError* _Nullable error))completion;
 - (void)removeDevice:(XeniaLiveDevice*)device completion:(void (^)(NSError* _Nullable error))completion;
+// For deleting |xuid| from this device only: takes this device off its online account if that
+// profile is connected right now. It never connects, and completion runs within a moment whatever
+// happens. The device stays listed if the profile isn't connected, and if it's the account's only
+// device, which the lobby keeps.
+- (void)removeThisDeviceOfProfile:(uint64_t)xuid completion:(void (^)(void))completion;
 // Deletes the online account of |xuid|, which has to be the signed-in profile, for good; it waits
 // briefly for that profile's connection if it just signed in. error is set if the lobby can't be
 // reached or doesn't answer.
