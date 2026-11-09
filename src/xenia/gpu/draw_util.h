@@ -819,6 +819,27 @@ struct ResolveInfo {
       ResolveCopyShaderConstants& constants_out, uint32_t& group_count_x_out,
       uint32_t& group_count_y_out) const;
 
+  // The height in pixels of a row of the destination's macro tiles.
+  uint32_t GetCopyDestMacroTileRowHeight() const {
+    return copy_dest_info.copy_dest_array ? 16 : 32;
+  }
+
+  // Whether the copy writes some destination bytes more than once: where the
+  // destination pitch is narrower than the copied columns, the columns past
+  // the pitch land in the macro tiles of the rows below, which the copy writes
+  // again. The console resolves rows in order, so the lower rows win there. A
+  // host dispatch doesn't order its writes, so such a copy has to run in
+  // ordered bands of destination macro tile rows
+  // (GetCopyShaderConstantsForRows).
+  bool CopyDestRowsAlias() const;
+
+  // Constants for the rows of the copy from row_start (relative to the copy's
+  // origin, a multiple of 8) on, with the dispatch's Y starting at row_start:
+  // the source and destination origins moved down by row_start rows.
+  void GetCopyShaderConstantsForRows(
+      const ResolveCopyShaderConstants& constants, uint32_t row_start,
+      ResolveCopyShaderConstants& constants_out) const;
+
   bool IsClearingDepth() const {
     return rb_copy_control.depth_clear_enable != 0;
   }

@@ -1922,6 +1922,80 @@ ResolveCopyShaderIndex ResolveInfo::GetCopyShader(
   return shader;
 }
 
+bool ResolveInfo::CopyDestRowsAlias() const {
+  uint32_t width = coordinate_info.width_div_8
+                   << xenos::kResolveAlignmentPixelsLog2;
+  uint32_t height = height_div_8 << xenos::kResolveAlignmentPixelsLog2;
+  if (!width || !height) {
+    return false;
+  }
+  uint32_t offset_x = copy_dest_coordinate_info.offset_x_div_8
+                      << xenos::kResolveAlignmentPixelsLog2;
+  uint32_t offset_y = copy_dest_coordinate_info.offset_y_div_8
+                      << xenos::kResolveAlignmentPixelsLog2;
+  uint32_t row_height = GetCopyDestMacroTileRowHeight();
+  // Within one row of macro tiles, every pixel has its own bytes.
+  if ((offset_y + height - 1) / row_height == offset_y / row_height) {
+    return false;
+  }
+  return ((offset_x + width - 1) >> xenos::kTextureTileWidthHeightLog2) >=
+         copy_dest_coordinate_info.pitch_aligned_div_32;
+}
+
+void ResolveInfo::GetCopyShaderConstantsForRows(
+    const ResolveCopyShaderConstants& constants, uint32_t row_start,
+    ResolveCopyShaderConstants& constants_out) const {
+  constants_out = constants;
+  if (!row_start) {
+    return;
+  }
+  // The source: whole EDRAM tile rows go into the base, the rest into the
+  // offset. A tile holds 16 rows of samples, 8 rows of pixels with 2x and 4x
+  // MSAA.
+  ResolveEdramInfo& edram_info = constants_out.dest_relative.edram_info;
+  ResolveCoordinateInfo& source_coordinates =
+      constants_out.dest_relative.coordinate_info;
+  uint32_t tile_height_pixels =
+      xenos::kEdramTileHeightSamples >>
+      uint32_t(edram_info.msaa_samples >= xenos::MsaaSamples::k2X);
+  uint32_t source_y = (source_coordinates.edram_offset_y_div_8
+                       << xenos::kResolveAlignmentPixelsLog2) +
+                      row_start;
+  edram_info.base_tiles =
+      (edram_info.base_tiles +
+       source_y / tile_height_pixels * edram_info.pitch_tiles) &
+      (xenos::kEdramTileCount - 1);
+  source_coordinates.edram_offset_y_div_8 =
+      (source_y % tile_height_pixels) >> xenos::kResolveAlignmentPixelsLog2;
+  // The destination: whole periods of the tiled address function, 128 rows, go
+  // into the base, where they add a constant, the rest into the offset.
+  ResolveCopyDestCoordinateInfo& dest_coordinates =
+      constants_out.dest_relative.dest_coordinate_info;
+  uint32_t dest_y = (dest_coordinates.offset_y_div_8
+                     << xenos::kResolveAlignmentPixelsLog2) +
+                    row_start;
+  constexpr uint32_t kDestPeriodRows = 128;
+  uint32_t dest_period_y = dest_y & ~(kDestPeriodRows - 1);
+  dest_coordinates.offset_y_div_8 =
+      (dest_y & (kDestPeriodRows - 1)) >> xenos::kResolveAlignmentPixelsLog2;
+  if (dest_period_y) {
+    uint32_t pitch_aligned = dest_coordinates.pitch_aligned_div_32
+                             << xenos::kTextureTileWidthHeightLog2;
+    uint32_t bytes_per_block_log2 =
+        GetResolveDownscalePixelSizeLog2(copy_dest_info);
+    if (copy_dest_info.copy_dest_array) {
+      uint32_t height_aligned = dest_coordinates.height_aligned_div_32
+                                << xenos::kTextureTileWidthHeightLog2;
+      constants_out.dest_base += uint32_t(texture_address::Tiled3D(
+          0, int32_t(dest_period_y), 0, pitch_aligned, height_aligned,
+          bytes_per_block_log2));
+    } else {
+      constants_out.dest_base += uint32_t(texture_address::Tiled2D(
+          0, int32_t(dest_period_y), pitch_aligned, bytes_per_block_log2));
+    }
+  }
+}
+
 uint32_t GetResolveDownscalePixelSizeLog2(
     reg::RB_COPY_DEST_INFO copy_dest_info) {
   // copy_dest_format holds a xenos::TextureFormat normalized by GetResolveInfo,

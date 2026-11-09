@@ -7111,7 +7111,11 @@ bool MetalRenderTargetCache::ResolveWithInfo(
   // for the pass end.
   bool clear_left_to_pass_end = false;
   MetalTextureCache::ResolveTextureRefreshTarget refresh_target;
+  // A copy that writes some destination bytes more than once has to write them
+  // in the console's row order, which only the compute resolve below does.
+  const bool dest_rows_alias = resolve_info.CopyDestRowsAlias();
   if (::cvars::direct_host_resolve && !draw_resolution_scaled &&
+      !dest_rows_alias &&
       GetDirectResolveEligibility(resolve_info, copy_shader, true,
                                   /*allow_cross_depth_color=*/true,
                                   /*allow_full32_rgb10f_1x=*/true,
@@ -7445,14 +7449,6 @@ bool MetalRenderTargetCache::ResolveWithInfo(
             }
             encoder->setComputePipelineState(pipeline);
 
-            // Buffer 0: push constants
-            if (draw_resolution_scaled) {
-              encoder->setBytes(&copy_constants.dest_relative,
-                                sizeof(copy_constants.dest_relative), 0);
-            } else {
-              encoder->setBytes(&copy_constants, sizeof(copy_constants), 0);
-            }
-
             // Buffer 1: destination memory (shared or scaled resolve).
             encoder->setBuffer(dest_buffer, dest_buffer_offset, 1);
 
@@ -7461,9 +7457,56 @@ bool MetalRenderTargetCache::ResolveWithInfo(
             encoder->useResource(dest_buffer, MTL::ResourceUsageWrite);
             encoder->useResource(edram_buffer_, MTL::ResourceUsageRead);
 
-            encoder->dispatchThreadgroups(
-                MTL::Size::Make(group_count_x, group_count_y, 1),
-                MTL::Size::Make(8, 8, 1));
+            if (dest_rows_alias && !draw_resolution_scaled) {
+              // The copy writes some destination bytes more than once
+              // (CopyDestRowsAlias), and the console's rows below win there,
+              // as it resolves rows in order. One dispatch would leave the
+              // winner to the host GPU's scheduling, so each row of
+              // destination macro tiles - no two of its pixels share bytes -
+              // gets a dispatch of its own, in order, each after the writes
+              // of the one before. Thread groups are 8 rows high, and row
+              // boundaries are multiples of 8.
+              const uint32_t row_height =
+                  resolve_info.GetCopyDestMacroTileRowHeight();
+              const uint32_t dest_offset_y =
+                  resolve_info.copy_dest_coordinate_info.offset_y_div_8
+                  << xenos::kResolveAlignmentPixelsLog2;
+              uint32_t row_start = 0;
+              while (row_start < resolve_height) {
+                uint32_t row_end =
+                    std::min(resolve_height,
+                             (dest_offset_y + row_start) / row_height *
+                                     row_height +
+                                 row_height - dest_offset_y);
+                draw_util::ResolveCopyShaderConstants band_constants;
+                resolve_info.GetCopyShaderConstantsForRows(
+                    copy_constants, row_start, band_constants);
+                if (row_start) {
+                  encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+                }
+                encoder->setBytes(&band_constants, sizeof(band_constants),
+                                  0);
+                encoder->dispatchThreadgroups(
+                    MTL::Size::Make(group_count_x,
+                                    (row_end - row_start) >>
+                                        xenos::kResolveAlignmentPixelsLog2,
+                                    1),
+                    MTL::Size::Make(8, 8, 1));
+                row_start = row_end;
+              }
+            } else {
+              // Buffer 0: push constants
+              if (draw_resolution_scaled) {
+                encoder->setBytes(&copy_constants.dest_relative,
+                                  sizeof(copy_constants.dest_relative), 0);
+              } else {
+                encoder->setBytes(&copy_constants, sizeof(copy_constants),
+                                  0);
+              }
+              encoder->dispatchThreadgroups(
+                  MTL::Size::Make(group_count_x, group_count_y, 1),
+                  MTL::Size::Make(8, 8, 1));
+            }
 
             hazards.End();
             encoder->endEncoding();
