@@ -636,6 +636,9 @@ std::optional<AccountMessage> ParseAccountMessage(std::string_view text) {
     m.kind = Kind::kReject;
     m.reason = String(doc, "reason");
     m.device_name = CleanText(String(doc, "device"), 40);
+    auto deleted = doc.FindMember("deleted");
+    m.deleted = deleted != doc.MemberEnd() && deleted->value.IsBool() &&
+                deleted->value.GetBool();
   } else if (type == "invite_state") {
     m.kind = Kind::kInviteState;
     m.invite_id = String(doc, "id");
@@ -1147,6 +1150,10 @@ std::string EncodeRemoveDevice(std::string_view key) {
     Field(w, "t", "remove_device");
     Field(w, "key", key);
   });
+}
+
+std::string EncodeDeleteAccount() {
+  return Json([&](JsonWriter& w) { Field(w, "t", "delete_account"); });
 }
 
 std::string EncodePresence(uint32_t title_id, uint32_t context,
@@ -1947,6 +1954,11 @@ void AccountClient::RemoveDevice(std::string key) {
   SendLocked(EncodeRemoveDevice(key));
 }
 
+void AccountClient::DeleteAccount() {
+  std::lock_guard lock(mutex_);
+  SendLocked(EncodeDeleteAccount());
+}
+
 // Sends at once when signed in, else after signing in.
 void AccountClient::SendLocked(std::string text) {
   if (signed_in_ && socket_) {
@@ -2089,8 +2101,9 @@ void AccountClient::OnMessage(std::string text) {
           };
         } else if (m->reason == "removed") {
           halted_ = true;
-          notify = [removed = events_.removed] {
-            if (removed) removed();
+          notify = [gone = m->deleted ? events_.account_deleted
+                                      : events_.removed] {
+            if (gone) gone();
           };
         } else if (m->reason == "elsewhere") {
           // Coming back on its own would end the other device's session.
