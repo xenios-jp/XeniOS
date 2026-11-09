@@ -6941,7 +6941,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
                                 draw_resolution_scale_x(),
                                 draw_resolution_scale_y(), fixed_rg16_trunc,
                                 fixed_rgba16_trunc, resolve_info,
-                                strip_merge_resolve_bottom());
+                                strip_merge_resolve_bottom(),
+                                strip_merge_resolve_clear_bottom());
   return ResolveWithInfo(resolve_info, resolve_info_valid, written_address,
                          written_length, command_buffer);
 }

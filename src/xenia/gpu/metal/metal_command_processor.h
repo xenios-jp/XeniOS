@@ -773,8 +773,10 @@ class MetalCommandProcessor : public CommandProcessor,
   // The dimensions of the encoded pass, refreshed when creating its encoder.
   uint32_t render_encoder_width_ = 1;
   uint32_t render_encoder_height_ = 1;
-  // The draw being issued is replicated into every strip-merged band.
+  // The draw being issued is replicated into every strip-merged band, or
+  // into the first band alone (StripMerge::first_strip_only_draw).
   bool strip_merge_replicate_draw_ = false;
+  bool strip_merge_first_band_only_ = false;
   // Whether the open pass covers less than its attachments (SetRenderPassArea).
   bool render_encoder_area_restricted_ = false;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;

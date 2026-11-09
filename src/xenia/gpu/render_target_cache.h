@@ -284,10 +284,16 @@ class RenderTargetCache {
   // alternate between two render targets (strip_merge_alt), so nothing writes
   // the owner's before then. The backend has ended its passes.
   void EndStripMerge(uint32_t band, bool carry);
+  // A draw only the first strip does, on another surface than the strips',
+  // takes its tiles for the first strip alone: the later bands of the merged
+  // render targets that take them back still start from the carry.
+  void SetStripMergeKeepCarries(bool keep) { strip_merge_keep_carries_ = keep; }
   // A strip-own resolve of the merged first strip, which covers the rows of
   // every strip down to this frame row; 0 otherwise.
-  void SetStripMergeResolveBottom(uint32_t bottom) {
+  // Its clear (if it clears) covers the bands down to clear_bottom.
+  void SetStripMergeResolveBottom(uint32_t bottom, uint32_t clear_bottom = 0) {
     strip_merge_resolve_bottom_ = bottom;
+    strip_merge_resolve_clear_bottom_ = clear_bottom;
   }
 
  protected:
@@ -746,6 +752,9 @@ class RenderTargetCache {
                                            uint32_t rows, uint32_t pitch);
   uint32_t strip_merge_resolve_bottom() const {
     return strip_merge_resolve_bottom_;
+  }
+  uint32_t strip_merge_resolve_clear_bottom() const {
+    return strip_merge_resolve_clear_bottom_;
   }
   // The band shape of strip-merged render targets, count 0 before any.
   struct StripMergeBands {
@@ -1224,7 +1233,9 @@ class RenderTargetCache {
   }
   StripMerge* strip_merge_ = nullptr;
   bool strip_merge_active_ = false;
+  bool strip_merge_keep_carries_ = false;
   uint32_t strip_merge_resolve_bottom_ = 0;
+  uint32_t strip_merge_resolve_clear_bottom_ = 0;
   struct StripMergeCarry {
     uint32_t start_tiles;
     uint32_t end_tiles;

@@ -94,6 +94,17 @@ class StripMerge {
     uint32_t window_br_first = 0;
     uint64_t strip_bits[kMaxStrips] = {};
     uint64_t strip_bits_union = 0;
+    // Per strip-own resolve: the frame row its clear reaches, 0 if it doesn't
+    // clear. D3D clears the next tile's EDRAM with each tile's resolve, in
+    // every strip (575207D7) or every strip but the last (425307D5): the
+    // merged resolve clears the bands of the strips whose resolves clear.
+    std::vector<uint32_t> resolve_clear_bottoms;
+    // Indices among the first strip's draws (and resolves) of its own draws
+    // the later strips don't do, ascending: D3D clears the first tile with a
+    // quad masked to it alone (425307D5, 4D5307D5), the later tiles start
+    // from what the previous tile's clearing resolve left. The merged first
+    // strip draws them into the first band alone, as the first strip does.
+    std::vector<uint32_t> first_strip_draws;
 
     bool IsValid() const { return strip_count >= 2 && band_rows; }
     uint32_t frame_bottom() const { return strip_count * band_rows; }
@@ -199,6 +210,9 @@ class StripMerge {
   }
   // The packet being executed is strip-own.
   bool current_packet_own() const { return current_packet_own_; }
+  // The merged first strip's current draw is one the later strips don't do
+  // (Layout::first_strip_draws): it goes into the first band alone.
+  bool first_strip_only_draw() const { return first_strip_draw_; }
   // Render targets at this pitch and MSAA are banded (merged when merging).
   bool IsBanded(uint32_t pitch_tiles_at_32bpp,
                 xenos::MsaaSamples msaa_samples) const;
@@ -215,6 +229,9 @@ class StripMerge {
   // The frame row a strip-own resolve of the merged first strip extends down
   // to, covering every strip's rows; 0 otherwise.
   uint32_t NoteResolve(TraceWriter& trace_writer);
+  // and the one its clear reaches (0, and the session failed, if it has more
+  // than the learned ones).
+  uint32_t TakeMergedResolveBottom(uint32_t& clear_bottom_out);
   // The session can't be merged (learning), or the merged first strip has to
   // recover, or a later merged strip went wrong.
   void Fail(const char* reason);
@@ -296,8 +313,12 @@ class StripMerge {
     std::vector<uint32_t> own_snapshot_starts;
     std::vector<OwnValue> own_snapshot_values;
     // Per strip-own draw (learning): CheckDraw's hash of its vertices.
-    std::vector<uint64_t> own_draw_vertices;
-    // The strip's latest own value of every register it wrote itself.
+    struct OwnDrawVertices {
+      // Index among the strip's draws.
+      uint32_t draw;
+      uint64_t hash;
+    };
+    std::vector<OwnDrawVertices> own_draw_vertices;
     // The strip's latest own value of every register it wrote itself, sorted
     // by register.
     std::vector<OwnLatest> own_shadow;
@@ -312,6 +333,14 @@ class StripMerge {
   void EndSession();
   // False if a packet is predicated on some strips but not all.
   bool CheckMasks();
+  // Learning: the first strip's own draws the second strip doesn't do, found
+  // by matching the strips' draws in order. False if they don't match that
+  // way (the comparisons below then fail with the reason).
+  bool FindFirstStripDraws(std::vector<uint32_t>& draws_out) const;
+  // Removes the first strip's draws the later strips don't do from what is
+  // compared draw by draw. False (and the session failed) if one isn't the
+  // first strip's own draw.
+  bool DropFirstStripDraws(const std::vector<uint32_t>& draws);
   // Derives the layout from the session's records. False if it isn't one.
   // Merged sessions skip the later strips' resolves, so they don't check them.
   bool DeriveLayout(Layout& layout_out, bool check_resolves);
@@ -361,6 +390,7 @@ class StripMerge {
   std::string failure_reason_;
   uint32_t failure_strip_ = 0;
   bool current_packet_own_ = false;
+  bool first_strip_draw_ = false;
   bool window_br_extended_ = false;
 
   // The open session's learning state, loaded from its slot when it begins

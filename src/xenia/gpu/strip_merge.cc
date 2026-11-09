@@ -33,6 +33,15 @@ DEFINE_bool(strip_merge, true,
             "GPU");
 // TODO(xenios-jp): the clipped last strip is not byte-exact yet.
             "their dormancy ends (256 sessions at most).",
+            "GPU");
+DEFINE_bool(strip_merge_first_strip_other_surface, true,
+            "Merge tiling sessions whose first strip alone draws through "
+            "another surface over the strip surface's tiles (D3D's clear of "
+            "the first tile through a 4x MSAA view: 4D5307D5, 4D530919). The "
+            "merged first band takes those tiles from that surface, the later "
+            "bands start from the carry, as the later strips start from what "
+            "the strip before left. false: such sessions stay unmerged.",
+            "GPU");
 DEFINE_bool(strip_merge_log, false,
             "Log every predicated tiling session strip merge sees.", "GPU");
 
@@ -148,6 +157,8 @@ uint32_t StripMerge::RegisterWrites::value(uint32_t index) const {
 
 bool StripMerge::Layout::operator==(const Layout& other) const {
   if (strip_count != other.strip_count || band_rows != other.band_rows ||
+      resolve_clear_bottoms != other.resolve_clear_bottoms ||
+      first_strip_draws != other.first_strip_draws ||
       pitch_tiles_at_32bpp != other.pitch_tiles_at_32bpp ||
       msaa_samples != other.msaa_samples ||
       window_br_first != other.window_br_first ||
@@ -165,7 +176,6 @@ bool StripMerge::Layout::operator==(const Layout& other) const {
 void StripMerge::Strip::Clear() {
   bits = 0;
   records.clear();
-  own_opcodes.clear();
   own_resolves.clear();
   draw_states.clear();
   draw_own_states.clear();
@@ -267,6 +277,7 @@ void StripMerge::BeginStrip(uint64_t bin_select) {
 
 void StripMerge::EndStrip() {
   current_packet_own_ = false;
+  first_strip_draw_ = false;
   // A first strip without draws: the session runs unmerged.
   merge_planned_ = false;
   if (strip_index_ != 0) {
@@ -288,9 +299,42 @@ void StripMerge::EndSession() {
   }
   EndStrip();
   Layout derived;
-  bool verified = !failed_ && DeriveLayout(derived, mode_ == Mode::kLearn);
+  // The first strip's draws the later strips don't do: found while learning,
+  // the verified ones when merged.
+  std::vector<uint32_t> first_strip_draws;
+  if (mode_ == Mode::kMerged) {
+    first_strip_draws = layout_.first_strip_draws;
+  } else if (!failed_ && strip_count_ >= 2) {
+    FindFirstStripDraws(first_strip_draws);
+    // A draw only the first strip does on another surface rewrites the EDRAM
+    // under the strip surface's render targets for the first strip alone
+    // (4D530919 writes depth through a 640x360 4x MSAA surface over the
+    // 1280x720 color targets' tiles). The later strips start from what the
+    // strip before leaves, but the merged render targets take those tiles in
+    // every band from that surface (AppendStripMergeTransfers; its claim also
+    // consumes the carry). Whether a draw is on the strip surface is known
+    // once there is a candidate layout.
+    if (candidate_.IsValid()) {
+      const Strip& first = strips_[0];
+      for (uint32_t draw : first_strip_draws) {
+        if (cvars::strip_merge_first_strip_other_surface) {
+          break;
+        }
+        if (draw >= first.draw_window.size() ||
+            !(first.draw_window[draw] & kDrawWindowBanded)) {
+          Fail("a draw only the first strip does is on another surface");
+          failure_strip_ = 0;
+          break;
+        }
+      }
+    }
+  }
   bool verified = !failed_ && CheckMasks() &&
+                  DropFirstStripDraws(first_strip_draws) &&
                   DeriveLayout(derived, mode_ == Mode::kLearn);
+  if (verified) {
+    derived.first_strip_draws = first_strip_draws;
+  }
   for (uint32_t k = 1; verified && k < strip_count_; ++k) {
     verified = CompareStrip(k);
   }
@@ -405,19 +449,27 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
   // resolves than strip 0 (575207D7: strip 0 resolves after its first and
   // second own writes, strip 1 after its third and fourth).
   size_t draw_count = first.draw_own_snapshots.size();
+  auto own_draws = [](const Strip& strip) {
+    return std::count_if(strip.draw_kinds.cbegin(), strip.draw_kinds.cend(),
+                         [](uint8_t kind) { return kind & kDrawKindOwn; });
+  };
   for (uint32_t k = 1; k < strip_count_; ++k) {
     const Strip& strip = strips_[k];
-    if (strip.own_opcodes != first.own_opcodes ||
-        strip.own_writes.size() != first.own_writes.size()) {
+    if (strip.draw_own_snapshots.size() != draw_count) {
       failure_strip_ = k;
-      Fail("strip-own packets differ between strips");
+      // D3D can draw into the first tile alone: 425307D5 clears it with a
+      // quad masked to that tile only, and the later tiles start from what
+      // the previous one left. Merging draws band-addressed draws into every
+      // band.
+      Fail(strip.draw_own_snapshots.size() < draw_count &&
+                   draw_count - strip.draw_own_snapshots.size() ==
+                       size_t(own_draws(first) - own_draws(strip))
+               ? "a strip-own draw only the first strip does"
+               : "strips with different draw counts");
       return false;
     }
-  }
-  int32_t band_rows = 0;
-  uint32_t window_br_first = 0;
-  auto set_band_rows = [&](int32_t rows) {
-    if (rows <= 0 || (band_rows && band_rows != rows)) {
+    if (strip.draw_kinds != first.draw_kinds) {
+      failure_strip_ = k;
       Fail("strip-own draws differ between strips");
       return false;
     }
@@ -552,6 +604,7 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     // verified one.
     layout_out.pitch_tiles_at_32bpp = layout_.pitch_tiles_at_32bpp;
     layout_out.msaa_samples = layout_.msaa_samples;
+    layout_out.resolve_clear_bottoms = layout_.resolve_clear_bottoms;
     return true;
   }
   if (first.own_resolves.empty()) {
@@ -581,9 +634,17 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     // destination, which has to reach the frame bottom.
     if (resolve.is_64bpp || resolve.clears || resolve.edram_offset_y ||
         resolve.dest_offset_y ||
+    // D3D clears the next tile's EDRAM with each tile's resolve (545407F2,
+    // 575207D7, 434307D2; 425307D5 and 4D530805 in every strip but the last).
+    // The merged resolve clears the bands of the first strips_clearing
+    // strips, which must clear the same way; the others mustn't clear.
+    constexpr uint32_t kClearBits = 0x300;
+    uint32_t clear_bits = resolve.copy_control & kClearBits;
+    uint32_t strips_clearing = 0;
     for (uint32_t k = 0; k < strip_count_; ++k) {
       const ResolveRecord& other = strips_[k].own_resolves[j];
       uint32_t bits = other.copy_control & kClearBits;
+      if (bits && bits == clear_bits && strips_clearing == k) {
         if (other.clear_color != resolve.clear_color ||
             other.clear_color_lo != resolve.clear_color_lo ||
             other.clear_depth != resolve.clear_depth) {
@@ -591,6 +652,13 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
           Fail("strip-own resolves that clear with other values");
           return false;
         }
+        ++strips_clearing;
+      } else if (bits) {
+        failure_strip_ = k;
+        Fail("strip-own resolves that clear in other strips than the first "
+             "few");
+        return false;
+      }
     }
     if (resolve.is_64bpp || resolve.edram_offset_y || resolve.dest_offset_y ||
         resolve.height_div_8 * 8 != uint32_t(band_rows) ||
@@ -610,7 +678,8 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
           other.copy_dest_info != resolve.copy_dest_info ||
           other.copy_dest_coordinate_info !=
               resolve.copy_dest_coordinate_info ||
-          other.copy_control != resolve.copy_control ||
+          (other.copy_control & ~kClearBits) !=
+              (resolve.copy_control & ~kClearBits) ||
           other.copy_dest_base != resolve.copy_dest_base + k * stride ||
           other.dest_height_aligned + k * uint32_t(band_rows) !=
               resolve.dest_height_aligned) {
@@ -619,9 +688,14 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
         return false;
       }
     }
+    uint32_t resolve_bottom =
+        strips_[strip_count_ - 1].own_resolves[j].height_div_8 * 8;
+    layout_out.resolve_bottoms.push_back(resolve_bottom);
+    layout_out.resolve_clear_bottoms.push_back(
+        strips_clearing == strip_count_
+            ? resolve_bottom
+            : strips_clearing * uint32_t(band_rows));
   }
-  // A whole number of EDRAM tile rows follows from whole 32-row texture tiles.
-  if (!layout_out.band_tile_rows()) {
     Fail("strips not a whole number of EDRAM tile rows");
     return false;
   }
@@ -681,6 +755,13 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
         values_x[k] = WindowOffsetX(values[k]);
         values_y[k] = WindowOffsetY(values[k]);
       }
+      if (!IsLinear(values_x, strip_count_, slope_x) || slope_x) {
+        // 4E4D07DC tiles 1280x720 as four 320-pixel columns, 4E4D07D1 as
+        // two of 640.
+        Fail("tiles side by side (the window offset x varies)");
+        return false;
+      }
+      if (!IsLinear(values_y, strip_count_, slope_y) || values_y[0] ||
           !set_band_rows(-slope_y)) {
         Fail("the window offset isn't the strip's frame row");
         return false;
@@ -692,6 +773,11 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
         values_x[k] = int32_t(values[k] & 0x8000FFFF);
         values_y[k] = int32_t((values[k] >> 16) & 0x3FFF);
       }
+      if (!IsLinear(values_x, strip_count_, slope_x) || slope_x) {
+        Fail("tiles side by side (the window scissor x varies)");
+        return false;
+      }
+      bool rows_ok = set_band_rows(rows);
         Fail("the window scissor isn't the strip's rows");
         return false;
       }
@@ -705,6 +791,12 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
   }
   if (reg < XE_GPU_REG_SHADER_CONSTANT_000_X ||
       reg >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) {
+    if (cvars::strip_merge_log) {
+      XELOGI("Strip merge: strip-own register {:04X} varies ({:08X}, {:08X}) "
+             "at a {}",
+             reg, values[0], values[1],
+             (kind & kDrawKindResolve) ? "resolve" : "draw");
+    }
     Fail("a strip-own write to a register merging can't vary");
     return false;
   }
@@ -732,14 +824,101 @@ bool StripMerge::CheckOwnValues(uint32_t reg, const uint32_t* values,
   return true;
 }
 
+bool StripMerge::FindFirstStripDraws(std::vector<uint32_t>& draws_out) const {
+  draws_out.clear();
+  // Learning sessions hash every draw's state. A draw of the first strip that
+  // doesn't match the second strip's next one must be the first strip's own
+  // (not a resolve: own resolves are compared per strip in DeriveLayout).
+  const Strip& first = strips_[0];
+  const Strip& second = strips_[1];
+  if (first.draw_states.size() != first.draw_kinds.size() ||
+      second.draw_states.size() != second.draw_kinds.size() ||
+      first.draw_kinds.size() <= second.draw_kinds.size()) {
+    return false;
+  }
+  size_t j = 0;
+  for (size_t i = 0; i < first.draw_kinds.size(); ++i) {
+    if (j < second.draw_kinds.size() &&
+        first.draw_kinds[i] == second.draw_kinds[j] &&
+        first.draw_states[i] == second.draw_states[j]) {
+      ++j;
+      continue;
+    }
+    if (first.draw_kinds[i] != kDrawKindOwn) {
+      draws_out.clear();
+      return false;
+    }
+    draws_out.push_back(uint32_t(i));
+  }
+  if (j != second.draw_kinds.size()) {
+    draws_out.clear();
+    return false;
+  }
+  return true;
+}
+
+bool StripMerge::DropFirstStripDraws(const std::vector<uint32_t>& draws) {
+  if (draws.empty()) {
+    return true;
+  }
+  Strip& first = strips_[0];
+  for (uint32_t draw : draws) {
+    if (draw >= first.draw_kinds.size() ||
+        first.draw_kinds[draw] != kDrawKindOwn) {
+      failure_strip_ = 0;
+      Fail("a draw only the first strip does isn't its own");
+      return false;
+    }
+  }
+  // Every vector indexed by draw, without the dropped ones.
+  auto drop = [&draws](auto& per_draw) {
+    if (per_draw.size() <= draws.back()) {
+      return;
+    }
+    size_t out = 0, next = 0;
+    for (size_t i = 0; i < per_draw.size(); ++i) {
+      if (next < draws.size() && draws[next] == i) {
+        ++next;
+        continue;
+      }
+      per_draw[out++] = per_draw[i];
+    }
+    per_draw.resize(out);
+  };
+  drop(first.draw_kinds);
+  drop(first.draw_own_snapshots);
+  drop(first.draw_own_states);
+  drop(first.draw_states);
+  first.own_draw_vertices.erase(
+      std::remove_if(first.own_draw_vertices.begin(),
+                     first.own_draw_vertices.end(),
+                     [&draws](const Strip::OwnDrawVertices& v) {
+                       return std::binary_search(draws.cbegin(), draws.cend(),
+                                                 v.draw);
+                     }),
+      first.own_draw_vertices.end());
+  first.draws -= std::min(first.draws, uint32_t(draws.size()));
+  return true;
+}
+
 bool StripMerge::CheckMasks() {
+  // A mask naming some strips but not all is an object the game culled per
+  // strip (4D530AA4 predicates objects on the strips they overlap, masks a
+  // and 28 over strips 3, c and 30): the strips draw different things. A mask
+  // naming part of one strip's bits runs in that strip alone, as its own
+  // packet (4D5307D5 masks its first tile's clear quad and resolves 2, its
+  // second tile's resolves 8, over strips 3 and c).
   for (uint32_t k = 0; k < strip_count_; ++k) {
     for (const Record& record : strips_[k].records) {
       uint64_t mask = record.mask & strip_bits_union_;
       if (!mask || mask == strip_bits_union_) {
         continue;
       }
+      bool one_strip = false;
+      for (uint32_t i = 0; i < strip_count_ && !one_strip; ++i) {
+        one_strip = !(mask & ~strips_[i].bits);
       }
+      if (!one_strip) {
         failure_strip_ = k;
         Fail("bin masks naming some strips but not all (objects culled per "
              "strip)");
@@ -760,8 +939,7 @@ bool StripMerge::CheckMasks() {
     if (mask == strip_bits_union_) {
       return 0;  // Shared.
     }
-    if (mask == bits) {
-      return 1;  // Own, compared through own_opcodes and own_writes.
+    if (mask && !(mask & ~bits)) {
       return 1;  // Own, compared through what the draws see of them.
     }
     if (!mask) {
@@ -828,7 +1006,28 @@ bool StripMerge::CheckMasks() {
   }
   if (first.own_draw_vertices != strip.own_draw_vertices) {
     failure_strip_ = index;
+    if (cvars::strip_merge_log) {
+      XELOGI("Strip merge: strip {} has {} strip-own draws with vertices, the "
+             "first {}",
+             index, strip.own_draw_vertices.size(),
+             first.own_draw_vertices.size());
+    }
+    Fail("a strip-own draw's vertices differ between strips");
     failure_strip_ = index;
+    if (cvars::strip_merge_log) {
+      std::string words;
+      for (size_t w = 0; w < a.words.size() && w < b.words.size(); ++w) {
+        float fa, fb;
+        std::memcpy(&fa, &a.words[w], sizeof(float));
+        std::memcpy(&fb, &b.words[w], sizeof(float));
+        words += fmt::format(" {}/{}", fa, fb);
+      }
+      XELOGI("Strip merge: strip {} own draw {} (vertex shader {:016X}, rows "
+             "are band rows {}/{}, {}/{} dwords) differs from the first "
+             "strip's:{}",
+             index, b.draw, b.vertex_shader_hash, a.rows_are_band_rows,
+             b.rows_are_band_rows, a.words.size(), b.words.size(), words);
+    }
     Fail("a strip-own draw's vertices differ between strips");
     return false;
   }
@@ -889,7 +1088,22 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
   bool executed = !predicated || (bin_select & bin_mask) != 0;
   if (policy == PacketPolicy::kViolation) {
     if (executed) {
-      Fail("a visibility query or bin draw");
+      switch (opcode) {
+        case xenos::PM4_EVENT_WRITE_ZPD:
+          // Each strip counts its own samples (5553083B points
+          // RB_SAMPLE_COUNT_ADDR at a slot per strip): one merged strip
+          // would count every strip's into the first one's.
+          // TODO(xenios-jp): with fake reports nothing is counted, so such a
+          // session could merge.
+          Fail("an occlusion query in a strip");
+          break;
+        case xenos::PM4_VIZ_QUERY:
+          Fail("a visibility query");
+          break;
+        default:
+          Fail("a bin draw");
+          break;
+      }
     }
     return;
   }
@@ -1124,6 +1338,7 @@ void StripMerge::OnPacketType01(uint32_t header,
 bool StripMerge::BeforeDraw() {
   Strip& strip = strips_[strip_index_];
   ++strip.draws;
+  first_strip_draw_ = false;
   if (merge_planned_) {
     merge_planned_ = false;
     if (!failed_ && strip_index_ == 0) {
@@ -1155,6 +1370,16 @@ bool StripMerge::BeforeDraw() {
     if (strip_index_) {
       // The merged first strip drew and resolved this strip's rows.
       return false;
+    }
+    if (std::binary_search(layout_.first_strip_draws.cbegin(),
+                           layout_.first_strip_draws.cend(), strip.draws - 1)) {
+      // Into the first band alone, in the first strip's window.
+      if (kind != kDrawKindOwn) {
+        Fail("a draw only the first strip does isn't its own");
+      } else {
+        first_strip_draw_ = true;
+      }
+      return true;
     }
     // Extended for this draw only: the next packet restores it.
     uint32_t& window_br =
@@ -1457,9 +1682,11 @@ bool StripMerge::ReadsOwnConstants(const Shader* shader,
 }
 
 void StripMerge::CheckDraw(const DrawInfo& draw) {
+    Strip& strip = strips_[strip_index_];
   if (mode_ == Mode::kLearn && session_open_) {
     // The draw's state as its shaders read it (BeforeDraw hashed every
     // constant before the shaders were known).
+    Strip& strip = strips_[strip_index_];
     if (strip.draws && strip.draw_states.size() == strip.draws) {
       strip.draw_states.back() = HashDrawState(&draw);
     }
@@ -1488,9 +1715,16 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
         vertices = XXH3_64bits_withSeed(range, sizeof(range), vertices);
       }
     }
-    strips_[strip_index_].own_draw_vertices.push_back(vertices);
+    Strip& strip = strips_[strip_index_];
   }
   if (!checking_draws()) {
+    return;
+  }
+  if (first_strip_draw_) {
+    // Drawn as the first strip draws it, into its band alone.
+    if (draw.memexport) {
+      Fail("memexport");
+    }
     return;
   }
   if (draw.memexport) {
@@ -1524,8 +1758,14 @@ uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer) {
     }
     if (banded && own) {
       return layout().frame_bottom();
+        clear_bottom_out = 0;
+      }
+      return bottom;
     }
-    if (banded) {
+    if (own) {
+      // Learning only accepts strip-own resolves of the strip surface.
+      Fail("a strip-own resolve off the strip surface");
+    } else if (banded) {
       // Every strip resolving its band: the later strips' resolves are
       // skipped, so their rows would be missing.
       Fail("a resolve of the strip's band in every strip");
@@ -1580,10 +1820,22 @@ uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer) {
   record.is_64bpp = edram_info.format_is_64bpp != 0;
   record.clears =
       resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
+  if (resolve_info.IsClearingColor()) {
+    record.clear_color = resolve_info.rb_color_clear;
+    record.clear_color_lo = resolve_info.rb_color_clear_lo;
+  }
+  if (resolve_info.IsClearingDepth()) {
+    record.clear_depth = resolve_info.rb_depth_clear;
+  }
   strips_[strip_index_].own_resolves.push_back(record);
   return 0;
 }
 
+uint32_t StripMerge::TakeMergedResolveBottom(uint32_t& clear_bottom_out) {
+  clear_bottom_out = 0;
+  if (merged_resolves_ >= layout_.resolve_bottoms.size() ||
+      merged_resolves_ >= layout_.resolve_clear_bottoms.size()) {
+  clear_bottom_out = layout_.resolve_clear_bottoms[merged_resolves_];
 void StripMerge::Fail(const char* reason) {
   if (!session_open_ || failed_) {
     return;
