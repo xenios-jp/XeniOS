@@ -102,6 +102,10 @@ DEFINE_int32(
     "multithreaded compilation.",
     "Metal");
 DEFINE_bool(
+    "Metal");
+DEFINE_bool(
+    "Metal");
+DEFINE_bool(
     metal_log_frame_gpu_waits, false,
     "Log, at every swap, the time the CPU spent waiting for the GPU in the "
     "frame by reason, and the command buffers it created by kind.",
@@ -335,6 +339,7 @@ const char* const kCommandBufferKindNames[] = {
     "rt_dump",
     "rt_other",
     "submission_pass_limit",
+    "submission_after_drain",
 };
 static_assert(std::size(kCommandBufferKindNames) ==
                   size_t(MetalCommandProcessor::CommandBufferKind::kCount),
@@ -3405,6 +3410,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                       kind_per_frame(CommandBufferKind::kSubmissionWait));
     COUNT_profile_set("gpu/cb_submission_pass_limit_per_frame",
                       kind_per_frame(CommandBufferKind::kSubmissionPassLimit));
+    COUNT_profile_set("gpu/cb_submission_after_drain_per_frame",
+                      kind_per_frame(CommandBufferKind::kSubmissionAfterDrain));
     COUNT_profile_set("gpu/cb_texture_upload_batch_per_frame",
                       kind_per_frame(CommandBufferKind::kTextureUploadBatch));
     COUNT_profile_set("gpu/cb_texture_upload_private_per_frame",
@@ -3589,7 +3596,31 @@ void MetalCommandProcessor::OnPrimaryBufferEnd() {
   if (!cvars::submit_on_primary_buffer_end) {
     return;
   }
+  // Ending an open pass here stores and reloads its attachments, and nothing
+  // waits at this point: a ring-empty stall and every wait commit at once.
+  // The pass is left to end, and the draw beginning the next one commits.
+  // DXIL path only.
+  if (UseDxilPath() && current_render_encoder_) {
+    primary_end_commit_at_pass_end_ = true;
+    return;
+  }
   EndCommandBuffer(CommandBufferKind::kSubmissionPrimaryBufferEnd);
+}
+
+void MetalCommandProcessor::CommitBetweenRenderPasses() {
+  if (!UseDxilPath() || !current_command_buffer_ || current_render_encoder_) {
+    return;
+  }
+  if (command_buffer_render_passes_ >= kMaxRenderPassesPerCommandBuffer) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionPassLimit);
+  } else if (primary_end_commit_at_pass_end_) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionPrimaryBufferEnd);
+  } else if (commit_after_drain_armed_ && command_buffer_render_passes_ &&
+             GetCompletedSubmission() + 1 >= submission_current_) {
+    // Committed submissions run in order, so the GPU is idle once the one
+    // before the open submission has completed.
+    EndCommandBuffer(CommandBufferKind::kSubmissionAfterDrain);
+  }
 }
 
 bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
@@ -4588,10 +4619,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           current_render_pass_descriptor_, 1)) {
     EndRenderEncoder();
   }
-  if (UseDxilPath() && current_command_buffer_ && !current_render_encoder_ &&
-      command_buffer_render_passes_ >= kMaxRenderPassesPerCommandBuffer) {
-    EndCommandBuffer(CommandBufferKind::kSubmissionPassLimit);
-  }
+  CommitBetweenRenderPasses();
   const bool initial_draw_encoder_deferred = CanDeferEmptyDrawEncoder();
   if (initial_draw_encoder_deferred) {
     EnsureCommandBuffer();
@@ -8441,6 +8469,12 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
   MaybeSavePipelineArchive();
   if (current_command_buffer_) {
     next_submission_kind_ = next_kind;
+  }
+  primary_end_commit_at_pass_end_ = false;
+  if (next_kind == CommandBufferKind::kSubmissionWait) {
+    commit_after_drain_armed_ = true;
+  } else if (current_command_buffer_) {
+    commit_after_drain_armed_ = false;
   }
   EndRenderEncoder();
 
