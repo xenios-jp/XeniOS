@@ -33,9 +33,10 @@ inline bool NetworkPathAvailable() {
   return GetNetworkPathState() == NetworkPathState::kAvailable;
 }
 
-// |listener| runs on an internal queue whenever the state changes, with the
-// listeners' lock held: it should only note the change and wake its owner, and
-// must not add or remove listeners. Removing waits for a running call to end.
+// |listener| runs on an internal queue whenever the state changes, with no
+// module lock held (it may call back in). After Remove returns the listener is
+// not running and never runs again, unless Remove is called from a listener.
+// Don't hold a lock the listener takes while calling Remove.
 uint64_t AddNetworkPathListener(std::function<void()> listener);
 void RemoveNetworkPathListener(uint64_t id);
 
