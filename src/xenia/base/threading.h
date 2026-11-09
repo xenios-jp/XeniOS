@@ -145,6 +145,12 @@ void PreciseSleep(std::chrono::nanoseconds duration);
 // precision. Use only where wake-up jitter would miss a frame budget; the
 // spin costs CPU.
 void NanoSleepPrecise(int64_t ns);
+// Sleeps the current thread for at least as long as the given duration, like
+// Sleep, without a busy-wait tail. On Apple platforms it waits for a deadline
+// with one mach_wait_until trap, while Sleep's nanosleep there, given a
+// remaining-time pointer, also sends a clock_get_time Mach message on every
+// call. Sleep elsewhere.
+void DeadlineSleep(std::chrono::microseconds duration);
 template <typename Rep, typename Period>
 void Sleep(std::chrono::duration<Rep, Period> duration) {
   Sleep(std::chrono::duration_cast<std::chrono::microseconds>(duration));

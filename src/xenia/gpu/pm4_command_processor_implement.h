@@ -1048,7 +1048,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
       // doesn't sleep above sleeps between checks after a brief spin.
       if (++polls > 64 &&
           (wait < 0x100 || !cvars::guest_display_refresh_cap)) {
-        xe::threading::Sleep(std::chrono::microseconds(100));
+        xe::threading::DeadlineSleep(std::chrono::microseconds(100));
       }
     }
   } while (!matched);
