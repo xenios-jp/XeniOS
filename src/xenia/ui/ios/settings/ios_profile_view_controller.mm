@@ -739,7 +739,10 @@ static UIImage* PlaceholderAvatarImage(CGFloat diameter, UIColor* color) {
                                        NSLocalizedString(
                                            @"The gamertag is released for anyone to take, friends "
                                            @"lose it, every other device is signed out, and the "
-                                           @"profile is deleted from this %@. This can’t be undone.",
+                                           @"profile is deleted from this %@. This can’t be "
+                                           @"undone.\n\nXeniOS keeps a permanent record of the "
+                                           @"account’s gamertag and its device and network "
+                                           @"identifiers, so a deleted account can still be banned.",
                                            @"Delete account: message; %@ is the device's kind"),
                                        UIDevice.currentDevice.model]
                 preferredStyle:UIAlertControllerStyleAlert];
