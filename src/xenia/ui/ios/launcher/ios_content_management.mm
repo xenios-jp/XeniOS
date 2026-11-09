@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <mutex>
+#include <shared_mutex>
 #include <string_view>
 #include <system_error>
 
@@ -28,9 +29,14 @@ namespace {
 constexpr const char* kLinkedContentMarkerSuffix = ".xenia-ios-link";
 // Where the DLC layout migration sets a package's old folder while it works.
 constexpr const char* kMigrateAsideSuffix = ".xenios-migrate";
+
 constexpr const char* kLinkedContentMarkerVersion = "version=1";
 constexpr std::string_view kLinkedContentSourcePrefix = "source_path=";
 constexpr std::string_view kLinkedContentRelativePrefix = "relative_path=";
+
+// Package installs hold it shared; the layout migration needs it exclusively,
+// as it briefly renames a folder over the name an install writes its file to.
+std::shared_mutex g_dlc_install_mutex;
 
 // The marker sits beside the package, named after it.
 std::filesystem::path LinkedContentMarkerPathForPackage(const std::filesystem::path& package_path) {
@@ -464,6 +470,7 @@ bool xe_copy_content_package_into_root(const IOSSelectedContentPackage& package_
     *error_message_out = "";
   }
 
+  std::shared_lock<std::shared_mutex> install_lock(g_dlc_install_mutex);
   std::error_code ec;
   std::filesystem::create_directories(destination_root, ec);
   if (ec) {
@@ -550,6 +557,11 @@ void xe_exclude_installed_content_from_backup() {
 void xe_migrate_nested_dlc_packages() {
   static std::mutex migration_mutex;
   std::lock_guard<std::mutex> lock(migration_mutex);
+  // Skip while an install runs (it can take minutes); the next scan retries.
+  std::unique_lock<std::shared_mutex> install_lock(g_dlc_install_mutex, std::try_to_lock);
+  if (!install_lock.owns_lock()) {
+    return;
+  }
   const std::filesystem::path user_root =
       xe_get_ios_documents_path() / "content" / "0000000000000000";
   std::error_code ec;
