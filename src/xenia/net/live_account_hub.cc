@@ -185,6 +185,7 @@ std::shared_ptr<AccountShare> ShareAccount(const std::string& lobby,
   fan_out.join_failed = forward(&E::join_failed);
   fan_out.register_refused = forward(&E::register_refused);
   fan_out.removed = forward(&E::removed);
+  fan_out.account_deleted = forward(&E::account_deleted);
   fan_out.signed_in_elsewhere = forward(&E::signed_in_elsewhere);
   fan_out.invite_answered = forward(&E::invite_answered);
   fan_out.invite_state = forward(&E::invite_state);

@@ -33,6 +33,8 @@ const XeniaIOSLiveSocialHost* g_real_host = nullptr;
 
 // How long a request waits for the lobby's answer.
 constexpr NSTimeInterval kAnswerTimeout = 15.0;
+// Deleting an account needs a connection already or very soon: the player is waiting on it.
+constexpr NSTimeInterval kDeleteConnectTimeout = 6.0;
 // Going online or joining also connects first.
 constexpr NSTimeInterval kConnectTimeout = 25.0;
 
@@ -287,10 +289,10 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
   // The profile whose device was removed from its account; offline until it joins one again.
   uint64_t _removedProfile;
-  // Leaving the account before the profile is deleted (leaveAccountOfProfile:).
-  void (^_leaveDone)(NSError*);
-  uint64_t _leaveProfile;
-  BOOL _leaveAsked;
+  // Deleting the account before the profile is deleted (deleteAccountOfProfile:).
+  void (^_deleteDone)(NSError*);
+  uint64_t _deleteProfile;
+  BOOL _deleteAsked;
 
   // What the screens last saw, to post a change only when there is one.
   NSString* _lastSignature;
@@ -326,7 +328,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   [_devices release];
   [_recoveryCodes release];
   [_removals release];
-  [_leaveDone release];
+  [_deleteDone release];
   [_goOnline release];
   [_goOnlineName release];
   [_goOnlineOldName release];
@@ -388,7 +390,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 - (void)signedIn {
   [self syncGamertag];
-  [self continueLeave];
+  [self continueDelete];
   if (_goOnline) {
     // The welcome's recovery code comes as the next event: finish after it.
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -532,7 +534,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
   for (NSArray* removal in removals) {
     ((void (^)(NSError*))removal[1])(error);
   }
-  [self finishLeave:error];
+  [self finishDelete:error];
 }
 
 - (void)requestFailed:(const std::string&)request reason:(const std::string&)reason {
@@ -583,10 +585,10 @@ NSArray* TakeWaiters(NSMutableArray* list) {
     done(nil, reason == "not_found" ? XeniaLiveLinkStatusBadCode
               : reason == "limit"   ? XeniaLiveLinkStatusLimit
                                     : XeniaLiveLinkStatusUnreachable);
+  } else if (request == "delete_account") {
+    [self finishDelete:RefusedError(request, reason)];
   } else if (request == "remove_device") {
     NSError* error = RefusedError(request, reason);
-    // The lobby keeps an account's last device: nothing more to do for leaving.
-    [self finishLeave:reason == "last_device" ? nil : error];
     NSArray* removals = [[_removals copy] autorelease];
     [_removals removeAllObjects];
     for (NSArray* removal in removals) {
@@ -597,11 +599,6 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 // Another device removed this one: the profile isn't on the account any more.
 - (void)removedFromAccount {
-  // This app asked for it, to delete the profile: nothing to tell the player.
-  if (_leaveDone && _leaveAsked) {
-    [self finishLeave:nil];
-    return;
-  }
   auto profile = ActiveProfile();
   if (profile && g_real_host->disable_online) {
     XELOGW("Live account (app): this device was removed from {}'s account", profile->gamertag);
@@ -632,6 +629,43 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                   userInfo:@{
                     XeniaLiveSocialMessageKey : message,
                     XeniaLiveSocialSignedOutReasonKey : @"removed",
+                  }];
+}
+
+// The account was deleted, here or on another device.
+- (void)accountDeleted {
+  // This app asked for it, to delete the profile: nothing to tell the player.
+  if (_deleteDone && _deleteAsked) {
+    [self finishDelete:nil];
+    return;
+  }
+  auto profile = ActiveProfile();
+  if (!profile) {
+    return;
+  }
+  XELOGW("Live account (app): {}'s account was deleted", profile->gamertag);
+  // Its XUID can't be used again: a new gamertag starts from none.
+  if (g_real_host->set_online_xuid) {
+    g_real_host->set_online_xuid(profile->xuid, 0);
+  }
+  if (g_real_host->disable_online) {
+    g_real_host->disable_online(profile->xuid);
+  }
+  _removedProfile = profile->xuid;
+  xe_ios_live_social_refresh_now();
+  [self postChange];
+  NSString* message = [NSString
+      stringWithFormat:NSLocalizedString(@"%1$@’s online account was deleted on another device. "
+                                         @"The profile and its saves stay on this %2$@, offline.",
+                                         @"Account deleted; %1$@ is the gamertag, %2$@ this "
+                                         @"device's kind (iPhone, iPad)"),
+                       ToNS(profile->gamertag), [UIDevice currentDevice].model];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:XeniaLiveSocialSignedOutNotification
+                    object:[XeniaLiveSocial shared]
+                  userInfo:@{
+                    XeniaLiveSocialMessageKey : message,
+                    XeniaLiveSocialSignedOutReasonKey : @"deleted",
                   }];
 }
 
@@ -970,63 +1004,54 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                  });
 }
 
-- (void)leaveAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError*))completion {
+- (void)deleteAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError*))completion {
   void (^done)(NSError*) = [[completion copy] autorelease];
-  if (_leaveDone || !xe_ios_online_features_enabled()) {
+  if (_deleteDone || !xe_ios_online_features_enabled()) {
     dispatch_async(dispatch_get_main_queue(), ^{
       done(UnreachableError());
     });
     return;
   }
-  _leaveDone = [done retain];
-  _leaveProfile = xuid;
-  _leaveAsked = NO;
+  _deleteDone = [done retain];
+  _deleteProfile = xuid;
+  _deleteAsked = NO;
   // A profile that was just switched to connects now; signedIn continues from there.
   xe_ios_live_social_refresh_now();
-  [self continueLeave];
+  [self continueDelete];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDeleteConnectTimeout * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (_deleteDone == done && !_deleteAsked) {
+                     [self finishDelete:UnreachableError()];
+                   }
+                 });
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnswerTimeout * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
-                   if (_leaveDone == done) {
-                     [self finishLeave:UnreachableError()];
+                   if (_deleteDone == done) {
+                     [self finishDelete:UnreachableError()];
                    }
                  });
 }
 
-// Removes this device once the connection is the profile's own: just after a switch it can still
-// be the previous profile's, whose account must not be touched.
-- (void)continueLeave {
+// Asks once the connection is the profile's own: just after a switch it can still be the previous
+// profile's, whose account must not be touched.
+- (void)continueDelete {
   auto profile = ActiveProfile();
   auto share = SignedInShare();
-  if (!_leaveDone || _leaveAsked || !profile || profile->xuid != _leaveProfile || !share ||
+  if (!_deleteDone || _deleteAsked || !profile || profile->xuid != _deleteProfile || !share ||
       !profile->online_xuid || (*share)->xuid() != profile->online_xuid) {
     return;
   }
-  _leaveAsked = YES;
-  [self loadDevicesWithCompletion:^(NSArray<XeniaLiveDevice*>* devices, NSError* error) {
-    XeniaLiveDevice* here = nil;
-    for (XeniaLiveDevice* device in devices) {
-      if (device.thisDevice) {
-        here = device;
-      }
-    }
-    auto now = SignedInShare();
-    if (error || !now) {
-      [self finishLeave:error ?: UnreachableError()];
-    } else if (!here || devices.count < 2) {
-      [self finishLeave:nil];
-    } else {
-      // The lobby closes this connection, so removedFromAccount finishes it.
-      (*now)->RemoveDevice(ToStd(here.deviceId));
-    }
-  }];
+  _deleteAsked = YES;
+  // The lobby closes this connection, so accountDeleted finishes it.
+  (*share)->DeleteAccount();
 }
 
-- (void)finishLeave:(NSError*)error {
-  if (!_leaveDone) {
+- (void)finishDelete:(NSError*)error {
+  if (!_deleteDone) {
     return;
   }
-  void (^done)(NSError*) = [_leaveDone autorelease];
-  _leaveDone = nil;
+  void (^done)(NSError*) = [_deleteDone autorelease];
+  _deleteDone = nil;
   done(error);
 }
 
@@ -1718,7 +1743,8 @@ void xe_ios_live_account_real_install(const XeniaIOSLiveSocialHost* host) {
 bool xe_ios_live_account_real_handles(const std::string& request) {
   return request == "check" || request == "rename" || request == "register" ||
          request == "link_code" || request == "recovery_new" || request == "devices" ||
-         request == "remove_device" || request == "join_approve" || request == "join_deny" ||
+         request == "remove_device" || request == "delete_account" ||
+         request == "join_approve" || request == "join_deny" ||
          request == "join_peek";
 }
 
@@ -1803,6 +1829,11 @@ void xe_ios_live_account_real_add_events(live::AccountClient::Events& events) {
   events.removed = [on_main] {
     on_main(^(XeniaLiveAccountReal* service) {
       [service removedFromAccount];
+    });
+  };
+  events.account_deleted = [on_main] {
+    on_main(^(XeniaLiveAccountReal* service) {
+      [service accountDeleted];
     });
   };
   events.signed_in_elsewhere = [on_main](const std::string& device) {

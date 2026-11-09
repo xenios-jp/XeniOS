@@ -180,11 +180,10 @@ typedef NS_ENUM(NSInteger, XeniaLiveApprovalStatus) {
 - (void)loadDevicesWithCompletion:(void (^)(NSArray<XeniaLiveDevice*>* _Nullable devices,
                                             NSError* _Nullable error))completion;
 - (void)removeDevice:(XeniaLiveDevice*)device completion:(void (^)(NSError* _Nullable error))completion;
-// Takes this device off the account of |xuid|, which has to be the signed-in profile, before the
-// profile is deleted; it waits for that profile's connection if it just signed in. An account's
-// last device can't be removed, so then nothing changes and error is nil too: the lobby keeps the
-// account either way. error is set if the lobby can't be reached.
-- (void)leaveAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError* _Nullable error))completion;
+// Deletes the online account of |xuid|, which has to be the signed-in profile, for good; it waits
+// briefly for that profile's connection if it just signed in. error is set if the lobby can't be
+// reached or doesn't answer.
+- (void)deleteAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError* _Nullable error))completion;
 
 // A new recovery code, R7K2-9QMD-4XTW. The old one stops working. (The first one comes
 // with goOnline.)

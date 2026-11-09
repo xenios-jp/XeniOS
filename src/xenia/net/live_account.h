@@ -214,6 +214,8 @@ struct AccountMessage {
   // kError: the player an invite was for (`to`).
   uint64_t to = 0;
   std::string reason;  // kError, kReject.
+  // kReject "removed": the whole account was deleted, not just this device.
+  bool deleted = false;
   // kReject "elsewhere": the name of the device the account signed in on
   // (empty when it gave none).
   std::string device_name;
@@ -346,6 +348,7 @@ std::string EncodeLinkCode();
 std::string EncodeSessionToken();
 std::string EncodeDevices();
 std::string EncodeRemoveDevice(std::string_view key);
+std::string EncodeDeleteAccount();
 // |offline| adds "offline": true: friends see the account as signed out.
 std::string EncodePresence(uint32_t title_id, uint32_t context,
                            std::string_view rich,
@@ -534,6 +537,9 @@ class AccountClient {
     // Another device removed this one from the account. The client stops
     // connecting; the device needs a link or recovery code to come back.
     std::function<void()> removed;
+    // The account was deleted, by this device or another. The client stops
+    // connecting; the XUID can't be used again.
+    std::function<void()> account_deleted;
     // The account signed in on another device (named |device|, or empty), which
     // ends its session here: one device at a time, as on the console. The
     // client stops connecting; a new client signs in again, with no code, and
@@ -719,6 +725,9 @@ class AccountClient {
   // Removes a device by its key (Device::key), but never the last one. Its
   // sockets are closed; everyone hears the new list.
   void RemoveDevice(std::string key);
+  // Deletes the whole account for good: account_deleted says when it's done,
+  // request_failed("delete_account", ...) if nothing changed.
+  void DeleteAccount();
 
  private:
   struct HeldInvite {

@@ -383,7 +383,7 @@ struct LaunchPreparation {
 - (void)finishTouchLayoutEditMode;
 - (void)updateTouchControlsOverlayVisibilityAnimated:(BOOL)animated;
 - (void)showStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
-- (void)showSignedOut:(NSString*)message removed:(BOOL)removed;
+- (void)showSignedOut:(NSString*)message removed:(BOOL)removed deleted:(BOOL)deleted;
 - (void)showPersistentStatusToast:(NSString*)message style:(XeniaIOSStatusToastStyle)style;
 - (void)updateStatusToast:(NSString*)message;
 - (void)dismissStatusToast;
@@ -3590,9 +3590,11 @@ static bool XeJITUsable() {
                   usingBlock:^(NSNotification* note) {
                     NSString* message = note.userInfo[XeniaLiveSocialMessageKey];
                     if (message.length) {
+                      NSString* reason = note.userInfo[XeniaLiveSocialSignedOutReasonKey];
+                      const BOOL deleted = [reason isEqualToString:@"deleted"];
                       [unsafe_self showSignedOut:message
-                                         removed:[note.userInfo[XeniaLiveSocialSignedOutReasonKey]
-                                                     isEqualToString:@"removed"]];
+                                         removed:deleted || [reason isEqualToString:@"removed"]
+                                         deleted:deleted];
                     }
                   }];
   [center addObserverForName:XeniaLiveSocialRequestFailedNotification
@@ -6136,7 +6138,7 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
 // What signed this device out, and the way back. Signed in elsewhere: signing in here again,
 // which signs the other device out. Removed: signing in with a code from another device. A game
 // keeps playing without Live, so over one it's a toast that says where to sign in.
-- (void)showSignedOut:(NSString*)message removed:(BOOL)removed {
+- (void)showSignedOut:(NSString*)message removed:(BOOL)removed deleted:(BOOL)deleted {
   if (self.gameRunning) {
     // The removed notice says its way back (a code) already.
     [self
@@ -6157,8 +6159,16 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     __unsafe_unretained XeniaViewController* unsafe_retry = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, int64_t(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-                     [unsafe_retry showSignedOut:held removed:removed];
+                     [unsafe_retry showSignedOut:held removed:removed deleted:deleted];
                    });
+    return;
+  }
+  if (deleted) {
+    // There's no account left to sign in to.
+    XEPresentOKAlert(presenter,
+                     NSLocalizedString(@"Account Deleted", @"Alert title: another device deleted "
+                                                           @"the account"),
+                     message);
     return;
   }
   UIAlertController* alert = [UIAlertController

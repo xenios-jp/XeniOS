@@ -1118,6 +1118,7 @@ TEST_CASE("Live account encoders for the new requests", "[live]") {
   CHECK(EncodeLinkCode() == R"({"t":"link_code"})");
   CHECK(EncodeDevices() == R"({"t":"devices"})");
   CHECK(EncodeRemoveDevice("04ab") == R"({"t":"remove_device","key":"04ab"})");
+  CHECK(EncodeDeleteAccount() == R"({"t":"delete_account"})");
 
   CHECK(NormalizeRecoveryCode("abcd-efgh-jkmn-pqrs-tvwx") ==
         "ABCDEFGHJKMNPQRSTVWX");
@@ -1765,6 +1766,25 @@ TEST_CASE("Live account removed from the account stops connecting", "[live]") {
   socket.message(R"({"t":"challenge","v":2,"nonce":"ab"})");
   socket.message(R"({"t":"reject","reason":"removed"})");
   CHECK(removed == 1);
+  socket.closed("closed 4005 removed");
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(lobby.Urls().size() == 1);
+}
+
+TEST_CASE("Live account deleted stops connecting", "[live]") {
+  FakeLobby lobby;
+  std::atomic<int> removed = 0;
+  std::atomic<int> deleted = 0;
+  AccountClient::Events events;
+  events.removed = [&] { ++removed; };
+  events.account_deleted = [&] { ++deleted; };
+  AccountClient client("ws://lobby.test", DeviceKey::Generate(),
+                       0x0009F00000000001ull, "Tester", std::move(events));
+  auto socket = lobby.WaitForSocket();
+  socket.message(R"({"t":"challenge","v":2,"nonce":"ab"})");
+  socket.message(R"({"t":"reject","reason":"removed","deleted":true})");
+  CHECK(deleted == 1);
+  CHECK(removed == 0);
   socket.closed("closed 4005 removed");
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(lobby.Urls().size() == 1);

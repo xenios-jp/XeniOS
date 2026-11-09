@@ -204,8 +204,8 @@ extern NSNotificationName const XeniaLiveSocialReportFailedNotification;
 // Posted on the main thread when the lobby signed this device out of the account, so the profile
 // is offline now: userInfo[XeniaLiveSocialMessageKey] says what happened and where, and
 // userInfo[XeniaLiveSocialSignedOutReasonKey] why: "elsewhere" (the account signed in on another
-// device; signing in here again takes it back) or "removed" (another device removed this one; a
-// code from it signs in again).
+// device; signing in here again takes it back), "removed" (another device removed this one; a
+// code from it signs in again) or "deleted" (the account is gone).
 extern NSNotificationName const XeniaLiveSocialSignedOutNotification;
 extern NSString* const XeniaLiveSocialSignedOutReasonKey;
 
