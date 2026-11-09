@@ -333,7 +333,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // pass's tiles, or a whole depth resolve, which can't read the tiles.
   // EndRenderEncoder runs it once the pass has ended, before anything else is
   // encoded after the pass.
-  bool HasPostPassResolves() const { return !post_pass_resolves_.empty(); }
+  bool HasPostPassResolves() const {
+    return !post_pass_resolves_.empty() || !post_pass_refresh_copies_.empty();
+  }
   // Whether a resolve left to the pass end writes guest memory in the range.
   bool PostPassResolvesWrite(uint32_t start, uint32_t length) const;
   // Runs it, in guest order.
@@ -982,6 +984,27 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   };
   std::vector<PostPassResolve> post_pass_resolves_;
   bool flushing_post_pass_resolves_ = false;
+  // A tile resolve's refresh of textures an earlier draw of the pass sampled,
+  // written to a scratch texture of their shape in the pass and copied into
+  // them when it ends.
+  struct PostPassRefreshCopy {
+    // Retained, back to refresh_scratch_pool_ after the copy is encoded.
+    MTL::Texture* scratch = nullptr;
+    std::vector<NS::SharedPtr<MTL::Texture>> destinations;
+    uint32_t origin_y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    // The resolves left to the pass end before it, which run first.
+    size_t post_pass_resolves_before = 0;
+  };
+  std::vector<PostPassRefreshCopy> post_pass_refresh_copies_;
+  // Retained, free scratch textures.
+  std::vector<MTL::Texture*> refresh_scratch_pool_;
+  MTL::Texture* AcquireRefreshScratch(MTL::Texture* like);
+  void ReleaseRefreshScratch(MTL::Texture* scratch);
+  void EncodePostPassRefreshCopies(MTL::CommandBuffer* command_buffer,
+                                   std::span<PostPassRefreshCopy> copies);
+  void ClearPostPassRefreshCopies();
   // Whether resolve work may be left to the end of the open pass at all.
   bool CanLeaveResolveToPassEnd() const;
   // The EDRAM tiles the resolve's clear writes, as
