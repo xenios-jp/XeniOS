@@ -92,6 +92,12 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
   options.halfPackingRounding = spirv2air::HalfPackingRounding::TowardZero;
   options.graphics.functionConstantSet =
       SpirvShaderTranslator::kDescriptorSetFetchState;
+  // Input attachment N is color attachment N. The mask is part of the
+  // modification, which keys the translation.
+  if (ReadsRenderTargets()) {
+    options.graphics.framebufferFetchMask =
+        (UINT32_C(1) << xenos::kMaxColorRenderTargets) - 1;
+  }
   spirv2air::Result result =
       spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
                            spirv.size() / sizeof(uint32_t), options);
@@ -158,11 +164,14 @@ bool DxilShader::DxilTranslation::CompileToAir(
 
   bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
   MetalShaderConversionResult conversion;
-  // Unsupported guest shaders retain the converter path.
+  // Unsupported guest shaders retain the converter path, except the ones
+  // reading render targets, which it can't express.
   const bool native_compiled =
       cvars::metal_shader_compiler != "msc" &&
       CompileToAirWithSpirv2air(conversion);
-  if (!native_compiled && !CompileToAirWithConverter(converter, conversion)) {
+  if (!native_compiled &&
+      (ReadsRenderTargets() ||
+       !CompileToAirWithConverter(converter, conversion))) {
     return false;
   }
   const char* compiler_name = native_compiled ? "spirv2air" : "msc";
