@@ -16,6 +16,7 @@
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_shader_converter.h"
@@ -153,7 +154,24 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
       pixel_shader,
       texture_cache->binding_state_generation(),
   };
-  if (gather_cache_valid_ && gather_key == gather_cache_key_) {
+  // The generation doesn't change for changes of the fetch constant words, so
+  // the words the shaders use are compared here.
+  const uint32_t* fetch_words = texture_cache->texture_fetch_constant_words();
+  auto gathered_fetch_words_equal = [&]() {
+    uint32_t fetch_mask = gather_cache_fetch_mask_;
+    uint32_t fetch_index;
+    while (xe::bit_scan_forward(fetch_mask, &fetch_index)) {
+      fetch_mask = xe::clear_lowest_bit(fetch_mask);
+      if (std::memcmp(fetch_words + fetch_index * 6,
+                      gather_cache_fetch_words_.data() + fetch_index * 6,
+                      6 * sizeof(uint32_t))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (gather_cache_valid_ && gather_key == gather_cache_key_ &&
+      gathered_fetch_words_equal()) {
     std::copy(gather_cache_ranges_.begin(), gather_cache_ranges_.end(),
               stage_ranges);
   } else {
@@ -169,6 +187,27 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     gather_cache_key_ = gather_key;
     std::copy(stage_ranges, stage_ranges + kStageCount,
               gather_cache_ranges_.begin());
+    uint32_t fetch_mask = 0;
+    for (const SpirvShader* shader : stage_shaders) {
+      if (!shader) {
+        continue;
+      }
+      for (const SpirvShader::TextureBinding& binding :
+           shader->GetTextureBindingsAfterTranslation()) {
+        fetch_mask |= UINT32_C(1) << binding.fetch_constant;
+      }
+      for (const SpirvShader::SamplerBinding& binding :
+           shader->GetSamplerBindingsAfterTranslation()) {
+        fetch_mask |= UINT32_C(1) << binding.fetch_constant;
+      }
+    }
+    gather_cache_fetch_mask_ = fetch_mask;
+    uint32_t fetch_index;
+    while (xe::bit_scan_forward(fetch_mask, &fetch_index)) {
+      fetch_mask = xe::clear_lowest_bit(fetch_mask);
+      std::memcpy(gather_cache_fetch_words_.data() + fetch_index * 6,
+                  fetch_words + fetch_index * 6, 6 * sizeof(uint32_t));
+    }
     gather_cache_valid_ = true;
   }
 

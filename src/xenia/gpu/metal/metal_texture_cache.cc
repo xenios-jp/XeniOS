@@ -2756,6 +2756,7 @@ void MetalTextureCache::ClearCache() {
     }
   }
   sampler_cache_.clear();
+  OnGatherInputsChanged();
   ClearScaledResolveBuffers();
 
   XELOGD("Metal texture cache: Cache cleared");
@@ -3109,9 +3110,6 @@ MTL::Texture* MetalTextureCache::CreateNullTextureCube() {
 void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
   SCOPE_profile_cpu_f("gpu");
 
-  if (++binding_state_generation_ == 0) {
-    binding_state_generation_ = 1;
-  }
   BeginUploadCommandBufferBatch();
 
   // Call base class implementation first
@@ -3121,6 +3119,14 @@ void MetalTextureCache::RequestTextures(uint32_t used_texture_mask) {
 
   // Intentionally no Metal-specific per-fetch logging here - invalid fetch
   // constants are already reported by the shared TextureCache logic.
+}
+
+void MetalTextureCache::UpdateTextureBindingsImpl(
+    uint32_t fetch_constant_mask) {
+  // The textures, validity, dimension, swizzle or sign classes of these
+  // bindings, everything GetTextureForBinding reads from them, changed, or the
+  // bindings were reset (also before textures are destroyed).
+  OnGatherInputsChanged();
 }
 
 void MetalTextureCache::Load3DAs2DViews(const SpirvShader& vertex_shader,
@@ -3591,6 +3597,8 @@ MTL::SamplerState* MetalTextureCache::GetOrCreateSampler(
   }
 
   sampler_cache_.emplace(parameters.value, sampler_state);
+  // A failed creation above is tried again on the next lookup.
+  OnGatherInputsChanged();
   return sampler_state;
 }
 
@@ -4115,6 +4123,7 @@ bool MetalTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   // leaves it stale. Only a base texture ever owns one.
   if (texture.key().dimension == xenos::DataDimension::k3D) {
     metal_texture->Invalidate3DAs2DView();
+    OnGatherInputsChanged();
   }
   return true;
 }
@@ -4312,6 +4321,8 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
   }
 
   swizzled_view_cache_.emplace(view_key, view);
+  // A failed creation above is tried again on the next lookup.
+  texture_cache_.OnGatherInputsChanged();
   return view;
 }
 
@@ -4353,6 +4364,7 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreate3DAs2DView(
       texture_3d_as_2d_.reset();
       return nullptr;
     }
+    texture_cache_.OnGatherInputsChanged();
   }
 
   return texture_3d_as_2d_->GetOrCreateView(host_swizzle, dimension, is_signed);
