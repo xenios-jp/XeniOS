@@ -231,6 +231,14 @@ class StripMerge {
   struct OwnWrite {
     uint32_t reg;
     uint32_t value;
+    // Whether a draw saw this write (it was still in the register then).
+    bool used = false;
+  };
+  struct OwnLatest {
+    uint32_t reg;
+    uint32_t value;
+    // Into own_writes.
+    uint32_t write_index;
   };
   struct Strip {
     uint64_t bits = 0;
@@ -242,7 +250,7 @@ class StripMerge {
     // Per draw: HashDrawOwnState.
     std::vector<uint64_t> draw_own_states;
     // The strip's latest own value of every register it wrote itself.
-    std::vector<OwnWrite> own_shadow;
+    std::vector<OwnLatest> own_shadow;
     std::vector<uint32_t> own_float_registers;
     uint32_t draws = 0;
     void Clear();
@@ -259,7 +267,7 @@ class StripMerge {
   bool DeriveLayout(Layout& layout_out, bool check_resolves);
   bool IsRedundantOwnSetConstant(const Strip& strip,
                                  const RingBuffer::ReadRange& payload) const;
-  uint64_t HashDrawOwnState(const Strip& strip);
+  uint64_t HashDrawOwnState(Strip& strip);
   void RecordOwnSetConstant(const RingBuffer::ReadRange& payload);
   bool ReadsOwnConstants(const Shader* shader, bool is_pixel_shader) const;
   uint64_t HashDrawState();
@@ -267,6 +275,9 @@ class StripMerge {
 
   RegisterFile& register_file_;
   std::vector<uint32_t> draw_own_scratch_;
+  // Per strip-own write of the last verified learning session: whether a draw
+  // saw it.
+  std::vector<bool> learned_own_used_;
   Backend* backend_ = nullptr;
 
   bool session_open_ = false;

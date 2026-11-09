@@ -270,6 +270,12 @@ void StripMerge::EndSession() {
       outcome = verified ? "candidate" : "not mergeable";
     }
     candidate_ = verified ? derived : Layout();
+    learned_own_used_.clear();
+    if (verified) {
+      for (const OwnWrite& write : strips_[0].own_writes) {
+        learned_own_used_.push_back(write.used);
+      }
+    }
   }
   if (cvars::strip_merge_log) {
     XELOGI(
@@ -327,12 +333,24 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     bool equal = true;
     for (uint32_t k = 1; k < strip_count_; ++k) {
       const OwnWrite& write = strips_[k].own_writes[j];
-      if (write.reg != reg) {
+      if (write.reg != reg || (mode_ == Mode::kLearn &&
+                               write.used != first.own_writes[j].used)) {
         failure_strip_ = k;
         Fail("strip-own writes differ between strips");
         return false;
       }
       equal &= write.value == value_first;
+    }
+    // Merged sessions don't run the later strips' draws: they use what the
+    // verified learning sessions found.
+    bool used = mode_ == Mode::kLearn
+                    ? first.own_writes[j].used
+                    : j < learned_own_used_.size() && learned_own_used_[j];
+    if (!used) {
+      // Overwritten before any draw saw it (Halo 3 sets a 485-row window
+      // scissor per strip, clamped in the last strip, that shared code
+      // replaces before drawing): what it holds doesn't matter.
+      continue;
     }
     if (equal) {
       // The same in every strip, as if shared.
@@ -680,7 +698,7 @@ bool StripMerge::IsRedundantOwnSetConstant(
   for (uint32_t i = 1; i < count; ++i) {
     uint32_t reg = base + (i - 1);
     auto it = std::find_if(strip.own_shadow.cbegin(), strip.own_shadow.cend(),
-                           [reg](const OwnWrite& own) { return own.reg == reg; });
+                           [reg](const OwnLatest& own) { return own.reg == reg; });
     if (it == strip.own_shadow.cend() || it->value != PayloadDword(payload, i)) {
       return false;
     }
@@ -688,7 +706,7 @@ bool StripMerge::IsRedundantOwnSetConstant(
   return true;
 }
 
-uint64_t StripMerge::HashDrawOwnState(const Strip& strip) {
+uint64_t StripMerge::HashDrawOwnState(Strip& strip) {
   // How many of the strip's own writes came before the draw; for each register
   // the strip wrote itself, whether it still holds the strip's latest own
   // value or else the value shared code put there; and the registers
@@ -699,16 +717,19 @@ uint64_t StripMerge::HashDrawOwnState(const Strip& strip) {
   std::vector<uint32_t>& data = draw_own_scratch_;
   data.clear();
   data.push_back(uint32_t(strip.own_writes.size()));
-  for (const OwnWrite& own : strip.own_shadow) {
+  for (const OwnLatest& own : strip.own_shadow) {
     uint32_t value = register_file_[own.reg];
     bool overwritten = value != own.value;
+    if (!overwritten) {
+      strip.own_writes[own.write_index].used = true;
+    }
     data.push_back(own.reg);
     data.push_back(uint32_t(overwritten));
     data.push_back(overwritten ? value : 0);
   }
   for (uint32_t reg : kExcluded) {
     if (std::none_of(strip.own_shadow.cbegin(), strip.own_shadow.cend(),
-                     [reg](const OwnWrite& w) { return w.reg == reg; })) {
+                     [reg](const OwnLatest& w) { return w.reg == reg; })) {
       data.push_back(register_file_[reg]);
     }
   }
@@ -739,13 +760,15 @@ void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
   for (uint32_t i = 1; i < count; ++i) {
     uint32_t reg = base + (i - 1);
     uint32_t value = PayloadDword(payload, i);
+    uint32_t write_index = uint32_t(strip.own_writes.size());
     strip.own_writes.push_back({reg, value});
     auto it = std::find_if(strip.own_shadow.begin(), strip.own_shadow.end(),
-                           [reg](const OwnWrite& own) { return own.reg == reg; });
+                           [reg](const OwnLatest& own) { return own.reg == reg; });
     if (it != strip.own_shadow.end()) {
       it->value = value;
+      it->write_index = write_index;
     } else {
-      strip.own_shadow.push_back({reg, value});
+      strip.own_shadow.push_back({reg, value, write_index});
     }
     if (type == 0) {
       strip.own_float_registers.push_back(reg);
