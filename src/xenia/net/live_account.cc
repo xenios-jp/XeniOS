@@ -30,6 +30,9 @@
 #include "third_party/utfcpp/source/utf8.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
+#if XE_PLATFORM_IOS || XE_PLATFORM_MAC
+#include "xenia/net/device_signal_apple.h"
+#endif
 #include "xenia/net/network_path.h"
 #include "xenia/net/xnet_secure.h"
 
@@ -813,6 +816,21 @@ void WriteDevice(JsonWriter& w, const DeviceInfo& device) {
   w.EndObject();
 }
 
+void WriteSignals(JsonWriter& w, const DeviceInfo& device) {
+  if (device.keychain_signal.empty() && device.machine_signal.empty()) {
+    return;
+  }
+  w.Key("signals");
+  w.StartObject();
+  if (!device.keychain_signal.empty()) {
+    Field(w, "keychain", device.keychain_signal);
+  }
+  if (!device.machine_signal.empty()) {
+    Field(w, "machine", device.machine_signal);
+  }
+  w.EndObject();
+}
+
 // Upper case without dashes and spaces; empty if anything else is in it.
 std::string Normalize(std::string_view typed, size_t size) {
   std::string code;
@@ -834,8 +852,10 @@ DeviceInfo DefaultDeviceInfo() {
   DeviceInfo info;
 #if XE_PLATFORM_IOS
   info.platform = "ios";
+  info.keychain_signal = KeychainDeviceSignal();
 #elif XE_PLATFORM_MAC
   info.platform = "macos";
+  info.machine_signal = MachineDeviceSignal();
 #elif XE_PLATFORM_WIN32
   info.platform = "windows";
 #else
@@ -983,6 +1003,7 @@ std::string EncodeRegister(const DeviceKey& key, std::string_view host,
     Field(w, "key", public_key);
     Field(w, "sig", sig);
     WriteDevice(w, device);
+    WriteSignals(w, device);
     WriteStartPresence(w, appear_offline);
   });
 }
@@ -1002,6 +1023,7 @@ std::string EncodeAuth(const DeviceKey& key, std::string_view host,
     Field(w, "key", key.PublicHex());
     Field(w, "sig", sig);
     WriteDevice(w, device);
+    WriteSignals(w, device);
     WriteStartPresence(w, appear_offline);
     if (passive) {
       w.Key("passive");
@@ -1032,6 +1054,7 @@ std::string EncodeJoin(const char* kind, const DeviceKey& key,
     Field(w, "key", public_key);
     Field(w, "sig", sig);
     WriteDevice(w, device);
+    WriteSignals(w, device);
   });
 }
 }  // namespace

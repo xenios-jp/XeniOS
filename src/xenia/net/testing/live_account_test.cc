@@ -1190,6 +1190,23 @@ TEST_CASE("Live account link and recover signatures", "[live]") {
       EncodeAuth(key, "h", 0x0009F00000000001ull, "n", defaults);
   CHECK(auth.find(R"("platform":")" + defaults.platform + R"(")") !=
         std::string::npos);
+
+  // The Keychain signal goes with signing in, and is left out when there is none.
+  DeviceInfo with_signal;
+  with_signal.keychain_signal = std::string(64, 'a');
+  const std::string signals =
+      R"("signals":{"keychain":")" + with_signal.keychain_signal + R"("})";
+  const uint64_t xuid = 0x0009F00000000001ull;
+  CHECK(EncodeAuth(key, "h", xuid, "n", with_signal).find(signals) != std::string::npos);
+  CHECK(EncodeRegister(key, "h", xuid, "G", "n", with_signal).find(signals) != std::string::npos);
+  CHECK(EncodeLink(key, "h", "CODE", "n", with_signal).find(signals) != std::string::npos);
+  CHECK(EncodeRecover(key, "h", "CODE", "n", with_signal).find(signals) != std::string::npos);
+  CHECK(EncodeAuth(key, "h", xuid, "n", DeviceInfo{}).find("signals") == std::string::npos);
+  DeviceInfo with_machine;
+  with_machine.machine_signal = std::string(64, 'b');
+  CHECK(EncodeAuth(key, "h", xuid, "n", with_machine)
+            .find(R"("signals":{"machine":")" + with_machine.machine_signal + R"("})") !=
+        std::string::npos);
 }
 
 TEST_CASE("Live account name check, link code, recovery and devices",
