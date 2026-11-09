@@ -5377,6 +5377,74 @@ static uint XeTileResolvePack_RGB10(float4 color,
             uint4(1023u, 1023u, 1023u, 3u);
   return n.x | (n.y << 10u) | (n.z << 20u) | (n.w << 30u);
 }
+// The dump's 7e3 packing of a host color component, on the bits
+// (XeResolveDirectFloat32To7e3): NaNs and everything with the sign bit become
+// 0, the rest is clamped to 31.875 and rounded to the nearest even.
+static uint XeTileResolveFloat32To7e3(float value) {
+  uint f32 = as_type<uint>(value);
+  if (f32 > 0x7F800000u) {
+    f32 = 0u;
+  }
+  f32 = min(f32, 0x41FF0000u);
+  uint biased_f32;
+  if (f32 < 0x3E800000u) {
+    biased_f32 = ((f32 & 0x7FFFFFu) | 0x800000u) >>
+                 min(125u - (f32 >> 23u), 24u);
+  } else {
+    biased_f32 = f32 - (124u << 23u);
+  }
+  return ((biased_f32 + 0x7FFFu + ((biased_f32 >> 16u) & 1u)) >> 16u) &
+         0x3FFu;
+}
+// The bit copy of a one-sample 2_10_10_10_FLOAT render target (RGBA16Float,
+// read as float like the compute copies read it), as the dump packs it
+// (XeResolveDirectPackRGB10A2Float): 7e3 RGB, and alpha clamped to [0, 1] the
+// same way as a 2-bit unsigned fraction. Half denormals are below half the
+// smallest 7e3 step, so they pack to 0 whether or not they are flushed.
+static uint XeTileResolvePack_RGB10Float(float4 color,
+                                         constant XeTileResolveConstants& c) {
+  uint alpha_bits = as_type<uint>(color.w);
+  if (alpha_bits > 0x7F800000u) {
+    alpha_bits = 0u;
+  }
+  float alpha = as_type<float>(min(alpha_bits, 0x3F800000u));
+  return XeTileResolveFloat32To7e3(color.x) |
+         (XeTileResolveFloat32To7e3(color.y) << 10u) |
+         (XeTileResolveFloat32To7e3(color.z) << 20u) |
+         (uint(alpha * 3.0f + 0.5f) << 30u);
+}
+// XeUnpackR10G10B10A2Float's 7e3 component.
+static float XeTileResolve7e3To32(uint f10) {
+  uint mantissa = f10 & 0x7Fu;
+  uint exponent = f10 >> 7u;
+  if (exponent == 0u) {
+    uint mantissa_lzcnt = 7u - (31u - clz(mantissa));
+    exponent = 1u - mantissa_lzcnt;
+    mantissa = (mantissa << mantissa_lzcnt) & 0x7Fu;
+  }
+  return as_type<float>(f10 != 0u ? ((exponent + 124u) << 23u) |
+                                        (mantissa << 16u)
+                                  : 0u);
+}
+// resolve_full_32bpp_rgb10f_1x_direct's conversion of one pixel: the dump's
+// packing, XeUnpackR10G10B10A2Float, the exponent bias and XePackR10G10B10A2
+// as an unsigned fraction. The red/blue swap comes after, on the packed
+// fields, which is the same as swapping the floats before packing. The color
+// products are exact; alpha's are exact or above a multiple of 1/3, never at
+// a rounding boundary, so contraction changes none of them.
+static uint XeTileResolvePack_RGB10FloatToRGB10(
+    float4 color, constant XeTileResolveConstants& c) {
+  uint packed = XeTileResolvePack_RGB10Float(color, c);
+  float4 pixel = float4(XeTileResolve7e3To32(packed & 0x3FFu),
+                        XeTileResolve7e3To32((packed >> 10u) & 0x3FFu),
+                        XeTileResolve7e3To32((packed >> 20u) & 0x3FFu),
+                        float(packed >> 30u) * (1.0f / 3.0f));
+  pixel *= as_type<float>(c.exp_bias_factor_bits);
+  uint4 n = uint4(saturate(pixel) * float4(1023.0f, 1023.0f, 1023.0f, 3.0f) +
+                  0.5f) &
+            uint4(1023u, 1023u, 1023u, 3u);
+  return n.x | (n.y << 10u) | (n.z << 20u) | (n.w << 30u);
+}
 static uint XeTileResolvePack_8888GammaAverage4(
     float4 s0, float4 s1, float4 s2, float4 s3,
     constant XeTileResolveConstants& c) {
@@ -5506,13 +5574,17 @@ XE_TILE_RESOLVE_ALL_INDICES(RGB10Average4, float4,
                             XE_TILE_RESOLVE_READ_4_SAMPLES)
 XE_TILE_RESOLVE_ALL_INDICES(8888Gamma, float4, XE_TILE_RESOLVE_READ_PIXEL)
 XE_TILE_RESOLVE_ALL_INDICES(RGB10, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(RGB10Float, float4, XE_TILE_RESOLVE_READ_PIXEL)
+XE_TILE_RESOLVE_ALL_INDICES(RGB10FloatToRGB10, float4,
+                            XE_TILE_RESOLVE_READ_PIXEL)
 )METAL";
 
 const char* const kTileResolveKernelNames[] = {
     "8888",        "16_16Float",  "32Float",
     "16_16_16_16Float", "32_32Float", "16_16_16_16",
     "8888Average4", "8888GammaAverage4", "RGB10Average4",
-    "8888Gamma",    "RGB10"};
+    "8888Gamma",    "RGB10",      "RGB10Float",
+    "RGB10FloatToRGB10"};
 
 // The largest tile area Metal allows at each sample count (Metal feature set
 // tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
@@ -5639,8 +5711,9 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     return "half_pixel_fill";
   }
   // The dump shader's bit copies and 8_8_8_8 four-sample average, the
-  // 16_16_16_16 conversion, and the rgb10-4x direct copy's 2_10_10_10
-  // four-sample average have tile variants.
+  // 16_16_16_16 conversion, the rgb10-4x direct copy's 2_10_10_10 four-sample
+  // average and the rgb10f-1x one's 2_10_10_10_FLOAT to 2_10_10_10
+  // conversion have tile variants.
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
   const bool average_4x =
@@ -5648,6 +5721,8 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   const bool rgb10_4x =
       IsFull32RGB10FourSampleAverage(copy_shader, copy_shader_constants);
   const bool four_samples = average_4x || rgb10_4x;
+  const bool rgb10f_1x =
+      IsFull32RGB10FloatOneSample(copy_shader, copy_shader_constants);
   switch (copy_shader) {
     case draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA:
     case draw_util::ResolveCopyShaderIndex::kFast32bpp4xMSAA:
@@ -5655,7 +5730,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     case draw_util::ResolveCopyShaderIndex::kFast64bpp4xMSAA:
       break;
     default:
-      if (!rgba16_1x && !four_samples) {
+      if (!rgba16_1x && !four_samples && !rgb10f_1x) {
         return "kernel";
       }
       break;
@@ -5706,6 +5781,13 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
                         : TileResolveKernel::kRGB10;
       source_format = MTL::PixelFormatRGB10A2Unorm;
       break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
+      // The bit copy of one sample, or the rgb10f-1x conversion.
+      kernel = rgb10f_1x ? TileResolveKernel::kRGB10FloatToRGB10
+                         : TileResolveKernel::kRGB10Float;
+      source_format = MTL::PixelFormatRGBA16Float;
+      break;
     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
       kernel = TileResolveKernel::k16_16Float;
       source_format = MTL::PixelFormatRG16Float;
@@ -5736,7 +5818,8 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   if ((rgba16_1x && kernel != TileResolveKernel::k16_16_16_16) ||
       (average_4x && kernel != TileResolveKernel::k8888Average4 &&
        kernel != TileResolveKernel::k8888GammaAverage4) ||
-      (rgb10_4x && kernel != TileResolveKernel::kRGB10Average4)) {
+      (rgb10_4x && kernel != TileResolveKernel::kRGB10Average4) ||
+      (rgb10f_1x && kernel != TileResolveKernel::kRGB10FloatToRGB10)) {
     return "kernel";
   }
   const bool is_64bpp = rt_key.Is64bpp();

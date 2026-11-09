@@ -1197,6 +1197,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     // (RGB10A2Unorm) render targets, as the dump shader packs them.
     k8888Gamma,
     kRGB10,
+    // The bit copy of a one-sample 2_10_10_10_FLOAT render target
+    // (RGBA16Float) as the dump shader packs it, and IsFull32RGB10FloatOneSample's
+    // conversion of it into 2_10_10_10.
+    kRGB10Float,
+    kRGB10FloatToRGB10,
     kCount,
   };
   // For the pass's color formats at every index and its sample count, reading
