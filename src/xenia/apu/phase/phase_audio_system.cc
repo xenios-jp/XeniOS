@@ -30,14 +30,12 @@ PHASEAudioSystem::~PHASEAudioSystem() {}
 
 void PHASEAudioSystem::Initialize() { AudioSystem::Initialize(); }
 
-X_STATUS PHASEAudioSystem::CreateDriver(size_t index,
+X_STATUS PHASEAudioSystem::CreateDriver(size_t /*index*/,
                                         xe::threading::Semaphore* semaphore,
                                         AudioDriver** out_driver) {
   assert_not_null(out_driver);
   // Every guest client gets a sound event on the one shared PHASE engine,
-  // which mixes them. Titles such as Left 4 Dead 2 play through a client other
-  // than the first.
-  (void)index;
+  // which mixes them (Left 4 Dead 2 plays through its second client).
   auto driver = std::make_unique<PHASEAudioDriver>(semaphore);
   if (!driver->Initialize()) {
     driver->Shutdown();
