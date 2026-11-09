@@ -443,6 +443,11 @@ class RenderTargetCache {
     uint32_t end_tiles;
     RenderTarget* source;
     RenderTarget* host_depth_source;
+    // Set by a host backend for a transfer into a depth render target that
+    // already holds the depth the transfer would write (its source is a copy
+    // of the destination in which only the stencil bits have changed since):
+    // only the stencil is written.
+    bool keep_dest_depth = false;
     Transfer(uint32_t start_tiles, uint32_t end_tiles, RenderTarget* source,
              RenderTarget* host_depth_source)
         : start_tiles(start_tiles),

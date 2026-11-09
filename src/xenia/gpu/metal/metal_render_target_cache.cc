@@ -1610,6 +1610,75 @@ void MetalRenderTargetCache::ElideAliasedStorageTransfers(
   });
 }
 
+void MetalRenderTargetCache::KeepDepthOfStencilRoundTrips() {
+  if (!UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
+    return;
+  }
+  auto* dest = static_cast<MetalRenderTarget*>(
+      last_update_accumulated_render_targets()[0]);
+  std::vector<Transfer>& transfers = last_update_transfers()[0];
+  if (!dest || transfers.empty()) {
+    return;
+  }
+  const RenderTargetKey dest_key = dest->key();
+  if (!dest_key.is_depth || dest->needs_initial_clear() ||
+      AnyDeferredClear(dest)) {
+    return;
+  }
+  // Red is the low byte of the 8_8_8_8 dword, where both depth formats keep
+  // the stencil; green, blue and alpha hold the 24 depth bits.
+  constexpr uint32_t kStencilComponents = 0b0001;
+  // All or none: a transfer left with host depth from the destination itself
+  // renders into a rotated-in backing, which would lose a kept depth.
+  for (const Transfer& transfer : transfers) {
+    auto* source = static_cast<MetalRenderTarget*>(transfer.source);
+    // Only a transfer that takes the depth back from the destination itself
+    // wherever the source's depth bits still match it would write, there,
+    // exactly the depth the destination holds. The transfer out of the
+    // destination packed those bits with the same conversion the transfer back
+    // compares them with, so they match everywhere draws left them alone.
+    if (!source || source == dest || transfer.host_depth_source != dest) {
+      return;
+    }
+    const RenderTargetKey source_key = source->key();
+    if (source_key.is_depth ||
+        source_key.GetColorFormat() !=
+            xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
+        source_key.base_tiles != dest_key.base_tiles ||
+        source_key.pitch_tiles_at_32bpp != dest_key.pitch_tiles_at_32bpp ||
+        source_key.msaa_samples != dest_key.msaa_samples ||
+        source_key.next_period != dest_key.next_period ||
+        source_key.scale_native != dest_key.scale_native ||
+        source->needs_initial_clear() || AnyDeferredClear(source) ||
+        (source->components_written_since_transfer() & ~kStencilComponents)) {
+      return;
+    }
+    // Transfers still queued into the source would change it after the
+    // records below.
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+      if (pending_draw_pass_render_targets_[i] == source &&
+          !pending_draw_pass_transfers_[i].empty()) {
+        return;
+      }
+    }
+    // Every tile last written by the transfer from the destination that
+    // started the source's tracking, with the destination unchanged since.
+    for (uint32_t tile = transfer.start_tiles; tile < transfer.end_tiles;
+         ++tile) {
+      const TileTransferRecord& record = tile_transfer_records_[tile];
+      if (record.dest != source_key || record.source != dest_key ||
+          record.source_generation != dest->content_generation() ||
+          record.dest_generation != source->transfer_generation()) {
+        return;
+      }
+    }
+  }
+  for (Transfer& transfer : transfers) {
+    transfer.host_depth_source = nullptr;
+    transfer.keep_dest_depth = true;
+  }
+}
+
 void MetalRenderTargetCache::RecordPerformedTransfers(
     MetalRenderTarget* dest, const std::vector<Transfer>& transfers) {
   MarkContentChanged(dest);
@@ -2221,9 +2290,9 @@ void MetalRenderTargetCache::NoteDrawWrites() {
   }
   pending_constant_ = PendingConstant();
   for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
-    if (current_color_targets_[i] &&
-        ((draw_color_write_mask_ >> (i * 4)) & 0b1111)) {
-      MarkContentChanged(current_color_targets_[i]);
+    const uint32_t components = (draw_color_write_mask_ >> (i * 4)) & 0b1111;
+    if (current_color_targets_[i] && components) {
+      MarkContentChangedByDraw(current_color_targets_[i], components);
     }
   }
 }
@@ -2477,6 +2546,9 @@ bool MetalRenderTargetCache::Update(
   // Transfers whose result the destination's backing already holds are
   // dropped before anything queues or draws them.
   ElideRedundantTransfers();
+  // Round trips through a color copy that changed only the stencil keep the
+  // depth instead of rebuilding it (no host depth copy or backing rotation).
+  KeepDepthOfStencilRoundTrips();
   // A held queue can't wait past an update that changes the targets or
   // transfers anything itself.
   if (quad_hold_slot_ != UINT32_MAX && !quad_hold_chain_update_) {
@@ -2861,6 +2933,12 @@ bool MetalRenderTargetCache::PendingDrawPassTransfersFullyOverwriteTarget(
   MTL::Texture* dest_texture = dest_metal_rt->texture();
   if (!dest_texture) {
     return false;
+  }
+  // A stencil-only transfer keeps the depth, which has to be loaded.
+  for (const Transfer& transfer : transfers) {
+    if (transfer.keep_dest_depth) {
+      return false;
+    }
   }
   uint32_t dest_width = uint32_t(dest_texture->width());
   uint32_t dest_height = uint32_t(dest_texture->height());
@@ -8059,6 +8137,12 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
     auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
     RecordPerformedTransfers(dest_metal_rt, transfers);
+    // What draws change from here on is tracked against what the transfers
+    // wrote. A resolve clear writes more than the records say.
+    if (!resolve_clear_needed && !transfers.empty() &&
+        !dest_rt->key().is_depth) {
+      dest_metal_rt->StartComponentTracking();
+    }
     const bool dest_needed_initial_clear = dest_metal_rt->needs_initial_clear();
     if (dest_needed_initial_clear) {
       dest_metal_rt->SetNeedsInitialClear(false);
@@ -8344,6 +8428,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         return false;
       }
       for (const Transfer& transfer : transfers_for_shaders) {
+        // A stencil-only transfer keeps the depth, which has to be loaded.
+        if (transfer.keep_dest_depth) {
+          return false;
+        }
         Transfer::Rectangle rectangles[Transfer::kMaxRectanglesWithCutout];
         uint32_t rectangle_count = transfer.GetRectangles(
             dest_key, dest_key.Is64bpp(), rectangles, resolve_clear_rectangle);
@@ -9107,6 +9195,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
           if (is_stencil_bit) {
             // Depth/stencil state set per-bit below.
+          } else if (dest_is_depth && transfer.keep_dest_depth) {
+            // The destination keeps its depth: stencil replaced from the
+            // shader's reference output, depth neither tested nor written. (The
+            // per-bit draws write the stencil when there is no such output.)
+            bind_transfer_depth_state(writes_stencil_with_depth
+                                          ? GetTransferStencilClearState()
+                                          : GetTransferNoDepthStencilState());
           } else if (dest_is_depth) {
             bind_transfer_depth_state(
                 writes_stencil_with_depth

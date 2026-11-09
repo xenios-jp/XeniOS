@@ -169,6 +169,24 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     void SetContentGeneration(uint64_t generation) {
       content_generation_ = generation;
     }
+    // The guest color components (RB_COLOR_MASK order, bit 0 red) that draws
+    // have written since the last ownership transfer performed into this
+    // target, which left content generation transfer_generation(). Anything
+    // else that changes the backing makes it 0b1111.
+    uint32_t components_written_since_transfer() const {
+      return components_written_since_transfer_;
+    }
+    uint64_t transfer_generation() const { return transfer_generation_; }
+    void StartComponentTracking() {
+      transfer_generation_ = content_generation_;
+      components_written_since_transfer_ = 0;
+    }
+    void NoteComponentsWritten(uint32_t components) {
+      components_written_since_transfer_ |= components;
+    }
+    void ForgetComponentsWritten() {
+      components_written_since_transfer_ = 0b1111;
+    }
 
     // Public constructor for creating render targets
     MetalRenderTarget(RenderTargetKey key) : RenderTarget(key) {}
@@ -182,6 +200,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     NS::SharedPtr<MTL::Texture> alias_storage_root_;
     uint32_t temporary_sort_index_ = UINT32_MAX;
     uint64_t content_generation_ = 0;
+    uint64_t transfer_generation_ = 0;
+    uint32_t components_written_since_transfer_ = 0b1111;
     bool needs_initial_clear_ = true;
     bool clear_deferred_ = false;
     float clear_depth_ = 1.0f;
@@ -614,11 +634,16 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       if (source_index != other_source_index) {
         return source_index < other_source_index;
       }
+      if (transfer.keep_dest_depth != other.transfer.keep_dest_depth) {
+        return other.transfer.keep_dest_depth;
+      }
       return transfer.start_tiles < other.transfer.start_tiles;
     }
     bool CanBeMergedIntoOneDraw(const TransferInvocation& other) const {
+      // A stencil-only draw binds a depth state of its own.
       return shader_key == other.shader_key &&
-             transfer.AreSourcesSame(other.transfer);
+             transfer.AreSourcesSame(other.transfer) &&
+             transfer.keep_dest_depth == other.transfer.keep_dest_depth;
     }
   };
 
@@ -679,6 +704,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   uint32_t draw_color_write_mask_ = 0;
   void MarkContentChanged(MetalRenderTarget* render_target) {
     render_target->SetContentGeneration(next_content_generation_++);
+    render_target->ForgetComponentsWritten();
+  }
+  // A draw that may write only `components` of a color render target.
+  void MarkContentChangedByDraw(MetalRenderTarget* render_target,
+                                uint32_t components) {
+    render_target->SetContentGeneration(next_content_generation_++);
+    render_target->NoteComponentsWritten(components);
   }
   // Records that the transfer (or elided transfer) into dest from source was
   // the last one to write these tiles.
@@ -688,6 +720,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Drops the transfers of the last update whose result the destination's
   // backing already holds.
   void ElideRedundantTransfers();
+  // Turns the depth transfers of the last update that would only rebuild the
+  // depth the destination already holds into stencil-only transfers: their
+  // 8_8_8_8 source was transferred from the destination, which is unchanged
+  // since, and draws have written only its stencil byte (red) since.
+  void KeepDepthOfStencilRoundTrips();
 
   ClearQuadDraw clear_quad_draw_;
   // The attachments (bit 0 depth and stencil, bits 1 and up color) whose every
