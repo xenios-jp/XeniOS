@@ -213,6 +213,18 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // the descriptor isn't the cache's draw pass descriptor.
   void SetRenderPassArea(MTL::RenderPassDescriptor* pass_descriptor,
                          uint32_t min_height) const;
+  // Whether the encoder the command processor may create next is for the
+  // last update's draw, which it is about to encode with its own shaders.
+  void SetClearQuadPassBegin(bool begin) { clear_quad_pass_begin_ = begin; }
+  // For an encoder about to be created for the draw from SetClearQuadPassBegin
+  // when it is a clear quad overwriting every sample of the render area: sets
+  // a DontCare load action instead of Load on the attachments it writes in
+  // full (depth only with stencil). Returns them, for
+  // RestoreClearQuadLoadActions right after creating the encoder.
+  // A quad ending short of the render area's right side or bottom changes
+  // nothing.
+  uint32_t SetClearQuadLoadActions(MTL::RenderPassDescriptor* pass_descriptor);
+  void RestoreClearQuadLoadActions(uint32_t attachment_mask);
   // Whether an existing encoder's descriptor still binds the textures needed
   // by the current guest render-target configuration.
   bool IsRenderPassDescriptorCompatible(
@@ -632,6 +644,16 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   void ElideRedundantTransfers();
 
   ClearQuadDraw clear_quad_draw_;
+  // The attachments (bit 0 depth and stencil, bits 1 and up color) whose every
+  // sample in `clear_quad_rectangle_` (in render target pixels) the last
+  // update's draw overwrites, and their textures.
+  uint32_t clear_quad_written_mask_ = 0;
+  Transfer::Rectangle clear_quad_rectangle_ = {};
+  std::array<MTL::Texture*, 1 + xenos::kMaxColorRenderTargets>
+      clear_quad_textures_ = {};
+  bool clear_quad_pass_begin_ = false;
+  uint32_t clear_quad_saved_area_width_ = 0;
+  uint32_t clear_quad_saved_area_height_ = 0;
   // A render target every sample of `rectangle` (in its pixels) of which has
   // held the guest EDRAM dword `value` since content generation `generation`.
   struct ConstantContent {

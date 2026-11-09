@@ -6520,8 +6520,15 @@ bool MetalCommandProcessor::IssueDrawDxil(
     return false;
   }
   // A texture load may have ended the render encoder to be ordered after the
-  // earlier draws in the command buffer.
+  // earlier draws in the command buffer. A pass begun here starts with this
+  // draw, drawn with its own shaders unless a placeholder stands in.
+  if (render_target_cache_) {
+    render_target_cache_->SetClearQuadPassBegin(!bound_placeholder);
+  }
   BeginCommandBuffer();
+  if (render_target_cache_) {
+    render_target_cache_->SetClearQuadPassBegin(false);
+  }
   if (!current_render_encoder_) {
     XELOGE("DXIL: failed to resume render encoder after uploads");
     return false;
@@ -7497,6 +7504,11 @@ void MetalCommandProcessor::BeginCommandBuffer() {
       render_target_cache_->SetRenderPassArea(pass_descriptor,
                                               GetDrawScissorBottom());
     }
+    // A clear quad beginning the pass may overwrite all it would load.
+    const uint32_t clear_quad_dontcare_mask =
+        render_target_cache_
+            ? render_target_cache_->SetClearQuadLoadActions(pass_descriptor)
+            : 0;
     EndSharedComputeEncoder();
     // If some path cleared the encoder without going through EndRenderEncoder,
     // avoid leaking cached binding state into the new encoder.
@@ -7507,6 +7519,10 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     current_render_encoder_ =
         current_command_buffer_->renderCommandEncoder(pass_descriptor);
     if (!current_render_encoder_) {
+      if (clear_quad_dontcare_mask) {
+        render_target_cache_->RestoreClearQuadLoadActions(
+            clear_quad_dontcare_mask);
+      }
       XELOGE("Failed to create render command encoder");
       return;
     }
@@ -7556,6 +7572,11 @@ void MetalCommandProcessor::BeginCommandBuffer() {
     render_encoder_height_ = rt_height;
     render_encoder_area_restricted_ =
         pass_descriptor->renderTargetHeight() != 0;
+    // The descriptor is reused for later passes, which have to load.
+    if (clear_quad_dontcare_mask) {
+      render_target_cache_->RestoreClearQuadLoadActions(
+          clear_quad_dontcare_mask);
+    }
     MTL::Viewport viewport = {
         0.0, 0.0, static_cast<double>(rt_width), static_cast<double>(rt_height),
         0.0, 1.0};
