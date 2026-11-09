@@ -20,6 +20,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/net/host_interfaces.h"
 #include "xenia/net/nat_check.h"
+#include "xenia/net/network_path.h"
 #include "xenia/net/packet_transport.h"
 #include "xenia/net/relay_socket.h"
 
@@ -243,7 +244,18 @@ class RelayTransport final : public PacketTransport {
       CloseLobby();
       client_.LobbyClosed(now);
     }
-    if (!lobby_ && factory_ && client_.WantsLobby(now)) {
+    // Only the lobby needs the internet: peers on the LAN keep their traffic.
+    const bool network = NetworkPathAvailable();
+    if (network != had_network_) {
+      had_network_ = network;
+      if (!network && lobby_) {
+        CloseLobby();
+        client_.LobbyClosed(now);
+      } else if (network) {
+        client_.NetworkReturned();
+      }
+    }
+    if (network && !lobby_ && factory_ && client_.WantsLobby(now)) {
       OpenLobby(now);
     }
     if (auto server = client_.WantedIceServer(now)) {
@@ -515,6 +527,7 @@ class RelayTransport final : public PacketTransport {
   relay::RelayClient client_;
   relay::RelaySocket socket_;
   LobbySocketFactory factory_;
+  bool had_network_ = true;
   std::unique_ptr<LobbySocket> lobby_;
   std::shared_ptr<LobbyInbox> inbox_;
   std::string last_close_;

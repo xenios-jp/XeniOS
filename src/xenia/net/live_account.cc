@@ -9,6 +9,7 @@
 
 #include "xenia/net/live_account.h"
 
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -30,6 +31,7 @@
 #include "third_party/utfcpp/source/utf8.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
+#include "xenia/net/network_path.h"
 #include "xenia/net/xnet_secure.h"
 
 #if !defined(_WIN32)
@@ -1403,6 +1405,11 @@ AccountClient::AccountClient(std::string lobby, DeviceKey key, uint64_t xuid,
       xuid_(xuid),
       appear_offline_(options.appear_offline),
       sign_in_only_(options.sign_in_only) {
+  network_listener_ = AddNetworkPathListener([this] {
+    std::lock_guard lock(mutex_);
+    network_changed_ = true;
+    changed_.notify_all();
+  });
   thread_ = std::thread([this] { Run(); });
 }
 
@@ -1432,6 +1439,7 @@ void AccountClient::Call(const std::shared_ptr<Calls>& calls,
 }
 
 AccountClient::~AccountClient() {
+  RemoveNetworkPathListener(network_listener_);
   {
     // No event starts from now on; wait for the running ones, except the one
     // on this thread when an event drops the last reference.
@@ -1974,7 +1982,8 @@ void AccountClient::SendLocked(std::string text) {
 }
 
 void AccountClient::EnsureOpenLocked() {
-  if (socket_ || stopping_ || halted_) {
+  // With no network, Run opens it when one comes back.
+  if (socket_ || stopping_ || halted_ || !NetworkPathAvailable()) {
     return;
   }
   auto factory = secure::GetLobbySocketFactory();
@@ -2553,10 +2562,31 @@ void AccountClient::Run() {
     }
     wait = std::max<steady_clock::duration>(wait, milliseconds(10));
     changed_.wait_for(lock, wait, [this] {
-      return stopping_ || closed_ || names_wake_;
+      return stopping_ || closed_ || names_wake_ || network_changed_;
     });
     if (stopping_) {
       break;
+    }
+    if (std::exchange(network_changed_, false)) {
+      if (!NetworkPathAvailable()) {
+        // Closed now rather than when pings stop being answered. Not a
+        // failure: it says nothing about the lobby.
+        if (socket_ && !closed_) {
+          XELOGI("Live account: no network, so disconnecting");
+          signed_in_ = false;
+          problem_.clear();
+          closed_ = true;
+          failures_ = 0;
+          ++generation_;
+        }
+      } else {
+        // Whatever the wait had grown to, at once.
+        failures_ = 0;
+        problem_.clear();
+        if (!closed_) {
+          EnsureOpenLocked();
+        }
+      }
     }
     if (closed_) {
       auto socket = std::move(socket_);
@@ -2577,7 +2607,8 @@ void AccountClient::Run() {
       if (halted_) {
         continue;
       }
-      changed_.wait_for(lock, delay, [this] { return stopping_; });
+      changed_.wait_for(lock, delay,
+                        [this] { return stopping_ || network_changed_; });
       EnsureOpenLocked();
       continue;
     }
