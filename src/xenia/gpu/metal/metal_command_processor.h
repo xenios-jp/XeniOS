@@ -123,9 +123,14 @@ class MetalCommandProcessor : public CommandProcessor,
   MTL::ComputeCommandEncoder* BeginSharedComputeEncoder(
       MTL::CommandBuffer* command_buffer,
       MetalBufferHazards::Encoder** hazards_out);
+  // Also encodes the shader-done fences written since the last pass ended, so
+  // they stay ahead of the encoder the caller creates next.
   void EndSharedComputeEncoder();
   void EndSharedComputeEncoder(MTL::CommandBuffer* command_buffer) {
-    if (command_buffer && command_buffer == shared_compute_command_buffer_) {
+    if (command_buffer &&
+        (command_buffer == shared_compute_command_buffer_ ||
+         (shader_done_fences_outside_pass_ &&
+          command_buffer == current_command_buffer_))) {
       EndSharedComputeEncoder();
     }
   }
@@ -1516,9 +1521,15 @@ class MetalCommandProcessor : public CommandProcessor,
       const IndexBufferInfo* index_buffer_info,
       const draw_util::VertexIndexRange* vertex_indices) const;
   // Shader-done fence writes made while a render pass was open, encoded in
-  // order when it ends.
+  // order when it ends, and those made with no pass open
+  // (shader_done_fences_outside_pass_), encoded in one copy before the next
+  // encoder on the command buffer or its commit
+  // (EndSharedComputeEncoder, which every encoder site calls first, directly or
+  // through EndRenderEncoder or BeginSharedComputeEncoder), so they keep their
+  // place in the GPU's order.
   std::vector<draw_util::MemExportRange> pending_shader_done_fence_ranges_;
   std::vector<uint32_t> pending_shader_done_fence_values_;
+  bool shader_done_fences_outside_pass_ = false;
   void EncodeDeferredShaderDoneFences();
   // Page tracking so a fence the guest reads can await export output. The
   // fragment's host/device routing half is unused - Metal has one buffer.
