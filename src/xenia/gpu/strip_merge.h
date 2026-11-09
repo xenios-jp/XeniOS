@@ -87,6 +87,10 @@ class StripMerge {
     uint32_t strip_count = 0;
     // Guest pixel rows of a strip.
     uint32_t band_rows = 0;
+    // The bottom of the last strip's window, the frame's rows: D3D clips the
+    // last strip to the frame (720 rows as 512 + 208), while every strip's
+    // EDRAM band is band_rows tall.
+    uint32_t frame_rows = 0;
     // The surface the strips render to, as RenderTargetCache keys have it.
     uint32_t pitch_tiles_at_32bpp = 0;
     xenos::MsaaSamples msaa_samples = xenos::MsaaSamples::k1X;
@@ -94,6 +98,11 @@ class StripMerge {
     uint32_t window_br_first = 0;
     uint64_t strip_bits[kMaxStrips] = {};
     uint64_t strip_bits_union = 0;
+    // Per strip-own resolve of a strip, in order: the frame row the merged
+    // first strip's resolve reaches. Every strip but the last resolves its
+    // band's rows; the last one's may stop short (at its window or the
+    // frame), or not.
+    std::vector<uint32_t> resolve_bottoms;
     // Per strip-own resolve: the frame row its clear reaches, 0 if it doesn't
     // clear. D3D clears the next tile's EDRAM with each tile's resolve, in
     // every strip (575207D7) or every strip but the last (425307D5): the
@@ -106,8 +115,10 @@ class StripMerge {
     // strip draws them into the first band alone, as the first strip does.
     std::vector<uint32_t> first_strip_draws;
 
-    bool IsValid() const { return strip_count >= 2 && band_rows; }
-    uint32_t frame_bottom() const { return strip_count * band_rows; }
+    bool IsValid() const {
+      return strip_count >= 2 && band_rows && frame_rows;
+    }
+    uint32_t frame_bottom() const { return frame_rows; }
     uint32_t window_br_frame() const {
       return (window_br_first & 0x3FFF) | (frame_bottom() << 16);
     }
@@ -229,6 +240,7 @@ class StripMerge {
   // The frame row a strip-own resolve of the merged first strip extends down
   // to, covering every strip's rows; 0 otherwise.
   uint32_t NoteResolve(TraceWriter& trace_writer);
+  // The merged first strip: the frame row its next strip-own resolve reaches
   // and the one its clear reaches (0, and the session failed, if it has more
   // than the learned ones).
   uint32_t TakeMergedResolveBottom(uint32_t& clear_bottom_out);
@@ -348,6 +360,8 @@ class StripMerge {
   // of kind `kind` that sees them. False (and the session failed) if merging
   // can't reproduce them.
   bool CheckOwnValues(uint32_t reg, const uint32_t* values, uint8_t kind,
+                      int32_t& band_rows, uint32_t& window_br_first,
+                      uint32_t& frame_rows);
   uint64_t HashDrawOwnState(Strip& strip, uint8_t kind);
   // SET_CONSTANT, SET_CONSTANT2, SET_SHADER_CONSTANTS and LOAD_ALU_CONSTANT.
   // False for other packets.
@@ -387,6 +401,8 @@ class StripMerge {
   uint64_t previous_strip_bits_union_ = 0;
   Strip strips_[kMaxStrips];
   bool failed_ = false;
+  // Strip-own resolves the merged first strip has done.
+  uint32_t merged_resolves_ = 0;
   std::string failure_reason_;
   uint32_t failure_strip_ = 0;
   bool current_packet_own_ = false;
