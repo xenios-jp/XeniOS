@@ -1944,6 +1944,20 @@ bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
 
   uint32_t render_target_height_pixels =
       GetRenderTargetHeight(pitch_tiles_at_32bpp, msaa_samples);
+  // Strip merge (strip_merge.h): a strip-own resolve of a merged session's
+  // first strip clears the strip-merged render targets, the first band's
+  // tiles in the EDRAM model, every band down to strip_merge_clear_bottom.
+  uint32_t strip_merge_band_rows = 0;
+  if (resolve_info.strip_merge_clear_bottom) {
+    if (strip_merge_bands_.count < 2) {
+      return false;
+    }
+    strip_merge_band_rows = strip_merge_bands_.tile_rows *
+                            (xenos::kEdramTileHeightSamples >>
+                             msaa_samples_y_log2);
+    render_target_height_pixels =
+        strip_merge_bands_.count * strip_merge_band_rows;
+  }
   uint32_t base_offset_rows_at_32bpp =
       base_offset_tiles_at_32bpp / pitch_tiles_at_32bpp;
   Transfer::Rectangle clear_rectangle;
@@ -1964,6 +1978,17 @@ bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
   clear_rectangle.height_pixels =
       std::min(uint32_t(resolve_info.height_div_8) << 3,
                render_target_height_pixels - clear_rectangle.y_pixels);
+  if (strip_merge_band_rows) {
+    // The first band's tiles change ownership, the rectangle covers the
+    // bands.
+    if (clear_rectangle.y_pixels >= strip_merge_band_rows ||
+        resolve_info.strip_merge_clear_bottom <= clear_rectangle.y_pixels) {
+      return false;
+    }
+    clear_rectangle.height_pixels =
+        std::min(clear_rectangle.height_pixels,
+                 strip_merge_band_rows - clear_rectangle.y_pixels);
+  }
   if (!clear_rectangle.width_pixels || !clear_rectangle.height_pixels) {
     // Outside the pitch / height (or initially specified as 0).
     return false;
@@ -2037,6 +2062,12 @@ bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
             depth_clear_start_tiles_wrapped - color_clear_start_tiles_wrapped);
   }
 
+  if (strip_merge_band_rows) {
+    clear_rectangle.height_pixels =
+        std::min(resolve_info.strip_merge_clear_bottom,
+                 render_target_height_pixels) -
+        clear_rectangle.y_pixels;
+  }
   plan_out.clear_rectangle = clear_rectangle;
   plan_out.depth_render_target_key = RenderTargetKey();
   plan_out.depth_clear_start_tiles_base_relative =
@@ -2050,6 +2081,12 @@ bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
     depth_key.is_depth = 1;
     depth_key.resource_format = resolve_info.depth_edram_info.format;
     depth_key.scale_native = uint32_t(scale_native);
+    depth_key.strip_merged = uint32_t(strip_merge_band_rows != 0);
+    if (strip_merge_band_rows) {
+      // The one the session draws to: the clear going to its twin would move
+      // every band there first (GetStripMergeSessionKey).
+      depth_key = GetStripMergeSessionKey(depth_key);
+    }
   }
   plan_out.color_render_target_key = RenderTargetKey();
   plan_out.color_clear_start_tiles_base_relative =
@@ -2064,6 +2101,12 @@ bool RenderTargetCache::GetHostRenderTargetsResolveClearPlan(
     color_key.resource_format = uint32_t(GetColorResourceFormat(
         xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
     color_key.scale_native = uint32_t(scale_native);
+    color_key.strip_merged = uint32_t(strip_merge_band_rows != 0);
+    if (strip_merge_band_rows) {
+      // The one the session draws to: the clear going to its twin would move
+      // every band there first (GetStripMergeSessionKey).
+      color_key = GetStripMergeSessionKey(color_key);
+    }
   }
   return true;
 }
@@ -2761,12 +2804,18 @@ void RenderTargetCache::ChangeOwnership(
                 host_depth_source.IsEmpty()
                     ? -1
                     : GetStripMergePendingBand(host_depth_source);
+            int32_t source_band =
+                source_pending ? int32_t(source_pending->band) : -1;
+            int32_t host_depth_band =
+                host_depth_pending ? int32_t(host_depth_pending->band) : -1;
             bool source_active = source.strip_merged && source_band < 0;
             bool host_depth_active =
                 host_depth_source.strip_merged && host_depth_band < 0;
             if (host_depth_band >= 0 &&
                 (source_active ||
-                 (source_band >= 0 && source_band != host_depth_band))) {
+                 (source_band >= 0 &&
+                  !AreStripMergePendingBandsSame(*source_pending,
+                                                 *host_depth_pending)))) {
               need_twin(host_depth_source);
             } else if (source_band >= 0 && host_depth_active) {
               need_twin(source);
@@ -2794,7 +2843,8 @@ void RenderTargetCache::ChangeOwnership(
     change_ownership_in_extent(
         0, std::min(end_tiles & (xenos::kEdramTileCount - 1), start_tiles));
   }
-  if (strip_merge_active_ && !strip_merge_carries_.empty()) {
+  if (strip_merge_active_ && !strip_merge_carries_.empty() &&
+      !(strip_merge_keep_carries_ && !dest.strip_merged)) {
     ConsumeStripMergeCarries(start_tiles,
                              std::min(end_tiles, xenos::kEdramTileCount));
     if (end_tiles > xenos::kEdramTileCount) {

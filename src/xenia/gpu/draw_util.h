@@ -800,6 +800,11 @@ struct ResolveInfo {
   uint32_t rb_copy_ref;
   uint32_t rb_copy_mask;
 
+  // Strip merge (strip_merge.h): a strip-own resolve of a merged tiling
+  // session's first strip clears the strip-merged render targets' bands down
+  // to this frame row; 0 for any other resolve.
+  uint32_t strip_merge_clear_bottom = 0;
+
   bool IsCopyingDepth() const {
     return rb_copy_control.copy_src_select >= xenos::kMaxColorRenderTargets;
   }
@@ -914,8 +919,10 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                     bool fixed_rgba16_truncated_to_minus_1_to_1,
                     ResolveInfo& info_out,
                     // Strip merge (strip_merge.h): extends a strip's rows
-                    // down to this frame row, 0 to leave them.
-                    uint32_t strip_merge_bottom = 0);
+                    // down to this frame row, 0 to leave them, and its clear
+                    // down to strip_merge_clear_bottom.
+                    uint32_t strip_merge_bottom = 0,
+                    uint32_t strip_merge_clear_bottom = 0);
 
 // Returns log2 of the copy destination texel size in bytes from a Resolve's
 // copy_dest_info (format already normalized) - the derivation GetResolveInfo

@@ -1342,11 +1342,14 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                     uint32_t draw_resolution_scale_y,
                     bool fixed_rg16_truncated_to_minus_1_to_1,
                     bool fixed_rgba16_truncated_to_minus_1_to_1,
-                    ResolveInfo& info_out, uint32_t strip_merge_bottom) {
+                    ResolveInfo& info_out, uint32_t strip_merge_bottom,
+                    uint32_t strip_merge_clear_bottom) {
   // Don't pass uninitialized values to shaders, not to leak data to frame
   // captures. Also initialize an invalid resolve to empty.
   info_out.coordinate_info.packed = 0;
   info_out.height_div_8 = 0;
+  info_out.strip_merge_clear_bottom =
+      strip_merge_bottom ? strip_merge_clear_bottom : 0;
 
   auto rb_copy_control = regs.Get<reg::RB_COPY_CONTROL>();
   info_out.rb_copy_control = rb_copy_control;
@@ -1417,10 +1420,6 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
     y1 += pa_sc_window_offset.window_y_offset;
   }
 
-  // A strip-own resolve of a merged tiling session's first strip resolves
-  // every strip's rows at once, the window scissor already reaches the frame
-  // bottom.
-  if (strip_merge_bottom && y1 > y0) {
     y1 = std::max(y1, int32_t(strip_merge_bottom));
   }
 

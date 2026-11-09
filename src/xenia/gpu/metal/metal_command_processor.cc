@@ -4697,6 +4697,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     // the strip's band itself, which the merged first strip replicates into
     // every band.
     strip_merge_replicate_draw_ = false;
+    strip_merge_first_band_only_ = false;
+    bool strip_merge_keep_carries = false;
     if (strip_merge_.recording()) {
       StripMerge::DrawInfo strip_merge_draw;
       strip_merge_draw.vertex_shader = vertex_shader;
@@ -4711,8 +4713,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           primitive_processing_result.IsTessellated();
       strip_merge_.CheckDraw(strip_merge_draw);
       if (strip_merge_.merging() && !strip_merge_.failed()) {
+        // A draw only the first strip does goes into its band alone, as
+        // that strip draws it.
+        strip_merge_first_band_only_ = strip_merge_.first_strip_only_draw();
+        strip_merge_keep_carries =
+            strip_merge_first_band_only_ && !strip_merge_draw.banded;
         strip_merge_replicate_draw_ =
-            strip_merge_draw.banded && !strip_merge_draw.frame_space;
+            strip_merge_draw.banded &&
+            (!strip_merge_draw.frame_space || strip_merge_first_band_only_);
       }
     }
     {
@@ -4726,14 +4734,18 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           pixel_shader && pixel_shader->kills_pixels();
       // A merged draw in frame space covers the merged render targets' rows
       // as it does the frame's. One addressing the band is drawn in every
-      // band.
+      // band, or in the first alone if only the first strip draws it
+      // (DrawStripMergeBands).
       if (strip_merge_replicate_draw_) {
-        clear_quad_draw.band_count = strip_merge_.layout().strip_count;
+        clear_quad_draw.band_count = strip_merge_first_band_only_
+                                         ? 1
+                                         : strip_merge_.layout().strip_count;
         clear_quad_draw.band_rows = strip_merge_.layout().band_rows;
       }
       render_target_cache_->SetClearQuadDraw(clear_quad_draw);
     }
     // The window offset stays in the viewport on Metal.
+    render_target_cache_->SetStripMergeKeepCarries(strip_merge_keep_carries);
     if (!render_target_cache_->Update(
             is_rasterization_done, normalized_depth_control,
             normalized_color_mask, *vertex_shader, 0)) {
@@ -7080,6 +7092,7 @@ bool MetalCommandProcessor::StripMergeBegin(const StripMerge::Layout& layout) {
 
 void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
   strip_merge_replicate_draw_ = false;
+  strip_merge_first_band_only_ = false;
   if (!render_target_cache_) {
     return;
   }
@@ -7103,7 +7116,8 @@ void MetalCommandProcessor::DrawStripMergeBands(
   const StripMerge::Layout& layout = strip_merge_.layout();
   MTL::Viewport viewport = msl_viewport_;
   MTL::ScissorRect scissor = msl_scissor_;
-  for (uint32_t band = 0; band < layout.strip_count; ++band) {
+  uint32_t band_count = strip_merge_first_band_only_ ? 1 : layout.strip_count;
+  for (uint32_t band = 0; band < band_count; ++band) {
     uint64_t band_top = uint64_t(band) * layout.band_rows;
     uint64_t band_bottom =
         std::min(band_top + layout.band_rows, uint64_t(render_encoder_height_));
@@ -7151,13 +7165,21 @@ bool MetalCommandProcessor::IssueCopy() {
   uint32_t written_address = 0;
   uint32_t written_length = 0;
 
+  if (render_target_cache_) {
+    render_target_cache_->SetStripMergeKeepCarries(false);
+  }
   // Strip merge (strip_merge.h): a strip-own resolve of the merged first strip
   // resolves every strip's rows. Its source is the strip-merged render target
   // as one rectangle (GetStripMergedResolveRectangle), so the tile resolve
   // can read every band from the open merged pass.
+  uint32_t strip_merge_resolve_clear_bottom = 0;
   uint32_t strip_merge_resolve_bottom =
-      strip_merge_.recording() ? strip_merge_.NoteResolve(trace_writer_) : 0;
-  render_target_cache_->SetStripMergeResolveBottom(strip_merge_resolve_bottom);
+      strip_merge_.recording()
+          ? strip_merge_.NoteResolve(trace_writer_,
+                                     strip_merge_resolve_clear_bottom)
+          : 0;
+  render_target_cache_->SetStripMergeResolveBottom(
+      strip_merge_resolve_bottom, strip_merge_resolve_clear_bottom);
   bool resolved = render_target_cache_->Resolve(
       *memory_, written_address, written_length, copy_command_buffer);
   render_target_cache_->SetStripMergeResolveBottom(0);
