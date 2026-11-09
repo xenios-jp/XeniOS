@@ -2328,6 +2328,8 @@ void RenderTargetCache::LogTransfers(
       if (transfer.host_depth_source) {
         host_depth_name = ", host depth from " +
                           transfer.host_depth_source->key().GetDebugName();
+      } else if (transfer.keep_dest_depth) {
+        host_depth_name = ", stencil only";
       }
       XELOGI("log_transfers: slot {}, {} <= {}, tiles [{}, {}){}", i, dest_name,
              transfer.source->key().GetDebugName(), transfer.start_tiles,
