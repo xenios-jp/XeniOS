@@ -902,6 +902,10 @@ uint64_t StripMerge::HashDrawState() {
   exclude(XE_GPU_REG_RB_COPY_DEST_BASE);
   // Written by events, not read by draws.
   exclude(XE_GPU_REG_VGT_EVENT_INITIATOR);
+  // The copy destination height: Halo 3 sets it, shrinking by a strip, for
+  // each strip's resolve. Strip-own resolves are compared with it
+  // (DeriveLayout, dest_height_aligned); draws don't read it.
+  scratch[XE_GPU_REG_RB_COPY_DEST_PITCH - kContextFirst] &= 0x3FFF;
   // The index buffer of the last indexed draw: a draw packet sets it when it
   // has indices in memory, and other draws don't read it (Halo 3's first draw
   // in every strip is auto-indexed after the previous strip's indexed ones).
