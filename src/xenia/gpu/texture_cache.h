@@ -135,6 +135,12 @@ class TextureCache {
 
     texture_bindings_in_sync_ &= ~res;
   }
+  // Like TextureFetchConstantsWritten, called after the registers are written,
+  // but a binding stays in sync while its fetch constant's words equal the ones
+  // it was last synced from, so a write of an unchanged value doesn't make the
+  // next draw request the texture again.
+  void TextureFetchConstantsWrittenIfChanged(uint32_t first_index,
+                                             uint32_t last_index);
 
   virtual void RequestTextures(uint32_t used_texture_mask);
   // Returns whether RequestTextures(used_texture_mask) may need to process
@@ -822,6 +828,10 @@ class TextureCache {
   // Bit vector with bits reset on fetch constant writes to avoid parsing fetch
   // constants again and again.
   uint32_t texture_bindings_in_sync_ = 0;
+  // The fetch constant words each binding was last synced from, meaningful
+  // while its texture_bindings_in_sync_ bit is set.
+  std::array<xenos::xe_gpu_texture_fetch_t, xenos::kTextureFetchConstantCount>
+      texture_bindings_synced_fetch_ = {};
 
   // GetFetchIntegerScaleBits and GetFetchDecodeBits run for every texture of
   // every draw's pipeline key, before RequestTextures. Both are functions of
