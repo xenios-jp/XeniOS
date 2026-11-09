@@ -158,6 +158,7 @@ class MetalCommandProcessor : public CommandProcessor,
     kRenderTargetDump,
     kRenderTargetOther,
     kSubmissionPassLimit,
+    kSubmissionAfterDrain,
     kCount,
   };
   // What the CPU waited for the GPU for, to attribute the per-frame wait time.
@@ -1436,6 +1437,18 @@ class MetalCommandProcessor : public CommandProcessor,
   static constexpr uint32_t kMaxRenderPassesPerCommandBuffer = 40;
   // Render passes ended in the current command buffer.
   uint32_t command_buffer_render_passes_ = 0;
+  // The end of a primary buffer found a render pass open and left the commit
+  // to the end of that pass, which a draw beginning another pass performs.
+  // Any commit clears it.
+  bool primary_end_commit_at_pass_end_ = false;
+  // The command processor waited, so the GPU may have run out of work: the
+  // first render pass end afterwards that finds it with everything submitted
+  // done commits what has been encoded since. A commit for anything but a
+  // wait clears it.
+  bool commit_after_drain_armed_ = false;
+  // Between render passes, at a draw about to begin a new one: performs the
+  // commits left to a pass end.
+  void CommitBetweenRenderPasses();
   // Signaled by the submission completion handler so waits for a specific
   // submission don't have to poll.
   std::mutex completion_mutex_;
