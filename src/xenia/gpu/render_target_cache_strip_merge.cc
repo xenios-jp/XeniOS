@@ -187,18 +187,25 @@ void RenderTargetCache::ConsumeStripMergeCarries(uint32_t start_tiles,
   strip_merge_carries_ = std::move(remaining);
 }
 
-bool RenderTargetCache::BeginStripMerge(uint32_t band_count,
-                                        uint32_t band_tile_rows) {
-  if (GetPath() != Path::kHostRenderTargets || IsDrawResolutionScaled() ||
-      band_count < 2 || band_count > StripMerge::kMaxStrips ||
-      !band_tile_rows) {
-    return false;
+const char* RenderTargetCache::BeginStripMerge(uint32_t band_count,
+                                               uint32_t band_tile_rows) {
+  if (GetPath() != Path::kHostRenderTargets) {
+    return "the render targets aren't host ones";
+  }
+  if (IsDrawResolutionScaled()) {
+    return "the draw resolution is scaled";
+  }
+  if (band_count < 2 || !band_tile_rows) {
+    return "no bands";
+  }
+  if (band_count > StripMerge::kMaxStrips) {
+    return "more strips than merged render targets have bands";
   }
   // Strip-merged render targets are created with the band shape.
   if (strip_merge_bands_.count &&
       (strip_merge_bands_.count != band_count ||
        strip_merge_bands_.tile_rows != band_tile_rows)) {
-    return false;
+    return "bands of another shape than the first merged session's";
   }
   strip_merge_bands_.count = band_count;
   strip_merge_bands_.tile_rows = band_tile_rows;
@@ -227,6 +234,8 @@ bool RenderTargetCache::BeginStripMerge(uint32_t band_count,
   }
   strip_merge_active_ = true;
   are_accumulated_render_targets_valid_ = false;
+  return nullptr;
+}
   return true;
 }
 

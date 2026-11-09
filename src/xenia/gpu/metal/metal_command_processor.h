@@ -372,8 +372,7 @@ class MetalCommandProcessor : public CommandProcessor,
   bool IssueCopy() override;
 
   // StripMerge::Backend.
-  bool StripMergeBegin(const StripMerge::Layout& layout) override;
-  void StripMergeEnd(uint32_t band, bool carry) override;
+  const char* StripMergeBegin(const StripMerge::Layout& layout) override;
   // Issues the draw once, or in each band of the merged render targets when
   // it addresses the strip's band (strip_merge_replicate_draw_). After
   // ApplyViewportAndScissor.
