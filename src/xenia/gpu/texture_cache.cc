@@ -396,6 +396,25 @@ uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle,
   return host_swizzle;
 }
 
+void TextureCache::TextureFetchConstantsWrittenIfChanged(uint32_t first_index,
+                                                         uint32_t last_index) {
+  uint32_t written = ((UINT32_C(1) << first_index) - 1) ^
+                     uint32_t((UINT64_C(1) << (last_index + 1)) - 1);
+  // A binding out of sync is requested again anyway.
+  uint32_t candidates = texture_bindings_in_sync_ & written;
+  const uint32_t* fetch_words =
+      &register_file().values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+  uint32_t index;
+  while (xe::bit_scan_forward(candidates, &index)) {
+    candidates = xe::clear_lowest_bit(candidates);
+    if (std::memcmp(fetch_words + index * 6,
+                    &texture_bindings_synced_fetch_[index],
+                    sizeof(xenos::xe_gpu_texture_fetch_t))) {
+      texture_bindings_in_sync_ &= ~(UINT32_C(1) << index);
+    }
+  }
+}
+
 void TextureCache::RequestTextures(uint32_t used_texture_mask) {
   const auto& regs = register_file();
 
@@ -438,6 +457,7 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
           old_key.is_valid && IsBindingOutdatedForUse(binding);
       BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
       texture_bindings_in_sync_ |= index_bit;
+      texture_bindings_synced_fetch_[index] = fetch;
       if (!binding.key.is_valid) {
         if (old_key.is_valid) {
           bindings_changed |= index_bit;

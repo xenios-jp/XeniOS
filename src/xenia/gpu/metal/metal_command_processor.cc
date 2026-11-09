@@ -4851,10 +4851,16 @@ void MetalCommandProcessor::UpdateGuestConstantCaches(
     msl_bool_loop_constants_dirty_ = false;
   }
   if (msl_fetch_constants_dirty_) {
-    std::memcpy(msl_cached_fetch_constants_.data(),
-                &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0],
-                kFetchConstantsSize);
-    ++dxil_guest_constant_versions_[3];
+    // The version names the contents, so writes that left them as they were
+    // keep the uploaded copy.
+    const uint32_t* fetch_constants =
+        &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
+    if (std::memcmp(msl_cached_fetch_constants_.data(), fetch_constants,
+                    kFetchConstantsSize)) {
+      std::memcpy(msl_cached_fetch_constants_.data(), fetch_constants,
+                  kFetchConstantsSize);
+      ++dxil_guest_constant_versions_[3];
+    }
     msl_fetch_constants_dirty_ = false;
   }
 }
@@ -6903,8 +6909,10 @@ void MetalCommandProcessor::WriteRegisterRangeFromMem(
       if (texture_cache_) {
         const uint32_t dword_start =
             start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
-        texture_cache_->TextureFetchConstantsWritten(
-            dword_start / 6, (dword_start + num_registers - 1) / 6);
+        const uint32_t first_fetch = dword_start / 6;
+        const uint32_t last_fetch = (dword_start + num_registers - 1) / 6;
+        texture_cache_->TextureFetchConstantsWrittenIfChanged(first_fetch,
+                                                              last_fetch);
       }
     } break;
     case RegisterRangeClass::kBoolLoopConstants:
@@ -6941,8 +6949,10 @@ void MetalCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
              index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
     msl_fetch_constants_dirty_ = true;
     if (texture_cache_) {
-      texture_cache_->TextureFetchConstantWritten(
-          (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+      const uint32_t fetch_index =
+          (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6;
+      texture_cache_->TextureFetchConstantsWrittenIfChanged(fetch_index,
+                                                            fetch_index);
     }
   }
 }
