@@ -1665,14 +1665,15 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   // that needs nothing from the current command buffer is recorded instead for
   // a command buffer committed right before it, one per submission: nothing
   // earlier in it uses the texture, and the load reads only guest memory
-  // copied now, not shared memory. Without an open pass, loading into the
+  // copied now, not shared memory. A load writing the texture directly reads
+  // the same copy, so it goes ahead too. Without an open pass, loading into the
   // current command buffer splits nothing, and the GPU can overlap the load
   // with the work around it.
   const uint64_t current_submission =
       command_processor_ ? command_processor_->GetCurrentSubmission() : 0;
   bool load_ahead = use_current_command_buffer && upload_batch_depth_ &&
                     command_processor_->HasActiveRenderEncoder() &&
-                    !use_direct_raw && !texture_resolution_scaled &&
+                    !texture_resolution_scaled &&
                     metal_texture->used_submission_ != current_submission;
   for (uint32_t part = 0; part < 2 && load_ahead; ++part) {
     if ((part ? load_mips : load_base) && !snapshot_length[part]) {
@@ -1739,9 +1740,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   // While a draw requests its textures, its loads are recorded and encoded
   // together when the request ends. A load writing the texture directly, or
   // one into the separate command buffers, is encoded at once, after the
-  // recorded ones, so loads stay in order.
+  // recorded ones, so loads stay in order, unless it goes ahead.
   const bool defer_load = (use_current_command_buffer || use_upload_batch) &&
-                          upload_batch_depth_ && !use_direct_raw &&
+                          upload_batch_depth_ &&
+                          (!use_direct_raw || load_ahead) &&
                           !texture_resolution_scaled;
   LoadCommands commands;
   if (!texture_resolution_scaled) {
