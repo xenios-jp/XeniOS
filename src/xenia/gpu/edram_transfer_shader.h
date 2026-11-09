@@ -212,6 +212,12 @@ union EdramTransferShaderKey {
     // wrapped (see EdramTransferAddressConstant).
     uint32_t source_unwrapped : 1;
     uint32_t host_depth_source_unwrapped : 1;
+    // With the unwrapped bit, the offset in the 12 bits isn't biased: the
+    // source is kEdramTileCount to 2 * kEdramTileCount - 1 tiles past the
+    // destination (the last band of four strips of 1280x720 2x is 2496 tiles
+    // past the first).
+    uint32_t source_unwrapped_far : 1;
+    uint32_t host_depth_source_unwrapped_far : 1;
   };
 
   EdramTransferShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -251,7 +257,8 @@ union EdramTransferAddressConstant {
     uint32_t source_next_period : 1;
     // With source_unwrapped or host_depth_source_unwrapped in the shader key,
     // source_to_dest | (source_next_period << 11) is instead the source tile
-    // index minus the destination tile index plus kEdramTileCount.
+    // index minus the destination tile index plus kEdramTileCount (not plus
+    // it with the matching _far bit).
   };
   EdramTransferAddressConstant() : constant(0) {
     static_assert_size(*this, sizeof(constant));

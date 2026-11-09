@@ -922,9 +922,9 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
       dest_tile_index_x);
   // The destination tile index plus the base difference in an address
   // constant: wrapped, or for strip merge (unwrapped), biased by the tile
-  // count and not wrapped.
+  // count unless far, and not wrapped.
   auto source_tile_index_of = [&](spv::Id source_address_constant,
-                                  bool unwrapped) -> spv::Id {
+                                  bool unwrapped, bool far) -> spv::Id {
     if (unwrapped) {
       return builder.createBinOp(
           spv::OpISub, type_uint,
@@ -934,7 +934,7 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
                   spv::OpBitFieldUExtract, type_uint, source_address_constant,
                   builder.makeUintConstant(xenos::kEdramPitchTilesBits * 2),
                   builder.makeUintConstant(xenos::kEdramBaseTilesBits + 1))),
-          builder.makeUintConstant(xenos::kEdramTileCount));
+          builder.makeUintConstant(far ? 0 : xenos::kEdramTileCount));
     }
     return builder.createBinOp(
         spv::OpBitwiseAnd, type_uint,
@@ -1137,7 +1137,8 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
     // base difference is stored wrapped too. Sources in the next period hold
     // their tiles a period of rows down.
     spv::Id source_tile_index =
-        source_tile_index_of(address_constant, key.source_unwrapped);
+        source_tile_index_of(address_constant, key.source_unwrapped,
+                             key.source_unwrapped_far);
     if (!key.source_unwrapped) {
       source_tile_index = builder.createBinOp(
           spv::OpIAdd, type_uint, source_tile_index,
@@ -2083,7 +2084,8 @@ std::vector<uint32_t> BuildEdramTransferShaderSpirv(
             // Transform the destination tile index into the host depth source,
             // wrapped (or, for strip merge, biased and not wrapped).
             spv::Id host_depth_source_tile_index = source_tile_index_of(
-                host_depth_address_constant, key.host_depth_source_unwrapped);
+                host_depth_address_constant, key.host_depth_source_unwrapped,
+                key.host_depth_source_unwrapped_far);
             // Split the host depth source tile index into X and Y tile index
             // within the source image.
             spv::Id host_depth_source_pitch_tiles = builder.createTriOp(

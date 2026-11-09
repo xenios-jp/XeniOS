@@ -7075,11 +7075,11 @@ const char* MetalCommandProcessor::StripMergeBegin(
     return "the render targets aren't host ones";
   }
   // Transfers address a band up to strip_count - 1 bands away with a 12-bit
-  // offset (MakeTransferAddressConstant).
+  // offset, biased or not (MakeTransferAddressConstant). Strip-merged render
+  // targets are 32bpp.
   if (uint64_t(layout.strip_count - 1) * layout.band_tile_rows() *
           layout.pitch_tiles_at_32bpp >=
-      xenos::kEdramTileCount) {
-    return false;
+      2 * xenos::kEdramTileCount) {
     return "the last band is farther from the first than transfers address";
   }
   // The merged render targets start in a pass of their own, with nothing
