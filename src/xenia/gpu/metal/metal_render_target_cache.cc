@@ -890,6 +890,11 @@ bool MetalRenderTargetCache::Initialize() {
 void MetalRenderTargetCache::Shutdown(bool from_destructor) {
   ClearPendingDrawPassTransfers();
   post_pass_resolves_.clear();
+  ClearPostPassRefreshCopies();
+  for (MTL::Texture* scratch : refresh_scratch_pool_) {
+    scratch->release();
+  }
+  refresh_scratch_pool_.clear();
   if (!from_destructor) {
     ClearCache();
   }
@@ -1375,6 +1380,7 @@ void MetalRenderTargetCache::ClearCache() {
   ClearPendingDrawPassTransfers();
   // It names render targets about to be destroyed.
   post_pass_resolves_.clear();
+  ClearPostPassRefreshCopies();
   dead_store_render_targets_.clear();
   constant_contents_.clear();
 
@@ -5900,6 +5906,12 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   // The refresh views are R32Uint at 32bpp and RG32Uint at 64bpp, all of the
   // shape of the first.
   const uint32_t refresh_count = uint32_t(refresh_textures.size());
+  // What the dispatch writes, and what is copied from its scratch texture
+  // after the pass.
+  std::array<MTL::Texture*, 4> kernel_refresh{};
+  uint32_t kernel_refresh_count = 0;
+  std::array<MTL::Texture*, 4> sampled_refresh{};
+  uint32_t sampled_refresh_count = 0;
   if (refresh_count) {
     if (refresh_count > 4) {
       return "refresh_count";
@@ -5914,16 +5926,27 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
       }
     }
     // An earlier draw of this pass may sample them in a tile the dispatch
-    // reaches first.
-    if (command_processor_.RenderEncoderUsesAnyTexture(refresh_textures)) {
-      return "refresh_sampled";
+    // reaches first. Those get a scratch texture of their shape instead,
+    // copied into them when the pass ends - after every draw of the pass, as
+    // the compute resolve after ending the pass would write them.
+    for (uint32_t i = 0; i < refresh_count; ++i) {
+      if (command_processor_.RenderEncoderUsesAnyTexture(
+              refresh_textures.subspan(i, 1))) {
+        sampled_refresh[sampled_refresh_count++] = refresh_textures[i];
+      } else {
+        kernel_refresh[kernel_refresh_count++] = refresh_textures[i];
+      }
+    }
+    if (sampled_refresh_count) {
+      // The scratch texture, bound last.
+      ++kernel_refresh_count;
     }
     constants.refresh_size[0] = uint32_t(refresh_textures[0]->width());
     constants.refresh_size[1] = uint32_t(refresh_textures[0]->height());
     constants.refresh_offset_y = refresh_offset_y;
   }
   MTL::RenderPipelineState* pipeline = GetOrCreateTileResolvePipeline(
-      pass_descriptor, color_index, kernel, sample_count, refresh_count);
+      pass_descriptor, color_index, kernel, sample_count, kernel_refresh_count);
   if (!pipeline) {
     return "pipeline";
   }
@@ -5963,15 +5986,41 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
   if (!command_processor_.HasActiveRenderEncoder()) {
     return "upload_ended_pass";
   }
+  MTL::Texture* refresh_scratch = nullptr;
+  if (sampled_refresh_count) {
+    refresh_scratch = AcquireRefreshScratch(refresh_textures[0]);
+    if (!refresh_scratch) {
+      return "refresh_scratch";
+    }
+    kernel_refresh[kernel_refresh_count - 1] = refresh_scratch;
+  }
 
   encoder->setRenderPipelineState(pipeline);
   command_processor_.InvalidateRenderEncoderPipeline();
   encoder->setTileBytes(&constants, sizeof(constants), 0);
   encoder->setTileBuffer(dest_buffer, 0, 1);
-  for (uint32_t i = 0; i < refresh_count; ++i) {
-    encoder->setTileTexture(refresh_textures[i], i);
-    command_processor_.UseRenderEncoderResource(refresh_textures[i],
+  for (uint32_t i = 0; i < kernel_refresh_count; ++i) {
+    encoder->setTileTexture(kernel_refresh[i], i);
+    command_processor_.UseRenderEncoderResource(kernel_refresh[i],
                                                 MTL::ResourceUsageWrite);
+  }
+  if (refresh_scratch) {
+    // The texels the dispatch writes: resolve pixel p at (p.x,
+    // p.y + refresh_offset_y), inside the texture.
+    PostPassRefreshCopy copy;
+    copy.scratch = refresh_scratch;
+    copy.origin_y = refresh_offset_y;
+    copy.width = std::min(constants.size[0], constants.refresh_size[0]);
+    copy.height =
+        refresh_offset_y < constants.refresh_size[1]
+            ? std::min(constants.size[1],
+                       constants.refresh_size[1] - refresh_offset_y)
+            : 0;
+    for (uint32_t i = 0; i < sampled_refresh_count; ++i) {
+      copy.destinations.push_back(NS::RetainPtr(sampled_refresh[i]));
+    }
+    copy.post_pass_resolves_before = post_pass_resolves_.size();
+    post_pass_refresh_copies_.push_back(std::move(copy));
   }
   if (hazards) {
     hazards->Access(resolve_info.copy_dest_extent_start,
@@ -7860,23 +7909,121 @@ void MetalRenderTargetCache::KeepStoresOfResolveReads(
   }
 }
 
+MTL::Texture* MetalRenderTargetCache::AcquireRefreshScratch(
+    MTL::Texture* like) {
+  for (auto it = refresh_scratch_pool_.begin();
+       it != refresh_scratch_pool_.end(); ++it) {
+    MTL::Texture* scratch = *it;
+    if (scratch->pixelFormat() == like->pixelFormat() &&
+        scratch->width() == like->width() &&
+        scratch->height() == like->height()) {
+      refresh_scratch_pool_.erase(it);
+      return scratch;
+    }
+  }
+  MTL::TextureDescriptor* descriptor =
+      MTL::TextureDescriptor::alloc()->init();
+  descriptor->setTextureType(MTL::TextureType2DArray);
+  descriptor->setPixelFormat(like->pixelFormat());
+  descriptor->setWidth(like->width());
+  descriptor->setHeight(like->height());
+  descriptor->setDepth(1);
+  descriptor->setArrayLength(1);
+  descriptor->setMipmapLevelCount(1);
+  descriptor->setSampleCount(1);
+  descriptor->setStorageMode(MTL::StorageModePrivate);
+  descriptor->setUsage(MTL::TextureUsageShaderWrite);
+  MTL::Texture* scratch = device_->newTexture(descriptor);
+  descriptor->release();
+  return scratch;
+}
+
+void MetalRenderTargetCache::ReleaseRefreshScratch(MTL::Texture* scratch) {
+  // Commands encoded later reuse it after the copy reading it, which Metal
+  // orders (tracked).
+  constexpr size_t kMaxFreeScratch = 8;
+  if (refresh_scratch_pool_.size() < kMaxFreeScratch) {
+    refresh_scratch_pool_.push_back(scratch);
+  } else {
+    scratch->release();
+  }
+}
+
+void MetalRenderTargetCache::ClearPostPassRefreshCopies() {
+  for (PostPassRefreshCopy& copy : post_pass_refresh_copies_) {
+    ReleaseRefreshScratch(copy.scratch);
+  }
+  post_pass_refresh_copies_.clear();
+}
+
+void MetalRenderTargetCache::EncodePostPassRefreshCopies(
+    MTL::CommandBuffer* command_buffer,
+    std::span<PostPassRefreshCopy> copies) {
+  if (copies.empty()) {
+    return;
+  }
+  command_processor_.EndSharedComputeEncoder(command_buffer);
+  MTL::BlitCommandEncoder* blit = command_buffer->blitCommandEncoder();
+  if (!blit) {
+    XELOGE(
+        "MetalRenderTargetCache: no blit encoder for the refresh of sampled "
+        "textures left to the pass end");
+  }
+  for (PostPassRefreshCopy& copy : copies) {
+    if (blit && copy.width && copy.height) {
+      for (const NS::SharedPtr<MTL::Texture>& destination :
+           copy.destinations) {
+        blit->copyFromTexture(
+            copy.scratch, 0, 0, MTL::Origin::Make(0, copy.origin_y, 0),
+            MTL::Size::Make(copy.width, copy.height, 1), destination.get(), 0,
+            0, MTL::Origin::Make(0, copy.origin_y, 0));
+      }
+    }
+    ReleaseRefreshScratch(copy.scratch);
+  }
+  if (blit) {
+    blit->endEncoding();
+  }
+}
+
 void MetalRenderTargetCache::FlushPostPassResolves(
     MTL::CommandBuffer* command_buffer) {
-  if (post_pass_resolves_.empty() || flushing_post_pass_resolves_) {
+  if (flushing_post_pass_resolves_ ||
+      (post_pass_resolves_.empty() && post_pass_refresh_copies_.empty())) {
     return;
   }
   assert_false(command_processor_.HasActiveRenderEncoder());
   flushing_post_pass_resolves_ = true;
   std::vector<PostPassResolve> resolves;
   resolves.swap(post_pass_resolves_);
+  std::vector<PostPassRefreshCopy> copies;
+  copies.swap(post_pass_refresh_copies_);
   if (!command_buffer) {
     command_buffer = command_processor_.EnsureCommandBuffer();
   }
+  // In the guest's order: the copies of tile resolves come after the resolves
+  // left to the pass end before them.
+  size_t copies_done = 0;
+  auto encode_copies_before = [&](size_t resolve_index) {
+    size_t copies_end = copies_done;
+    while (copies_end < copies.size() &&
+           copies[copies_end].post_pass_resolves_before <= resolve_index) {
+      ++copies_end;
+    }
+    EncodePostPassRefreshCopies(
+        command_buffer, std::span<PostPassRefreshCopy>(
+                            copies.data() + copies_done,
+                            copies_end - copies_done));
+    copies_done = copies_end;
+  };
   // Running the depth resolves resets what the last resolve, the one before
   // the pass end, did.
   const bool kept_pass = last_resolve_kept_pass_;
   const uint32_t strip_merge_bottom = strip_merge_resolve_bottom();
-  for (const PostPassResolve& resolve : resolves) {
+  for (size_t resolve_index = 0; resolve_index < resolves.size();
+       ++resolve_index) {
+    encode_copies_before(resolve_index);
+    const PostPassResolve& resolve = resolves[resolve_index];
     SetStripMergeResolveBottom(resolve.strip_merge_resolve_bottom);
     if (resolve.copy) {
       uint32_t written_address, written_length;
@@ -7894,6 +8041,7 @@ void MetalRenderTargetCache::FlushPostPassResolves(
           "pass failed");
     }
   }
+  encode_copies_before(SIZE_MAX);
   SetStripMergeResolveBottom(strip_merge_bottom);
   last_resolve_kept_pass_ = kept_pass;
   flushing_post_pass_resolves_ = false;
