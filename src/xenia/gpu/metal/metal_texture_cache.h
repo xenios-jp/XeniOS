@@ -124,8 +124,15 @@ class MetalTextureCache : public TextureCache {
 
   // TextureCache virtual method overrides
   void RequestTextures(uint32_t used_texture_mask) override;
+  // Changes when what the descriptor gather of a draw's textures and samplers
+  // reads, other than the fetch constant words, may have changed.
   uint64_t binding_state_generation() const {
     return binding_state_generation_;
+  }
+  // The six words of each of the 32 texture fetch constants, as the registers
+  // hold them.
+  const uint32_t* texture_fetch_constant_words() const {
+    return &register_file().values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0];
   }
 
   // Narrow producer interface for an existing, exact texture-cache image
@@ -399,6 +406,16 @@ class MetalTextureCache : public TextureCache {
   xenos::ClampMode NormalizeClampMode(xenos::ClampMode clamp_mode) const;
 
   MetalCommandProcessor* command_processor_;
+  // The binding state generation changes only here: when a binding's
+  // textures, swizzle or signs change or the bindings are reset, and when a
+  // view, sampler or 3D-as-2D wrapper the gather may return is created or
+  // dropped.
+  void OnGatherInputsChanged() {
+    if (++binding_state_generation_ == 0) {
+      binding_state_generation_ = 1;
+    }
+  }
+  void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) override;
   uint64_t binding_state_generation_ = 1;
   // GetSamplerParameters runs for every sampler of every draw, and its result
   // is a function of the fetch constant's words and the binding's filters.

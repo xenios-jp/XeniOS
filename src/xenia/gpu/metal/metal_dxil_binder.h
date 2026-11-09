@@ -117,6 +117,12 @@ class MetalDxilBinder {
   bool gather_cache_valid_ = false;
   GatherKey gather_cache_key_;
   std::array<StageRange, kStageCount> gather_cache_ranges_;
+  // The fetch constants the gathered stages' textures and samplers use, and
+  // their words at the gather, which the descriptors (the samplers in
+  // particular) are a function of.
+  uint32_t gather_cache_fetch_mask_ = 0;
+  std::array<uint32_t, xenos::kTextureFetchConstantCount * 6>
+      gather_cache_fetch_words_{};
 
   // Copies size bytes into a fresh transient slice, zero filling when there is
   // nothing to copy so the slot still points at readable memory.
