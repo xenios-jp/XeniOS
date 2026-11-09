@@ -412,6 +412,9 @@ bool COMMAND_PROCESSOR::ExecutePacket() {
         return COMMAND_PROCESSOR::ExecutePacketType3(packet);
       }
       else {
+        XE_UNLIKELY_IF(strip_merge_.recording() && packet_type != 2) {
+          COMMAND_PROCESSOR::StripMergeNoteType01(packet);
+        }
         if (packet_type ==
             0) {  // dont know whether 0 or 1 are the next most frequent
           return COMMAND_PROCESSOR::ExecutePacketType0(packet);
@@ -536,6 +539,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
     } else {
       trace_writer_.WritePacketStart(COMMAND_PROCESSOR::GuestReadPtrOffset(-4),
                                      1 + count);
+    }
+
+    // Strip merge sees every packet of a tiling session, executed or not.
+    XE_UNLIKELY_IF(strip_merge_.recording()) {
+      COMMAND_PROCESSOR::StripMergeNoteType3(packet, opcode, count);
     }
 
     // & 1 == predicate - when set, we do bin check to see if we should execute
@@ -671,6 +679,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
                                                value);
         }
         bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | value;
+        COMMAND_PROCESSOR::StripMergeOnBinSelect();
         result = true;
       } break;
       case PM4_SET_BIN_SELECT_HI: {
@@ -681,6 +690,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
         }
         bin_select_ = (bin_select_ & 0xFFFFFFFFull) |
                       (static_cast<uint64_t>(value) << 32);
+        COMMAND_PROCESSOR::StripMergeOnBinSelect();
         result = true;
       } break;
       case PM4_SET_BIN_MASK: {
@@ -705,6 +715,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
                                                uint32_t(val_lo));
         }
         bin_select_ = (val_hi << 32) | val_lo;
+        COMMAND_PROCESSOR::StripMergeOnBinSelect();
         result = true;
       } break;
       case PM4_CONTEXT_UPDATE: {
@@ -1536,6 +1547,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
   // Skip to the next command, for example, if there are immediate indexes that
   // we don't support yet.
   reader_.AdvanceRead(count_remaining * sizeof(uint32_t));
+
+  // A merged tiling session's later strips skip their draws and resolves,
+  // drawn for them by the first strip (strip_merge.h).
+  XE_UNLIKELY_IF(draw_succeeded && strip_merge_.recording() &&
+                 !strip_merge_.BeforeDraw()) {
+    return true;
+  }
 
   if (draw_succeeded) {
     // A consumer draw whose survey is still outstanding runs under the

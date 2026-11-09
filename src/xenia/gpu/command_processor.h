@@ -27,6 +27,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/ring_buffer.h"
 #include "xenia/gpu/register_file.h"
+#include "xenia/gpu/strip_merge.h"
 #include "xenia/gpu/trace_writer.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/gpu/xenos_zpd_report.h"
@@ -679,6 +680,13 @@ class CommandProcessor {
   }
   virtual bool IssueCopy() { return false; }
 
+  // Strip merge (strip_merge.h) PM4 hooks, while strip_merge_.recording().
+  void StripMergeNoteType3(uint32_t packet, uint32_t opcode, uint32_t count);
+  void StripMergeNoteType01(uint32_t packet);
+  void StripMergeOnBinSelect() {
+    strip_merge_.OnBinSelect(bin_select_, trace_writer_.is_open());
+  }
+
   // Debug marker stubs for base class (overridden by D3D12/Vulkan backends).
   bool debug_markers_enabled() const { return false; }
   void PushDebugMarker(const char* format, ...) {}
@@ -828,6 +836,8 @@ class CommandProcessor {
 
   uint64_t bin_select_ = 0xFFFFFFFFull;
   uint64_t bin_mask_ = 0xFFFFFFFFull;
+  // Predicated tiling strips drawn as one; backends that can set its backend.
+  StripMerge strip_merge_;
 
   Shader* active_vertex_shader_ = nullptr;
   Shader* active_pixel_shader_ = nullptr;

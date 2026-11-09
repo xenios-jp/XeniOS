@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -66,7 +67,8 @@ namespace metal {
 
 class MetalGraphicsSystem;
 
-class MetalCommandProcessor : public CommandProcessor {
+class MetalCommandProcessor : public CommandProcessor,
+                              public StripMerge::Backend {
   friend class MetalRegisterWriteTest;
 
  protected:
@@ -356,6 +358,17 @@ class MetalCommandProcessor : public CommandProcessor {
       bool primitive_polygonal, bool memexport_used, bool pure_memexport_draw,
       uint32_t normalized_color_mask, const RegisterFile& regs);
   bool IssueCopy() override;
+
+  // StripMerge::Backend.
+  bool StripMergeBegin(const StripMerge::Layout& layout) override;
+  void StripMergeEnd(uint32_t band, bool carry) override;
+  // Strip merge for a resolve (IssueCopy): learning records the strip-own
+  // ones, the merged first strip extends them down to bottom_out.
+  bool StripMergeNoteResolve(uint32_t& bottom_out);
+  // Issues the draw once, or in each band of the merged render targets when
+  // it addresses the strip's band (strip_merge_replicate_draw_). After
+  // ApplyViewportAndScissor.
+  void DrawStripMergeBands(const std::function<void()>& draw);
   void WriteRegister(uint32_t index, uint32_t value) override;
   void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                              uint32_t num_registers) override;
@@ -751,6 +764,8 @@ class MetalCommandProcessor : public CommandProcessor {
   // The dimensions of the encoded pass, refreshed when creating its encoder.
   uint32_t render_encoder_width_ = 1;
   uint32_t render_encoder_height_ = 1;
+  // The draw being issued is replicated into every strip-merged band.
+  bool strip_merge_replicate_draw_ = false;
   // Whether the open pass covers less than its attachments (SetRenderPassArea).
   bool render_encoder_area_restricted_ = false;
   NS::AutoreleasePool* command_buffer_autorelease_pool_ = nullptr;

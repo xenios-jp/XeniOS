@@ -225,7 +225,8 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
       trace_writer_(graphics_system->memory()->physical_membase()),
       worker_running_(true),
       write_ptr_index_event_(xe::threading::Event::CreateAutoResetEvent(false)),
-      write_ptr_index_(0) {
+      write_ptr_index_(0),
+      strip_merge_(*graphics_system->register_file()) {
   assert_not_null(write_ptr_index_event_);
   // Parse and cache ZPD mode once.
   cached_zpd_mode_ = ParseZPDMode();
@@ -1082,6 +1083,22 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
     }
   }
 }
+void CommandProcessor::StripMergeNoteType3(uint32_t packet, uint32_t opcode,
+                                           uint32_t count) {
+  // The payload stays unread, the packet handler reads it.
+  RingBuffer::ReadRange payload = reader_.BeginRead(count * sizeof(uint32_t));
+  strip_merge_.OnPacketType3(packet, opcode, bin_mask_, bin_select_, payload);
+}
+
+void CommandProcessor::StripMergeNoteType01(uint32_t packet) {
+  uint32_t count = (packet >> 30) ? 2 : ((packet >> 16) & 0x3FFF) + 1;
+  if (GetCurrentRingReadCount() < count * sizeof(uint32_t)) {
+    return;
+  }
+  RingBuffer::ReadRange payload = reader_.BeginRead(count * sizeof(uint32_t));
+  strip_merge_.OnPacketType01(packet, payload);
+}
+
 void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   // chrispy: rearrange check order, place set after checks
 

@@ -1342,7 +1342,7 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                     uint32_t draw_resolution_scale_y,
                     bool fixed_rg16_truncated_to_minus_1_to_1,
                     bool fixed_rgba16_truncated_to_minus_1_to_1,
-                    ResolveInfo& info_out) {
+                    ResolveInfo& info_out, uint32_t strip_merge_bottom) {
   // Don't pass uninitialized values to shaders, not to leak data to frame
   // captures. Also initialize an invalid resolve to empty.
   info_out.coordinate_info.packed = 0;
@@ -1415,6 +1415,13 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
     y0 += pa_sc_window_offset.window_y_offset;
     x1 += pa_sc_window_offset.window_x_offset;
     y1 += pa_sc_window_offset.window_y_offset;
+  }
+
+  // A strip-own resolve of a merged tiling session's first strip resolves
+  // every strip's rows at once, the window scissor already reaches the frame
+  // bottom.
+  if (strip_merge_bottom && y1 > y0) {
+    y1 = std::max(y1, int32_t(strip_merge_bottom));
   }
 
   // Apply the scissor and prevent negative origin (behind the EDRAM base).

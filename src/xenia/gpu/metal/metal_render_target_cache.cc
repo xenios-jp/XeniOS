@@ -29,6 +29,7 @@
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
+#include "xenia/gpu/strip_merge.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_1xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_4xmsaa_cs.h"
@@ -1409,6 +1410,15 @@ void MetalRenderTargetCache::RenderTargetReused(RenderTarget& render_target,
   metal_render_target.SetNeedsInitialClear(true);
 }
 
+bool MetalRenderTargetCache::PerformStripMergeTransfers(
+    RenderTarget* dest, const std::vector<Transfer>& transfers) {
+  // Outside any pass: the command processor ended the merged one.
+  RenderTarget* render_targets[] = {dest};
+  bool result = PerformTransfersAndResolveClears(1, render_targets, &transfers);
+  render_pass_descriptor_dirty_ = true;
+  return result;
+}
+
 bool MetalRenderTargetCache::CanReuseRenderTarget(
     const RenderTarget& render_target) const {
   // Transfers that failed to flush still reference their sources.
@@ -1552,7 +1562,10 @@ MetalRenderTargetCache::MetalRenderTarget*
 MetalRenderTargetCache::FindUnorm32ColorStoragePartner(RenderTargetKey key,
                                                        uint32_t width,
                                                        uint32_t height) const {
-  if (key.is_depth || IsDrawResolutionScaled() ||
+  // Strip-merged render targets and strip carries keep their own storage: a
+  // carry has to survive the session's draws to the strip-merged ones.
+  if (key.is_depth || IsDrawResolutionScaled() || key.strip_merged ||
+      key.strip_merge_carry ||
       key.msaa_samples != xenos::MsaaSamples::k4X ||
       !IsUnorm32AliasColorFormat(key.GetColorFormat())) {
     return nullptr;
@@ -1564,8 +1577,8 @@ MetalRenderTargetCache::FindUnorm32ColorStoragePartner(RenderTargetKey key,
     }
     RenderTargetKey rt_key = rt->key();
     MTL::Texture* root = rt->storage_root();
-    if (rt_key == key || rt_key.is_depth ||
-        rt_key.base_tiles != key.base_tiles ||
+    if (rt_key == key || rt_key.is_depth || rt_key.strip_merged ||
+        rt_key.strip_merge_carry || rt_key.base_tiles != key.base_tiles ||
         rt_key.next_period != key.next_period ||
         rt_key.scale_native != key.scale_native ||
         rt_key.pitch_tiles_at_32bpp != key.pitch_tiles_at_32bpp ||
@@ -3318,6 +3331,10 @@ RenderTargetCache::RenderTarget* MetalRenderTargetCache::CreateRenderTarget(
   uint32_t width = key.GetWidth();
   uint32_t height =
       GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
+  if (key.strip_merged) {
+    // Every strip's band (strip carries the same shape).
+    height = strip_merge_bands_.count * GetStripMergeBandRows(key);
+  }
 
   // Apply resolution scaling
   width *= draw_resolution_scale_x();
@@ -6093,6 +6110,40 @@ void MetalRenderTargetCache::DumpRenderTargets(
   std::vector<ResolveCopyDumpRectangle> rectangles;
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
                                  dump_pitch, rectangles);
+  if (strip_merge_resolve_bottom() && dump_pitch &&
+      uint64_t(dump_rows - 1) * dump_pitch + dump_row_length_used >
+          xenos::kEdramTileCount) {
+    // A resolve of every strip of a merged session, past the EDRAM size: the
+    // EDRAM buffer can hold only the first strip's rows. The later strips
+    // run normally after the failure and resolve their own rows.
+    for (ResolveCopyDumpRectangle& rectangle : rectangles) {
+      RenderTargetKey rectangle_key = rectangle.render_target->key();
+      if (!rectangle_key.strip_merged) {
+        continue;
+      }
+      uint32_t rt_row_first =
+          ((dump_base - rectangle_key.base_tiles) &
+           (xenos::kEdramTileCount - 1)) /
+              dump_pitch +
+          rectangle.row_first;
+      uint32_t band_tile_rows = strip_merge_bands_.tile_rows;
+      uint32_t rows_in_band =
+          rt_row_first < band_tile_rows ? band_tile_rows - rt_row_first : 0;
+      if (rectangle.rows > rows_in_band) {
+        rectangle.rows = rows_in_band;
+        rectangle.row_last_end = dump_row_length_used;
+      }
+    }
+    rectangles.erase(
+        std::remove_if(rectangles.begin(), rectangles.end(),
+                       [](const ResolveCopyDumpRectangle& rectangle) {
+                         return !rectangle.rows;
+                       }),
+        rectangles.end());
+    if (strip_merge()) {
+      strip_merge()->Fail("a resolve of every strip not done directly");
+    }
+  }
   // Merge adjacent rectangles of the same source to dispatch fewer times.
   // Restrict the proof to one physical EDRAM period, so combining dispatches
   // cannot turn ordered writes to the same physical tile into concurrent ones.
@@ -6657,7 +6708,8 @@ bool MetalRenderTargetCache::Resolve(Memory& memory, uint32_t& written_address,
       draw_util::GetResolveInfo(regs, memory, *trace_writer_,
                                 draw_resolution_scale_x(),
                                 draw_resolution_scale_y(), fixed_rg16_trunc,
-                                fixed_rgba16_trunc, resolve_info);
+                                fixed_rgba16_trunc, resolve_info,
+                                strip_merge_resolve_bottom());
   return ResolveWithInfo(resolve_info, resolve_info_valid, written_address,
                          written_length, command_buffer);
 }
@@ -7184,6 +7236,73 @@ bool MetalRenderTargetCache::ResolveWithInfo(
   return false;
 }
 
+bool MetalRenderTargetCache::MakeTransferAddressConstant(
+    RenderTargetKey source_key, RenderTargetKey dest_key,
+    const Transfer& transfer, EdramTransferAddressConstant& constant_out) {
+  constexpr uint32_t kTileMask = xenos::kEdramTileCount - 1;
+  constant_out = EdramTransferAddressConstant();
+  constant_out.dest_pitch = dest_key.GetPitchTiles();
+  constant_out.source_pitch = source_key.GetPitchTiles();
+  if (source_key.strip_merged) {
+    // Strip merge, a source with rows past the EDRAM: the source tile index is
+    // the destination one plus the offset between the range's tile in each,
+    // plus the band shift, not wrapped. The destination's tile index already
+    // includes the band it writes.
+    int32_t offset =
+        int32_t(source_key.GetNonWrappedTileIndex(transfer.start_tiles) -
+                source_key.base_tiles) -
+        int32_t(dest_key.GetNonWrappedTileIndex(transfer.start_tiles) -
+                dest_key.base_tiles) +
+        int32_t(transfer.source_band_shift) *
+            int32_t(GetStripMergeBandTiles(source_key));
+    int32_t biased = offset + int32_t(xenos::kEdramTileCount);
+    if (biased < 0 || biased >= int32_t(2 * xenos::kEdramTileCount)) {
+      XELOGE("Strip merge: transfer offset {} out of range", offset);
+      return false;
+    }
+    constant_out.source_to_dest = uint32_t(biased) & kTileMask;
+    constant_out.source_next_period =
+        uint32_t(biased) >> xenos::kEdramBaseTilesBits;
+    return true;
+  }
+  uint32_t band_offset_tiles = 0;
+  if (dest_key.strip_merged) {
+    // A source with the EDRAM's rows fills one band of a strip-merged
+    // destination per transfer, the destination's tile index being past the
+    // band's start.
+    if (transfer.band_count != 1) {
+      XELOGE("Strip merge: a multi-band transfer from {}",
+             source_key.GetDebugName());
+      return false;
+    }
+    band_offset_tiles = transfer.band_first * GetStripMergeBandTiles(dest_key);
+  }
+  constant_out.source_to_dest =
+      (uint32_t(dest_key.base_tiles) - uint32_t(source_key.base_tiles) -
+       band_offset_tiles) &
+      kTileMask;
+  constant_out.source_next_period = source_key.next_period;
+  return true;
+}
+
+bool MetalRenderTargetCache::IsStripMergeAddressingSame(
+    const Transfer& transfer, const Transfer& other_transfer,
+    RenderTargetKey dest_key) {
+  // Only strip-merged sources have an address depending on the range.
+  auto same = [&](const RenderTarget* source) {
+    if (!source || !source->key().strip_merged) {
+      return true;
+    }
+    EdramTransferAddressConstant constant, other_constant;
+    return MakeTransferAddressConstant(source->key(), dest_key, transfer,
+                                       constant) &&
+           MakeTransferAddressConstant(source->key(), dest_key, other_transfer,
+                                       other_constant) &&
+           constant == other_constant;
+  };
+  return same(transfer.source) && same(transfer.host_depth_source);
+}
+
 EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
     RenderTargetKey source_key, RenderTargetKey dest_key,
     const RenderTargetKey* host_depth_source_key,
@@ -7238,9 +7357,12 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
   // the next period use the generic addressing path.
   const uint32_t relative_start = (transfer.start_tiles - dest_key.base_tiles) &
                                   (xenos::kEdramTileCount - 1);
+  // Strip-merged render targets have rows past the EDRAM, and band copies
+  // move rows (see MakeTransferAddressConstant).
   const bool same_layout_no_wrap =
       !IsDrawResolutionScaled() && !source_key.next_period &&
-      !dest_key.next_period && source_key.base_tiles == dest_key.base_tiles &&
+      !dest_key.next_period && !source_key.strip_merged &&
+      !dest_key.strip_merged && source_key.base_tiles == dest_key.base_tiles &&
       source_key.GetPitchTiles() == dest_key.GetPitchTiles() &&
       relative_start + transfer.end_tiles - transfer.start_tiles <=
           xenos::kEdramTileCount;
@@ -7257,6 +7379,10 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
       shader_key.mode == EdramTransferMode::kColorToColor &&
       !source_key.Is64bpp() && !dest_key.Is64bpp() &&
       source_key.msaa_samples == dest_key.msaa_samples;
+  shader_key.source_unwrapped = source_key.strip_merged;
+  shader_key.host_depth_source_unwrapped =
+      host_depth_source_key && !host_depth_source_is_copy &&
+      host_depth_source_key->strip_merged;
   // The identity layouts don't divide by the source pitch.
   shader_key.source_pitch_16 = !shader_key.depth_identity_layout &&
                                !shader_key.color_identity_layout &&
@@ -8054,6 +8180,15 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       if (!dest_key.is_depth) {
         continue;
       }
+      // The EDRAM buffer has no room for the bands of a strip-merged render
+      // target past the first, the transfers drop the host depth instead.
+      if (dest_key.strip_merged) {
+        if (strip_merge()) {
+          strip_merge()->Fail(
+              "a strip-merged depth buffer is its own host depth source");
+        }
+        continue;
+      }
       const std::vector<Transfer>& depth_transfers = render_target_transfers[i];
       for (const Transfer& transfer : depth_transfers) {
         if (transfer.host_depth_source != dest_rt) {
@@ -8712,6 +8847,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               pass
                   ? nullptr
                   : static_cast<MetalRenderTarget*>(transfer.host_depth_source);
+          // No host depth store for strip-merged render targets (see above).
+          bool drop_host_depth = host_depth_rt && dest_key.strip_merged &&
+                                 host_depth_rt == dest_metal_rt &&
+                                 dest_metal_rt != renamed_depth_dest;
+          if (drop_host_depth) {
+            host_depth_rt = nullptr;
+          }
           ensure_sort_index(source_rt);
           ensure_sort_index(host_depth_rt);
 
@@ -8730,7 +8872,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           shader_key.dest_float_bits = dest_float_bits ? 1 : 0;
 
           transfer_invocations_.emplace_back(transfer, shader_key);
-          if (pass) {
+          if (pass || drop_host_depth) {
             transfer_invocations_.back().transfer.host_depth_source = nullptr;
           }
         }
@@ -9141,7 +9283,11 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           size_t merged_invocation_end = invocation_index + 1;
           while (merged_invocation_end < transfer_invocations_.size() &&
                  invocation.CanBeMergedIntoOneDraw(
-                     transfer_invocations_[merged_invocation_end])) {
+                     transfer_invocations_[merged_invocation_end]) &&
+                 IsStripMergeAddressingSame(
+                     invocation.transfer,
+                     transfer_invocations_[merged_invocation_end].transfer,
+                     dest_key)) {
             ++merged_invocation_end;
           }
 
@@ -9274,12 +9420,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           // counts, tile dimensions - the emitter bakes into the shader, so
           // only the addressing is left to pass.
           EdramTransferAddressConstant address_constant;
-          address_constant.dest_pitch = dest_key.GetPitchTiles();
-          address_constant.source_pitch = source_key.GetPitchTiles();
-          address_constant.source_to_dest = (uint32_t(dest_key.base_tiles) -
-                                             uint32_t(source_key.base_tiles)) &
-                                            (xenos::kEdramTileCount - 1);
-          address_constant.source_next_period = source_key.next_period;
+          if (!MakeTransferAddressConstant(source_key, dest_key, transfer,
+                                           address_constant)) {
+            continue;
+          }
           EdramTransferAddressConstant host_depth_address_constant;
           if (EdramTransferUsesHostDepth(shader_key.mode) &&
               !EdramTransferHostDepthIsCopy(shader_key.mode)) {
@@ -9287,13 +9431,15 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
                 static_cast<MetalRenderTarget*>(transfer.host_depth_source);
             if (host_depth_rt) {
               RenderTargetKey host_depth_key = host_depth_rt->key();
-              host_depth_address_constant.dest_pitch = dest_key.GetPitchTiles();
-              host_depth_address_constant.source_pitch =
-                  host_depth_key.GetPitchTiles();
-              host_depth_address_constant.source_to_dest =
-                  (uint32_t(dest_key.base_tiles) -
-                   uint32_t(host_depth_key.base_tiles)) &
-                  (xenos::kEdramTileCount - 1);
+              if (!MakeTransferAddressConstant(host_depth_key, dest_key,
+                                               transfer,
+                                               host_depth_address_constant)) {
+                continue;
+              }
+              // The host depth address has no next period.
+              if (!host_depth_key.strip_merged) {
+                host_depth_address_constant.source_next_period = 0;
+              }
             }
           }
           TransferVertexConstants vertex_constants;

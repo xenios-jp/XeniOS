@@ -886,7 +886,10 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                     uint32_t draw_resolution_scale_y,
                     bool fixed_rg16_truncated_to_minus_1_to_1,
                     bool fixed_rgba16_truncated_to_minus_1_to_1,
-                    ResolveInfo& info_out);
+                    ResolveInfo& info_out,
+                    // Strip merge (strip_merge.h): extends a strip's rows
+                    // down to this frame row, 0 to leave them.
+                    uint32_t strip_merge_bottom = 0);
 
 // Returns log2 of the copy destination texel size in bytes from a Resolve's
 // copy_dest_info (format already normalized) - the derivation GetResolveInfo

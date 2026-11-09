@@ -205,6 +205,13 @@ union EdramTransferShaderKey {
     // additional stencil texture.
     static_assert(size_t(EdramTransferMode::kCount) <= (size_t(1) << 4));
     EdramTransferMode mode : 4;
+
+    // Strip merge (render targets taller than the EDRAM): the source, or the
+    // host depth source, tile index is the destination one plus the 12 bits
+    // of source_to_dest and source_next_period minus kEdramTileCount, not
+    // wrapped (see EdramTransferAddressConstant).
+    uint32_t source_unwrapped : 1;
+    uint32_t host_depth_source_unwrapped : 1;
   };
 
   EdramTransferShaderKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -242,6 +249,9 @@ union EdramTransferAddressConstant {
     uint32_t source_to_dest : xenos::kEdramBaseTilesBits;
     // The source render target is in the next period (64bpp color only).
     uint32_t source_next_period : 1;
+    // With source_unwrapped or host_depth_source_unwrapped in the shader key,
+    // source_to_dest | (source_next_period << 11) is instead the source tile
+    // index minus the destination tile index plus kEdramTileCount.
   };
   EdramTransferAddressConstant() : constant(0) {
     static_assert_size(*this, sizeof(constant));
