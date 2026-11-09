@@ -182,6 +182,8 @@ void StripMerge::Strip::Clear() {
   draw_states.clear();
   draw_own_states.clear();
   draw_kinds.clear();
+  draw_window_br.clear();
+  draw_window.clear();
   draw_own_snapshots.clear();
   own_snapshot_starts.clear();
   own_snapshot_values.clear();
@@ -483,6 +485,11 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
   uint32_t checked[kMaxStrips];
   std::fill(std::begin(checked), std::end(checked), UINT32_MAX);
   uint32_t values[kMaxStrips];
+  // Per draw: whether the strips' window offset, and any of their window
+  // registers, differ at it.
+  std::vector<uint8_t> window_differs(draw_count, 0);
+  uint8_t differs = 0;
+  constexpr uint8_t kOffsetDiffers = 1 << 0, kWindowDiffers = 1 << 1;
   for (size_t d = 0; d < draw_count; ++d) {
     bool same = true;
     for (uint32_t k = 0; k < strip_count_; ++k) {
@@ -490,36 +497,10 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
     }
     if (same) {
       // The previous draw saw the same.
+      window_differs[d] = differs;
       continue;
     }
-    int32_t slope_x, slope_y;
-    switch (reg) {
-      case XE_GPU_REG_PA_SC_WINDOW_OFFSET:
-        for (uint32_t k = 0; k < strip_count_; ++k) {
-          values_x[k] = WindowOffsetX(strips_[k].own_writes[j].value);
-          values_y[k] = WindowOffsetY(strips_[k].own_writes[j].value);
-        }
-        if (!IsLinear(values_x, strip_count_, slope_x) || slope_x ||
-            !IsLinear(values_y, strip_count_, slope_y) || values_y[0] ||
-            !set_band_rows(-slope_y)) {
-          Fail("the window offset isn't the strip's frame row");
-          return false;
-        }
-        break;
-      case XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL:
-      case XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR:
-        for (uint32_t k = 0; k < strip_count_; ++k) {
-          uint32_t value = strips_[k].own_writes[j].value;
-          // The window offset disable bit of TL goes with x.
-          values_x[k] = int32_t(value & 0x8000FFFF);
-          values_y[k] = int32_t((value >> 16) & 0x3FFF);
-        }
-        if (!IsLinear(values_x, strip_count_, slope_x) || slope_x ||
-            !IsLinear(values_y, strip_count_, slope_y) ||
-            !set_band_rows(slope_y) ||
-            values_y[0] !=
-                (reg == XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL ? 0 : slope_y)) {
-          Fail("the window scissor isn't the strip's rows");
+    differs = 0;
     uint32_t first_begin = 0, first_end = 0;
     for (uint32_t k = 0; k < strip_count_; ++k) {
       const Strip& strip = strips_[k];
@@ -556,48 +537,68 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
             strip.own_snapshot_values[strip.own_snapshot_starts[checked[k]] + i]
                 .value;
       }
+      uint32_t reg = first.own_snapshot_values[first_begin + i].reg;
+      if (reg == XE_GPU_REG_PA_SC_WINDOW_OFFSET ||
+          reg == XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL ||
+          reg == XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR) {
+        for (uint32_t k = 1; k < strip_count_; ++k) {
+          if (values[k] != values[0]) {
+            differs |= kWindowDiffers;
+            if (reg == XE_GPU_REG_PA_SC_WINDOW_OFFSET) {
+              differs |= kOffsetDiffers;
+            }
           }
-          window_br_first = value_first;
         }
-        break;
-      case XE_GPU_REG_RB_COPY_DEST_BASE:
-        // Checked with the resolves.
-        break;
-      default: {
-        if (reg < XE_GPU_REG_SHADER_CONSTANT_000_X ||
-            reg >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) {
-          Fail("a strip-own write to a register merging can't vary");
-          return false;
-        }
-        // A float constant component that is the strip's frame row (or its
-        // negation), 0 in the first strip, so that the merged first strip's
-        // frame-space pixels get the value of every strip's.
-        float floats[kMaxStrips];
-        for (uint32_t k = 0; k < strip_count_; ++k) {
-          uint32_t value = strips_[k].own_writes[j].value;
-          std::memcpy(&floats[k], &value, sizeof(float));
-        }
-        float slope = floats[1] - floats[0];
-        bool linear = floats[0] == 0.0f && slope != 0.0f &&
-                      float(int32_t(slope)) == slope;
-        for (uint32_t k = 2; linear && k < strip_count_; ++k) {
-          linear = floats[k] == slope * float(k);
-        }
-        if (!linear || !set_band_rows(std::abs(int32_t(slope)))) {
-          Fail("a strip-own constant isn't the strip's frame row");
-          return false;
-        }
-      } break;
+      }
+      if (!CheckOwnValues(reg, values, first.draw_kinds[d], band_rows,
                           window_br_first, frame_rows)) {
         return false;
       }
     }
+    window_differs[d] = differs;
   }
   if (!band_rows || !window_br_first) {
     Fail("no strip window");
     return false;
   }
+  // Merging draws a draw on the strip surface once into the frame if its
+  // window is the first strip's (IsFrameSpace), else into every band as the
+  // first strip draws it. That's every strip's draw only if the strips'
+  // windows differ at a draw exactly when it's the first strip's window, the
+  // window offset moving the vertices and the scissor alike.
+  if (first.draw_window.size() != draw_count ||
+      first.draw_window_br.size() != draw_count) {
+    Fail("draws not seen by CheckDraw");
+    return false;
+  }
   for (size_t d = 0; d < draw_count; ++d) {
+    uint8_t window = first.draw_window[d];
+    if ((first.draw_kinds[d] & kDrawKindResolve) ||
+        !(window & kDrawWindowBanded)) {
+      continue;
+    }
+    bool frame_space = first.draw_window_br[d] == window_br_first;
+    if (frame_space != bool(window_differs[d] & kWindowDiffers)) {
+      if (cvars::strip_merge_log) {
+        XELOGI("Strip merge: draw {} {} the first strip's window, the strips' "
+               "windows {}",
+               d, frame_space ? "has" : "doesn't have",
+               window_differs[d] ? "differ" : "are the same");
+      }
+      Fail(frame_space
+               ? "a draw in the first strip's window that every strip draws "
+                 "alike"
+               : "a draw outside the first strip's window that the strips' "
+                 "windows move");
+      return false;
+    }
+    if ((window_differs[d] & kOffsetDiffers) &&
+        (!(window & kDrawWindowVertexOffset) ||
+         (window & kDrawWindowScissorOffsetDisabled))) {
+      Fail("a frame-space draw the strip's window offset doesn't move");
+      return false;
+    }
+  }
   // The last strip's window: its band, or clipped to the frame.
   if (frame_rows <= (strip_count_ - 1) * uint32_t(band_rows) ||
       frame_rows > strip_count_ * uint32_t(band_rows)) {
@@ -935,6 +936,8 @@ bool StripMerge::DropFirstStripDraws(const std::vector<uint32_t>& draws) {
     per_draw.resize(out);
   };
   drop(first.draw_kinds);
+  drop(first.draw_window_br);
+  drop(first.draw_window);
   drop(first.draw_own_snapshots);
   drop(first.draw_own_states);
   drop(first.draw_states);
@@ -1415,6 +1418,9 @@ bool StripMerge::BeforeDraw() {
   }
   strip.draw_kinds.push_back(kind);
   strip.draw_own_states.push_back(HashDrawOwnState(strip, kind));
+  strip.draw_window_br.push_back(
+      register_file_.values[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR]);
+  strip.draw_window.push_back(0);
   if (mode_ == Mode::kMerged) {
     if (strip_index_) {
       // The merged first strip drew and resolved this strip's rows.
@@ -1731,7 +1737,21 @@ bool StripMerge::ReadsOwnConstants(const Shader* shader,
 }
 
 void StripMerge::CheckDraw(const DrawInfo& draw) {
+  if (session_open_ && mode_ != Mode::kRecovered) {
     Strip& strip = strips_[strip_index_];
+    if (strip.draws && strip.draw_window.size() == strip.draws) {
+      uint8_t window = draw.banded ? kDrawWindowBanded : 0;
+      if (register_file_.Get<reg::PA_SU_SC_MODE_CNTL>()
+              .vtx_window_offset_enable) {
+        window |= kDrawWindowVertexOffset;
+      }
+      if (register_file_.Get<reg::PA_SC_WINDOW_SCISSOR_TL>()
+              .window_offset_disable) {
+        window |= kDrawWindowScissorOffsetDisabled;
+      }
+      strip.draw_window.back() = window;
+    }
+  }
   if (mode_ == Mode::kLearn && session_open_) {
     // The draw's state as its shaders read it (BeforeDraw hashed every
     // constant before the shaders were known).
@@ -1780,6 +1800,12 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
     Fail("memexport");
     return;
   }
+  // TODO(xenios-jp): the pixel position is the window-offset one
+  // (PsParamGen). With the strips' window offsets moving their rows to the
+  // band's top, a frame-space draw reading it gets the frame row merged and
+  // the band row unmerged: exact where the shader adds a strip-own frame row
+  // constant (Halo 3) or uses it with a period dividing band_rows. Halo 3 has
+  // frame-space draws reading it without a strip-own constant.
   bool band_addressed = draw.banded && !draw.frame_space;
   if (band_addressed) {
     if (draw.tessellated) {

@@ -307,16 +307,28 @@ class StripMerge {
   };
   // RB_HIZCONTROL hiz_enable, the only bit of it Xenia reads.
   static constexpr uint32_t kHiZEnableBit = 1 << 1;
+  enum DrawWindow : uint8_t {
+    // A draw on the strip surface (CheckDraw).
+    kDrawWindowBanded = 1 << 0,
+    // PA_SU_SC_MODE_CNTL vtx_window_offset_enable.
+    kDrawWindowVertexOffset = 1 << 1,
+    // PA_SC_WINDOW_SCISSOR_TL window_offset_disable.
+    kDrawWindowScissorOffsetDisabled = 1 << 2,
+  };
   struct Strip {
     uint64_t bits = 0;
     std::vector<Record> records;
-    std::vector<uint32_t> own_opcodes;
     std::vector<ResolveRecord> own_resolves;
     std::vector<uint64_t> draw_states;
     // Per draw: HashDrawOwnState.
     std::vector<uint64_t> draw_own_states;
     // Per draw: DrawKind bits.
     std::vector<uint8_t> draw_kinds;
+    // Per draw: PA_SC_WINDOW_SCISSOR_BR, and DrawWindow bits (CheckDraw), for
+    // DeriveLayout to check that a draw addresses the frame exactly when the
+    // strips' windows differ at it.
+    std::vector<uint32_t> draw_window_br;
+    std::vector<uint8_t> draw_window;
     // Per draw: which of own_snapshot_starts holds the strip-own values the
     // draw sees (the registers still holding the strip's own latest value).
     std::vector<uint32_t> draw_own_snapshots;
