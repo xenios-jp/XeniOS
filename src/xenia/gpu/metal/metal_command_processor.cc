@@ -2130,6 +2130,26 @@ bool MetalCommandProcessor::TryWriteShaderDoneFence(uint32_t address,
     bool deferred = current_render_encoder_ &&
                     address <= SharedMemory::kBufferSize - sizeof(value) &&
                     shared_memory_->RequestRange(address, sizeof(value));
+    // With no pass open, the fence is copied before whatever is encoded next,
+    // where its own blit encoder would have been, together with any fences
+    // that follow it before that. The guest's fences come in runs with nothing
+    // encoded between them, as Halo 3 writes them before a frame's first draw.
+    if (!deferred && !current_render_encoder_ && (address & 3) == 0 &&
+        address <= SharedMemory::kBufferSize - sizeof(value) &&
+        EnsureCommandBuffer()) {
+      if (!shader_done_fences_outside_pass_) {
+        // Ordered after everything encoded so far, as CopyToBufferGpuOrdered
+        // orders it: ends the shared compute encoder, and encodes the resolves
+        // a pass left to its end. Fences already queued mean nothing was
+        // encoded since the first of them.
+        EndRenderEncoder();
+      }
+      if (!current_render_encoder_ &&
+          shared_memory_->RequestRange(address, sizeof(value))) {
+        deferred = true;
+        shader_done_fences_outside_pass_ = true;
+      }
+    }
     if (deferred) {
       pending_shader_done_fence_ranges_.emplace_back(address >> 2,
                                                      uint32_t(sizeof(value)));
@@ -2155,6 +2175,8 @@ bool MetalCommandProcessor::TryWriteShaderDoneFence(uint32_t address,
 }
 
 void MetalCommandProcessor::EncodeDeferredShaderDoneFences() {
+  // Cleared first: EndSharedComputeEncoder below would encode them again.
+  shader_done_fences_outside_pass_ = false;
   if (pending_shader_done_fence_values_.empty()) {
     return;
   }
@@ -2782,6 +2804,7 @@ void MetalCommandProcessor::ShutdownContext() {
   render_encoder_memexport_ranges_.clear();
   pending_shader_done_fence_ranges_.clear();
   pending_shader_done_fence_values_.clear();
+  shader_done_fences_outside_pass_ = false;
   render_encoder_memexport_draws_are_pure_ = true;
   dxil_binder_.ResetUploadCaches();
   // End any active render encoder before shutdown
@@ -7432,14 +7455,19 @@ MTL::ComputeCommandEncoder* MetalCommandProcessor::BeginSharedComputeEncoder(
 }
 
 void MetalCommandProcessor::EndSharedComputeEncoder() {
-  if (!shared_compute_encoder_) {
-    return;
+  if (shared_compute_encoder_) {
+    shared_compute_hazards_.End();
+    shared_compute_encoder_->endEncoding();
+    shared_compute_encoder_->release();
+    shared_compute_encoder_ = nullptr;
+    shared_compute_command_buffer_ = nullptr;
   }
-  shared_compute_hazards_.End();
-  shared_compute_encoder_->endEncoding();
-  shared_compute_encoder_->release();
-  shared_compute_encoder_ = nullptr;
-  shared_compute_command_buffer_ = nullptr;
+  // Fences written with no pass open go before the next encoder. A pass
+  // begins only after this, so no pass is open while they're pending.
+  if (shader_done_fences_outside_pass_) {
+    assert_null(current_render_encoder_);
+    EncodeDeferredShaderDoneFences();
+  }
 }
 
 bool MetalCommandProcessor::ExactShadersRequired(bool memexport_used) const {
