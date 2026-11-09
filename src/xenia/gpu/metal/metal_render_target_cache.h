@@ -989,6 +989,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     k32_32Float,
     // IsFull64RGBA16OneSample's conversion, not a bit copy.
     k16_16_16_16,
+    // IsFull32RGBA8FourSampleAverage's average, of an 8_8_8_8 or an
+    // 8_8_8_8_GAMMA (RGBA16Unorm) render target.
+    k8888Average4,
+    k8888GammaAverage4,
     kCount,
   };
   // For the pass's color formats at every index and its sample count, reading
