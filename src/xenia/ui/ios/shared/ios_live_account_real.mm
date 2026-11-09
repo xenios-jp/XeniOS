@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_live_account_real.h"
 
 #include <atomic>
@@ -76,8 +77,9 @@ NSError* Error(NSString* text) {
 }
 
 NSError* UnreachableError() {
-  return Error(NSLocalizedString(@"Can’t reach XeniOS. Check your connection and try again.",
-                                 @"Online account: the lobby didn't answer"));
+  return Error(xe_ios_connection_failure_text(
+      NSLocalizedString(@"Can’t reach XeniOS. Check your connection and try again.",
+                        @"Online account: the lobby didn't answer")));
 }
 
 NSError* NotYetError() {
@@ -777,7 +779,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 - (void)checkOverHTTP:(NSString*)gamertag completion:(void (^)(XeniaLiveNameResult*))completion {
   void (^done)(XeniaLiveNameResult*) = [[completion copy] autorelease];
   const std::string lobby = xe::kernel::xam::LiveSessionLobby();
-  if (lobby.empty() || !xe_ios_online_features_enabled()) {
+  if (lobby.empty() || !xe_ios_online_features_enabled() || !xe_ios_network_available()) {
     dispatch_async(dispatch_get_main_queue(), ^{
       done(NameResult(XeniaLiveNameStatusUnreachable));
     });
@@ -833,7 +835,10 @@ NSArray* TakeWaiters(NSMutableArray* list) {
                   completion:(void (^)(XeniaLiveNameResult*))completion {
   void (^done)(XeniaLiveNameResult*) = [[completion copy] autorelease];
   auto profile = ActiveProfile();
-  if (!profile || _goOnline || !g_real_host->enable_online || !g_real_host->rename_profile) {
+  const BOOL already_online = profile && profile->live_enabled && profile->online_xuid &&
+                              profile->xuid != _removedProfile;
+  if (!profile || _goOnline || !g_real_host->enable_online || !g_real_host->rename_profile ||
+      (!already_online && !xe_ios_network_available())) {
     dispatch_async(dispatch_get_main_queue(), ^{
       done(NameResult(XeniaLiveNameStatusUnreachable));
     });
@@ -1059,7 +1064,7 @@ NSArray* TakeWaiters(NSMutableArray* list) {
 
 - (void)deleteAccountOfProfile:(uint64_t)xuid completion:(void (^)(NSError*))completion {
   void (^done)(NSError*) = [[completion copy] autorelease];
-  if (_deleteDone || !xe_ios_online_features_enabled()) {
+  if (_deleteDone || !xe_ios_online_features_enabled() || !xe_ios_network_available()) {
     dispatch_async(dispatch_get_main_queue(), ^{
       done(UnreachableError());
     });
@@ -1176,8 +1181,8 @@ NSArray* TakeWaiters(NSMutableArray* list) {
              done:(void (^)(XeniaLiveLinkStatus))done {
   const std::string lobby = xe::kernel::xam::LiveSessionLobby();
   std::optional<live::DeviceKey> key;
-  if (!lobby.empty() && xe_ios_online_features_enabled() && g_real_host &&
-      g_real_host->adopt_account) {
+  if (!lobby.empty() && xe_ios_online_features_enabled() && xe_ios_network_available() &&
+      g_real_host && g_real_host->adopt_account) {
     key = live::DeviceKey::LoadOrCreate(g_real_host->storage_root / "live" / "device_key");
   }
   if (!key) {

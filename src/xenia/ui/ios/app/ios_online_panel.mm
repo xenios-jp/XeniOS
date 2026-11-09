@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include <utility>
+
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/app/ios_online_panel.h"
 
 #import <LinkPresentation/LinkPresentation.h>
@@ -1752,6 +1755,10 @@ XE_COPY_BLOCK_PROPERTY(void (^)(void), closeHandler, setCloseHandler, _closeHand
       title = NSLocalizedString(@"Can't Connect", @"Friends status title");
       symbol = @"exclamationmark.triangle";
       break;
+    case XeniaLiveSocialStateNoNetwork:
+      title = xe_ios_no_network_title();
+      symbol = @"wifi.slash";
+      break;
     case XeniaLiveSocialStateProfileOffline:
       title = social.signedInElsewhere
                   ? NSLocalizedString(@"Signed In on Another Device",
@@ -3289,6 +3296,7 @@ NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
   NSMutableSet<NSNumber*>* _coverFetches;
   BOOL _filterChosen;
   CFAbsoluteTime _openedAt;
+  BOOL _hadNoNetwork;
 }
 
 @synthesize openFriendsHandler = _openFriends;
@@ -3386,7 +3394,8 @@ NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
   ]];
 
   for (NSNotificationName name : @[ XeniaIOSSystemLinkOnlineDidChangeNotification,
-                                    XeniaLiveSocialDidChangeNotification ]) {
+                                    XeniaLiveSocialDidChangeNotification,
+                                    XeniaNetworkStatusDidChangeNotification ]) {
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(reload)
                                                  name:name
@@ -3585,6 +3594,17 @@ NSString* JoinedNames(NSArray<NSString*>* names, NSUInteger shown) {
   _filter.hidden = !connected || !all.count;
 
   __unsafe_unretained XeniaIOSPublicGamesViewController* unsafe_self = self;
+  if (!connected && !xe_ios_network_available()) {
+    // No connection is tried, so nothing to wait for; it connects when the network comes back.
+    _hadNoNetwork = YES;
+    _subtitle.text = NSLocalizedString(@"Offline", @"Public Games: subtitle with no network");
+    [_list addArrangedSubview:EmptyState(@"wifi.slash", xe_ios_no_network_title(),
+                                         xe_ios_no_network_message())];
+    return;
+  }
+  if (std::exchange(_hadNoNetwork, NO)) {
+    _openedAt = CFAbsoluteTimeGetCurrent();
+  }
   if (!connected) {
     // The lobby takes a moment on open: a few seconds of "Connecting" before saying it can't.
     const CFAbsoluteTime waited = CFAbsoluteTimeGetCurrent() - _openedAt;

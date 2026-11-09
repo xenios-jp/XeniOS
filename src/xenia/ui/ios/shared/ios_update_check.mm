@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
 
 #import "xenia/ui/ios/shared/ios_online_features.h"
@@ -271,6 +272,11 @@ void xe_check_for_update(BOOL force_refresh, void (^completion)(XeniaUpdateInfo*
       DeliverCachedResult(completion);
       return;
     }
+  }
+
+  if (!xe_ios_network_available()) {
+    DeliverCachedResult(completion);
+    return;
   }
 
   NSMutableURLRequest* request =

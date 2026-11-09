@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_background_refresh.h"
 
 #import <BackgroundTasks/BackgroundTasks.h>
@@ -153,6 +154,10 @@ void (^CheckAccount(void (^done)(BOOL ok)))(void) {
     return nothing;
   }
   if (!std::filesystem::exists(key_path.UTF8String, error)) {
+    finish(NO);
+    return nothing;
+  }
+  if (!xe_ios_network_available()) {
     finish(NO);
     return nothing;
   }

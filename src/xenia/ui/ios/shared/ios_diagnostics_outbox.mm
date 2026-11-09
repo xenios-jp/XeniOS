@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
 
 #include <sys/sysctl.h>
@@ -654,6 +655,9 @@ void UploadLocked() {
   }
   if (!batches.count) {
     return;
+  }
+  if (!xe_ios_network_available()) {
+    return;  // Kept for the next try.
   }
   g_uploading = YES;
   SendNextLocked(batches, 0, url);

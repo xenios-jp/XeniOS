@@ -179,6 +179,8 @@ target_sources(xenia-ui-ios PRIVATE
   shared/ios_microphone.mm
   shared/ios_party_voice.h
   shared/ios_party_voice.mm
+  shared/ios_network_status.h
+  shared/ios_network_status.mm
   shared/ios_system_link.h
   shared/ios_system_link.mm
   shared/ios_update_check.h

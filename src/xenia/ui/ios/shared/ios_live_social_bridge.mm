@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 
 #include <algorithm>
@@ -589,7 +590,8 @@ NSString* ProblemText(const std::string& problem) {
     state_ = XeniaLiveSocialStateOff;
     NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
     for (NSNotificationName name in @[
-           UIApplicationDidBecomeActiveNotification, XeniaIOSSystemLinkStatusDidChangeNotification
+           UIApplicationDidBecomeActiveNotification, XeniaIOSSystemLinkStatusDidChangeNotification,
+           XeniaNetworkStatusDidChangeNotification
          ]) {
       [center addObserver:self selector:@selector(refreshSoon) name:name object:nil];
     }
@@ -814,6 +816,8 @@ NSString* ProblemText(const std::string& problem) {
   const auto& client = *share_;
   if (client->signed_in()) {
     [self setState:XeniaLiveSocialStateOnline text:nil];
+  } else if (!xe_ios_network_available()) {
+    [self setState:XeniaLiveSocialStateNoNetwork text:xe_ios_no_network_message()];
   } else {
     const std::string problem = client->problem();
     if (problem.empty()) {
