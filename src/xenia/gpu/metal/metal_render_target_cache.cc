@@ -114,6 +114,17 @@ DEFINE_bool(
     "programmable blending (Apple GPUs) and the spirv2air shader compiler; "
     "replaces gamma_render_target_as_unorm16 where it applies.",
     "Metal");
+DEFINE_bool(
+    metal_rt16_fetch_blend, true,
+    "Write 16_16 and 16_16_16_16 render targets with the console's fixed "
+    "point encode into their snorm attachments, which hold the EDRAM's bits, "
+    "and blend draws into them in the pixel shader where fixed-function "
+    "blending isn't exact (factors other than ONE and ZERO, and 16_16's green, "
+    "which the console blends under the alpha control): read the target "
+    "through framebuffer fetch and blend with the console's 16-bit fixed "
+    "point blender. Needs programmable blending (Apple GPUs), the spirv2air "
+    "shader compiler and snorm16_render_target_full_range.",
+    "Metal");
 DEFINE_int32(metal_memory_log_rate, 0,
              "Log Metal render target/pipeline/instance buffer sizes every N "
              "frames (0 to disable)",
@@ -840,6 +851,12 @@ bool MetalRenderTargetCache::Initialize() {
   // linear storage is only for when it can't.
   gamma_render_target_as_unorm16_ =
       ::cvars::gamma_render_target_as_unorm16 && !gamma_fetch_blend_;
+  fixed16_fetch_blend_ = ::cvars::metal_rt16_fetch_blend &&
+                         ::cvars::snorm16_render_target_full_range &&
+                         command_processor_.SupportsHostRenderTargetFeedback();
+  XELOGI("MetalRenderTargetCache: 16_16 and 16_16_16_16 {}",
+         fixed16_fetch_blend_ ? "encoded and blended in the shader"
+                              : "blended fixed-function");
   XELOGI("MetalRenderTargetCache: 8_8_8_8_GAMMA as {}",
          gamma_fetch_blend_ ? "8-bit gamma with shader blending"
          : gamma_render_target_as_unorm16_ ? "16-bit linear"

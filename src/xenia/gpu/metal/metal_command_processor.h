@@ -1017,13 +1017,13 @@ class MetalCommandProcessor : public CommandProcessor,
     uint32_t vertex_fetch_states_specialized : 1;
     uint32_t fragment_fetch_states_specialized : 1;
     uint32_t finite_multiply_enabled : 1;
-    // 8_8_8_8_GAMMA color targets the pixel shader blends itself, with
-    // fixed-function blending off.
+    // 8_8_8_8_GAMMA, 16_16 and 16_16_16_16 color targets the pixel shader
+    // blends itself, with fixed-function blending off.
     uint32_t gamma_shader_blend_mask : 4;
     uint32_t padding : 17;  // 32
 
     // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20261109;
+    static constexpr uint32_t kVersion = 0x20261110;
 
     // Copied whole, padding included, because the hash covers every byte.
     PipelineDescription() { Reset(); }
