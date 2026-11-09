@@ -1580,17 +1580,24 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
         // 8_8_8_8_GAMMA is stored as the console's 8-bit gamma, encoded (and
         // if needed blended) as the console's render backend does it.
         spv::Id result;
-        if (features_.host_render_target_fixed16) {
+        if (GetSpirvShaderModification().pixel.host_render_target_fixed16) {
           // A negative exponent bias marks a 16_16 or 16_16_16_16 target.
           SpirvBuilder::IfBuilder if_fixed16(
               builder_->createBinOp(spv::OpFOrdLessThan, type_bool_,
                                     color_exp_bias, const_float_0_),
               spv::SelectionControlDontFlattenMask, *builder_);
+          // The console stores NaN by its sign, which the multiplication
+          // may not keep.
           spv::Id result_fixed16 = CompleteFragmentShader_HostFixed16(
-              builder_->createNoContractionBinOp(
-                  spv::OpVectorTimesScalar, type_float4_, color_unbiased,
-                  builder_->createUnaryOp(spv::OpFNegate, type_float_,
-                                          color_exp_bias)),
+              builder_->createTriOp(
+                  spv::OpSelect, type_float4_,
+                  builder_->createUnaryOp(spv::OpIsNan, type_bool4_,
+                                          color_unbiased),
+                  color_unbiased,
+                  builder_->createNoContractionBinOp(
+                      spv::OpVectorTimesScalar, type_float4_, color_unbiased,
+                      builder_->createUnaryOp(spv::OpFNegate, type_float_,
+                                              color_exp_bias))),
               color_target_index);
           if_fixed16.makeBeginElse();
           spv::Id result_other =
@@ -4597,14 +4604,22 @@ spv::Id SpirvShaderTranslator::HostFixed16Encode(spv::Id color) {
           builder_->smearFloatConstant(-32.0f, type_float4_),
           builder_->smearFloatConstant(32767.0f / 1024.0f, type_float4_)),
       builder_->makeFloatConstant(1024.0f));
-  // Rounded half up (-0.5 to 0, -32 to -32768).
-  return builder_->createUnaryOp(
-      spv::OpConvertFToS, type_int4_,
-      builder_->createUnaryBuiltinCall(
-          type_float4_, ext_inst_glsl_std_450_, GLSLstd450Floor,
-          builder_->createNoContractionBinOp(
-              spv::OpFAdd, type_float4_, color_scaled,
-              builder_->smearFloatConstant(0.5f, type_float4_))));
+  // Rounded half up (-0.5 to 0, -32 to -32768), exactly: x + 0.5 itself may
+  // round up, but x - floor(x) is exact.
+  spv::Id color_floor = builder_->createUnaryBuiltinCall(
+      type_float4_, ext_inst_glsl_std_450_, GLSLstd450Floor, color_scaled);
+  return builder_->createBinOp(
+      spv::OpIAdd, type_int4_,
+      builder_->createUnaryOp(spv::OpConvertFToS, type_int4_, color_floor),
+      builder_->createTriOp(
+          spv::OpSelect, type_int4_,
+          builder_->createBinOp(
+              spv::OpFOrdGreaterThanEqual, type_bool4_,
+              builder_->createNoContractionBinOp(spv::OpFSub, type_float4_,
+                                                 color_scaled, color_floor),
+              builder_->smearFloatConstant(0.5f, type_float4_)),
+          builder_->smearIntConstant(1, type_int4_),
+          builder_->smearIntConstant(0, type_int4_)));
 }
 
 spv::Id SpirvShaderTranslator::HostFixed16Blend(

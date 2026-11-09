@@ -42,7 +42,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // version number! Backends add it to their dated
     // PipelineDescription::kVersion, so bumping either one is enough. Only
     // ever raise it, a reverted layout change needs another bump.
-    static constexpr uint32_t kVersion = 30;
+    static constexpr uint32_t kVersion = 31;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -129,8 +129,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // ignores blend factors, but Xbox 360 applies them). kOne means no
       // pre-multiply. Only RT0 is supported for now. For alpha,
       // kSrcAlphaSaturate is kOne, so 4 bits hold every distinct factor: store
-      // kOne for it.
-      xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
+      // kOne for it. Only kOne and kSrcAlpha are ever stored for color, so it
+      // takes 4 bits too.
+      xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 4;
       xenos::BlendFactor rt0_blend_a_factor_for_premult : 4;
       // For host render targets - which color render targets are actually
       // bound. With host_render_target_feedback, the ones the shader reads
@@ -158,6 +159,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // declares for reading lost some samples' blends, or blended them over
       // zero, at 4x MSAA.
       uint32_t host_render_target_feedback : 1;
+      // Host render target path with host_render_target_feedback - a 16_16 or
+      // 16_16_16_16 target the shader writes is bound, so the shader has the
+      // console's fixed point encode (and blend) for the targets the system
+      // constants mark with a negative color_exp_bias.
+      uint32_t host_render_target_fixed16 : 1;
 
       // The host render target path's fields, assembled into one value so
       // the FSI path can carve them up without its own uses colliding. Safe
@@ -176,19 +182,21 @@ class SpirvShaderTranslator : public ShaderTranslator {
       uint32_t fsi_bits() const {
         return uint32_t(depth_stencil_mode) |
                (uint32_t(rt0_blend_rgb_factor_for_premult) << 3) |
-               (uint32_t(rt0_blend_a_factor_for_premult) << 8) |
-               (color_targets_used << 12) | (resolution_scale_native << 16) |
-               (host_render_target_feedback << 17);
+               (uint32_t(rt0_blend_a_factor_for_premult) << 7) |
+               (color_targets_used << 11) | (resolution_scale_native << 15) |
+               (host_render_target_feedback << 16) |
+               (host_render_target_fixed16 << 17);
       }
       void set_fsi_bits(uint32_t bits) {
         assert_zero(bits >> kFsiBitCount);
         depth_stencil_mode = DepthStencilMode(bits & 0x7);
         rt0_blend_rgb_factor_for_premult =
-            xenos::BlendFactor((bits >> 3) & 0x1F);
-        rt0_blend_a_factor_for_premult = xenos::BlendFactor((bits >> 8) & 0xF);
-        color_targets_used = (bits >> 12) & 0xF;
-        resolution_scale_native = (bits >> 16) & 1;
-        host_render_target_feedback = (bits >> 17) & 1;
+            xenos::BlendFactor((bits >> 3) & 0xF);
+        rt0_blend_a_factor_for_premult = xenos::BlendFactor((bits >> 7) & 0xF);
+        color_targets_used = (bits >> 11) & 0xF;
+        resolution_scale_native = (bits >> 15) & 1;
+        host_render_target_feedback = (bits >> 16) & 1;
+        host_render_target_fixed16 = (bits >> 17) & 1;
         // Catches a field having been narrowed under the shifts above.
         assert_true(fsi_bits() == bits);
       }
@@ -650,14 +658,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // Host render targets can be read in the pixel shader in raster order
     // (Metal framebuffer fetch through spirv2air), so 8_8_8_8_GAMMA targets
     // are stored as the console's 8-bit piecewise linear gamma and blended in
-    // the shader in linear space, as the console's render backend does.
+    // the shader in linear space, as the console's render backend does. With
+    // the host_render_target_fixed16 modification, 16_16 and 16_16_16_16
+    // targets (snorm attachments holding the EDRAM's fixed point bits) are
+    // written with the console's fixed point encode, and blended in the shader
+    // with the console's 16-bit blender where fixed-function blending isn't
+    // exact. The host marks those targets with a negative color_exp_bias.
     bool host_render_target_feedback = false;
-    // With host_render_target_feedback: 16_16 and 16_16_16_16 targets (snorm
-    // attachments holding the EDRAM's fixed point bits) are written with the
-    // console's fixed point encode, and blended in the shader with the
-    // console's 16-bit blender where fixed-function blending isn't exact. The
-    // host marks those targets with a negative color_exp_bias.
-    bool host_render_target_fixed16 = false;
   };
 
   SpirvShaderTranslator(const Features& features,

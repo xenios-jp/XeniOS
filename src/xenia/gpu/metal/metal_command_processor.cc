@@ -202,6 +202,11 @@ constexpr uint32_t kBlendControlNoBlending = 0x00010001;
 // console's blender is the exact sum or difference, and MIN and MAX only
 // compare the values themselves with both factors ONE (the host's MIN and MAX
 // ignore the factors).
+bool IsFixed16Format(xenos::ColorRenderTargetFormat format) {
+  return format == xenos::ColorRenderTargetFormat::k_16_16 ||
+         format == xenos::ColorRenderTargetFormat::k_16_16_16_16;
+}
+
 bool IsFixed16BlendExact(xenos::BlendFactor src, xenos::BlendFactor dest,
                          xenos::BlendOp op) {
   auto unit = [](xenos::BlendFactor factor) {
@@ -238,9 +243,7 @@ uint32_t GetShaderBlendControl(const RegisterFile& regs, uint32_t rt,
           .color_format;
   auto blendcontrol = regs.Get<reg::RB_BLENDCONTROL>(
       reg::RB_BLENDCONTROL::rt_register_indices[rt]);
-  if (fixed16_fetch_blend &&
-      (format == xenos::ColorRenderTargetFormat::k_16_16 ||
-       format == xenos::ColorRenderTargetFormat::k_16_16_16_16)) {
+  if (fixed16_fetch_blend && IsFixed16Format(format)) {
     bool color_exact = IsFixed16BlendExact(blendcontrol.color_srcblend,
                                            blendcontrol.color_destblend,
                                            blendcontrol.color_comb_fcn);
@@ -1319,7 +1322,7 @@ void MetalCommandProcessor::ApplyColorAttachmentState(
         op_rgb != MTL::BlendOperationAdd || src_alpha != MTL::BlendFactorOne ||
         dst_alpha != MTL::BlendFactorZero || op_alpha != MTL::BlendOperationAdd;
     // The pixel shader blends it.
-    if (request.description.gamma_shader_blend_mask & (1u << i)) {
+    if (request.description.shader_blend_mask & (1u << i)) {
       blending_enabled = false;
     }
     color_attachment->setBlendingEnabled(blending_enabled);
@@ -1456,7 +1459,7 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
       sizeof(request.description.pixel_texture_decode_bits));
   for (uint32_t i = 0; i < 4; ++i) {
     states[SpirvShaderTranslator::kFetchStateColorBlendBinding * 4 + i] =
-        (request.description.gamma_shader_blend_mask & (1u << i))
+        (request.description.shader_blend_mask & (1u << i))
             ? (request.description.blendcontrol[i] & kBlendControlMask) |
                   (request.description.color_formats[i] ==
                            uint32_t(MTL::PixelFormatRG16Snorm)
@@ -2834,8 +2837,6 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   // fixed point, blended in the shader.
   spirv_features.host_render_target_feedback =
       render_target_cache_->gamma_fetch_blend() ||
-      render_target_cache_->fixed16_fetch_blend();
-  spirv_features.host_render_target_fixed16 =
       render_target_cache_->fixed16_fetch_blend();
   spirv_features.optimize_finite_multiplication =
       cvars::metal_finite_multiply &&
@@ -6706,7 +6707,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
                 (!is_tessellated || cvars::async_shader_skip_draws),
             &pixel_status));
     // Only spirv2air reads render targets. If it can't translate the shader,
-    // blend the gamma targets with fixed-function blending, in gamma space,
+    // blend the targets with fixed-function blending (gamma in gamma space)
     // rather than dropping the draw.
     if (pixel_status == ShaderCompileStatus::kFailed &&
         pixel_shader_modification.pixel.host_render_target_feedback) {
@@ -9201,6 +9202,8 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
   modification.pixel.color_targets_used =
       GetColorTargetsWritten(normalized_color_mask);
 
+  // Only shaders writing a bound 16_16 or 16_16_16_16 target carry the
+  // console's fixed point encode, so the others compile as without it.
   // Only draws blending into a gamma or 16-bit fixed point target read their
   // targets back: a pixel shader that reads a target can't have its fragments
   // removed as hidden. The shader reads back only the targets it blends, which
@@ -9219,6 +9222,12 @@ MetalCommandProcessor::GetCurrentSpirvPixelShaderModification(
     uint32_t rt;
     while (xe::bit_scan_forward(rts, &rt)) {
       rts &= ~(UINT32_C(1) << rt);
+      if (render_target_cache_->fixed16_fetch_blend() &&
+          IsFixed16Format(regs.Get<reg::RB_COLOR_INFO>(
+                                  reg::RB_COLOR_INFO::rt_register_indices[rt])
+                              .color_format)) {
+        modification.pixel.host_render_target_fixed16 = 1;
+      }
       if (GetShaderBlendControl(regs, rt, normalized_color_mask,
                                 render_target_cache_->gamma_fetch_blend(),
                                 render_target_cache_->fixed16_fetch_blend()) !=
@@ -9358,7 +9367,7 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
           pixel_translation->modification());
       if (pixel_modification.pixel.host_render_target_feedback &&
           (pixel_modification.pixel.color_targets_used & (1u << i))) {
-        description.gamma_shader_blend_mask |= 1u << i;
+        description.shader_blend_mask |= 1u << i;
       }
     }
   }

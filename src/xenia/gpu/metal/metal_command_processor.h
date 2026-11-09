@@ -1019,7 +1019,7 @@ class MetalCommandProcessor : public CommandProcessor,
     uint32_t finite_multiply_enabled : 1;
     // 8_8_8_8_GAMMA, 16_16 and 16_16_16_16 color targets the pixel shader
     // blends itself, with fixed-function blending off.
-    uint32_t gamma_shader_blend_mask : 4;
+    uint32_t shader_blend_mask : 4;
     uint32_t padding : 17;  // 32
 
     // Increment when the layout or its meaning changes.
