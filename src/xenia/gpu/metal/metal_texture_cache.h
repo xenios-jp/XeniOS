@@ -164,6 +164,11 @@ class MetalTextureCache : public TextureCache {
     // evicts its cache wrapper.
     std::array<Alias, kMaxAliases + 1> destinations{};
     uint32_t count = 0;
+    // The last raw_count destinations of a depth refresh are other
+    // interpretations whose loaders copy the resolved dwords unchanged. They
+    // take the packed depth and stencil texels as raw dwords through R32Uint
+    // views rather than the converted depth.
+    uint32_t raw_count = 0;
 
     std::span<const Alias> textures() const {
       return {destinations.data(), count};
@@ -181,7 +186,9 @@ class MetalTextureCache : public TextureCache {
     explicit operator bool() const { return count != 0; }
   };
   // Other interpretations may join only with matching write format, size,
-  // conversion and row offset; unmatched textures retain the normal reload.
+  // conversion and row offset; unmatched textures retain the normal reload. A
+  // depth refresh also takes raw 32bpb interpretations of matching size and
+  // row offset, after the depth ones.
   void PrepareDirectResolveTextureRefresh(
       xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
       uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,

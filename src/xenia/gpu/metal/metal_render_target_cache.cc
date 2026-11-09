@@ -4495,7 +4495,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
     MTL::CommandBuffer* command_buffer,
     std::span<MTL::Texture* const> refresh_textures, uint32_t refresh_offset_y,
-    bool refresh_depth_float) {
+    bool refresh_depth_float, uint32_t refresh_raw_count) {
   MTL::Texture* refresh_texture =
       refresh_textures.empty() ? nullptr : refresh_textures.front();
   const uint32_t refresh_alias_count =
@@ -4550,6 +4550,12 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
   const bool copy_from_render_target =
       rgb10_4x_average || rgb10f_1x || rgba16_1x || rgb10f_rgba16_average ||
       full32_1x;
+  // Only the dump shader writes raw aliases of a depth refresh.
+  if (refresh_raw_count &&
+      (copy_from_render_target || !resolve_info.IsCopyingDepth() ||
+       refresh_raw_count > refresh_alias_count)) {
+    return false;
+  }
   // The dump shader's direct resolve only copies bits.
   if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull64bpp &&
       !rgba16_1x && !rgb10f_rgba16_1x && !rgb10f_rgba16_average) {
@@ -4721,6 +4727,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
         rt_key.is_depth != uint32_t(resolve_info.IsCopyingDepth());
     shader_key.direct_resolve_texture_depth_float =
         refresh_texture && resolve_info.IsCopyingDepth() && refresh_depth_float;
+    shader_key.direct_resolve_texture_raw_aliases = refresh_raw_count;
     shader_key.direct_resolve_average = resolve_average;
     shader_key.direct_resolve_samples_as_pixels =
         rt_key.msaa_samples != resolve_msaa_samples;
@@ -6989,7 +6996,8 @@ bool MetalRenderTargetCache::ResolveWithInfo(
           refresh_target.destinations[0].offset_y,
           refresh_target.transform ==
               MetalTextureCache::ResolveTextureRefreshTarget::Transform::
-                  kDepthFloat24);
+                  kDepthFloat24,
+          refresh_target.raw_count);
     }
   }
   end_tile_pass(draw_resolution_scaled ? "scaled" : "not_direct");

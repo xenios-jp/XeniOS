@@ -1161,7 +1161,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
       MTL::CommandBuffer* command_buffer,
       std::span<MTL::Texture* const> refresh_textures = {},
-      uint32_t refresh_offset_y = 0, bool refresh_depth_float = false);
+      uint32_t refresh_offset_y = 0, bool refresh_depth_float = false,
+      uint32_t refresh_raw_count = 0);
 
   // What DirectResolveRenderTargets' dump shader does for
   // a bit copy of one 1x color render target, as a tile dispatch in the
