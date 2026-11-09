@@ -322,9 +322,12 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
 
   // Resolve work left to the end of the guest's pass, which stays open for
   // further tile resolves only: the clear of a resolve whose copy ran in the
-  // pass's tiles. EndRenderEncoder runs it once the pass has ended, before
-  // anything else is encoded after the pass.
+  // pass's tiles, or a whole depth resolve, which can't read the tiles.
+  // EndRenderEncoder runs it once the pass has ended, before anything else is
+  // encoded after the pass.
   bool HasPostPassResolves() const { return !post_pass_resolves_.empty(); }
+  // Whether a resolve left to the pass end writes guest memory in the range.
+  bool PostPassResolvesWrite(uint32_t start, uint32_t length) const;
   // Runs it, in guest order.
   void FlushPostPassResolves(MTL::CommandBuffer* command_buffer);
 
@@ -926,15 +929,28 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   void PlanResolveStoreActions(const draw_util::ResolveInfo& resolve_info);
   std::vector<MetalRenderTarget*> dead_store_render_targets_;
 
+  // Resolve's body, from what GetResolveInfo gave (resolve_info_valid if it
+  // succeeded), so a resolve left to the pass end can run it later.
+  bool ResolveWithInfo(draw_util::ResolveInfo resolve_info,
+                       bool resolve_info_valid, uint32_t& written_address,
+                       uint32_t& written_length,
+                       MTL::CommandBuffer* command_buffer);
   // The resolve's clear, after its copy.
   bool PerformResolveClear(const draw_util::ResolveInfo& resolve_info,
                            MTL::CommandBuffer* command_buffer);
   struct PostPassResolve {
     draw_util::ResolveInfo resolve_info;
+    // The whole resolve, rather than only its clear.
+    bool copy = false;
     // The EDRAM tiles the clear writes, depth then color, from a start that
     // may be past kEdramTileCount (the range wraps).
-    uint32_t clear_start_tiles[2];
-    uint32_t clear_length_tiles[2];
+    uint32_t clear_start_tiles[2] = {};
+    uint32_t clear_length_tiles[2] = {};
+    // The guest memory the copy writes.
+    uint32_t dest_start = 0;
+    uint32_t dest_length = 0;
+    // The render targets the copy reads, whose stores have to stay.
+    std::vector<MetalRenderTarget*> read_targets;
   };
   std::vector<PostPassResolve> post_pass_resolves_;
   bool flushing_post_pass_resolves_ = false;
@@ -947,12 +963,18 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                                  uint32_t start_tiles_out[2],
                                  uint32_t length_tiles_out[2]) const;
   // Why the resolve can't run in the open pass ahead of the work left to its
-  // end, or null: it reads tiles that work clears.
+  // end, or null: it reads tiles that work clears, or writes guest memory that
+  // work's copies write.
   const char* GetPostPassResolveConflict(
       const draw_util::ResolveInfo& resolve_info) const;
   // Leaves the clear of a resolve whose copy ran in the open pass to the pass
   // end, adding what it makes dead to the pass's store plan.
   bool LeaveResolveClearToPassEnd(const draw_util::ResolveInfo& resolve_info);
+  // Leaves the whole depth resolve to the pass end.
+  bool LeaveDepthResolveToPassEnd(const draw_util::ResolveInfo& resolve_info,
+                                  uint32_t dump_base,
+                                  uint32_t dump_row_length_used,
+                                  uint32_t dump_rows, uint32_t dump_pitch);
   // Drops the render targets the resolve reads from the store plan.
   void KeepStoresOfResolveReads(const draw_util::ResolveInfo& resolve_info);
   bool AnyDeferredClear(const RenderTarget* render_target) const {

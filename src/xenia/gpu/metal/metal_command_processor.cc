@@ -1960,8 +1960,13 @@ void MetalCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
   if (!shared_memory_ || !shared_memory_->is_zero_copy() || !length) {
     return;
   }
+  // A resolve left to the end of the open pass writes there only when the
+  // submission ends, so it has to land before the restore too.
+  const bool post_pass_write =
+      render_target_cache_ &&
+      render_target_cache_->PostPassResolvesWrite(base_ptr, length);
   auto* hazards = shared_memory_->hazards();
-  if (!hazards ||
+  if (post_pass_write || !hazards ||
       render_encoder_shared_memory_hazards_.HasAccess(base_ptr, length) ||
       hazards->HasPendingAccess(base_ptr, length)) {
     // Submission alone does not keep the GPU from seeing a later CPU restore.
