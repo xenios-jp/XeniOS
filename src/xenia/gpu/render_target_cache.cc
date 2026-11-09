@@ -1059,6 +1059,9 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     depth_key.resource_format = resource_formats[0];
     depth_key.scale_native = uint32_t(scale_native);
     depth_key.strip_merged = uint32_t(strip_merged);
+    if (strip_merged) {
+      depth_key = GetStripMergeSessionKey(depth_key);
+    }
   }
 
   // Sorted by EDRAM base and then by index in the pipeline - for simplicity,
@@ -1157,6 +1160,9 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     rt_key.resource_format = resource_formats[rt_bit_index];
     rt_key.scale_native = uint32_t(scale_native);
     rt_key.strip_merged = uint32_t(strip_merged);
+    if (strip_merged) {
+      rt_key = GetStripMergeSessionKey(rt_key);
+    }
     uint32_t rt_is_64bpp = (rts_are_64bpp >> rt_bit_index) & 1;
     uint32_t range_start_tiles = 0;
     uint32_t range_end_tiles = 0;
@@ -2812,7 +2818,8 @@ void RenderTargetCache::AppendStripMergeTransfers(
   // The first claim of the tiles in a merged session takes the EDRAM as it
   // was before the session, which is what the first strip starts with. The
   // later strips start with what the strip before leaves: the carry of the
-  // previous merged session, where there is one.
+  // previous merged session, where there is one, band k - 1 of its
+  // strip-merged owner, unwritten since (strip_merge_alt).
   uint32_t position = start_tiles;
   for (const StripMergeCarry& carry : strip_merge_carries_) {
     if (carry.end_tiles <= position || carry.start_tiles >= end_tiles) {
@@ -2823,8 +2830,9 @@ void RenderTargetCache::AppendStripMergeTransfers(
       position = carry.start_tiles;
     }
     uint32_t piece_end_tiles = std::min(carry.end_tiles, end_tiles);
-    auto carry_it = render_targets_.find(carry.carry);
-    if (carry_it != render_targets_.end() && carry_it->second) {
+    auto carry_it = render_targets_.find(carry.owner);
+    if (carry.owner != dest && carry_it != render_targets_.end() &&
+        carry_it->second && carry_it->second == carry.render_target) {
       Transfer& first_band = transfers.emplace_back(
           position, piece_end_tiles, source, host_depth_source);
       first_band.band_first = 0;
@@ -2833,9 +2841,10 @@ void RenderTargetCache::AppendStripMergeTransfers(
       RenderTarget* carry_rt = carry_it->second;
       Transfer& later_bands = transfers.emplace_back(
           position, piece_end_tiles, carry_rt,
-          carry.carry.is_depth ? carry_rt : nullptr);
+          carry.owner.is_depth ? carry_rt : nullptr);
       later_bands.band_first = 1;
       later_bands.band_count = uint8_t(band_count - 1);
+      later_bands.source_band_shift = -1;
     } else {
       append_bands(position, piece_end_tiles);
     }
@@ -2859,10 +2868,12 @@ void RenderTargetCache::ConsumeStripMergeCarries(uint32_t start_tiles,
       continue;
     }
     if (carry.start_tiles < start_tiles) {
-      remaining.push_back({carry.start_tiles, start_tiles, carry.carry});
+      remaining.push_back(
+          {carry.start_tiles, start_tiles, carry.owner, carry.render_target});
     }
     if (carry.end_tiles > end_tiles) {
-      remaining.push_back({end_tiles, carry.end_tiles, carry.carry});
+      remaining.push_back(
+          {end_tiles, carry.end_tiles, carry.owner, carry.render_target});
     }
   }
   strip_merge_carries_ = std::move(remaining);
@@ -2884,8 +2895,32 @@ bool RenderTargetCache::BeginStripMerge(uint32_t band_count,
   strip_merge_bands_.count = band_count;
   strip_merge_bands_.tile_rows = band_tile_rows;
   strip_merge_active_ = true;
+  // The keys whose previous render target holds a carry draw to their other
+  // one in this session.
+  strip_merge_alt_keys_.clear();
+  for (const StripMergeCarry& carry : strip_merge_carries_) {
+    RenderTargetKey session_key = carry.owner;
+    session_key.strip_merge_alt ^= 1;
+    if (std::find(strip_merge_alt_keys_.cbegin(), strip_merge_alt_keys_.cend(),
+                  session_key) == strip_merge_alt_keys_.cend()) {
+      strip_merge_alt_keys_.push_back(session_key);
+    }
+  }
   are_accumulated_render_targets_valid_ = false;
   return true;
+}
+
+RenderTargetCache::RenderTargetKey RenderTargetCache::GetStripMergeSessionKey(
+    RenderTargetKey key) const {
+  key.strip_merge_alt = 0;
+  for (RenderTargetKey alt_key : strip_merge_alt_keys_) {
+    RenderTargetKey alt_key_cleared = alt_key;
+    alt_key_cleared.strip_merge_alt = 0;
+    if (alt_key_cleared == key) {
+      return alt_key;
+    }
+  }
+  return key;
 }
 
 void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
@@ -2911,13 +2946,15 @@ void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
         source_it != render_targets_.end() ? source_it->second : nullptr;
     RenderTargetKey twin_key = key;
     twin_key.strip_merged = 0;
+    twin_key.strip_merge_alt = 0;
     RenderTarget* twin = source ? GetOrCreateRenderTarget(twin_key) : nullptr;
     // Depth copies take the host depth from the same render target, so it
     // keeps its host precision.
     RenderTarget* host_depth_source = key.is_depth ? source : nullptr;
     // Every range the strip-merged render target is in, as the owner or as
-    // the holder of depth, moves to the twin, from band `band`.
-    std::vector<Transfer> transfers, carry_transfers;
+    // the holder of depth, moves to the twin, from band `band`. The ranges it
+    // owns are carried: the next session reads its bands in place.
+    std::vector<Transfer> transfers;
     for (const auto& range_pair : ownership_ranges_) {
       const OwnershipRange& range = range_pair.second;
       bool owner = range.render_target == key;
@@ -2936,15 +2973,12 @@ void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
         transfer.source_band_shift = int8_t(band);
       }
       if (carry && owner) {
-        if (!carry_transfers.empty() &&
-            carry_transfers.back().end_tiles == range_pair.first) {
-          carry_transfers.back().end_tiles = range.end_tiles;
+        if (!carries.empty() && carries.back().owner == key &&
+            carries.back().end_tiles == range_pair.first) {
+          carries.back().end_tiles = range.end_tiles;
         } else {
-          Transfer& transfer = carry_transfers.emplace_back(
-              range_pair.first, range.end_tiles, source, host_depth_source);
-          transfer.band_first = 1;
-          transfer.band_count = uint8_t(band_count - 1);
-          transfer.source_band_shift = -1;
+          carries.push_back(
+              {range_pair.first, range.end_tiles, key, source});
         }
       }
     }
@@ -2952,17 +2986,6 @@ void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
         !PerformStripMergeTransfers(twin, transfers)) {
       XELOGE("Strip merge: failed to move {} into its twin",
              key.GetDebugName());
-    }
-    if (!carry_transfers.empty()) {
-      RenderTargetKey carry_key = key;
-      carry_key.strip_merge_carry = 1;
-      RenderTarget* carry_rt = GetOrCreateRenderTarget(carry_key);
-      if (carry_rt && PerformStripMergeTransfers(carry_rt, carry_transfers)) {
-        for (const Transfer& transfer : carry_transfers) {
-          carries.push_back(
-              {transfer.start_tiles, transfer.end_tiles, carry_key});
-        }
-      }
     }
     // The twin takes the strip-merged render target's place.
     RenderTargetKey replacement = twin ? twin_key : RenderTargetKey();
