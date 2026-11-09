@@ -318,7 +318,7 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
   icon.contentMode = UIViewContentModeCenter;
   icon.isAccessibilityElement = NO;
 
-  // One slim line: the title, then the detail beside it in the secondary colour.
+  // One slim line: the title, then the detail beside it, a little dimmer.
   title.textColor = [XeniaTheme textPrimary];
   xe_apply_label_font(title, UIFontTextStyleSubheadline, 15.0, UIFontWeightSemibold);
   title.numberOfLines = 1;
@@ -327,7 +327,8 @@ UIView* xe_new_notice_card(UIImageView* icon, UILabel* title, UILabel* detail, U
                                          forAxis:UILayoutConstraintAxisHorizontal];
   [title setContentHuggingPriority:UILayoutPriorityRequired
                            forAxis:UILayoutConstraintAxisHorizontal];
-  detail.textColor = [XeniaTheme textSecondary];
+  // Not textSecondary: this row sits on the library's coloured backdrop, where that grey fades.
+  detail.textColor = [[XeniaTheme textPrimary] colorWithAlphaComponent:0.85];
   xe_apply_label_font(detail, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
   detail.numberOfLines = 1;
   detail.lineBreakMode = NSLineBreakByTruncatingTail;
