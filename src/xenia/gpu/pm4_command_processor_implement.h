@@ -905,6 +905,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
   COMMAND_PROCESSOR::IssueScalerSwap();
   swap_representable_ = true;
   graphics_system_->OnGuestSwap();
+  strip_merge_.OnSwap();
 
   // Advance the present-frame counter shown in the log prefix.
   logging::IncrementFrameNumber();
@@ -1028,6 +1029,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
   uint32_t ref = reader_.ReadAndSwap<uint32_t>();
   uint32_t mask = reader_.ReadAndSwap<uint32_t>();
   uint32_t wait = reader_.ReadAndSwap<uint32_t>();
+  // Polls that didn't match.
 
   bool is_memory = (wait_info & 0x10) != 0;
 

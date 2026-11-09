@@ -48,7 +48,8 @@ class TraceWriter;
 //   varying linearly with the strip (the strip's frame row), the strip-own
 //   resolves tile the destination, and the draw-level checks pass (see
 //   CheckDraw). kLearnSessions verified sessions with the same layout in a
-//   row enable merging.
+//   row enable merging. Each tiling session of a frame (by its
+//   order since the last swap) learns on its own.
 // - Merged session, first strip: the window scissor bottom of the strip's
 //   frame-space draws is extended to the frame bottom; render targets at the
 //   strip surface pitch and MSAA are "merged" ones, N bands tall, whose EDRAM
@@ -171,6 +172,7 @@ class StripMerge {
   void OnPacketType01(uint32_t header, const RingBuffer::ReadRange& payload);
   // Before each draw or resolve while recording. False to skip it.
   bool BeforeDraw();
+  // An unpredicated swap: the next tiling session is the frame's first.
 
   // Backend queries.
   // The first strip of a merged session is running.
@@ -329,12 +331,19 @@ class StripMerge {
 
   bool session_open_ = false;
   Mode mode_ = Mode::kLearn;
+  // The session merges from the first strip's first draw, if it has one: a
+  // session that draws nothing (555308AE opens one before each drawing one)
+  // runs unmerged and leaves learning and the carries as they are.
+  bool merge_planned_ = false;
   uint64_t current_select_ = 0;
   // A learning session started with a layout to check the draws against.
   bool draw_checks_ran_ = false;
   uint32_t strip_index_ = 0;
   uint32_t strip_count_ = 0;
   uint64_t strip_bits_union_ = 0;
+  // The strip bits of the slot's last tiling session with more than one
+  // strip.
+  uint64_t previous_strip_bits_union_ = 0;
   Strip strips_[kMaxStrips];
   bool failed_ = false;
   std::string failure_reason_;
@@ -342,16 +351,42 @@ class StripMerge {
   bool current_packet_own_ = false;
   bool window_br_extended_ = false;
 
-  // The layout of the last session, unverified or verified.
+  // The open session's learning state, loaded from its slot when it begins
+  // and stored back when it ends.
+  // The layout of the slot's last session, unverified or verified.
   Layout candidate_;
   // Verified sessions in a row with the candidate layout.
   uint32_t verified_sessions_ = 0;
+  // Merged sessions since the last learning one.
+  uint32_t merged_since_learning_ = 0;
+
+  // Learning state per tiling session of the frame, by its order since the
+  // last swap: frames often run several tiling passes with different strips,
+  // each learns from the same pass of earlier frames. Sessions past the last
+  // slot share it.
+  struct SessionSlot {
+    Layout candidate;
+    uint32_t verified_sessions = 0;
+    uint32_t merged_since_learning = 0;
+    uint64_t previous_strip_bits_union = 0;
+  };
+  static constexpr uint32_t kSessionSlots = 4;
+  SessionSlot slots_[kSessionSlots];
+  uint32_t slot_ = 0;
+  // Tiling sessions since the last swap (up to the last slot).
+  uint32_t frame_sessions_ = 0;
+  // The same, uncapped, and the current session's order in its frame.
+  uint32_t frame_session_order_ = 0;
+  uint32_t session_order_ = 0;
+  // The order in its frame of the merged session that left the carry, the
+  // only one that merges while it's there, or kNoCarry.
+  static constexpr uint32_t kNoCarry = UINT32_MAX;
+  uint32_t carry_session_order_ = kNoCarry;
+
   // The layout merged sessions use, fixed by the first one.
   Layout layout_;
   // Sessions left before merging may resume after a failure.
   uint32_t cooldown_sessions_ = 0;
-  // Merged sessions since the last learning one.
-  uint32_t merged_since_learning_ = 0;
   uint64_t sessions_ = 0;
   // Float constant vectors (0-511) strip-own packets have written.
   std::vector<uint32_t> own_float_constants_;
