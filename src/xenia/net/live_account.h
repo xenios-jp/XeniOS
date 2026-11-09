@@ -122,9 +122,15 @@ struct PartyState {
 struct DeviceInfo {
   std::string name;  // Up to 32 characters, e.g. "Will's iPhone".
   std::string platform;  // "ios", "macos", "windows" or "linux".
+  // Sent as the "keychain" signal, for bans only (see KeychainDeviceSignal). 64
+  // hex digits, or empty to send none.
+  std::string keychain_signal;
+  // Sent as the "machine" signal, likewise (see MachineDeviceSignal).
+  std::string machine_signal;
 };
-// The platform from compile-time macros, and the host name up to its first dot
-// (empty on iOS, which only says "localhost"). A UI may give a nicer name.
+// The platform from compile-time macros, the host name up to its first dot
+// (empty on iOS, which only says "localhost") and, on iOS and Mac, the signal
+// that outlasts a reinstall. A UI may give a nicer name.
 DeviceInfo DefaultDeviceInfo();
 
 // One of the account's devices (the `devices` message).
