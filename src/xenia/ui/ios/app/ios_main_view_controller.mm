@@ -935,30 +935,74 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   if (!problem || !self.view.window || self.presentedViewController) {
     return NO;
   }
-  NSString* (^name_of)(const std::filesystem::path&) = ^NSString*(const std::filesystem::path& p) {
-    return [NSString stringWithUTF8String:p.filename().string().c_str()];
-  };
-  NSMutableString* detail = [NSMutableString stringWithString:name_of(problem->file)];
+  // Short enough to fit without scrolling: the parser's own description, then what XeniOS did.
+  // (The file names are in the log.)
+  NSString* error_text = [NSString stringWithUTF8String:problem->error.c_str()] ?: @"";
+  NSMutableString* message = [NSMutableString string];
   if (problem->line) {
-    [detail appendFormat:@", line %u", problem->line];
+    [message appendFormat:@"Line %u: %@", problem->line, error_text];
+  } else if (error_text.length) {
+    [message appendString:[[error_text substringToIndex:1].uppercaseString
+                              stringByAppendingString:[error_text substringFromIndex:1]]];
   }
-  [detail appendFormat:@": %s", problem->error.c_str()];
-  NSString* using_text = problem->backup_available
-                             ? NSLocalizedString(@"XeniOS is using your last working settings for now.",
-                                                 @"Config recovery alert: backup loaded")
-                             : NSLocalizedString(@"XeniOS is using the default settings for now.",
-                                                 @"Config recovery alert: defaults loaded");
-  NSMutableString* message = [NSMutableString stringWithFormat:@"%@\n\n%@", detail, using_text];
+  [message appendString:@"."];
+  [message appendString:problem->backup_available
+                            ? NSLocalizedString(@"\n\nXeniOS is using your last working settings.",
+                                                @"Config recovery alert: backup loaded")
+                            : NSLocalizedString(@"\n\nXeniOS is using default settings.",
+                                                @"Config recovery alert: defaults loaded")];
   if (!problem->kept_copy.empty()) {
-    [message appendFormat:NSLocalizedString(@" The broken file is kept as %@.",
-                                            @"Config recovery alert: name of the kept copy"),
-                          name_of(problem->kept_copy)];
+    [message appendString:NSLocalizedString(@" A copy of the broken file was kept.",
+                                            @"Config recovery alert: broken file kept")];
   }
   UIAlertController* alert = [UIAlertController
       alertControllerWithTitle:NSLocalizedString(@"Your settings file couldn't be read",
                                                  @"Config recovery alert title")
                        message:message
                 preferredStyle:UIAlertControllerStyleAlert];
+  // Words wrap whole (no hyphenation), and Dynamic Type stops at the size where the title, the
+  // text and both buttons still fit an iPhone without scrolling.
+  // The fonts below are set by hand, so apply the same cap to them.
+  UIContentSizeCategory category = self.traitCollection.preferredContentSizeCategory;
+  if (UIContentSizeCategoryCompareToCategory(category, UIContentSizeCategoryAccessibilityMedium) ==
+      NSOrderedDescending) {
+    category = UIContentSizeCategoryAccessibilityMedium;
+  }
+  UITraitCollection* capped_traits =
+      [UITraitCollection traitCollectionWithPreferredContentSizeCategory:category];
+  NSMutableParagraphStyle* title_style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+  title_style.alignment = NSTextAlignmentCenter;
+  title_style.hyphenationFactor = 0;
+  title_style.lineBreakMode = NSLineBreakByWordWrapping;
+  NSMutableParagraphStyle* body_style = [[title_style mutableCopy] autorelease];
+  // attributedTitle and attributedMessage are not public API. If a later iOS drops them, keep
+  // the plain title and message rather than throw on the launch meant to recover.
+  @try {
+    [alert setValue:[[[NSAttributedString alloc]
+                        initWithString:[alert.title stringByReplacingOccurrencesOfString:@"be read"
+                                                                        withString:@"be\u00a0read"]
+                            attributes:@{
+                              NSParagraphStyleAttributeName : title_style,
+                              NSFontAttributeName :
+                                  [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline
+                                      compatibleWithTraitCollection:capped_traits],
+                            }] autorelease]
+             forKey:@"attributedTitle"];
+    [alert setValue:[[[NSAttributedString alloc]
+                        initWithString:message
+                            attributes:@{
+                              NSParagraphStyleAttributeName : body_style,
+                              NSFontAttributeName :
+                                  [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote
+                                      compatibleWithTraitCollection:capped_traits],
+                              NSForegroundColorAttributeName : UIColor.secondaryLabelColor,
+                            }] autorelease]
+             forKey:@"attributedMessage"];
+  } @catch (NSException* exception) {
+    XELOGW("Config recovery alert: styled text unavailable ({})",
+           exception.reason ? [exception.reason UTF8String] : "unknown");
+  }
+  alert.view.maximumContentSizeCategory = UIContentSizeCategoryAccessibilityMedium;
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   void (^done)(void) = ^{
     // The alert doesn't bring this view back, so run what it held up.
@@ -986,8 +1030,36 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
                                  done();
                                }]];
   alert.preferredAction = alert.actions.firstObject;
-  [self presentViewController:alert animated:YES completion:nil];
+  [self presentViewController:alert
+                     animated:YES
+                   completion:^{
+                     [XeniaViewController cueHiddenTextInAlert:alert];
+                   }];
   return YES;
+}
+
+// If an alert's text still overflows (a small screen, a long parse error), the text scrolls:
+// fade the bottom edge and flash the scroll indicators so a cut line never looks like clipping.
++ (void)cueHiddenTextInAlert:(UIAlertController*)alert {
+  NSMutableArray<UIView*>* queue = [NSMutableArray arrayWithObject:alert.view];
+  while (queue.count) {
+    UIView* view = queue.firstObject;
+    [queue removeObjectAtIndex:0];
+    [queue addObjectsFromArray:view.subviews];
+    UIScrollView* scroll = [view isKindOfClass:[UIScrollView class]] ? (UIScrollView*)view : nil;
+    if (!scroll || scroll.contentSize.height <= scroll.bounds.size.height + 1) {
+      continue;
+    }
+    CAGradientLayer* fade = [CAGradientLayer layer];
+    fade.frame = scroll.bounds;
+    fade.colors = @[ (id)UIColor.blackColor.CGColor, (id)UIColor.blackColor.CGColor,
+                     (id)UIColor.clearColor.CGColor ];
+    const CGFloat height = MAX(scroll.bounds.size.height, 1);
+    fade.locations = @[ @0, @(MAX(0, 1 - 28 / height)), @1 ];
+    scroll.layer.mask = fade;
+    scroll.showsVerticalScrollIndicator = YES;
+    [scroll flashScrollIndicators];
+  }
 }
 
 // Sign-ins another device is waiting on, and "pick a new gamertag" for a flagged account.
