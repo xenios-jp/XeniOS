@@ -4405,7 +4405,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     // the frame (the strip's window, extended to the frame when merging) or
     // the strip's band itself, which the merged first strip replicates into
     // every band.
-    bool strip_merge_banded = false;
     strip_merge_replicate_draw_ = false;
     if (strip_merge_.recording()) {
       StripMerge::DrawInfo strip_merge_draw;
@@ -4421,21 +4420,26 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           primitive_processing_result.IsTessellated();
       strip_merge_.CheckDraw(strip_merge_draw);
       if (strip_merge_.merging() && !strip_merge_.failed()) {
-        strip_merge_banded = strip_merge_draw.banded;
         strip_merge_replicate_draw_ =
             strip_merge_draw.banded && !strip_merge_draw.frame_space;
       }
     }
     {
       MetalRenderTargetCache::ClearQuadDraw clear_quad_draw;
-      // Clear quads on merged surfaces aren't the whole pass's.
       clear_quad_draw.candidate =
           is_rasterization_done && !memexport_used &&
           primitive_type == xenos::PrimitiveType::kRectangleList &&
-          !primitive_processing_result.IsTessellated() && !strip_merge_banded;
+          !primitive_processing_result.IsTessellated();
       clear_quad_draw.has_pixel_shader = pixel_shader != nullptr;
       clear_quad_draw.pixel_shader_kills =
           pixel_shader && pixel_shader->kills_pixels();
+      // A merged draw in frame space covers the merged render targets' rows
+      // as it does the frame's. One addressing the band is drawn in every
+      // band.
+      if (strip_merge_replicate_draw_) {
+        clear_quad_draw.band_count = strip_merge_.layout().strip_count;
+        clear_quad_draw.band_rows = strip_merge_.layout().band_rows;
+      }
       render_target_cache_->SetClearQuadDraw(clear_quad_draw);
     }
     // The window offset stays in the viewport on Metal.

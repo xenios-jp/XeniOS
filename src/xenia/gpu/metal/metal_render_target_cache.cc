@@ -1918,6 +1918,22 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   if (right <= left || bottom <= top || right > 16384 || bottom > 16384) {
     return;
   }
+  if (draw.band_count) {
+    // Drawn in every band of strip-merged render targets, each copy clamped
+    // to its band: one covering the whole band covers every band's rows,
+    // ending at the band edges. Anything less isn't one rectangle.
+    const uint32_t written_mask = slot == 0 ? uint32_t(1) : written_slots;
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
+      if ((written_mask & (uint32_t(1) << i)) &&
+          !render_targets[i]->key().strip_merged) {
+        return;
+      }
+    }
+    if (top || bottom < int64_t(draw.band_rows)) {
+      return;
+    }
+    bottom = int64_t(draw.band_rows) * draw.band_count;
+  }
   Transfer::Rectangle covered = {};
   covered.x_pixels = uint32_t(left);
   covered.y_pixels = uint32_t(top);
@@ -2076,8 +2092,9 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
                          positions.z[0] >= 0.0f && positions.z[0] <= 1.0f &&
                          positions.w[0] == 1.0f && positions.w[1] == 1.0f &&
                          positions.w[2] == 1.0f;
+    // Not yet for strip-merged render targets, read at band offsets.
     if ((z_zero || z_one || z_d24s8) && draw_resolution_scale_x() == 1 &&
-        draw_resolution_scale_y() == 1) {
+        draw_resolution_scale_y() == 1 && !key.strip_merged) {
       uint32_t guest_depth = 0;
       if (z_one) {
         guest_depth = d24s8 ? 0xFFFFFF : xenos::Float32To20e4(1.0f, true);
@@ -2115,7 +2132,8 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
   }
   auto* dest = static_cast<MetalRenderTarget*>(render_targets[slot]);
   std::vector<Transfer>& transfers = transfer_lists[slot];
-  if (!dest) {
+  // A strip-merged destination's bands read their sources at band offsets.
+  if (!dest || dest->key().strip_merged) {
     return;
   }
   const RenderTargetKey dest_key = dest->key();

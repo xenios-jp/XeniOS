@@ -377,6 +377,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     bool candidate = false;
     bool has_pixel_shader = false;
     bool pixel_shader_kills = false;
+    // A strip-merged draw addressing the strip's band, drawn into each of
+    // band_count bands of band_rows rows, clamped to the band
+    // (MetalCommandProcessor::DrawStripMergeBands); 0 otherwise.
+    uint32_t band_count = 0;
+    uint32_t band_rows = 0;
   };
   // For the next Update only.
   void SetClearQuadDraw(const ClearQuadDraw& draw) { clear_quad_draw_ = draw; }
