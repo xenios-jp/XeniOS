@@ -1581,9 +1581,17 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
   uint32_t copy_dest_base_adjusted = rb_copy_dest_base;
   uint32_t copy_dest_extent_start, copy_dest_extent_end;
   auto rb_copy_dest_pitch = regs.Get<reg::RB_COPY_DEST_PITCH>();
+  // A 2D destination row has floor(pitch / 32) macro tiles on the console:
+  // the texels of a pitch that isn't a multiple of 32 past the last whole
+  // macro tile land in the next row's tiles. Direct3D always aligns the
+  // pitch to 32. 3D destinations keep the rounded-up pitch, which hasn't
+  // been checked against the console.
   const uint32_t copy_dest_pitch_aligned =
-      xe::align(rb_copy_dest_pitch.copy_dest_pitch,
-                texture_address::kStoragePitchHeightAlignmentBlocks);
+      rb_copy_dest_info.copy_dest_array
+          ? xe::align(rb_copy_dest_pitch.copy_dest_pitch,
+                      texture_address::kStoragePitchHeightAlignmentBlocks)
+          : rb_copy_dest_pitch.copy_dest_pitch &
+                ~(texture_address::kStoragePitchHeightAlignmentBlocks - 1);
   info_out.copy_dest_coordinate_info.pitch_aligned_div_32 =
       copy_dest_pitch_aligned >> 5;
   // For volume resolves.
