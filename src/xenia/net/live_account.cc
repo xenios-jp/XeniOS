@@ -9,7 +9,6 @@
 
 #include "xenia/net/live_account.h"
 
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -2579,8 +2578,9 @@ void AccountClient::Run() {
           failures_ = 0;
           ++generation_;
         }
-      } else {
-        // Whatever the wait had grown to, at once.
+      } else if (!halted_) {
+        // Whatever the wait had grown to, at once. A halt (refused, removed,
+        // signed in elsewhere) keeps its reason.
         failures_ = 0;
         problem_.clear();
         if (!closed_) {
