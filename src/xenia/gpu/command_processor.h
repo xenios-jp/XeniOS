@@ -672,6 +672,14 @@ class CommandProcessor {
                              uint32_t dword_count) {
     return nullptr;
   }
+  // IM_LOAD of the ucode at a guest physical address. A backend may hide this
+  // with one that remembers what each address held until it's written.
+  Shader* LoadShaderAtAddress(xenos::ShaderType shader_type,
+                              uint32_t guest_address, uint32_t dword_count) {
+    return LoadShader(shader_type,
+                      memory_->TranslatePhysical<const uint32_t*>(guest_address),
+                      dword_count);
+  }
 
   virtual bool IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                          IndexBufferInfo* index_buffer_info,

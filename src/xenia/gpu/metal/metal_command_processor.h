@@ -338,6 +338,9 @@ class MetalCommandProcessor : public CommandProcessor,
   Shader* LoadShader(xenos::ShaderType shader_type,
                      const uint32_t* host_address,
                      uint32_t dword_count) override;
+  // Hides CommandProcessor::LoadShaderAtAddress for IM_LOAD.
+  Shader* LoadShaderAtAddress(xenos::ShaderType shader_type,
+                              uint32_t guest_address, uint32_t dword_count);
 
   bool IssueDraw(xenos::PrimitiveType primitive_type, uint32_t index_count,
                  IndexBufferInfo* index_buffer_info,
@@ -902,6 +905,36 @@ class MetalCommandProcessor : public CommandProcessor,
     std::vector<uint32_t> ucode;
   };
   std::array<RecentShaderLoad, 8> recent_shader_loads_;
+  // IM_LOAD by guest address (zero-copy shared memory only): the shader an
+  // address held when it was last loaded, trusted until a shared memory watch
+  // sees a write to its pages. Most loads reload
+  // what the stage had loaded from the same address a few draws before.
+  struct AddressShaderLoad {
+    // Command processor thread only.
+    SpirvShader* shader = nullptr;
+    uint32_t dword_count = 0;
+    xenos::ShaderType shader_type = xenos::ShaderType::kVertex;
+    // Reloads after a watch fired that found the same shader. A page written
+    // often for other reasons stops being watched, so its writes don't keep
+    // faulting.
+    uint32_t same_reloads = 0;
+    bool unwatchable = false;
+    // A watch was placed and not yet seen cancelled.
+    bool watch_installed = false;
+    // Under the global critical region.
+    SharedMemory::WatchHandle watch = nullptr;
+    // Cleared by the watch (any thread) before the write it reports.
+    std::atomic<bool> valid{false};
+  };
+  static void AddressShaderLoadWatchCallback(
+      const global_unique_lock_type& global_lock, void* context, void* data,
+      uint64_t argument, bool invalidated_by_gpu);
+  void ClearAddressShaderLoads();
+  std::unordered_map<uint32_t, std::unique_ptr<AddressShaderLoad>>
+      address_shader_loads_;
+  // The last entry each stage loaded through (vertex, pixel).
+  std::array<std::pair<uint32_t, AddressShaderLoad*>, 2>
+      last_address_shader_loads_{};
   // Owns the root signature the DXIL shaders are compiled against.
   MetalShaderConverter metal_shader_converter_;
   MetalDxilBinder dxil_binder_;

@@ -1785,8 +1785,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_IM_LOAD(uint32_t packet,
   }
 
   trace_writer_.WriteMemoryRead(CpuToGpu(addr), size_dwords * 4);
-  auto shader = COMMAND_PROCESSOR::LoadShader(
-      shader_type, memory_->TranslatePhysical<uint32_t*>(addr), size_dwords);
+  auto shader =
+      COMMAND_PROCESSOR::LoadShaderAtAddress(shader_type, addr, size_dwords);
   switch (shader_type) {
     case xenos::ShaderType::kVertex:
       active_vertex_shader_ = shader;
