@@ -80,6 +80,7 @@ struct XeResolveInfo {
   uint edram_format;
   uint edram_format_ints_log2;
   bool decode_pwl_gamma;
+  bool exact_unorm8_average;
   uint2_xe resolution_scale;
   uint2_xe half_pixel_offset_fill_source;
   uint2_xe edram_offset_scaled;
@@ -113,6 +114,7 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
   resolve_info.edram_format = (edram_info >> 24u) & ((1u << 4u) - 1u);
   resolve_info.edram_format_ints_log2 = (edram_info >> 28u) & 1u;
   resolve_info.decode_pwl_gamma = (edram_info & (1u << 30u)) != 0u;
+  resolve_info.exact_unorm8_average = (edram_info & (1u << 31u)) != 0u;
   #ifdef XE_RESOLVE_RESOLUTION_SCALED
     resolve_info.resolution_scale =
         (uint_x2_xe(coordinate_info) >> uint2_xe(16u, 19u)) & 7u;
@@ -692,6 +694,47 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
       }
     }
 
+    // The console's average of 8-bit unorm samples - 8_8_8_8's channels and
+    // 8_8_8_8_GAMMA's alpha - into an unsigned 8_8_8_8 destination without
+    // exponent bias: each byte widened to 10 bits by replication, the sum
+    // divided by the sample count truncating, and the result truncated to 8
+    // bits.
+    bool XeResolveAveragesUnorm8Exactly(XeResolveInfo resolve_info) {
+      return resolve_info.exact_unorm8_average &&
+             resolve_info.sample_select >= kXenosCopySampleSelect_01 &&
+             resolve_info.dest_format == kXenosFormat_8_8_8_8 &&
+             resolve_info.dest_num_format ==
+                 kXenosSurfaceNumberFormat_UnsignedRepeatingFraction &&
+             resolve_info.dest_exp_bias_factor == 1.0f &&
+             (resolve_info.edram_format ==
+                  kXenosColorRenderTargetFormat_8_8_8_8 ||
+              XeResolveSourceUsesPWLGamma(resolve_info));
+    }
+
+    float4_xe XeResolveWidenUnorm8(float4_xe unorm) {
+      uint4_xe byte_value = uint4_xe(unorm * 255.0f + 0.5f);
+      return float4_xe((byte_value << 2u) | (byte_value >> 6u));
+    }
+
+    // A sample after XeResolveDecodePWLGammaSource: the 8-bit unorm channels
+    // as 10-bit codes when they're averaged exactly.
+    void XeResolveWidenUnorm8Source(
+        XeResolveInfo resolve_info, bool exact_unorm8,
+        inout_param_xe(float4_xe, pixel)) {
+      dont_flatten_xe if (exact_unorm8) {
+        dont_flatten_xe if (XeResolveSourceUsesPWLGamma(resolve_info)) {
+          pixel.a = XeResolveWidenUnorm8(pixel.aaaa).x;
+        } else {
+          pixel = XeResolveWidenUnorm8(pixel);
+        }
+      }
+    }
+
+    // The summed 10-bit codes to the normalized 8-bit average.
+    float4_xe XeResolveAverageUnorm8(float4_xe sum, float sample_weight) {
+      return float4_xe(uint4_xe(sum * sample_weight) >> 2u) * (1.0f / 255.0f);
+    }
+
     uint2_xe XeResolveColorCopySampleOffsetsBytes(XeResolveInfo resolve_info) {
       return uint2_xe(
           (2u * 4u * resolve_info.resolution_scale.x) <<
@@ -836,10 +879,15 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
           pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
           sample_addresses, resolve_info.edram_format_ints_log2,
           resolve_info.edram_format, pixel_0, pixel_1, pixel_2, pixel_3);
+      bool exact_unorm8 = XeResolveAveragesUnorm8Exactly(resolve_info);
       XeResolveDecodePWLGammaSource(resolve_info, pixel_0);
+      XeResolveWidenUnorm8Source(resolve_info, exact_unorm8, pixel_0);
       XeResolveDecodePWLGammaSource(resolve_info, pixel_1);
+      XeResolveWidenUnorm8Source(resolve_info, exact_unorm8, pixel_1);
       XeResolveDecodePWLGammaSource(resolve_info, pixel_2);
+      XeResolveWidenUnorm8Source(resolve_info, exact_unorm8, pixel_2);
       XeResolveDecodePWLGammaSource(resolve_info, pixel_3);
+      XeResolveWidenUnorm8Source(resolve_info, exact_unorm8, pixel_3);
       float exp_bias = resolve_info.dest_exp_bias_factor;
       dont_flatten_xe
       if (resolve_info.sample_select >= kXenosCopySampleSelect_01) {
@@ -857,9 +905,17 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
             msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
             msaa_resolve_pixel_3);
         XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+        XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                   msaa_resolve_pixel_0);
         XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+        XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                   msaa_resolve_pixel_1);
         XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_2);
+        XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                   msaa_resolve_pixel_2);
         XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_3);
+        XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                   msaa_resolve_pixel_3);
         pixel_0 += msaa_resolve_pixel_0;
         pixel_1 += msaa_resolve_pixel_1;
         pixel_2 += msaa_resolve_pixel_2;
@@ -875,9 +931,17 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
               msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
               msaa_resolve_pixel_3);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_0);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_1);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_2);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_2);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_3);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_3);
           pixel_0 += msaa_resolve_pixel_0;
           pixel_1 += msaa_resolve_pixel_1;
           pixel_2 += msaa_resolve_pixel_2;
@@ -890,14 +954,42 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
               msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
               msaa_resolve_pixel_3);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_0);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_1);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_2);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_2);
           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_3);
+          XeResolveWidenUnorm8Source(resolve_info, exact_unorm8,
+                                     msaa_resolve_pixel_3);
           pixel_0 += msaa_resolve_pixel_0;
           pixel_1 += msaa_resolve_pixel_1;
           pixel_2 += msaa_resolve_pixel_2;
           pixel_3 += msaa_resolve_pixel_3;
         }
+      }
+      // The exact average replaces the sample weighting, and is final already
+      // (it only applies without exponent bias). Gamma colour still goes
+      // through the PWL average below.
+      float unorm8_factor = exp_bias;
+      dont_flatten_xe if (exact_unorm8) {
+        float exact_weight = resolve_info.sample_select >=
+            kXenosCopySampleSelect_0123 ? 0.25f : 0.5f;
+        dont_flatten_xe if (XeResolveSourceUsesPWLGamma(resolve_info)) {
+          pixel_0.a = XeResolveAverageUnorm8(pixel_0.aaaa, exact_weight).x;
+          pixel_1.a = XeResolveAverageUnorm8(pixel_1.aaaa, exact_weight).x;
+          pixel_2.a = XeResolveAverageUnorm8(pixel_2.aaaa, exact_weight).x;
+          pixel_3.a = XeResolveAverageUnorm8(pixel_3.aaaa, exact_weight).x;
+        } else {
+          pixel_0 = XeResolveAverageUnorm8(pixel_0, exact_weight);
+          pixel_1 = XeResolveAverageUnorm8(pixel_1, exact_weight);
+          pixel_2 = XeResolveAverageUnorm8(pixel_2, exact_weight);
+          pixel_3 = XeResolveAverageUnorm8(pixel_3, exact_weight);
+        }
+        unorm8_factor = 1.0f;
       }
       dont_flatten_xe if (XeResolveSourceUsesPWLGamma(resolve_info)) {
         float sample_weight = resolve_info.sample_select >=
@@ -905,21 +997,21 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
             resolve_info.sample_select >= kXenosCopySampleSelect_01 ? 0.5f : 1.0f;
         pixel_0.rgb = XeResolveAveragePWLGamma3(pixel_0.rgb, sample_weight) *
                         resolve_info.dest_exp_bias_factor;
-        pixel_0.a *= exp_bias;
+        pixel_0.a *= unorm8_factor;
         pixel_1.rgb = XeResolveAveragePWLGamma3(pixel_1.rgb, sample_weight) *
                         resolve_info.dest_exp_bias_factor;
-        pixel_1.a *= exp_bias;
+        pixel_1.a *= unorm8_factor;
         pixel_2.rgb = XeResolveAveragePWLGamma3(pixel_2.rgb, sample_weight) *
                         resolve_info.dest_exp_bias_factor;
-        pixel_2.a *= exp_bias;
+        pixel_2.a *= unorm8_factor;
         pixel_3.rgb = XeResolveAveragePWLGamma3(pixel_3.rgb, sample_weight) *
                         resolve_info.dest_exp_bias_factor;
-        pixel_3.a *= exp_bias;
+        pixel_3.a *= unorm8_factor;
       } else {
-        pixel_0 *= exp_bias;
-        pixel_1 *= exp_bias;
-        pixel_2 *= exp_bias;
-        pixel_3 *= exp_bias;
+        pixel_0 *= unorm8_factor;
+        pixel_1 *= unorm8_factor;
+        pixel_2 *= unorm8_factor;
+        pixel_3 *= unorm8_factor;
       }
       dont_flatten_xe if (resolve_info.dest_swap) {
         pixel_0 = pixel_0.bgra;

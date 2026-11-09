@@ -1061,13 +1061,16 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
     }
 
-    // All the source's samples are averaged: 0123 at 4x, 01 at 2x.
+    // All the source's samples are averaged: 0123 at 4x, 01 at 2x, as the
+    // console does (ResolveEdramInfo exact_unorm8_average): per component, the
+    // sum of the samples' bytes widened to 10 bits ((b << 2) | (b >> 6)),
+    // divided truncating, then truncated to 8 bits.
     auto load_average_rgba8 = [&](spv::Id pixel_x, spv::Id pixel_y,
                                   spv::Id& packed_out) {
       spv::Id type_float4 = builder.makeVectorType(type_float, 4);
-      spv::Id sum = spv::NoResult;
       bool average_4x = key.msaa_samples >= xenos::MsaaSamples::k4X;
       uint32_t sample_count = average_4x ? 4 : 2;
+      std::array<spv::Id, 4> sum10 = {};
       for (uint32_t guest_sample = 0; guest_sample < sample_count;
            ++guest_sample) {
         uint32_t sample =
@@ -1101,32 +1104,36 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
               spv::NoPrecision, type_float4, false, true, false, false, false,
               source_texture_parameters, spv::ImageOperandsMaskNone);
         }
-        sum = sum == spv::NoResult
-                  ? value
-                  : builder.createBinOp(spv::OpFAdd, type_float4, sum, value);
+        // An RGBA8 texel is byte / 255, which this rounds back to the byte.
+        for (uint32_t component = 0; component < 4; ++component) {
+          spv::Id byte_value = builder.createUnaryOp(
+              spv::OpConvertFToU, type_uint,
+              builder.createBinOp(
+                  spv::OpFAdd, type_float,
+                  builder.createBinOp(spv::OpFMul, type_float,
+                                      builder.createCompositeExtract(
+                                          value, type_float, component),
+                                      builder.makeFloatConstant(255.0f)),
+                  builder.makeFloatConstant(0.5f)));
+          spv::Id widened =
+              bitwise_or(shift_left(byte_value, 2), shift_right(byte_value, 6));
+          sum10[component] = sum10[component] == spv::NoResult
+                                 ? widened
+                                 : add(sum10[component], widened);
+        }
       }
-      spv::Id average =
-          builder.createBinOp(spv::OpVectorTimesScalar, type_float4, sum,
-                              builder.makeFloatConstant(1.0f / sample_count));
-      spv::Id component_width = builder.makeUintConstant(8);
+      // The truncating average, truncated to 8 bits: one shift.
+      uint32_t shift = 2 + (average_4x ? 2 : 1);
       packed_out = spv::NoResult;
       for (uint32_t component = 0; component < 4; ++component) {
-        spv::Id packed_component = builder.createUnaryOp(
-            spv::OpConvertFToU, type_uint,
-            builder.createBinOp(
-                spv::OpFAdd, type_float,
-                builder.createBinOp(spv::OpFMul, type_float,
-                                    builder.createCompositeExtract(
-                                        average, type_float, component),
-                                    builder.makeFloatConstant(255.0f)),
-                builder.makeFloatConstant(0.5f)));
+        spv::Id packed_component = shift_right(sum10[component], shift);
         packed_out =
             component == 0
                 ? packed_component
                 : builder.createQuadOp(spv::OpBitFieldInsert, type_uint,
                                        packed_out, packed_component,
                                        builder.makeUintConstant(8 * component),
-                                       component_width);
+                                       builder.makeUintConstant(8));
       }
     };
 

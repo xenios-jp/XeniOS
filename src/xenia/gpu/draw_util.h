@@ -628,6 +628,11 @@ union ResolveEdramInfo {
     // PWL gamma to linear before MSAA averaging / conversion, then write gamma
     // bytes again for gamma dests. Kept as a constant in the resolve shader.
     uint32_t decode_pwl_gamma : 1;
+    // Average 8-bit unorm samples (8_8_8_8's channels, 8_8_8_8_GAMMA's alpha)
+    // into an 8_8_8_8 destination as the console does: each byte widened to
+    // 10 bits by replication, the sum divided truncating, then truncated to 8
+    // bits. Set by backends that opt in; GetResolveInfo leaves it clear.
+    uint32_t exact_unorm8_average : 1;
   };
   ResolveEdramInfo() : packed(0) { static_assert_size(*this, sizeof(packed)); }
 };
