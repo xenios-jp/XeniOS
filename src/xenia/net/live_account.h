@@ -725,6 +725,9 @@ class AccountClient {
   // Removes a device by its key (Device::key), but never the last one. Its
   // sockets are closed; everyone hears the new list.
   void RemoveDevice(std::string key);
+  // The same for this device: the lobby closes this connection (Events::removed),
+  // or refuses with request_failed("remove_device", "last_device").
+  void RemoveThisDevice();
   // Deletes the whole account for good: account_deleted says when it's done,
   // request_failed("delete_account", ...) if nothing changed.
   void DeleteAccount();

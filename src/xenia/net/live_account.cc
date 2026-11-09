@@ -1954,6 +1954,11 @@ void AccountClient::RemoveDevice(std::string key) {
   SendLocked(EncodeRemoveDevice(key));
 }
 
+void AccountClient::RemoveThisDevice() {
+  std::lock_guard lock(mutex_);
+  SendLocked(EncodeRemoveDevice(key_.PublicHex()));
+}
+
 void AccountClient::DeleteAccount() {
   std::lock_guard lock(mutex_);
   SendLocked(EncodeDeleteAccount());
