@@ -1705,10 +1705,12 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     return;
   }
   auto sc_mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-  // Filled, and not culled as a whole.
+  // Filled, and not culled. Rectangle lists are drawn as triangle strips that
+  // the host culls by facing; the facing of the quad is not worked out, so any
+  // culling skips the rule.
   if (sc_mode.poly_offset_para_enable ||
       sc_mode.poly_mode == xenos::PolygonModeEnable::kDualMode ||
-      (sc_mode.cull_front && sc_mode.cull_back)) {
+      sc_mode.cull_front || sc_mode.cull_back) {
     return;
   }
   // Every sample covered.
@@ -2032,7 +2034,6 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   }
   // Depth 0 and 1 are exact in both depth formats, and kept by every
   // transfer conversion.
-  bool constant = false;
   if (constant_depth_candidate) {
     const bool z_zero = positions.z[0] <= 0.0f && positions.z[1] <= 0.0f &&
                         positions.z[2] <= 0.0f;
@@ -2062,7 +2063,6 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
           (guest_depth << 8) |
           (regs.Get<reg::RB_STENCILREFMASK>().stencilref & 0xFF);
       pending_constant_.rectangle = covered;
-      constant = true;
     }
   }
 }
