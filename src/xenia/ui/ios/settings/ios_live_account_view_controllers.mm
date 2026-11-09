@@ -3477,6 +3477,7 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.backgroundColor = [UIColor clearColor];
+  self.tableView.sectionHeaderTopPadding = 0;
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
   _header = [[XEProfileHeader alloc] init];
   [_header.editPicture addTarget:self
@@ -3716,6 +3717,18 @@ typedef NS_ENUM(NSInteger, XEPageRow) {
 
 - (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
   return (NSInteger)_sections[(NSUInteger)section].count;
+}
+
+// Tighter than UIKit's grouped defaults: the page is one column of short groups, and the default
+// gaps pushed most of it off the sheet.
+- (CGFloat)tableView:(UITableView*)tableView heightForHeaderInSection:(NSInteger)section {
+  return [self tableView:tableView titleForHeaderInSection:section].length ? 30.0 : 8.0;
+}
+
+- (CGFloat)tableView:(UITableView*)tableView heightForFooterInSection:(NSInteger)section {
+  return [self tableView:tableView titleForFooterInSection:section].length
+             ? UITableViewAutomaticDimension
+             : 6.0;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
