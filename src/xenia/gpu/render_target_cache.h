@@ -277,10 +277,11 @@ class RenderTargetCache {
   bool BeginStripMerge(uint32_t band_count, uint32_t band_tile_rows);
   // Every strip-merged render target referenced in the EDRAM ownership moves
   // band `band` into its ordinary twin, which takes its place, so the EDRAM is
-  // what that strip leaves. With carry, bands 0 to N-2 are kept as bands 1 to
-  // N-1 of a carry render target, which the next session's strip-merged render
-  // targets start their later bands with where they first take the tiles. The
-  // backend has ended its passes.
+  // what that strip leaves. With carry, the next session's strip-merged render
+  // targets start their bands 1 to N-1 with bands 0 to N-2 of the owners of
+  // the tiles they first take, read in place: those keys alternate between
+  // two render targets (strip_merge_alt), so nothing writes the owner's
+  // before then. The backend has ended its passes.
   void EndStripMerge(uint32_t band, bool carry);
   // A strip-own resolve of the merged first strip, which covers the rows of
   // every strip down to this frame row; 0 otherwise.
@@ -362,10 +363,11 @@ class RenderTargetCache {
       // a merged predicated tiling session, a band of rows per strip, in the
       // EDRAM ownership of the first strip's tiles. Only while merging.
       uint32_t strip_merged : 1;  // 29
-      // With strip_merged: a strip-merged render target's bands as the next
-      // session's later strips start, band k holding the previous session's
-      // band k - 1. Never owns EDRAM (RenderTargetCache::EndStripMerge).
-      uint32_t strip_merge_carry : 1;  // 30
+      // With strip_merged: the second of the key's two strip-merged render
+      // targets. A key whose bands the next session's later strips start
+      // from alternates between the two, so the previous session's stays
+      // unwritten until read (RenderTargetCache::EndStripMerge).
+      uint32_t strip_merge_alt : 1;  // 30
     };
 
     RenderTargetKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -433,9 +435,9 @@ class RenderTargetCache {
                          GetPitchTiles(), uint32_t(1) << uint32_t(msaa_samples),
                          GetFormatName(), scale_native ? ", native" : "",
                          next_period ? ", next period" : "",
-                         strip_merge_carry ? ", strip carry"
-                         : strip_merged    ? ", strip merged"
-                                           : "");
+                         strip_merge_alt ? ", strip merged alt"
+                         : strip_merged  ? ", strip merged"
+                                         : "");
     }
   };
 
@@ -1209,10 +1211,19 @@ class RenderTargetCache {
   struct StripMergeCarry {
     uint32_t start_tiles;
     uint32_t end_tiles;
-    RenderTargetKey carry;
+    // The previous session's strip-merged owner of the tiles, and the render
+    // target it was, so one reused for another key in between isn't read.
+    RenderTargetKey owner;
+    RenderTarget* render_target;
   };
   // Not yet claimed in this session, never wrapping around the EDRAM end.
   std::vector<StripMergeCarry> strip_merge_carries_;
+  // The strip-merged keys of the active session that use their other render
+  // target: the carried ones, the other one than the carry's.
+  std::vector<RenderTargetKey> strip_merge_alt_keys_;
+  // The strip-merged key an active session draws to, strip_merge_alt set for
+  // the carried keys.
+  RenderTargetKey GetStripMergeSessionKey(RenderTargetKey key) const;
 };
 
 }  // namespace gpu
