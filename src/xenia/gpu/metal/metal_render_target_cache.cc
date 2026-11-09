@@ -6140,9 +6140,7 @@ void MetalRenderTargetCache::DumpRenderTargets(
                          return !rectangle.rows;
                        }),
         rectangles.end());
-    if (strip_merge()) {
-      strip_merge()->Fail("a resolve of every strip not done directly");
-    }
+    strip_merge()->Fail("a resolve of every strip not done directly");
   }
   // Merge adjacent rectangles of the same source to dispatch fewer times.
   // Restrict the proof to one physical EDRAM period, so combining dispatches
@@ -8183,10 +8181,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       // The EDRAM buffer has no room for the bands of a strip-merged render
       // target past the first, the transfers drop the host depth instead.
       if (dest_key.strip_merged) {
-        if (strip_merge()) {
-          strip_merge()->Fail(
-              "a strip-merged depth buffer is its own host depth source");
-        }
+        strip_merge()->Fail(
+            "a strip-merged depth buffer is its own host depth source");
         continue;
       }
       const std::vector<Transfer>& depth_transfers = render_target_transfers[i];

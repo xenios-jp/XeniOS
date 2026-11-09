@@ -239,12 +239,16 @@ class StripMerge {
     std::vector<OwnWrite> own_writes;
     std::vector<ResolveRecord> own_resolves;
     std::vector<uint64_t> draw_states;
+    // Per draw: HashDrawOwnState.
+    std::vector<uint64_t> draw_own_states;
+    // The strip's latest own value of every register it wrote itself.
+    std::vector<OwnWrite> own_shadow;
     std::vector<uint32_t> own_float_registers;
     uint32_t draws = 0;
     void Clear();
   };
 
-  void BeginSession(uint64_t bin_select, bool tracing);
+  void BeginSession(uint64_t bin_select);
   void BeginStrip(uint64_t bin_select);
   void EndStrip();
   void EndSession();
@@ -253,12 +257,16 @@ class StripMerge {
   // Derives the layout from the session's records. False if it isn't one.
   // Merged sessions skip the later strips' resolves, so they don't check them.
   bool DeriveLayout(Layout& layout_out, bool check_resolves);
+  bool IsRedundantOwnSetConstant(const Strip& strip,
+                                 const RingBuffer::ReadRange& payload) const;
+  uint64_t HashDrawOwnState(const Strip& strip);
   void RecordOwnSetConstant(const RingBuffer::ReadRange& payload);
   bool ReadsOwnConstants(const Shader* shader, bool is_pixel_shader) const;
   uint64_t HashDrawState();
   void RestoreWindowScissor();
 
   RegisterFile& register_file_;
+  std::vector<uint32_t> draw_own_scratch_;
   Backend* backend_ = nullptr;
 
   bool session_open_ = false;

@@ -282,7 +282,6 @@ class RenderTargetCache {
   // targets start their later bands with where they first take the tiles. The
   // backend has ended its passes.
   void EndStripMerge(uint32_t band, bool carry);
-  bool IsStripMergeActive() const { return strip_merge_active_; }
   // A strip-own resolve of the merged first strip, which covers the rows of
   // every strip down to this frame row; 0 otherwise.
   void SetStripMergeResolveBottom(uint32_t bottom) {

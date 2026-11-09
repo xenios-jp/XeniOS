@@ -138,6 +138,8 @@ void StripMerge::Strip::Clear() {
   own_writes.clear();
   own_resolves.clear();
   draw_states.clear();
+  draw_own_states.clear();
+  own_shadow.clear();
   own_float_registers.clear();
   draws = 0;
 }
@@ -165,11 +167,11 @@ void StripMerge::OnBinSelect(uint64_t bin_select, bool tracing) {
   uint64_t strip_bits = bin_select & ~kFirstTileBit;
   if ((bin_select & kFirstTileBit) && strip_bits && !(bin_select >> 32) &&
       strip_bits != (kFirstTileBit - 1)) {
-    BeginSession(bin_select, tracing);
+    BeginSession(bin_select);
   }
 }
 
-void StripMerge::BeginSession(uint64_t bin_select, bool tracing) {
+void StripMerge::BeginSession(uint64_t bin_select) {
   ++sessions_;
   session_open_ = true;
   mode_ = Mode::kLearn;
@@ -182,7 +184,7 @@ void StripMerge::BeginSession(uint64_t bin_select, bool tracing) {
   window_br_extended_ = false;
   draw_checks_ran_ = candidate_.IsValid();
   uint64_t strip_bits = bin_select & ~kFirstTileBit;
-  bool may_merge = !tracing && !cooldown_sessions_ && candidate_.IsValid() &&
+  bool may_merge = !cooldown_sessions_ && candidate_.IsValid() &&
                    verified_sessions_ >= kLearnSessions &&
                    candidate_.strip_bits[0] == strip_bits &&
                    (!layout_.IsValid() || layout_ == candidate_);
@@ -477,10 +479,8 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
       }
     }
   }
-  if (!layout_out.band_tile_rows() ||
-      uint32_t(band_rows) % (layout_out.msaa_samples >= xenos::MsaaSamples::k2X
-                                 ? 8
-                                 : 16)) {
+  // A whole number of EDRAM tile rows follows from whole 32-row texture tiles.
+  if (!layout_out.band_tile_rows()) {
     Fail("strips not a whole number of EDRAM tile rows");
     return false;
   }
@@ -563,22 +563,25 @@ bool StripMerge::CompareStrip(uint32_t index) {
     Fail("strips with different draw counts");
     return false;
   }
-  if (!first.draw_states.empty() || !strip.draw_states.empty()) {
-    if (first.draw_states.size() != strip.draw_states.size()) {
+  // Learning sessions hash both states at every draw (BeforeDraw), others
+  // none, so equal draw counts give equal sizes.
+  for (size_t d = 0; d < first.draw_states.size(); ++d) {
+    if (first.draw_states[d] != strip.draw_states[d]) {
       failure_strip_ = index;
-      Fail("strips with different draw counts");
+      if (cvars::strip_merge_log) {
+        XELOGI("Strip merge: strip {} draw {} sees different state", index, d);
+      }
+      Fail("a draw sees different inherited state between strips");
       return false;
     }
-    for (size_t d = 0; d < first.draw_states.size(); ++d) {
-      if (first.draw_states[d] != strip.draw_states[d]) {
-        failure_strip_ = index;
-        if (cvars::strip_merge_log) {
-          XELOGI("Strip merge: strip {} draw {} sees different state", index,
-                 d);
-        }
-        Fail("a draw sees different inherited state between strips");
-        return false;
+    if (first.draw_own_states[d] != strip.draw_own_states[d]) {
+      failure_strip_ = index;
+      if (cvars::strip_merge_log) {
+        XELOGI("Strip merge: strip {} draw {} sees different own state", index,
+               d);
       }
+      Fail("a draw sees different strip-own state between strips");
+      return false;
     }
   }
   return true;
@@ -630,6 +633,17 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
     return;
   }
   current_packet_own_ = true;
+  if (opcode == xenos::PM4_SET_CONSTANT &&
+      IsRedundantOwnSetConstant(strip, payload)) {
+    // A repeat of the strip's own latest values is left out of the strip-own
+    // sequence the strips are compared by. Halo 3 sets RB_COPY_DEST_BASE to
+    // the first strip's value, then writes every strip's own value, before
+    // each strip's resolve: strip k has its resolve after k + 1 such writes
+    // and 3 - k more after it. BeforeDraw compares, at every draw, which
+    // registers hold the strip's own values and which hold shared ones, so
+    // dropping the repeats can't hide a difference.
+    return;
+  }
   strip.own_opcodes.push_back(opcode);
   switch (opcode) {
     case xenos::PM4_SET_CONSTANT:
@@ -642,6 +656,63 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
       Fail("a strip-own packet other than SET_CONSTANT or a draw");
       break;
   }
+}
+
+bool StripMerge::IsRedundantOwnSetConstant(
+    const Strip& strip, const RingBuffer::ReadRange& payload) const {
+  uint32_t count = PayloadDwordCount(payload);
+  if (count < 2) {
+    return false;
+  }
+  uint32_t offset_type = PayloadDword(payload, 0);
+  uint32_t index = offset_type & 0x7FF;
+  uint32_t base;
+  switch ((offset_type >> 16) & 0xFF) {
+    case 0:
+      base = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
+      break;
+    case 4:
+      base = 0x2000 + index;
+      break;
+    default:
+      return false;
+  }
+  for (uint32_t i = 1; i < count; ++i) {
+    uint32_t reg = base + (i - 1);
+    auto it = std::find_if(strip.own_shadow.cbegin(), strip.own_shadow.cend(),
+                           [reg](const OwnWrite& own) { return own.reg == reg; });
+    if (it == strip.own_shadow.cend() || it->value != PayloadDword(payload, i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+uint64_t StripMerge::HashDrawOwnState(const Strip& strip) {
+  // How many of the strip's own writes came before the draw; for each register
+  // the strip wrote itself, whether it still holds the strip's latest own
+  // value or else the value shared code put there; and the registers
+  // HashDrawState leaves out that the strip hasn't written itself.
+  constexpr uint32_t kExcluded[] = {
+      XE_GPU_REG_PA_SC_WINDOW_OFFSET, XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL,
+      XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, XE_GPU_REG_RB_COPY_DEST_BASE};
+  std::vector<uint32_t>& data = draw_own_scratch_;
+  data.clear();
+  data.push_back(uint32_t(strip.own_writes.size()));
+  for (const OwnWrite& own : strip.own_shadow) {
+    uint32_t value = register_file_[own.reg];
+    bool overwritten = value != own.value;
+    data.push_back(own.reg);
+    data.push_back(uint32_t(overwritten));
+    data.push_back(overwritten ? value : 0);
+  }
+  for (uint32_t reg : kExcluded) {
+    if (std::none_of(strip.own_shadow.cbegin(), strip.own_shadow.cend(),
+                     [reg](const OwnWrite& w) { return w.reg == reg; })) {
+      data.push_back(register_file_[reg]);
+    }
+  }
+  return XXH3_64bits(data.data(), data.size() * sizeof(uint32_t));
 }
 
 void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
@@ -667,7 +738,15 @@ void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
   Strip& strip = strips_[strip_index_];
   for (uint32_t i = 1; i < count; ++i) {
     uint32_t reg = base + (i - 1);
-    strip.own_writes.push_back({reg, PayloadDword(payload, i)});
+    uint32_t value = PayloadDword(payload, i);
+    strip.own_writes.push_back({reg, value});
+    auto it = std::find_if(strip.own_shadow.begin(), strip.own_shadow.end(),
+                           [reg](const OwnWrite& own) { return own.reg == reg; });
+    if (it != strip.own_shadow.end()) {
+      it->value = value;
+    } else {
+      strip.own_shadow.push_back({reg, value});
+    }
     if (type == 0) {
       strip.own_float_registers.push_back(reg);
       uint32_t vector_index = (reg - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
@@ -708,6 +787,7 @@ bool StripMerge::BeforeDraw() {
   }
   if (mode_ == Mode::kLearn) {
     strip.draw_states.push_back(HashDrawState());
+    strip.draw_own_states.push_back(HashDrawOwnState(strip));
   }
   return true;
 }
