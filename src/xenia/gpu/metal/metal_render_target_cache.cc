@@ -1705,7 +1705,10 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     return;
   }
   auto sc_mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-  if (sc_mode.poly_offset_para_enable) {
+  // Filled, and not culled as a whole.
+  if (sc_mode.poly_offset_para_enable ||
+      sc_mode.poly_mode == xenos::PolygonModeEnable::kDualMode ||
+      (sc_mode.cull_front && sc_mode.cull_back)) {
     return;
   }
   // Every sample covered.
@@ -1754,12 +1757,16 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     // clipping, Z must be inside the clip volume; X and Y are clipped at the
     // host viewport, which the covered rectangle is cut to below.
     const float z_near = clip_cntl.dx_clip_space_def ? 0.0f : -1.0f;
+    // The fourth corner is not given, so its Z is only known when all three
+    // are equal.
+    const float z = positions.z[0];
+    if (!clip_cntl.clip_disable &&
+        !(z >= z_near && z <= 1.0f && positions.z[1] == z &&
+          positions.z[2] == z)) {
+      return;
+    }
     for (uint32_t i = 0; i < 3; ++i) {
-      const float z = positions.z[i];
       if (!(positions.w[i] == 1.0f)) {
-        return;
-      }
-      if (!clip_cntl.clip_disable && !(z >= z_near && z <= 1.0f)) {
         return;
       }
       positions.x[i] = positions.x[i] * viewport_x_scale + viewport_x_offset;
