@@ -266,6 +266,9 @@ class SessionDirectory {
   uint64_t generation_ = 0;  // Bumped when a socket opens or closes.
   bool open_ = false;
   bool closed_ = false;  // The socket closed; Run replaces it.
+  // The device's network changed (Run acts on it).
+  bool network_changed_ = false;
+  uint64_t network_listener_ = 0;
   bool stopping_ = false;
   // The socket signed in (authed): adverts and searches go only then.
   bool authed_ = false;

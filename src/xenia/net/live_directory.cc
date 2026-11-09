@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <random>
 #include <set>
+#include <utility>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/rapidjson/include/rapidjson/document.h"
@@ -22,6 +23,7 @@
 #include "third_party/rapidjson/include/rapidjson/writer.h"
 #include "xenia/base/logging.h"
 #include "xenia/net/live_account.h"
+#include "xenia/net/network_path.h"
 
 namespace xe::net::live {
 
@@ -700,10 +702,16 @@ SessionDirectory::SessionDirectory(std::string lobby, uint32_t title_id,
                                    DirectoryAuth auth)
     : url_(fmt::format("{}/v2/sessions/{:08X}", lobby, title_id)),
       auth_(std::move(auth)) {
+  network_listener_ = AddNetworkPathListener([this] {
+    std::lock_guard lock(mutex_);
+    network_changed_ = true;
+    changed_.notify_all();
+  });
   thread_ = std::thread([this] { Run(); });
 }
 
 SessionDirectory::~SessionDirectory() {
+  RemoveNetworkPathListener(network_listener_);
   std::unique_ptr<secure::LobbySocket> socket;
   {
     std::lock_guard lock(mutex_);
@@ -717,7 +725,8 @@ SessionDirectory::~SessionDirectory() {
 }
 
 void SessionDirectory::EnsureOpenLocked() {
-  if (socket_ || stopping_ || halted_) {
+  // With no network, Run opens it when one comes back.
+  if (socket_ || stopping_ || halted_ || !NetworkPathAvailable()) {
     return;
   }
   auto factory = secure::GetLobbySocketFactory();
@@ -931,9 +940,24 @@ void SessionDirectory::Run() {
   auto next_refresh = steady_clock::now() + seconds(kTtl / 2);
   std::unique_lock lock(mutex_);
   while (!stopping_) {
-    changed_.wait_for(lock, seconds(20), [this] { return stopping_ || closed_; });
+    changed_.wait_for(lock, seconds(20), [this] {
+      return stopping_ || closed_ || network_changed_;
+    });
     if (stopping_) {
       break;
+    }
+    if (std::exchange(network_changed_, false)) {
+      if (!NetworkPathAvailable()) {
+        if (socket_ && !closed_) {
+          OnClosed("no network");
+          failures_ = 0;  // It says nothing about the lobby.
+        }
+      } else {
+        failures_ = 0;
+        if (!closed_ && (!adverts_.empty() || !stats_writes_.empty())) {
+          EnsureOpenLocked();
+        }
+      }
     }
     if (closed_) {
       // A socket is destroyed here, not inside its own event, and without the
@@ -946,7 +970,8 @@ void SessionDirectory::Run() {
       lock.unlock();
       socket.reset();
       lock.lock();
-      changed_.wait_for(lock, delay, [this] { return stopping_; });
+      changed_.wait_for(lock, delay,
+                        [this] { return stopping_ || network_changed_; });
       if (stopping_) {
         break;
       }

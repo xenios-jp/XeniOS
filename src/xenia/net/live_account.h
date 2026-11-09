@@ -850,6 +850,9 @@ class AccountClient {
   std::chrono::steady_clock::time_point names_paused_until_;
   // Set when the queue changed, so Run() looks at its wait again.
   bool names_wake_ = false;
+  // The device's network changed (Run acts on it).
+  bool network_changed_ = false;
+  uint64_t network_listener_ = 0;
   // Whether the lobby has settings and names (its welcome said settings), and
   // what it said of them.
   bool lobby_has_settings_ = false;

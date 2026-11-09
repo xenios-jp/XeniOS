@@ -133,6 +133,8 @@ class RelayClient {
   // |refused|: the lobby answered with an HTTP error instead of the connection,
   // as it does while it's overloaded or out of its daily quota.
   void LobbyClosed(uint64_t now_ms, bool refused = false);
+  // The device has a network again: the next connection goes at once.
+  void NetworkReturned();
   // An open lobby connection that has gone quiet, to be closed.
   bool LobbyStale(uint64_t now_ms) const;
 

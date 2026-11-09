@@ -445,6 +445,11 @@ void RelayClient::LobbyClosed(uint64_t now_ms, bool refused) {
   UpdateStatus(now_ms);
 }
 
+void RelayClient::NetworkReturned() {
+  next_connect_ms_ = 0;
+  failures_ = 0;
+}
+
 bool RelayClient::LobbyStale(uint64_t now_ms) const {
   return (lobby_ != Lobby::kClosed && restart_lobby_) ||
          (lobby_ == Lobby::kOpen && now_ms - lobby_heard_ms_ > kLobbyLostMs) ||
