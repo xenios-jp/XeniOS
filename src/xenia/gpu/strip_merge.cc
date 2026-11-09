@@ -640,6 +640,7 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
   }
   if (!predicated || !(bin_mask & strip.bits)) {
     // Shared, or executed for the first tile only.
+    MarkOwnStale(opcode, payload);
     return;
   }
   // Masks naming another strip are shared (and compared as such at the end).
@@ -648,11 +649,13 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
                               ? candidate_.strip_bits_union
                               : ~kFirstTileBit;
   if (bin_mask & ~(strip.bits | kFirstTileBit) & other_strips) {
+    MarkOwnStale(opcode, payload);
     return;
   }
   current_packet_own_ = true;
   if (opcode == xenos::PM4_SET_CONSTANT &&
       IsRedundantOwnSetConstant(strip, payload)) {
+    MarkOwnRestored(strip, payload);
     // A repeat of the strip's own latest values is left out of the strip-own
     // sequence the strips are compared by. Halo 3 sets RB_COPY_DEST_BASE to
     // the first strip's value, then writes every strip's own value, before
@@ -676,30 +679,70 @@ void StripMerge::OnPacketType3(uint32_t header, uint32_t opcode,
   }
 }
 
-bool StripMerge::IsRedundantOwnSetConstant(
-    const Strip& strip, const RingBuffer::ReadRange& payload) const {
+bool StripMerge::SetConstantRange(const RingBuffer::ReadRange& payload,
+                                  uint32_t& base_out, uint32_t& count_out) {
   uint32_t count = PayloadDwordCount(payload);
-  if (count < 2) {
+  if (!count) {
     return false;
   }
   uint32_t offset_type = PayloadDword(payload, 0);
   uint32_t index = offset_type & 0x7FF;
-  uint32_t base;
   switch ((offset_type >> 16) & 0xFF) {
     case 0:
-      base = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
+      base_out = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
       break;
     case 4:
-      base = 0x2000 + index;
+      base_out = 0x2000 + index;
       break;
     default:
       return false;
   }
-  for (uint32_t i = 1; i < count; ++i) {
-    uint32_t reg = base + (i - 1);
+  count_out = count - 1;
+  return true;
+}
+
+void StripMerge::MarkOwnStale(uint32_t base, uint32_t count) {
+  for (OwnLatest& own : strips_[strip_index_].own_shadow) {
+    if (own.reg >= base && own.reg - base < count) {
+      own.stale = true;
+    }
+  }
+}
+
+void StripMerge::MarkOwnStale(uint32_t opcode,
+                              const RingBuffer::ReadRange& payload) {
+  uint32_t base, count;
+  if (opcode == xenos::PM4_SET_CONSTANT &&
+      SetConstantRange(payload, base, count)) {
+    MarkOwnStale(base, count);
+  }
+}
+
+void StripMerge::MarkOwnRestored(Strip& strip,
+                                 const RingBuffer::ReadRange& payload) {
+  uint32_t base, count;
+  if (!SetConstantRange(payload, base, count)) {
+    return;
+  }
+  for (OwnLatest& own : strip.own_shadow) {
+    if (own.reg >= base && own.reg - base < count) {
+      own.stale = false;
+    }
+  }
+}
+
+bool StripMerge::IsRedundantOwnSetConstant(
+    const Strip& strip, const RingBuffer::ReadRange& payload) const {
+  uint32_t base, count;
+  if (!SetConstantRange(payload, base, count) || !count) {
+    return false;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t reg = base + i;
     auto it = std::find_if(strip.own_shadow.cbegin(), strip.own_shadow.cend(),
                            [reg](const OwnLatest& own) { return own.reg == reg; });
-    if (it == strip.own_shadow.cend() || it->value != PayloadDword(payload, i)) {
+    if (it == strip.own_shadow.cend() ||
+        it->value != PayloadDword(payload, 1 + i)) {
       return false;
     }
   }
@@ -719,7 +762,7 @@ uint64_t StripMerge::HashDrawOwnState(Strip& strip) {
   data.push_back(uint32_t(strip.own_writes.size()));
   for (const OwnLatest& own : strip.own_shadow) {
     uint32_t value = register_file_[own.reg];
-    bool overwritten = value != own.value;
+    bool overwritten = own.stale || value != own.value;
     if (!overwritten) {
       strip.own_writes[own.write_index].used = true;
     }
@@ -737,29 +780,17 @@ uint64_t StripMerge::HashDrawOwnState(Strip& strip) {
 }
 
 void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
-  uint32_t count = PayloadDwordCount(payload);
-  if (!count) {
+  uint32_t base, count;
+  if (!SetConstantRange(payload, base, count)) {
+    if (PayloadDwordCount(payload)) {
+      Fail("strip-own fetch, bool or loop constants");
+    }
     return;
   }
-  uint32_t offset_type = PayloadDword(payload, 0);
-  uint32_t index = offset_type & 0x7FF;
-  uint32_t type = (offset_type >> 16) & 0xFF;
-  uint32_t base;
-  switch (type) {
-    case 0:
-      base = XE_GPU_REG_SHADER_CONSTANT_000_X + index;
-      break;
-    case 4:
-      base = 0x2000 + index;
-      break;
-    default:
-      Fail("strip-own fetch, bool or loop constants");
-      return;
-  }
   Strip& strip = strips_[strip_index_];
-  for (uint32_t i = 1; i < count; ++i) {
-    uint32_t reg = base + (i - 1);
-    uint32_t value = PayloadDword(payload, i);
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t reg = base + i;
+    uint32_t value = PayloadDword(payload, 1 + i);
     uint32_t write_index = uint32_t(strip.own_writes.size());
     strip.own_writes.push_back({reg, value});
     auto it = std::find_if(strip.own_shadow.begin(), strip.own_shadow.end(),
@@ -767,10 +798,11 @@ void StripMerge::RecordOwnSetConstant(const RingBuffer::ReadRange& payload) {
     if (it != strip.own_shadow.end()) {
       it->value = value;
       it->write_index = write_index;
+      it->stale = false;
     } else {
       strip.own_shadow.push_back({reg, value, write_index});
     }
-    if (type == 0) {
+    if (reg >= XE_GPU_REG_SHADER_CONSTANT_000_X) {
       strip.own_float_registers.push_back(reg);
       uint32_t vector_index = (reg - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
       if (std::find(own_float_constants_.cbegin(), own_float_constants_.cend(),
@@ -787,6 +819,11 @@ void StripMerge::OnPacketType01(uint32_t header,
   // aren't rendering state.
   if (!(header >> 30) && (header & 0x7FFF) < 0x2000) {
     return;
+  }
+  if (!(header >> 30)) {
+    uint32_t base = header & 0x7FFF;
+    uint32_t count = ((header >> 16) & 0x3FFF) + 1;
+    MarkOwnStale(base, (header & (uint32_t(1) << 15)) ? 1 : count);
   }
   strips_[strip_index_].records.push_back(
       {~uint64_t(0), HashPayload(payload, header), UINT32_MAX});
