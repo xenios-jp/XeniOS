@@ -10,6 +10,8 @@
 #include "config.h"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -19,6 +21,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/system.h"
@@ -77,15 +80,47 @@ bool sortCvar(cvar::IConfigVar* a, cvar::IConfigVar* b) {
   return false;
 }
 
-toml::parse_result ParseConfig(const std::filesystem::path& config_path) {
+// Parses a config file. A file that can't be read or parsed leaves |out|
+// alone and fills |error|; it never ends the process.
+struct ConfigParseError {
+  std::string description;
+  uint32_t line = 0;
+  uint32_t column = 0;
+};
+
+bool ParseConfig(const std::filesystem::path& config_path, toml::table& out,
+                 ConfigParseError& error) {
   try {
-    return ParseFile(config_path);
-  } catch (toml::parse_error& e) {
-    xe::FatalError(fmt::format("Failed to parse config file '{}':\n\n{}",
-                               config_path, e.what()));
-    return toml::parse_result();
+    out = ParseFile(config_path);
+    return true;
+  } catch (const toml::parse_error& e) {
+    error.description = std::string(e.description());
+    error.line = e.source().begin.line;
+    error.column = e.source().begin.column;
+  } catch (const std::exception& e) {
+    error.description = e.what();
   }
+  return false;
 }
+
+std::string DescribeParseError(const ConfigParseError& error) {
+  if (!error.line) {
+    return error.description;
+  }
+  return fmt::format("line {}, column {}: {}", error.line, error.column,
+                     error.description);
+}
+
+// The last config that parsed, kept next to it. Never written in place, so a
+// crash mid-copy can't damage it.
+std::filesystem::path BackupPath(std::filesystem::path config_path) {
+  return config_path += ".bak";
+}
+
+// A broken config problem waiting for the user's choice, see
+// GetConfigLoadProblem.
+ConfigLoadProblem pending_problem;
+bool choice_pending = false;
 
 void PrintConfigToLog(const std::filesystem::path& file_path) {
   std::ifstream file(file_path);
@@ -257,13 +292,25 @@ const toml::node* FindConfigNode(const toml::table& root,
   return nullptr;
 }
 
-void ReadConfig(const std::filesystem::path& file_path,
-                bool update_if_no_version_stored) {
+// Returns false, leaving every value as it was, if the file doesn't parse.
+bool ReadConfig(const std::filesystem::path& file_path,
+                bool update_if_no_version_stored,
+                ConfigParseError* parse_error = nullptr) {
   if (!cvar::ConfigVars) {
-    return;
+    return false;
   }
 
-  const auto config = ParseConfig(file_path);
+  toml::table config;
+  ConfigParseError error;
+  if (!ParseConfig(file_path, config, error)) {
+    XELOGE("Failed to parse config file '{}': {}",
+           xe::strip_pii(xe::path_to_utf8(file_path)),
+           xe::strip_pii(DescribeParseError(error)));
+    if (parse_error) {
+      *parse_error = error;
+    }
+    return false;
+  }
 
   PrintConfigToLog(file_path);
 
@@ -327,6 +374,7 @@ void ReadConfig(const std::filesystem::path& file_path,
   }
 
   XELOGI("Loaded config: {}", xe::strip_pii(xe::path_to_utf8(file_path)));
+  return true;
 }
 
 uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
@@ -410,7 +458,14 @@ uint32_t LoadGameConfigForFile(const std::filesystem::path& game_path) {
   }
 
   try {
-    const auto config = ParseConfig(game_config_path);
+    toml::table config;
+    ConfigParseError parse_error;
+    if (!ParseConfig(game_config_path, config, parse_error)) {
+      XELOGW("Skipping game config {}: {}",
+             xe::strip_pii(xe::path_to_utf8(game_config_path)),
+             xe::strip_pii(DescribeParseError(parse_error)));
+      return title_id;
+    }
     XELOGI("Loading game config: {}",
            xe::strip_pii(xe::path_to_utf8(game_config_path)));
 
@@ -716,6 +771,10 @@ void SaveConfig() {
   if (config_path.empty()) {
     return;
   }
+  if (choice_pending) {
+    XELOGW("Config: not saving until the broken settings file is resolved");
+    return;
+  }
 
   // All cvar defaults have been updated on loading - store the current date.
   auto defaults_date_cvar =
@@ -729,7 +788,7 @@ void SaveConfig() {
 }
 
 void SaveConfigValues(const std::set<std::string>& names) {
-  if (config_path.empty()) {
+  if (config_path.empty() || choice_pending) {
     return;
   }
   toml::table on_disk;
@@ -763,6 +822,139 @@ void SetConfigSavedCallback(std::function<void()> callback) {
   config_saved_callback = callback;
 }
 
+// Copies |from| to |to| through a temporary file, so |to| is always either the
+// old file or the complete new one.
+static bool CopyFileAtomically(const std::filesystem::path& from,
+                               const std::filesystem::path& to) {
+  std::error_code ec;
+  auto temp = to;
+  temp += ".tmp";
+  std::filesystem::copy_file(
+      from, temp, std::filesystem::copy_options::overwrite_existing, ec);
+  if (!ec) {
+    std::filesystem::rename(temp, to, ec);
+  }
+  if (ec) {
+    std::filesystem::remove(temp, ec);
+    return false;
+  }
+  return true;
+}
+
+// Saves a config that parsed as the last known good one. An empty file (an
+// interrupted write) doesn't replace a backup that has settings.
+static void BackupConfig(const std::filesystem::path& path) {
+  const auto backup_path = BackupPath(path);
+  std::error_code ec;
+  if (std::filesystem::file_size(path, ec) == 0 &&
+      std::filesystem::exists(backup_path)) {
+    return;
+  }
+  if (!CopyFileAtomically(path, backup_path)) {
+    XELOGW("Config: couldn't update the backup '{}'",
+           xe::strip_pii(xe::path_to_utf8(backup_path)));
+  }
+}
+
+// Copies a file that doesn't parse to <name>.invalid-<yyyymmdd-HHMMSS>, so
+// nothing the user wrote is lost. Empty if the copy failed.
+static std::filesystem::path KeepInvalidConfig(
+    const std::filesystem::path& path) {
+  const std::time_t now =
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm local_time = {};
+  localtime_r(&now, &local_time);
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local_time);
+  auto kept = path;
+  kept += std::string(".invalid-") + stamp;
+  std::error_code ec;
+  for (int n = 2; std::filesystem::exists(kept, ec) && n < 100; ++n) {
+    kept = path;
+    kept += fmt::format(".invalid-{}-{}", stamp, n);
+  }
+  std::filesystem::copy_file(path, kept, std::filesystem::copy_options::none,
+                             ec);
+  if (ec) {
+    XELOGE("Config: couldn't keep a copy of the broken file: {}",
+           ec.message());
+    return {};
+  }
+  return kept;
+}
+
+const ConfigLoadProblem* GetConfigLoadProblem() {
+  return choice_pending ? &pending_problem : nullptr;
+}
+
+bool RestoreConfigBackup() {
+  if (!choice_pending || !pending_problem.backup_available ||
+      !ReadConfig(BackupPath(config_path), true)) {
+    return false;
+  }
+  choice_pending = false;
+  SaveConfig();
+  return true;
+}
+
+bool ResetConfigToDefaults() {
+  if (!choice_pending || !cvar::ConfigVars) {
+    return false;
+  }
+  for (const auto& it : *cvar::ConfigVars) {
+    auto* config_var = static_cast<cvar::IConfigVar*>(it.second);
+    if (!config_var->is_transient()) {
+      config_var->ResetConfigValueToDefault();
+    }
+  }
+  choice_pending = false;
+  SaveConfig();
+  return true;
+}
+
+// The global config doesn't parse. Keeps the file, loads the backup if there is
+// a good one (else the cvars stay at their defaults), and holds off writing the
+// config until the choice is made.
+static void RecoverFromBrokenConfig(const std::filesystem::path& path,
+                                    const ConfigParseError& error) {
+  ConfigLoadProblem problem;
+  problem.file = path;
+  problem.error = error.description;
+  problem.line = error.line;
+  problem.column = error.column;
+  problem.kept_copy = KeepInvalidConfig(path);
+  const auto backup_path = BackupPath(path);
+  problem.backup_available =
+      std::filesystem::exists(backup_path) && ReadConfig(backup_path, true);
+  pending_problem = problem;
+  choice_pending = true;
+
+  XELOGW("Config: '{}' can't be read ({}); using {}. The broken file is kept as '{}'.",
+         xe::strip_pii(xe::path_to_utf8(path)),
+         xe::strip_pii(DescribeParseError(error)),
+         problem.backup_available ? "the backup" : "defaults",
+         xe::strip_pii(xe::path_to_utf8(problem.kept_copy)));
+
+#if !XE_PLATFORM_IOS
+  // No choice to offer here: take the backup, or the defaults, and say so.
+  xe::ShowSimpleMessageBox(
+      xe::SimpleMessageBoxType::Warning,
+      fmt::format("Your settings file couldn't be read.\n\n{}: {}\n\n"
+                  "Xenia loaded {} instead.{}",
+                  xe::path_to_utf8(path.filename()), DescribeParseError(error),
+                  problem.backup_available ? "your last working settings"
+                                           : "the default settings",
+                  problem.kept_copy.empty()
+                      ? std::string()
+                      : fmt::format(" The broken file is kept as {}.",
+                                    xe::path_to_utf8(
+                                        problem.kept_copy.filename()))));
+  if (!problem.backup_available || !RestoreConfigBackup()) {
+    ResetConfigToDefaults();
+  }
+#endif
+}
+
 void SetupConfig(const std::filesystem::path& config_folder) {
   config::config_folder = config_folder;
   // check if the user specified a specific config to load
@@ -774,8 +966,23 @@ void SetupConfig(const std::filesystem::path& config_folder) {
       // from the version 0 in this case. Or, it may be a full config - in this
       // case, if it's recent enough (created at least in 2021), it will contain
       // the version number - updates the defaults in it.
-      ReadConfig(config_path, false);
-      return;
+      ConfigParseError error;
+      if (ReadConfig(config_path, false, &error)) {
+        return;
+      }
+      // Not ours to back up or rewrite: carry on with the default config.
+      XELOGW("Config: ignoring --config '{}' ({})",
+             xe::strip_pii(xe::path_to_utf8(config_path)),
+             xe::strip_pii(DescribeParseError(error)));
+#if !XE_PLATFORM_IOS
+      xe::ShowSimpleMessageBox(
+          xe::SimpleMessageBoxType::Warning,
+          fmt::format("The config file given with --config couldn't be "
+                      "read:\n\n{}\n{}\n\nXenia ignored it and left it "
+                      "unchanged.",
+                      xe::path_to_utf8(config_path), DescribeParseError(error)));
+#endif
+      config_path.clear();
     }
   }
   // if the user specified a --config argument, but the file doesn't exist,
@@ -783,11 +990,17 @@ void SetupConfig(const std::filesystem::path& config_folder) {
   if (!config_folder.empty()) {
     config_path = config_folder / config_name;
     if (std::filesystem::exists(config_path)) {
-      ReadConfig(config_path, true);
+      ConfigParseError error;
+      if (ReadConfig(config_path, true, &error)) {
+        BackupConfig(config_path);
+      } else {
+        RecoverFromBrokenConfig(config_path, error);
+      }
     }
     // Re-save the loaded config to present the most up-to-date list of
     // parameters to the user, if new options were added, descriptions were
-    // updated, or default values were changed.
+    // updated, or default values were changed. Does nothing while a broken
+    // config waits for the user's choice.
     SaveConfig();
   }
 }

@@ -31,7 +31,30 @@ namespace config {
 extern std::filesystem::path config_folder;
 extern std::string game_config_suffix;
 
+// Reads the global config (or the file given with --config). A file that
+// doesn't parse never ends the launch: a good global config is copied to
+// <config>.bak; a broken one is kept as <config>.invalid-<yyyymmdd-HHMMSS>, the
+// backup's values (else the defaults) are loaded, and nothing is written until
+// the user chooses (on iOS, via GetConfigLoadProblem; elsewhere the choice is
+// made here and the user told). A broken --config file is ignored and left
+// alone.
 void SetupConfig(const std::filesystem::path& config_folder);
+
+// What a UI needs to ask the user about a global config that couldn't be read.
+struct ConfigLoadProblem {
+  std::filesystem::path file;       // The config that didn't parse.
+  std::filesystem::path kept_copy;  // Where it was kept; empty if that failed.
+  std::string error;
+  uint32_t line = 0;  // 0 when the error has no position.
+  uint32_t column = 0;
+  bool backup_available = false;  // A backup parsed and is loaded now.
+};
+// Non-null while the choice is pending. Main thread.
+const ConfigLoadProblem* GetConfigLoadProblem();
+// Each ends the pending choice, writes a valid config and returns true; false
+// when nothing was pending (or, for the backup, it can't be read now).
+bool RestoreConfigBackup();
+bool ResetConfigToDefaults();
 toml::table LoadGameConfig(uint32_t title_id);
 std::filesystem::path GetBundledDataPath(const std::string& subdirectory);
 
