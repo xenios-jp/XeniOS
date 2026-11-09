@@ -19,9 +19,11 @@
 #include "xenia/gpu/xenos.h"
 
 namespace xe {
+class Memory;
 namespace gpu {
 
 class Shader;
+class TraceWriter;
 
 // Strip merge: predicated tiling (D3D9 on Xenos) renders a frame too big for
 // the EDRAM as N horizontal strips. The command buffer runs once per strip
@@ -123,7 +125,7 @@ class StripMerge {
     bool tessellated = false;
   };
 
-  // What NoteOwnResolve compares across strips, from draw_util::ResolveInfo.
+  // What NoteResolve records for DeriveLayout, from draw_util::ResolveInfo.
   struct ResolveRecord {
     uint32_t edram_info = 0;
     uint32_t coordinate_info = 0;
@@ -145,8 +147,8 @@ class StripMerge {
     bool clears = false;
   };
 
-  explicit StripMerge(RegisterFile& register_file)
-      : register_file_(register_file) {}
+  StripMerge(RegisterFile& register_file, const Memory* memory)
+      : register_file_(register_file), memory_(memory) {}
 
   void SetBackend(Backend* backend) { backend_ = backend; }
 
@@ -189,6 +191,8 @@ class StripMerge {
   // Render targets at this pitch and MSAA are banded (merged when merging).
   bool IsBanded(uint32_t pitch_tiles_at_32bpp,
                 xenos::MsaaSamples msaa_samples) const;
+  // IsBanded for the current RB_SURFACE_INFO.
+  bool IsSurfaceBanded() const;
   // The current window scissor is the first strip's frame-space one (when
   // merging, after BeforeDraw extended it).
   bool IsFrameSpace() const;
@@ -196,8 +200,10 @@ class StripMerge {
   // for memexport, for shaders reading strip-own constants in draws that don't
   // address the frame, and for band-addressed draws that can't be replicated.
   void CheckDraw(const DrawInfo& draw);
-  // Learning sessions: a strip-own resolve.
-  void NoteOwnResolve(const ResolveRecord& resolve);
+  // A resolve while recording: learning sessions record the strip-own ones.
+  // The frame row a strip-own resolve of the merged first strip extends down
+  // to, covering every strip's rows; 0 otherwise.
+  uint32_t NoteResolve(TraceWriter& trace_writer);
   // The session can't be merged (learning), or the merged first strip has to
   // recover, or a later merged strip went wrong.
   void Fail(const char* reason);
@@ -283,6 +289,7 @@ class StripMerge {
   void RestoreWindowScissor();
 
   RegisterFile& register_file_;
+  const Memory* memory_;
   std::vector<uint32_t> draw_own_scratch_;
   // Per strip-own write of the last verified learning session: whether a draw
   // saw it.

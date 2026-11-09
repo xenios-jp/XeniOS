@@ -4408,20 +4408,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     bool strip_merge_banded = false;
     strip_merge_replicate_draw_ = false;
     if (strip_merge_.recording()) {
-      auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
-      uint32_t pitch_tiles_at_32bpp =
-          ((rb_surface_info.surface_pitch
-            << uint32_t(rb_surface_info.msaa_samples >=
-                        xenos::MsaaSamples::k4X)) +
-           (xenos::kEdramTileWidthSamples - 1)) /
-          xenos::kEdramTileWidthSamples;
       StripMerge::DrawInfo strip_merge_draw;
       strip_merge_draw.vertex_shader = vertex_shader;
       strip_merge_draw.pixel_shader = pixel_shader;
       strip_merge_draw.banded =
-          is_rasterization_done &&
-          strip_merge_.IsBanded(pitch_tiles_at_32bpp,
-                                rb_surface_info.msaa_samples);
+          is_rasterization_done && strip_merge_.IsSurfaceBanded();
       strip_merge_draw.frame_space = strip_merge_.IsFrameSpace();
       strip_merge_draw.memexport = memexport_used;
       strip_merge_draw.pixel_position =
@@ -6792,83 +6783,6 @@ void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
   render_target_cache_->EndStripMerge(band, carry);
 }
 
-bool MetalCommandProcessor::StripMergeNoteResolve(uint32_t& bottom_out) {
-  bottom_out = 0;
-  const RegisterFile& regs = *register_file_;
-  auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
-  uint32_t pitch_tiles_at_32bpp =
-      ((rb_surface_info.surface_pitch
-        << uint32_t(rb_surface_info.msaa_samples >= xenos::MsaaSamples::k4X)) +
-       (xenos::kEdramTileWidthSamples - 1)) /
-      xenos::kEdramTileWidthSamples;
-  bool banded =
-      strip_merge_.IsBanded(pitch_tiles_at_32bpp, rb_surface_info.msaa_samples);
-  bool own = strip_merge_.current_packet_own();
-  if (strip_merge_.merging()) {
-    if (strip_merge_.failed()) {
-      return true;
-    }
-    if (banded && own) {
-      bottom_out = strip_merge_.layout().frame_bottom();
-    } else if (banded) {
-      // Every strip resolving its band: the later strips' resolves are
-      // skipped, so their rows would be missing.
-      strip_merge_.Fail("a resolve of the strip's band in every strip");
-    }
-    return true;
-  }
-  if (!strip_merge_.learning()) {
-    return true;
-  }
-  if (!own) {
-    if (banded) {
-      strip_merge_.Fail("a resolve of the strip's band in every strip");
-    }
-    return true;
-  }
-  // Learning: what DeriveLayout compares across the strips. No trace is being
-  // written while recording, so this logs no memory reads.
-  draw_util::ResolveInfo resolve_info;
-  if (!draw_util::GetResolveInfo(regs, *memory_, trace_writer_, 1, 1, false,
-                                 false, resolve_info)) {
-    strip_merge_.Fail("a strip-own resolve that can't be decoded");
-    return true;
-  }
-  const draw_util::ResolveEdramInfo& edram_info =
-      resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
-                                    : resolve_info.color_edram_info;
-  StripMerge::ResolveRecord record;
-  record.edram_info = edram_info.packed;
-  record.coordinate_info = resolve_info.coordinate_info.packed;
-  record.height_div_8 = resolve_info.height_div_8;
-  record.copy_dest_info = resolve_info.copy_dest_info.value;
-  draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
-      resolve_info.copy_dest_coordinate_info;
-  record.dest_height_aligned = dest_coordinates.height_aligned_div_32 << 5;
-  dest_coordinates.height_aligned_div_32 = 0;
-  record.copy_dest_coordinate_info = dest_coordinates.packed;
-  record.copy_dest_base = resolve_info.copy_dest_base;
-  record.copy_control = resolve_info.rb_copy_control.value;
-  record.dest_pitch_aligned =
-      resolve_info.copy_dest_coordinate_info.pitch_aligned_div_32 << 5;
-  record.dest_offset_y =
-      resolve_info.copy_dest_coordinate_info.offset_y_div_8 << 3;
-  record.dest_bytes_per_pixel =
-      FormatInfo::Get(
-          xenos::TextureFormat(resolve_info.copy_dest_info.copy_dest_format))
-          ->bits_per_pixel >>
-      3;
-  record.edram_offset_y = resolve_info.coordinate_info.edram_offset_y_div_8
-                          << 3;
-  record.pitch_tiles_at_32bpp = edram_info.pitch_tiles;
-  record.msaa_samples = edram_info.msaa_samples;
-  record.is_64bpp = edram_info.format_is_64bpp != 0;
-  record.clears =
-      resolve_info.IsClearingDepth() || resolve_info.IsClearingColor();
-  strip_merge_.NoteOwnResolve(record);
-  return true;
-}
-
 void MetalCommandProcessor::DrawStripMergeBands(
     const std::function<void()>& draw) {
   if (!strip_merge_replicate_draw_) {
@@ -6933,17 +6847,13 @@ bool MetalCommandProcessor::IssueCopy() {
   // Strip merge (strip_merge.h): a strip-own resolve of the merged first strip
   // resolves every strip's rows, from a pass of its own (the tile resolve
   // path reads one EDRAM band).
-  uint32_t strip_merge_resolve_bottom = 0;
-  if (strip_merge_.recording()) {
-    if (!StripMergeNoteResolve(strip_merge_resolve_bottom)) {
+  uint32_t strip_merge_resolve_bottom =
+      strip_merge_.recording() ? strip_merge_.NoteResolve(trace_writer_) : 0;
+  if (strip_merge_resolve_bottom) {
+    EndRenderEncoder();
+    copy_command_buffer = EnsureCommandBuffer();
+    if (!copy_command_buffer) {
       return false;
-    }
-    if (strip_merge_resolve_bottom) {
-      EndRenderEncoder();
-      copy_command_buffer = EnsureCommandBuffer();
-      if (!copy_command_buffer) {
-        return false;
-      }
     }
   }
   render_target_cache_->SetStripMergeResolveBottom(strip_merge_resolve_bottom);

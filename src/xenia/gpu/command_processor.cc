@@ -226,7 +226,8 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
       worker_running_(true),
       write_ptr_index_event_(xe::threading::Event::CreateAutoResetEvent(false)),
       write_ptr_index_(0),
-      strip_merge_(*graphics_system->register_file()) {
+      strip_merge_(*graphics_system->register_file(),
+                   graphics_system->memory()) {
   assert_not_null(write_ptr_index_event_);
   // Parse and cache ZPD mode once.
   cached_zpd_mode_ = ParseZPDMode();
