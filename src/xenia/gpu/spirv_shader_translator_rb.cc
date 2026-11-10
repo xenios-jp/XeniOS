@@ -4668,6 +4668,46 @@ spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
       spv::Id alpha_source_term_without_dest =
           FSI_BlendTermFixed10(true, false, alpha_source_factor,
                                source_fixed10, no_dest, constant_fixed10);
+      // Zero or one factors with an add, in the color and in the alpha, are
+      // a sum of the two values: every other factor field bit and both
+      // equations are zero. The source's part of it is known before the read.
+      spv::Id color_dest_factor = field(8, blend_factor_width);
+      spv::Id alpha_dest_factor = field(24, blend_factor_width);
+      spv::Id unit_add = builder_->createBinOp(
+          spv::OpIEqual, type_bool_,
+          builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, blend_control,
+                                builder_->makeUintConstant(0x1EFE1EFE)),
+          const_uint_0_);
+      spv::Id factor_one =
+          builder_->makeUintConstant(uint32_t(xenos::BlendFactor::kOne));
+      auto is_one = [&](spv::Id factor) {
+        return builder_->createBinOp(spv::OpIEqual, type_bool_, factor,
+                                     factor_one);
+      };
+      spv::Id zero_uint3 = builder_->makeNullConstant(type_uint3_);
+      uint_vector_temp_.clear();
+      uint_vector_temp_.push_back(0);
+      uint_vector_temp_.push_back(1);
+      uint_vector_temp_.push_back(2);
+      spv::Id unit_source_rgb10 = builder_->createTriOp(
+          spv::OpSelect, type_uint3_,
+          builder_->smearScalar(spv::NoPrecision, is_one(color_source_factor),
+                                type_bool3_),
+          builder_->createRvalueSwizzle(spv::NoPrecision, type_uint3_,
+                                        source_fixed10, uint_vector_temp_),
+          zero_uint3);
+      // The alpha is 8 bits widened to 10, and the 10-bit sum narrowed back
+      // is the 8-bit sum.
+      spv::Id unit_source_alpha8 = builder_->createTriOp(
+          spv::OpSelect, type_uint_, is_one(alpha_source_factor),
+          builder_->createBinOp(
+              spv::OpShiftRightLogical, type_uint_,
+              builder_->createCompositeExtract(source_fixed10, type_uint_, 3),
+              builder_->makeUintConstant(2)),
+          const_uint_0_);
+      spv::Id color_dest_is_one = builder_->smearScalar(
+          spv::NoPrecision, is_one(color_dest_factor), type_bool3_);
+      spv::Id alpha_dest_is_one = is_one(alpha_dest_factor);
       // The destination's bytes. unorm8 to float is exact enough to round
       // back.
       spv::Id dest_bytes = builder_->createUnaryOp(
@@ -4688,23 +4728,51 @@ spv::Id SpirvShaderTranslator::CompleteFragmentShader_HostGamma(
       spv::Id dest_rgb10 = Gamma8TableLookup(
           false, builder_->createRvalueSwizzle(spv::NoPrecision, type_uint3_,
                                                dest_bytes, uint_vector_temp_));
+      spv::Id dest_alpha8 =
+          builder_->createCompositeExtract(dest_bytes, type_uint_, 3);
+
+      SpirvBuilder::IfBuilder if_unit_add(
+          unit_add, spv::SelectionControlDontFlattenMask, *builder_);
+      std::pair<spv::Id, spv::Id> unit_fields;
+      unit_fields.first = Gamma8TableLookup(
+          true,
+          builder_->createBinBuiltinCall(
+              type_uint3_, ext_inst_glsl_std_450_, GLSLstd450UMin,
+              builder_->createBinOp(
+                  spv::OpIAdd, type_uint3_, unit_source_rgb10,
+                  builder_->createTriOp(spv::OpSelect, type_uint3_,
+                                        color_dest_is_one, dest_rgb10,
+                                        zero_uint3)),
+              builder_->smearUintConstant(1023, type_uint3_)));
+      unit_fields.second = builder_->createBinBuiltinCall(
+          type_uint_, ext_inst_glsl_std_450_, GLSLstd450UMin,
+          builder_->createBinOp(
+              spv::OpIAdd, type_uint_, unit_source_alpha8,
+              builder_->createTriOp(spv::OpSelect, type_uint_,
+                                    alpha_dest_is_one, dest_alpha8,
+                                    const_uint_0_)),
+          builder_->makeUintConstant(255));
+      if_unit_add.makeBeginElse();
       id_vector_temp_.clear();
       for (uint32_t i = 0; i < 3; ++i) {
         id_vector_temp_.push_back(
             builder_->createCompositeExtract(dest_rgb10, type_uint_, i));
       }
-      id_vector_temp_.push_back(FSI_Widen8To10(
-          builder_->createCompositeExtract(dest_bytes, type_uint_, 3)));
+      id_vector_temp_.push_back(FSI_Widen8To10(dest_alpha8));
       spv::Id dest_fixed10 =
           builder_->createCompositeConstruct(type_uint4_, id_vector_temp_);
-
-      blended_fields = FSI_BlendFixed10Fields(
+      std::pair<spv::Id, spv::Id> general_fields = FSI_BlendFixed10Fields(
           gamma_format, source_fixed10, dest_fixed10, constant_fixed10,
           field(5, blend_equation_width), color_source_factor,
-          field(8, blend_factor_width), field(21, blend_equation_width),
-          alpha_source_factor, field(24, blend_factor_width),
+          color_dest_factor, field(21, blend_equation_width),
+          alpha_source_factor, alpha_dest_factor,
           color_source_term_without_dest, alpha_source_term_without_dest,
           true);
+      if_unit_add.makeEndIf();
+      blended_fields.first = if_unit_add.createMergePhi(unit_fields.first,
+                                                        general_fields.first);
+      blended_fields.second = if_unit_add.createMergePhi(
+          unit_fields.second, general_fields.second);
     }
     if_blend.makeBeginElse();
     std::pair<spv::Id, spv::Id> unblended_fields =
