@@ -2608,6 +2608,11 @@ bool MetalCommandProcessor::SetupContext() {
     return false;
   }
 
+  // Resolve read watch (ResolveReadWatchActive decides whether it is used).
+  InitResolveReadWatch();
+  resolve_read_callback_ = memory_->RegisterPhysicalMemoryReadCallback(
+      ResolveReadCallbackThunk, this);
+
   // Initialize primitive processor (index/primitive conversion like D3D12).
   primitive_processor_ = std::make_unique<MetalPrimitiveProcessor>(
       *this, *register_file_, *memory_, trace_writer_, *shared_memory_);
@@ -2899,9 +2904,118 @@ uint64_t MetalCommandProcessor::GetHeldGpuWritesSubmission() {
   // Resolve output, with zero-copy. Command processor stores aren't held: a
   // late held store could overwrite a newer guest write (a read-through
   // variant hung BF4 on a spin at 0x1FC1B002).
-  return resolve_last_submission_ > GetCompletedSubmission()
-             ? resolve_last_submission_
-             : 0;
+  // Output a read watch guards makes a CPU access of it wait instead: held
+  // behind the rest only (not watchable), and behind all of it again once the
+  // watch has given up.
+  uint64_t submission =
+      !resolve_read_watch_disabled_.load(std::memory_order_relaxed)
+          ? resolve_unwatched_last_submission_
+          : resolve_last_submission_;
+  return submission > GetCompletedSubmission() ? submission : 0;
+}
+
+bool MetalCommandProcessor::ResolveReadWatchActive() const {
+  return resolve_page_owners_ && shared_memory_ &&
+         shared_memory_->is_zero_copy() &&
+         !resolve_read_watch_disabled_.load(std::memory_order_relaxed);
+}
+
+bool MetalCommandProcessor::EndResolveSubmission() {
+  if (current_command_buffer_) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionOther);
+  }
+  return true;
+}
+
+bool MetalCommandProcessor::FaultCopyResolveToGuestRam(
+    const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+  if (ranges.empty()) {
+    return false;
+  }
+  // Under resolve_read_mutex_. The ranges are pages the owner still owns.
+  uint64_t submission = GetResolveSubmittedThrough();
+  auto owner_it = resolve_owners_.find(
+      resolve_page_owners_[ranges.front().first >> 12].load(
+          std::memory_order_relaxed));
+  if (owner_it != resolve_owners_.end()) {
+    submission = std::min(submission, owner_it->second.submission);
+  }
+    return true;
+  }
+  // Not the GPU thread's AwaitSubmissionCompletion: this may be any thread,
+  // with or without the global lock. Completion handlers take only
+  // completion_mutex_, so they never wait for this.
+  auto wait_start = std::chrono::steady_clock::now();
+  bool completed;
+  {
+    std::unique_lock<std::mutex> lock(completion_mutex_);
+    completed = completion_cond_.wait_for(
+        lock, kResolveFaultWaitBound, [this, submission]() {
+          return completed_command_buffers_.load(std::memory_order_acquire) >=
+                 submission;
+        });
+  }
+  uint64_t wait_ns =
+      uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now() - wait_start)
+                   .count());
+  if (!completed) {
+    uint32_t hits =
+        resolve_fault_bound_hits_.fetch_add(1, std::memory_order_relaxed) + 1;
+    XELOGW(
+        "Metal: a CPU access of resolve output at 0x{:08X} waited {} ms for "
+        "submission {} (completed {}) and goes ahead without it",
+        ranges.front().first, kResolveFaultWaitBound.count(), submission,
+        completed_command_buffers_.load(std::memory_order_relaxed));
+    if (hits >= kResolveFaultMaxBoundHits &&
+        !resolve_read_watch_disabled_.exchange(true,
+                                               std::memory_order_relaxed)) {
+      XELOGE(
+          "Metal: resolve read watch waits ran out {} times, so guest signals "
+          "are held behind resolve output again for the rest of the run",
+          hits);
+    }
+  }
+  // Either way the watch is done with: after a bound hit the access goes
+  // ahead rather than faulting again into another wait.
+  // TODO(xenios-jp): for a write (or kDiscard) the GPU output then lands over
+  // what the guest wrote. Needs counts of how often the bound is hit by writes
+  // before changing it for them.
+  return true;
+}
+
+int MetalCommandProcessor::ResolveOwnerStateAt(uint32_t physical_address,
+                                               bool note_read) {
+  if (!resolve_page_owners_ ||
+      physical_address >= SharedMemory::kBufferSize) {
+    return 0;
+  }
+  uint64_t owner_key = resolve_page_owners_[physical_address >> 12].load(
+      std::memory_order_relaxed);
+  if (!owner_key) {
+    return 0;
+void MetalCommandProcessor::ResolveReadCallbackThunk(
+    void* context, uint32_t physical_address, uint32_t length,
+    Memory::PhysicalAccess access) {
+  auto command_processor = static_cast<MetalCommandProcessor*>(context);
+  // A read that arrives before its resolve's submission asks for the
+  // submission (ResolveOwnerStateAt).
+  if (access == Memory::PhysicalAccess::kRead) {
+  switch (access) {
+    case Memory::PhysicalAccess::kRead:
+      command_processor->MarkResolvePagesRead(physical_address, length);
+      break;
+    case Memory::PhysicalAccess::kWrite:
+      command_processor->PrepareResolvePagesForWrite(physical_address, length);
+      break;
+    case Memory::PhysicalAccess::kDiscard:
+      // The GPU writes guest RAM itself, so dropping the owners doesn't stop a
+      // submitted resolve from landing over what the pages hold next: wait for
+      // it as a write would first.
+      command_processor->PrepareResolvePagesForWrite(physical_address, length);
+      command_processor->DiscardResolvePages(physical_address, length);
+      break;
+  }
 }
 
 void MetalCommandProcessor::AwaitGpuWritesBeforeGuestRead() {
@@ -3018,6 +3132,10 @@ void MetalCommandProcessor::ShutdownContext() {
   }
 
   WaitForPendingCompletionHandlers();
+
+  // Nothing is in flight now, so no fault can still be waiting for a
+  // submission.
+  ResetResolveReadWatch();
 
   if (uint64_t failed =
           failed_command_buffers_.load(std::memory_order_relaxed)) {
@@ -3580,6 +3698,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // submission's pages, which may be recycled once it retires) and the
   // autorelease pool drain.
   EndCommandBuffer();
+  NoteResolveFrame();
 
   if (primitive_processor_ && frame_open_) {
     primitive_processor_->EndFrame();
@@ -7207,6 +7326,20 @@ bool MetalCommandProcessor::IssueCopy() {
   // read once a fence or interrupt tells it the GPU got past the resolve.
   if (shared_memory_->is_zero_copy()) {
     resolve_last_submission_ = submission_current_;
+    // With the read watch, a CPU access of the output waits for this
+    // submission instead, so guest signals needn't
+    // (GetHeldGpuWritesSubmission).
+    if (ResolveReadWatchActive() &&
+        IsResolveDestinationResident(written_address, written_length)) {
+      NoteResolveForReadback(written_address, written_length, false);
+      // lazy submission.
+      if (AdaptiveResolveSubmitsEarly(
+              MakeReadbackResolveKey(written_address, written_length))) {
+        EndResolveSubmission();
+      }
+    } else {
+      resolve_unwatched_last_submission_ = submission_current_;
+    }
   }
 
   // Later work in the submission that reads the output (draws, texture loads
@@ -8670,6 +8803,11 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     if (shared_memory_ && shared_memory_->hazards()) {
       shared_memory_->hazards()->Retire();
     }
+    // Resolves recorded into it can now be waited for from a fault, so the
+    // watches reads racing them used up are armed again.
+    resolve_submitted_through_.store(submission_current_,
+                                     std::memory_order_release);
+    OnResolveSubmissionEnded();
   }
   copy_resolve_writes_pending_ = false;
   DrainCommandBufferAutoreleasePool();
