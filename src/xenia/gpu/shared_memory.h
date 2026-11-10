@@ -262,6 +262,10 @@ class SharedMemory {
         WatchNode* node_first;
         uint32_t page_first;
         uint32_t page_last;
+        // The bytes watched: a GPU write, whose extent is known to the byte,
+        // only fires the watches it overlaps.
+        uint32_t address_first;
+        uint32_t address_last;
       };
       WatchRange* next_free;
     };
@@ -303,9 +307,13 @@ class SharedMemory {
   uint32_t trace_download_page_count_ = 0;
 
   // Triggers the watches (global and per-range), removing triggered range
-  // watches.
+  // watches. With written_first / written_last, the bytes that changed, only
+  // the range watches overlapping them are triggered: a watch that merely
+  // shares a page with a GPU write keeps what it watches (with 16 KB host
+  // pages most neighbouring 4 KB-aligned textures share one).
   void FireWatches(uint32_t page_first, uint32_t page_last,
-                   bool invalidated_by_gpu);
+                   bool invalidated_by_gpu, uint32_t written_first = 0,
+                   uint32_t written_last = UINT32_MAX);
   // Unlinks and frees the range and its nodes. Call this in the global critical
   // region.
   void UnlinkWatchRange(WatchRange* range);
