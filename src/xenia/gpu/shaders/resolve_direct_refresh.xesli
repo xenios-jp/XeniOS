@@ -14,13 +14,25 @@
 // the loader would copy from the resolved memory: the texels before the endian
 // swap. Up to three aliases - images of the same size loaded from the same
 // memory with the same texel bits - get the same texels at the same
-// coordinates.
-RWTexture2DArray<uint> xe_resolve_refresh_texture : register(u4);
-RWTexture2DArray<uint> xe_resolve_refresh_alias_0 : register(u5);
-RWTexture2DArray<uint> xe_resolve_refresh_alias_1 : register(u6);
-RWTexture2DArray<uint> xe_resolve_refresh_alias_2 : register(u7);
+// coordinates. With XE_RESOLVE_DIRECT_REFRESH_64BPP, the images are RG32Uint
+// views of 64bpb textures, a texel being the two dwords of a pixel.
+#ifdef XE_RESOLVE_DIRECT_REFRESH_64BPP
+#define XE_RESOLVE_DIRECT_REFRESH_TEXEL uint2_xe
+#else
+#define XE_RESOLVE_DIRECT_REFRESH_TEXEL uint
+#endif
+RWTexture2DArray<XE_RESOLVE_DIRECT_REFRESH_TEXEL> xe_resolve_refresh_texture
+    : register(u4);
+RWTexture2DArray<XE_RESOLVE_DIRECT_REFRESH_TEXEL> xe_resolve_refresh_alias_0
+    : register(u5);
+RWTexture2DArray<XE_RESOLVE_DIRECT_REFRESH_TEXEL> xe_resolve_refresh_alias_1
+    : register(u6);
+RWTexture2DArray<XE_RESOLVE_DIRECT_REFRESH_TEXEL> xe_resolve_refresh_alias_2
+    : register(u7);
 
-void XeResolveDirectRefreshWrite(uint2_xe texel, uint value, uint alias_count) {
+void XeResolveDirectRefreshWrite(uint2_xe texel,
+                                 XE_RESOLVE_DIRECT_REFRESH_TEXEL value,
+                                 uint alias_count) {
   xe_resolve_refresh_texture[uint3(texel, 0u)] = value;
   if (alias_count >= 1u) {
     xe_resolve_refresh_alias_0[uint3(texel, 0u)] = value;
@@ -33,6 +45,29 @@ void XeResolveDirectRefreshWrite(uint2_xe texel, uint value, uint alias_count) {
   }
 }
 
+#ifdef XE_RESOLVE_DIRECT_REFRESH_64BPP
+// Refresh the four pixels produced by a direct 64bpp resolve kernel, two in
+[ForceInline]
+void XeResolveDirectRefreshWrite4x64(uint2_xe pixel_index, uint4_xe packed_01,
+                                     uint4_xe packed_23,
+                                     uint constants_offset) {
+  uint texture_width_and_offset_y =
+      byte_buffer_align4_load4_xe(xe_resolve_edram, constants_offset);
+  uint texture_width = texture_width_and_offset_y & 0xFFFFu;
+  uint texture_height_and_alias_count =
+      byte_buffer_align4_load4_xe(xe_resolve_edram, constants_offset + 4u);
+  uint texture_height = texture_height_and_alias_count & 0xFFFFu;
+                                  packed_01.xy, alias_count);
+    }
+                                  packed_01.zw, alias_count);
+    }
+                                  packed_23.xy, alias_count);
+    }
+                                  packed_23.zw, alias_count);
+    }
+  }
+}
+#else
 // Refresh the four pixels produced by either direct RGB10 resolve kernel.
 [ForceInline]
 void XeResolveDirectRefreshWrite4(uint2_xe pixel_index, uint4_xe packed) {
@@ -63,5 +98,6 @@ void XeResolveDirectRefreshWrite4(uint2_xe pixel_index, uint4_xe packed) {
     }
   }
 }
+#endif  // XE_RESOLVE_DIRECT_REFRESH_64BPP
 
 #endif  // XENIA_GPU_SHADERS_RESOLVE_DIRECT_REFRESH_XESLI_

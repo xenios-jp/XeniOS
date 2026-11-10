@@ -11,12 +11,19 @@
 #include "endian.xesli"
 #include "pixel_formats.xesli"
 // The EDRAM binding slot carries the source texel origin instead: two dwords,
-// the host render target texel of the resolve area's first pixel.
+// the host render target texel of the resolve area's first pixel. With
+// XE_RESOLVE_DIRECT_REFRESH, two more follow: the refreshed texture's width
+// with the texture row of the resolve's first row in the upper 16 bits, and
+// its height with the number of its aliases in the upper 16 bits.
 #define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
 #include "resolve.xesli"
 #include "resolve_direct_rgb10f.xesli"
 
 byte_buffer_align16_wo_declare_xe(xe_resolve_dest, 1, 0, u0, space0, 1)
+#ifdef XE_RESOLVE_DIRECT_REFRESH
+#define XE_RESOLVE_DIRECT_REFRESH_64BPP 1
+#include "resolve_direct_refresh.xesli"
+#endif
 #define LOCAL_SIZE_X_XE 8
 #define LOCAL_SIZE_Y_XE 8
 #define LOCAL_SIZE_Z_XE 1
@@ -99,6 +106,9 @@ entry_inputs_end_code_begin_compute_xe
     }
     packed_01.xy = packed_01.zw;
   }
+#ifdef XE_RESOLVE_DIRECT_REFRESH
+  XeResolveDirectRefreshWrite4x64(pixel_index, packed_01, packed_23, 8u);
+#endif
   uint dest_address = XeResolveDestPixelAddress(resolve_info, pixel_index, 3u);
   byte_buffer_align16_store16_xe(
       xe_resolve_dest, dest_address,
