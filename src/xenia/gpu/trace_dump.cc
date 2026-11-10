@@ -261,7 +261,11 @@ int TraceDump::Run() {
     }
     player_->WaitOnPlayback();
     EndFrame(pass, i);
-    if (i == cvars::trace_dump_edram_frame) {
+    // Dumps of later passes overwrite the earlier ones: only the last pass
+    // writes them, so the earlier ones don't change what it replays (the
+    // EDRAM snapshot moves render targets around).
+    bool last_pass = pass + 1 == passes;
+    if (i == cvars::trace_dump_edram_frame && last_pass) {
       std::filesystem::path edram_path = base_output_path_;
       edram_path.replace_filename(edram_path.stem().concat("_edram.bin"));
       // The dump submits GPU work, so it has to run on the GPU thread.
@@ -282,7 +286,7 @@ int TraceDump::Run() {
     if (n == capture_frame) {
       EndHostCapture();
     }
-    if (i == cvars::trace_dump_memory_frame) {
+    if (i == cvars::trace_dump_memory_frame && last_pass) {
       AwaitGuestMemoryWrites(cvars::trace_dump_memory_base,
                              cvars::trace_dump_memory_size);
       std::filesystem::path mem_path = base_output_path_;
