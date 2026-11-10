@@ -184,8 +184,11 @@ class StripMerge {
 
   void SetBackend(Backend* backend) { backend_ = backend; }
 
-  // A session is open, the PM4 hooks below have to run.
-  bool recording() const { return session_open_; }
+  // A session is open and recorded, the PM4 hooks below have to run.
+  bool recording() const { return session_open_ && recording_; }
+  // A session is open, recorded or not: BeforeDraw has to run (it counts the
+  // draws of unrecorded sessions).
+  bool session_open() const { return session_open_; }
 
   // PM4 hooks. tracing: a trace is being written (traces record the guest's
   // mask rewrites, a merged trace couldn't be replayed unmerged).
@@ -196,9 +199,10 @@ class StripMerge {
                      const RingBuffer::ReadRange& payload);
   // Type 0 and 1 register writes while recording.
   void OnPacketType01(uint32_t header, const RingBuffer::ReadRange& payload);
-  // Before each draw or resolve while recording. False to skip it.
+  // Before each draw or resolve while a session is open. False to skip it.
   bool BeforeDraw();
   // An unpredicated swap: the next tiling session is the frame's first.
+  void OnSwap();
 
   // Backend queries.
   // The first strip of a merged session is running.
@@ -206,7 +210,7 @@ class StripMerge {
     return session_open_ && mode_ == Mode::kMerged && strip_index_ == 0;
   }
   // A learning session is running.
-  bool learning() const { return session_open_ && mode_ == Mode::kLearn; }
+  bool learning() const { return recording() && mode_ == Mode::kLearn; }
   // A check failed in this session (a merged first strip keeps rendering
   // merged until it ends, then recovers).
   bool failed() const { return failed_; }
@@ -215,7 +219,7 @@ class StripMerge {
                                                               : candidate_; }
   // Draw-level checks apply: the first strip, with a layout to check against.
   bool checking_draws() const {
-    return session_open_ && strip_index_ == 0 && !failed_ &&
+    return recording() && strip_index_ == 0 && !failed_ &&
            (mode_ == Mode::kMerged ||
             (mode_ == Mode::kLearn && candidate_.IsValid()));
   }
@@ -354,6 +358,8 @@ class StripMerge {
   void BeginSession(uint64_t bin_select);
   void BeginStrip(uint64_t bin_select);
   void EndStrip();
+  // A dormant session: no learning, its slot's dormant run counts down.
+  void EndDormantSession();
   void EndSession();
   // False if a packet is predicated on some strips but not all.
   bool CheckMasks();
@@ -392,11 +398,14 @@ class StripMerge {
   RegisterFile& register_file_;
   const Memory* memory_;
   std::vector<uint32_t> draw_own_scratch_;
-  // saw it.
-  std::vector<bool> learned_own_used_;
   Backend* backend_ = nullptr;
 
   bool session_open_ = false;
+  // The open session is recorded: the PM4 hooks see its packets. A learning
+  // session stops being recorded once it failed (at its next draw), a dormant
+  // one isn't (SessionSlot::dormant_sessions).
+  bool recording_ = false;
+  bool dormant_ = false;
   Mode mode_ = Mode::kLearn;
   // The session merges from the first strip's first draw, if it has one: a
   // session that draws nothing (555308AE opens one before each drawing one)
@@ -439,6 +448,13 @@ class StripMerge {
     uint32_t verified_sessions = 0;
     uint32_t merged_since_learning = 0;
     uint64_t previous_strip_bits_union = 0;
+    // Learning sessions in a row that failed or found another layout than
+    // the last one (kDormantAfterSessions).
+    uint32_t failed_sessions = 0;
+    // Sessions left that run unrecorded, and how many the next dormant run
+    // has (doubling, up to kDormantMaxSessions; 0 for the first).
+    uint32_t dormant_sessions = 0;
+    uint32_t dormant_length = 0;
   };
   static constexpr uint32_t kSessionSlots = 4;
   SessionSlot slots_[kSessionSlots];
