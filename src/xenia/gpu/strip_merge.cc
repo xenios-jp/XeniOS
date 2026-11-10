@@ -25,13 +25,18 @@
 #include "xenia/memory.h"
 
 // TODO(xenios-jp): sessions that fail verification (Learning, strip_merge.h)
-// run
+// run unmerged. Not handled: side-by-side tiles, strips holding queries, and a
+// carry that is exact only while consecutive frames are equal.
 DEFINE_bool(strip_merge, true,
             "Render the strips of predicated tiling (Halo 3) as one "
             "full-height pass sequence when every strip is verified to draw "
             "the same thing (Metal only, see xenia/gpu/strip_merge.h).",
             "GPU");
 // TODO(xenios-jp): the clipped last strip is not byte-exact yet.
+DEFINE_bool(strip_merge_clipped_last_strip, true,
+            "Merge sessions whose last strip is clipped by the frame (545407F2: "
+            "720 rows as 256 + 256 + 208). Off: such sessions stop merging at "
+            "once and fail learning as before; on again takes effect when "
             "their dormancy ends (256 sessions at most).",
             "GPU");
 DEFINE_bool(strip_merge_first_strip_other_surface, true,
@@ -242,6 +247,7 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   failure_strip_ = 0;
   window_br_extended_ = false;
   merge_planned_ = false;
+  banded_bases_.clear();
   slot_ = frame_sessions_;
   if (frame_sessions_ + 1 < kSessionSlots) {
     ++frame_sessions_;
@@ -264,6 +270,8 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   uint64_t strip_bits = bin_select & kStripBitsMask;
       candidate_.strip_bits[0] == strip_bits &&
       (!layout_.IsValid() || layout_ == candidate_) &&
+      (cvars::strip_merge_clipped_last_strip ||
+       !candidate_.last_band_clipped()) &&
       (carry_session_order_ == kNoCarry ||
        carry_session_order_ == session_order_);
     // Verify the game still draws the strips the same way.
@@ -302,7 +310,7 @@ void StripMerge::EndStrip() {
   if (mode_ == Mode::kMerged && failed_) {
     // The later strips run normally from the first strip's band, which is what
     // the first strip leaves in EDRAM.
-    backend_->StripMergeEnd(0, false);
+    backend_->StripMergeEnd(0, false, 0);
     carry_session_order_ = kNoCarry;
     mode_ = Mode::kRecovered;
   }
@@ -364,7 +372,7 @@ void StripMerge::EndSession() {
     derived.first_strip_draws = first_strip_draws;
   }
   for (uint32_t k = 1; verified && k < strip_count_; ++k) {
-    verified = CompareStrip(k);
+    verified = CompareStrip(k, derived);
   }
   bool empty = true;
   for (uint32_t k = 0; k < strip_count_; ++k) {
@@ -377,6 +385,13 @@ void StripMerge::EndSession() {
     // that could differ. It doesn't take a slot either.
     outcome = "empty";
   } else if (mode_ == Mode::kMerged) {
+    // Below the frame, the last band's rows are what the strip before left.
+    backend_->StripMergeEnd(
+        strip_count_ - 1, true,
+        layout_.last_band_clipped()
+            ? layout_.last_band_rows() / layout_.tile_height()
+            : 0);
+    carry_session_order_ = session_order_;
     if (!verified || derived != layout_) {
       if (!failed_) {
         failed_ = true;
@@ -792,8 +807,28 @@ bool StripMerge::DeriveLayout(Layout& layout_out, bool check_resolves) {
             ? resolve_bottom
             : strips_clearing * uint32_t(band_rows));
   }
+  if (!layout_out.band_tile_rows() ||
+      uint32_t(band_rows) % layout_out.tile_height()) {
     Fail("strips not a whole number of EDRAM tile rows");
     return false;
+  }
+  if (layout_out.last_band_clipped()) {
+    // The rows of the last band below the frame keep what the strip before
+    // left (Layout::last_band_rows): the ended session's last band holds the
+    // EDRAM above them, band by EDRAM tile row, and the last strip mustn't
+    // read or clear them. Its draws are checked in NoteDrawTiles.
+    if (layout_out.last_band_rows() % layout_out.tile_height()) {
+      Fail("the last strip's rows not a whole number of EDRAM tile rows");
+      return false;
+    }
+    for (size_t j = 0; j < layout_out.resolve_bottoms.size(); ++j) {
+      if (layout_out.resolve_bottoms[j] > frame_rows ||
+          layout_out.resolve_clear_bottoms[j] > frame_rows) {
+        failure_strip_ = strip_count_ - 1;
+        Fail("a strip-own resolve of the last strip past the frame");
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -1049,9 +1084,58 @@ bool StripMerge::CheckMasks() {
   return true;
 }
 
+bool StripMerge::MatchClippedQuad(const Strip::OwnDrawVertices& first,
+                                  const Strip::OwnDrawVertices& last,
+                                  const Layout& layout) const {
+  // D3D's predicated tiling clear quad vertex shader (545407F2, 4D5307E6):
+  //   vfetch_full r1.xyz1, r0.x, vf, FMT_32_32_32_FLOAT, Stride=7
+  //   vfetch_mini r0, Offset=3, FMT_32_32_32_32_FLOAT
+  //   max o0, r0, r0; max oPos, r1, r1; max r0._, c0, c0
   // So a vertex is 7 dwords: x, y, z, then the interpolated color.
+  constexpr uint64_t kD3DTilingClearVertexShader = 0x0A6D1DD7767FDF27;
+  constexpr uint32_t kStride = 7, kRow = 1;
+  if (!layout.IsValid() || !layout.last_band_clipped() ||
       first.vertex_shader_hash != kD3DTilingClearVertexShader ||
       last.vertex_shader_hash != kD3DTilingClearVertexShader ||
+      !first.rows_are_band_rows || !last.rows_are_band_rows ||
+      first.words.empty() || first.words.size() != last.words.size() ||
+      first.words.size() % kStride) {
+    return false;
+  }
+  // With pixel centers at integers, the edge between rows r - 1 and r is at
+  // r - 0.5: the first strip's quad has to end at its band's bottom, the
+  // last one's at the frame's, both starting at the band's top. Every sample
+  // of the rows above the frame is then inside both, none on an edge.
+  const float top = -0.5f;
+  const float first_bottom = float(layout.band_rows) - 0.5f;
+  const float last_bottom = float(layout.last_band_rows()) - 0.5f;
+  bool bottom_seen = false;
+  for (size_t i = 0; i < first.words.size(); ++i) {
+    uint32_t a = first.words[i], b = last.words[i];
+    uint32_t offset = uint32_t(i % kStride);
+    if (offset == kRow) {
+      float fa, fb;
+      std::memcpy(&fa, &a, sizeof(float));
+      std::memcpy(&fb, &b, sizeof(float));
+      if (fa == top && fb == top) {
+        continue;
+      }
+      if (fa == first_bottom && fb == last_bottom) {
+        bottom_seen = true;
+        continue;
+      }
+      return false;
+    }
+    // x as in the first strip; depth and color the same at every vertex,
+    // so they don't depend on where the quad ends.
+    if (a != b || (offset > kRow && a != first.words[offset])) {
+      return false;
+    }
+  }
+  return bottom_seen;
+}
+
+bool StripMerge::CompareStrip(uint32_t index, const Layout& layout) {
   const Strip& first = strips_[0];
   const Strip& strip = strips_[index];
   auto classify = [this](const Record& record, uint64_t bits) {
@@ -1124,7 +1208,7 @@ bool StripMerge::CheckMasks() {
     ++i;
     ++j;
   }
-  if (first.own_draw_vertices != strip.own_draw_vertices) {
+  if (first.own_draw_vertices.size() != strip.own_draw_vertices.size()) {
     failure_strip_ = index;
     if (cvars::strip_merge_log) {
       XELOGI("Strip merge: strip {} has {} strip-own draws with vertices, the "
@@ -1133,6 +1217,22 @@ bool StripMerge::CheckMasks() {
              first.own_draw_vertices.size());
     }
     Fail("a strip-own draw's vertices differ between strips");
+    return false;
+  }
+  for (size_t i = 0; i < first.own_draw_vertices.size(); ++i) {
+    const Strip::OwnDrawVertices& a = first.own_draw_vertices[i];
+    const Strip::OwnDrawVertices& b = strip.own_draw_vertices[i];
+    if (a.hash == b.hash) {
+      continue;
+    }
+    // D3D clips the last tile's clear quad to the frame (545407F2: 720 rows
+    // as 256 + 256 + 208, the last quad 208 rows tall). The merged first
+    // strip draws the first strip's quad, the same above the frame, and the
+    // rows below it aren't the EDRAM.
+    if (cvars::strip_merge_clipped_last_strip && index + 1 == strip_count_ &&
+        MatchClippedQuad(a, b, layout)) {
+      continue;
+    }
     failure_strip_ = index;
     if (cvars::strip_merge_log) {
       std::string words;
@@ -1878,6 +1978,34 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
       }
     }
     Strip& strip = strips_[strip_index_];
+    Strip::OwnDrawVertices own_vertices;
+    own_vertices.draw = strip.draws ? strip.draws - 1 : 0;
+    own_vertices.hash = vertices;
+    if (draw.vertex_shader && memory_ &&
+        draw.vertex_shader->vertex_bindings().size() == 1) {
+      own_vertices.vertex_shader_hash = draw.vertex_shader->ucode_data_hash();
+      xenos::xe_gpu_vertex_fetch_t fetch = register_file_.GetVertexFetch(
+          draw.vertex_shader->vertex_bindings()[0].fetch_constant);
+      if (fetch.type == xenos::FetchConstantType::kVertex && fetch.size &&
+          fetch.size <= kMaxClippedQuadDwords) {
+        const uint32_t* guest = memory_->TranslatePhysical<const uint32_t*>(
+            fetch.address << 2);
+        own_vertices.words.resize(fetch.size);
+        for (uint32_t i = 0; i < fetch.size; ++i) {
+          own_vertices.words[i] = xenos::GpuSwap(guest[i], fetch.endian);
+        }
+      }
+      auto vte = register_file_.Get<reg::PA_CL_VTE_CNTL>();
+      own_vertices.rows_are_band_rows =
+          !vte.vport_y_scale_ena && !vte.vport_y_offset_ena &&
+          register_file_.Get<reg::PA_SU_VTX_CNTL>().pix_center ==
+              xenos::PixelCenter::kD3DZero &&
+          (!register_file_.Get<reg::PA_SU_SC_MODE_CNTL>()
+                .vtx_window_offset_enable ||
+           !WindowOffsetY(
+               register_file_.values[XE_GPU_REG_PA_SC_WINDOW_OFFSET]));
+    }
+    strip.own_draw_vertices.push_back(std::move(own_vertices));
   }
   if (!checking_draws()) {
     return;
@@ -1917,7 +2045,46 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
   }
 }
 
-uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer) {
+void StripMerge::NoteDrawTiles(uint32_t base_tiles, uint32_t length_tiles,
+                               bool banded) {
+  if (!checking_draw_tiles()) {
+    return;
+  }
+  base_tiles &= xenos::kEdramTileCount - 1;
+  if (strip_index_ + 1 < candidate_.strip_count) {
+    if (banded && std::find(banded_bases_.cbegin(), banded_bases_.cend(),
+                            base_tiles) == banded_bases_.cend()) {
+      banded_bases_.push_back(base_tiles);
+    }
+    return;
+  }
+  if (strip_index_ + 1 != candidate_.strip_count || !length_tiles) {
+    return;
+  }
+  // The last strip leaves the strip surface's rows past the frame as the strip
+  // before left them, also on other surfaces over the same tiles (Layout::
+  // last_band_rows): nothing may claim them. Banded render targets are 32bpp
+  // (merging refuses 64bpp ones).
+  uint32_t pitch_tiles = candidate_.pitch_tiles_at_32bpp;
+  uint32_t past_start = candidate_.last_band_rows() /
+                        candidate_.tile_height() * pitch_tiles;
+  uint32_t past_length =
+      candidate_.band_tile_rows() * pitch_tiles - past_start;
+  for (uint32_t banded_base : banded_bases_) {
+    uint32_t start = (banded_base + past_start) & (xenos::kEdramTileCount - 1);
+    // Circular ranges overlap where either starts inside the other.
+    if (length_tiles >= xenos::kEdramTileCount ||
+        ((start - base_tiles) & (xenos::kEdramTileCount - 1)) < length_tiles ||
+        ((base_tiles - start) & (xenos::kEdramTileCount - 1)) < past_length) {
+      Fail("a draw of the last strip past the frame");
+      return;
+    }
+  }
+}
+
+uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer,
+                                 uint32_t& clear_bottom_out) {
+  clear_bottom_out = 0;
   bool banded = IsSurfaceBanded();
   bool own = current_packet_own();
   if (merging()) {
@@ -1925,7 +2092,15 @@ uint32_t StripMerge::NoteResolve(TraceWriter& trace_writer) {
       return 0;
     }
     if (banded && own) {
-      return layout().frame_bottom();
+      uint32_t bottom = TakeMergedResolveBottom(clear_bottom_out);
+      // The merged resolve clears like the first strip's: every band of the
+      // strips whose resolves the verified sessions saw clearing.
+      auto copy_control = register_file_.Get<reg::RB_COPY_CONTROL>();
+      if (bottom && bool(copy_control.color_clear_enable ||
+                         copy_control.depth_clear_enable) !=
+                        bool(clear_bottom_out)) {
+        Fail("a strip-own resolve clears unlike the verified ones");
+        bottom = 0;
         clear_bottom_out = 0;
       }
       return bottom;

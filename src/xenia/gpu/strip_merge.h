@@ -123,8 +123,20 @@ class StripMerge {
       return (window_br_first & 0x3FFF) | (frame_bottom() << 16);
     }
     uint32_t band_tile_rows() const {
-      return band_rows / (msaa_samples >= xenos::MsaaSamples::k2X ? 8 : 16);
+      return band_rows / tile_height();
     }
+    uint32_t tile_height() const {
+      return msaa_samples >= xenos::MsaaSamples::k2X ? 8 : 16;
+    }
+    // The rows of the last strip's window, and whether the frame clips it.
+    // The rows of the last band past them are what the strip before left
+    // there: the last strip draws and resolves none of them (DeriveLayout,
+    // NoteDrawTiles), and an ended merged session's last band holds the EDRAM
+    // only above them (RenderTargetCache::EndStripMerge).
+    uint32_t last_band_rows() const {
+      return frame_rows - (strip_count - 1) * band_rows;
+    }
+    bool last_band_clipped() const { return last_band_rows() < band_rows; }
     bool operator==(const Layout& other) const;
     bool operator!=(const Layout& other) const { return !(*this == other); }
   };
@@ -137,8 +149,11 @@ class StripMerge {
     virtual const char* StripMergeBegin(const Layout& layout) = 0;
     // Merged rendering ends. Band `band` of every merged render target becomes
     // the EDRAM; with carry, the bands are kept for the next session's later
-    // strips (see the carry above).
-    virtual void StripMergeEnd(uint32_t band, bool carry) = 0;
+    // strips (see the carry above). With band_tile_rows nonzero, only its
+    // first band_tile_rows tile rows, the rows below them being band - 1's
+    // (Layout::last_band_rows).
+    virtual void StripMergeEnd(uint32_t band, bool carry,
+                               uint32_t band_tile_rows) = 0;
     // Whether guest memory in a range is yet to be written by GPU work
     // already recorded, so it can't be read to verify a session.
     virtual bool StripMergeMemoryUnfinished(uint32_t address,
@@ -246,8 +261,20 @@ class StripMerge {
   void CheckDraw(const DrawInfo& draw);
   // A resolve while recording: learning sessions record the strip-own ones.
   // The frame row a strip-own resolve of the merged first strip extends down
-  // to, covering every strip's rows; 0 otherwise.
-  uint32_t NoteResolve(TraceWriter& trace_writer);
+  // to, covering every strip's rows, and the one its clear reaches; 0
+  // otherwise.
+  uint32_t NoteResolve(TraceWriter& trace_writer, uint32_t& clear_bottom_out);
+  // Whether NoteDrawTiles has to be called for the render targets of draws:
+  // a learning session with a layout whose last strip the frame clips.
+  bool checking_draw_tiles() const {
+    return learning() && !failed_ && candidate_.IsValid() &&
+           candidate_.last_band_clipped();
+  }
+  // With checking_draw_tiles, a render target a draw claims, from EDRAM tile
+  // base_tiles on, length_tiles long, as RenderTargetCache claims it for the
+  // draw's rows. Fails the session if it's in the last strip and reaches the
+  // rows of the strip surface past the frame.
+  void NoteDrawTiles(uint32_t base_tiles, uint32_t length_tiles, bool banded);
   // The merged first strip: the frame row its next strip-own resolve reaches
   // and the one its clear reaches (0, and the session failed, if it has more
   // than the learned ones).
@@ -349,6 +376,14 @@ class StripMerge {
       // Index among the strip's draws.
       uint32_t draw;
       uint64_t hash;
+      // For MatchClippedQuad: the vertex shader, the vertices (host endian)
+      // if it has one binding of at most kMaxClippedQuadDwords, and whether
+      // the vertex rows are the band's pixel rows with pixel centers at
+      // integers (no viewport y scale or offset, no window offset, D3D pixel
+      // centers).
+      uint64_t vertex_shader_hash = 0;
+      std::vector<uint32_t> words;
+      bool rows_are_band_rows = false;
     };
     std::vector<OwnDrawVertices> own_draw_vertices;
     // The strip's latest own value of every register it wrote itself, sorted
@@ -375,6 +410,20 @@ class StripMerge {
   // compared draw by draw. False (and the session failed) if one isn't the
   // first strip's own draw.
   bool DropFirstStripDraws(const std::vector<uint32_t>& draws);
+  // Compares strip `index` with the first one, of the session's layout. False
+  // if they differ.
+  bool CompareStrip(uint32_t index, const Layout& layout);
+  // Whether the last strip's own draw `last` is the first strip's `first`
+  // clipped to the last strip's rows: D3D's tiling clear quad (its vertex
+  // shader), the same vertices but the bottom ones' rows, which are the band's
+  // bottom in the first strip and the frame's in the last, and constant
+  // depth and color. Above the frame, the first strip's quad covers the same
+  // samples with the same values; below it, the last band's rows aren't the
+  // EDRAM (Layout::last_band_rows).
+  bool MatchClippedQuad(const Strip::OwnDrawVertices& first,
+                        const Strip::OwnDrawVertices& last,
+                        const Layout& layout) const;
+  static constexpr uint32_t kMaxClippedQuadDwords = 64;
   // Derives the layout from the session's records. False if it isn't one.
   // Merged sessions skip the later strips' resolves, so they don't check them.
   bool DeriveLayout(Layout& layout_out, bool check_resolves);
@@ -432,6 +481,9 @@ class StripMerge {
   uint32_t failure_strip_ = 0;
   bool current_packet_own_ = false;
   bool first_strip_draw_ = false;
+  // checking_draw_tiles: the EDRAM bases of render targets the strips before
+  // the last drew on the strip surface.
+  std::vector<uint32_t> banded_bases_;
   bool window_br_extended_ = false;
 
   // The open session's learning state, loaded from its slot when it begins

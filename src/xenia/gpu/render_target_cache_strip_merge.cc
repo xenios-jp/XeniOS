@@ -89,10 +89,21 @@ void RenderTargetCache::AppendStripMergeTransfers(
   // session left it, in one band, the same for every strip as anything not
   // strip-merged (ChangeOwnership has given the source and the host depth
   // source one such band or none).
-  int32_t pending_band = GetStripMergePendingBand(source->key());
-  if (pending_band < 0 && host_depth_source) {
-    pending_band = GetStripMergePendingBand(host_depth_source->key());
+  const StripMergePending* pending = GetStripMergePending(source->key());
+  if (!pending && host_depth_source) {
+    pending = GetStripMergePending(host_depth_source->key());
   }
+  // One band, or two by row (EndStripMerge): one transfer per band.
+  StripMergePendingPiece pieces[kMaxStripMergePendingPieces];
+  auto get_pieces = [&](uint32_t pieces_start_tiles,
+                        uint32_t pieces_end_tiles) {
+    if (pending) {
+      return GetStripMergePendingPieces(*pending, pieces_start_tiles,
+                                        pieces_end_tiles, pieces);
+    }
+    pieces[0] = {pieces_start_tiles, pieces_end_tiles, 0};
+    return uint32_t(1);
+  };
   bool source_merged =
       source->key().strip_merged && GetStripMergePendingBand(source->key()) < 0;
   if (source_merged &&
@@ -104,13 +115,19 @@ void RenderTargetCache::AppendStripMergeTransfers(
   // Anything not strip-merged is the same for every strip, but its addressing
   // wraps around the EDRAM, so it fills one band per transfer.
   auto append_bands = [&](uint32_t band_start_tiles, uint32_t band_end_tiles) {
+    uint32_t piece_count = get_pieces(band_start_tiles, band_end_tiles);
     for (uint32_t band = 0; band < band_count; ++band) {
-      Transfer& transfer = transfers.emplace_back(
-          band_start_tiles, band_end_tiles, source, host_depth_source);
-      transfer.band_first = uint8_t(band);
-      transfer.band_count = 1;
-      if (pending_band >= 0) {
-        transfer.source_band_shift = int8_t(pending_band - int32_t(band));
+      for (uint32_t piece_index = 0; piece_index < piece_count;
+           ++piece_index) {
+        const StripMergePendingPiece& piece = pieces[piece_index];
+        Transfer& transfer = transfers.emplace_back(
+            piece.start_tiles, piece.end_tiles, source, host_depth_source);
+        transfer.band_first = uint8_t(band);
+        transfer.band_count = 1;
+        if (pending) {
+          transfer.source_band_shift =
+              int8_t(int32_t(piece.band) - int32_t(band));
+        }
       }
     }
   };
@@ -136,12 +153,15 @@ void RenderTargetCache::AppendStripMergeTransfers(
     auto carry_it = render_targets_.find(carry.owner);
     if (carry.owner != dest && carry_it != render_targets_.end() &&
         carry_it->second && carry_it->second == carry.render_target) {
-      Transfer& first_band = transfers.emplace_back(
-          position, piece_end_tiles, source, host_depth_source);
-      first_band.band_first = 0;
-      first_band.band_count = 1;
-      if (pending_band >= 0) {
-        first_band.source_band_shift = int8_t(pending_band);
+      uint32_t piece_count = get_pieces(position, piece_end_tiles);
+      for (uint32_t piece_index = 0; piece_index < piece_count;
+           ++piece_index) {
+        const StripMergePendingPiece& piece = pieces[piece_index];
+        Transfer& first_band = transfers.emplace_back(
+            piece.start_tiles, piece.end_tiles, source, host_depth_source);
+        first_band.band_first = 0;
+        first_band.band_count = 1;
+        first_band.source_band_shift = int8_t(piece.band);
       }
       // A depth carry into a depth render target is its own host depth, not
       // to lose the host precision. Into color, the guest bits are the same
@@ -252,7 +272,8 @@ RenderTargetCache::RenderTargetKey RenderTargetCache::GetStripMergeSessionKey(
   return key;
 }
 
-void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
+void RenderTargetCache::EndStripMerge(uint32_t band, bool carry,
+                                      uint32_t band_tile_rows) {
   if (!strip_merge_active_) {
     return;
   }
@@ -281,7 +302,10 @@ void RenderTargetCache::EndStripMerge(uint32_t band, bool carry) {
       replaced |= ReplaceOwnershipKey(key, RenderTargetKey());
       continue;
     }
-    strip_merge_pending_.push_back({key, band});
+    strip_merge_pending_.push_back(
+        {key, band,
+         band && band_tile_rows < strip_merge_bands_.tile_rows ? band_tile_rows
+                                                               : 0});
     // The ranges it owns are carried: the next session reads its bands in
     // place.
     if (!carry) {
@@ -328,6 +352,95 @@ int32_t RenderTargetCache::GetStripMergePendingBand(RenderTargetKey key) const {
   return -1;
 }
 
+const RenderTargetCache::StripMergePending*
+RenderTargetCache::GetStripMergePending(RenderTargetKey key) const {
+  if (!key.strip_merged) {
+    return nullptr;
+  }
+  for (const StripMergePending& pending : strip_merge_pending_) {
+    if (pending.key == key) {
+      return &pending;
+    }
+  }
+  return nullptr;
+}
+
+uint32_t RenderTargetCache::GetStripMergePendingPieces(
+    const StripMergePending& pending, uint32_t start_tiles, uint32_t end_tiles,
+    StripMergePendingPiece* pieces_out) const {
+  uint32_t count = 0;
+  auto emit = [&](uint32_t piece_start, uint32_t piece_end, uint32_t band) {
+    if (piece_start >= piece_end) {
+      return;
+    }
+    if (count && pieces_out[count - 1].band == band &&
+        pieces_out[count - 1].end_tiles == piece_start) {
+      pieces_out[count - 1].end_tiles = piece_end;
+      return;
+    }
+    assert_true(count < kMaxStripMergePendingPieces);
+    pieces_out[count++] = {piece_start, piece_end, band};
+  };
+  if (!pending.band || !pending.band_tile_rows) {
+    emit(start_tiles, end_tiles, pending.band);
+    return count;
+  }
+  // The rows below the last strip's, of the key's first band (the tiles it
+  // owns), may wrap around the EDRAM end.
+  uint32_t pitch_tiles = pending.key.GetPitchTiles();
+  uint32_t below_start =
+      (pending.key.base_tiles + pending.band_tile_rows * pitch_tiles) &
+      (xenos::kEdramTileCount - 1);
+  uint32_t below_length = std::min(
+      (strip_merge_bands_.tile_rows - pending.band_tile_rows) * pitch_tiles,
+      xenos::kEdramTileCount);
+  uint32_t below_end = below_start + below_length;
+  std::pair<uint32_t, uint32_t> below[2];
+  uint32_t below_count = 0;
+  if (below_end > xenos::kEdramTileCount) {
+    below[below_count++] = {0, below_end - xenos::kEdramTileCount};
+    below[below_count++] = {below_start, xenos::kEdramTileCount};
+  } else {
+    below[below_count++] = {below_start, below_end};
+  }
+  uint32_t position = start_tiles;
+  for (uint32_t i = 0; i < below_count; ++i) {
+    uint32_t piece_start = std::max(below[i].first, position);
+    uint32_t piece_end = std::min(below[i].second, end_tiles);
+    if (piece_start >= piece_end) {
+      continue;
+    }
+    emit(position, piece_start, pending.band);
+    emit(piece_start, piece_end, pending.band - 1);
+    position = piece_end;
+  }
+  emit(position, end_tiles, pending.band);
+  return count;
+}
+
+bool RenderTargetCache::AreStripMergePendingBandsSame(
+    const StripMergePending& a, const StripMergePending& b) const {
+  if (a.band != b.band) {
+    return false;
+  }
+  bool a_split = a.band && a.band_tile_rows;
+  bool b_split = b.band && b.band_tile_rows;
+  if (!a_split && !b_split) {
+    return true;
+  }
+  if (a_split != b_split) {
+    return false;
+  }
+  auto below = [](const StripMergePending& pending) {
+    uint32_t pitch_tiles = pending.key.GetPitchTiles();
+    return std::make_pair(
+        (pending.key.base_tiles + pending.band_tile_rows * pitch_tiles) &
+            (xenos::kEdramTileCount - 1),
+        pitch_tiles);
+  };
+  return a.band_tile_rows == b.band_tile_rows && below(a) == below(b);
+}
+
 void RenderTargetCache::PruneStripMergePending() {
   strip_merge_pending_.erase(
       std::remove_if(
@@ -355,7 +468,7 @@ void RenderTargetCache::MaterializeStripMergeTwin(RenderTargetKey key,
   if (pending_it == strip_merge_pending_.end()) {
     return;
   }
-  uint32_t band = pending_it->band;
+  StripMergePending pending = *pending_it;
   strip_merge_pending_.erase(pending_it);
   auto source_it = render_targets_.find(key);
   RenderTarget* source =
@@ -381,12 +494,21 @@ void RenderTargetCache::MaterializeStripMergeTwin(RenderTargetKey key,
       continue;
     }
     tile_count += range.end_tiles - range_pair.first;
-    if (!transfers.empty() && transfers.back().end_tiles == range_pair.first) {
-      transfers.back().end_tiles = range.end_tiles;
-    } else {
-      Transfer& transfer = transfers.emplace_back(
-          range_pair.first, range.end_tiles, source, host_depth_source);
-      transfer.source_band_shift = int8_t(band);
+    // One band, or two by row (EndStripMerge).
+    StripMergePendingPiece pieces[kMaxStripMergePendingPieces];
+    uint32_t piece_count = GetStripMergePendingPieces(
+        pending, range_pair.first, range.end_tiles, pieces);
+    for (uint32_t piece_index = 0; piece_index < piece_count; ++piece_index) {
+      const StripMergePendingPiece& piece = pieces[piece_index];
+      if (!transfers.empty() &&
+          transfers.back().end_tiles == piece.start_tiles &&
+          transfers.back().source_band_shift == int8_t(piece.band)) {
+        transfers.back().end_tiles = piece.end_tiles;
+      } else {
+        Transfer& transfer = transfers.emplace_back(
+            piece.start_tiles, piece.end_tiles, source, host_depth_source);
+        transfer.source_band_shift = int8_t(piece.band);
+      }
     }
   }
   if (cvars::strip_merge_log) {

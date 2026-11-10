@@ -1012,6 +1012,30 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
       strip_merge_->Fail("a draw reaching past the strip's rows");
     }
   }
+  if (strip_merge_ && !interlock_barrier_only &&
+      strip_merge_->checking_draw_tiles()) {
+    // The tiles each render target claims for the draw's rows (the strip
+    // surface's rows past the frame are the last strip's to leave alone).
+    bool banded = !window_offset_tiles &&
+                  strip_merge_->IsBanded(pitch_tiles_at_32bpp, msaa_samples);
+    uint32_t tile_rows =
+        (height_used +
+         (xenos::kEdramTileHeightSamples >>
+          uint32_t(msaa_samples >= xenos::MsaaSamples::k2X)) -
+         1) /
+        (xenos::kEdramTileHeightSamples >>
+         uint32_t(msaa_samples >= xenos::MsaaSamples::k2X));
+    uint32_t rts_remaining_tiles = depth_and_color_rts_used_bits;
+    uint32_t rt_index_tiles;
+    while (xe::bit_scan_forward(rts_remaining_tiles, &rt_index_tiles)) {
+      rts_remaining_tiles &= ~(uint32_t(1) << rt_index_tiles);
+      uint32_t rt_pitch_tiles =
+          pitch_tiles_at_32bpp
+          << uint32_t((rts_are_64bpp >> rt_index_tiles) & 1);
+      strip_merge_->NoteDrawTiles(edram_bases[rt_index_tiles],
+                                  tile_rows * rt_pitch_tiles, banded);
+    }
+  }
 
   RenderTargetKey rt_keys[1 + xenos::kMaxColorRenderTargets] = {};
   RenderTarget* rts[1 + xenos::kMaxColorRenderTargets] = {};
@@ -2672,7 +2696,29 @@ void RenderTargetCache::ChangeOwnership(
               // Same render target, don't provide a separate host depth source.
               transfer_host_depth_source = RenderTargetKey();
             }
-            if (!dest.strip_merged && !transfers_append_out->empty() &&
+            // A strip-merged render target of an ended session holds the
+            // EDRAM in one band, or in two by row (EndStripMerge): one
+            // transfer per band.
+            const StripMergePending* transfer_pending =
+                GetStripMergePending(transfer_source);
+            if (!transfer_pending && !transfer_host_depth_source.IsEmpty()) {
+              transfer_pending =
+                  GetStripMergePending(transfer_host_depth_source);
+            }
+            StripMergePendingPiece
+                transfer_pieces[kMaxStripMergePendingPieces];
+            uint32_t transfer_piece_count = 1;
+            if (transfer_pending) {
+              transfer_piece_count = GetStripMergePendingPieces(
+                  *transfer_pending, it->first, transfer_end_tiles,
+                  transfer_pieces);
+            } else {
+              transfer_pieces[0] = {it->first, transfer_end_tiles, 0};
+            }
+            if (!dest.strip_merged && transfer_piece_count == 1 &&
+                !transfers_append_out->empty() &&
+                transfers_append_out->back().source_band_shift ==
+                    int8_t(transfer_pieces[0].band) &&
                 transfers_append_out->back().end_tiles == it->first &&
                 transfers_append_out->back().source->key() == transfer_source &&
                 ((transfers_append_out->back().host_depth_source == nullptr) ==
@@ -2707,21 +2753,15 @@ void RenderTargetCache::ChangeOwnership(
                         dest, transfer_source_rt_it->second,
                         transfer_host_depth_source_rt);
                   } else {
-                    Transfer& transfer = transfers_append_out->emplace_back(
-                        it->first, transfer_end_tiles,
-                        transfer_source_rt_it->second,
-                        transfer_host_depth_source_rt);
-                    // A strip-merged render target of an ended session holds
-                    // the EDRAM in one band.
-                    int32_t pending_band =
-                        GetStripMergePendingBand(transfer_source);
-                    if (pending_band < 0 &&
-                        !transfer_host_depth_source.IsEmpty()) {
-                      pending_band = GetStripMergePendingBand(
-                          transfer_host_depth_source);
-                    }
-                    if (pending_band > 0) {
-                      transfer.source_band_shift = int8_t(pending_band);
+                    for (uint32_t piece_index = 0;
+                         piece_index < transfer_piece_count; ++piece_index) {
+                      const StripMergePendingPiece& piece =
+                          transfer_pieces[piece_index];
+                      Transfer& transfer = transfers_append_out->emplace_back(
+                          piece.start_tiles, piece.end_tiles,
+                          transfer_source_rt_it->second,
+                          transfer_host_depth_source_rt);
+                      transfer.source_band_shift = int8_t(piece.band);
                     }
                   }
                 }
@@ -2799,11 +2839,12 @@ void RenderTargetCache::ChangeOwnership(
             if (host_depth_source == source) {
               host_depth_source = RenderTargetKey();
             }
-            int32_t source_band = GetStripMergePendingBand(source);
-            int32_t host_depth_band =
+            const StripMergePending* source_pending =
+                GetStripMergePending(source);
+            const StripMergePending* host_depth_pending =
                 host_depth_source.IsEmpty()
-                    ? -1
-                    : GetStripMergePendingBand(host_depth_source);
+                    ? nullptr
+                    : GetStripMergePending(host_depth_source);
             int32_t source_band =
                 source_pending ? int32_t(source_pending->band) : -1;
             int32_t host_depth_band =
