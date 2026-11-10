@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/graphics_system.h"
 
+#include <algorithm>
 #include <charconv>
 
 #include "xenia/base/byte_stream.h"
@@ -229,24 +230,28 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                     last_frame_time += target_duration_ticks;
                   }
                   MarkVblank();
-#if XE_PLATFORM_WIN32 || XE_PLATFORM_APPLE
+#if XE_PLATFORM_WIN32
                   // Sleep for 90% of the period, spin for the rest.
                   const uint64_t sleep_ns = static_cast<uint64_t>(
                       900000000.0 / (vblank_hz * Clock::guest_time_scalar()));
-#if XE_PLATFORM_APPLE
-                  threading::NanoSleepPrecise(sleep_ns);
-#else
                   threading::NanoSleep(sleep_ns);
 #endif
-#endif
                 }
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX || XE_PLATFORM_APPLE
                 else {
                   // Sleep to the deadline, so a late wake-up shortens the
                   // next sleep instead of stretching the period.
-                  threading::NanoSleep(static_cast<int64_t>(
+                  double sleep_ns =
                       (target_duration_ticks - time_delta) * 1000000000.0 /
-                      (tick_freq * Clock::guest_time_scalar())));
+                      (tick_freq * Clock::guest_time_scalar());
+#if XE_PLATFORM_APPLE
+                  // mach_wait_until with no busy-wait tail: spinning out the
+                  // last tenth of every period kept a core awake for it.
+                  threading::DeadlineSleep(std::chrono::microseconds(
+                      static_cast<int64_t>(sleep_ns / 1000.0)));
+#else
+                  threading::NanoSleep(static_cast<int64_t>(sleep_ns));
+#endif
                 }
 #endif
               } else {

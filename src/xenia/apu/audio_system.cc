@@ -176,7 +176,12 @@ void AudioSystem::WorkerThreadMain() {
               std::chrono::steady_clock::now().time_since_epoch())
               .count());
       if (wake_target_us > now_precise) {
-        xe::threading::NanoSleepPrecise((wake_target_us - now_precise) * 1000);
+        // The wake target is already kAudioIntervalSlack early and a late pump
+        // is made up from the host queue, so the sub-millisecond rest of the
+        // wait needs no busy-wait tail: NanoSleepPrecise spins 200us on
+        // Apple platforms, every pump.
+        xe::threading::DeadlineSleep(
+            std::chrono::microseconds(wake_target_us - now_precise));
       }
     }
 
