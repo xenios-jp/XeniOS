@@ -1556,6 +1556,49 @@ class MetalCommandProcessor : public CommandProcessor,
 #include "../command_processor_memexport.inc"
   void NoteMemexportRangesWritten();
 
+  // Resolve read watch (command_processor_resolve_readwatch.inc), with
+  // zero-copy only. A zero-copy resolve writes guest RAM itself, so a CPU access of its output
+  // only has to wait for its submission to complete; nothing is copied.
+  bool EndResolveSubmission();
+  uint64_t GetResolveSubmittedThrough() const {
+    return resolve_submitted_through_.load(std::memory_order_acquire);
+  }
+  // Waits, from the faulting thread and bounded, for the submission of the
+  // resolve owning the ranges. Called under resolve_read_mutex_.
+  bool FaultCopyResolveToGuestRam(
+      const std::vector<std::pair<uint32_t, uint32_t>>& ranges);
+  // Export output is in guest RAM already (one buffer), so nothing is staged
+  // or copied for it.
+  bool EnsureMemexportRangeInDeviceBuffer(uint32_t base, uint32_t size) {
+    return false;
+  }
+  void DropStagedMemexportOutput(uint32_t address, uint32_t length) {}
+  // The state of the watched owner of a page, from any thread: 0 none, 1 not
+  // submitted, 2 submitted, 3 complete. note_read: a read, which asks for the
+  // submission of an owner not submitted yet.
+  // Whether a resolve recorded now is guarded by a read watch.
+  bool ResolveReadWatchActive() const;
+  // The last submission handed to the GPU, for other threads.
+  std::atomic<uint64_t> resolve_submitted_through_{0};
+  // The last submission with zero-copy resolve output that no read watch
+  // guards, so guest signals are held behind it as before.
+  uint64_t resolve_unwatched_last_submission_ = 0;
+  // A fault waits this long at most for a submission to complete; then the
+  // access goes ahead with what guest RAM holds.
+  static constexpr auto kResolveFaultWaitBound = std::chrono::milliseconds(250);
+  // Bound hits after which no further resolve is watched and guest signals are
+  // held behind resolve output again, for the rest of the run.
+  static constexpr uint32_t kResolveFaultMaxBoundHits = 3;
+  std::atomic<uint32_t> resolve_fault_bound_hits_{0};
+  std::atomic<bool> resolve_read_watch_disabled_{false};
+#include "../command_processor_resolve_readwatch.inc"
+  // Routes a read-watch access to MarkResolvePagesRead,
+  // PrepareResolvePagesForWrite or, after waiting like a write, to
+  // DiscardResolvePages.
+  static void ResolveReadCallbackThunk(void* context, uint32_t physical_address,
+                                       uint32_t length,
+                                       Memory::PhysicalAccess access);
+
   bool gamma_ramp_256_entry_table_up_to_date_ = false;
   bool gamma_ramp_pwl_up_to_date_ = false;
 
