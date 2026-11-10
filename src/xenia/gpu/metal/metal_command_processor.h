@@ -377,6 +377,8 @@ class MetalCommandProcessor : public CommandProcessor,
   bool StripMergeMemoryUnfinished(uint32_t address, uint32_t length) override {
     return UnfinishedGpuWriteSubmission(address, length) != 0;
   }
+  void StripMergeEnd(uint32_t band, bool carry,
+                     uint32_t band_tile_rows) override;
   // Issues the draw once, or in each band of the merged render targets when
   // it addresses the strip's band (strip_merge_replicate_draw_). After
   // ApplyViewportAndScissor.

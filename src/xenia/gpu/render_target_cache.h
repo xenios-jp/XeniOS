@@ -288,8 +288,12 @@ class RenderTargetCache {
   // strip-merged render targets start their bands 1 to N-1 with bands 0 to
   // N-2 of the owners of the tiles they first take, read in place: those keys
   // alternate between two render targets (strip_merge_alt), so nothing writes
-  // the owner's before then. The backend has ended its passes.
-  void EndStripMerge(uint32_t band, bool carry);
+  // the owner's before then. The backend has ended its passes. With
+  // band_tile_rows nonzero (band > 0), band `band` is the EDRAM only in its
+  // first band_tile_rows tile rows, and band - 1 below them: a last strip
+  // clipped by the frame leaves the rows past it as the strip before did
+  // (StripMerge::Layout::last_band_rows).
+  void EndStripMerge(uint32_t band, bool carry, uint32_t band_tile_rows = 0);
   // A draw only the first strip does, on another surface than the strips',
   // takes its tiles for the first strip alone: the later bands of the merged
   // render targets that take them back still start from the carry.
@@ -1264,10 +1268,30 @@ class RenderTargetCache {
   struct StripMergePending {
     RenderTargetKey key;
     uint32_t band;
+    // Nonzero: band holds the EDRAM in the tile rows above this one alone,
+    // band - 1 below (EndStripMerge).
+    uint32_t band_tile_rows = 0;
   };
   std::vector<StripMergePending> strip_merge_pending_;
   // The band an ended session left the key's EDRAM in, -1 if it's not one.
+  // With rows below the last strip's, the band of the rows above them.
   int32_t GetStripMergePendingBand(RenderTargetKey key) const;
+  const StripMergePending* GetStripMergePending(RenderTargetKey key) const;
+  // The pieces of [start_tiles, end_tiles) (in the EDRAM, not wrapping) by the
+  // band of the pending render target holding their EDRAM.
+  struct StripMergePendingPiece {
+    uint32_t start_tiles;
+    uint32_t end_tiles;
+    uint32_t band;
+  };
+  static constexpr uint32_t kMaxStripMergePendingPieces = 3;
+  uint32_t GetStripMergePendingPieces(
+      const StripMergePending& pending, uint32_t start_tiles,
+      uint32_t end_tiles, StripMergePendingPiece* pieces_out) const;
+  // Whether two pending render targets hold the EDRAM of the same tiles in the
+  // same bands (one band shift fits both in a transfer).
+  bool AreStripMergePendingBandsSame(const StripMergePending& a,
+                                     const StripMergePending& b) const;
   // Drops the keys no longer in the ownership.
   void PruneStripMergePending();
   // Copies the band into the twin, which takes the key's place in the

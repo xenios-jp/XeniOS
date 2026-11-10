@@ -7628,6 +7628,8 @@ const char* MetalCommandProcessor::StripMergeBegin(
 }
 
 void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
+void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry,
+                                          uint32_t band_tile_rows) {
   strip_merge_replicate_draw_ = false;
   strip_merge_first_band_only_ = false;
   if (!render_target_cache_) {
@@ -7637,7 +7639,7 @@ void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
   // the transfers queued for it wrote.
   EndRenderEncoder();
   render_target_cache_->FlushPendingDrawPassTransfers();
-  render_target_cache_->EndStripMerge(band, carry);
+  render_target_cache_->EndStripMerge(band, carry, band_tile_rows);
 }
 
 void MetalCommandProcessor::DrawStripMergeBands(
