@@ -81,6 +81,11 @@ class SharedMemory {
   // ensures the host GPU memory backing the range are resident. Returns true if
   // the range has been fully updated and is usable.
   bool RequestRange(uint32_t start, uint32_t length);
+  // For vertex and index data the GPU reads straight from the buffer, with
+  // nothing derived from it cached. When the buffer is the guest memory itself
+  // there is nothing to upload for such a range, so it doesn't need valid
+  // pages or the write watch that comes with them. RequestRange otherwise.
+  bool RequestRangeForGpuRead(uint32_t start, uint32_t length);
   // XXH3 of the guest memory behind a range, as the CPU sees it now.
   uint64_t HashGuestRange(uint32_t start, uint32_t length) const;
   // Returns whether every page in the range is currently valid in the host GPU
@@ -183,6 +188,10 @@ class SharedMemory {
   // Release memory used for trace download ranges, to be called after
   // downloading or in cases when download is dropped.
   void ReleaseTraceDownloadRanges();
+
+ protected:
+  // Set by an implementation whose buffer aliases the guest memory.
+  bool buffer_is_guest_memory_ = false;
 
  private:
   Memory& memory_;

@@ -439,6 +439,16 @@ uint64_t SharedMemory::HashGuestRange(uint32_t start, uint32_t length) const {
   return XXH3_64bits(memory_.TranslatePhysical<const uint8_t*>(start), length);
 }
 
+bool SharedMemory::RequestRangeForGpuRead(uint32_t start, uint32_t length) {
+  if (buffer_is_guest_memory_ && !IsTraceOpen()) {
+    if (length && (start > kBufferSize || (kBufferSize - start) < length)) {
+      return false;
+    }
+    return true;
+  }
+  return RequestRange(start, length);
+}
+
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   if (!length) {
     // Some texture or buffer is empty, for example - safe to draw in this case.
@@ -653,7 +663,12 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
 
   auto global_lock = global_critical_region_.Acquire();
 
-  if (!exact_range) {
+  // With the buffer aliasing guest memory there is nothing to upload, so
+  // widening only saves faults, and costs every texture nearby a reload.
+  // TODO(xenios-jp): the textures sharing a host page with the write still
+  // reload unchanged; a hash of the guest bytes could skip that once it is
+  // sound with GPU-side loads.
+  if (!exact_range && !buffer_is_guest_memory_) {
     // Check if a somewhat wider range (up to 256 KB with 4 KB pages) can be
     // invalidated - if no GPU-written data nearby that was not intended to be
     // invalidated since it's not in sync with CPU memory and can't be

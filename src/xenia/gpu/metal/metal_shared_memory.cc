@@ -64,6 +64,7 @@ bool MetalSharedMemory::Initialize() {
           device->newBuffer(xbox_ram, kBufferSize, buffer_options, nullptr);
       if (buffer_) {
         use_zero_copy_ = true;
+        buffer_is_guest_memory_ = true;
         XELOGD("Metal shared memory: using bytes-no-copy buffer");
       } else {
         XELOGW("Metal shared memory: bytes-no-copy buffer creation failed");
@@ -200,6 +201,9 @@ bool MetalSharedMemory::CopyToBufferGpuOrdered(uint32_t start, const void* data,
   // recycled only after the command buffer completes.
   constexpr uint32_t kMaxCopyLength = UINT32_C(1) << 20;
   const uint8_t* source = static_cast<const uint8_t*>(data);
+  // TODO(xenios-jp): a failure on a later chunk returns false with the earlier
+  // chunks already encoded, against the header. Latent: zero-copy callers pass
+  // 4 bytes.
   bool copied = true;
   while (length) {
     uint32_t copy_length = std::min(length, kMaxCopyLength);
@@ -264,6 +268,7 @@ void MetalSharedMemory::Shutdown() {
     buffer_ = nullptr;
   }
   use_zero_copy_ = false;
+  buffer_is_guest_memory_ = false;
 
   ShutdownCommon();  // Base class cleanup
 }
