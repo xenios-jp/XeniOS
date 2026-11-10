@@ -1077,8 +1077,8 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
           ProcessedIndexBufferType::kHostBuiltinForDMA) {
     // Request the index buffer memory.
     // TODO(Triang3l): Shared memory request cache.
-    if (!shared_memory_.RequestRange(guest_index_base,
-                                     guest_index_buffer_needed_bytes)) {
+    if (!shared_memory_.RequestRangeForGpuRead(
+            guest_index_base, guest_index_buffer_needed_bytes)) {
       XELOGE(
           "PrimitiveProcessor: Failed to request index buffer 0x{:08X}, 0x{:X} "
           "bytes needed, in the shared memory",

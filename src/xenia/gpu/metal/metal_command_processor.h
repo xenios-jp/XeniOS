@@ -1462,6 +1462,7 @@ class MetalCommandProcessor : public CommandProcessor,
   // done commits what has been encoded since. A commit for anything but a
   // wait clears it.
   bool commit_after_drain_armed_ = false;
+  uint64_t shader_done_fence_last_submission_ = 0;
   // Between render passes, at a draw about to begin a new one: performs the
   // commits left to a pass end.
   void CommitBetweenRenderPasses();

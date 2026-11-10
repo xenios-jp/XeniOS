@@ -2304,6 +2304,7 @@ bool MetalCommandProcessor::TryWriteShaderDoneFence(uint32_t address,
       // and a ring-empty stall commits it in PrepareForWait, so the fence is
       // published without a submission of its own.
       copy_resolve_writes_pending_ = true;
+      shader_done_fence_last_submission_ = submission_current_;
       return true;
     }
   }
@@ -5409,7 +5410,8 @@ bool MetalCommandProcessor::RequestDrawSharedMemoryRanges(
             vfetch_index, buffer_offset, buffer_length);
         return false;
       }
-      if (!shared_memory_->RequestRange(buffer_offset, buffer_length)) {
+      if (!shared_memory_->RequestRangeForGpuRead(buffer_offset,
+                                                  buffer_length)) {
         XELOGE(
             "Metal: Failed to request vertex buffer at 0x{:08X} (size {}) in "
             "shared memory",

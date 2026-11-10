@@ -10,8 +10,10 @@
 #include "xenia/gpu/command_processor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <fstream>
+#include <mutex>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/stb/stb_image_write.h"
