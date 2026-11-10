@@ -2182,6 +2182,12 @@ bool MetalCommandProcessor::DumpEdramSnapshotToFile(
   if (submission_current_) {
     AwaitSubmissionCompletion(submission_current_);
   }
+  // DumpRenderTargets takes its descriptor heap from the open command
+  // buffer's argument buffer pages: without one, nothing is dumped and the
+  // snapshot is whatever the EDRAM buffer last held.
+  if (!EnsureCommandBuffer()) {
+    return false;
+  }
   if (!render_target_cache_->InitializeTraceSubmitDownloads()) {
     return false;
   }
