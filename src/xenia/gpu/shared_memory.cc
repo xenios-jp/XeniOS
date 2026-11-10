@@ -238,6 +238,8 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
   range->callback_argument = callback_argument;
   range->page_first = watch_page_first;
   range->page_last = watch_page_last;
+  range->address_first = start;
+  range->address_last = start + (length - 1);
 
   // Allocate and link the nodes.
   WatchNode* node_previous = nullptr;
@@ -278,7 +280,8 @@ void SharedMemory::UnwatchMemoryRange(WatchHandle handle) {
 }
 
 void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last,
-                               bool invalidated_by_gpu) {
+                               bool invalidated_by_gpu, uint32_t written_first,
+                               uint32_t written_last) {
   uint32_t address_first = page_first << page_size_log2_;
   uint32_t address_last =
       (page_last << page_size_log2_) + ((1 << page_size_log2_) - 1);
@@ -311,7 +314,9 @@ void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last,
       if (node) {
         swcache::PrefetchL1(node);
       }
-      if (page_first <= range->page_last && page_last >= range->page_first) {
+      if (page_first <= range->page_last && page_last >= range->page_first &&
+          written_first <= range->address_last &&
+          written_last >= range->address_first) {
         range->callback(global_lock, range->callback_context,
                         range->callback_data, range->callback_argument,
                         invalidated_by_gpu);
@@ -336,7 +341,7 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length,
 
   // Trigger modification callbacks so, for instance, resolved data is loaded to
   // the texture.
-  FireWatches(page_first, page_last, true);
+  FireWatches(page_first, page_last, true, start, end);
 
   // Mark the range as valid (so pages are not reuploaded until modified by the
   // CPU) and watch it so the CPU can reuse it and this will be caught.
