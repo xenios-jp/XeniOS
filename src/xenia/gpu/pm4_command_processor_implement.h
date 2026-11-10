@@ -1552,7 +1552,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3Draw(
 
   // A merged tiling session's later strips skip their draws and resolves,
   // drawn for them by the first strip (strip_merge.h).
-  XE_UNLIKELY_IF(draw_succeeded && strip_merge_.recording() &&
+  XE_UNLIKELY_IF(draw_succeeded && strip_merge_.session_open() &&
                  !strip_merge_.BeforeDraw()) {
     return true;
   }

@@ -230,6 +230,8 @@ void StripMerge::OnBinSelect(uint64_t bin_select, bool tracing) {
 void StripMerge::BeginSession(uint64_t bin_select) {
   ++sessions_;
   session_open_ = true;
+  recording_ = true;
+  dormant_ = false;
   mode_ = Mode::kLearn;
   strip_index_ = 0;
   strip_count_ = 0;
@@ -246,6 +248,14 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   }
   session_order_ = frame_session_order_++;
   const SessionSlot& slot = slots_[slot_];
+  if (slot.dormant_sessions) {
+    // Its last learning sessions all failed: only where it ends is tracked
+    // (and whether it draws), no packet is recorded.
+    recording_ = false;
+    dormant_ = true;
+    BeginStrip(bin_select);
+    return;
+  }
   candidate_ = slot.candidate;
   verified_sessions_ = slot.verified_sessions;
   merged_since_learning_ = slot.merged_since_learning;
@@ -298,8 +308,21 @@ void StripMerge::EndStrip() {
   }
 }
 
+void StripMerge::OnSwap() {
+  // An unrecorded session's swap packet went past the PM4 hooks.
+  if (session_open_ && !recording_) {
+    EndSession();
+  }
+  frame_sessions_ = 0;
+  frame_session_order_ = 0;
+}
+
 void StripMerge::EndSession() {
   if (!session_open_) {
+    return;
+  }
+  if (dormant_) {
+    EndDormantSession();
     return;
   }
   EndStrip();
@@ -347,6 +370,7 @@ void StripMerge::EndSession() {
   for (uint32_t k = 0; k < strip_count_; ++k) {
     empty &= !strips_[k].draws;
   }
+  const Layout candidate_before = candidate_;
   const char* outcome;
   if (mode_ == Mode::kLearn && empty) {
     // Nothing drawn or resolved, unmerged: nothing to learn from, and nothing
@@ -390,7 +414,35 @@ void StripMerge::EndSession() {
       for (const OwnWrite& write : strips_[0].own_writes) {
         learned_own_used_.push_back(write.used);
       }
+  if (!(mode_ == Mode::kLearn && empty)) {
+    // Dormancy: a pass that never merges costs the recording and hashing of
+    // every packet and draw in every session.
     SessionSlot& slot = slots_[slot_];
+    bool merged = mode_ == Mode::kMerged && !failed_;
+    bool verified_outcome = mode_ == Mode::kLearn && verified &&
+                            draw_checks_ran_ && derived == candidate_before;
+    bool new_candidate = mode_ == Mode::kLearn && verified &&
+                         !verified_outcome && !draw_checks_ran_;
+    if (merged || verified_outcome) {
+      slot.failed_sessions = 0;
+      slot.dormant_length = 0;
+    } else if (!new_candidate &&
+               ++slot.failed_sessions >= kDormantAfterSessions) {
+      slot.dormant_length =
+          std::max(uint32_t(1),
+                   std::min(slot.dormant_length ? slot.dormant_length * 2
+                                                : uint32_t(16),
+                            kDormantMaxSessions));
+      slot.dormant_sessions = slot.dormant_length;
+      // One more failing relearn after it doubles the run.
+      slot.failed_sessions = kDormantAfterSessions - 1;
+      XELOGI(
+          "Strip merge: tiling session {} of the frame failed {} times in a "
+          "row ({}), {} sessions unrecorded",
+          session_order_, kDormantAfterSessions,
+          failure_reason_.empty() ? "another layout each time"
+                                  : failure_reason_.c_str(),
+          slot.dormant_sessions);
     }
   }
   if (cvars::strip_merge_log) {
@@ -425,16 +477,32 @@ void StripMerge::EndSession() {
   current_packet_own_ = false;
 }
 
+void StripMerge::EndDormantSession() {
   bool empty = true;
   for (uint32_t k = 0; k < strip_count_; ++k) {
     empty &= !strips_[k].draws;
   }
   if (cooldown_sessions_) {
+    --cooldown_sessions_;
+  }
+  if (empty) {
+    // Like an empty recorded session, it doesn't take the slot.
     frame_sessions_ = slot_;
     frame_session_order_ = session_order_;
   } else {
     SessionSlot& slot = slots_[slot_];
+    if (strip_count_ >= 2) {
+      slot.previous_strip_bits_union = strip_bits_union_;
+    }
+    --slot.dormant_sessions;
+  }
+  if (cvars::strip_merge_log) {
+    XELOGI("Strip merge: session {} dormant strips {} draws {}", sessions_,
+           strip_count_, strip_count_ ? strips_[0].draws : 0);
+  }
   session_open_ = false;
+  recording_ = false;
+  dormant_ = false;
   mode_ = Mode::kLearn;
   current_select_ = 0;
   current_packet_own_ = false;
@@ -1391,6 +1459,16 @@ bool StripMerge::BeforeDraw() {
   Strip& strip = strips_[strip_index_];
   ++strip.draws;
   first_strip_draw_ = false;
+  if (!recording_) {
+    return true;
+  }
+  if (failed_ && mode_ == Mode::kLearn) {
+    // Nothing more to learn from it: the rest runs unrecorded (it has drawn,
+    // it takes its slot).
+    recording_ = false;
+    merge_planned_ = false;
+    return true;
+  }
   if (merge_planned_) {
     merge_planned_ = false;
     if (!failed_ && strip_index_ == 0) {
