@@ -21,6 +21,8 @@ namespace {
 // Every stage that may access the buffer, including the object and mesh
 // stages of the emulated tessellation, and the tile stage of resolves
 // dispatched inside the guest's render pass.
+// TODO(xenios-jp): object, mesh and tile stages are named on every encoder; not
+// checked with the validation layer on a device without mesh shaders.
 constexpr MTL::RenderStages kRenderStages =
     MTL::RenderStageVertex | MTL::RenderStageFragment | MTL::RenderStageObject |
     MTL::RenderStageMesh | MTL::RenderStageTile;
@@ -36,6 +38,7 @@ void MetalBufferHazards::Encoder::BeginCommon(
   compute_ = nullptr;
   blit_ = nullptr;
   reads_.clear();
+  coarse_reads_.clear();
   writes_.clear();
   waited_fences_.clear();
 }
@@ -112,11 +115,22 @@ bool MetalBufferHazards::Encoder::HasAccess(uint32_t start,
   }
   uint32_t end = uint32_t(
       std::min(uint64_t(start) + length, uint64_t(hazards_->buffer_size_)));
-  return Overlaps(reads_, start, end) || Overlaps(writes_, start, end);
+  return Overlaps(reads_, start, end) || Overlaps(coarse_reads_, start, end) ||
+         Overlaps(writes_, start, end);
+}
+
+bool MetalBufferHazards::Encoder::HasReadAccess(uint32_t start,
+                                                uint32_t length) const {
+  if (!hazards_ || !length || start >= hazards_->buffer_size_) {
+    return false;
+  }
+  uint32_t end = uint32_t(
+      std::min(uint64_t(start) + length, uint64_t(hazards_->buffer_size_)));
+  return Overlaps(reads_, start, end);
 }
 
 bool MetalBufferHazards::Encoder::Access(uint32_t start, uint32_t length,
-                                         bool write) {
+                                         bool write, bool coarse_read) {
   assert_not_null(hazards_);
   MetalBufferHazards& hazards = *hazards_;
   if (!length || start >= hazards.buffer_size_) {
@@ -125,8 +139,10 @@ bool MetalBufferHazards::Encoder::Access(uint32_t start, uint32_t length,
   uint32_t end = start + std::min(length, hazards.buffer_size_ - start);
 
   bool conflict_within =
-      Overlaps(writes_, start, end) || (write && Overlaps(reads_, start, end));
-  Insert(write ? writes_ : reads_, start, end);
+      Overlaps(writes_, start, end) ||
+      (write && (Overlaps(reads_, start, end) ||
+                 Overlaps(coarse_reads_, start, end)));
+  Insert(write ? writes_ : coarse_read ? coarse_reads_ : reads_, start, end);
 
   // A read waits for the earlier writes, a write for the earlier reads too.
   bool check_writes = AnyBlock(hazards.write_blocks_, start, end);
@@ -174,7 +190,7 @@ void MetalBufferHazards::Encoder::End() {
     return;
   }
   MetalBufferHazards& hazards = *hazards_;
-  if (!reads_.empty() || !writes_.empty()) {
+  if (!reads_.empty() || !coarse_reads_.empty() || !writes_.empty()) {
     // Give this encoder a separate output fence from the producers it waits on.
     MTL::Fence* fence;
     std::vector<MTL::Fence*> skipped_fences;
@@ -197,9 +213,11 @@ void MetalBufferHazards::Encoder::End() {
     }
     Group& group = hazards.GetGroup(command_buffer_);
     group.fences.push_back(fence);
-    for (const Range& range : reads_) {
-      group.reads.push_back(Record{range.start, range.end, fence});
-      hazards.CountBlocks(hazards.read_blocks_, range.start, range.end, 1);
+    for (const std::vector<Range>* reads : {&reads_, &coarse_reads_}) {
+      for (const Range& range : *reads) {
+        group.reads.push_back(Record{range.start, range.end, fence});
+        hazards.CountBlocks(hazards.read_blocks_, range.start, range.end, 1);
+      }
     }
     for (const Range& range : writes_) {
       group.writes.push_back(Record{range.start, range.end, fence});

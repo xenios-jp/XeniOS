@@ -2680,6 +2680,24 @@ bool MetalCommandProcessor::DrawOverlapsPendingWrites(
   return false;
 }
 
+bool MetalCommandProcessor::DrawExportsOverlapPassReads() const {
+  for (const draw_util::MemExportRange& written : memexport_ordering_ranges_) {
+    uint32_t start = written.base_address_dwords << 2;
+    if (render_encoder_shared_memory_hazards_.HasReadAccess(
+            start, written.size_bytes)) {
+      return true;
+    }
+    uint64_t end = uint64_t(start) + written.size_bytes;
+    for (const std::pair<uint32_t, uint32_t>& read :
+         render_encoder_narrowed_reads_) {
+      if (read.first < end && start < read.second) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void MetalCommandProcessor::ForceIssueSwap() {
   // Force a swap to push any pending render target to presenter
   // This is used by trace dumps to capture output when there's no explicit swap
@@ -3580,6 +3598,8 @@ void MetalCommandProcessor::ShutdownContext() {
   pending_shader_done_fence_values_.clear();
   shader_done_fences_outside_pass_ = false;
   render_encoder_memexport_draws_are_pure_ = true;
+  render_encoder_narrowed_reads_.clear();
+  render_encoder_pixel_stage_fetches_ = false;
   dxil_binder_.ResetUploadCaches();
   // End any active render encoder before shutdown
   if (current_render_encoder_) {
@@ -5271,6 +5291,33 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                     memexport_ordering_ranges_, vertex_indices);
     }
   }
+  // What such a draw can fetch, for ordering later exports of the pass after
+  // it. Any other draw is taken to read its whole fetch ranges.
+  draw_reads_narrowed_ = false;
+  if (vertex_indices && vertex_shader->vertex_fetches_vertex_indexed()) {
+    draw_reads_narrowed_ = true;
+    draw_narrowed_reads_.clear();
+    for (const Shader::VertexFetchStride& stride :
+         vertex_shader->vertex_fetch_strides()) {
+      const auto fetch = regs.GetVertexFetch(stride.fetch_constant);
+      int64_t first =
+          std::max(int64_t(vertex_indices->first) * stride.stride_words +
+                       vertex_shader->vertex_fetch_min_word_offset(),
+                   int64_t(0));
+      int64_t end =
+          std::min(int64_t(vertex_indices->last) * stride.stride_words +
+                       vertex_shader->vertex_fetch_end_word_offset(),
+                   int64_t(fetch.size));
+      if (first < end) {
+        uint64_t start =
+            uint64_t(xenos::CpuToGpu(fetch.address << 2)) + (first << 2);
+        draw_narrowed_reads_.emplace_back(
+            uint32_t(std::min(start, uint64_t(SharedMemory::kBufferSize))),
+            uint32_t(std::min(start + (uint64_t(end - first) << 2),
+                              uint64_t(SharedMemory::kBufferSize))));
+      }
+    }
+  }
   // Tile resolves earlier in the pass may not have run in every tile yet.
   if (current_render_encoder_ &&
       !render_encoder_tile_resolve_ranges_.empty() &&
@@ -5287,6 +5334,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                 vertex_indices)) {
     EndRenderEncoder();
   }
+  bool memexport_barrier_encoded = false;
   if (UseDxilPath() && current_render_encoder_ &&
       DrawOverlapsPendingWrites(render_encoder_memexport_ranges_,
                                 *vertex_shader, pixel_shader, index_buffer_info,
@@ -5299,6 +5347,24 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       current_render_encoder_->memoryBarrier(MTL::BarrierScopeBuffers,
                                              MTL::RenderStageVertex,
                                              MTL::RenderStageVertex);
+      memexport_barrier_encoded = true;
+    } else {
+      EndRenderEncoder();
+    }
+  }
+  // And the export after the earlier draws of the pass that read what it
+  // writes: the shared memory buffer is not hazard-tracked, and without this
+  // the vertex stage of this draw may run before theirs. A pure memexport draw
+  // writes in the vertex stage, so the vertex-to-vertex barrier orders it
+  // after every earlier fetch but a pixel shader's.
+  if (UseDxilPath() && current_render_encoder_ &&
+      !memexport_ordering_ranges_.empty() && DrawExportsOverlapPassReads()) {
+    if (pure_memexport_draw && !render_encoder_pixel_stage_fetches_) {
+      if (!memexport_barrier_encoded) {
+        current_render_encoder_->memoryBarrier(MTL::BarrierScopeBuffers,
+                                               MTL::RenderStageVertex,
+                                               MTL::RenderStageVertex);
+      }
     } else {
       EndRenderEncoder();
     }
@@ -5601,7 +5667,21 @@ void MetalCommandProcessor::OrderDrawSharedMemoryAccesses(
   }
   for (const std::pair<uint32_t, uint32_t>& range : draw_shared_memory_reads_) {
     render_encoder_shared_memory_hazards_.Access(range.first, range.second,
-                                                 false);
+                                                 false, draw_reads_narrowed_);
+  }
+  if (draw_reads_narrowed_) {
+    for (const std::pair<uint32_t, uint32_t>& read : draw_narrowed_reads_) {
+      // Consecutive draws of a chain usually continue the same range.
+      if (!render_encoder_narrowed_reads_.empty() &&
+          render_encoder_narrowed_reads_.back().first <= read.second &&
+          read.first <= render_encoder_narrowed_reads_.back().second) {
+        auto& last = render_encoder_narrowed_reads_.back();
+        last.first = std::min(last.first, read.first);
+        last.second = std::max(last.second, read.second);
+      } else {
+        render_encoder_narrowed_reads_.push_back(read);
+      }
+    }
   }
   // Vertex fetches in the pixel shader aren't requested with the vertex
   // shader's ones, but they still read the buffer.
@@ -5616,6 +5696,7 @@ void MetalCommandProcessor::OrderDrawSharedMemoryAccesses(
       while (xe::bit_scan_forward(vfetch_bits_remaining, &j)) {
         vfetch_bits_remaining &= ~(uint32_t(1) << j);
         xenos::xe_gpu_vertex_fetch_t vfetch = regs.GetVertexFetch(i * 32 + j);
+        render_encoder_pixel_stage_fetches_ = true;
         render_encoder_shared_memory_hazards_.Access(
             xenos::CpuToGpu(vfetch.address << 2), vfetch.size << 2, false);
       }
@@ -5643,7 +5724,9 @@ void MetalCommandProcessor::OrderDrawSharedMemoryAccesses(
             uint64_t(SharedMemory::kBufferSize))),
         false);
   }
-  // Ordering the exports within the pass is up to the draw's own checks.
+  // Ordering the exports within the pass is up to the draw's own checks
+  // (DrawOverlapsPendingWrites, DrawExportsOverlapPassReads), so the result
+  // is not used.
   for (const draw_util::MemExportRange& range : memexport_ranges_) {
     render_encoder_shared_memory_hazards_.Access(range.base_address_dwords << 2,
                                                  range.size_bytes, true);
@@ -6210,6 +6293,8 @@ bool MetalCommandProcessor::IssueDrawMsl(
   }
   if (render_encoder_shared_memory_hazards_.is_active()) {
     // Tessellation may read control points without a host index buffer.
+    // TODO(xenios-jp): on this legacy MSL path the result is dropped and
+    // exports are not
     render_encoder_shared_memory_hazards_.Access(0, SharedMemory::kBufferSize,
                                                  memexport_used);
   }
@@ -8576,6 +8661,8 @@ void MetalCommandProcessor::EndRenderEncoder() {
   render_encoder_index_count_ = 0;
   render_encoder_tile_member_class_ = 0;
   render_encoder_memexport_draws_are_pure_ = true;
+  render_encoder_narrowed_reads_.clear();
+  render_encoder_pixel_stage_fetches_ = false;
   if (!current_render_encoder_) {
     if (current_render_pass_descriptor_) {
       current_render_pass_descriptor_->release();
