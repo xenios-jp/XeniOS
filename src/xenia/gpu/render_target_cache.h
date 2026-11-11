@@ -1027,6 +1027,15 @@ class RenderTargetCache {
   // decoding applies only where those bytes are actually seen, a matched
   // same-base/pitch/MSAA reuse into a render target of the last update whose
   // blending reads the destination. Everything else stays bit-exact.
+  // For transfers encoded after later updates: exchanges the blend-reading
+  // color render targets IsTransferValueConverted7e3And8888 checks with the
+  // ones of the update that gathered the transfers.
+  void SwapLastUpdateBlendReadingColorRTs(
+      RenderTargetKey (&rts)[xenos::kMaxColorRenderTargets]) {
+    for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+      std::swap(last_update_blend_reading_color_rts_[i], rts[i]);
+    }
+  }
   bool IsTransferValueConverted7e3And8888(RenderTargetKey source,
                                           RenderTargetKey dest) const;
 
