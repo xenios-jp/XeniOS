@@ -31,6 +31,9 @@ namespace metal {
 // command buffer, and those of command buffers already committed. An encoder
 // can't wait for one in another command buffer that isn't committed yet - if
 // that command buffer is committed later, it runs later, as with tracking.
+// TODO(xenios-jp): without tracking, a pass of a later command buffer may start
+// while an earlier one runs, so a side command buffer committed ahead of the
+// open one is ordered against it only by the queue.
 class MetalBufferHazards {
  public:
   class Encoder {
@@ -49,11 +52,18 @@ class MetalBufferHazards {
     bool is_active() const { return hazards_ != nullptr; }
     // Accesses already encoded in this still-open encoder.
     bool HasAccess(uint32_t start, uint32_t length) const;
+    // Reads already encoded in this still-open encoder, other than the coarse
+    // ones.
+    bool HasReadAccess(uint32_t start, uint32_t length) const;
 
     // Encodes the waits for the earlier encoders whose accesses conflict with
     // this one. Returns whether it conflicts with an earlier access by this
     // encoder, which only a barrier within the encoder can order.
-    bool Access(uint32_t start, uint32_t length, bool write);
+    // A coarse read is an upper bound of what a command reads, given when its
+    // owner orders the command within the encoder by a tighter range of its
+    // own: other encoders wait for it as usual, HasReadAccess leaves it out.
+    bool Access(uint32_t start, uint32_t length, bool write,
+                bool coarse_read = false);
     // Orders a fence publication after the preceding buffer accesses without
     // recording a fictitious whole-buffer access. Report its actual write with
     // Access afterwards so unrelated future ranges may proceed independently.
@@ -86,6 +96,7 @@ class MetalBufferHazards {
     MTL::BlitCommandEncoder* blit_ = nullptr;
     // Sorted and disjoint.
     std::vector<Range> reads_;
+    std::vector<Range> coarse_reads_;
     std::vector<Range> writes_;
     std::vector<MTL::Fence*> waited_fences_;
   };

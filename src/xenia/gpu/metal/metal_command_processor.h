@@ -1590,6 +1590,18 @@ class MetalCommandProcessor : public CommandProcessor,
   // memexport_ranges_, narrowed for a pure memexport draw to what its vertex
   // indices can reach.
   std::vector<draw_util::MemExportRange> memexport_ordering_ranges_;
+  // What the pure memexport draws of the current render encoder can fetch,
+  // narrowed like their exports (start, end). Their whole fetch ranges go to
+  // the hazard tracker as coarse reads.
+  std::vector<std::pair<uint32_t, uint32_t>> render_encoder_narrowed_reads_;
+  // The narrowed fetches of the draw being issued, if draw_reads_narrowed_.
+  std::vector<std::pair<uint32_t, uint32_t>> draw_narrowed_reads_;
+  bool draw_reads_narrowed_ = false;
+  // Whether a pixel shader of the current render encoder fetches vertices, so
+  // not every earlier read of the pass is done in the vertex stage.
+  bool render_encoder_pixel_stage_fetches_ = false;
+  // Whether the draw's exports overlap what earlier draws of the pass read.
+  bool DrawExportsOverlapPassReads() const;
   // Whether the draw's shared memory reads or exports overlap writes not yet
   // ordered before it.
   bool DrawOverlapsPendingWrites(
