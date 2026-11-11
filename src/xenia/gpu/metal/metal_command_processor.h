@@ -1533,6 +1533,9 @@ class MetalCommandProcessor : public CommandProcessor,
   uint32_t render_encoder_tile_member_class_ = 0;
   // The open pass takes further resolves only (SetRenderEncoderResolveOnly).
   bool render_encoder_resolve_only_ = false;
+  // Why the current draw may not use an async stand-in
+  // (RenderTargetCache::GetPipelineStandInWaitReason), or null.
+  const char* draw_stand_in_wait_reason_ = nullptr;
   // Runs the resolve work left to the end of the pass that has just ended.
   void FlushPostPassResolves();
   // Whether every draw in the current render encoder was a pure vertex
