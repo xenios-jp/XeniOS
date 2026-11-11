@@ -10585,6 +10585,18 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
       consts.texture_integer_scale_bits[i] =
           texture_cache_->GetActiveIntegerScaleBits(i);
 
+      // Fetch constant LOD bias and gradient exponent biases, decoded from
+      // the word 4 the way the shader would (exact conversions).
+      if (spirv_translator_features_.predecoded_texture_fetch_lod_gradient) {
+        const uint32_t word_4 =
+            regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + i * 6 + 4];
+        consts.texture_fetch_lod_gradient[i][0] =
+            float(int32_t(word_4 << 10) >> 22) * (1.0f / 32.0f);
+        consts.texture_fetch_lod_gradient[i][1] =
+            float(int32_t(word_4 << 5) >> 27);
+        consts.texture_fetch_lod_gradient[i][2] = float(int32_t(word_4) >> 27);
+      }
+
       // Host swizzles: 12 bits per texture, 2 textures per uint32.
       uint32_t texture_swizzle = texture_cache_->GetActiveTextureHostSwizzle(i);
       uint32_t swizzle_shift = 12 * (i & 1);

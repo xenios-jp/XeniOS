@@ -481,6 +481,15 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // Scalar estimates of the draw's float constants that the vertex shader
     // would otherwise compute for every vertex (see DrawExactAnalysis).
     float draw_exact_estimates[4];
+    // Per texture fetch constant, decoded on the host from word 4 (used only
+    // when Features::predecoded_texture_fetch_lod_gradient is set), so the
+    // shader doesn't extract and convert the fields:
+    //   x: fetch constant LOD bias, float(signed bits 12:21) * (1 / 32),
+    //   y: gradient exponent bias H, float(signed bits 22:26),
+    //   z: gradient exponent bias V, float(signed bits 27:31),
+    //   w: reserved (0).
+    // All conversions are exact, so these are the shader's own values.
+    float texture_fetch_lod_gradient[32][4];
   };
 
   // xenos_draw.glsli reads these tessellation fields from the system constants
@@ -752,6 +761,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // with the console's 16-bit blender where fixed-function blending isn't
     // exact. The host marks those targets with a negative color_exp_bias.
     bool host_render_target_feedback = false;
+    // Texture fetch constant LOD bias and gradient exponent biases come from
+    // the system constants (texture_fetch_lod_gradient), filled by the host.
+    bool predecoded_texture_fetch_lod_gradient = false;
   };
 
   SpirvShaderTranslator(const Features& features,
@@ -1255,6 +1267,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
                           spv::Id sampler, spv::Id is_all_signed);
   // The explicit LOD, or the bias of a computed one: the fetch constant's, the
   // register's and the instruction's.
+  // The host-decoded LOD bias (0) or gradient exponent bias H/V (1, 2) of the
+  // instruction's fetch constant, or NoResult if they aren't predecoded.
+  spv::Id LoadPredecodedFetchLodGradient(
+      const ParsedTextureFetchInstruction& instr, uint32_t component);
   spv::Id TextureFetchLod(const ParsedTextureFetchInstruction& instr,
                           spv::Id fetch_constant_word_4_signed);
   // getBCF's lane 0 and lanes 1 to 3.
@@ -1632,6 +1648,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantTextureIntegerScaleBits,
     kSystemConstantParamGenWindowOffset,
     kSystemConstantDrawExactEstimates,
+    kSystemConstantTextureFetchLodGradient,
   };
   spv::Id uniform_fetch_state_[kFetchStateBindingCount] = {};
   spv::Id main_fetch_state_[kFetchStateBindingCount] = {};

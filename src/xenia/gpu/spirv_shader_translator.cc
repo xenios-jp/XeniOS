@@ -631,6 +631,21 @@ void SpirvShaderTranslator::StartTranslation() {
       type_float4_, builder_->makeUintConstant(6), sizeof(float) * 4);
   builder_->addDecoration(type_float4_array_6, spv::DecorationArrayStride,
                           sizeof(float) * 4);
+  spv::Id type_float4_array_32 = spv::NoResult;
+  if (features_.predecoded_texture_fetch_lod_gradient) {
+    system_constant_optional_count = 2;
+    type_float4_array_32 = builder_->makeArrayType(
+        type_float4_, builder_->makeUintConstant(32), sizeof(float) * 4);
+    builder_->addDecoration(type_float4_array_32, spv::DecorationArrayStride,
+                            sizeof(float) * 4);
+    if (type_float4_array_16 == spv::NoResult) {
+      // Declared, but not read.
+      type_float4_array_16 = builder_->makeArrayType(
+          type_float4_, builder_->makeUintConstant(16), sizeof(float) * 4);
+      builder_->addDecoration(type_float4_array_16, spv::DecorationArrayStride,
+                              sizeof(float) * 4);
+    }
+  }
   const SystemConstant system_constants[] = {
       {"flags", offsetof(SystemConstants, flags), type_uint_},
       {"vertex_index_load_address",
@@ -716,7 +731,11 @@ void SpirvShaderTranslator::StartTranslation() {
        offsetof(SystemConstants, param_gen_window_offset), type_float2_},
       {"draw_exact_estimates", offsetof(SystemConstants, draw_exact_estimates),
        type_float4_},
+      {"texture_fetch_lod_gradient",
+       offsetof(SystemConstants, texture_fetch_lod_gradient),
+       type_float4_array_32},
   };
+  constexpr size_t kSystemConstantOptionalCount = 2;
   id_vector_temp_.clear();
   id_vector_temp_.reserve(xe::countof(system_constants));
   for (size_t i = 0; i < xe::countof(system_constants); ++i) {

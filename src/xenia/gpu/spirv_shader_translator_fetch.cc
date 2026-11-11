@@ -1972,20 +1972,30 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           // greater of the two to the LOD bias. Scaling both gradients by 2^n
           // shifts the computed LOD by n, so this is exact whenever both biases
           // are equal, and biases a blurrier mip rather than a shimmering one.
-          spv::Id grad_exp_adjust_max = builder_->createBinBuiltinCall(
-              type_int_, ext_inst_glsl_std_450_, GLSLstd450SMax,
-              builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
-                                    fetch_constant_word_4_signed,
-                                    builder_->makeUintConstant(22),
-                                    builder_->makeUintConstant(5)),
-              builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
-                                    fetch_constant_word_4_signed,
-                                    builder_->makeUintConstant(27),
-                                    builder_->makeUintConstant(5)));
+          spv::Id grad_exp_adjust_max_float;
+          spv::Id predecoded_h = LoadPredecodedFetchLodGradient(instr, 1);
+          if (predecoded_h != spv::NoResult) {
+            // The two biases are small integers in floats, so the float
+            // maximum is the converted integer maximum.
+            grad_exp_adjust_max_float = builder_->createBinBuiltinCall(
+                type_float_, ext_inst_glsl_std_450_, GLSLstd450FMax,
+                predecoded_h, LoadPredecodedFetchLodGradient(instr, 2));
+          } else {
+            spv::Id grad_exp_adjust_max = builder_->createBinBuiltinCall(
+                type_int_, ext_inst_glsl_std_450_, GLSLstd450SMax,
+                builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
+                                      fetch_constant_word_4_signed,
+                                      builder_->makeUintConstant(22),
+                                      builder_->makeUintConstant(5)),
+                builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
+                                      fetch_constant_word_4_signed,
+                                      builder_->makeUintConstant(27),
+                                      builder_->makeUintConstant(5)));
+            grad_exp_adjust_max_float = builder_->createUnaryOp(
+                spv::OpConvertSToF, type_float_, grad_exp_adjust_max);
+          }
           lod = builder_->createNoContractionBinOp(
-              spv::OpFAdd, type_float_, lod,
-              builder_->createUnaryOp(spv::OpConvertSToF, type_float_,
-                                      grad_exp_adjust_max));
+              spv::OpFAdd, type_float_, lod, grad_exp_adjust_max_float);
         }
         // Calculate the gradients for sampling the texture if needed.
         // 2D vectors for k1D (because 1D images are emulated as 2D arrays),
@@ -1998,18 +2008,22 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           // the fetch-constant LOD bias (getCompTexLOD returns the raw queried
           // LOD, so neither bias is folded into it). Zero (the common case) is
           // a no-op.
-          spv::Id grad_exp_adjust_h = builder_->createUnaryOp(
-              spv::OpConvertSToF, type_float_,
-              builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
-                                    fetch_constant_word_4_signed,
-                                    builder_->makeUintConstant(22),
-                                    builder_->makeUintConstant(5)));
-          spv::Id grad_exp_adjust_v = builder_->createUnaryOp(
-              spv::OpConvertSToF, type_float_,
-              builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
-                                    fetch_constant_word_4_signed,
-                                    builder_->makeUintConstant(27),
-                                    builder_->makeUintConstant(5)));
+          spv::Id grad_exp_adjust_h = LoadPredecodedFetchLodGradient(instr, 1);
+          spv::Id grad_exp_adjust_v = LoadPredecodedFetchLodGradient(instr, 2);
+          if (grad_exp_adjust_h == spv::NoResult) {
+            grad_exp_adjust_h = builder_->createUnaryOp(
+                spv::OpConvertSToF, type_float_,
+                builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
+                                      fetch_constant_word_4_signed,
+                                      builder_->makeUintConstant(22),
+                                      builder_->makeUintConstant(5)));
+            grad_exp_adjust_v = builder_->createUnaryOp(
+                spv::OpConvertSToF, type_float_,
+                builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
+                                      fetch_constant_word_4_signed,
+                                      builder_->makeUintConstant(27),
+                                      builder_->makeUintConstant(5)));
+          }
           spv::Id lod_gradient_scale_h = builder_->createUnaryBuiltinCall(
               type_float_, ext_inst_glsl_std_450_, GLSLstd450Exp2,
               builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, lod,
@@ -3245,20 +3259,42 @@ size_t SpirvShaderTranslator::FindOrAddSamplerBinding(
   return new_sampler_binding_index;
 }
 
+spv::Id SpirvShaderTranslator::LoadPredecodedFetchLodGradient(
+    const ParsedTextureFetchInstruction& instr, uint32_t component) {
+  if (!features_.predecoded_texture_fetch_lod_gradient ||
+      instr.operands[1].storage_index >= 32) {
+    return spv::NoResult;
+  }
+  uint32_t fetch_constant_index = instr.operands[1].storage_index;
+  id_vector_temp_.clear();
+  id_vector_temp_.push_back(
+      builder_->makeIntConstant(kSystemConstantTextureFetchLodGradient));
+  id_vector_temp_.push_back(builder_->makeIntConstant(int32_t(fetch_constant_index)));
+  id_vector_temp_.push_back(builder_->makeIntConstant(int32_t(component)));
+  return builder_->createLoad(
+      builder_->createAccessChain(spv::StorageClassUniform,
+                                  uniform_system_constants_, id_vector_temp_),
+      spv::NoPrecision);
+}
+
 spv::Id SpirvShaderTranslator::TextureFetchLod(
     const ParsedTextureFetchInstruction& instr,
     spv::Id fetch_constant_word_4_signed) {
   // Accumulate the explicit LOD (or LOD bias) sources (in D3D11.3 specification
   // order: specified LOD + sampler LOD bias + instruction LOD bias).
   // Fetch constant LOD (bits 12:21 of the word 4).
-  spv::Id lod = builder_->createNoContractionBinOp(
-      spv::OpFMul, type_float_,
-      builder_->createUnaryOp(
-          spv::OpConvertSToF, type_float_,
-          builder_->createTriOp(
-              spv::OpBitFieldSExtract, type_int_, fetch_constant_word_4_signed,
-              builder_->makeUintConstant(12), builder_->makeUintConstant(10))),
-      builder_->makeFloatConstant(1.0f / 32.0f));
+  spv::Id lod = LoadPredecodedFetchLodGradient(instr, 0);
+  if (lod == spv::NoResult) {
+    lod = builder_->createNoContractionBinOp(
+        spv::OpFMul, type_float_,
+        builder_->createUnaryOp(
+            spv::OpConvertSToF, type_float_,
+            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_,
+                                  fetch_constant_word_4_signed,
+                                  builder_->makeUintConstant(12),
+                                  builder_->makeUintConstant(10))),
+        builder_->makeFloatConstant(1.0f / 32.0f));
+  }
   // Register LOD.
   if (instr.attributes.use_register_lod) {
     lod = builder_->createNoContractionBinOp(
