@@ -43,7 +43,8 @@ bool MetalPrimitiveProcessor::Initialize() {
                         false,  // line_loops_supported (will convert)
                         false,  // quad_lists_supported (will convert)
                         false,  // point_sprites_without_expansion
-                        false)) {
+                        false,  // rectangle_lists_without_expansion
+                        true)) {  // primitive_reset_always_enabled
     Shutdown();
     return false;
   }
