@@ -69,6 +69,11 @@ DEFINE_bool(a64_lfs_quiet_unobserved, true,
             "a compare or a NaN test, none of which can tell a signalling NaN "
             "from the same NaN quieted. Same results.",
             "a64");
+DEFINE_bool(a64_stfs_skip_quiet_test, true,
+            "stfs: skip the test that keeps a NaN's signalling bit when the "
+            "stored value can never be a signalling NaN, such as the result "
+            "of arithmetic. Same results.",
+            "a64");
 DEFINE_bool(a64_vmx_nan_fixup_in_tail, true,
             "Test the result of a VMX float add, subtract, multiply or divide "
             "for a NaN and apply PowerPC's NaN operand order in the function "

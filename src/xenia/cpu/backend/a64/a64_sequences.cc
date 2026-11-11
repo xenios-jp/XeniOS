@@ -5449,17 +5449,24 @@ struct PACK_SINGLE
     e.fmov(dest, e.s1);
 
     auto& done = e.NewCachedLabel();
-    auto& snan_fixup =
-        e.AddToTail([src, dest, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
-          // The convert forced the single's quiet bit on; copy the double's.
-          e.fmov(e.x17, src);
-          e.lsr(e.x17, e.x17, 51 - 22);
-          e.and_(e.w17, e.w17, uint64_t(1u << 22));
-          e.and_(dest, dest, uint64_t(~(1u << 22)));
-          e.orr(dest, dest, e.w17);
-          e.b(done);
-        });
-    e.b(VS, snan_fixup);
+    // The fixup only changes a signalling NaN: the convert already gives a
+    // quiet one its quiet bit and the top of its payload. A value that is
+    // never signalling, such as the result of arithmetic, needs no test.
+    if (!cvars::a64_stfs_skip_quiet_test || i.src1.is_constant ||
+        !IsNeverSignalingNan(i.src1.value)) {
+      e.fcmp(src, src);
+      auto& snan_fixup =
+          e.AddToTail([src, dest, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
+            // The convert forced the single's quiet bit on; copy the double's.
+            e.fmov(e.x17, src);
+            e.lsr(e.x17, e.x17, 51 - 22);
+            e.and_(e.w17, e.w17, uint64_t(1u << 22));
+            e.and_(dest, dest, uint64_t(~(1u << 22)));
+            e.orr(dest, dest, e.w17);
+            e.b(done);
+          });
+      e.b(VS, snan_fixup);
+    }
     if (!i.src1.is_constant && e.fpcr_mode() != FPCRMode::Fpu) {
       auto& in_fpu = AddFpuModeTail(e, done, [src, dest](A64Emitter& e) {
         e.fcvt(e.s1, src);

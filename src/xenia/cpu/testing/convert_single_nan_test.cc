@@ -175,6 +175,7 @@ TEST_CASE("UNPACK_THEN_PACK_SINGLE_IS_IDENTITY", "[instr]") {
   cvars::fold_single_round_trip = fold_default;
 }
 DECLARE_bool(a64_lfs_quiet_unobserved);
+DECLARE_bool(a64_stfs_skip_quiet_test);
   for (int variant = 0; variant < 4; ++variant) {
     const bool after_vmx = (variant & 2) != 0;
     TestFunction test([after_vmx](HIRBuilder& b) {
@@ -316,11 +317,19 @@ TEST_CASE("UNPACK_SINGLE_READERS_MATRIX", "[instr]") {
 #endif
   }
 }
+
+// stfs of a value that can never be a signalling NaN (an arithmetic result,
+// a rounding to single) stores the same single with or without the NaN test,
+// and stfs of a value that can be one keeps the test. Over doubles of every
+// class, in the Fpu mode and after a vector op.
+TEST_CASE("PACK_SINGLE_OF_ARITHMETIC_MATRIX", "[instr]") {
   static const uint64_t kDoubles[] = {
       0x0000000000000000ull, 0x8000000000000000ull, 0x3FF0000000000000ull,
       0xC008000000000000ull, 0x0000000000000001ull, 0x800FFFFFFFFFFFFFull,
       0x7FEFFFFFFFFFFFFFull, 0x7FF0000000000000ull, 0xFFF0000000000000ull,
       0x7FF8000000000000ull, 0xFFF8000000012345ull, 0x7FF0000000000001ull,
+      0xFFF4000000054321ull, 0x36A0000000000000ull, 0x3FF7FFFFF0000000ull,
+      0x47EFFFFFF0000000ull, 0x7FFFFFFFFFFFFFFFull, 0x7FF7FFFFE0000000ull,
   };
   const auto run = [](bool after_vmx) {
     TestFunction test([after_vmx](HIRBuilder& b) {
@@ -329,8 +338,51 @@ TEST_CASE("UNPACK_SINGLE_READERS_MATRIX", "[instr]") {
       }
       Value* d = LoadFPR(b, 1);
       Value* e = LoadFPR(b, 2);
+      int out = 10;
+      const auto pack = [&b, &out](Value* v) {
+        StoreGPR(b, out++, b.ZeroExtend(b.PackSingle(v), INT64_TYPE));
+      };
+      pack(b.Add(d, e));
+      pack(b.Sub(d, e));
+      pack(b.Mul(d, e));
+      pack(b.Div(d, e));
+      pack(b.MulAdd(d, e, d));
+      pack(b.MulSub(d, e, e, true));
+      pack(b.ToSingle(d));
+      pack(b.ToSingle(b.Mul(d, e)));
+      pack(b.Neg(b.Add(d, e)));
+      pack(b.Abs(b.Mul(d, e)));
+      // These can be signalling and keep the test.
+      pack(d);
+      pack(b.Neg(e));
+      pack(b.Select(b.Truncate(LoadGPR(b, 4), INT8_TYPE), d, b.Add(d, e)));
+      b.Return();
+    });
+    std::vector<uint32_t> results;
+    for (uint64_t d : kDoubles) {
+      for (uint64_t e : kDoubles) {
+        for (uint64_t pick = 0; pick < 2; ++pick) {
+          test.Run(
+              [d, e, pick](PPCContext* ctx) {
                 SetF64Bits(ctx, 1, d);
                 SetF64Bits(ctx, 2, e);
+                ctx->r[4] = pick;
+              },
+              [&results, d, e](PPCContext* ctx) {
+                for (int n = 10; n <= 22; ++n) {
+                  results.push_back(uint32_t(ctx->r[n]));
+                }
+                // stfs of the register itself moves a NaN's bits: sign,
+                // quiet bit and the top 22 payload bits.
+                if (IsDoubleNaN(d)) {
+                  REQUIRE(uint32_t(ctx->r[20]) ==
+                          (uint32_t(d >> 63) << 31 | 0x7F800000u |
+                           uint32_t((d >> 29) & 0x7FFFFF)));
+                }
+                if (IsDoubleNaN(e)) {
+                  REQUIRE(uint32_t(ctx->r[21]) ==
+                          (uint32_t(~e >> 63) << 31 | 0x7F800000u |
+                           uint32_t((e >> 29) & 0x7FFFFF)));
                 }
               });
         }
@@ -339,6 +391,13 @@ TEST_CASE("UNPACK_SINGLE_READERS_MATRIX", "[instr]") {
     return results;
   };
   for (bool after_vmx : {false, true}) {
+    const std::vector<uint32_t> results = run(after_vmx);
+    REQUIRE(results.size() == 18u * 18u * 2u * 13u);
+#if XE_ARCH_ARM64
+    const bool saved = cvars::a64_stfs_skip_quiet_test;
+    cvars::a64_stfs_skip_quiet_test = !saved;
+    const std::vector<uint32_t> other = run(after_vmx);
+    cvars::a64_stfs_skip_quiet_test = saved;
     size_t differing = 0;
     for (size_t n = 0; n < results.size(); ++n) {
       differing += results[n] != other[n];
