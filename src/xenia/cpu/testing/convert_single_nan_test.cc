@@ -9,6 +9,8 @@
 
 #include "xenia/cpu/testing/util.h"
 
+#include "xenia/cpu/cpu_flags.h"
+
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -127,3 +129,79 @@ TEST_CASE("FRSP_QUIETS_SNAN", "[instr]") {
              REQUIRE((out & (1ull << 51)) != 0);  // quieted
            });
 }
+
+// lfs then stfs of the same value stores the bits that were loaded, for every
+// class of single: all 256 exponents with empty, lowest-bit, quiet-bit-only,
+// all-but-quiet-bit, full and mixed mantissas, both signs. With the fold on
+// the pair is an assign; with it off both conversions run, in the Fpu mode
+// and, after a vector op, in a VMX mode.
+TEST_CASE("UNPACK_THEN_PACK_SINGLE_IS_IDENTITY", "[instr]") {
+  const bool fold_default = cvars::fold_single_round_trip;
+  for (int variant = 0; variant < 4; ++variant) {
+    cvars::fold_single_round_trip = (variant & 1) != 0;
+    const bool after_vmx = (variant & 2) != 0;
+    TestFunction test([after_vmx](HIRBuilder& b) {
+      if (after_vmx) {
+        StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
+      }
+      for (int n = 0; n < 6; ++n) {
+        Value* single_bits = b.Truncate(LoadGPR(b, 4 + n), INT32_TYPE);
+        Value* wide = b.UnpackSingle(single_bits);
+        StoreFPR(b, 1 + n, wide);
+        StoreGPR(b, 14 + n, b.ZeroExtend(b.PackSingle(wide), INT64_TYPE));
+      }
+      b.Return();
+    });
+    static const uint32_t kMantissas[6] = {0x000000, 0x000001, 0x400000,
+                                           0x3FFFFF, 0x7FFFFF, 0x2AAAAA};
+    for (uint32_t sign = 0; sign < 2; ++sign) {
+      for (uint32_t exponent = 0; exponent < 256; ++exponent) {
+        const uint32_t base = (sign << 31) | (exponent << 23);
+        test.Run(
+            [base](PPCContext* ctx) {
+              for (int n = 0; n < 6; ++n) {
+                ctx->r[4 + n] = base | kMantissas[n];
+              }
+            },
+            [base, variant](PPCContext* ctx) {
+              for (int n = 0; n < 6; ++n) {
+                CAPTURE(variant, base | kMantissas[n]);
+                REQUIRE(ctx->r[14 + n] == (base | kMantissas[n]));
+              }
+            });
+      }
+    }
+  }
+  cvars::fold_single_round_trip = fold_default;
+}
+  for (int variant = 0; variant < 4; ++variant) {
+    const bool after_vmx = (variant & 2) != 0;
+    TestFunction test([after_vmx](HIRBuilder& b) {
+      if (after_vmx) {
+        StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
+      }
+      for (int n = 0; n < 6; ++n) {
+      }
+      b.Return();
+    });
+    static const uint32_t kMantissas[6] = {0x000000, 0x000001, 0x400000,
+                                           0x3FFFFF, 0x7FFFFF, 0x2AAAAA};
+    for (uint32_t sign = 0; sign < 2; ++sign) {
+      for (uint32_t exponent = 0; exponent < 256; ++exponent) {
+        const uint32_t base = (sign << 31) | (exponent << 23);
+        test.Run(
+            [base](PPCContext* ctx) {
+              for (int n = 0; n < 6; ++n) {
+                ctx->r[4 + n] = base | kMantissas[n];
+              }
+            },
+              for (int n = 0; n < 6; ++n) {
+                CAPTURE(variant, base | kMantissas[n]);
+    TestFunction test([after_vmx](HIRBuilder& b) {
+      if (after_vmx) {
+        StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
+      }
+    TestFunction test([after_vmx](HIRBuilder& b) {
+      if (after_vmx) {
+        StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
+      }
