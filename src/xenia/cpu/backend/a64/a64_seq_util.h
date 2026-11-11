@@ -26,6 +26,7 @@
 DECLARE_bool(a64_stfs_skip_quiet_test);
 DECLARE_bool(a64_lfs_quiet_unobserved);
 DECLARE_bool(a64_vmx_nan_fixup_in_tail);
+DECLARE_bool(a64_vmx_fma_minmax_nan_in_tail);
 
 #if XE_COMPILER_MSVC
 #include <intrin.h>
@@ -712,18 +713,42 @@ inline void PrepareVmxFmaSources(A64Emitter& e, const T1& op1, const T2& op2,
 // operands are (A, C, B). An invalid operation with no NaN operand needs
 // nothing: ARM's default NaN is already the one PPC produces.
 // Expects v2 = the FMA result and a, c, b holding the (flushed) sources.
-// A four-instruction test of the result skips the fixup unless some lane is
-// NaN. tmp must differ from a, c, b, v2 and every live allocated register; qs
+// A test of the result skips the fixup unless some lane is NaN. tmp must
+// differ from a, c, b, v2 and every live allocated register; qs
 // is written only after the sources die. Modifies v2 in place.
+inline void FixupVmxNanLanes_V128_Fma(A64Emitter& e, int a, int c, int b,
+                                      int tmp, int qs);
 inline void FixupVmxNan_V128_Fma(A64Emitter& e, int a, int c, int b, int tmp,
                                  int qs) {
   using namespace Xbyak_aarch64;
   auto& done = e.NewCachedLabel();
+  if (cvars::a64_vmx_fma_minmax_nan_in_tail) {
+    // FMINV returns a NaN if any lane is one, which one compare of it with
+    // itself tells, and the fixup, which changes nothing unless some lane is
+    // a NaN, sits in the tail.
+    auto& nan_lane = e.AddToTail(
+        [a, c, b, tmp, qs, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
+          FixupVmxNanLanes_V128_Fma(e, a, c, b, tmp, qs);
+          e.b(done);
+        });
+    e.fminv(SReg(tmp), VReg(2).s4);
+    e.fcmp(SReg(tmp), SReg(tmp));
+    e.b(VS, nan_lane);
+    e.L(done);
+    return;
+  }
   e.fcmeq(VReg(tmp).s4, VReg(2).s4, VReg(2).s4);  // all-ones where not NaN
   e.uminv(SReg(tmp), VReg(tmp).s4);               // 0 iff any lane is NaN
   e.fmov(WReg(0), SReg(tmp));
   e.cbnz_near(WReg(0), done);
+  FixupVmxNanLanes_V128_Fma(e, a, c, b, tmp, qs);
+  e.L(done);
+}
 
+// The fixup itself, for a result with a NaN lane.
+inline void FixupVmxNanLanes_V128_Fma(A64Emitter& e, int a, int c, int b,
+                                      int tmp, int qs) {
+  using namespace Xbyak_aarch64;
   // Lowest priority first (C, B, A) so an earlier operand overwrites. BIF
   // inserts an operand wherever its self-compare is false, which is exactly
   // where it is NaN.
@@ -819,6 +844,69 @@ inline void EmitVmxFpBinOp_V128(A64Emitter& e, int dest_idx, const T1& src1,
     // Move to dest.
     e.mov(VReg(dest_idx).b16, VReg(2).b16);
   });
+}
+
+// VMX float32x4 maximum or minimum with denormal flushing and PPC NaN
+// propagation, inside EmitWithVmxFpcr. Result goes into dest_idx.
+// Clobbers v0-v3, w17.
+template <typename T1, typename T2>
+inline void EmitVmxFpMaxMin_V128(A64Emitter& e, int dest_idx, const T1& src1,
+                                 const T2& src2, bool is_min) {
+  const auto emit_op = [&e, is_min](int result, int s1, int s2) {
+    if (is_min) {
+      e.fmin(VReg(result).s4, VReg(s1).s4, VReg(s2).s4);
+    } else {
+      e.fmax(VReg(result).s4, VReg(s1).s4, VReg(s2).s4);
+    }
+  };
+  if (cvars::a64_vmx_fma_minmax_nan_in_tail &&
+      e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
+    // FPCR.FZ flushes the inputs and the result, so the operands are used
+    // where they are. fmax and fmin make a NaN only out of a NaN operand, and
+    // the fixup replaces only the result's NaN lanes, so a result with no NaN
+    // lane is final.
+    const int s1 = SrcVReg(e, src1, 0);
+    const int s2 = SrcVReg(e, src2, 1);
+    const int result = dest_idx != s1 && dest_idx != s2 ? dest_idx : 2;
+    emit_op(result, s1, s2);
+    auto& done = e.NewCachedLabel();
+    auto& nan_lane = e.AddToTail(
+        [s1, s2, result, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
+          // The fixup wants src1, src2 and the result in v0, v1 and v2. A
+          // source is in its allocated register or already in its scratch.
+          if (s1 != 0) {
+            e.mov(VReg(0).b16, VReg(s1).b16);
+          }
+          if (s2 != 1) {
+            e.mov(VReg(1).b16, VReg(s2).b16);
+          }
+          if (result != 2) {
+            e.mov(VReg(2).b16, VReg(result).b16);
+          }
+          FixupVmxMaxMinNan(e);
+          if (result != 2) {
+            e.mov(VReg(result).b16, VReg(2).b16);
+          }
+          e.b(done);
+        });
+    e.fminv(SReg(3), VReg(result).s4);
+    e.fcmp(SReg(3), SReg(3));
+    e.b(Xbyak_aarch64::VS, nan_lane);
+    e.L(done);
+    if (result != dest_idx) {
+      e.mov(VReg(dest_idx).b16, VReg(result).b16);
+    }
+    return;
+  }
+  int s1, s2;
+  PrepareVmxFpSources(e, src1, src2, s1, s2);
+  emit_op(2, s1, s2);
+  // PPC vmaxfp and vminfp: a NaN input is returned quieted, vA before vB.
+  FixupVmxMaxMinNan(e);
+  if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
+    FlushDenormals_V128(e, 2, 0, 1);
+  }
+  e.mov(VReg(dest_idx).b16, VReg(2).b16);
 }
 
 }  // namespace a64
