@@ -85,6 +85,9 @@ class SharedMemory {
   // nothing derived from it cached. When the buffer is the guest memory itself
   // there is nothing to upload for such a range, so it doesn't need valid
   // pages or the write watch that comes with them. RequestRange otherwise.
+  // While a trace is being written the range is requested like any other: the
+  // upload of its pages is what records them, and a trace has to hold every
+  // range its draws read.
   bool RequestRangeForGpuRead(uint32_t start, uint32_t length);
   // XXH3 of the guest memory behind a range, as the CPU sees it now.
   uint64_t HashGuestRange(uint32_t start, uint32_t length) const;
@@ -192,6 +195,9 @@ class SharedMemory {
  protected:
   // Set by an implementation whose buffer aliases the guest memory.
   bool buffer_is_guest_memory_ = false;
+  // Set by an implementation that records uploads in a trace. Whether a trace
+  // is open is only asked where a request would otherwise be skipped.
+  virtual bool IsTraceOpen() const { return false; }
 
  private:
   Memory& memory_;
