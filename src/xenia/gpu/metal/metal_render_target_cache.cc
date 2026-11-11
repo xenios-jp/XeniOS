@@ -1770,6 +1770,7 @@ bool UnionIsRectangle(const Rectangle& a, const Rectangle& b,
   union_out.height_pixels = uint32_t(bt - t);
   return true;
 }
+
 }  // namespace
 
 void MetalRenderTargetCache::ApplyClearQuadRule(
@@ -2048,6 +2049,10 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
   covered.y_pixels = uint32_t(top);
   covered.width_pixels = uint32_t(right - left);
   covered.height_pixels = uint32_t(bottom - top);
+  // Everything below withholds a transfer or a load on the strength of the
+  // quad being drawn, so the draw waits for its own pipeline
+  // (update_relies_on_quad_draw()).
+  update_relies_on_quad_draw_ = true;
   // Unless culled, the quad overwrites every sample of `covered` in the
   // targets it writes, so a pass it begins needn't load them if it covers the
   // pass's whole render area.
@@ -2684,6 +2689,7 @@ bool MetalRenderTargetCache::Update(
   // Full-target clear quads, and transfers that would only copy a constant.
   pending_constant_ = PendingConstant();
   update_cutout_mask_ = 0;
+  update_relies_on_quad_draw_ = false;
   update_cutout_full_overwrite_mask_ = 0;
   update_cutout_quad_slot_ = UINT32_MAX;
   update_targets_changed_ = targets_changed;
