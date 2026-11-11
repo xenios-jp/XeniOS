@@ -165,7 +165,8 @@ enum EdramDumpShaderPushConstant : uint32_t {
   // threads can place themselves without dividing the linear index back out.
   kEdramDumpShaderPushConstantResolveDispatchTile,
   // Logical consumer dimensions, not the resolve's 8-pixel-aligned extent.
-  // The upper 16 bits of width are the first output texture row.
+  // The upper 16 bits of width are the first output texture row, and the top
+  // byte of height the first output texture column in 32-texel tiles.
   kEdramDumpShaderPushConstantResolveTextureWidth,
   kEdramDumpShaderPushConstantResolveTextureHeight,
 

@@ -140,7 +140,9 @@ class MetalTextureCache : public TextureCache {
   // may write the same logical texels there while it performs the required
   // guest-memory resolve. Partial rectangles require current retained texels,
   // or proof that all writes to an outdated texture stayed within complete
-  // rows being rewritten. Publication rechecks intervening invalidations after
+  // rows being rewritten, or, of an outdated texture, that the rectangles
+  // refreshed with nothing else written between them add up to all of it.
+  // Publication rechecks intervening invalidations after
   // the resolve marks the range GPU-written. It requires valid shared-memory
   // pages and installs the ordinary watch immediately under the same lock,
   // so later writes take the normal invalidation path.
@@ -149,8 +151,15 @@ class MetalTextureCache : public TextureCache {
     struct Alias {
       NS::SharedPtr<MTL::Texture> write_texture;
       void* cache_texture = nullptr;
+      // Where the resolve rectangle starts in the texture, in whole 32x32
+      // tiles, as texels.
+      uint32_t offset_x = 0;
       uint32_t offset_y = 0;
       bool partial = false;
+      // The texture is outdated beyond what the rectangle rewrites: it becomes
+      // current only once such rectangles cover it (MetalTexture's
+      // resolve_refresh_cover_).
+      bool accumulate = false;
       uint64_t invalidation_count = 0;
       bool outdated_within_band = false;
       uint64_t fire_sequence = 0;
@@ -158,6 +167,9 @@ class MetalTextureCache : public TextureCache {
     static constexpr uint32_t kMaxAliases = 3;
     uint32_t length = 0;
     uint32_t address = 0;
+    // The resolve rectangle.
+    uint32_t width = 0;
+    uint32_t height = 0;
     Transform transform = Transform::kNone;
     // The first destination supplies the shared shape and conversion. Keep
     // every view alive through encoding and publication even if RequestRange
@@ -201,9 +213,9 @@ class MetalTextureCache : public TextureCache {
     explicit operator bool() const { return count != 0; }
   };
   // Other interpretations may join only with matching write format, size,
-  // conversion and row offset; unmatched textures retain the normal reload. A
+  // conversion and offset; unmatched textures retain the normal reload. A
   // depth refresh also takes raw 32bpb interpretations of matching size and
-  // row offset, after the depth ones.
+  // offset, after the depth ones.
   void PrepareDirectResolveTextureRefresh(
       xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
       uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
@@ -398,6 +410,23 @@ class MetalTextureCache : public TextureCache {
     MetalTexture* resolve_refresh_previous_ = nullptr;
     MetalTexture* resolve_refresh_next_ = nullptr;
     bool resolve_refresh_registered_ = false;
+    // While the texture is outdated: the rectangle of it that direct resolves
+    // have rewritten, in guest memory and in the image alike, with nothing
+    // else written to its memory since the first of them. The watch tells of
+    // the first write after the last of them, which is the next such resolve
+    // itself if the rectangle is to grow. All under the global lock.
+    struct ResolveRefreshCover {
+      uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+      SharedMemory::WatchHandle watch = nullptr;
+      // The shared memory fire sequence of the write the watch saw.
+      uint64_t fired_sequence = 0;
+      bool active = false;
+    };
+    ResolveRefreshCover resolve_refresh_cover_;
+    static void ResolveRefreshCoverWatchCallback(
+        const global_unique_lock_type& global_lock, void* context, void* data,
+        uint64_t argument, bool invalidated_by_gpu);
+    void DropResolveRefreshCover(const global_unique_lock_type& global_lock);
     // The last submission whose command buffer accesses the texture.
     uint64_t used_submission_ = 0;
     // The loads_ahead_generation_ in which a load ahead was recorded.
