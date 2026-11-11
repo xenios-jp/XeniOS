@@ -8790,6 +8790,18 @@ bool MetalCommandProcessor::EncodeHeldDrawPassTransfers() {
   if (!render_target_cache_) {
     return true;
   }
+  // The transfers take their value conversion from the draw that caused
+  // them, not from the one that ends the hold.
+  struct HeldEncode {
+    MetalRenderTargetCache* cache;
+    bool begun;
+    ~HeldEncode() {
+      if (begun) {
+        cache->EndHeldTransferEncode();
+      }
+    }
+  } held_encode = {render_target_cache_.get(),
+                   render_target_cache_->BeginHeldTransferEncode()};
   const bool in_pass = render_target_cache_->ReleaseHeldDrawPassTransfers();
   if (!render_target_cache_->HasPendingDrawPassTransfers()) {
     return true;

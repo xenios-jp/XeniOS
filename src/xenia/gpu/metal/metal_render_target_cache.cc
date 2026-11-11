@@ -2743,6 +2743,17 @@ bool MetalRenderTargetCache::Update(
           // Held until the quad is drawn, and the quads after it that
           // continue the clear, then encoded with all of them left out.
           quad_hold_slot_ = i;
+          // The transfers are encoded after later updates, with the value
+          // conversion this draw's blending asks for, not theirs.
+          RenderTargetKey no_blend_reading[xenos::kMaxColorRenderTargets];
+          for (uint32_t j = 0; j < xenos::kMaxColorRenderTargets; ++j) {
+            quad_hold_blend_reading_rts_[j] = RenderTargetKey();
+          }
+          SwapLastUpdateBlendReadingColorRTs(quad_hold_blend_reading_rts_);
+          for (uint32_t j = 0; j < xenos::kMaxColorRenderTargets; ++j) {
+            no_blend_reading[j] = quad_hold_blend_reading_rts_[j];
+          }
+          SwapLastUpdateBlendReadingColorRTs(no_blend_reading);
           quad_hold_in_encoder_ = false;
           quad_hold_candidate_ = update_cutouts_[i];
           quad_hold_candidate_valid_ = true;
@@ -3426,6 +3437,18 @@ void MetalRenderTargetCache::NoteReleasedQuadWrites() {
   }
   released_quad_dest_ = nullptr;
   released_quad_constant_valid_ = false;
+}
+
+bool MetalRenderTargetCache::BeginHeldTransferEncode() {
+  if (quad_hold_slot_ == UINT32_MAX) {
+    return false;
+  }
+  SwapLastUpdateBlendReadingColorRTs(quad_hold_blend_reading_rts_);
+  return true;
+}
+
+void MetalRenderTargetCache::EndHeldTransferEncode() {
+  SwapLastUpdateBlendReadingColorRTs(quad_hold_blend_reading_rts_);
 }
 
 void MetalRenderTargetCache::ResetQuadHold() {

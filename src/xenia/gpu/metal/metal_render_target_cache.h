@@ -288,6 +288,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Such a draw must be drawn with its own shaders: a stand-in that writes no
   // color, or a skipped draw, would leave the rectangle without the
   // transferred or loaded contents for good.
+  // Around the encoding of transfers held behind a clear quad.
+  bool BeginHeldTransferEncode();
+  void EndHeldTransferEncode();
   bool update_relies_on_quad_draw() const {
     return update_relies_on_quad_draw_;
   }
@@ -779,6 +782,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Whether the last Update took the draw for a quad that overwrites its
   // rectangle: transfers were cut around it, or a load may be skipped for it.
   bool update_relies_on_quad_draw_ = false;
+  // The blend-reading color render targets of the update that began the
+  // quad hold.
+  RenderTargetKey quad_hold_blend_reading_rts_[xenos::kMaxColorRenderTargets];
   uint32_t clear_quad_saved_area_width_ = 0;
   uint32_t clear_quad_saved_area_height_ = 0;
   // A render target every sample of `rectangle` (in its pixels) of which has
