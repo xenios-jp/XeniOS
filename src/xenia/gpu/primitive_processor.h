@@ -18,6 +18,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <vector>
 #include <unordered_map>
 #include <utility>
 
@@ -260,11 +261,17 @@ class PrimitiveProcessor {
   //     emulation. Overrides do not apply to these as hosts are not required to
   //     support the fallback paths since they require different vertex shader
   //     structure (for the fallback HostVertexShaderTypes).
+  // - primitive_reset_always_enabled:
+  //   - Pass true if the host cuts the primitive at the all-ones index of the
+  //     index type in every indexed draw and has no way to turn that off
+  //     (Metal). 16-bit index buffers where 0xFFFF is a vertex index rather
+  //     than the guest's reset index are widened to 32 bits then.
   bool InitializeCommon(bool full_32bit_vertex_indices_supported,
                         bool triangle_fans_supported, bool line_loops_supported,
                         bool quad_lists_supported,
                         bool point_sprites_supported_without_vs_expansion,
-                        bool rectangle_lists_supported_without_vs_expansion);
+                        bool rectangle_lists_supported_without_vs_expansion,
+                        bool primitive_reset_always_enabled = false);
   // If any primitive type conversion is needed for auto-indexed draws, called
   // from InitializeCommon (thus only once in the primitive processor's
   // lifetime) to set up the backend's index buffer containing indices for
@@ -748,6 +755,9 @@ class PrimitiveProcessor {
   SharedMemory& shared_memory_;
 
   bool full_32bit_vertex_indices_used_ = false;
+  bool primitive_reset_always_enabled_ = false;
+  // Reused scratch for widening converted 16-bit indices.
+  std::vector<uint16_t> widen_to_32_indices_;
   bool convert_triangle_fans_to_lists_ = false;
   bool convert_line_loops_to_strips_ = false;
   bool convert_quad_lists_to_triangle_lists_ = false;

@@ -111,7 +111,9 @@ bool PrimitiveProcessor::InitializeCommon(
     bool full_32bit_vertex_indices_supported, bool triangle_fans_supported,
     bool line_loops_supported, bool quad_lists_supported,
     bool point_sprites_supported_without_vs_expansion,
-    bool rectangle_lists_supported_without_vs_expansion) {
+    bool rectangle_lists_supported_without_vs_expansion,
+    bool primitive_reset_always_enabled) {
+  primitive_reset_always_enabled_ = primitive_reset_always_enabled;
   full_32bit_vertex_indices_used_ = full_32bit_vertex_indices_supported;
   convert_triangle_fans_to_lists_ =
       !triangle_fans_supported || cvars::force_convert_triangle_fans_to_lists;
@@ -820,11 +822,16 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
         if (guest_index_format == xenos::IndexFormat::kInt16) {
           // 16-bit indices - just convert the primitive (or multiple
           // primitives) to the host topology.
-          // TODO(Triang3l): 16-bit > 32-bit primitive type conversion for
-          // Metal, where primitive reset is always enabled, if UINT16_MAX is
-          // used as a real vertex index.
           auto guest_indices =
               reinterpret_cast<const uint16_t*>(guest_indices_ptr);
+          // Where primitive reset is always enabled on the host, 0xFFFF that
+          // is a vertex index (not the guest's reset index, which is consumed
+          // by the conversion) would cut the converted primitives.
+          bool widen_to_32 =
+              primitive_reset_always_enabled_ &&
+              !(guest_primitive_reset_enabled &&
+                guest_primitive_reset_index_guest_endian == UINT16_MAX) &&
+              IsResetUsed(guest_indices, guest_draw_vertex_count, UINT16_MAX);
           if (guest_primitive_reset_enabled &&
               IsResetUsed(guest_indices, guest_draw_vertex_count,
                           guest_primitive_reset_index_guest_endian)) {
@@ -842,17 +849,42 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
             single_primitive_ranges_.emplace_back(
                 0, guest_draw_vertex_count, cacheable.host_draw_vertex_count);
           }
-          auto host_indices = reinterpret_cast<uint16_t*>(
-              RequestHostConvertedIndexBufferForCurrentFrame(
-                  xenos::IndexFormat::kInt16, cacheable.host_draw_vertex_count,
-                  false, guest_index_base, cacheable.host_index_buffer_handle));
-          if (!host_indices) {
-            return false;
+          if (widen_to_32) {
+            // Rare, so converted as 16-bit first. The indices stay in the
+            // guest endianness in the low 16 bits, like in
+            // ReplaceResetIndex16To24.
+            widen_to_32_indices_.resize(cacheable.host_draw_vertex_count);
+            ConvertSinglePrimitiveRanges(
+                widen_to_32_indices_.data(), guest_indices,
+                guest_primitive_type, PassthroughIndexTransform(),
+                single_primitive_ranges_.cbegin(),
+                single_primitive_ranges_.cend());
+            cacheable.host_index_format = xenos::IndexFormat::kInt32;
+            auto host_indices = reinterpret_cast<uint32_t*>(
+                RequestHostConvertedIndexBufferForCurrentFrame(
+                    xenos::IndexFormat::kInt32,
+                    cacheable.host_draw_vertex_count, false, guest_index_base,
+                    cacheable.host_index_buffer_handle));
+            if (!host_indices) {
+              return false;
+            }
+            for (uint32_t i = 0; i < cacheable.host_draw_vertex_count; ++i) {
+              host_indices[i] = widen_to_32_indices_[i];
+            }
+          } else {
+            auto host_indices = reinterpret_cast<uint16_t*>(
+                RequestHostConvertedIndexBufferForCurrentFrame(
+                    xenos::IndexFormat::kInt16,
+                    cacheable.host_draw_vertex_count, false, guest_index_base,
+                    cacheable.host_index_buffer_handle));
+            if (!host_indices) {
+              return false;
+            }
+            ConvertSinglePrimitiveRanges(
+                host_indices, guest_indices, guest_primitive_type,
+                PassthroughIndexTransform(), single_primitive_ranges_.cbegin(),
+                single_primitive_ranges_.cend());
           }
-          ConvertSinglePrimitiveRanges(
-              host_indices, guest_indices, guest_primitive_type,
-              PassthroughIndexTransform(), single_primitive_ranges_.cbegin(),
-              single_primitive_ranges_.cend());
         } else {
           // 32-bit indices - may need to pre-swap and pre-mask also if the host
           // doesn't support full 32-bit vertex indices.
@@ -975,10 +1007,15 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
                 cacheable.host_index_format = is_ffff_used_as_vertex_index
                                                   ? xenos::IndexFormat::kInt32
                                                   : xenos::IndexFormat::kInt16;
+                // Coaligning only for 16 bits to 16 bits (aligned stores).
+                // The 32-bit output is stored unaligned, and coaligned with
+                // the 16-bit source, it could be at an offset that is not a
+                // multiple of the index size, which is not valid for a host
+                // index buffer.
                 void* host_indices_ptr =
                     RequestHostConvertedIndexBufferForCurrentFrame(
                         cacheable.host_index_format, guest_draw_vertex_count,
-                        true, guest_index_base,
+                        !is_ffff_used_as_vertex_index, guest_index_base,
                         cacheable.host_index_buffer_handle);
                 if (!host_indices_ptr) {
                   return false;
@@ -1065,6 +1102,46 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
             }
             cache_transaction.SetNewResult(cacheable);
           }
+        }
+      } else if (primitive_reset_always_enabled_ &&
+                 guest_index_format == xenos::IndexFormat::kInt16) {
+        // The host cuts the primitive (a list too) at 0xFFFF though the guest
+        // has primitive reset disabled (or the primitive is a list). If
+        // 0xFFFF is used as a vertex index, widen the indices to 32 bits,
+        // where it is just an index. (For 32-bit indices, the host's
+        // 0xFFFFFFFF is not a value a guest index buffer is expected to have.)
+        // Writing to the trace irrespective of the cache lookup result
+        // because cache behavior depends on runtime configuration and state.
+        trace_writer_.WriteMemoryRead(guest_index_base,
+                                      guest_index_buffer_needed_bytes);
+        CacheTransaction cache_transaction(
+            *this, CacheKey(guest_index_base, guest_draw_vertex_count,
+                            guest_index_format, guest_index_endian,
+                            guest_primitive_reset_enabled));
+        if (cache_transaction.GetFoundResult()) {
+          cacheable = *cache_transaction.GetFoundResult();
+        } else {
+          auto guest_indices =
+              memory_.TranslatePhysical<const uint16_t*>(guest_index_base);
+          if (IsResetUsed(guest_indices, guest_draw_vertex_count,
+                          UINT16_MAX)) {
+            cacheable.index_buffer_type =
+                ProcessedIndexBufferType::kHostConverted;
+            cacheable.host_index_format = xenos::IndexFormat::kInt32;
+            auto host_indices = reinterpret_cast<uint32_t*>(
+                RequestHostConvertedIndexBufferForCurrentFrame(
+                    xenos::IndexFormat::kInt32, guest_draw_vertex_count, false,
+                    guest_index_base, cacheable.host_index_buffer_handle));
+            if (!host_indices) {
+              return false;
+            }
+            // In the guest endianness in the low 16 bits, like in
+            // ReplaceResetIndex16To24.
+            for (uint32_t i = 0; i < guest_draw_vertex_count; ++i) {
+              host_indices[i] = guest_indices[i];
+            }
+          }
+          cache_transaction.SetNewResult(cacheable);
         }
       }
     }
