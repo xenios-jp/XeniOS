@@ -201,6 +201,17 @@ class MetalCommandProcessor : public CommandProcessor,
   // placeholder loses, and counted draws need the guest's exact kills and
   // alpha test: such draws wait for their own shaders and pipeline.
   bool ExactShadersRequired(bool memexport_used) const;
+  // For the render target cache's depth clear retarget: the open pass's
+  // encoder and descriptor if these are its depth and stencil attachments,
+  // otherwise null. After drawing, the cache passes what it changed on the
+  // encoder to InvalidateRenderEncoderStateAfterDrawPassTransfers.
+  MTL::RenderCommandEncoder* GetRenderEncoderForDepthClear(
+      MTL::Texture* depth_texture, MTL::Texture* stencil_texture,
+      MTL::RenderPassDescriptor** pass_descriptor_out);
+  void NoteDepthClearInRenderEncoder();
+  // Whether an occlusion report or a VIZ query counts the samples of the draw
+  // being issued.
+  bool IsDrawCountedByQuery() const;
   // The guest's open render pass, for a resolve that encodes a tile dispatch
   // into it: its descriptor, the area its tiles cover,
   // and the shared memory hazard tracking of its encoder, null when the buffer

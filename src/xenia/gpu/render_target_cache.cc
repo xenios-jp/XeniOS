@@ -29,6 +29,22 @@
 
 DECLARE_bool(strip_merge_log);
 
+DEFINE_bool(
+    depth_clear_retarget_4x, true,
+    "When the guest clears depth, stencil or both by drawing one rectangle "
+    "that writes a constant (depth 0 or 1 with depth function always, "
+    "stencil replaced with function always, no color, no pixel shader, whole "
+    "pixels) through a 4x MSAA view of EDRAM tiles that a 1x or 2x depth "
+    "render target of the same format, base and pitch owns, write the "
+    "constant into the owner instead of transferring ownership to the 4x view and "
+    "back.",
+    "GPU");
+DEFINE_bool(
+    skip_no_effect_draws, true,
+    "Don't issue a draw that writes no color, depth or stencil, exports "
+    "nothing to memory and is counted by no occlusion query.",
+    "GPU");
+
 DEFINE_bool(log_transfers, false,
             "Log every EDRAM ownership transfer with its source and "
             "destination render target and tile range.",
@@ -603,6 +619,8 @@ void RenderTargetCache::DestroyAllRenderTargets(bool shutting_down) {
 void RenderTargetCache::ShutdownCommon() { DestroyAllRenderTargets(true); }
 
 void RenderTargetCache::ClearCache() {
+  depth_clear_retarget_last_ = RenderTargetKey();
+  depth_clear_retarget_stay_.clear();
   // Keep only render targets currently owning any EDRAM data.
   if (!render_targets_.empty()) {
     std::unordered_set<RenderTargetKey, RenderTargetKey::Hasher>
@@ -729,6 +747,11 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
                                int32_t window_offset_tiles) {
   const RegisterFile& regs = register_file();
   bool interlock_barrier_only = GetPath() == Path::kPixelShaderInterlock;
+  const bool depth_clear_retarget_candidate = depth_clear_retarget_candidate_;
+  depth_clear_retarget_candidate_ = false;
+  last_update_depth_clear_retargeted_ = false;
+  const RenderTargetKey depth_clear_retarget_draw_target_before =
+      last_update_draw_target_;
   last_update_draw_target_ = RenderTargetKey();
 
   auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
@@ -1141,6 +1164,58 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
       length_used_tiles_at_32bpp += right_tiles_at_32bpp - pitch_tiles_at_32bpp;
     }
   }
+  // A depth clear through a 4x view of tiles a 1x or 2x depth render target
+  // owns goes to the owner, before anything of this update exists: no render
+  // target is created, no ownership changes, and the last update's transfers
+  // and render targets stay as the draw before left them.
+  if (!depth_clear_retarget_last_.IsEmpty() &&
+      (depth_and_color_rts_used_bits & 1) && !interlock_barrier_only) {
+    // The first draw with depth after a retargeted clear: if it is on the 4x
+    // view, that view takes the tiles anyway and the retarget saved nothing,
+    // so clears through it are drawn as usual from now on. Either way is
+    // exact; this only picks the one with less work.
+    RenderTargetKey depth_key;
+    depth_key.base_tiles = edram_bases[0];
+    depth_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
+    depth_key.msaa_samples = msaa_samples;
+    depth_key.is_depth = 1;
+    depth_key.resource_format = resource_formats[0];
+    depth_key.scale_native = uint32_t(scale_native);
+    if (depth_key == depth_clear_retarget_last_ &&
+        std::find(depth_clear_retarget_stay_.cbegin(),
+                  depth_clear_retarget_stay_.cend(),
+                  depth_key) == depth_clear_retarget_stay_.cend()) {
+      depth_clear_retarget_stay_.push_back(depth_key);
+    }
+    depth_clear_retarget_last_ = RenderTargetKey();
+  }
+  if (cvars::depth_clear_retarget_4x && depth_clear_retarget_candidate &&
+      !interlock_barrier_only && !window_offset_tiles &&
+      depth_and_color_rts_used_bits == 1 && !keep_aliased_depth &&
+      !strip_merged && msaa_samples == xenos::MsaaSamples::k4X) {
+    RenderTargetKey draw_key;
+    draw_key.base_tiles = edram_bases[0];
+    draw_key.pitch_tiles_at_32bpp = pitch_tiles_at_32bpp;
+    draw_key.msaa_samples = msaa_samples;
+    draw_key.is_depth = 1;
+    draw_key.resource_format = resource_formats[0];
+    draw_key.scale_native = uint32_t(scale_native);
+    DepthClearRetarget retarget;
+    const bool retargeted =
+        std::find(depth_clear_retarget_stay_.cbegin(),
+                  depth_clear_retarget_stay_.cend(),
+                  draw_key) == depth_clear_retarget_stay_.cend() &&
+        GetDepthClearRetarget(normalized_depth_control, draw_key,
+                              length_used_tiles_at_32bpp, height_used,
+                              retarget) &&
+        PerformDepthClearRetarget(retarget);
+    if (retargeted) {
+      last_update_draw_target_ = depth_clear_retarget_draw_target_before;
+      last_update_depth_clear_retargeted_ = true;
+      depth_clear_retarget_last_ = draw_key;
+      return true;
+    }
+  }
   for (uint32_t i = 0; i < edram_bases_sorted_count; ++i) {
     const std::pair<uint32_t, uint32_t>& rt_base_index = edram_bases_sorted[i];
     uint32_t rt_base = rt_base_index.first;
@@ -1282,6 +1357,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
             : RenderTargetKey();
   }
 
+  // TODO(xenios-jp): claim only the tiles the draw's box or scissor touches.
   for (uint32_t i = 0; i < edram_bases_sorted_count; ++i) {
     const std::pair<uint32_t, uint32_t>& rt_base_index = edram_bases_sorted[i];
     uint32_t rt_bit_index = rt_base_index.second;
@@ -1367,6 +1443,290 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
     are_accumulated_render_targets_valid_ = true;
   }
 
+  return true;
+}
+
+bool RenderTargetCache::GetDepthClearRetarget(
+    reg::RB_DEPTHCONTROL normalized_depth_control, RenderTargetKey draw_key,
+    uint32_t length_tiles, uint32_t height_used,
+    DepthClearRetarget& retarget_out) {
+  // What makes the retarget exact:
+  // - The draw writes one depth value, one stencil value under the write
+  //   mask, or both, and nothing else, to every sample of whole pixels of the
+  //   4x view: a rectangle is the same set of samples as
+  //   the rectangle of doubled coordinates in a 1x render target of the same
+  //   base and pitch (doubled in X only, both samples of each pixel, in a 2x
+  //   one), whatever the order of the samples in a pixel.
+  // - The owner holds all the tiles the 4x view would take, as their render
+  //   target, depth bits and host depth, so the transfer into the 4x view and
+  //   the one back out (raw copies of host depth and stencil between depth
+  //   render targets of one format) would leave every other sample, and the
+  //   ownership once the 1x view is drawn to again, as they are.
+  const RegisterFile& regs = register_file();
+  const reg::RB_DEPTHCONTROL dc = normalized_depth_control;
+  if (GetPath() != Path::kHostRenderTargets || IsDrawResolutionScaled() ||
+      draw_key.scale_native) {
+    return false;
+  }
+  if (strip_merge_ && (strip_merge_active_ || strip_merge_->learning()) &&
+      strip_merge_->IsBanded(draw_key.pitch_tiles_at_32bpp,
+                             draw_key.msaa_samples)) {
+    return false;
+  }
+  // Nothing fails a test, depth is written or left alone, and stencil is
+  // replaced under its write mask or left alone, the same for both faces.
+  const bool write_depth = dc.z_enable && dc.z_write_enable;
+  if (dc.z_enable && dc.zfunc != xenos::CompareFunction::kAlways) {
+    return false;
+  }
+  auto stencil_ref_mask = regs.Get<reg::RB_STENCILREFMASK>();
+  bool write_stencil = false;
+  uint32_t stencil_value = 0;
+  if (dc.stencil_enable) {
+    if (dc.stencilfunc != xenos::CompareFunction::kAlways ||
+        (dc.stencilzpass != xenos::StencilOp::kKeep &&
+         dc.stencilzpass != xenos::StencilOp::kReplace &&
+         dc.stencilzpass != xenos::StencilOp::kZero)) {
+      return false;
+    }
+    if (dc.backface_enable) {
+      auto stencil_ref_mask_bf =
+          regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
+      if (dc.stencilfunc_bf != dc.stencilfunc ||
+          dc.stencilzpass_bf != dc.stencilzpass ||
+          stencil_ref_mask_bf.stencilref != stencil_ref_mask.stencilref ||
+          stencil_ref_mask_bf.stencilwritemask !=
+              stencil_ref_mask.stencilwritemask) {
+        return false;
+      }
+    }
+    write_stencil = dc.stencilzpass != xenos::StencilOp::kKeep &&
+                    stencil_ref_mask.stencilwritemask != 0;
+    stencil_value = dc.stencilzpass == xenos::StencilOp::kReplace
+                        ? stencil_ref_mask.stencilref
+                        : 0;
+  }
+  if (!write_depth && !write_stencil) {
+    return false;
+  }
+  auto draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+  if (draw_initiator.prim_type != xenos::PrimitiveType::kRectangleList ||
+      draw_initiator.num_indices != 3) {
+    return false;
+  }
+  // Window-space positions: no viewport, clipping or perspective divide.
+  auto clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
+  auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
+  if (!clip_cntl.clip_disable || vte.vport_x_scale_ena ||
+      vte.vport_x_offset_ena || vte.vport_y_scale_ena ||
+      vte.vport_y_offset_ena || vte.vport_z_scale_ena ||
+      vte.vport_z_offset_ena || !vte.vtx_xy_fmt || !vte.vtx_z_fmt) {
+    return false;
+  }
+  auto sc_mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  if (sc_mode.poly_offset_front_enable || sc_mode.poly_offset_back_enable ||
+      sc_mode.poly_offset_para_enable || sc_mode.cull_front ||
+      sc_mode.cull_back ||
+      sc_mode.poly_mode == xenos::PolygonModeEnable::kDualMode) {
+    // Filled only: a quad drawn as lines or points doesn't cover the
+    // rectangle.
+    return false;
+  }
+  // Every sample of a covered pixel.
+  auto color_control = regs.Get<reg::RB_COLORCONTROL>();
+  if ((regs[XE_GPU_REG_PA_SC_AA_MASK] & 0xF) != 0xF ||
+      color_control.alpha_to_mask_enable) {
+    return false;
+  }
+  const DrawExtentEstimator::LastVertexPositions& positions =
+      draw_extent_estimator_.last_vertex_positions();
+  if (!positions.valid || positions.count != 3) {
+    return false;
+  }
+  // Depth 0 and 1 are exact in both depth formats on the host and the guest.
+  // Window-space Z is clamped, not clipped (clip_disable), to the viewport's
+  // 0...1 (no viewport Z scale or offset): a constant below 0 is stored as 0
+  // and one above 1 as 1. The same Z at the three vertices is the Z of the
+  // fourth.
+  float z = positions.z[0];
+  if (write_depth) {
+    if (positions.z[1] != z || positions.z[2] != z || !std::isfinite(z) ||
+        (z > 0.0f && z < 1.0f)) {
+      return false;
+    }
+    z = z >= 1.0f ? 1.0f : 0.0f;
+  }
+  // Three distinct corners of an axis-aligned box.
+  const float x_lo = std::min({positions.x[0], positions.x[1], positions.x[2]});
+  const float x_hi = std::max({positions.x[0], positions.x[1], positions.x[2]});
+  const float y_lo = std::min({positions.y[0], positions.y[1], positions.y[2]});
+  const float y_hi = std::max({positions.y[0], positions.y[1], positions.y[2]});
+  if (!(x_lo < x_hi) || !(y_lo < y_hi)) {
+    return false;
+  }
+  bool corners[4] = {};
+  for (uint32_t i = 0; i < 3; ++i) {
+    const float x = positions.x[i], y = positions.y[i];
+    if ((x != x_lo && x != x_hi) || (y != y_lo && y != y_hi)) {
+      return false;
+    }
+    const uint32_t corner = uint32_t(x == x_hi) | (uint32_t(y == y_hi) << 1);
+    if (corners[corner]) {
+      return false;
+    }
+    corners[corner] = true;
+  }
+  float offset_x = 0.0f, offset_y = 0.0f;
+  if (sc_mode.vtx_window_offset_enable) {
+    auto window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
+    offset_x += float(window_offset.window_x_offset);
+    offset_y += float(window_offset.window_y_offset);
+  }
+  if (cvars::half_pixel_offset && regs.Get<reg::PA_SU_VTX_CNTL>().pix_center ==
+                                      xenos::PixelCenter::kD3DZero) {
+    offset_x += 0.5f;
+    offset_y += 0.5f;
+  }
+  // Whole pixels only: each edge of the box is on a pixel boundary or outside
+  // the scissor, so no pixel has some of its samples covered and others not.
+  draw_util::Scissor scissor;
+  draw_util::GetScissor(regs, scissor, true, false);
+  const float scissor_left = float(scissor.offset[0]);
+  const float scissor_top = float(scissor.offset[1]);
+  const float scissor_right = float(scissor.offset[0] + scissor.extent[0]);
+  const float scissor_bottom = float(scissor.offset[1] + scissor.extent[1]);
+  const float box_left = x_lo + offset_x, box_right = x_hi + offset_x;
+  const float box_top = y_lo + offset_y, box_bottom = y_hi + offset_y;
+  auto is_edge_whole = [](float edge) {
+    return edge >= 0.0f && edge <= 16384.0f && edge == std::floor(edge);
+  };
+  if (!(box_left <= scissor_left || is_edge_whole(box_left)) ||
+      !(box_top <= scissor_top || is_edge_whole(box_top)) ||
+      !(box_right >= scissor_right || is_edge_whole(box_right)) ||
+      !(box_bottom >= scissor_bottom || is_edge_whole(box_bottom))) {
+    return false;
+  }
+  const float left = std::max(box_left, scissor_left);
+  const float top = std::max(box_top, scissor_top);
+  const float right = std::min(box_right, scissor_right);
+  const float bottom = std::min(box_bottom, scissor_bottom);
+  const uint32_t view_width =
+      draw_key.pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> 1);
+  if (!(left < right) || !(top < bottom) || right > float(view_width) ||
+      bottom > float(height_used)) {
+    return false;
+  }
+  // The tiles the 4x view would take, all of them the owner's.
+  if (!length_tiles ||
+      draw_key.base_tiles + length_tiles > xenos::kEdramTileCount) {
+    return false;
+  }
+  // The tiles the rectangle touches through the 4x view (2x2 samples in a
+  // pixel, 80x16 samples in a tile): a 1x or 2x view of the same tiles,
+  // whichever holds the first of them, has to hold them all. The other tiles
+  // of the view's range are not touched and may be anyone's.
+  const uint32_t pitch_tiles = draw_key.pitch_tiles_at_32bpp;
+  const uint32_t column_first =
+      uint32_t(left) * 2 / xenos::kEdramTileWidthSamples;
+  const uint32_t column_end =
+      std::min((uint32_t(right) * 2 + (xenos::kEdramTileWidthSamples - 1)) /
+                   xenos::kEdramTileWidthSamples,
+               pitch_tiles);
+  const uint32_t row_first =
+      uint32_t(top) * 2 / xenos::kEdramTileHeightSamples;
+  const uint32_t row_end =
+      (uint32_t(bottom) * 2 + (xenos::kEdramTileHeightSamples - 1)) /
+      xenos::kEdramTileHeightSamples;
+  if (column_first >= column_end || row_first >= row_end ||
+      row_end * pitch_tiles > length_tiles) {
+    return false;
+  }
+  RenderTargetKey owner_key = draw_key;
+  {
+    auto first_it = ownership_ranges_.upper_bound(
+        draw_key.base_tiles + row_first * pitch_tiles + column_first);
+    if (first_it == ownership_ranges_.begin()) {
+      return false;
+    }
+    owner_key.msaa_samples =
+        std::prev(first_it)->second.render_target.msaa_samples;
+    if (owner_key.msaa_samples != xenos::MsaaSamples::k1X &&
+        owner_key.msaa_samples != xenos::MsaaSamples::k2X) {
+      return false;
+    }
+  }
+  const bool host_depth_encoding_different =
+      IsHostDepthEncodingDifferent(draw_key.GetDepthFormat());
+  auto is_owned = [&](uint32_t start_tiles, uint32_t end_tiles) -> bool {
+    uint32_t owned_until = start_tiles;
+    auto it = ownership_ranges_.upper_bound(start_tiles);
+    if (it != ownership_ranges_.begin()) {
+      --it;
+    }
+    for (; it != ownership_ranges_.end() && it->first < end_tiles; ++it) {
+      const OwnershipRange& range = it->second;
+      if (range.end_tiles <= start_tiles) {
+        continue;
+      }
+      if (it->first > owned_until || range.render_target != owner_key) {
+        return false;
+      }
+      if (range.depth_bits_target != owner_key) {
+        return false;
+      }
+      if (host_depth_encoding_different &&
+          range.GetHostDepthRenderTarget(draw_key.GetDepthFormat()) !=
+              owner_key) {
+        return false;
+      }
+      owned_until = range.end_tiles;
+    }
+    if (owned_until < end_tiles) {
+      return false;
+    }
+    return true;
+  };
+  if (!column_first && column_end == pitch_tiles) {
+    if (!is_owned(draw_key.base_tiles + row_first * pitch_tiles,
+                  draw_key.base_tiles + row_end * pitch_tiles)) {
+      return false;
+    }
+  } else {
+    for (uint32_t row = row_first; row < row_end; ++row) {
+      const uint32_t row_tiles = draw_key.base_tiles + row * pitch_tiles;
+      if (!is_owned(row_tiles + column_first, row_tiles + column_end)) {
+        return false;
+      }
+    }
+  }
+  auto owner_it = render_targets_.find(owner_key);
+  if (owner_it == render_targets_.end() || !owner_it->second) {
+    return false;
+  }
+  if (!strip_merge_pending_.empty() &&
+      (GetStripMergePending(owner_key) || GetStripMergePending(draw_key))) {
+    return false;
+  }
+  retarget_out.owner = owner_it->second;
+  // 4x has 2x2 samples in a pixel; 2x has them one above the other, so its
+  // pixels are the 4x view's columns of samples.
+  const uint32_t owner_y_shift =
+      uint32_t(owner_key.msaa_samples == xenos::MsaaSamples::k1X);
+  retarget_out.rectangle.x_pixels = uint32_t(left) * 2;
+  retarget_out.rectangle.y_pixels = uint32_t(top) << owner_y_shift;
+  retarget_out.rectangle.width_pixels = uint32_t(right - left) * 2;
+  retarget_out.rectangle.height_pixels = uint32_t(bottom - top)
+                                         << owner_y_shift;
+  retarget_out.write_depth = write_depth;
+  retarget_out.write_stencil = write_stencil;
+  retarget_out.stencil_value = stencil_value & 0xFF;
+  retarget_out.stencil_write_mask = stencil_ref_mask.stencilwritemask & 0xFF;
+  retarget_out.guest_depth =
+      !write_depth || z == 0.0f
+          ? 0
+          : (draw_key.GetDepthFormat() == xenos::DepthRenderTargetFormat::kD24S8
+                 ? 0xFFFFFF
+                 : xenos::Float32To20e4(1.0f, true));
   return true;
 }
 

@@ -70,6 +70,7 @@ DECLARE_bool(precise_interpolation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(submit_on_primary_buffer_end);
 
+DECLARE_bool(skip_no_effect_draws);
 DEFINE_int32(
     metal_draw_ring_count, 128,
     "Metal per-command-buffer draw ring size (descriptor-table pages). "
@@ -5361,6 +5362,32 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         clear_quad_draw.band_rows = strip_merge_.layout().band_rows;
       }
       render_target_cache_->SetClearQuadDraw(clear_quad_draw);
+      render_target_cache_->SetDepthClearRetargetCandidate(
+          clear_quad_draw.candidate && !pixel_shader &&
+          !strip_merge_replicate_draw_ && !draw_util::IsVIZSurveyDraw(regs));
+    }
+    // A draw that writes no color, depth or stencil, exports nothing to
+    // memory and is counted by no query has no effect; issuing it would only
+    // move the ownership of the EDRAM tiles its surface covers.
+    if (::cvars::skip_no_effect_draws && is_rasterization_done &&
+        !memexport_used && !normalized_color_mask &&
+        !draw_util::IsVIZSurveyDraw(regs) && !IsDrawCountedByQuery() &&
+        !RenderTargetCache::DoesDepthControlWrite(
+            normalized_depth_control,
+            regs.Get<reg::RB_STENCILREFMASK>(),
+            regs.Get<reg::RB_STENCILREFMASK>(
+                XE_GPU_REG_RB_STENCILREFMASK_BF))) {
+      // Drawn, it would have been a draw of the open pass that is not a pure
+      // vertex memexport draw: the next export read in that pass then ends
+      // it instead of chaining behind a vertex stage memory barrier. Keep
+      // that, or every memexport draw of the frame chains in one pass.
+      if (current_render_encoder_) {
+        render_encoder_memexport_draws_are_pure_ = false;
+      }
+      render_target_cache_->SetClearQuadDraw(
+          MetalRenderTargetCache::ClearQuadDraw());
+      render_target_cache_->SetDepthClearRetargetCandidate(false);
+      return true;
     }
     // The window offset stays in the viewport on Metal.
     render_target_cache_->SetStripMergeKeepCarries(strip_merge_keep_carries);
@@ -5371,6 +5398,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           "MetalCommandProcessor::IssueDraw - RenderTargetCache::Update "
           "failed");
       return false;
+    }
+    if (render_target_cache_->last_update_depth_clear_retargeted()) {
+      // The depth clear went into the 1x owner of the tiles
+      // (depth_clear_retarget_4x): nothing is left of the draw.
+      return true;
     }
     // A stand-in (the placeholder, or skipping the draw) only suits a pass
     // redrawn every frame. A one-off render to a texture or generated data in
@@ -8410,6 +8442,46 @@ bool MetalCommandProcessor::ExactShadersRequired(bool memexport_used) const {
   return memexport_used ||
          (GetZPDMode() != ZPDMode::kFake && !zpd_force_fake_fallback_ &&
           zpd_current_report_.handle != kInvalidReportHandle);
+}
+
+MTL::RenderCommandEncoder* MetalCommandProcessor::GetRenderEncoderForDepthClear(
+    MTL::Texture* depth_texture, MTL::Texture* stencil_texture,
+    MTL::RenderPassDescriptor** pass_descriptor_out) {
+  if (!current_render_encoder_ || !current_render_pass_descriptor_ ||
+      !depth_texture || !stencil_texture) {
+    return nullptr;
+  }
+  auto* depth_attachment = current_render_pass_descriptor_->depthAttachment();
+  auto* stencil_attachment =
+      current_render_pass_descriptor_->stencilAttachment();
+  if (!depth_attachment || depth_attachment->texture() != depth_texture ||
+      !stencil_attachment || stencil_attachment->texture() != stencil_texture) {
+    return nullptr;
+  }
+  *pass_descriptor_out = current_render_pass_descriptor_;
+  return current_render_encoder_;
+}
+
+bool MetalCommandProcessor::IsDrawCountedByQuery() const {
+  const reg::PA_SC_VIZ_QUERY viz_query =
+      register_file_->Get<reg::PA_SC_VIZ_QUERY>();
+  // A report measures only from its event (QueueZPDReport) to the end of the
+  // frame (EndZPDFrame); a draw outside that opens no segment
+  // (UpdateQuerySegment).
+  return active_segment_.report_measuring() ||
+         active_segment_.segment_active || viz_query.viz_query_ena;
+}
+
+void MetalCommandProcessor::NoteDepthClearInRenderEncoder() {
+  using RTC = MetalRenderTargetCache;
+  InvalidateRenderEncoderStateAfterDrawPassTransfers(
+      RTC::kDrawPassTransferEncoderMutationPipeline |
+      RTC::kDrawPassTransferEncoderMutationDepthStencil |
+      RTC::kDrawPassTransferEncoderMutationStencilReference |
+      RTC::kDrawPassTransferEncoderMutationViewport |
+      RTC::kDrawPassTransferEncoderMutationScissor |
+      RTC::kDrawPassTransferEncoderMutationRasterizer |
+      RTC::kDrawPassTransferEncoderMutationFragmentSlot0);
 }
 
 bool MetalCommandProcessor::EncodeHeldDrawPassTransfers() {

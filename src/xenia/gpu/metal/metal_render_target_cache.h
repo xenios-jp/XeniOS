@@ -449,6 +449,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool PerformStripMergeTransfers(
       RenderTarget* dest, const std::vector<Transfer>& transfers) override;
 
+  bool PerformDepthClearRetarget(const DepthClearRetarget& retarget) override;
+
  private:
   // Sets the render area of a pass on the render targets with the keys, as
   // SetRenderPassArea does for the draw pass.
@@ -681,6 +683,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::DepthStencilState* transfer_depth_stencil_output_state_ = nullptr;
   MTL::DepthStencilState* transfer_depth_state_none_ = nullptr;
   MTL::DepthStencilState* transfer_depth_clear_state_ = nullptr;
+  // For PerformDepthClearRetarget: nothing tested, depth written or not,
+  // stencil replaced under a write mask or not. Keyed by depth write (bit 9),
+  // stencil write (bit 8) and the mask.
+  std::unordered_map<uint32_t, MTL::DepthStencilState*> retarget_clear_states_;
   MTL::DepthStencilState* transfer_stencil_clear_state_ = nullptr;
   MTL::DepthStencilState* transfer_stencil_bit_states_[8] = {};
   bool native_stencil_output_probed_ = false;
