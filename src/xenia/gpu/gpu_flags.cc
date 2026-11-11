@@ -298,6 +298,8 @@ DEFINE_bool(
     "than for every vertex. The results are the same. It builds a second "
     "pipeline, in the background, for the vertex shaders it applies to; "
     "draws use the pipeline that assumes nothing until it is ready.",
+    "GPU");
+
 DEFINE_bool(xenos_sample_positions, false,
             "Rasterize 2x and 4x MSAA render targets at the Xenos sample "
             "positions, like real hardware, if the GPU and driver support it.\n"

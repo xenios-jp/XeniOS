@@ -1563,6 +1563,7 @@ void MetalCommandProcessor::UpdateDrawExactness(
     const PrimitiveProcessor::ProcessingResult& primitive_processing_result) {
   draw_exact_shader_ = &vertex_shader;
   draw_exact_flags_ = 0;
+  draw_exact_key_flags_ = 0;
   const auto& analysis = GetDrawExactAnalysis(vertex_shader);
   if (!analysis.flag_count) {
     std::memset(draw_exact_estimates_, 0, sizeof(draw_exact_estimates_));
@@ -1594,6 +1595,25 @@ void MetalCommandProcessor::UpdateDrawExactness(
   draw_exact_flags_ = SpirvShaderTranslator::EvaluateDrawExactness(
       analysis, &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X],
       vertex_index_bound, draw_exact_estimates_);
+  // What this draw proves depends on the values of its constants. A pipeline
+  // per set of flags would have draws wait for new pipelines whenever those
+  // values change, so the pipelines are for the flags all the draws of the
+  // shader have had, which only ever lose bits.
+  std::lock_guard<std::mutex> lock(draw_exact_stable_flags_mutex_);
+  DrawExactStableFlags& stable =
+      draw_exact_stable_flags_[vertex_shader.ucode_data_hash()];
+  uint32_t stable_flags = stable.flags & draw_exact_flags_;
+  if (stable_flags != stable.flags) {
+    stable.flags = stable_flags;
+    stable.settled_draws = 0;
+  } else if (stable.settled_draws < UINT32_MAX) {
+    ++stable.settled_draws;
+  }
+  // Draws in a row that must agree before their flags key pipelines.
+  constexpr uint32_t kDrawExactSettledDraws = 32;
+  if (stable.settled_draws >= kDrawExactSettledDraws) {
+    draw_exact_key_flags_ = stable_flags;
+  }
 }
 
 uint64_t MetalCommandProcessor::GetFiniteMultiplyRequirements(
@@ -3841,6 +3861,16 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
   if (description.finite_multiply_enabled !=
       spirv_translator_features_.optimize_finite_multiplication) {
     return "belonging to another finite-multiply configuration";
+  }
+  if (uint32_t draw_exact_flags =
+          description.vertex_finite_multiply_state[1] >> 1) {
+    // What the draws of the vertex shader had proven when this was stored:
+    // settled already, and still only used where a draw proves as much.
+    std::lock_guard<std::mutex> lock(draw_exact_stable_flags_mutex_);
+    DrawExactStableFlags& stable =
+        draw_exact_stable_flags_[description.vertex_shader_hash];
+    stable.flags &= draw_exact_flags;
+    stable.settled_draws = UINT32_MAX;
   }
   // A tessellation pipeline belongs to the path that recorded it, and its
   // shaders are the wrong subclass for the other one.
@@ -10265,6 +10295,8 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
               SpirvShaderTranslator::Modification(
                   vertex_translation->modification())
                   .vertex.host_vertex_shader_type)) {
+        description.vertex_finite_multiply_state[1] |= draw_exact_key_flags_
+                                                       << 1;
       }
     }
   }
@@ -10346,6 +10378,30 @@ MTL::RenderPipelineState* MetalCommandProcessor::GetOrCreatePipelineState(
     depth_modification.pixel.depth_stencil_mode =
         SpirvShaderTranslator::Modification::DepthStencilMode::kPolygonOffset;
     request.description.pixel_shader_modification = depth_modification.value;
+    request.pipeline_key = request.description.GetHash();
+  }
+  if (request.description.vertex_finite_multiply_state[1] & ~UINT32_C(1)) {
+    // A pipeline for what the draws of the vertex shader have proven. It's
+    // never waited for: built behind the draws, and until it's there the draw
+    // goes on as if nothing were proven, which is always right.
+    uint64_t pending_key = last_pending_pipeline_key_;
+    PipelineCompileRequest proven_request = request;
+    proven_request.priority = pixel_translation
+                                  ? kPipelinePriorityStored
+                                  : kPipelinePriorityStoredDepthOnly;
+    PipelineCompileStatus proven_status = PipelineCompileStatus::kFailed;
+    auto* proven = AcquirePipelineState(proven_request, true, &proven_status);
+    if (proven) {
+      if (exact_depth_function) {
+        exact_depth_function->release();
+      }
+      if (compile_status_out) {
+        *compile_status_out = proven_status;
+      }
+      return proven;
+    }
+    last_pending_pipeline_key_ = pending_key;
+    request.description.vertex_finite_multiply_state[1] &= 1;
     request.pipeline_key = request.description.GetHash();
   }
   // A pipeline with no pixel shader is quick to link and is what a placeholder

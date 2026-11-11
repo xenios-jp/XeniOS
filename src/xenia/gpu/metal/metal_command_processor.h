@@ -1134,6 +1134,19 @@ class MetalCommandProcessor : public CommandProcessor,
   // Of the draw being issued, for draw_exact_shader_ only.
   const Shader* draw_exact_shader_ = nullptr;
   uint32_t draw_exact_flags_ = 0;
+  // The flags the pipeline of the draw is asked for with: those of
+  // draw_exact_flags_ that every draw of the shader has had, once that has
+  // settled. A flag only permits leaving work out, so a pipeline with fewer
+  // flags than the draw has is as exact, and one with none always is.
+  uint32_t draw_exact_key_flags_ = 0;
+  struct DrawExactStableFlags {
+    uint32_t flags = UINT32_MAX;
+    uint32_t settled_draws = 0;
+  };
+  // By the ucode hash of the vertex shader. Also given the flags of the stored
+  // pipelines while those are read, which may be on another thread.
+  std::unordered_map<uint64_t, DrawExactStableFlags> draw_exact_stable_flags_;
+  std::mutex draw_exact_stable_flags_mutex_;
   float draw_exact_estimates_
       [SpirvShaderTranslator::DrawExactAnalysis::kMaxEstimates] = {};
   std::mutex specialized_functions_mutex_;
