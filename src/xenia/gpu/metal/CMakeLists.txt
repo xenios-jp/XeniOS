@@ -117,9 +117,9 @@ if(XE_PLATFORM_IOS AND XENIA_BUILD_IOS_TRACE_APP)
     xenia-kernel xenia-patcher xenia-ui xenia-ui-ios xenia-ui-metal xenia-vfs
     capstone dxbc fmt glslang-spirv imgui libavcodec libavformat libavutil
     mspack snappy xxhash
-    "-framework AVFoundation" "-framework AudioToolbox" "-framework Foundation"
-    "-framework Metal" "-framework MetalKit" "-framework QuartzCore"
-    "-framework UIKit"
+    "-framework AVFoundation" "-framework AudioToolbox"
+    "-framework CoreGraphics" "-framework Foundation" "-framework Metal"
+    "-framework MetalKit" "-framework QuartzCore" "-framework UIKit"
   )
   target_link_options(xenia-gpu-metal-trace-app PRIVATE
     "-Wl,-u,___clear_cache"
