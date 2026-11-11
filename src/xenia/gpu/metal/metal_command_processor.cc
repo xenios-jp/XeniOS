@@ -1519,7 +1519,9 @@ MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
   auto found = finite_multiply_requirements_.find(&shader);
   if (found == finite_multiply_requirements_.end()) {
     SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
-    SpirvShaderTranslator::AnalyzeFiniteMultiplications(shader, analysis);
+    SpirvShaderTranslator::AnalyzeFiniteMultiplications(
+        shader, analysis, spirv_translator_features_.finite_multiply_one_sided,
+        spirv_translator_features_.finite_multiply_control_flow_join);
     FiniteMultiplyInfo info;
     info.required = analysis.dynamic_inputs;
     std::memcpy(info.direct_constants, analysis.direct_constants,

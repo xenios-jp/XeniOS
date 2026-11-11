@@ -42,15 +42,20 @@ spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
       const_float_0_, value);
 }
 
-bool SpirvShaderTranslator::CanUseFiniteProduct(uint64_t first,
-                                                uint64_t second) const {
-  uint64_t reasons = first | second;
+bool SpirvShaderTranslator::CanProveFinite(uint64_t reasons) const {
   if (!finite_multiply_enabled_ ||
       (reasons & ~(kFiniteMultiplyTextures | kFiniteMultiplyFloatConstants))) {
     return false;
   }
   return !reasons ||
          main_fetch_state_[kFetchStateFiniteMultiplyBinding] != spv::NoResult;
+}
+
+bool SpirvShaderTranslator::CanUseFiniteProduct(uint64_t first,
+                                                uint64_t second) const {
+  return features_.finite_multiply_one_sided
+             ? CanProveFinite(first) || CanProveFinite(second)
+             : CanProveFinite(first | second);
 }
 
 spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
@@ -61,7 +66,13 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
   if (!CanUseFiniteProduct(first_reasons, second_reasons)) {
     return guarded;
   }
-  uint64_t reasons = first_reasons | second_reasons;
+  bool first_finite = true, second_finite = true;
+  if (features_.finite_multiply_one_sided) {
+    first_finite = CanProveFinite(first_reasons);
+    second_finite = CanProveFinite(second_reasons);
+  }
+  uint64_t reasons = (first_finite ? first_reasons : 0) |
+                     (second_finite ? second_reasons : 0);
   bool rounds_toward_zero = !rounded_to_nearest && RoundsTowardZero() &&
                             !RoundsTowardZeroInHardware();
   if (reasons && rounds_toward_zero) {
@@ -71,7 +82,7 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
     return guarded;
   }
   spv::Id finite = spv::NoResult;
-  if (reasons) {
+  if (reasons && !features_.finite_multiply_one_sided) {
     spv::Id flags = main_fetch_state_[kFetchStateFiniteMultiplyBinding];
     spv::Id possible = const_uint_0_;
     uint32_t textures = uint32_t((reasons & kFiniteMultiplyTextures) >>
@@ -93,6 +104,24 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
     }
     finite = builder_->createBinOp(spv::OpIEqual, type_bool_, possible,
                                    const_uint_0_);
+  } else if (reasons) {
+    uint32_t textures = uint32_t((reasons & kFiniteMultiplyTextures) >>
+                                 kFiniteMultiplyTextureShift);
+    if (textures) {
+      finite = builder_->createBinOp(
+          spv::OpIEqual, type_bool_,
+          builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
+                                main_finite_multiply_textures_,
+                                builder_->makeUintConstant(textures)),
+          const_uint_0_);
+    }
+    if (reasons & kFiniteMultiplyFloatConstants) {
+      finite = finite != spv::NoResult
+                   ? builder_->createBinOp(
+                         spv::OpLogicalAnd, type_bool_, finite,
+                         main_finite_multiply_constants_finite_)
+                   : main_finite_multiply_constants_finite_;
+    }
   }
   // A genuinely fused product plus +0 preserves the legacy +0 for zero
   // operands and the original sign for negative underflow. Keep this operation
@@ -110,7 +139,27 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
         builder_->createNoContractionUnaryOp(spv::OpFNegate, type_float_,
                                              product));
     builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
-    product = RoundTowardZero(product, error, first, second);
+    // The fused error of a product that overflowed from finite operands is
+    // the infinity of the opposite sign, which RoundTowardZero steps on
+    // already.
+    product = RoundTowardZero(product, error, spv::NoResult);
+  }
+  if (!first_finite || !second_finite) {
+    // Only one operand, F, is proven finite (the flags select the guarded
+    // product when the proof fails at run time). The result equals the guard's
+    // select(min(|x|, |F|) == 0, +0, x * F) for every x:
+    // - F == 0: +0 from this select, whatever x is.
+    // - F != 0, x == +-0: the fused product +-0 plus +0 is +0.
+    // - F != 0, x infinite or NaN: the guard passes x * F through, and so
+    //   does the fused product (RoundTowardZero steps neither: the error is
+    //   NaN, and an infinite operand is not an overflow).
+    // - both nonzero and finite: the case with both operands proven.
+    spv::Id finite_operand = first_finite ? first : second;
+    product = builder_->createTriOp(
+        spv::OpSelect, type_float_,
+        builder_->createBinOp(spv::OpFOrdEqual, type_bool_, finite_operand,
+                              const_float_0_),
+        const_float_0_, product);
   }
   return finite == spv::NoResult
              ? product

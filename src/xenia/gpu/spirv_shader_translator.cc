@@ -525,7 +525,9 @@ void SpirvShaderTranslator::StartTranslation() {
   finite_multiply_analysis_ = {};
   current_finite_multiply_ = {};
   if (finite_multiply_enabled_) {
-    AnalyzeFiniteMultiplications(current_shader(), finite_multiply_analysis_);
+    AnalyzeFiniteMultiplications(current_shader(), finite_multiply_analysis_,
+                                 features_.finite_multiply_one_sided,
+                                 features_.finite_multiply_control_flow_join);
   }
   draw_exact_analysis_ = {};
   current_draw_exact_ = {};
@@ -995,6 +997,22 @@ void SpirvShaderTranslator::StartTranslation() {
                                       uniform_fetch_state_[i], id_vector_temp_),
           spv::NoPrecision);
     }
+  }
+  main_finite_multiply_textures_ = spv::NoResult;
+  main_finite_multiply_constants_finite_ = spv::NoResult;
+  if (features_.finite_multiply_one_sided &&
+      main_fetch_state_[kFetchStateFiniteMultiplyBinding] != spv::NoResult) {
+    spv::Id flags = main_fetch_state_[kFetchStateFiniteMultiplyBinding];
+    main_finite_multiply_textures_ =
+        builder_->createCompositeExtract(flags, type_uint_, 0);
+    // Bit 0 of y; the other bits are the DrawExactAnalysis flags.
+    main_finite_multiply_constants_finite_ = builder_->createBinOp(
+        spv::OpIEqual, type_bool_,
+        builder_->createBinOp(
+            spv::OpBitwiseAnd, type_uint_,
+            builder_->createCompositeExtract(flags, type_uint_, 1),
+            builder_->makeUintConstant(1)),
+        const_uint_0_);
   }
 
   if (!is_depth_only_fragment_shader_) {

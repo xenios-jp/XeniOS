@@ -611,10 +611,15 @@ class SpirvShaderTranslator : public ShaderTranslator {
     uint64_t dynamic_inputs = 0;
     uint64_t direct_constants[4] = {};
   };
-  // Local proofs are joined across predication and discarded at control-flow
-  // boundaries. Arithmetic is never assumed immune to finite-input overflow.
+  // Local proofs are joined across predication, and discarded at control-flow
+  // boundaries unless join_control_flow joins them at labels. Arithmetic is
+  // never assumed immune to finite-input overflow. With one_sided, a product
+  // needs only one proven operand, and integer and normalized vertex fetches
+  // are finite. Both options must match the translator's Features.
   static void AnalyzeFiniteMultiplications(const Shader& shader,
-                                           FiniteMultiplyAnalysis& analysis);
+                                           FiniteMultiplyAnalysis& analysis,
+                                           bool one_sided,
+                                           bool join_control_flow);
 
   // Rounding-sensitive vertex shader sums and products with nothing to round,
   // and estimates of constant operands. The values traced are float constants,
@@ -718,6 +723,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
     bool fetch_state_function_constants = false;
     bool structured_vertex_control_flow = false;
     bool optimize_finite_multiplication = false;
+    // With optimize_finite_multiplication: one proven-finite operand is
+    // enough, with the zero check on that operand alone.
+    bool finite_multiply_one_sided = false;
+    // With optimize_finite_multiplication: proofs survive control flow.
+    bool finite_multiply_control_flow_join = false;
     // 32-bit Fma stays fused through the host compiler, so a product's exact
     // rounding error is one Fma.
     bool fused_float32_fma = false;
@@ -1156,8 +1166,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id IsInfinite(spv::Id value, bool is_infinite);
   // Whether the result of a and b is infinite while neither of them is.
   spv::Id OverflowedFromFinite(spv::Id rounded, spv::Id a, spv::Id b);
+  // Whether a value with the finite multiply reasons can be proven finite,
+  // statically or by the fetch state flags.
+  bool CanProveFinite(uint64_t reasons) const;
+  // Whether both operands can be proven finite, or with
+  // Features::finite_multiply_one_sided, at least one.
   bool CanUseFiniteProduct(uint64_t first, uint64_t second) const;
-  // guarded is rounded as AluMultiply rounds unless rounded_to_nearest.
+  // guarded is rounded as AluMultiply rounds unless rounded_to_nearest. With
+  // both operands proven finite, the product is a fused multiply with +0; with
+  // only one (Features::finite_multiply_one_sided), the zero check is on that
+  // operand alone.
   spv::Id UseFiniteProduct(spv::Id guarded, spv::Id first, spv::Id second,
                            uint64_t first_reasons, uint64_t second_reasons,
                            bool rounded_to_nearest = false);
@@ -1617,6 +1635,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   };
   spv::Id uniform_fetch_state_[kFetchStateBindingCount] = {};
   spv::Id main_fetch_state_[kFetchStateBindingCount] = {};
+  // With Features::finite_multiply_one_sided, from the finite multiply fetch
+  // state, loaded once in main: the textures that may be nonfinite (uint) and
+  // whether the float constants are finite (bool).
+  spv::Id main_finite_multiply_textures_ = spv::NoResult;
+  spv::Id main_finite_multiply_constants_finite_ = spv::NoResult;
   spv::Id uniform_system_constants_;
   spv::Id uniform_float_constants_;
   spv::Id uniform_bool_loop_constants_;
