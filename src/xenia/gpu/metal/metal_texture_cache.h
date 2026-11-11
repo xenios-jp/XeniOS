@@ -326,8 +326,12 @@ class MetalTextureCache : public TextureCache {
     std::vector<MTL::Buffer*> buffers;
     // Retained until encoded.
     std::vector<MTL::Texture*> textures;
+    // Texture::LoadedGuestData::load_done of the parts loaded, set when the
+    // command buffer the commands are encoded into completes.
+    std::vector<std::shared_ptr<std::atomic<bool>>> done_flags;
     bool empty() const { return dispatches.empty() && copies.empty(); }
   };
+  bool TracksLoadCompletion() const override { return true; }
   // Encodes the dispatches in one compute encoder, then the copies in one blit
   // encoder, releases the buffers after cmd and the textures, and clears
   // commands.

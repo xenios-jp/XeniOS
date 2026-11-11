@@ -81,6 +81,8 @@ class SharedMemory {
   // ensures the host GPU memory backing the range are resident. Returns true if
   // the range has been fully updated and is usable.
   bool RequestRange(uint32_t start, uint32_t length);
+  // XXH3 of the guest memory behind a range, as the CPU sees it now.
+  uint64_t HashGuestRange(uint32_t start, uint32_t length) const;
   // Returns whether every page in the range is currently valid in the host GPU
   // memory copy, and with cpu_data_only, also that none of them holds data
   // written by the GPU. Hold the global critical region if relying on this for
