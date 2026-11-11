@@ -174,20 +174,61 @@ TEST_CASE("UNPACK_THEN_PACK_SINGLE_IS_IDENTITY", "[instr]") {
   }
   cvars::fold_single_round_trip = fold_default;
 }
+
+#if XE_ARCH_ARM64
+DECLARE_bool(a64_lfs_exponent_test);
 DECLARE_bool(a64_lfs_quiet_unobserved);
 DECLARE_bool(a64_stfs_skip_quiet_test);
+#endif
+
+// lfs widens every single exactly and keeps a NaN's signalling bit, in the
+// Fpu mode and, after a vector op, in a VMX mode, where the host would flush
+// a denormal: all 256 exponents with six mantissas and both signs against
+// the widening done by hand, whichever way the sequence tests its result.
+TEST_CASE("UNPACK_SINGLE_MATRIX", "[instr]") {
+#if XE_ARCH_ARM64
+  const bool test_default = cvars::a64_lfs_exponent_test;
+#endif
   for (int variant = 0; variant < 4; ++variant) {
+#if XE_ARCH_ARM64
+    cvars::a64_lfs_exponent_test = (variant & 1) != 0;
+#endif
     const bool after_vmx = (variant & 2) != 0;
     TestFunction test([after_vmx](HIRBuilder& b) {
       if (after_vmx) {
         StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
       }
       for (int n = 0; n < 6; ++n) {
+        StoreFPR(b, 1 + n,
+                 b.UnpackSingle(b.Truncate(LoadGPR(b, 4 + n), INT32_TYPE)));
       }
       b.Return();
     });
     static const uint32_t kMantissas[6] = {0x000000, 0x000001, 0x400000,
                                            0x3FFFFF, 0x7FFFFF, 0x2AAAAA};
+    const auto widen = [](uint32_t single) -> uint64_t {
+      const uint64_t sign = uint64_t(single >> 31) << 63;
+      const uint32_t exponent = (single >> 23) & 0xFF;
+      uint64_t mantissa = single & 0x7FFFFF;
+      if (exponent == 0xFF) {
+        return sign | 0x7FF0000000000000ull | (mantissa << 29);
+      }
+      if (exponent != 0) {
+        return sign | (uint64_t(exponent + 1023 - 127) << 52) |
+               (mantissa << 29);
+      }
+      if (!mantissa) {
+        return sign;
+      }
+      // A denormal: shift the leading one out to become the implicit bit.
+      int shift = 0;
+      while (!(mantissa & 0x800000)) {
+        mantissa <<= 1;
+        ++shift;
+      }
+      return sign | (uint64_t(1 + 1023 - 127 - shift) << 52) |
+             ((mantissa & 0x7FFFFF) << 29);
+    };
     for (uint32_t sign = 0; sign < 2; ++sign) {
       for (uint32_t exponent = 0; exponent < 256; ++exponent) {
         const uint32_t base = (sign << 31) | (exponent << 23);
@@ -197,8 +238,19 @@ DECLARE_bool(a64_stfs_skip_quiet_test);
                 ctx->r[4 + n] = base | kMantissas[n];
               }
             },
+            [base, variant, &widen](PPCContext* ctx) {
               for (int n = 0; n < 6; ++n) {
                 CAPTURE(variant, base | kMantissas[n]);
+                REQUIRE(GetF64Bits(ctx, 1 + n) == widen(base | kMantissas[n]));
+              }
+            });
+      }
+    }
+  }
+#if XE_ARCH_ARM64
+  cvars::a64_lfs_exponent_test = test_default;
+#endif
+}
 
 // A loaded single read only by arithmetic, rounding, compares and NaN tests
 // gives them the same answers whether or not its signalling bit was kept, and
