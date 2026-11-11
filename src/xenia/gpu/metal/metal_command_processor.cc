@@ -111,8 +111,23 @@ DEFINE_int32(
     "multithreaded compilation.",
     "Metal");
 DEFINE_bool(
+    metal_finite_multiply_general_fallback, true,
+    "When the pipeline for a draw's finite multiply state isn't built, draw "
+    "with the pair's general variant (guarded products throughout) if that is "
+    "built, and build the exact one in the background. Pipelines stored under "
+    "another finite multiply analysis are rebuilt as the general variant.",
     "Metal");
 DEFINE_bool(
+    metal_finite_multiply_force_general, false,
+    "Test: every pipeline uses the general variant of its finite multiply "
+    "state. Must give the same frames and guest memory as off.",
+    "Metal");
+DEFINE_bool(
+    metal_finite_multiply_prewarm_general, false,
+    "Test: build the general variant before the first draw of each finite "
+    "multiply state, as loading a description stored under another analysis "
+    "does, so replays take the fallback. Must give the same frames and guest "
+    "memory as off.",
     "Metal");
 DEFINE_bool(
     metal_log_frame_gpu_waits, false,
@@ -1703,6 +1718,51 @@ void MetalCommandProcessor::GetFiniteMultiplyState(
       }
     }
   }
+}
+
+bool MetalCommandProcessor::HasFiniteMultiplyRequirements(
+    const Shader::Translation* vertex, const Shader::Translation* pixel,
+    const PipelineDescription& description) const {
+  if (!spirv_translator_features_.optimize_finite_multiplication) {
+    return false;
+  }
+  return (description.vertex_fetch_states_specialized && vertex &&
+          GetFiniteMultiplyInfo(vertex->shader()).required) ||
+         (description.fragment_fetch_states_specialized && pixel &&
+          GetFiniteMultiplyInfo(pixel->shader()).required);
+}
+
+bool MetalCommandProcessor::SetGeneralFiniteMultiplyState(
+    const Shader::Translation* vertex, const Shader::Translation* pixel,
+    PipelineDescription& description) const {
+  if (!HasFiniteMultiplyRequirements(vertex, pixel, description)) {
+    return false;
+  }
+  auto set = [this](const Shader::Translation* translation, uint32_t* state) {
+    uint64_t required = GetFiniteMultiplyInfo(translation->shader()).required;
+    state[0] |=
+        uint32_t((required & SpirvShaderTranslator::kFiniteMultiplyTextures) >>
+                 SpirvShaderTranslator::kFiniteMultiplyTextureShift);
+    if (required & SpirvShaderTranslator::kFiniteMultiplyFloatConstants) {
+      state[1] |= 1;
+    }
+  };
+  if (description.vertex_fetch_states_specialized && vertex) {
+    set(vertex, description.vertex_finite_multiply_state);
+    // Nothing proven for the draw either (DrawExactAnalysis flags).
+    description.vertex_finite_multiply_state[1] &= 1;
+  }
+  if (description.fragment_fetch_states_specialized && pixel) {
+    set(pixel, description.pixel_finite_multiply_state);
+  }
+  return true;
+}
+
+MTL::RenderPipelineState* MetalCommandProcessor::FindBuiltPipelineState(
+    uint64_t key) {
+  std::lock_guard<std::mutex> lock(async_compile_mutex_);
+  auto it = async_pipeline_cache_.find(key);
+  return it != async_pipeline_cache_.end() ? it->second : nullptr;
 }
 
 void MetalCommandProcessor::SetPipelineFunctionConstants(
@@ -3978,6 +4038,22 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
       description.fragment_fetch_states_specialized !=
           request.fragment_fetch_states_specialized) {
     return "belonging to another specialization configuration";
+  }
+
+  if (cvars::metal_finite_multiply_general_fallback &&
+      HasFiniteMultiplyRequirements(vertex_translation, pixel_translation,
+                                    request.description) &&
+      bool(request.description.finite_multiply_one_sided) !=
+          spirv_translator_features_.finite_multiply_one_sided) {
+    // Stored under another finite multiply analysis: the state it was stored
+    // with may prove more than this build's draws will. Build the general
+    // variant in its place, which every draw of the pair can use until its own
+    // is built behind it.
+    SetGeneralFiniteMultiplyState(vertex_translation, pixel_translation,
+                                  request.description);
+    request.description.finite_multiply_one_sided =
+        spirv_translator_features_.finite_multiply_one_sided;
+    request.pipeline_key = request.description.GetHash();
   }
 
   PipelineCompileStatus pipeline_status = PipelineCompileStatus::kFailed;
@@ -10444,6 +10520,15 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
                              description.pixel_finite_multiply_state);
     }
   }
+  if (HasFiniteMultiplyRequirements(vertex_translation, pixel_translation,
+                                    description)) {
+    description.finite_multiply_one_sided =
+        spirv_translator_features_.finite_multiply_one_sided;
+    if (cvars::metal_finite_multiply_force_general) {
+      SetGeneralFiniteMultiplyState(vertex_translation, pixel_translation,
+                                    description);
+    }
+  }
   request.priority = pixel_translation ? kPipelinePriorityDraw
                                        : kPipelinePriorityDrawDepthOnly;
   request.pipeline_key = description.GetHash();
@@ -10532,6 +10617,51 @@ MTL::RenderPipelineState* MetalCommandProcessor::GetOrCreatePipelineState(
     last_pending_pipeline_key_ = pending_key;
     request.description.vertex_finite_multiply_state[1] &= 1;
     request.pipeline_key = request.description.GetHash();
+  }
+  if (cvars::metal_finite_multiply_general_fallback && pixel_translation &&
+      !FindBuiltPipelineState(request.pipeline_key)) {
+    // The pipeline for this draw's finite multiply state isn't built. If the
+    // general variant of the same pair is (a set bit only takes a proof away,
+    // so it's right for every draw), draw with it and build the exact one
+    // behind the draws instead of waiting or using the placeholder.
+    PipelineCompileRequest general_request = request;
+    if (SetGeneralFiniteMultiplyState(vertex_translation, pixel_translation,
+                                      general_request.description)) {
+      general_request.pipeline_key = general_request.description.GetHash();
+      MTL::RenderPipelineState* general =
+          general_request.pipeline_key != request.pipeline_key
+              ? FindBuiltPipelineState(general_request.pipeline_key)
+              : nullptr;
+      if (!general && cvars::metal_finite_multiply_prewarm_general &&
+          general_request.pipeline_key != request.pipeline_key) {
+        general = AcquirePipelineState(general_request, false, nullptr);
+      }
+      if (general) {
+        uint64_t pending_key = last_pending_pipeline_key_;
+        PipelineCompileRequest exact_request = request;
+        exact_request.priority = kPipelinePriorityStored;
+        PipelineCompileStatus exact_status = PipelineCompileStatus::kFailed;
+        AcquirePipelineState(exact_request, true, &exact_status);
+        last_pending_pipeline_key_ = pending_key;
+        ++finite_multiply_general_draws_;
+        if (ShouldLogRateLimited(finite_multiply_general_last_log_ns_,
+                                 kAsyncCompileLogIntervalNs)) {
+          XELOGI(
+              "Metal: drawing with the general finite multiply variant while "
+              "the draw's own builds (VS {:016X}, PS {:016X}, {} draws so far)",
+              vertex_translation->shader().ucode_data_hash(),
+              pixel_translation->shader().ucode_data_hash(),
+              finite_multiply_general_draws_);
+        }
+        if (exact_depth_function) {
+          exact_depth_function->release();
+        }
+        if (compile_status_out) {
+          *compile_status_out = PipelineCompileStatus::kReady;
+        }
+        return general;
+      }
+    }
   }
   // A pipeline with no pixel shader is quick to link and is what a placeholder
   // draw waits on, so it is built here rather than queued.
