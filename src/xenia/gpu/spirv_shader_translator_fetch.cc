@@ -232,6 +232,7 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
                                    builder_->makeUintConstant(0b11));
   }
   words = EndianSwap32Uint(words, endian);
+  words = EndianSwap32Uint(words, endian, true);
 
   spv::Id result = spv::NoResult;
 
@@ -906,6 +907,26 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         offsets_not_zero |= 1 << i;
       }
     }
+    // The epsilon alone (no instruction offset) added to a normalized 2D or
+    // cube coordinate is divided by the texture size. The host provides the
+    // quotient (the size is the same 2D layout width and height from the fetch
+    // constant word 2, so the host division is the same float division), so
+    // the size is not extracted, converted and divided here.
+    uint32_t epsilon_from_constants = 0b000;
+    if (features_.texture_coord_epsilon_constants &&
+        instr.opcode != ucode::FetchOpcode::kGetTextureWeights &&
+        fetch_constant_index < 32 && draw_resolution_scale_x_ <= 1 &&
+        draw_resolution_scale_y_ <= 1 &&
+        !instr.attributes.unnormalized_coordinates && !point_snap &&
+        coordinate_dimension == instr.dimension &&
+        (coordinate_dimension == xenos::FetchOpDimension::k2D ||
+         coordinate_dimension == xenos::FetchOpDimension::kCube)) {
+      for (uint32_t i = 0; i < 2; ++i) {
+        if (offset_values[i] == kTextureCoordEpsilon) {
+          epsilon_from_constants |= UINT32_C(1) << i;
+        }
+      }
+    }
 
     // Fetch constant word usage:
     // - 2: Size (needed only once).
@@ -948,7 +969,7 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
     } else {
       // Size needed for normalization (or, for stacked texture layers,
       // denormalization) and for offsets.
-      size_needed_components |= offsets_not_zero;
+      size_needed_components |= offsets_not_zero & ~epsilon_from_constants;
       switch (coordinate_dimension) {
         case xenos::FetchOpDimension::k1D:
           // Always need size for 1D textures to handle wide 1D textures
@@ -1428,10 +1449,25 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
               spv::OpFDiv, type_float_, coordinate_ref, size_component);
         } else {
           if (component_offset != spv::NoResult) {
-            assert_true(size_component != spv::NoResult);
-            spv::Id component_offset_normalized =
-                builder_->createNoContractionBinOp(
-                    spv::OpFDiv, type_float_, component_offset, size_component);
+            spv::Id component_offset_normalized;
+            if (epsilon_from_constants & (UINT32_C(1) << i)) {
+              id_vector_temp_.clear();
+              id_vector_temp_.push_back(builder_->makeIntConstant(
+                  kSystemConstantTextureCoordEpsilonOverSize));
+              id_vector_temp_.push_back(
+                  builder_->makeIntConstant(int32_t(fetch_constant_index >> 1)));
+              id_vector_temp_.push_back(builder_->makeIntConstant(
+                  int32_t((fetch_constant_index & 1) * 2 + i)));
+              component_offset_normalized = builder_->createLoad(
+                  builder_->createAccessChain(spv::StorageClassUniform,
+                                              uniform_system_constants_,
+                                              id_vector_temp_),
+                  spv::NoPrecision);
+            } else {
+              assert_true(size_component != spv::NoResult);
+              component_offset_normalized = builder_->createNoContractionBinOp(
+                  spv::OpFDiv, type_float_, component_offset, size_component);
+            }
             coordinate_ref = builder_->createNoContractionBinOp(
                 spv::OpFAdd, type_float_, coordinate_ref,
                 component_offset_normalized);
