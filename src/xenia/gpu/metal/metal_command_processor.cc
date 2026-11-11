@@ -5348,6 +5348,8 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           is_rasterization_done && !memexport_used &&
           primitive_type == xenos::PrimitiveType::kRectangleList &&
           !primitive_processing_result.IsTessellated();
+      clear_quad_draw.pass_begin =
+          !current_render_encoder_ || RenderEncoderResolveOnly();
       clear_quad_draw.has_pixel_shader = pixel_shader != nullptr;
       clear_quad_draw.pixel_shader_kills =
           pixel_shader && pixel_shader->kills_pixels();

@@ -1829,7 +1829,8 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
       color_transfers |= ((draw_color_write_mask_ >> (i * 4)) & 0xF) &&
                          !transfer_lists[1 + i].empty();
     }
-    if (color_transfers) {
+    // Or one that may begin a pass, which then needn't load what it covers.
+    if (color_transfers || draw.pass_begin || update_targets_changed_) {
       draw_extent_estimator().EstimateVertexMaxY(vertex_shader, false);
       positions = draw_extent_estimator().last_vertex_positions();
     }
@@ -2684,6 +2685,7 @@ bool MetalRenderTargetCache::Update(
   update_cutout_mask_ = 0;
   update_cutout_full_overwrite_mask_ = 0;
   update_cutout_quad_slot_ = UINT32_MAX;
+  update_targets_changed_ = targets_changed;
   ApplyClearQuadRule(accumulated_targets, normalized_depth_control,
                      vertex_shader);
   // Not another quad of the held clear. A quad whose transfers read the held

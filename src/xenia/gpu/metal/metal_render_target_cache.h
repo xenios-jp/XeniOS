@@ -388,6 +388,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     bool candidate = false;
     bool has_pixel_shader = false;
     bool pixel_shader_kills = false;
+    // No render pass is open for the draw to join, so it begins one.
+    bool pass_begin = false;
     // A strip-merged draw addressing the strip's band, drawn into each of
     // band_count bands of band_rows rows, clamped to the band
     // (MetalCommandProcessor::DrawStripMergeBands); 0 otherwise.
@@ -756,6 +758,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   std::array<MTL::Texture*, 1 + xenos::kMaxColorRenderTargets>
       clear_quad_textures_ = {};
   bool clear_quad_pass_begin_ = false;
+  // Whether the Update in progress changed the render targets.
+  bool update_targets_changed_ = false;
   uint32_t clear_quad_saved_area_width_ = 0;
   uint32_t clear_quad_saved_area_height_ = 0;
   // A render target every sample of `rectangle` (in its pixels) of which has
