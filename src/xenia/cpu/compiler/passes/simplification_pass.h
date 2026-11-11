@@ -28,6 +28,7 @@ class SimplificationPass : public ConditionalGroupSubpass {
   bool EliminateConversions(hir::HIRBuilder* builder);
   bool CheckTruncate(hir::Instr* i);
   bool CheckByteSwap(hir::Instr* i);
+  bool CheckPackSingle(hir::Instr* i);
 
   bool PropagateGuestFPRDenormalProof(hir::HIRBuilder* builder);
   bool RemoveRepeatedFpscrSummaryClears(hir::HIRBuilder* builder);

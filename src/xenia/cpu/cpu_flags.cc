@@ -24,6 +24,12 @@ DEFINE_bool(accurate_vmx_denormal_flush, false,
             "a title that clears VSCR.NJ through mtvscr.",
             "CPU");
 
+DEFINE_bool(fold_single_round_trip, true,
+            "Store the bits lfs loaded when stfs stores a value that came "
+            "straight from lfs, instead of widening and narrowing them again. "
+            "Same results.",
+            "CPU");
+
 DEFINE_bool(fpscr_summary_byte, true,
             "Keep FPSCR FX, FEX, VX and OX in a context byte of their own, so "
             "that a float instruction without Rc clears them with one store "

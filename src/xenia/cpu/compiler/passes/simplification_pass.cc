@@ -1451,12 +1451,37 @@ bool SimplificationPass::EliminateConversions(HIRBuilder* builder) {
         // This is pretty rare within the same basic block, but is in the
         // memcpy hot path and (probably) worth it. Maybe.
         result |= CheckByteSwap(i);
+      } else if (i->opcode == &OPCODE_PACK_SINGLE_info) {
+        // Matches unpack_single + pack_single: a float copied through an FPR.
+        result |= CheckPackSingle(i);
       }
       i = i->next;
     }
     block = block->next;
   }
   return result;
+}
+
+bool SimplificationPass::CheckPackSingle(Instr* i) {
+  //   v1.f64 = unpack_single v0.i32
+  //   v2.i32 = pack_single v1.f64
+  // becomes:
+  //   v2.i32 = v0.i32
+  // lfs widens every single exactly and keeps a NaN's signalling bit, and stfs
+  // of a widened single gives back its sign, exponent and mantissa with that
+  // bit, so the pair is the identity on all 2^32 values.
+  if (!cvars::fold_single_round_trip) {
+    return false;
+  }
+  Instr* def = i->src1.value->GetDefSkipAssigns();
+  if (!def || def->opcode != &OPCODE_UNPACK_SINGLE_info ||
+      def->src1.value->type != i->dest->type) {
+    return false;
+  }
+  Value* single_bits = def->src1.value;
+  i->Replace(&OPCODE_ASSIGN_info, 0);
+  i->set_src1(single_bits);
+  return true;
 }
 
 bool SimplificationPass::CheckTruncate(Instr* i) {
