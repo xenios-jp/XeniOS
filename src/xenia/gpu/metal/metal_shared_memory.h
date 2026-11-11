@@ -66,6 +66,8 @@ class MetalSharedMemory : public SharedMemory {
   bool CopyToBufferGpuOrdered(uint32_t start, const void* data, uint32_t length,
                               bool order_all_accesses = false);
 
+  bool IsTraceOpen() const override { return trace_writer_.is_open(); }
+
   MetalCommandProcessor& command_processor_;
   TraceWriter& trace_writer_;
   MTL::Buffer* buffer_ = nullptr;
