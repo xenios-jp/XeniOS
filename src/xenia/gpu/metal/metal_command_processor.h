@@ -1447,7 +1447,21 @@ class MetalCommandProcessor : public CommandProcessor,
   float ff_blend_factor_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool ff_blend_factor_valid_ = false;
 
+  // The submission all the submissions up to which have finished, in whatever
+  // order their completion handlers ran. Written under completion_mutex_.
+  //
+  // A submission that finished with an error counts as finished: no wait can
+  // produce its output anymore, and the GPU no longer uses its resources. So
+  // once every earlier submission is done too, its pooled buffers are
+  // recycled, guest signals held behind it are released, and an access that
+  // waited for its resolve or export output goes ahead and sees what guest
+  // memory held before (as after kResolveFaultWaitBound). The failure is
+  // logged by LogCommandBufferFailure and counted in failed_submissions_.
   std::atomic<uint64_t> completed_command_buffers_{0};
+  // Finished submissions past completed_command_buffers_ + 1, under
+  // completion_mutex_.
+  std::vector<uint64_t> completed_out_of_order_;
+  std::atomic<uint64_t> failed_submissions_{0};
   // Scratch for TracePlaybackWillWriteMemory.
   std::vector<MTL::CommandBuffer*> await_all_side_command_buffers_;
   std::atomic<uint32_t> pending_completion_handlers_{0};
