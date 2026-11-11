@@ -8281,8 +8281,13 @@ bool MetalRenderTargetCache::PerformResolveClear(
           clear_targets[1], clear_transfers[1])) {
     uint64_t clear_values[2];
     clear_values[0] = resolve_info.rb_depth_clear;
-    clear_values[1] = resolve_info.rb_color_clear |
-                      (uint64_t(resolve_info.rb_color_clear_lo) << 32);
+    // For 64bpp formats, RB_COLOR_CLEAR_LO is the lower 32 bits of the packed
+    // clear value. RB_COLOR_CLEAR is the upper 32 bits and, for 32bpp formats,
+    // the whole value.
+    clear_values[1] = resolve_info.color_edram_info.format_is_64bpp
+                          ? resolve_info.rb_color_clear_lo |
+                                (uint64_t(resolve_info.rb_color_clear) << 32)
+                          : resolve_info.rb_color_clear;
     return PerformTransfersAndResolveClears(2, clear_targets, clear_transfers,
                                             nullptr, clear_values,
                                             &clear_rectangle, command_buffer);
