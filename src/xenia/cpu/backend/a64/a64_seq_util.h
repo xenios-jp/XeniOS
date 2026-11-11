@@ -23,6 +23,7 @@
 
 #include "xbyak_aarch64.h"
 
+DECLARE_bool(a64_lfs_quiet_unobserved);
 DECLARE_bool(a64_vmx_nan_fixup_in_tail);
 
 #if XE_COMPILER_MSVC

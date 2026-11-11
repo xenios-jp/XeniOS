@@ -63,6 +63,12 @@ DEFINE_bool(a64_enable_host_guest_stack_synchronization, true,
             "impact, but fixes crashes in games that use setjmp/longjmp.",
             "a64");
 
+DEFINE_bool(a64_lfs_quiet_unobserved, true,
+            "lfs: skip the test that keeps a NaN's signalling bit when every "
+            "reader of the loaded value is arithmetic, a rounding to single, "
+            "a compare or a NaN test, none of which can tell a signalling NaN "
+            "from the same NaN quieted. Same results.",
+            "a64");
 DEFINE_bool(a64_vmx_nan_fixup_in_tail, true,
             "Test the result of a VMX float add, subtract, multiply or divide "
             "for a NaN and apply PowerPC's NaN operand order in the function "

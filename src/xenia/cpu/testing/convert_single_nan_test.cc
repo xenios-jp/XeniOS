@@ -174,6 +174,7 @@ TEST_CASE("UNPACK_THEN_PACK_SINGLE_IS_IDENTITY", "[instr]") {
   }
   cvars::fold_single_round_trip = fold_default;
 }
+DECLARE_bool(a64_lfs_quiet_unobserved);
   for (int variant = 0; variant < 4; ++variant) {
     const bool after_vmx = (variant & 2) != 0;
     TestFunction test([after_vmx](HIRBuilder& b) {
@@ -197,11 +198,152 @@ TEST_CASE("UNPACK_THEN_PACK_SINGLE_IS_IDENTITY", "[instr]") {
             },
               for (int n = 0; n < 6; ++n) {
                 CAPTURE(variant, base | kMantissas[n]);
+
+// A loaded single read only by arithmetic, rounding, compares and NaN tests
+// gives them the same answers whether or not its signalling bit was kept, and
+// one that is also stored keeps the bit. Every reader, with the loaded value
+// in each operand position, over singles and doubles of every class, in the
+// Fpu mode and after a vector op; on a64 with the test skipped and kept.
+TEST_CASE("UNPACK_SINGLE_READERS_MATRIX", "[instr]") {
+  static const uint32_t kSingles[] = {
+      0x00000000, 0x80000000, 0x3F800000, 0xC0400000, 0x00000001,
+      0x807FFFFF, 0x00800000, 0x7F7FFFFF, 0x7F800000, 0xFF800000,
+      0x7FC00000, 0xFFC12345, 0x7F800001, 0xFFA54321, 0x7FBFFFFF,
+  };
+  static const uint64_t kDoubles[] = {
+      0x0000000000000000ull, 0x8000000000000000ull, 0x3FF0000000000000ull,
+      0xC008000000000000ull, 0x0000000000000001ull, 0x800FFFFFFFFFFFFFull,
+      0x7FEFFFFFFFFFFFFFull, 0x7FF0000000000000ull, 0xFFF0000000000000ull,
+      0x7FF8000000000000ull, 0xFFF8000000012345ull, 0x7FF0000000000001ull,
+      0xFFF4000000054321ull, 0x36A0000000000000ull,
+  };
+  const auto run = [](bool after_vmx) {
     TestFunction test([after_vmx](HIRBuilder& b) {
       if (after_vmx) {
         StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
       }
+      // A fresh load for each reader, so each has no other reader.
+      const auto load = [&b] {
+        return b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE));
+      };
+      Value* d = LoadFPR(b, 1);
+      Value* e = LoadFPR(b, 2);
+      int out = 3;
+      const auto store = [&b, &out](Value* v) { StoreFPR(b, out++, v); };
+      const auto flag = [&b, &out](Value* v) {
+        StoreGPR(b, out++, b.ZeroExtend(v, INT64_TYPE));
+      };
+      store(b.Add(d, load()));
+      store(b.Add(load(), d));
+      store(b.Sub(d, load()));
+      store(b.Sub(load(), d));
+      store(b.Mul(d, load()));
+      store(b.Mul(load(), d));
+      store(b.Div(d, load()));
+      store(b.Div(load(), d));
+      store(b.MulAdd(load(), d, e));
+      store(b.MulAdd(d, load(), e));
+      store(b.MulAdd(d, e, load()));
+      store(b.MulSub(load(), d, e));
+      store(b.MulSub(d, e, load(), true));
+      store(b.ToSingle(load()));
+      store(b.ToSingle(b.Mul(d, load())));
+      Value* twice = load();
+      store(b.Add(twice, twice));
+      Value* both = load();
+      store(b.Mul(b.Add(both, d), both));
+      // Two loads, so the first operand's reader sees a load in the second.
+      store(b.Add(load(), load()));
+      out = 10;
+      flag(b.CompareSLT(d, load()));
+      flag(b.CompareSGT(load(), d));
+      flag(b.CompareEQ(d, load()));
+      flag(b.IsNan(load()));
+      Value* q = load();
+      flag(b.DenormalQuirk(d, q, q));
+      // Also stored: the register must hold the signalling bit, and the sum
+      // must still be the same.
+      Value* kept = load();
+      StoreFPR(b, 30, kept);
+      StoreFPR(b, 31, b.Add(d, kept));
+      b.Return();
+    });
+    std::vector<uint64_t> results;
+    for (uint32_t single : kSingles) {
+      for (uint64_t d : kDoubles) {
+        for (uint64_t e : {kDoubles[2], kDoubles[10], kDoubles[11]}) {
+          test.Run(
+              [single, d, e](PPCContext* ctx) {
+                ctx->r[4] = single;
+                SetF64Bits(ctx, 1, d);
+                SetF64Bits(ctx, 2, e);
+              },
+              [&results, single](PPCContext* ctx) {
+                for (int n = 3; n <= 20; ++n) {
+                  results.push_back(GetF64Bits(ctx, n));
+                }
+                for (int n = 10; n <= 14; ++n) {
+                  results.push_back(ctx->r[n]);
+                }
+                results.push_back(GetF64Bits(ctx, 31));
+                // The stored copy is the exact widening.
+                const uint64_t kept = GetF64Bits(ctx, 30);
+                results.push_back(kept);
+                if ((single & 0x7FFFFFFF) > 0x7F800000) {
+                  REQUIRE(kept == ((uint64_t(single >> 31) << 63) |
+                                   0x7FF0000000000000ull |
+                                   (uint64_t(single & 0x7FFFFF) << 29)));
+                }
+              });
+        }
+      }
+    }
+    return results;
+  };
+  for (bool after_vmx : {false, true}) {
+    const std::vector<uint64_t> results = run(after_vmx);
+    REQUIRE(results.size() == 15u * 14u * 3u * 25u);
+#if XE_ARCH_ARM64
+    const bool saved = cvars::a64_lfs_quiet_unobserved;
+    cvars::a64_lfs_quiet_unobserved = !saved;
+    const std::vector<uint64_t> other = run(after_vmx);
+    cvars::a64_lfs_quiet_unobserved = saved;
+    size_t differing = 0;
+    for (size_t n = 0; n < results.size(); ++n) {
+      differing += results[n] != other[n];
+    }
+    REQUIRE(differing == 0);
+#endif
+  }
+}
+  static const uint64_t kDoubles[] = {
+      0x0000000000000000ull, 0x8000000000000000ull, 0x3FF0000000000000ull,
+      0xC008000000000000ull, 0x0000000000000001ull, 0x800FFFFFFFFFFFFFull,
+      0x7FEFFFFFFFFFFFFFull, 0x7FF0000000000000ull, 0xFFF0000000000000ull,
+      0x7FF8000000000000ull, 0xFFF8000000012345ull, 0x7FF0000000000001ull,
+  };
+  const auto run = [](bool after_vmx) {
     TestFunction test([after_vmx](HIRBuilder& b) {
       if (after_vmx) {
         StoreVR(b, 3, b.VectorAdd(LoadVR(b, 4), LoadVR(b, 5), FLOAT32_TYPE));
       }
+      Value* d = LoadFPR(b, 1);
+      Value* e = LoadFPR(b, 2);
+                SetF64Bits(ctx, 1, d);
+                SetF64Bits(ctx, 2, e);
+                }
+              });
+        }
+      }
+    }
+    return results;
+  };
+  for (bool after_vmx : {false, true}) {
+    size_t differing = 0;
+    for (size_t n = 0; n < results.size(); ++n) {
+      differing += results[n] != other[n];
+    }
+    REQUIRE(differing == 0);
+#endif
+  }
+}

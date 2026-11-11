@@ -583,6 +583,46 @@ struct ADD_I64 : Sequence<ADD_I64, I<OPCODE_ADD, I64Op, I64Op, I64Op>> {
 // quiet NaN and the second a signalling one.
 enum class FpBinOp { Add, Sub, Mul, Div };
 
+// lfs keeps a NaN's signalling bit, which costs a test of every loaded value.
+// Whether the value was signalling or the same NaN quieted makes no difference
+// to arithmetic, rounding to single, a compare or a NaN or denormal test:
+// PowerPC returns a NaN operand quieted, picks it by position, and orders and
+// classifies both the same. So when those are the only readers of a loaded
+// value it may be left as the host convert made it, quieted, and it is then
+// never signalling to its readers. Anything that copies bits (a store to the
+// context or memory, a cast, a sign operation, a select, stfs) keeps the test.
+static bool UnpackSingleMayQuiet(const hir::Instr* unpack) {
+  if (!cvars::a64_lfs_quiet_unobserved || unpack->src1.value->IsConstant() ||
+      !unpack->dest->use_head) {
+    return false;
+  }
+  for (const hir::Value::Use* use = unpack->dest->use_head; use;
+       use = use->next) {
+    switch (use->instr->GetOpcodeNum()) {
+      case hir::OPCODE_ADD:
+      case hir::OPCODE_SUB:
+      case hir::OPCODE_MUL:
+      case hir::OPCODE_DIV:
+      case hir::OPCODE_MUL_ADD:
+      case hir::OPCODE_MUL_SUB:
+      case hir::OPCODE_TO_SINGLE:
+      case hir::OPCODE_COMPARE_EQ:
+      case hir::OPCODE_COMPARE_NE:
+      case hir::OPCODE_COMPARE_SLT:
+      case hir::OPCODE_COMPARE_SLE:
+      case hir::OPCODE_COMPARE_SGT:
+      case hir::OPCODE_COMPARE_SGE:
+      case hir::OPCODE_IS_NAN:
+      case hir::OPCODE_IS_UNORDERED:
+      case hir::OPCODE_DENORMAL_QUIRK:
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
 // Whether a scalar float value can never be a signalling NaN. ARM arithmetic
 // and conversions never produce one with FPCR.DN clear: a NaN result is a
 // quieted operand or the default QNaN, and the fixups below only substitute
@@ -616,6 +656,8 @@ static bool IsNeverSignalingNan(const hir::Value* v, int depth = 0) {
     case hir::OPCODE_TO_SINGLE:
     case hir::OPCODE_CONVERT:
       return true;
+    case hir::OPCODE_UNPACK_SINGLE:
+      return UnpackSingleMayQuiet(def);
     case hir::OPCODE_ASSIGN:
     case hir::OPCODE_NEG:
     case hir::OPCODE_ABS:
@@ -5344,6 +5386,7 @@ struct UNPACK_SINGLE
     WReg src = i.src1.is_constant ? e.w0 : WReg(i.src1.reg().getIdx());
     const DReg dest = i.dest;
     auto& done = e.NewCachedLabel();
+    const bool may_quiet = UnpackSingleMayQuiet(i.instr);
     if (i.src1.is_constant) {
       e.ChangeFpcrMode(FPCRMode::Fpu);
       e.mov(e.w0, static_cast<uint64_t>(i.src1.constant()));
@@ -5356,6 +5399,10 @@ struct UNPACK_SINGLE
     }
     e.fmov(SReg(dest.getIdx()), src);
     e.fcvt(dest, SReg(dest.getIdx()));
+    if (may_quiet) {
+      e.L(done);
+      return;
+    }
     e.fcmp(dest, dest);
 
     auto& snan_fixup =
@@ -5400,7 +5447,6 @@ struct PACK_SINGLE
     const WReg dest = i.dest;
     e.fcvt(e.s1, src);
     e.fmov(dest, e.s1);
-    e.fcmp(src, src);
 
     auto& done = e.NewCachedLabel();
     auto& snan_fixup =
