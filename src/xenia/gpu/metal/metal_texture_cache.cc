@@ -3805,6 +3805,7 @@ static MetalTextureCache::SamplerParameters BuildSamplerParametersFromFetch(
       xenos::ClampModeUsesBorder(parameters.clamp_y) ||
       xenos::ClampModeUsesBorder(parameters.clamp_z)) {
     parameters.border_color = fetch.border_color;
+    parameters.force_bc_w_to_max = fetch.force_bc_w_to_max;
   } else {
     parameters.border_color = xenos::BorderColor::k_ABGR_Black;
   }
@@ -3937,11 +3938,16 @@ MTL::SamplerState* MetalTextureCache::GetOrCreateSampler(
     case xenos::BorderColor::k_ABGR_White:
       desc->setBorderColor(MTL::SamplerBorderColorOpaqueWhite);
       break;
-    case xenos::BorderColor::k_ABGR_Black:
-      desc->setBorderColor(MTL::SamplerBorderColorTransparentBlack);
-      break;
     default:
-      desc->setBorderColor(MTL::SamplerBorderColorOpaqueBlack);
+      // Metal has three fixed border colors only. k_ABGR_Black is exact. The
+      // two YCbCr blacks (0.5 in the chroma channels on Direct3D 12 and on
+      // Vulkan with custom border colors) are not representable: like Vulkan
+      // without custom border colors, use black with the right alpha.
+      // TODO(xenios-jp): YCbCr border colors need the border applied in the
+      // shader.
+      desc->setBorderColor(parameters.force_bc_w_to_max
+                               ? MTL::SamplerBorderColorOpaqueBlack
+                               : MTL::SamplerBorderColorTransparentBlack);
       break;
   }
 

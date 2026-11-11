@@ -107,6 +107,9 @@ class MetalTextureCache : public TextureCache {
       xenos::AnisoFilter aniso_filter : 3;
       uint32_t mip_min_level : 4;
       uint32_t mip_base_map : 1;
+      // Force the border color alpha to 1.0 (only meaningful with a border
+      // clamp mode).
+      uint32_t force_bc_w_to_max : 1;
     };
 
     SamplerParameters() : value(0) { static_assert_size(*this, sizeof(value)); }
