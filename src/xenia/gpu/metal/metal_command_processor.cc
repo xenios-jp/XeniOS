@@ -4791,7 +4791,7 @@ void MetalCommandProcessor::LogFrameGpuWaits() {
 void MetalCommandProcessor::AwaitMemexportSubmission(uint64_t submission) {
   int64_t wait_start_ns = GetSteadyTimeNs();
   // submission_current_ is committed once there's no command buffer open, and
-  // completions arrive in order.
+  // completed submission is a front over every earlier one.
   if (submission >= submission_current_ && current_command_buffer_) {
     EndCommandBuffer(CommandBufferKind::kSubmissionWait);
   }
@@ -8367,7 +8367,31 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
             submission, std::memory_order_release);
         {
           std::lock_guard<std::mutex> lock(completion_mutex_);
-          completed_command_buffers_.fetch_add(1, std::memory_order_release);
+          // Handlers of different command buffers may run in any order (one
+          // that fails is finished at once, ahead of earlier ones still
+          // running), so the front only moves over submissions that have all
+          // finished.
+          uint64_t front =
+              completed_command_buffers_.load(std::memory_order_relaxed);
+          if (submission != front + 1) {
+            completed_out_of_order_.push_back(submission);
+          } else {
+            ++front;
+            for (size_t i = 0; i < completed_out_of_order_.size();) {
+              if (completed_out_of_order_[i] == front + 1) {
+                ++front;
+                completed_out_of_order_[i] = completed_out_of_order_.back();
+                completed_out_of_order_.pop_back();
+                i = 0;
+              } else {
+                ++i;
+              }
+            }
+            completed_command_buffers_.store(front, std::memory_order_release);
+          }
+          if (command_buffer->status() != MTL::CommandBufferStatusCompleted) {
+            failed_submissions_.fetch_add(1, std::memory_order_relaxed);
+          }
           completion_cond_.notify_all();
         }
         // Publish callback completion after its final owner access and unlock.
