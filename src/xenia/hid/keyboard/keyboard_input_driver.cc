@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -38,7 +39,11 @@ DEFINE_path(input_script, "",
             "added: A B X Y START BACK UP DOWN LEFT RIGHT LB RB, WAIT MS, or "
             "SCREENSHOT (saves the guest output as with F12). "
             "Each button is pressed for 150 ms, whether or not the window "
-            "has focus. For driving several instances in tests.",
+            "has focus. HOLD BUTTON MS presses one for longer. LS X Y MS and "
+            "RS X Y MS hold a stick at X, Y (-100 to 100, up and right "
+            "positive) and LT MS, RT MS hold a trigger, for MS milliseconds, "
+            "while the following commands go on. For driving several "
+            "instances in tests.",
             "HID");
 
 DEFINE_int64(input_script_offset, 0,
@@ -305,6 +310,39 @@ bool PopScriptedKeystroke(X_INPUT_KEYSTROKE* out_keystroke) {
 
 std::atomic<bool> script_screenshot_requested{false};
 
+// Sticks and triggers the input_script file holds right now. They don't hold
+// up the commands after them.
+struct ScriptedAnalog {
+  int16_t lx = 0, ly = 0, rx = 0, ry = 0;
+  std::chrono::steady_clock::time_point ls_until{}, rs_until{}, lt_until{},
+      rt_until{};
+};
+std::mutex scripted_analog_mutex;
+ScriptedAnalog scripted_analog;
+
+void ApplyScriptedAnalog(int16_t& lx, int16_t& ly, int16_t& rx, int16_t& ry,
+                         uint8_t& lt, uint8_t& rt) {
+  if (cvars::input_script.empty()) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard lock(scripted_analog_mutex);
+  if (now < scripted_analog.ls_until) {
+    lx = scripted_analog.lx;
+    ly = scripted_analog.ly;
+  }
+  if (now < scripted_analog.rs_until) {
+    rx = scripted_analog.rx;
+    ry = scripted_analog.ry;
+  }
+  if (now < scripted_analog.lt_until) {
+    lt = 0xFF;
+  }
+  if (now < scripted_analog.rt_until) {
+    rt = 0xFF;
+  }
+}
+
 // How far ScriptedButtons has read input_script.
 std::atomic<int64_t> script_read{-1};
 
@@ -381,15 +419,55 @@ uint16_t ScriptedButtons() {
     until = now + std::chrono::milliseconds(std::atoi(command.c_str() + 5));
     return 0;
   }
+  {
+    char name[8] = {};
+    int a = 0, b = 0, c = 0;
+    const int count =
+        std::sscanf(command.c_str(), "%7s %d %d %d", name, &a, &b, &c);
+    const std::string analog(name);
+    const auto axis = [](int percent) {
+      return int16_t(std::clamp(percent, -100, 100) * SHRT_MAX / 100);
+    };
+    std::lock_guard analog_lock(scripted_analog_mutex);
+    if (count == 4 && (analog == "LS" || analog == "RS")) {
+      const auto analog_until = now + std::chrono::milliseconds(c);
+      if (analog == "LS") {
+        scripted_analog.lx = axis(a);
+        scripted_analog.ly = axis(b);
+        scripted_analog.ls_until = analog_until;
+      } else {
+        scripted_analog.rx = axis(a);
+        scripted_analog.ry = axis(b);
+        scripted_analog.rs_until = analog_until;
+      }
+      XELOGI("input_script: {}", command);
+      return 0;
+    }
+    if (count == 2 && (analog == "LT" || analog == "RT")) {
+      (analog == "LT" ? scripted_analog.lt_until : scripted_analog.rt_until) =
+          now + std::chrono::milliseconds(a);
+      XELOGI("input_script: {}", command);
+      return 0;
+    }
+  }
+  int hold_ms = 150;
+  std::string button_name = command;
+  if (command.rfind("HOLD ", 0) == 0) {
+    const size_t space = command.find(' ', 5);
+    if (space != std::string::npos) {
+      button_name = command.substr(5, space - 5);
+      hold_ms = std::max(std::atoi(command.c_str() + space + 1), 1);
+    }
+  }
   for (const auto& [name, button, key] : kButtons) {
-    if (command == name) {
+    if (button_name == name) {
       held = button;
       if (cvars::input_script_keystrokes) {
         std::lock_guard keys_lock(scripted_keys_mutex);
         scripted_keys.emplace_back(key, true);
         scripted_keys.emplace_back(key, false);
       }
-      until = now + std::chrono::milliseconds(150);
+      until = now + std::chrono::milliseconds(hold_ms);
       XELOGI("input_script: {}", command);
       return held;
     }
@@ -508,6 +586,8 @@ X_RESULT KeyboardInputDriver::GetState(uint32_t user_index,
 
   if (user_index == 0) {
     buttons |= ScriptedButtons();
+    ApplyScriptedAnalog(thumb_lx, thumb_ly, thumb_rx, thumb_ry, left_trigger,
+                        right_trigger);
   }
 
   out_state->gamepad.buttons = buttons;
