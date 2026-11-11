@@ -81,6 +81,12 @@ DEFINE_bool(a64_vmx_nan_fixup_in_tail, true,
             "fewer instructions; only where FPCR.FZ flushes denormal inputs.",
             "a64");
 
+DEFINE_bool(a64_vmx_fma_minmax_nan_in_tail, true,
+            "Test the result of a VMX float multiply-add, maximum or minimum "
+            "for a NaN with one reduction and apply PowerPC's NaN operand "
+            "order in the function tail. Same results, fewer instructions.",
+            "a64");
+
 DECLARE_bool(record_mmio_access_exceptions);
 
 namespace xe {

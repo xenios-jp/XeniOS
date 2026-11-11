@@ -3626,15 +3626,8 @@ struct MAX_F64 : Sequence<MAX_F64, I<OPCODE_MAX, F64Op, F64Op, F64Op>> {
 struct MAX_V128 : Sequence<MAX_V128, I<OPCODE_MAX, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     EmitWithVmxFpcr(e, [&] {
-      int s1, s2;
-      PrepareVmxFpSources(e, i.src1, i.src2, s1, s2);
-      e.fmax(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
-      // PPC vmaxfp: a NaN input is returned as-is, vA before vB.
-      FixupVmxMaxMinNan(e);
-      if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
-        FlushDenormals_V128(e, 2, 0, 1);
-      }
-      e.mov(VReg(i.dest.reg().getIdx()).b16, VReg(2).b16);
+      EmitVmxFpMaxMin_V128(e, i.dest.reg().getIdx(), i.src1, i.src2,
+                           /*is_min=*/false);
     });
   }
 };
@@ -3912,15 +3905,8 @@ struct MIN_F64 : Sequence<MIN_F64, I<OPCODE_MIN, F64Op, F64Op, F64Op>> {
 struct MIN_V128 : Sequence<MIN_V128, I<OPCODE_MIN, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     EmitWithVmxFpcr(e, [&] {
-      int s1, s2;
-      PrepareVmxFpSources(e, i.src1, i.src2, s1, s2);
-      e.fmin(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
-      // PPC vminfp: a NaN input is returned as-is, vA before vB.
-      FixupVmxMaxMinNan(e);
-      if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
-        FlushDenormals_V128(e, 2, 0, 1);
-      }
-      e.mov(VReg(i.dest.reg().getIdx()).b16, VReg(2).b16);
+      EmitVmxFpMaxMin_V128(e, i.dest.reg().getIdx(), i.src1, i.src2,
+                           /*is_min=*/true);
     });
   }
 };

@@ -416,18 +416,7 @@ struct VECTOR_MAX
   template <typename T>
   static void EmitVmxFpMaxMin(A64Emitter& e, const T& i, bool is_min) {
     EmitWithVmxFpcr(e, [&] {
-      int s1, s2;
-      PrepareVmxFpSources(e, i.src1, i.src2, s1, s2);
-      if (is_min) {
-        e.fmin(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
-      } else {
-        e.fmax(VReg(2).s4, VReg(s1).s4, VReg(s2).s4);
-      }
-      FixupVmxMaxMinNan(e);
-      if (!e.IsFeatureEnabled(xe::arm64::kA64FZFlushesInputs)) {
-        FlushDenormals_V128(e, 2, 0, 1);
-      }
-      e.mov(VReg(i.dest.reg().getIdx()).b16, VReg(2).b16);
+      EmitVmxFpMaxMin_V128(e, i.dest.reg().getIdx(), i.src1, i.src2, is_min);
     });
   }
 };
