@@ -574,6 +574,7 @@ class MetalCommandProcessor : public CommandProcessor,
     kFailed,
   };
   struct PipelineCompileRequest;
+  struct PipelineDescription;
   void InitializeAsyncCompilation();
   void ShutdownAsyncCompilation();
   ShaderCompileStatus GetShaderCompileStatus(Shader::Translation* translation);
@@ -653,6 +654,18 @@ class MetalCommandProcessor : public CommandProcessor,
   };
   const FiniteMultiplyInfo& GetFiniteMultiplyInfo(const Shader& shader) const;
   uint64_t GetFiniteMultiplyRequirements(const Shader& shader) const;
+  // The general variant of a pipeline's finite multiply state: every input the
+  // stages' shaders need proven is taken as possibly not finite, so the guarded
+  // product is used throughout, which is right for any draw. Returns whether
+  // either stage has requirements.
+  bool SetGeneralFiniteMultiplyState(const Shader::Translation* vertex,
+                                     const Shader::Translation* pixel,
+                                     PipelineDescription& description) const;
+  bool HasFiniteMultiplyRequirements(const Shader::Translation* vertex,
+                                     const Shader::Translation* pixel,
+                                     const PipelineDescription& description)
+      const;
+  MTL::RenderPipelineState* FindBuiltPipelineState(uint64_t key);
   void GetFiniteMultiplyState(const Shader::Translation* translation,
                               const RegisterFile& regs, uint32_t* state) const;
   const SpirvShaderTranslator::DrawExactAnalysis& GetDrawExactAnalysis(
@@ -1048,7 +1061,12 @@ class MetalCommandProcessor : public CommandProcessor,
     // 8_8_8_8_GAMMA, 16_16 and 16_16_16_16 color targets the pixel shader
     // blends itself, with fixed-function blending off.
     uint32_t shader_blend_mask : 4;
-    uint32_t padding : 17;  // 32
+    // Set when a stage has finite multiply requirements and they come from
+    // the one-sided analysis. Taken from the padding, so a description stored
+    // by a build without it reads 0: its finite multiply state then belongs to
+    // another analysis, and it's rebuilt as the general variant.
+    uint32_t finite_multiply_one_sided : 1;
+    uint32_t padding : 16;  // 32
 
     // Increment when the layout or its meaning changes.
     static constexpr uint32_t kVersion = 0x20261110;
@@ -1199,6 +1217,8 @@ class MetalCommandProcessor : public CommandProcessor,
   std::atomic<int64_t> async_shader_pending_last_log_ns_{0};
   std::atomic<int64_t> async_pipeline_pending_last_log_ns_{0};
   std::atomic<int64_t> async_placeholder_last_log_ns_{0};
+  std::atomic<int64_t> finite_multiply_general_last_log_ns_{0};
+  uint64_t finite_multiply_general_draws_ = 0;
   std::atomic<int64_t> async_compile_drain_last_log_ns_{0};
   // The stored-pipeline rebuild timing record (see InitializeShaderStorage and
   // RecordStorageRebuildStatsLocked). Guarded by async_compile_mutex_.
