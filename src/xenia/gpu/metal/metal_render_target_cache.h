@@ -284,6 +284,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // RestoreClearQuadLoadActions right after creating the encoder.
   // A quad ending short of the render area's right side or bottom changes
   // nothing.
+  // Whether the last Update left work out because the draw overwrites it.
+  // Such a draw must be drawn with its own shaders: a stand-in that writes no
+  // color, or a skipped draw, would leave the rectangle without the
+  // transferred or loaded contents for good.
+  bool update_relies_on_quad_draw() const {
+    return update_relies_on_quad_draw_;
+  }
   uint32_t SetClearQuadLoadActions(MTL::RenderPassDescriptor* pass_descriptor);
   void RestoreClearQuadLoadActions(uint32_t attachment_mask);
   // Whether an existing encoder's descriptor still binds the textures needed
@@ -769,6 +776,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool clear_quad_pass_begin_ = false;
   // Whether the Update in progress changed the render targets.
   bool update_targets_changed_ = false;
+  // Whether the last Update took the draw for a quad that overwrites its
+  // rectangle: transfers were cut around it, or a load may be skipped for it.
+  bool update_relies_on_quad_draw_ = false;
   uint32_t clear_quad_saved_area_width_ = 0;
   uint32_t clear_quad_saved_area_height_ = 0;
   // A render target every sample of `rectangle` (in its pixels) of which has

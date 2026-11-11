@@ -84,6 +84,12 @@ DEFINE_bool(
     "they differ by host subpixel rounding). Changes the output of every "
     "draw slightly; off by default.",
     "GPU");
+DEFINE_bool(metal_stand_in_exact_depth_stencil, true,
+            "A draw that writes depth or stencil and whose pixel shader "
+            "decides where (kill, alpha test, alpha to coverage, depth "
+            "output) waits for its pipeline instead of drawing through the "
+            "vertex-only placeholder.",
+            "Metal");
 DEFINE_bool(
     metal_use_dxil, true,
     "Compile guest shaders to AIR with the Metal Shader Converter resource "
@@ -5604,6 +5610,41 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         render_target_cache_->GetPipelineStandInWaitReason(
             frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
             memexport_used_pixel, false);
+    // What a stand-in may leave behind is missing color in a pass redrawn
+    // every frame, nothing else. Two kinds of draw leave more, and wait:
+    // - A clear quad the render target cache relies on: transfers were cut
+    //   around it, or a load is skipped for it, so its rectangle would keep
+    //   stale or undefined contents for good.
+    // - A draw whose pixel shader decides which samples get depth or stencil
+    //   (kill, alpha test, alpha to coverage, depth output): the placeholder
+    //   has no pixel shader and would write depth and stencil the draw
+    //   doesn't, rejecting later draws and staying in what the game keeps.
+    const char* stand_in_policy_reason = nullptr;
+    if (render_target_cache_->update_relies_on_quad_draw()) {
+      stand_in_policy_reason = "clear quad";
+    } else if (cvars::metal_stand_in_exact_depth_stencil &&
+               is_rasterization_done && pixel_shader) {
+      const reg::RB_DEPTHCONTROL dc = normalized_depth_control;
+      const auto keep = xenos::StencilOp::kKeep;
+      const bool stencil_written =
+          dc.stencil_enable &&
+          (dc.stencilfail != keep || dc.stencilzpass != keep ||
+           dc.stencilzfail != keep ||
+           (dc.backface_enable &&
+            (dc.stencilfail_bf != keep || dc.stencilzpass_bf != keep ||
+             dc.stencilzfail_bf != keep)));
+      const auto color_control = regs.Get<reg::RB_COLORCONTROL>();
+      if (((dc.z_enable && dc.z_write_enable) || stencil_written) &&
+          (pixel_shader->kills_pixels() || pixel_shader->writes_depth() ||
+           color_control.alpha_to_mask_enable ||
+           (color_control.alpha_test_enable &&
+            color_control.alpha_func != xenos::CompareFunction::kAlways))) {
+        stand_in_policy_reason = "pixel shader decides depth/stencil";
+      }
+    }
+    if (!draw_stand_in_wait_reason_) {
+      draw_stand_in_wait_reason_ = stand_in_policy_reason;
+    }
   }
 
   // Pipeline formats can be derived from the cache without opening a render
