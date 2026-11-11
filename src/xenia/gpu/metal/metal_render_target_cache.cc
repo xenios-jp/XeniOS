@@ -1924,6 +1924,27 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
       slot = 1 + i;
       written_slots |= uint32_t(1) << slot;
     }
+    // A color quad that also stores depth and every stencil bit overwrites
+    // all of the depth target's samples it covers as well, whatever depth the
+    // shader or the vertices give: the transfers into the depth target leave
+    // the quad out like the ones into the colors.
+    if (written_slots && render_targets[0]) {
+      auto stencil_ref_mask = regs.Get<reg::RB_STENCILREFMASK>();
+      auto stencil_ref_mask_bf =
+          regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
+      if (dc.z_enable && dc.z_write_enable &&
+          dc.zfunc == xenos::CompareFunction::kAlways && dc.stencil_enable &&
+          dc.stencilfunc == xenos::CompareFunction::kAlways &&
+          dc.stencilzpass == xenos::StencilOp::kReplace &&
+          stencil_ref_mask.stencilwritemask == 0xFF &&
+          (!dc.backface_enable ||
+           (dc.stencilfunc_bf == xenos::CompareFunction::kAlways &&
+            dc.stencilzpass_bf == xenos::StencilOp::kReplace &&
+            stencil_ref_mask_bf.stencilwritemask == 0xFF &&
+            stencil_ref_mask_bf.stencilref == stencil_ref_mask.stencilref))) {
+        written_slots |= 1;
+      }
+    }
   } else {
     if (!render_targets[0] || draw.has_pixel_shader) {
       return;
