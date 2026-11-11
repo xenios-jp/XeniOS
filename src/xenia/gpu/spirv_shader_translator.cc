@@ -631,6 +631,8 @@ void SpirvShaderTranslator::StartTranslation() {
        type_uint_},
       {"vertex_base_index", offsetof(SystemConstants, vertex_base_index),
        type_int_},
+      {"vertex_snap_scale", offsetof(SystemConstants, vertex_snap_scale),
+       type_float2_},
       {"ndc_scale", offsetof(SystemConstants, ndc_scale), type_float3_},
       {"point_vertex_diameter_min",
        offsetof(SystemConstants, point_vertex_diameter_min), type_float_},
@@ -3323,6 +3325,78 @@ void SpirvShaderTranslator::CompleteVertexOrTessEvalShaderInMain() {
       spv::OpVectorTimesScalar, type_float3_, ndc_offset, position_w);
   position_xyz = builder_->createNoContractionBinOp(
       spv::OpFAdd, type_float3_, position_xyz, ndc_offset_mul_w);
+
+  // Snap the window position to the guest's 1/16 pixel grid when asked to
+  // (vertex_snap_scale non-zero). The host snaps to its own finer grid after a
+  // float viewport transform, so without this the same primitive rasterizes
+  // slightly differently at another integer viewport origin (a vertex in a few
+  // hundred lands one host subpixel away, which moves the depth of its
+  // triangles by a few steps and now and then an edge pixel). Positions on the
+  // 1/16 grid survive that transform exactly. The grid is relative to the
+  // viewport center, which is the pixel grid's as the host viewport is integer.
+  // Vertices behind the camera are left alone.
+  // TODO(xenios-jp): PA_SU_VTX_CNTL quant_mode and round_mode (1/16 and round
+  // to nearest assumed), and primitives the host clips (their new vertices
+  // aren't snapped).
+  {
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(
+        builder_->makeIntConstant(kSystemConstantVertexSnapScale));
+    spv::Id snap_scale = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassUniform,
+                                    uniform_system_constants_, id_vector_temp_),
+        spv::NoPrecision);
+    uint_vector_temp_.clear();
+    uint_vector_temp_.push_back(0);
+    uint_vector_temp_.push_back(1);
+    spv::Id snap_xy = builder_->createRvalueSwizzle(
+        spv::NoPrecision, type_float2_, position_xyz, uint_vector_temp_);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(position_w);
+    id_vector_temp_.push_back(position_w);
+    spv::Id snap_w2 = builder_->createCompositeConstruct(type_float2_,
+                                                         id_vector_temp_);
+    spv::Id snap_grid = builder_->createNoContractionBinOp(
+        spv::OpFMul, type_float2_,
+        builder_->createNoContractionBinOp(spv::OpFDiv, type_float2_, snap_xy,
+                                           snap_w2),
+        snap_scale);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->makeFloatConstant(0.5f));
+    id_vector_temp_.push_back(builder_->makeFloatConstant(0.5f));
+    spv::Id snap_half =
+        builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
+    spv::Id snap_rounded = builder_->createUnaryBuiltinCall(
+        type_float2_, ext_inst_glsl_std_450_, GLSLstd450Floor,
+        builder_->createNoContractionBinOp(spv::OpFAdd, type_float2_,
+                                           snap_grid, snap_half));
+    spv::Id snap_back = builder_->createNoContractionBinOp(
+        spv::OpFMul, type_float2_,
+        builder_->createNoContractionBinOp(spv::OpFDiv, type_float2_,
+                                           snap_rounded, snap_scale),
+        snap_w2);
+    spv::Id snap_on = builder_->createBinOp(
+        spv::OpLogicalAnd, type_bool_,
+        builder_->createBinOp(
+            spv::OpFOrdGreaterThan, type_bool_,
+            builder_->createCompositeExtract(snap_scale, type_float_, 0),
+            const_float_0_),
+        builder_->createBinOp(spv::OpFOrdGreaterThan, type_bool_, position_w,
+                              const_float_0_));
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(snap_on);
+    id_vector_temp_.push_back(snap_on);
+    spv::Id snap_on2 =
+        builder_->createCompositeConstruct(type_bool2_, id_vector_temp_);
+    spv::Id snapped_xy = builder_->createTriOp(spv::OpSelect, type_float2_,
+                                               snap_on2, snap_back, snap_xy);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(snapped_xy);
+    id_vector_temp_.push_back(
+        builder_->createCompositeExtract(position_xyz, type_float_, 2));
+    position_xyz =
+        builder_->createCompositeConstruct(type_float3_, id_vector_temp_);
+  }
 
   // Apply vertex killing requested via the kill flag (oPts.z) - bits 0:30 of
   // the value being non-zero kills. Done after the NDC transform since the kill

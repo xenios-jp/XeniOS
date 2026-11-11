@@ -76,6 +76,14 @@ DEFINE_int32(
     "Higher reduces ring churn but uses more memory.",
     "Metal");
 DEFINE_bool(
+    snap_vertices, false,
+    "Snap vertex positions to the console's 1/16 pixel grid in the vertex "
+    "shader. Rasterization then doesn't depend on the host viewport origin, "
+    "so strip_merge gives bit for bit what unmerged strips give (without it "
+    "they differ by host subpixel rounding). Changes the output of every "
+    "draw slightly; off by default.",
+    "GPU");
+DEFINE_bool(
     metal_use_dxil, true,
     "Compile guest shaders to AIR with the Metal Shader Converter resource "
     "interface (see metal_shader_compiler) instead of SPIRV-Cross MSL.",
@@ -10388,6 +10396,11 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
     consts.ndc_scale[i] = viewport_info.ndc_scale[i];
     consts.ndc_offset[i] = viewport_info.ndc_offset[i];
   }
+  // Vertex snapping to the guest's subpixel grid (snap_vertices).
+  consts.vertex_snap_scale[0] =
+      cvars::snap_vertices ? float(viewport_info.xy_extent[0]) * 8.0f : 0.0f;
+  consts.vertex_snap_scale[1] =
+      cvars::snap_vertices ? float(viewport_info.xy_extent[1]) * 8.0f : 0.0f;
 
   // Point rendering (matching Vulkan backend).
   auto pa_su_point_size = regs.Get<reg::PA_SU_POINT_SIZE>();

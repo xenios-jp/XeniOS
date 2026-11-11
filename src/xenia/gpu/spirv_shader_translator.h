@@ -349,7 +349,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
     uint32_t vertex_index_count;
     xenos::Endian vertex_index_endian;
     int32_t vertex_base_index;
-    uint32_t padding_after_vertex_index[3];
+    uint32_t padding_after_vertex_index;
+    // Half the host viewport extent, in 1/16ths of a pixel, when vertex
+    // positions are snapped to the guest's subpixel grid before rasterization;
+    // 0 when they aren't.
+    float vertex_snap_scale[2];
 
     float ndc_scale[3];
     float point_vertex_diameter_min;
@@ -1485,6 +1489,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantVertexIndexCount,
     kSystemConstantVertexIndexEndian,
     kSystemConstantVertexBaseIndex,
+    kSystemConstantVertexSnapScale,
     kSystemConstantNdcScale,
     kSystemConstantPointVertexDiameterMin,
     kSystemConstantNdcOffset,
