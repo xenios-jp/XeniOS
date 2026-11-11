@@ -481,6 +481,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // Scalar estimates of the draw's float constants that the vertex shader
     // would otherwise compute for every vertex (see DrawExactAnalysis).
     float draw_exact_estimates[4];
+    // kTextureCoordEpsilon divided by the width and by the height (in texels,
+    // from the fetch constant word 2, 2D and cube layout) of each fetch
+    // constant, computed on the host with the same IEEE single-precision
+    // division the shader would do. Fetch constant N is in element N >> 1,
+    // components (N & 1) * 2 and (N & 1) * 2 + 1 (float4 array, std140).
+    // Used only when Features::texture_coord_epsilon_constants is set.
+    float texture_coord_epsilon_over_size[16][4];
     // Per texture fetch constant, decoded on the host from word 4 (used only
     // when Features::predecoded_texture_fetch_lod_gradient is set), so the
     // shader doesn't extract and convert the fields:
@@ -730,6 +737,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
 
     // Metal MSC maps descriptor set 9 to named function constants.
     bool fetch_state_function_constants = false;
+    // Texture fetch coordinate epsilon divided by the texture size comes from
+    // the system constants (texture_coord_epsilon_over_size) instead of an
+    // in-shader division. The host must fill them with the same division the
+    // shader would do, and the host compiler's float division must be correctly
+    // rounded.
+    bool texture_coord_epsilon_constants = false;
     bool structured_vertex_control_flow = false;
     bool optimize_finite_multiplication = false;
     // With optimize_finite_multiplication: one proven-finite operand is
@@ -1648,6 +1661,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantTextureIntegerScaleBits,
     kSystemConstantParamGenWindowOffset,
     kSystemConstantDrawExactEstimates,
+    kSystemConstantTextureCoordEpsilonOverSize,
     kSystemConstantTextureFetchLodGradient,
   };
   spv::Id uniform_fetch_state_[kFetchStateBindingCount] = {};

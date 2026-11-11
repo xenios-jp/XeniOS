@@ -3013,9 +3013,16 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   spirv_features.host_render_target_feedback =
       render_target_cache_->gamma_fetch_blend() ||
       render_target_cache_->fixed16_fetch_blend();
+  // The AIR float division is correctly rounded (verified for the epsilon over
+  // every texture size), so the host division gives the shader's bits.
+  spirv_features.texture_coord_epsilon_constants =
+      UseDxilPath();
+  spirv_features.predecoded_texture_fetch_lod_gradient = true;
   spirv_features.optimize_finite_multiplication =
       cvars::metal_finite_multiply &&
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
+  spirv_features.finite_multiply_one_sided = true;
+  spirv_features.finite_multiply_control_flow_join = true;
   spirv_features.fused_float32_fma =
       UseDxilPath() && SpirvToDxilCompiler::SupportsMscFmad32();
   // Not using fragment shader interlock — we use host render targets.
@@ -10584,6 +10591,23 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
 
       consts.texture_integer_scale_bits[i] =
           texture_cache_->GetActiveIntegerScaleBits(i);
+
+      // Epsilon over width and height for the normalized 2D and cube fetches.
+      if (spirv_translator_features_.texture_coord_epsilon_constants) {
+        const uint32_t texture_size_word =
+            regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + i * 6 + 2];
+        const uint32_t size_mask =
+            (UINT32_C(1) << xenos::kTexture2DCubeMaxWidthHeightLog2) - 1;
+        const float width = float((texture_size_word & size_mask) + 1);
+        const float height = float(
+            ((texture_size_word >> xenos::kTexture2DCubeMaxWidthHeightLog2) &
+             size_mask) +
+            1);
+        consts.texture_coord_epsilon_over_size[i >> 1][(i & 1) * 2] =
+            kTextureCoordEpsilon / width;
+        consts.texture_coord_epsilon_over_size[i >> 1][(i & 1) * 2 + 1] =
+            kTextureCoordEpsilon / height;
+      }
 
       // Fetch constant LOD bias and gradient exponent biases, decoded from
       // the word 4 the way the shader would (exact conversions).

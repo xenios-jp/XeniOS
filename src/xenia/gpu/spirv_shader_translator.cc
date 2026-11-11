@@ -627,6 +627,17 @@ void SpirvShaderTranslator::StartTranslation() {
       type_uint4_, builder_->makeUintConstant(8), sizeof(uint32_t) * 4);
   builder_->addDecoration(type_uint4_array_8, spv::DecorationArrayStride,
                           sizeof(uint32_t) * 4);
+  // Optional members at the end of the system constants, declared only up to
+  // the last one in use so shaders without them are unchanged.
+  size_t system_constant_optional_count = 0;
+  spv::Id type_float4_array_16 = spv::NoResult;
+  if (features_.texture_coord_epsilon_constants) {
+    system_constant_optional_count = 1;
+    type_float4_array_16 = builder_->makeArrayType(
+        type_float4_, builder_->makeUintConstant(16), sizeof(float) * 4);
+    builder_->addDecoration(type_float4_array_16, spv::DecorationArrayStride,
+                            sizeof(float) * 4);
+  }
   spv::Id type_float4_array_6 = builder_->makeArrayType(
       type_float4_, builder_->makeUintConstant(6), sizeof(float) * 4);
   builder_->addDecoration(type_float4_array_6, spv::DecorationArrayStride,
@@ -731,19 +742,25 @@ void SpirvShaderTranslator::StartTranslation() {
        offsetof(SystemConstants, param_gen_window_offset), type_float2_},
       {"draw_exact_estimates", offsetof(SystemConstants, draw_exact_estimates),
        type_float4_},
+      {"texture_coord_epsilon_over_size",
+       offsetof(SystemConstants, texture_coord_epsilon_over_size),
+       type_float4_array_16},
       {"texture_fetch_lod_gradient",
        offsetof(SystemConstants, texture_fetch_lod_gradient),
        type_float4_array_32},
   };
   constexpr size_t kSystemConstantOptionalCount = 2;
+  size_t system_constant_count = xe::countof(system_constants) -
+                                 kSystemConstantOptionalCount +
+                                 system_constant_optional_count;
   id_vector_temp_.clear();
-  id_vector_temp_.reserve(xe::countof(system_constants));
-  for (size_t i = 0; i < xe::countof(system_constants); ++i) {
+  id_vector_temp_.reserve(system_constant_count);
+  for (size_t i = 0; i < system_constant_count; ++i) {
     id_vector_temp_.push_back(system_constants[i].type);
   }
   spv::Id type_system_constants =
       builder_->makeStructType(id_vector_temp_, "XeSystemConstants");
-  for (size_t i = 0; i < xe::countof(system_constants); ++i) {
+  for (size_t i = 0; i < system_constant_count; ++i) {
     const SystemConstant& system_constant = system_constants[i];
     builder_->addMemberName(type_system_constants, static_cast<unsigned int>(i),
                             system_constant.name);
