@@ -644,6 +644,13 @@ class MetalCommandProcessor : public CommandProcessor,
   uint64_t GetFiniteMultiplyRequirements(const Shader& shader) const;
   void GetFiniteMultiplyState(const Shader::Translation* translation,
                               const RegisterFile& regs, uint32_t* state) const;
+  const SpirvShaderTranslator::DrawExactAnalysis& GetDrawExactAnalysis(
+      const Shader& shader) const;
+  // Evaluates the DrawExactAnalysis flags and estimates of the vertex shader
+  // for the draw.
+  void UpdateDrawExactness(
+      const Shader& vertex_shader,
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result);
   void SetPipelineFunctionConstants(PipelineCompileRequest& request,
                                     const Shader::Translation* vertex,
                                     const Shader::Translation* pixel);
@@ -1107,6 +1114,17 @@ class MetalCommandProcessor : public CommandProcessor,
   // several times. Elements of an unordered_map keep their address on insert.
   mutable const Shader* finite_multiply_last_shader_[2] = {};
   mutable const FiniteMultiplyInfo* finite_multiply_last_info_[2] = {};
+  mutable std::unordered_map<const Shader*,
+                             SpirvShaderTranslator::DrawExactAnalysis>
+      draw_exact_analyses_;
+  mutable const Shader* draw_exact_last_shader_ = nullptr;
+  mutable const SpirvShaderTranslator::DrawExactAnalysis*
+      draw_exact_last_analysis_ = nullptr;
+  // Of the draw being issued, for draw_exact_shader_ only.
+  const Shader* draw_exact_shader_ = nullptr;
+  uint32_t draw_exact_flags_ = 0;
+  float draw_exact_estimates_
+      [SpirvShaderTranslator::DrawExactAnalysis::kMaxEstimates] = {};
   std::mutex specialized_functions_mutex_;
   // Compare the complete specialization identity; a hash alone may collide.
   using SpecializedFunctionKey =

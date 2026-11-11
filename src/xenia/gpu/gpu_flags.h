@@ -86,6 +86,7 @@ DECLARE_bool(gpu_3d_to_2d_texture);
 DECLARE_bool(use_fuzzy_alpha_epsilon);
 
 DECLARE_bool(alu_round_toward_zero);
+DECLARE_bool(alu_rtz_draw_exact);
 
 DECLARE_bool(xenos_sample_positions);
 
