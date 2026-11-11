@@ -1965,9 +1965,21 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
   for (uint32_t part = 0; part < 2; ++part) {
     if (snapshot_length[part]) {
-      std::memcpy(static_cast<uint8_t*>(constants_buffer->contents()) +
-                      snapshot_offset[part],
-                  guest_ram + part_guest_address[part], snapshot_length[part]);
+      // With the slack: the buffer is pooled, and a load fetching past the
+      // part must see what it would in shared memory, the guest bytes that
+      // follow it, not what an earlier upload left there.
+      uint8_t* snapshot = static_cast<uint8_t*>(constants_buffer->contents()) +
+                          snapshot_offset[part];
+      size_t slack_copy = size_t(std::min(
+          uint64_t(16),
+          uint64_t(SharedMemory::kBufferSize) -
+              std::min(uint64_t(SharedMemory::kBufferSize),
+                       uint64_t(part_guest_address[part]) +
+                           snapshot_length[part])));
+      std::memcpy(snapshot, guest_ram + part_guest_address[part],
+                  snapshot_length[part] + slack_copy);
+      std::memset(snapshot + snapshot_length[part] + slack_copy, 0,
+                  16 - slack_copy);
     }
   }
 
