@@ -242,6 +242,41 @@ class RenderTargetCache {
                       uint32_t normalized_color_mask,
                       const Shader& vertex_shader, int32_t window_offset_tiles);
 
+  // Whether a draw with this depth control may change depth or stencil.
+  static bool DoesDepthControlWrite(reg::RB_DEPTHCONTROL normalized_depth_control,
+                                    reg::RB_STENCILREFMASK stencil_ref_mask,
+                                    reg::RB_STENCILREFMASK stencil_ref_mask_bf) {
+    const reg::RB_DEPTHCONTROL dc = normalized_depth_control;
+    if (dc.z_enable && dc.z_write_enable) {
+      return true;
+    }
+    if (!dc.stencil_enable) {
+      return false;
+    }
+    if (stencil_ref_mask.stencilwritemask &&
+        (dc.stencilfail != xenos::StencilOp::kKeep ||
+         dc.stencilzpass != xenos::StencilOp::kKeep ||
+         dc.stencilzfail != xenos::StencilOp::kKeep)) {
+      return true;
+    }
+    return dc.backface_enable && stencil_ref_mask_bf.stencilwritemask &&
+           (dc.stencilfail_bf != xenos::StencilOp::kKeep ||
+            dc.stencilzpass_bf != xenos::StencilOp::kKeep ||
+            dc.stencilzfail_bf != xenos::StencilOp::kKeep);
+  }
+
+  // Depth clear retarget (depth_clear_retarget_4x). For the next Update only:
+  // whether the draw is a rasterized rectangle list with no pixel shader,
+  // memexport or tessellation, which only the command processor knows.
+  void SetDepthClearRetargetCandidate(bool candidate) {
+    depth_clear_retarget_candidate_ = candidate;
+  }
+  // Whether the last Update wrote the draw's depth into the 1x render target
+  // owning the tiles instead of binding the 4x view the guest set up: the
+  // update changed nothing else and the draw must not be drawn.
+  bool last_update_depth_clear_retargeted() const {
+    return last_update_depth_clear_retargeted_;
+  }
   // Returns bits where 0 is whether a depth render target is currently bound on
   // the host and 1... are whether the same applies to color render targets, and
   // formats (resource formats, but if needed, with gamma taken into account) of
@@ -754,6 +789,28 @@ class RenderTargetCache {
   virtual bool IsHostDepthEncodingDifferent(
       xenos::DepthRenderTargetFormat format) const = 0;
 
+  // A rectangle writing constant depth, stencil or both through a 4x view of
+  // tiles a 1x or 2x depth render target of the same format, base and pitch
+  // owns, as a write to the owner.
+  struct DepthClearRetarget {
+    RenderTarget* owner = nullptr;
+    // In the owner's pixels, every sample of them.
+    Transfer::Rectangle rectangle = {};
+    // The 24 guest depth bits every sample in the rectangle gets, and the
+    // stencil bits under the write mask.
+    bool write_depth = false;
+    uint32_t guest_depth = 0;
+    bool write_stencil = false;
+    uint32_t stencil_value = 0;
+    uint32_t stencil_write_mask = 0;
+  };
+  // Writes them, keeping what isn't written and everything outside the
+  // rectangle.
+  // False if the backend can't right now: the draw is then done as usual.
+  virtual bool PerformDepthClearRetarget(const DepthClearRetarget& retarget) {
+    return false;
+  }
+
   void ResetAccumulatedRenderTargets() {
     are_accumulated_render_targets_valid_ = false;
   }
@@ -1192,6 +1249,19 @@ class RenderTargetCache {
   }
   // See TrackLastUpdateDrawTarget.
   RenderTargetKey last_update_draw_target_;
+
+  // See SetDepthClearRetargetCandidate.
+  bool GetDepthClearRetarget(reg::RB_DEPTHCONTROL normalized_depth_control,
+                             RenderTargetKey draw_key, uint32_t length_tiles,
+                             uint32_t height_used,
+                             DepthClearRetarget& retarget_out);
+  bool depth_clear_retarget_candidate_ = false;
+  bool last_update_depth_clear_retargeted_ = false;
+  // The 4x view of the last retargeted clear until the next draw with depth,
+  // and the views whose clears aren't retargeted because the guest goes on
+  // drawing to them.
+  RenderTargetKey depth_clear_retarget_last_;
+  std::vector<RenderTargetKey> depth_clear_retarget_stay_;
   // The latest frame each render target was drawn in, and the one before it,
   // 0 for never.
   std::unordered_map<RenderTargetKey, std::pair<uint64_t, uint64_t>,

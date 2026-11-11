@@ -1009,6 +1009,12 @@ void MetalRenderTargetCache::Shutdown(bool from_destructor) {
     transfer_depth_clear_state_->release();
     transfer_depth_clear_state_ = nullptr;
   }
+  for (auto& retarget_clear_state : retarget_clear_states_) {
+    if (retarget_clear_state.second) {
+      retarget_clear_state.second->release();
+    }
+  }
+  retarget_clear_states_.clear();
   if (transfer_stencil_clear_state_) {
     transfer_stencil_clear_state_->release();
     transfer_stencil_clear_state_ = nullptr;
@@ -2584,6 +2590,15 @@ bool MetalRenderTargetCache::Update(
           normalized_color_mask, vertex_shader, window_offset_tiles)) {
     XELOGE("MetalRenderTargetCache::Update - Base class Update failed");
     return false;
+  }
+  if (last_update_depth_clear_retargeted()) {
+    // The draw's depth is in the tiles' owner (PerformDepthClearRetarget) and
+    // the draw is dropped: nothing of this update is bound or transferred.
+    clear_quad_draw_ = ClearQuadDraw();
+    draw_may_write_depth_ = false;
+    draw_may_write_stencil_ = false;
+    draw_color_write_mask_ = 0;
+    return true;
   }
 
   if (::cvars::metal_memory_log_rate > 0) {
@@ -7871,6 +7886,7 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
     depth->DeferDepthClear(clear_depth, stencil_value);
     color->DeferColorClear(color_constants.color);
     depth->NoteDeferredClearRows(GetRenderTargetOwnedHeight(depth_key));
+    color->NoteDeferredClearRows(GetRenderTargetOwnedHeight(color_key));
     deferred_clear_targets_.push_back(depth_key);
     deferred_clear_targets_.push_back(color_key);
     MarkContentChanged(depth);
@@ -7953,6 +7969,163 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
   color->SetNeedsInitialClear(false);
   render_pass_descriptor_dirty_ = true;
   return PairedClearResult::kEncoded;
+}
+
+bool MetalRenderTargetCache::PerformDepthClearRetarget(
+    const DepthClearRetarget& retarget) {
+  auto* owner = static_cast<MetalRenderTarget*>(retarget.owner);
+  // Transfers held behind a clear quad are still to be encoded, maybe into
+  // the owner.
+  if (!owner || quad_hold_slot_ != UINT32_MAX ||
+      HasPendingDrawPassTransfers()) {
+    return false;
+  }
+  const RenderTargetKey key = owner->key();
+  MTL::Texture* depth_texture = owner->texture();
+  MTL::Texture* stencil_texture = owner->stencil_attachment_texture();
+  if (!depth_texture || !stencil_texture || owner->needs_initial_clear() ||
+      owner->clear_deferred() ||
+      depth_texture->pixelFormat() != MTL::PixelFormatDepth32Float ||
+      stencil_texture->pixelFormat() != MTL::PixelFormatStencil8) {
+    return false;
+  }
+  // One host sample for each guest sample: the draw covers whole pixels, so
+  // it writes every sample of a 2x owner.
+  const uint32_t sample_count = uint32_t(depth_texture->sampleCount());
+  if (sample_count != (key.msaa_samples == xenos::MsaaSamples::k2X ? 2u : 1u) ||
+      stencil_texture->sampleCount() != sample_count) {
+    return false;
+  }
+  // TODO(xenios-jp): a clear an occlusion report counts could be drawn into the
+  // open pass, inside the host query segment counting there, if the samples
+  // counted came out the same as through the 4x view.
+  if (command_processor_.IsDrawCountedByQuery()) {
+    return false;
+  }
+  const Transfer::Rectangle& rectangle = retarget.rectangle;
+  if (!rectangle.width_pixels || !rectangle.height_pixels ||
+      rectangle.x_pixels + rectangle.width_pixels > depth_texture->width() ||
+      rectangle.y_pixels + rectangle.height_pixels > depth_texture->height()) {
+    return false;
+  }
+  const uint32_t state_key =
+      (uint32_t(retarget.write_depth) << 9) |
+      (retarget.write_stencil ? 0x100 | retarget.stencil_write_mask : 0);
+  MTL::DepthStencilState*& clear_state = retarget_clear_states_[state_key];
+  if (!clear_state) {
+    MTL::DepthStencilDescriptor* desc =
+        MTL::DepthStencilDescriptor::alloc()->init();
+    desc->setDepthCompareFunction(MTL::CompareFunctionAlways);
+    desc->setDepthWriteEnabled(retarget.write_depth);
+    if (retarget.write_stencil) {
+      MTL::StencilDescriptor* stencil = MTL::StencilDescriptor::alloc()->init();
+      stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
+      stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
+      stencil->setDepthFailureOperation(MTL::StencilOperationKeep);
+      stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
+      stencil->setReadMask(0xFF);
+      stencil->setWriteMask(retarget.stencil_write_mask);
+      desc->setFrontFaceStencil(stencil);
+      desc->setBackFaceStencil(stencil);
+      stencil->release();
+    }
+    clear_state = device_->newDepthStencilState(desc);
+    desc->release();
+  }
+  if (!clear_state) {
+    return false;
+  }
+  TransferClearDepthConstants constants = {};
+  constants.depth = GetResolveClearDepth(key.GetDepthFormat(),
+                                         uint64_t(retarget.guest_depth) << 8);
+  const MTL::Viewport viewport = {double(rectangle.x_pixels),
+                                  double(rectangle.y_pixels),
+                                  double(rectangle.width_pixels),
+                                  double(rectangle.height_pixels),
+                                  0.0,
+                                  1.0};
+  const MTL::ScissorRect scissor = {rectangle.x_pixels, rectangle.y_pixels,
+                                    rectangle.width_pixels,
+                                    rectangle.height_pixels};
+  auto draw_clear = [&](MTL::RenderCommandEncoder* encoder,
+                        MTL::RenderPipelineState* pipeline) {
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setTriangleFillMode(MTL::TriangleFillModeFill);
+    encoder->setDepthBias(0.0f, 0.0f, 0.0f);
+    encoder->setDepthClipMode(MTL::DepthClipModeClip);
+    encoder->setViewport(viewport);
+    encoder->setScissorRect(scissor);
+    encoder->setRenderPipelineState(pipeline);
+    encoder->setDepthStencilState(clear_state);
+    if (retarget.write_stencil) {
+      encoder->setStencilReferenceValue(retarget.stencil_value);
+    }
+    encoder->setFragmentBytes(&constants, sizeof(constants), 0);
+    encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
+                            NS::UInteger(3));
+  };
+
+  // In the open pass if the owner is its depth attachment, the rectangle is
+  // inside its render area, and nothing left to the pass's end reads or drops
+  // what the pass holds: the clear is then one more draw of that pass.
+  MTL::RenderPassDescriptor* open_descriptor = nullptr;
+  MTL::RenderCommandEncoder* open_encoder =
+      !HasPostPassResolves() && dead_store_render_targets_.empty()
+          ? command_processor_.GetRenderEncoderForDepthClear(
+                depth_texture, stencil_texture, &open_descriptor)
+          : nullptr;
+  if (open_encoder) {
+    const uint64_t area_width = open_descriptor->renderTargetWidth();
+    const uint64_t area_height = open_descriptor->renderTargetHeight();
+    TransferAttachmentFormats formats;
+    MTL::RenderPipelineState* pipeline = nullptr;
+    if ((!area_width ||
+         rectangle.x_pixels + rectangle.width_pixels <= area_width) &&
+        (!area_height ||
+         rectangle.y_pixels + rectangle.height_pixels <= area_height) &&
+        GetActiveTransferAttachmentFormats(open_descriptor, formats)) {
+      pipeline = GetOrCreateTransferClearPipeline(
+          MTL::PixelFormatDepth32Float, false, true, sample_count, 0,
+          &formats.color_attachment_formats, formats.depth_attachment_format,
+          formats.stencil_attachment_format);
+    }
+    if (pipeline) {
+      draw_clear(open_encoder, pipeline);
+      command_processor_.NoteDepthClearInRenderEncoder();
+      MarkContentChanged(owner);
+      return true;
+    }
+  }
+
+  MTL::RenderPipelineState* pipeline = GetOrCreateTransferClearPipeline(
+      MTL::PixelFormatDepth32Float, false, true, sample_count, 0, nullptr,
+      MTL::PixelFormatDepth32Float, MTL::PixelFormatStencil8);
+  MTL::CommandBuffer* cmd = command_processor_.EnsureCommandBuffer();
+  if (!pipeline || !cmd) {
+    return false;
+  }
+  command_processor_.EndRenderEncoder();
+  auto* rp = MTL::RenderPassDescriptor::renderPassDescriptor();
+  auto* da = rp->depthAttachment();
+  da->setTexture(depth_texture);
+  da->setLoadAction(MTL::LoadActionLoad);
+  da->setStoreAction(MTL::StoreActionStore);
+  auto* sa = rp->stencilAttachment();
+  sa->setTexture(stencil_texture);
+  sa->setLoadAction(MTL::LoadActionLoad);
+  sa->setStoreAction(MTL::StoreActionStore);
+  RestrictRenderArea(rp, &key, 1, rectangle.y_pixels + rectangle.height_pixels);
+  command_processor_.EndSharedComputeEncoder(cmd);
+  auto* encoder = cmd->renderCommandEncoder(rp);
+  if (!encoder) {
+    return false;
+  }
+  draw_clear(encoder, pipeline);
+  encoder->endEncoding();
+  // As a draw writing depth to the owner.
+  MarkContentChanged(owner);
+  render_pass_descriptor_dirty_ = true;
+  return true;
 }
 
 void MetalRenderTargetCache::PerformDeferredClears(MTL::CommandBuffer* cmd) {
