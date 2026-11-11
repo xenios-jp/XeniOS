@@ -13,6 +13,7 @@
 #include "xenia/base/bit_range.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/xxhash.h"
 
 namespace xe {
 namespace gpu {
@@ -430,6 +431,14 @@ void SharedMemory::UnlinkWatchRange(WatchRange* range) {
 }
 
 // todo: optimize, an enormous amount of cpu time (1.34%) is spent here.
+uint64_t SharedMemory::HashGuestRange(uint32_t start, uint32_t length) const {
+  if (!length || start >= kBufferSize) {
+    return 0;
+  }
+  length = std::min(length, kBufferSize - start);
+  return XXH3_64bits(memory_.TranslatePhysical<const uint8_t*>(start), length);
+}
+
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
   if (!length) {
     // Some texture or buffer is empty, for example - safe to draw in this case.

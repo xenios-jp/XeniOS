@@ -288,6 +288,25 @@ class TextureCache {
 
     const TextureKey& key() const { return key_; }
 
+    // texture_load_skip_unchanged: what the last load of each part (base,
+    // mips) read, to skip a reload after a guest write that invalidated the
+    // part without changing it (see TextureCache::SkipUnchangedGuestData).
+    // Accessed by the command processor thread while the part is outdated
+    // (it has no watch then), and by the part's watch callback under the
+    // global critical region.
+    struct LoadedGuestData {
+      uint64_t hash = 0;
+      // The hash is of the bytes the host texture holds.
+      bool hash_valid = false;
+      // The texture cache's GPU write sequence when the part was hashed.
+      uint64_t gpu_write_sequence = 0;
+      // Set once the load of the hashed bytes has run on the GPU. Guest
+      // memory is read then, so an invalidation before it means the load
+      // may have read other bytes than the hashed ones.
+      std::shared_ptr<std::atomic<bool>> load_done;
+    };
+    LoadedGuestData loaded_guest_data[2];
+
     const texture_util::TextureGuestLayout& guest_layout() const {
       return guest_layout_;
     }
@@ -771,6 +790,31 @@ class TextureCache {
  private:
   // Global shared memory invalidation callback for invalidating scaled resolved
   // texture data.
+  // texture_load_skip_unchanged. Clears load_base / load_mips for the parts
+  // whose guest bytes are the ones the host texture was loaded from. Call
+  // after the parts' ranges were requested from the shared memory and before
+  // loading; LoadFailedForUnchangedSkip if the load then fails.
+  void SkipUnchangedGuestData(Texture& texture, bool& load_base,
+                              bool& load_mips);
+  void LoadFailedForUnchangedSkip(Texture& texture, bool load_base,
+                                  bool load_mips);
+  // Whether the implementation sets Texture::LoadedGuestData::load_done of
+  // the parts it loads once the load has run on the GPU.
+  virtual bool TracksLoadCompletion() const { return false; }
+  static void GpuWriteGlobalWatchCallbackThunk(
+      const global_unique_lock_type& global_lock, void* context,
+      uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);
+  // GPU writes to guest memory (resolves, memory exports), whose bytes reach
+  // guest memory only when the GPU runs them: their count, and for each 4 KB
+  // page of guest memory, the count just after the last one that touched it
+  // (0 if none). It never forgets a write, so a part is distrusted only when
+  // a write really reached one of its pages. Under the global critical
+  // region.
+  uint64_t gpu_write_sequence_ = 0;
+  static constexpr uint32_t kGpuWriteEpochPageShift = 12;
+  std::vector<uint64_t> gpu_write_epochs_;
+  SharedMemory::GlobalWatchHandle gpu_write_global_watch_handle_ = nullptr;
+
   static void ScaledResolveGlobalWatchCallbackThunk(
       const global_unique_lock_type& global_lock, void* context,
       uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);

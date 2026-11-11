@@ -1314,6 +1314,17 @@ bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
   for (MTL::Texture* texture : commands.textures) {
     texture->release();
   }
+  if (encoded && !commands.done_flags.empty()) {
+    auto done_flags = std::make_shared<
+        std::vector<std::shared_ptr<std::atomic<bool>>>>(
+        std::move(commands.done_flags));
+    cmd->addCompletedHandler(^(MTL::CommandBuffer*) {
+      for (const std::shared_ptr<std::atomic<bool>>& done : *done_flags) {
+        done->store(true, std::memory_order_release);
+      }
+    });
+  }
+  commands.done_flags.clear();
   commands.dispatches.clear();
   commands.shared_memory_reads.clear();
   commands.copies.clear();
@@ -2096,6 +2107,12 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
                           (!use_direct_raw || load_ahead) &&
                           !texture_resolution_scaled;
   LoadCommands commands;
+  for (uint32_t part = 0; part < 2; ++part) {
+    if ((part ? load_mips : load_base) &&
+        texture.loaded_guest_data[part].load_done) {
+      commands.done_flags.push_back(texture.loaded_guest_data[part].load_done);
+    }
+  }
   if (!texture_resolution_scaled) {
     for (uint32_t part = 0; part < 2; ++part) {
       if (!(part ? load_mips : load_base) || snapshot_length[part]) {
@@ -2279,6 +2296,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       deferred.textures.insert(deferred.textures.end(),
                                commands.textures.begin(),
                                commands.textures.end());
+      deferred.done_flags.insert(deferred.done_flags.end(),
+                                 commands.done_flags.begin(),
+                                 commands.done_flags.end());
       return true;
     }
     FlushDeferredLoads();

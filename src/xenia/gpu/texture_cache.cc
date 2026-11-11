@@ -14,9 +14,19 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/shared_memory.h"
 
+DEFINE_bool(
+    texture_load_skip_unchanged, true,
+    "Skip reloading a texture that a guest write invalidated without changing "
+    "it: a write watch covers whole host pages (16 KB on Apple platforms), so "
+    "data written every frame next to a texture reloads the texture every "
+    "frame. The guest bytes are hashed once the range is watched again, and "
+    "the reload is skipped when they are the bytes the host texture was "
+    "loaded from. Needs a backend that reports load completion (Metal).",
+    "GPU");
 DEFINE_bool(log_samplers, false,
             "Log the sampler parameters each backend derives from a fetch "
             "constant.",
@@ -144,11 +154,18 @@ TextureCache::TextureCache(const RegisterFile& register_file,
     scaled_resolve_global_watch_handle_ = shared_memory.RegisterGlobalWatch(
         ScaledResolveGlobalWatchCallbackThunk, this);
   }
+  gpu_write_epochs_.resize(SharedMemory::kBufferSize >>
+                           kGpuWriteEpochPageShift);
+  gpu_write_global_watch_handle_ = shared_memory.RegisterGlobalWatch(
+      GpuWriteGlobalWatchCallbackThunk, this);
 }
 
 TextureCache::~TextureCache() {
   DestroyAllTextures(true);
 
+  if (gpu_write_global_watch_handle_) {
+    shared_memory().UnregisterGlobalWatch(gpu_write_global_watch_handle_);
+  }
   if (scaled_resolve_global_watch_handle_) {
     shared_memory().UnregisterGlobalWatch(scaled_resolve_global_watch_handle_);
   }
@@ -708,14 +725,22 @@ bool TextureCache::Texture::MakeUpToDateAndWatch(
   const bool watch_base = base_outdated_;
   const bool watch_mips = mips_outdated_;
   assert_true(global_lock.owns_lock());
-  if (watch_base &&
-      !shared_memory.IsRangeValid(
-          key().base_page << 12, xe::align(GetGuestBaseSize(), UINT32_C(16)))) {
-    return false;
-  }
-  if (watch_mips &&
-      !shared_memory.IsRangeValid(
-          key().mip_page << 12, xe::align(GetGuestMipsSize(), UINT32_C(16)))) {
+  if ((watch_base &&
+       !shared_memory.IsRangeValid(
+           key().base_page << 12,
+           xe::align(GetGuestBaseSize(), UINT32_C(16)))) ||
+      (watch_mips &&
+       !shared_memory.IsRangeValid(
+           key().mip_page << 12,
+           xe::align(GetGuestMipsSize(), UINT32_C(16))))) {
+    // Written since the range was requested: whatever was hashed or loaded
+    // in between is not known to be what the texture holds.
+    if (watch_base) {
+      loaded_guest_data[0].hash_valid = false;
+    }
+    if (watch_mips) {
+      loaded_guest_data[1].hash_valid = false;
+    }
     return false;
   }
 
@@ -769,6 +794,14 @@ void TextureCache::Texture::MarkAsUsed() {
 void TextureCache::Texture::WatchCallback(
     [[maybe_unused]] const global_unique_lock_type& global_lock, bool is_mip,
     bool invalidated_by_gpu) {
+  // The load of the hashed bytes reads guest memory when the GPU runs it:
+  // invalidated before that, it may have read something else. A GPU write
+  // doesn't show in guest memory until the GPU runs it either.
+  LoadedGuestData& loaded = loaded_guest_data[is_mip ? 1 : 0];
+  if (invalidated_by_gpu || !loaded.load_done ||
+      !loaded.load_done->load(std::memory_order_acquire)) {
+    loaded.hash_valid = false;
+  }
   if (is_mip) {
     assert_not_zero(GetGuestMipsSize());
     mips_outdated_ = true;
@@ -960,6 +993,109 @@ uint32_t TextureCache::GetFetchDecodeBits(
   return GetFetchDecode(fetch_constant_index).decode_bits;
 }
 
+void TextureCache::GpuWriteGlobalWatchCallbackThunk(
+    [[maybe_unused]] const global_unique_lock_type& global_lock, void* context,
+    uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu) {
+  if (!invalidated_by_gpu) {
+    return;
+  }
+  TextureCache* texture_cache = reinterpret_cast<TextureCache*>(context);
+  ++texture_cache->gpu_write_sequence_;
+  const uint32_t page_last =
+      std::min(address_last >> kGpuWriteEpochPageShift,
+               uint32_t(texture_cache->gpu_write_epochs_.size() - 1));
+  for (uint32_t page = address_first >> kGpuWriteEpochPageShift;
+       page <= page_last; ++page) {
+    texture_cache->gpu_write_epochs_[page] = texture_cache->gpu_write_sequence_;
+  }
+}
+
+void TextureCache::SkipUnchangedGuestData(Texture& texture, bool& load_base,
+                                          bool& load_mips) {
+  // Why the skip is exact:
+  // - The part's range was requested, so its pages are valid and write
+  //   protected, before it is hashed. A guest write during or after the
+  //   hashing makes the range invalid: MakeUpToDateAndWatch then fails and
+  //   the part stays outdated, or, once the part is watched, its watch fires.
+  // - The stored hash is trusted only if nothing invalidated the part between
+  //   the hashing and the completion of the load on the GPU (the watch
+  //   callback and the MakeUpToDateAndWatch failure path drop it otherwise),
+  //   so the host texture holds exactly the hashed bytes.
+  // - A GPU write to the range is not in guest memory yet when the CPU hashes
+  //   it, so the hash of a part with GPU-written pages, or of a part a GPU
+  //   write overlapped since the stored hash was taken, is never trusted.
+  const TextureKey& key = texture.key();
+  const bool enabled = cvars::texture_load_skip_unchanged &&
+                       TracksLoadCompletion() && !key.scaled_resolve;
+  for (uint32_t part = 0; part < 2; ++part) {
+    bool& load = part ? load_mips : load_base;
+    if (!load) {
+      continue;
+    }
+    Texture::LoadedGuestData& loaded = texture.loaded_guest_data[part];
+    const uint32_t address = (part ? key.mip_page : key.base_page) << 12;
+    // Whole 16-byte fetches of the last blocks, as the range was requested.
+    const uint32_t length = xe::align(
+        part ? texture.GetGuestMipsSize() : texture.GetGuestBaseSize(),
+        UINT32_C(16));
+    // While the part is outdated it has no watch, so only this thread
+    // accesses its record.
+    if (!enabled && !loaded.hash_valid && !loaded.load_done) {
+      continue;
+    }
+    bool hash_valid;
+    bool cpu_data = enabled && length &&
+                    uint64_t(address) + length <= SharedMemory::kBufferSize;
+    {
+      auto global_lock = global_critical_region_.Acquire();
+      hash_valid = loaded.hash_valid;
+      if (cpu_data) {
+        cpu_data = shared_memory().IsRangeValid(address, length, true);
+        // A write that overlapped the part touched one of its pages and left
+        // there a sequence above the one the part was hashed at.
+        const uint32_t page_last =
+            std::min((address + length - 1) >> kGpuWriteEpochPageShift,
+                     uint32_t(gpu_write_epochs_.size() - 1));
+        for (uint32_t page = address >> kGpuWriteEpochPageShift;
+             page <= page_last && hash_valid; ++page) {
+          if (gpu_write_epochs_[page] > loaded.gpu_write_sequence) {
+            hash_valid = false;
+          }
+        }
+        loaded.gpu_write_sequence = gpu_write_sequence_;
+      }
+      if (!cpu_data) {
+        loaded.hash_valid = false;
+        loaded.load_done.reset();
+      }
+    }
+    if (!cpu_data) {
+      continue;
+    }
+    const uint64_t hash = shared_memory().HashGuestRange(address, length);
+    if (hash_valid && loaded.hash == hash) {
+      load = false;
+      continue;
+    }
+    // The part has no watch while it is outdated, so nothing else accesses
+    // this until MakeUpToDateAndWatch.
+    loaded.hash = hash;
+    loaded.hash_valid = true;
+    loaded.load_done = std::make_shared<std::atomic<bool>>(false);
+  }
+}
+
+void TextureCache::LoadFailedForUnchangedSkip(Texture& texture, bool load_base,
+                                              bool load_mips) {
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t part = 0; part < 2; ++part) {
+    if (part ? load_mips : load_base) {
+      texture.loaded_guest_data[part].hash_valid = false;
+      texture.loaded_guest_data[part].load_done.reset();
+    }
+  }
+}
+
 void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
   SCOPE_profile_cpu_f("gpu");
   assert_true(n_textures <= 64);
@@ -1069,11 +1205,17 @@ void TextureCache::LoadTexturesData(Texture** textures, uint32_t n_textures) {
       }
     }
 
-    // Actually load the texture data.
-    if (!LoadTextureDataFromResidentMemoryImpl(
-            texture, (index_base_outdated & (1ULL << i)) != 0,
-            (index_mips_outdated & (1ULL << i)) != 0)) {
-      continue;
+    // Actually load the texture data, unless a guest write only invalidated
+    // it without changing it.
+    bool load_base = (index_base_outdated & (1ULL << i)) != 0;
+    bool load_mips = (index_mips_outdated & (1ULL << i)) != 0;
+    SkipUnchangedGuestData(texture, load_base, load_mips);
+    if (load_base || load_mips) {
+      if (!LoadTextureDataFromResidentMemoryImpl(texture, load_base,
+                                                 load_mips)) {
+        LoadFailedForUnchangedSkip(texture, load_base, load_mips);
+        continue;
+      }
     }
 
     // reque for makeuptodatandwatch
@@ -1164,10 +1306,17 @@ bool TextureCache::LoadTextureData(Texture& texture) {
     }
   }
 
-  // Actually load the texture data.
-  if (!LoadTextureDataFromResidentMemoryImpl(texture, base_outdated,
-                                             mips_outdated)) {
-    return false;
+  // Actually load the texture data, unless a guest write only invalidated it
+  // without changing it.
+  bool load_base = base_outdated;
+  bool load_mips = mips_outdated;
+  SkipUnchangedGuestData(texture, load_base, load_mips);
+  if (load_base || load_mips) {
+    if (!LoadTextureDataFromResidentMemoryImpl(texture, load_base,
+                                               load_mips)) {
+      LoadFailedForUnchangedSkip(texture, load_base, load_mips);
+      return false;
+    }
   }
 
   // Mark the ranges as uploaded and watch them. This is needed for scaled
