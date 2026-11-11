@@ -389,6 +389,19 @@ bool ConstantPropagationPass::Run(HIRBuilder* builder, bool& result) {
             result = true;
           }
           break;
+        case OPCODE_IS_UNORDERED:
+          if (i->src1.value->IsConstant() && i->src2.value->IsConstant()) {
+            const bool unordered =
+                i->src1.value->type == FLOAT32_TYPE
+                    ? std::isnan(i->src1.value->constant.f32) ||
+                          std::isnan(i->src2.value->constant.f32)
+                    : std::isnan(i->src1.value->constant.f64) ||
+                          std::isnan(i->src2.value->constant.f64);
+            v->set_constant(uint8_t(unordered ? 1 : 0));
+            i->UnlinkAndNOP();
+            result = true;
+          }
+          break;
         case OPCODE_VECTOR_ALL_SET:
         case OPCODE_VECTOR_NONE_SET:
           if (i->src1.value->IsConstant()) {

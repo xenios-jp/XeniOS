@@ -20,6 +20,9 @@ struct MachineInfo {
   bool supports_extended_load_store;
   // Acts on DELAY_EXECUTION_INJECTED (SpinWaitInjectionPass).
   bool supports_spin_wait_release;
+  // COMPARE_EQ, COMPARE_SLT and COMPARE_SGT of floats are false when either
+  // operand is a NaN, and IS_UNORDERED is implemented.
+  bool supports_ordered_float_compare;
 
   struct RegisterSet {
     enum Types {

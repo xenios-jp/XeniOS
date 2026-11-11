@@ -21,6 +21,8 @@ DECLARE_bool(fold_single_round_trip);
 
 DECLARE_bool(fpscr_summary_byte);
 
+DECLARE_bool(fcmp_ordered_compares);
+
 DECLARE_bool(disassemble_functions);
 
 DECLARE_bool(no_round_to_single);
