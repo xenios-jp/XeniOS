@@ -20,6 +20,11 @@
 #include "xenia/base/system.h"
 #include "xenia/base/utf8.h"
 
+#if !XE_PLATFORM_WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace utfcpp = utf8;
 
 using u8_citer = utfcpp::iterator<std::string_view::const_iterator>;
@@ -92,6 +97,17 @@ void ParseLaunchArguments(int& argc, char**& argv,
       }
     }
   } catch (const cxxopts::exceptions::exception& e) {
+#if !XE_PLATFORM_WIN32
+    // Started by a script (stderr is a file or a pipe, not a terminal and not
+    // the null device a desktop launch gets): say what was wrong there and
+    // fail, rather than raising a dialog nobody is watching.
+    struct stat stderr_stat;
+    if (!isatty(STDERR_FILENO) && !fstat(STDERR_FILENO, &stderr_stat) &&
+        (S_ISREG(stderr_stat.st_mode) || S_ISFIFO(stderr_stat.st_mode))) {
+      std::cerr << "Invalid launch options: " << e.what() << std::endl;
+      exit(1);
+    }
+#endif
     xe::AttachConsole();
     if (xe::has_console_attached()) {
       std::cout << e.what() << std::endl;
