@@ -2940,6 +2940,15 @@ bool MetalCommandProcessor::FaultCopyResolveToGuestRam(
   if (owner_it != resolve_owners_.end()) {
     submission = std::min(submission, owner_it->second.submission);
   }
+  // Export output is never submitted ahead.
+  bool adaptive = owner_it != resolve_owners_.end() &&
+                  !IsMemexportWatchPage(ranges.front().first);
+  if (completed_command_buffers_.load(std::memory_order_acquire) >=
+      submission) {
+    if (adaptive) {
+      AdaptiveNoteAccess(owner_it->first, owner_it->second.submission, false,
+                         0);
+    }
     return true;
   }
   // Not the GPU thread's AwaitSubmissionCompletion: this may be any thread,
@@ -2959,6 +2968,10 @@ bool MetalCommandProcessor::FaultCopyResolveToGuestRam(
       uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                    std::chrono::steady_clock::now() - wait_start)
                    .count());
+  if (adaptive) {
+    AdaptiveNoteAccess(owner_it->first, owner_it->second.submission, true,
+                       wait_ns);
+  }
   if (!completed) {
     uint32_t hits =
         resolve_fault_bound_hits_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -2994,6 +3007,207 @@ int MetalCommandProcessor::ResolveOwnerStateAt(uint32_t physical_address,
       std::memory_order_relaxed);
   if (!owner_key) {
     return 0;
+  }
+  std::lock_guard<std::mutex> lock(resolve_read_mutex_);
+  auto owner_it = resolve_owners_.find(owner_key);
+  if (owner_it == resolve_owners_.end() || !owner_it->second.copyable) {
+    return 0;
+  }
+  const ResolveOwner& owner = owner_it->second;
+  if (owner.submission > GetResolveSubmittedThrough()) {
+    // rearm_pending: an earlier callback of this or another fault counted it.
+    if (note_read && !owner.in_guest_ram && !owner.rearm_pending) {
+      // The read goes ahead with what guest RAM holds; the command processor
+      // thread submits the resolve at its next draw (SubmitWantedResolve).
+      resolve_submit_wanted_.store(true, std::memory_order_relaxed);
+      if (!IsMemexportWatchPage(physical_address)) {
+        AdaptivePromote(owner_key, kAdaptiveUnsubmittedCredit);
+      }
+    }
+    return 1;
+  }
+  return owner.submission >
+                 completed_command_buffers_.load(std::memory_order_acquire)
+             ? 2
+             : 3;
+}
+
+void MetalCommandProcessor::SubmitWantedResolve() {
+  if (!resolve_unsubmitted_owner_) {
+    resolve_submit_wanted_.store(false, std::memory_order_relaxed);
+    return;
+  }
+  // Strip merging keeps its passes in one command buffer; asked again at the
+  // next draw.
+  if (strip_merge_.recording()) {
+    return;
+  }
+  resolve_submit_wanted_.store(false, std::memory_order_relaxed);
+  EndResolveSubmission();
+}
+
+void MetalCommandProcessor::AdaptivePromote(uint64_t resolve_key,
+                                            uint32_t credit) {
+  auto it = adaptive_destinations_.find(resolve_key);
+  if (it == adaptive_destinations_.end()) {
+    if (adaptive_destinations_.size() >= kMaxAdaptiveDestinations) {
+      adaptive_destinations_.clear();
+    }
+    it = adaptive_destinations_.emplace(resolve_key, AdaptiveDestination())
+             .first;
+  }
+  it->second.credit = std::max(it->second.credit, credit);
+}
+
+void MetalCommandProcessor::AdaptiveNoteAccess(uint64_t resolve_key,
+                                               uint64_t owner_submission,
+                                               bool waited,
+                                               uint64_t waited_ns) {
+  auto it = adaptive_destinations_.find(resolve_key);
+  if (it == adaptive_destinations_.end() ||
+      it->second.early_submission != owner_submission) {
+    // Submitted lazily.
+    if (waited && waited_ns >= kAdaptiveMinWaitNs) {
+      AdaptivePromote(
+          resolve_key,
+          uint32_t(std::min(uint64_t(kAdaptiveMaxCredit),
+                            std::max(uint64_t(2),
+                                     waited_ns / kAdaptiveSubmitCostNs))));
+    }
+    return;
+  }
+  // Submitted early: would the access have waited for a lazy submission?
+  AdaptiveDestination& destination = it->second;
+  destination.early_submission = 0;
+  bool used = waited;
+  if (!used) {
+    size_t slot = size_t(owner_submission & (kAdaptiveRingSize - 1));
+    if (adaptive_sync_submission_[slot].load(std::memory_order_acquire) !=
+        owner_submission) {
+      // No guest sync point would have submitted it yet.
+      used = true;
+    } else {
+      // A lazy submission would have been committed at the sync point and
+      // could not have completed sooner than its GPU time after that.
+      uint64_t lazy_done_ns =
+          adaptive_sync_ns_[slot].load(std::memory_order_relaxed);
+      if (adaptive_gpu_submission_[slot].load(std::memory_order_acquire) ==
+          owner_submission) {
+        lazy_done_ns += adaptive_gpu_ns_[slot].load(std::memory_order_relaxed);
+      }
+      used = uint64_t(GetSteadyTimeNs()) < lazy_done_ns;
+    }
+  }
+  if (used) {
+    if (waited) {
+    }
+    destination.credit = std::max(destination.credit, kAdaptiveUsedCredit);
+    return;
+  }
+  if (destination.credit <= 1) {
+    adaptive_destinations_.erase(it);
+  } else {
+    --destination.credit;
+  }
+}
+
+bool MetalCommandProcessor::AdaptiveResolveSubmitsEarly(uint64_t resolve_key) {
+  {
+    std::lock_guard<std::mutex> lock(resolve_read_mutex_);
+    auto it = adaptive_destinations_.find(resolve_key);
+    if (it == adaptive_destinations_.end()) {
+      return false;
+    }
+    AdaptiveDestination& destination = it->second;
+    if (destination.early_submission) {
+      // Resolved again with no access of the last output.
+      destination.early_submission = 0;
+      if (destination.credit <= 1) {
+        adaptive_destinations_.erase(it);
+        return false;
+      }
+      --destination.credit;
+    }
+    adaptive_early_frame_ = resolve_frame_index_;
+    // Strip merging keeps its passes in one command buffer.
+    if (strip_merge_.recording() || !current_command_buffer_) {
+      return false;
+    }
+    destination.early_submission = submission_current_;
+  }
+  adaptive_awaiting_sync_.push_back(submission_current_);
+  return true;
+}
+
+void MetalCommandProcessor::OnResolveGuestSync() {
+  if (adaptive_awaiting_sync_.empty()) {
+    return;
+  }
+  uint64_t now_ns = uint64_t(GetSteadyTimeNs());
+  for (uint64_t submission : adaptive_awaiting_sync_) {
+    size_t slot = size_t(submission & (kAdaptiveRingSize - 1));
+    adaptive_sync_ns_[slot].store(now_ns, std::memory_order_relaxed);
+    adaptive_sync_submission_[slot].store(submission,
+                                          std::memory_order_release);
+  }
+  adaptive_awaiting_sync_.clear();
+}
+
+void MetalCommandProcessor::SubmitResolvesAtGpuFence() {
+  if (!resolve_unsubmitted_owner_ || !current_command_buffer_ ||
+      !ResolveReadWatchActive()) {
+    return;
+  }
+  // Worth it only while an access of resolve output waits for the GPU (an
+  // early destination was resolved this frame or the last), and while the GPU
+  // has been running dry at these points.
+  bool submit = adaptive_early_frame_ != UINT32_MAX &&
+                resolve_frame_index_ - adaptive_early_frame_ <= 1 &&
+                adaptive_fence_score_ >= kAdaptiveFenceScoreSubmit &&
+                !strip_merge_.recording();
+  if (!submit) {
+    // One test per command buffer.
+    if (!adaptive_fence_tests_.empty() &&
+        adaptive_fence_tests_.back().submission == submission_current_) {
+      return;
+    }
+    adaptive_fence_tests_.push_back(
+        {submission_current_, submission_current_ - 1, false});
+    return;
+  }
+  if (current_render_encoder_) {
+  }
+  // Judged when the next command buffer ends, which is when this one's work
+  // would have been submitted.
+  adaptive_fence_tests_.push_back(
+      {submission_current_ + 1, submission_current_ - 1, true});
+  EndResolveSubmission();
+}
+
+void MetalCommandProcessor::AdaptiveJudgeFenceTests() {
+  uint64_t completed = completed_command_buffers_.load(std::memory_order_acquire);
+  size_t kept = 0;
+  for (const AdaptiveFenceTest& test : adaptive_fence_tests_) {
+    if (test.submission > submission_current_) {
+      adaptive_fence_tests_[kept++] = test;
+      continue;
+    }
+    bool dry = completed >= test.prior_submission;
+    if (dry) {
+      // A dry GPU loses the time to the next submission; a submit it didn't
+      // need costs one command buffer. So one dry point outweighs two that
+      // weren't.
+      adaptive_fence_score_ =
+          std::min(adaptive_fence_score_ + 2, kAdaptiveFenceScoreMax);
+    } else {
+      if (test.submitted) {
+      }
+      adaptive_fence_score_ -= adaptive_fence_score_ ? 1 : 0;
+    }
+  }
+  adaptive_fence_tests_.resize(kept);
+}
+
 void MetalCommandProcessor::ResolveReadCallbackThunk(
     void* context, uint32_t physical_address, uint32_t length,
     Memory::PhysicalAccess access) {
@@ -3136,6 +3350,9 @@ void MetalCommandProcessor::ShutdownContext() {
   // Nothing is in flight now, so no fault can still be waiting for a
   // submission.
   ResetResolveReadWatch();
+  adaptive_destinations_.clear();
+  adaptive_awaiting_sync_.clear();
+  adaptive_fence_tests_.clear();
 
   if (uint64_t failed =
           failed_command_buffers_.load(std::memory_order_relaxed)) {
@@ -4642,6 +4859,11 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   // VIZ surveys aren't measured on Metal yet, so every ID stays visible.
   OnVIZSurveyDraw(false);
+
+  // A CPU read arrived before the submission of the resolve it reads.
+  if (resolve_submit_wanted_.load(std::memory_order_relaxed)) {
+    SubmitWantedResolve();
+  }
 
   // Check for copy mode
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
@@ -7597,7 +7819,18 @@ MTL::CommandBuffer* MetalCommandProcessor::EnsureCommandBuffer() {
   AddGpuTimeHandler(current_command_buffer_);
   pending_completion_handlers_.fetch_add(1, std::memory_order_relaxed);
   current_command_buffer_->addCompletedHandler(
-      [this](MTL::CommandBuffer* command_buffer) {
+      [this, submission = submission_current_](
+          MTL::CommandBuffer* command_buffer) {
+        // For the adaptive early submit, before the submission counts as
+        // complete.
+        double gpu_time = command_buffer->GPUEndTime() -
+                          command_buffer->GPUStartTime();
+        size_t adaptive_slot = size_t(submission & (kAdaptiveRingSize - 1));
+        adaptive_gpu_ns_[adaptive_slot].store(
+            gpu_time > 0.0 ? uint64_t(gpu_time * 1e9) : 0,
+            std::memory_order_relaxed);
+        adaptive_gpu_submission_[adaptive_slot].store(
+            submission, std::memory_order_release);
         {
           std::lock_guard<std::mutex> lock(completion_mutex_);
           completed_command_buffers_.fetch_add(1, std::memory_order_release);
@@ -8796,6 +9029,9 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     }
     ScheduleSpirvUniformBufferRelease(current_command_buffer_);
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
+    if (!adaptive_fence_tests_.empty()) {
+      AdaptiveJudgeFenceTests();
+    }
     current_command_buffer_->commit();
     current_command_buffer_->release();
     current_command_buffer_ = nullptr;

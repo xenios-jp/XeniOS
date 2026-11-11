@@ -419,6 +419,7 @@ void OnResolveSubmissionEnded() {
 // Before the guest can learn the GPU got past a resolve, the resolve has to be
 // submitted, so ProvideResolveOutput can copy its output from the fault.
 void SubmitResolvesForGuestSync() override {
+  OnResolveGuestSync();
   if (resolve_unsubmitted_owner_) {
     EndResolveSubmission();
   }
@@ -563,6 +564,9 @@ void InitResolveReadWatch() {
 
 // Unregisters the read callback and drops all tracking. Called from each
 // backend's ShutdownContext.
+// TODO(xenios-jp): a fault callback on another thread may still be inside
+// MarkResolvePagesRead when the owner array is freed, unless unregistering
+// waits for callbacks in flight (not checked).
 void ResetResolveReadWatch() {
   if (resolve_read_callback_) {
     memory_->UnregisterPhysicalMemoryReadCallback(resolve_read_callback_);
