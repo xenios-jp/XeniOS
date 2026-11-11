@@ -63,6 +63,13 @@ DEFINE_bool(a64_enable_host_guest_stack_synchronization, true,
             "impact, but fixes crashes in games that use setjmp/longjmp.",
             "a64");
 
+DEFINE_bool(a64_vmx_nan_fixup_in_tail, true,
+            "Test the result of a VMX float add, subtract, multiply or divide "
+            "for a NaN and apply PowerPC's NaN operand order in the function "
+            "tail, instead of applying it to every result. Same results, "
+            "fewer instructions; only where FPCR.FZ flushes denormal inputs.",
+            "a64");
+
 DECLARE_bool(record_mmio_access_exceptions);
 
 namespace xe {
