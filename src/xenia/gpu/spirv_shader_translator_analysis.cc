@@ -39,6 +39,20 @@ struct FiniteValues {
     }
     previous_scalar |= other.previous_scalar;
   }
+  // Joins this state into target, returning whether target gained a reason.
+  bool JoinInto(FiniteValues& target) const {
+    uint64_t gained = 0;
+    for (uint32_t reg = 0; reg < xenos::kMaxShaderTempRegisters; ++reg) {
+      for (uint32_t component = 0; component < 4; ++component) {
+        uint64_t& value = target.registers[reg][component];
+        gained |= registers[reg][component] & ~value;
+        value |= registers[reg][component];
+      }
+    }
+    gained |= previous_scalar & ~target.previous_scalar;
+    target.previous_scalar |= previous_scalar;
+    return gained != 0;
+  }
   void Read(const InstructionOperand& operand, uint64_t* out) const {
     for (uint32_t i = 0; i < 4; ++i) {
       out[i] = kUnknown;
@@ -102,37 +116,70 @@ struct FiniteValues {
   }
 };
 
+bool VertexFormatIsFinite(xenos::VertexFormat format) {
+  switch (format) {
     case xenos::VertexFormat::k_8_8_8_8:
     case xenos::VertexFormat::k_2_10_10_10:
     case xenos::VertexFormat::k_10_11_11:
     case xenos::VertexFormat::k_11_11_10:
     case xenos::VertexFormat::k_16_16:
     case xenos::VertexFormat::k_16_16_16_16:
+    case xenos::VertexFormat::k_32:
+    case xenos::VertexFormat::k_32_32:
+    case xenos::VertexFormat::k_32_32_32_32:
+      return true;
+    default:
+      return false;
+  }
+}
+
 uint64_t Any(const uint64_t* reasons) {
   return reasons[0] | reasons[1] | reasons[2] | reasons[3];
 }
 
-}  // namespace
-
-void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
-    const Shader& shader, FiniteMultiplyAnalysis& analysis) {
+// One pass in program order. label_states holds the state on entry to each
+// label, and gains the states of the edges into it found by this pass. Returns
+// whether any label gained a reason.
+bool AnalyzeFiniteMultiplicationsPass(
+    const Shader& shader, Translator::FiniteMultiplyAnalysis& analysis,
+    std::map<uint32_t, FiniteValues>& label_states, bool one_sided,
+    bool join_control_flow, bool give_up) {
   const auto& words = shader.ucode_data();
-  analysis.operands.assign(words.size() / 3, FiniteMultiplyOperands());
+  analysis.operands.assign(words.size() / 3,
+                           Translator::FiniteMultiplyOperands());
   analysis.dynamic_inputs = 0;
   std::fill(std::begin(analysis.direct_constants),
             std::end(analysis.direct_constants), 0);
   FiniteValues state;
+  // A product needs the flags of both operands, or with one_sided, of either
+  // operand proven finite.
   auto pair = [&](uint64_t a, uint64_t b) {
-    uint64_t reasons = a | b;
-    if (!(reasons & kUnknown)) {
-      analysis.dynamic_inputs |= reasons;
+    if (!one_sided) {
+      a |= b;
+      b = a;
+    }
+    for (uint64_t reasons : {a, b}) {
+      if (!(reasons & kUnknown)) {
+        analysis.dynamic_inputs |= reasons;
+      }
     }
   };
-  const auto& labels = shader.label_addresses();
+  bool label_states_changed = false;
+  auto add_edge = [&](uint32_t target) {
+    auto it = label_states.find(target);
+    if (!give_up && it != label_states.end() && state.JoinInto(it->second)) {
+      label_states_changed = true;
+    }
+  };
   for (uint32_t cf_index = 0; cf_index < shader.cf_pair_index_bound() * 2;
        ++cf_index) {
-    if (labels.count(cf_index) != 0) {
-      state.Reset();
+    auto label_it = label_states.find(cf_index);
+    if (label_it != label_states.end()) {
+      if (!join_control_flow || give_up) {
+        state.Reset();
+      } else {
+        state.Join(label_it->second);
+      }
     }
     ucode::ControlFlowInstruction packed[2];
     ucode::UnpackControlFlowInstructions(words.data() + (cf_index / 2) * 3,
@@ -155,7 +202,37 @@ void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
         ParseControlFlowCondExecPred(cf.cond_exec_pred, cf_index, exec);
         break;
       default:
-        // No proof survives a jump, loop, call, return or unsupported CF op.
+        // Without join_control_flow, no proof survives a jump, loop, call,
+        // return or unsupported CF op.
+        if (join_control_flow) {
+          switch (cf.opcode()) {
+            case ucode::ControlFlowOpcode::kNop:
+            case ucode::ControlFlowOpcode::kAlloc:
+            case ucode::ControlFlowOpcode::kMarkVsFetchDone:
+              // No register is written.
+              continue;
+            case ucode::ControlFlowOpcode::kCondJmp:
+              // The fallthrough is joined too, even past an unconditional
+              // jump.
+              add_edge(cf.cond_jmp.address());
+              continue;
+            case ucode::ControlFlowOpcode::kLoopStart:
+              // The loop skip address.
+              add_edge(cf.loop_start.address());
+              continue;
+            case ucode::ControlFlowOpcode::kLoopEnd:
+              // The loop body address.
+              add_edge(cf.loop_end.address());
+              continue;
+            case ucode::ControlFlowOpcode::kCondCall:
+              // The subroutine may write any register before returning here.
+              add_edge(cf.cond_call.address());
+              break;
+            default:
+              // No proof survives a return or an unsupported CF op.
+              break;
+          }
+        }
         state.Reset();
         continue;
     }
@@ -182,6 +259,12 @@ void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
                                           parsed)) {
             previous_full = fetch.vertex_fetch();
           }
+          if (one_sided &&
+              VertexFormatIsFinite(parsed.attributes.data_format)) {
+            // Integers converted to float, normalized and scaled by at most
+            // 2^31, or 0 out of bounds.
+            std::fill(std::begin(reasons), std::end(reasons), 0);
+          }
           state.Write(parsed.result, reasons,
                       conditional || parsed.is_predicated);
         } else {
@@ -190,7 +273,7 @@ void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
           if (parsed.opcode == ucode::FetchOpcode::kTextureFetch &&
               parsed.operands[1].storage_index < 32) {
             std::fill(std::begin(reasons), std::end(reasons),
-                      UINT64_C(1) << (kFiniteMultiplyTextureShift +
+                      UINT64_C(1) << (Translator::kFiniteMultiplyTextureShift +
                                       parsed.operands[1].storage_index));
           }
           state.Write(parsed.result, reasons,
@@ -212,7 +295,7 @@ void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
               UINT64_C(1) << (operand.storage_index & 63);
         }
       };
-      FiniteMultiplyOperands inputs;
+      Translator::FiniteMultiplyOperands inputs;
       for (uint32_t j = 0; j < instr.vector_operand_count; ++j) {
         state.Read(instr.vector_operands[j], inputs.vector[j]);
         record_constant(instr.vector_operands[j]);
@@ -340,6 +423,40 @@ void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
       state.Join(before_exec);
     }
   }
+  return label_states_changed;
+}
+
+}  // namespace
+
+void SpirvShaderTranslator::AnalyzeFiniteMultiplications(
+    const Shader& shader, FiniteMultiplyAnalysis& analysis, bool one_sided,
+    bool join_control_flow) {
+  // The state at each label joins every edge into it: the fallthrough, and the
+  // jumps, loop ends, loop skips and calls targeting it. Edges from later in
+  // the program are only known after a pass, so passes repeat until no label
+  // gains a reason. States only gain reasons, so this terminates; past the cap,
+  // a last pass treats every label as unknown. Without join_control_flow, the
+  // only pass does that.
+  constexpr uint32_t kMaxPasses = 32;
+  std::map<uint32_t, FiniteValues> label_states;
+  for (uint32_t label : shader.label_addresses()) {
+    // No edge seen yet: empty, the identity of the join.
+    FiniteValues& entry = label_states[label];
+    for (auto& reg : entry.registers) {
+      std::fill(std::begin(reg), std::end(reg), 0);
+    }
+    entry.previous_scalar = 0;
+  }
+  for (uint32_t pass = 0;; ++pass) {
+    bool give_up = !join_control_flow || pass >= kMaxPasses;
+    if (!AnalyzeFiniteMultiplicationsPass(shader, analysis, label_states,
+                                          one_sided, join_control_flow,
+                                          give_up) ||
+        give_up) {
+      break;
+    }
+  }
+}
 
 namespace {
 using DrawExact = Translator::DrawExactAnalysis;
