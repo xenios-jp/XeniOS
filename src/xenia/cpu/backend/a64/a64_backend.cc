@@ -74,6 +74,12 @@ DEFINE_bool(a64_stfs_skip_quiet_test, true,
             "stored value can never be a signalling NaN, such as the result "
             "of arithmetic. Same results.",
             "a64");
+DEFINE_bool(a64_lfs_exponent_test, true,
+            "lfs while the FPCR holds a VMX mode: send every single with a "
+            "zero exponent field to the tail, which tells a zero from a "
+            "denormal, instead of telling them apart before every load. Same "
+            "results.",
+            "a64");
 DEFINE_bool(a64_vmx_nan_fixup_in_tail, true,
             "Test the result of a VMX float add, subtract, multiply or divide "
             "for a NaN and apply PowerPC's NaN operand order in the function "

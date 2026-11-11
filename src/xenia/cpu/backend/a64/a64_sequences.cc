@@ -5377,11 +5377,42 @@ struct UNPACK_SINGLE
       e.ChangeFpcrMode(FPCRMode::Fpu);
       e.mov(e.w0, static_cast<uint64_t>(i.src1.constant()));
     } else if (e.fpcr_mode() != FPCRMode::Fpu) {
-      BranchIfDenormalSingle(
-          e, src, AddFpuModeTail(e, done, [src, dest](A64Emitter& e) {
-            e.fmov(SReg(dest.getIdx()), src);
-            e.fcvt(dest, SReg(dest.getIdx()));
-          }));
+      if (cvars::a64_lfs_exponent_test) {
+        // Only a single with a zero exponent field, a zero or a denormal,
+        // can widen differently here than in the Fpu mode, so that field is
+        // all the inline test reads. The tail widens a zero where it is, as
+        // every mode does the same, and a denormal in the Fpu mode.
+        // TODO(xenios-jp): one compare of the widened value with zero would
+        // also cover the NaN test, but it misses a denormal that this mode
+        // widens exactly and the Fpu mode flushes (FPSCR.NI set, VSCR.NJ
+        // clear), so it is not exact as it stands.
+        auto& zero_exponent = e.AddToTail(
+            [src, dest, &done](A64Emitter& e, Xbyak_aarch64::Label&) {
+              Xbyak_aarch64::Label denormal;
+              e.lsl(e.w17, src, 1);
+              e.cbnz(e.w17, denormal);
+              e.fmov(SReg(dest.getIdx()), src);
+              e.fcvt(dest, SReg(dest.getIdx()));
+              e.b(done);
+              e.L(denormal);
+              e.mrs(e.x17, 3, 3, 4, 4, 0);  // mrs x17, FPCR
+              e.ldr(e.w0,
+                    e.BackendCtxPtr(offsetof(A64BackendContext, fpcr_fpu)));
+              e.msr(3, 3, 4, 4, 0, e.x0);  // msr FPCR, x0
+              e.fmov(SReg(dest.getIdx()), src);
+              e.fcvt(dest, SReg(dest.getIdx()));
+              e.msr(3, 3, 4, 4, 0, e.x17);  // msr FPCR, x17
+              e.b(done);
+            });
+        e.tst(src, uint64_t(0x7F800000));
+        e.b(EQ, zero_exponent);
+      } else {
+        BranchIfDenormalSingle(
+            e, src, AddFpuModeTail(e, done, [src, dest](A64Emitter& e) {
+              e.fmov(SReg(dest.getIdx()), src);
+              e.fcvt(dest, SReg(dest.getIdx()));
+            }));
+      }
     }
     e.fmov(SReg(dest.getIdx()), src);
     e.fcvt(dest, SReg(dest.getIdx()));
