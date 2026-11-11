@@ -1488,7 +1488,8 @@ bool MetalCommandProcessor::UsesVertexFetchStateFunctionConstants(
              SpirvShaderTranslator::Modification(translation->modification())
                  .vertex.host_vertex_shader_type) &&
          (!translation->shader().vertex_bindings().empty() ||
-          UsesPixelFetchStateFunctionConstants(translation));
+          UsesPixelFetchStateFunctionConstants(translation) ||
+          GetDrawExactAnalysis(translation->shader()).flag_count);
 }
 
 bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
@@ -1528,6 +1529,68 @@ MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
   finite_multiply_last_shader_[last_index] = &shader;
   finite_multiply_last_info_[last_index] = &found->second;
   return found->second;
+}
+
+const SpirvShaderTranslator::DrawExactAnalysis&
+MetalCommandProcessor::GetDrawExactAnalysis(const Shader& shader) const {
+  if (draw_exact_last_shader_ == &shader) {
+    return *draw_exact_last_analysis_;
+  }
+  auto found = draw_exact_analyses_.find(&shader);
+  if (found == draw_exact_analyses_.end()) {
+    SpirvShaderTranslator::DrawExactAnalysis analysis;
+    // The same conditions as in the translator.
+    if (spirv_translator_features_.optimize_finite_multiplication &&
+        spirv_translator_features_.fetch_state_function_constants &&
+        shader.type() == xenos::ShaderType::kVertex &&
+        cvars::alu_round_toward_zero &&
+        !spirv_translator_features_.rounding_mode_rtz_float32 &&
+        cvars::alu_rtz_draw_exact) {
+      SpirvShaderTranslator::AnalyzeDrawExactness(shader, analysis);
+    }
+    found = draw_exact_analyses_.emplace(&shader, std::move(analysis)).first;
+  }
+  draw_exact_last_shader_ = &shader;
+  draw_exact_last_analysis_ = &found->second;
+  return found->second;
+}
+
+void MetalCommandProcessor::UpdateDrawExactness(
+    const Shader& vertex_shader,
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result) {
+  draw_exact_shader_ = &vertex_shader;
+  draw_exact_flags_ = 0;
+  const auto& analysis = GetDrawExactAnalysis(vertex_shader);
+  if (!analysis.flag_count) {
+    std::memset(draw_exact_estimates_, 0, sizeof(draw_exact_estimates_));
+    return;
+  }
+  const RegisterFile& regs = *register_file_;
+  // r0.x is the guest vertex index plus the base where the vertex shader runs
+  // once for a guest vertex. Automatic indices are below the vertex count, and
+  // only 16-bit ones from an index buffer are known to be small.
+  double vertex_index_bound = -1.0;
+  if (analysis.uses_vertex_index &&
+      (primitive_processing_result.host_vertex_shader_type ==
+           Shader::HostVertexShaderType::kVertex ||
+       primitive_processing_result.host_vertex_shader_type ==
+           Shader::HostVertexShaderType::kMemExportCompute)) {
+    auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+    double base =
+        std::abs(double(int32_t(regs.Get<reg::VGT_INDX_OFFSET>().indx_offset)));
+    if (vgt_draw_initiator.source_select == xenos::SourceSelect::kAutoIndex) {
+      vertex_index_bound =
+          base +
+          double(std::max(primitive_processing_result.guest_draw_vertex_count,
+                          primitive_processing_result.host_draw_vertex_count));
+    } else if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA &&
+               vgt_draw_initiator.index_size == xenos::IndexFormat::kInt16) {
+      vertex_index_bound = base + 65535.0;
+    }
+  }
+  draw_exact_flags_ = SpirvShaderTranslator::EvaluateDrawExactness(
+      analysis, &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X],
+      vertex_index_bound, draw_exact_estimates_);
 }
 
 uint64_t MetalCommandProcessor::GetFiniteMultiplyRequirements(
@@ -5199,6 +5262,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (!primitive_processing_result.host_draw_vertex_count) {
     return true;
   }
+  UpdateDrawExactness(*vertex_shader, primitive_processing_result);
   if (primitive_processing_result.host_vertex_shader_type ==
       Shader::HostVertexShaderType::kMemExportCompute) {
     primitive_processing_result.host_vertex_shader_type =
@@ -10110,6 +10174,15 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     if (spirv_translator_features_.optimize_finite_multiplication) {
       GetFiniteMultiplyState(vertex_translation, regs,
                              description.vertex_finite_multiply_state);
+      // Bit 0 is whether a float constant is not finite, the rest are the
+      // DrawExactAnalysis flags.
+      description.vertex_finite_multiply_state[1] &= 1;
+      if (draw_exact_shader_ == &vertex_translation->shader() &&
+          !Shader::IsHostVertexShaderTypeDomain(
+              SpirvShaderTranslator::Modification(
+                  vertex_translation->modification())
+                  .vertex.host_vertex_shader_type)) {
+      }
     }
   }
   if (request.fragment_fetch_states_specialized) {
@@ -10625,6 +10698,9 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
       regs[XE_GPU_REG_VGT_MIN_VTX_INDX];
   spirv_system_constants_.tessellation_vertex_index_min_max[1] =
       regs[XE_GPU_REG_VGT_MAX_VTX_INDX];
+
+  std::memcpy(spirv_system_constants_.draw_exact_estimates,
+              draw_exact_estimates_, sizeof(draw_exact_estimates_));
 
   // The system constants version bump covers clip planes and tessellation,
   // which live in the same struct.

@@ -477,6 +477,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // 0 when it's in the viewport.
     float param_gen_window_offset[2];
     uint32_t param_gen_window_offset_padding[2];
+
+    // Scalar estimates of the draw's float constants that the vertex shader
+    // would otherwise compute for every vertex (see DrawExactAnalysis).
+    float draw_exact_estimates[4];
   };
 
   // xenos_draw.glsli reads these tessellation fields from the system constants
@@ -611,6 +615,75 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // boundaries. Arithmetic is never assumed immune to finite-input overflow.
   static void AnalyzeFiniteMultiplications(const Shader& shader,
                                            FiniteMultiplyAnalysis& analysis);
+
+  // Rounding-sensitive vertex shader sums and products with nothing to round,
+  // and estimates of constant operands. The values traced are float constants,
+  // the vertex index, small integer vertex data and the sums, products, floors
+  // and estimates of these. Whether a sum or a product of them is exact, and
+  // what an estimate of a constant is, is only known in the draw, so each
+  // gets a flag evaluated on the CPU, and a folded estimate a value.
+  struct DrawExactAnalysis {
+    enum class Op : uint8_t {
+      kUnknown,
+      kZero,
+      kOne,
+      // a = float constant index, b = component.
+      kConstant,
+      kVertexIndex,
+      // An integer of at most a bits.
+      kInteger,
+      kNegate,
+      kAbsolute,
+      kAdd,
+      kMultiply,
+      kFloor,
+      kTruncate,
+      kMinMax,
+      // The operand minus its floor.
+      kFraction,
+      // b = ScalarEstimateOp.
+      kEstimate,
+    };
+    static constexpr uint8_t kNoFlag = 0xFF;
+    static constexpr uint32_t kMaxFlags = 31;
+    static constexpr uint32_t kMaxEstimates = 4;
+    static constexpr uint32_t kMaxNodes = 192;
+    struct Node {
+      Op op = Op::kUnknown;
+      // Bit of the flags set when the sum or the product is exact, or the
+      // estimate is folded.
+      uint8_t flag = kNoFlag;
+      // For a flagged estimate, its index in the folded values.
+      uint8_t estimate = 0;
+      uint16_t a = 0;
+      uint16_t b = 0;
+    };
+    // Flags of the sites of one ALU instruction.
+    struct Sites {
+      uint8_t vector_multiply[4] = {kNoFlag, kNoFlag, kNoFlag, kNoFlag};
+      uint8_t vector_add[4] = {kNoFlag, kNoFlag, kNoFlag, kNoFlag};
+      uint8_t scalar = kNoFlag;
+      uint8_t estimate = kNoFlag;
+      uint8_t estimate_index = 0;
+    };
+    // Operands precede their users.
+    std::vector<Node> nodes;
+    // By instruction address, empty if there are no flags.
+    std::vector<Sites> sites;
+    uint32_t flag_count = 0;
+    uint32_t estimate_count = 0;
+    bool uses_vertex_index = false;
+  };
+  static void AnalyzeDrawExactness(const Shader& shader,
+                                   DrawExactAnalysis& analysis);
+  // float_constants are the 256 vertex shader constants of the draw.
+  // vertex_index_bound is the largest magnitude r0.x may have as the guest
+  // vertex index, negative if it's not known or r0 isn't the index. Returns
+  // the flags, and writes kMaxEstimates folded estimates.
+  static uint32_t EvaluateDrawExactness(const DrawExactAnalysis& analysis,
+                                        const uint32_t* float_constants,
+                                        double vertex_index_bound,
+                                        float* estimates_out);
 
   struct Features {
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
@@ -1056,6 +1129,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // rounding-sensitive vertex shader results, and the host's elsewhere where
   // the extra instructions cost too much.
   spv::Id ScalarEstimate(ScalarEstimateOp op, spv::Id value);
+  // Whether the draw sets flag bits of DrawExactAnalysis, as a boolean or a
+  // boolean vector of the used components, or spv::NoResult if none of the
+  // components has a flag.
+  spv::Id DrawExactCondition(const uint8_t* flags, uint32_t used_components);
   // Whether alu_round_toward_zero applies to the ALU operation being
   // translated. Only in vertex shaders since the extra instructions per
   // operation are too slow per pixel, and unless the rounding mode does it,
@@ -1066,12 +1143,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   bool RoundsTowardZeroInHardware() const;
   // Guest ALU sums and products of floats or float vectors, rounded toward
   // zero if RoundsTowardZero.
-  spv::Id AluAdd(spv::Id a, spv::Id b);
-  spv::Id AluSubtract(spv::Id a, spv::Id b);
-  spv::Id AluMultiply(spv::Id a, spv::Id b);
-  // Steps a sum or product of a and b rounded to nearest toward zero if its
-  // exact error shows it rounded away, and saturates overflow.
-  spv::Id RoundTowardZero(spv::Id rounded, spv::Id error, spv::Id a, spv::Id b);
+  // Where exact (a boolean or a boolean vector from DrawExactCondition) is
+  // set, the draw has proven that there is nothing to round.
+  spv::Id AluAdd(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
+  spv::Id AluSubtract(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
+  spv::Id AluMultiply(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
   // Steps a sum or product rounded to nearest toward zero if its exact error
   // shows it rounded away, or if it overflowed from finite operands, to
   // saturate (overflowed may be spv::NoResult if the error shows that too).
@@ -1412,6 +1488,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
   bool finite_multiply_enabled_ = false;
   FiniteMultiplyAnalysis finite_multiply_analysis_;
   FiniteMultiplyOperands current_finite_multiply_;
+  DrawExactAnalysis draw_exact_analysis_;
+  DrawExactAnalysis::Sites current_draw_exact_;
   bool is_viz_survey_fragment_shader_ = false;
 
   std::unique_ptr<SpirvBuilder> builder_;
@@ -1535,6 +1613,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     kSystemConstantInterpreterCfInstrCount,
     kSystemConstantTextureIntegerScaleBits,
     kSystemConstantParamGenWindowOffset,
+    kSystemConstantDrawExactEstimates,
   };
   spv::Id uniform_fetch_state_[kFetchStateBindingCount] = {};
   spv::Id main_fetch_state_[kFetchStateBindingCount] = {};

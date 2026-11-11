@@ -527,6 +527,14 @@ void SpirvShaderTranslator::StartTranslation() {
   if (finite_multiply_enabled_) {
     AnalyzeFiniteMultiplications(current_shader(), finite_multiply_analysis_);
   }
+  draw_exact_analysis_ = {};
+  current_draw_exact_ = {};
+  if (finite_multiply_enabled_ && is_vertex_shader() &&
+      features_.fetch_state_function_constants &&
+      cvars::alu_round_toward_zero && !features_.rounding_mode_rtz_float32 &&
+      cvars::alu_rtz_draw_exact) {
+    AnalyzeDrawExactness(current_shader(), draw_exact_analysis_);
+  }
 
   builder_->addCapability(IsSpirvTessEvalShader() ? spv::CapabilityTessellation
                                                   : spv::CapabilityShader);
@@ -704,6 +712,8 @@ void SpirvShaderTranslator::StartTranslation() {
        type_uint4_array_8},
       {"param_gen_window_offset",
        offsetof(SystemConstants, param_gen_window_offset), type_float2_},
+      {"draw_exact_estimates", offsetof(SystemConstants, draw_exact_estimates),
+       type_float4_},
   };
   id_vector_temp_.clear();
   id_vector_temp_.reserve(xe::countof(system_constants));
@@ -762,7 +772,9 @@ void SpirvShaderTranslator::StartTranslation() {
       fetch_state_bindings |=
           UINT64_C(1) << (kFetchStateLoopConstantsBinding + (index >> 2));
     }
-    if (finite_multiply_enabled_ && finite_multiply_analysis_.dynamic_inputs) {
+    if ((finite_multiply_enabled_ &&
+         finite_multiply_analysis_.dynamic_inputs) ||
+        draw_exact_analysis_.flag_count) {
       fetch_state_bindings |= UINT64_C(1) << kFetchStateFiniteMultiplyBinding;
     }
     for (const Shader::TextureBinding& binding :

@@ -289,6 +289,15 @@ DEFINE_bool(
     "or a floor, trunc or frc this way.",
     "GPU");
 
+DEFINE_bool(
+    alu_rtz_draw_exact, true,
+    "With alu_round_toward_zero in software, leave the rounding out of the "
+    "vertex shader sums and products that the float constants, the vertex "
+    "index range and the integer vertex data of the draw prove exact, and "
+    "compute the scalar estimates of float constants once for the draw rather "
+    "than for every vertex. The results are the same. It builds a second "
+    "pipeline, in the background, for the vertex shaders it applies to; "
+    "draws use the pipeline that assumes nothing until it is ready.",
 DEFINE_bool(xenos_sample_positions, false,
             "Rasterize 2x and 4x MSAA render targets at the Xenos sample "
             "positions, like real hardware, if the GPU and driver support it.\n"

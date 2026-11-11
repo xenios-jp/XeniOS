@@ -88,6 +88,7 @@ DECLARE_bool(use_fuzzy_alpha_epsilon);
 DECLARE_bool(force_depth_clamp);
 
 DECLARE_bool(alu_round_toward_zero);
+DECLARE_bool(alu_rtz_draw_exact);
 
 DECLARE_bool(xenos_sample_positions);
 
