@@ -122,6 +122,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       needs_initial_clear_ = needs_initial_clear;
       if (!needs_initial_clear) {
         clear_deferred_ = false;
+        deferred_clear_rows_ = 0;
         clear_depth_ = 1.0f;
         clear_stencil_ = 0;
         clear_color_[0] = clear_color_[1] = clear_color_[2] =
@@ -145,6 +146,13 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
         clear_color_[i] = color[i];
       }
     }
+    // The rows (guest pixels) a deferred clear has to cover: what the target
+    // owned when the clear was deferred. UINT32_MAX for all of it.
+    void NoteDeferredClearRows(uint32_t owned_rows) {
+      deferred_clear_rows_ =
+          std::max(deferred_clear_rows_, owned_rows ? owned_rows : UINT32_MAX);
+    }
+    uint32_t deferred_clear_rows() const { return deferred_clear_rows_; }
     // The values the clear load action writes.
     float clear_depth() const { return clear_depth_; }
     uint32_t clear_stencil() const { return clear_stencil_; }
@@ -193,6 +201,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     uint32_t components_written_since_transfer_ = 0b1111;
     bool needs_initial_clear_ = true;
     bool clear_deferred_ = false;
+    uint32_t deferred_clear_rows_ = 0;
     float clear_depth_ = 1.0f;
     uint32_t clear_stencil_ = 0;
     float clear_color_[4] = {};
