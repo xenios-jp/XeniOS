@@ -6590,6 +6590,10 @@ void MetalRenderTargetCache::DumpRenderTargets(
     MTL::ComputePipelineState* dump_pipeline =
         GetOrCreateDumpPipeline(shader_key);
     if (!dump_pipeline) {
+      XELOGE(
+          "MetalRenderTargetCache::DumpRenderTargets: no dump pipeline for {}, "
+          "its EDRAM tiles stay stale",
+          rt_key.GetDebugName());
       continue;
     }
 
@@ -6613,6 +6617,10 @@ void MetalRenderTargetCache::DumpRenderTargets(
       source_texture = source_is_uint ? rt->transfer_texture() : rt->texture();
     }
     if (!source_texture) {
+      XELOGE(
+          "MetalRenderTargetCache::DumpRenderTargets: no source texture for "
+          "{}, its EDRAM tiles stay stale",
+          rt_key.GetDebugName());
       continue;
     }
 
@@ -7352,6 +7360,20 @@ bool MetalRenderTargetCache::ResolveWithInfo(
     return PerformResolveClear(resolve_info, command_buffer);
   };
 
+  // A copy that can't be done doesn't take the clear with it (as on D3D12
+  // and Vulkan, where the clear follows the copy whatever its outcome).
+  auto fail_resolve_copy = [&]() {
+    XELOGE(
+        "MetalRenderTargetCache::Resolve: copy to 0x{:08X} ({} bytes) not "
+        "performed, the destination keeps its old contents",
+        resolve_info.copy_dest_extent_start,
+        resolve_info.copy_dest_extent_length);
+    if (!clear_left_to_pass_end) {
+      PerformResolveClear(resolve_info, command_buffer);
+    }
+    return false;
+  };
+
   if (resolved_directly) {
     return finish_resolve();
   }
@@ -7466,7 +7488,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
                           : nullptr;
         if (!metal_texture_cache) {
           XELOGE("MetalResolve: missing MetalTextureCache for scaled resolve");
-          return false;
+          return fail_resolve_copy();
         }
         uint32_t range_length = resolve_info.copy_dest_extent_start -
                                 resolve_info.copy_dest_base +
@@ -7480,14 +7502,14 @@ bool MetalRenderTargetCache::ResolveWithInfo(
             !metal_texture_cache->GetCurrentScaledResolveBuffer(
                 dest_buffer, dest_buffer_offset, dest_buffer_length)) {
           XELOGE("MetalResolve: failed to select scaled resolve buffer");
-          return false;
+          return fail_resolve_copy();
         }
         (void)dest_buffer_length;
       } else {
         dest_buffer = shared ? shared->GetBuffer() : nullptr;
         if (!dest_buffer) {
           XELOGE("MetalResolve: missing shared memory buffer");
-          return false;
+          return fail_resolve_copy();
         }
         // Request the destination shared memory range before the GPU write,
         // mirroring D3D12/Vulkan behavior. This ensures pages are committed and
@@ -7499,7 +7521,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
               "0x{:08X} len {}",
               resolve_info.copy_dest_extent_start,
               resolve_info.copy_dest_extent_length);
-          return false;
+          return fail_resolve_copy();
         }
 
         shared_bytes = static_cast<const uint8_t*>(dest_buffer->contents());
@@ -7626,7 +7648,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
   XELOGE(
       "MetalRenderTargetCache::Resolve: no valid GPU resolve shader / pipeline "
       "for this configuration");
-  return false;
+  return fail_resolve_copy();
 }
 
 bool MetalRenderTargetCache::MakeTransferAddressConstant(
@@ -8894,6 +8916,10 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
         MTL::Texture* depth_texture = dest_metal_rt->texture();
         if (!depth_texture || !edram_buffer_) {
+          XELOGE(
+              "MetalRenderTargetCache: host depth store skipped for {} (no "
+              "texture or EDRAM buffer), the transfer reads stale host depth",
+              dest_key.GetDebugName());
           continue;
         }
         size_t pipeline_index = size_t(dest_key.msaa_samples);
