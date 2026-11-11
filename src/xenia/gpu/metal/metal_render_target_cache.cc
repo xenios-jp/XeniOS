@@ -3024,6 +3024,16 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
       return false;
     }
     RenderTargetKey source_key = source_rt->key();
+    // Halo 3 (two recorded frames): with a depth target transferred into the
+    // second color target at the head of a long pass, later draws of the pass
+    // lost their output to that target in 8x4 pixel groups, at random places
+    // and in 10 to 25% of replays on an Apple M5 Pro. A pass of its own for the
+    // transfer never showed it.
+    // TODO(xenios-jp): the cause is not known, so this rule is fitted to that
+    // one transfer and may be too narrow or too wide.
+    if (source_key.is_depth && !dest_key.is_depth && render_target_index >= 2) {
+      return false;
+    }
     if (transfer.host_depth_source) {
       if (!dest_key.is_depth) {
         return false;
