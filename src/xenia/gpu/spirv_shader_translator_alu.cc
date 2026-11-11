@@ -62,6 +62,14 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
     return guarded;
   }
   uint64_t reasons = first_reasons | second_reasons;
+  bool rounds_toward_zero = !rounded_to_nearest && RoundsTowardZero() &&
+                            !RoundsTowardZeroInHardware();
+  if (reasons && rounds_toward_zero) {
+    // Whether the operands are finite is only known in the draw, so both
+    // products would be rounded toward zero and one selected. For finite
+    // operands they are the same value, and the guarded one is needed anyway.
+    return guarded;
+  }
   spv::Id finite = spv::NoResult;
   if (reasons) {
     spv::Id flags = main_fetch_state_[kFetchStateFiniteMultiplyBinding];
@@ -91,8 +99,7 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
       type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
       const_float_0_);
   builder_->addDecoration(product, spv::Decoration::FPFastMathMode, 0);
-  if (!rounded_to_nearest && RoundsTowardZero() &&
-      !RoundsTowardZeroInHardware()) {
+  if (rounds_toward_zero) {
     // The fused product's exact error, also free of nsz.
     auto error = builder_->createTriBuiltinCall(
         type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
@@ -553,54 +560,74 @@ spv::Id SpirvShaderTranslator::ScalarEstimate(ScalarEstimateOp op,
 // out one ulp too large where the console rounds toward zero. A fix matches the
 // console but costs too much to enable for now.
 spv::Id SpirvShaderTranslator::RoundTowardZero(spv::Id rounded, spv::Id error,
-                                               spv::Id a, spv::Id b) {
+                                               spv::Id overflowed) {
   spv::Id type = builder_->getTypeId(rounded);
   int component_count = builder_->getNumComponents(rounded);
   spv::Id type_bool = type_bool_vectors_[component_count - 1];
   spv::Id type_uint = type_uint_vectors_[component_count - 1];
   spv::Id const_zero = const_float_vectors_0_[component_count - 1];
-  auto splat = [&](spv::Id vector_type, spv::Id scalar) {
-    if (component_count == 1) {
-      return scalar;
-    }
-    std::vector<spv::Id> components(component_count, scalar);
-    return builder_->makeCompositeConstant(vector_type, components);
-  };
   auto compare = [&](spv::Op op, spv::Id x, spv::Id y) {
     return builder_->createBinOp(op, type_bool, x, y);
   };
-  auto absolute = [&](spv::Id x) {
-    return builder_->createUnaryBuiltinCall(type, ext_inst_glsl_std_450_,
-                                            GLSLstd450FAbs, x);
-  };
 
   // Opposite signs mean the rounding went away from zero.
+  // Both nonzero and of opposite signs if the smaller is negative and the
+  // larger is positive. A NaN error, from a NaN or infinite result, never
+  // passes: whichever operand the minimum and the maximum return for it, at
+  // most one of the two comparisons can hold.
   spv::Id step = builder_->createBinOp(
       spv::OpLogicalAnd, type_bool,
-      compare(spv::OpFOrdNotEqual, error, const_zero),
-      builder_->createBinOp(spv::OpLogicalNotEqual, type_bool,
-                            compare(spv::OpFOrdLessThan, error, const_zero),
-                            compare(spv::OpFOrdLessThan, rounded, const_zero)));
-  step =
-      builder_->createBinOp(spv::OpLogicalAnd, type_bool, step,
-                            compare(spv::OpFOrdNotEqual, rounded, const_zero));
-  // Overflow from finite operands saturates.
-  spv::Id const_infinity = splat(type, builder_->makeFloatConstant(INFINITY));
-  spv::Id overflowed = builder_->createBinOp(
-      spv::OpLogicalAnd, type_bool,
-      compare(spv::OpFOrdEqual, absolute(rounded), const_infinity),
-      builder_->createBinOp(
-          spv::OpLogicalAnd, type_bool,
-          compare(spv::OpFOrdNotEqual, absolute(a), const_infinity),
-          compare(spv::OpFOrdNotEqual, absolute(b), const_infinity)));
-  step = builder_->createBinOp(spv::OpLogicalOr, type_bool, step, overflowed);
+      compare(spv::OpFOrdLessThan,
+              builder_->createBinBuiltinCall(type, ext_inst_glsl_std_450_,
+                                             GLSLstd450NMin, error, rounded),
+              const_zero),
+      compare(spv::OpFOrdGreaterThan,
+              builder_->createBinBuiltinCall(type, ext_inst_glsl_std_450_,
+                                             GLSLstd450NMax, error, rounded),
+              const_zero));
+  // Overflow from finite operands saturates, an infinity being one step above
+  // the largest finite value.
+  if (overflowed != spv::NoResult) {
+    step = builder_->createBinOp(spv::OpLogicalOr, type_bool, step, overflowed);
+  }
+  spv::Id const_uint_1 = builder_->makeUintConstant(1);
+  if (component_count > 1) {
+    std::vector<spv::Id> components(component_count, const_uint_1);
+    const_uint_1 = builder_->makeCompositeConstant(type_uint, components);
+  }
   spv::Id stepped = builder_->createUnaryOp(
       spv::OpBitcast, type,
       builder_->createBinOp(
           spv::OpISub, type_uint,
           builder_->createUnaryOp(spv::OpBitcast, type_uint, rounded),
-          splat(type_uint, builder_->makeUintConstant(1))));
+          const_uint_1));
   return builder_->createTriOp(spv::OpSelect, type, step, stepped, rounded);
+}
+
+spv::Id SpirvShaderTranslator::IsInfinite(spv::Id value, bool is_infinite) {
+  spv::Id type = builder_->getTypeId(value);
+  int component_count = builder_->getNumComponents(value);
+  spv::Id const_infinity = builder_->makeFloatConstant(INFINITY);
+  if (component_count > 1) {
+    std::vector<spv::Id> components(component_count, const_infinity);
+    const_infinity = builder_->makeCompositeConstant(type, components);
+  }
+  return builder_->createBinOp(
+      is_infinite ? spv::OpFOrdEqual : spv::OpFOrdNotEqual,
+      type_bool_vectors_[component_count - 1],
+      builder_->createUnaryBuiltinCall(type, ext_inst_glsl_std_450_,
+                                       GLSLstd450FAbs, value),
+      const_infinity);
+}
+
+spv::Id SpirvShaderTranslator::OverflowedFromFinite(spv::Id rounded, spv::Id a,
+                                                    spv::Id b) {
+  spv::Id type_bool =
+      type_bool_vectors_[builder_->getNumComponents(rounded) - 1];
+  return builder_->createBinOp(
+      spv::OpLogicalAnd, type_bool, IsInfinite(rounded, true),
+      builder_->createBinOp(spv::OpLogicalAnd, type_bool, IsInfinite(a, false),
+                            IsInfinite(b, false)));
 }
 
 bool SpirvShaderTranslator::RoundsTowardZero() const {
@@ -623,14 +650,24 @@ spv::Id SpirvShaderTranslator::AluAdd(spv::Id a, spv::Id b) {
   // Two-sum error of the rounded sum, exact unless it overflowed.
   spv::Id b_rounded =
       builder_->createNoContractionBinOp(spv::OpFSub, type, sum, a);
+  spv::Id b_error =
+      builder_->createNoContractionBinOp(spv::OpFSub, type, b, b_rounded);
   spv::Id error = builder_->createNoContractionBinOp(
       spv::OpFAdd, type,
       builder_->createNoContractionBinOp(
           spv::OpFSub, type, a,
           builder_->createNoContractionBinOp(spv::OpFSub, type, sum,
                                              b_rounded)),
-      builder_->createNoContractionBinOp(spv::OpFSub, type, b, b_rounded));
-  return RoundTowardZero(sum, error, a, b);
+      b_error);
+  // An infinite sum has finite operands exactly when b - (sum - a) is infinite
+  // as well: sum - a is NaN for an infinite a, and the infinity b is for an
+  // infinite b. A finite sum of large operands can have it infinite too.
+  return RoundTowardZero(
+      sum, error,
+      builder_->createBinOp(
+          spv::OpLogicalAnd,
+          type_bool_vectors_[builder_->getNumComponents(sum) - 1],
+          IsInfinite(sum, true), IsInfinite(b_error, true)));
 }
 
 spv::Id SpirvShaderTranslator::AluSubtract(spv::Id a, spv::Id b) {
@@ -688,7 +725,7 @@ spv::Id SpirvShaderTranslator::AluMultiply(spv::Id a, spv::Id b) {
   error = add(error, mul(a_high, b_low));
   error = add(error, mul(a_low, b_high));
   error = add(error, mul(a_low, b_low));
-  return RoundTowardZero(product, error, a, b);
+  return RoundTowardZero(product, error, OverflowedFromFinite(product, a, b));
 }
 
 void SpirvShaderTranslator::KillPixel(

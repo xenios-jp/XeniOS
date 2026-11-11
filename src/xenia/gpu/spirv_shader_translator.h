@@ -1072,6 +1072,14 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Steps a sum or product of a and b rounded to nearest toward zero if its
   // exact error shows it rounded away, and saturates overflow.
   spv::Id RoundTowardZero(spv::Id rounded, spv::Id error, spv::Id a, spv::Id b);
+  // Steps a sum or product rounded to nearest toward zero if its exact error
+  // shows it rounded away, or if it overflowed from finite operands, to
+  // saturate (overflowed may be spv::NoResult if the error shows that too).
+  spv::Id RoundTowardZero(spv::Id rounded, spv::Id error, spv::Id overflowed);
+  // Per component, whether the absolute value is (or is not) infinity.
+  spv::Id IsInfinite(spv::Id value, bool is_infinite);
+  // Whether the result of a and b is infinite while neither of them is.
+  spv::Id OverflowedFromFinite(spv::Id rounded, spv::Id a, spv::Id b);
   bool CanUseFiniteProduct(uint64_t first, uint64_t second) const;
   // guarded is rounded as AluMultiply rounds unless rounded_to_nearest.
   spv::Id UseFiniteProduct(spv::Id guarded, spv::Id first, spv::Id second,
